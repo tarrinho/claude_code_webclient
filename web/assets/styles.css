@@ -117,6 +117,6 @@ button{touch-action:manipulation}
 .btn-secondary,.btn-primary{min-height:38px;border-radius:6px;padding:7px 13px;cursor:pointer}.btn-secondary{border:1px solid var(--line);background:transparent;color:var(--fg)}.btn-primary{border:1px solid var(--accent);background:var(--accent);color:#fff}.btn-danger{border-color:var(--bad);background:var(--bad)}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
-@media(min-width:768px){.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send{min-width:44px;min-height:44px}.chat-actions,.message-tools{opacity:1}}
+@media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}.chat-actions,.message-tools{opacity:1}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}

@@ -1,0 +1,8 @@
+# Pinned to exact versions so dependency scanners can resolve them.
+# Bump on a vulnerability hit or new feature.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+aiosqlite==0.21.0
+argon2-cffi==23.1.0
+python-dotenv==1.0.1
+loguru==0.7.3

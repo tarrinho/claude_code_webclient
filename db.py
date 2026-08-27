@@ -17,6 +17,7 @@ import config
 
 
 db_conn: aiosqlite.Connection | None = None
+_messages_batch_lock: asyncio.Lock | None = None
 
 
 async def init() -> None:
@@ -104,7 +105,7 @@ _ALLOWED_CHAT_FIELDS = {"title", "description", "archived", "pinned", "pinned_at
 
 async def chat_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db_conn.execute(
-        f"SELECT {_CHAT_COLUMNS} FROM chats WHERE owner_id = ? AND deleted_at IS NULL "
+        f"SELECT {_CHAT_COLUMNS} FROM chats WHERE owner_id = ? AND deleted_at IS NULL "  # nosec B608: columns are static
         "ORDER BY archived ASC, "
         "CASE WHEN archived = 0 THEN pinned ELSE 0 END DESC, "
         "CASE WHEN archived = 0 AND pinned = 1 THEN pinned_at END DESC, "
@@ -121,7 +122,7 @@ async def chat_get(
     archived_filter = "" if include_archived else " AND archived = 0"
     cur = await db_conn.execute(
         f"SELECT {_CHAT_COLUMNS} FROM chats "
-        f"WHERE id = ? AND owner_id = ? AND deleted_at IS NULL{archived_filter}",
+        f"WHERE id = ? AND owner_id = ? AND deleted_at IS NULL{archived_filter}",  # nosec B608: filter is static
         (chat_id, owner_id),
     )
     row = await cur.fetchone()
@@ -152,7 +153,7 @@ async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
         fields["pinned_at"] = _now() if fields["pinned"] else None
     sets = ", ".join(k + " = ?" for k in fields)
     sets += ", updated_at = ?"
-    sql = "UPDATE chats SET " + sets + " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
+    sql = "UPDATE chats SET " + sets + " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"  # nosec B608: fields are allowlisted
     vals = list(fields.values()) + [_now(), chat_id, owner_id]
     cur = await db_conn.execute(sql, vals)
     await db_conn.commit()
@@ -222,15 +223,28 @@ async def messages_append(chat_id: str, role: str, content: str) -> int:
 
 
 async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]:
-    """Insert multiple messages. Each row is (role, content)."""
-    now = _now()
-    vals = [(chat_id, role, content, now) for role, content in rows]
-    cur = await db_conn.executemany(
-        "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        vals,
-    )
-    await db_conn.commit()
-    return list(range(cur.lastrowid - len(vals) + 1, cur.lastrowid + 1))
+    """Insert multiple messages atomically and return their exact IDs."""
+    global _messages_batch_lock
+    if not rows:
+        return []
+    if _messages_batch_lock is None:
+        _messages_batch_lock = asyncio.Lock()
+    async with _messages_batch_lock:
+        ids = []
+        try:
+            await db_conn.execute("BEGIN")
+            now = _now()
+            for role, content in rows:
+                cur = await db_conn.execute(
+                    "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                    (chat_id, role, content, now),
+                )
+                ids.append(cur.lastrowid)
+            await db_conn.commit()
+        except Exception:
+            await db_conn.rollback()
+            raise
+        return ids
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────────────
@@ -323,9 +337,11 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             continue
 
-        # Skip sessions whose PID matches (that's us / the current process)
+        # Skip the active CLI process, but retain WebConsole-created session files.
+        # WebConsole writes these files with its own PID so the CLI can discover
+        # them; filtering by PID alone would hide the bidirectional-sync record.
         pid = data.get("pid")
-        if pid and int(pid) == current_pid:
+        if pid and int(pid) == current_pid and data.get("entrypoint") != "webconsole":
             continue
 
         name = data.get("name", "")

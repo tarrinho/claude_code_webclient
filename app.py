@@ -10,16 +10,13 @@ import asyncio
 import datetime
 import json
 import logging
-import os
-import secrets
-import time
 import uuid
 from contextlib import asynccontextmanager
 from html import escape as html_escape
 from pathlib import Path
 from typing import Final
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -128,7 +125,10 @@ async def handle_chats_list(request: Request):
     return JSONResponse({
         "chats": [{"id": c["id"], "title": c["title"], "description": c["description"],
                    "work_dir": c["work_dir"], "created_at": c["created_at"],
-                   "updated_at": c["updated_at"], "archived": bool(c["archived"])}
+                   "updated_at": c["updated_at"], "archived": bool(c["archived"]),
+                   "pinned": bool(c["pinned"]), "pinned_at": c.get("pinned_at"),
+                   "session_id": c.get("session_id"),
+                   }
                   for c in chats],
     })
 
@@ -166,26 +166,45 @@ async def handle_chat_get(request: Request, chat_id: str):
 
     messages = await db.messages_get(chat_id)
     return JSONResponse({
-        "chat": {k: chat[k] for k in ("id", "title", "description", "session_id", "work_dir", "archived")},
+        "chat": {**{k: chat[k] for k in (
+            "id", "title", "description", "session_id", "work_dir", "archived",
+            "pinned", "pinned_at",
+        )}, "archived": bool(chat["archived"]), "pinned": bool(chat["pinned"])},
         "messages": [{"role": m["role"], "content": m["content"], "created_at": m["created_at"]} for m in messages],
     })
 
 
 async def handle_chat_patch(request: Request, chat_id: str):
-    """PATCH /api/chats/{id} -- rename, edit description, archive."""
+    """PATCH /api/chats/{id} -- rename, edit description, archive, pin."""
     session = request.state.session
     data = await request.json()
+
+    allowed = {"title", "description", "archived", "pinned"}
+    if not data or not set(data).issubset(allowed):
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
     fields = {}
     if "title" in data:
-        t = data["title"].strip()[:200]
-        if t:
-            fields["title"] = t
+        if not isinstance(data["title"], str):
+            raise HTTPException(status_code=400, detail="Title must be text")
+        title = data["title"].strip()[:200]
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        fields["title"] = title
     if "description" in data:
-        fields["description"] = data["description"]
+        description = data["description"]
+        if description is not None and not isinstance(description, str):
+            raise HTTPException(status_code=400, detail="Description must be text or null")
+        fields["description"] = description[:500] if description is not None else None
     if "archived" in data:
-        fields["archived"] = 1 if data["archived"] else 0
-    if not fields:
-        raise HTTPException(status_code=400, detail="No valid fields to update")
+        if not isinstance(data["archived"], bool):
+            raise HTTPException(status_code=400, detail="Archived must be a boolean")
+        fields["archived"] = int(data["archived"])
+    if "pinned" in data:
+        if not isinstance(data["pinned"], bool):
+            raise HTTPException(status_code=400, detail="Pinned must be a boolean")
+        fields["pinned"] = int(data["pinned"])
+        fields["pinned_at"] = db._now() if data["pinned"] else None
 
     updated = await db.chat_update(chat_id, session["user"], **fields)
     if not updated:
@@ -194,11 +213,51 @@ async def handle_chat_patch(request: Request, chat_id: str):
 
 
 async def handle_chat_delete(request: Request, chat_id: str):
-    """DELETE /api/chats/{id} -- soft delete (never rm -rf)."""
+    """DELETE /api/chats/{id} -- hard delete (never rm -rf)."""
     session = request.state.session
-    await db.chat_delete(chat_id, session["user"])
+    deleted = await db.chat_delete(chat_id, session["user"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Chat not found")
     _log.info("chat_deleted chat_id=%s", chat_id)
     return JSONResponse({"ok": True})
+
+
+def render_chat_markdown(chat: dict, messages: list[dict]) -> str:
+    """Render a chat transcript as a Markdown document."""
+    created = chat.get("created_at") or "Unknown"
+    try:
+        created = datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).strftime("%-d %B %Y")
+    except (AttributeError, ValueError):
+        pass
+    lines: list[str] = [
+        f"# {chat['title']}", "",
+        f"- Created: {created}",
+        f"- Workspace: `{chat.get('work_dir') or 'Unknown'}`",
+        f"- Session: `{chat.get('session_id') or 'None'}`", "",
+    ]
+    if chat.get("description"):
+        lines.extend([f"> {chat['description']}", ""])
+    labels = {"user": "User", "assistant": "Assistant", "system": "System"}
+    for message in messages:
+        role = labels.get(message.get("role"), "Message")
+        lines.extend([f"## {role}", "", str(message.get("content") or ""), ""])
+    return "\n".join(lines)
+
+
+_render_chat_markdown = render_chat_markdown
+
+
+async def handle_chat_export(request: Request, chat_id: str):
+    """GET /api/chats/{id}/export -- download chat as Markdown."""
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    messages = await db.messages_get(chat_id)
+    body = render_chat_markdown(chat, messages)
+    filename = f"{db.slug_from_title(chat['title']) or 'conversation'}.md"
+    return Response(body, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 async def handle_submit_message(request: Request, chat_id: str):
@@ -361,6 +420,10 @@ async def _api_chat_patch(request: Request, chat_id: str):
 async def _api_chat_delete(request: Request, chat_id: str):
     return await handle_chat_delete(request, chat_id)
 
+@app.get("/api/chats/{chat_id}/export")
+async def _api_chat_export(request: Request, chat_id: str):
+    return await handle_chat_export(request, chat_id)
+
 @app.post("/api/chats/{chat_id}/messages")
 async def _api_submit_message(request: Request, chat_id: str):
     return await handle_submit_message(request, chat_id)
@@ -375,7 +438,9 @@ async def handle_sessions_list(request: Request):
     session = request.state.session
     cli_sessions = await db.read_claude_sessions()
     web_chats = await db.chat_list(session["user"])
-    # Merge: web chats already have the right shape
+    linked_session_ids = {chat.get("session_id") for chat in web_chats if chat.get("session_id")}
+    cli_sessions = [item for item in cli_sessions if item.get("sessionId") not in linked_session_ids]
+    # Merge unlinked CLI sessions with WebConsole chats.
     items = cli_sessions + [
         {"id": c["id"], "name": c["title"], "cwd": c["work_dir"],
          "kind": "web", "startedAt": c["created_at"], "updatedAt": c["updated_at"],
@@ -397,8 +462,6 @@ async def handle_sessions_resume(request: Request, session_id: str):
     title = f"CLI: {session_id[:12]}..."
     work_dir = str(_Path(config.PROJECTS_ROOT).resolve() / f"cli-import-{session_id[:8]}-{_dt.date.today().isoformat()}")
     _Path(work_dir).mkdir(parents=True, exist_ok=True)
-    now = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
     await db.chat_create(chat_id, title, None, work_dir, session["user"])
     # Link the CLI session ID
     await db.chat_set_session(chat_id, session_id)

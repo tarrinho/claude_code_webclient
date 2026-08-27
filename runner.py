@@ -137,7 +137,7 @@ async def _execute_proxy(prompt: str, session_id: str | None, work_dir: str, cha
         # Read handshake ACK from proxy
         try:
             ack_raw = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
-            ack = json.loads(ack_raw)
+            json.loads(ack_raw)
         except (asyncio.TimeoutError, ValueError, json.JSONDecodeError):
             _log.warning("proxy handshake ACK unexpected")
 
@@ -368,7 +368,7 @@ async def _do_proxy_stream(prompt: str, session_id: str | None, work_dir: str, c
 
         try:
             ack_raw = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
-            ack = json.loads(ack_raw)
+            json.loads(ack_raw)
         except (asyncio.TimeoutError, ValueError, json.JSONDecodeError):
             _log.warning("proxy handshake ACK unexpected")
 
@@ -381,7 +381,8 @@ async def _do_proxy_stream(prompt: str, session_id: str | None, work_dir: str, c
         }) + "\n").encode())
         await writer.drain()
 
-        # Stream events
+        # Stream events. A clean turn must include an explicit done frame.
+        completed = False
         try:
             async with asyncio.timeout(config.PROXY_TURN_TIMEOUT_S):
                 async for raw_line in _read_lines(reader):
@@ -399,8 +400,11 @@ async def _do_proxy_stream(prompt: str, session_id: str | None, work_dir: str, c
                     if msg_type in ("text", "session_id", "status", "error"):
                         yield obj
                     elif msg_type == "done":
+                        completed = True
                         yield {"type": "done"}
                         break
+            if not completed:
+                yield {"type": "error", "error": "Proxy stream ended before completion"}
         except TimeoutError:
             yield {"type": "error", "error": f"Stream timed out after {config.PROXY_TURN_TIMEOUT_S}s"}
 
@@ -463,9 +467,19 @@ async def _do_direct_stream(prompt: str, session_id: str | None, work_dir: str, 
         except asyncio.TimeoutError:
             await _kill_process(proc)
 
-        yield {"type": "done"}
+        if proc.returncode:
+            stderr = ""
+            if proc.stderr is not None:
+                stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
+            yield {"type": "error", "error": stderr[-2000:] or f"Claude exited with code {proc.returncode}"}
+        else:
+            yield {"type": "done"}
 
+    except asyncio.CancelledError:
+        await _kill_process(proc)
+        raise
     except Exception as e:
+        await _kill_process(proc)
         yield {"type": "error", "error": str(e)}
 
 

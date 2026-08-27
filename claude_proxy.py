@@ -261,32 +261,52 @@ async def handle_client(
 
     stdout_task = asyncio.create_task(relay_stdout())
     stderr_task = asyncio.create_task(collect_stderr())
+    process_task = asyncio.create_task(proc.wait())
+    disconnect_task = asyncio.create_task(reader.read())
     timed_out = False
+    disconnected = False
 
-    # ── 6. Wait for Claude exit and all buffered output ──────────────────────
+    # ── 6. Wait for Claude exit, client cancellation, or timeout ─────────────
     try:
-        await asyncio.wait_for(proc.wait(), timeout=300.0)
-    except asyncio.TimeoutError:
-        timed_out = True
-        log.warning("claude timed out")
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except (asyncio.TimeoutError, ProcessLookupError):
-            proc.kill()
-            await proc.wait()
+        done, _ = await asyncio.wait(
+            {process_task, disconnect_task}, timeout=300.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            timed_out = True
+            log.warning("claude timed out")
+        elif disconnect_task in done and not process_task.done():
+            disconnected = True
+            log.info("client disconnected; terminating Claude PID %d", proc.pid)
+
+        if timed_out or disconnected:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(process_task, timeout=5)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                proc.kill()
+                await process_task
+        else:
+            await process_task
+    finally:
+        if not disconnect_task.done():
+            disconnect_task.cancel()
+        await asyncio.gather(disconnect_task, return_exceptions=True)
 
     await stdout_task
     stderr_text = await stderr_task
 
-    if timed_out:
+    if disconnected:
+        log.info("cancelled turn for disconnected client %s", peer)
+    elif timed_out:
         await send_frame({"type": "error", "error": "Claude turn timed out after 300s"})
     elif proc.returncode and not error_sent:
         detail = stderr_text[-2000:] if stderr_text else f"Claude exited with code {proc.returncode}"
         await send_frame({"type": "error", "error": detail})
 
     # ── 7. done + close ─────────────────────────────────────────────────────
-    await send_frame({"type": "done"})
+    if not disconnected:
+        await send_frame({"type": "done"})
     writer.close()
     try:
         await writer.wait_closed()

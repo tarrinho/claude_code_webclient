@@ -161,6 +161,16 @@ python3 -m py_compile app.py auth.py claude_proxy.py config.py db.py runner.py
 python3 -m unittest discover -s . -p 'test*.py' -v
 ```
 
+The suite is layered across the QA pyramid:
+
+- **Unit tests** cover pure helpers, authentication boundaries, command construction, environment filtering, and frame normalization.
+- **Integration tests** exercise SQLite CRUD, ownership isolation, message batching, CLI session-file synchronization, and app/database interactions.
+- **Component/API tests** verify route contracts, validation, authentication boundaries, and handler behavior with runner/proxy dependencies mocked.
+- **System/E2E tests** run a complete create → submit → persist → reload transcript flow with a fake Claude turn.
+- **Acceptance/UAT tests** validate user requirements for CLI-session resume, conversation export, sidebar session visibility, and cross-user privacy.
+
+The layered additions are in `tests/test_qa_layers.py`. They use temporary databases and mocked Claude boundaries, so the suite is deterministic and does not require a live model.
+
 Install development and security tooling with:
 
 ```bash

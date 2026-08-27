@@ -27,7 +27,7 @@ def _bool(name: str, default: bool) -> bool:
 
 
 # --- listen ----------------------------------------------------------------
-HOST = _str("WC_HOST", "0.0.0.0")
+HOST = _str("WC_HOST", "127.0.0.1")
 PORT = _int("WC_PORT", 8080)
 # Bind to this interface only. For Tailscale use: the device's tailnet IP
 # (e.g. "100.x.x.x"), never "0.0.0.0" for external exposure.

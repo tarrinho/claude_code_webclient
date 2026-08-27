@@ -12,7 +12,7 @@ SQLite persistence, and resumable Claude Code sessions.
 
 ## Stack
 
-- Python 3.11+ and FastAPI
+- Python 3.11+ and FastAPI (runtime dependencies are pinned and audited in CI)
 - SQLite through `aiosqlite`
 - Server-Sent Events for streaming
 - Server-rendered HTML and vanilla JavaScript
@@ -100,7 +100,7 @@ Copy `.env.example` for the complete set of settings. Important variables are:
 
 | Variable | Default | Description |
 |---|---:|---|
-| `WC_LISTEN_HOST` | `0.0.0.0` | Web bind address; use loopback or a private tailnet IP |
+| `WC_LISTEN_HOST` | `127.0.0.1` | Web bind address; use loopback or a private tailnet IP |
 | `WC_PORT` | `8080` | Web port |
 | `WC_DB_PATH` | `/data/webconsole.db` | SQLite database path |
 | `WC_PROJECTS_ROOT` | `/projects` | Root for conversation workspaces |
@@ -152,14 +152,35 @@ its database records but deliberately leaves its workspace on disk.
 
 Read [SECURITY.md](SECURITY.md) before deployment.
 
-## Tests
+## Tests and security checks
+
+Runtime tests:
 
 ```bash
 python3 -m py_compile app.py auth.py claude_proxy.py config.py db.py runner.py
 python3 -m unittest discover -s . -p 'test*.py' -v
 ```
 
-Tests do not require a live Claude Code connection.
+Install development and security tooling with:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+pip-audit -r requirements.txt --strict
+# Optional: requires SAFETY_API_KEY in the environment
+safety --stage cicd --key "$SAFETY_API_KEY" scan --target .
+bandit -r app.py auth.py claude_proxy.py config.py db.py runner.py -ll
+ruff check app.py auth.py claude_proxy.py config.py db.py runner.py tests test_functional.py
+```
+
+The GitHub Actions security workflow also runs Gitleaks and scans the Docker
+image with Trivy. Install Gitleaks locally and enable the pre-push hook:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Tests do not require a live Claude Code connection. See [SECURITY.md](SECURITY.md)
+for secret-management and vulnerability-handling requirements.
 
 ## License
 

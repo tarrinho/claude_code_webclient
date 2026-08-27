@@ -1,0 +1,6 @@
+# Development, CI, and security tooling — not required at runtime.
+httpx>=0.28,<1
+bandit>=1.7,<2
+safety>=3.0,<4
+pip-audit>=2.7,<3
+ruff>=0.9,<1

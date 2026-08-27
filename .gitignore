@@ -26,6 +26,10 @@ htmlcov/
 # Local build/review instructions
 /rules.md
 
+# Security scan output
+.gitleaks-report.json
+trivy-results.sarif
+
 # Editors and operating systems
 .vscode/
 .idea/

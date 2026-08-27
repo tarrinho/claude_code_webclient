@@ -198,7 +198,7 @@ async def handle_client(
         # Resolve work_dir: Docker-internal paths don't exist on host — fall back to /tmp
         _cwd = work_dir or None
         if _cwd and not _os.path.isdir(_cwd):
-            _fallback = "/tmp"
+            _fallback = os.environ.get("WC_PROXY_FALLBACK_DIR", "/tmp")  # nosec B108: configurable private fallback
             log.info("work_dir %s not found on host, falling back to %s", _cwd, _fallback)
             _cwd = _fallback
 

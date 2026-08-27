@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Scan commits being pushed for credentials before they leave the workstation.
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-push: gitleaks is not installed; install it from https://github.com/gitleaks/gitleaks" >&2
+  exit 1
+fi
+
+remote_name="${1:-origin}"
+remote_url="${2:-}"
+zero="0000000000000000000000000000000000000000"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -z "${local_ref}" ]] && continue
+  if [[ "${local_sha}" == "${zero}" ]]; then
+    range="${remote_sha}^..${remote_sha}"
+  elif [[ "${remote_sha}" == "${zero}" ]]; then
+    range="${local_sha}"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+
+  echo "pre-push: scanning ${local_ref} (${range})"
+  gitleaks git --config .gitleaks.toml --redact --log-opts="${range}"
+done

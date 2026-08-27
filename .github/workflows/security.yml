@@ -1,0 +1,90 @@
+name: Security scans
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies and auditors
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: pip-audit
+        run: pip-audit -r requirements.txt --strict
+      - name: Safety scan (optional secondary database)
+        if: ${{ secrets.SAFETY_API_KEY != '' }}
+        env:
+          SAFETY_API_KEY: ${{ secrets.SAFETY_API_KEY }}
+        run: safety --stage cicd --key "$SAFETY_API_KEY" scan --target .
+      - name: Safety scan configuration
+        if: ${{ secrets.SAFETY_API_KEY == '' }}
+        run: echo "SAFETY_API_KEY is not configured; pip-audit remains the required SCA gate."
+
+  static-security:
+    name: Static security analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install security tooling
+        run: python -m pip install -r requirements-dev.txt
+      - name: Bandit
+        run: bandit -r app.py auth.py claude_proxy.py config.py db.py runner.py -ll --ini .bandit
+      - name: Ruff security and correctness checks
+        run: ruff check app.py auth.py claude_proxy.py config.py db.py runner.py tests test_functional.py
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  container-scan:
+    name: Container vulnerability scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --tag claude-code-webconsole:ci --file docker/Dockerfile .
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: claude-code-webconsole:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: "1"
+      - name: Upload Trivy results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif

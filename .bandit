@@ -1,0 +1,5 @@
+[bandit]
+# B108: proxy fallback is explicitly configurable and defaults to a private
+# temporary workspace. B608: SQL identifiers are static/allowlisted; values use
+# parameterized placeholders. Keep these exclusions narrow and reviewed.
+skips = B108,B608

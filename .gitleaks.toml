@@ -1,0 +1,14 @@
+title = "Claude Code WebConsole secret scanning"
+
+[extend]
+useDefault = true
+
+# Test-only placeholders are intentionally non-secret and appear in CI fixtures.
+[[allowlists]]
+description = "CI-only test credentials"
+regexes = [
+  '''ci-only-session-secret-at-least-32-characters''',
+  '''ci-only-proxy-token-at-least-32-characters''',
+  '''testing-session-secret-at-least-32-characters''',
+  '''testing-proxy-token-at-least-32-characters''',
+]

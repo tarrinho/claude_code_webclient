@@ -17,6 +17,11 @@ let dialogMode = 'create';
 let dialogChat = null;
 let listController;
 let conversationController;
+let settingsVisible = false;
+let _activeMachineId = null;
+let _machines = [];
+let _machineEditing = null;
+let _currentTab = 'machines';
 
 function showToast(message, type = '') {
   const toast = document.createElement('div');
@@ -124,6 +129,299 @@ function closeDialog() {
   if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
 }
 
+function openSettingsDialog() {
+  previousFocus = document.activeElement;
+  byId('settingsStatus').textContent = '';
+  byId('settingsDialog').classList.add('open');
+  settingsVisible = true;
+  _machineEditing = null;
+  byId('machineForm').hidden = true;
+  _switchTab('machines');
+  byId('settingsHost').value = '';
+}
+
+function closeSettingsDialog() {
+  byId('settingsDialog').classList.remove('open');
+  settingsVisible = false;
+  _machineEditing = null;
+  if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
+}
+
+function _switchTab(tab) {
+  _currentTab = tab;
+  document.querySelectorAll('.settings-tab').forEach(t => {
+    const active = t.dataset.tab === tab;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', String(active));
+  });
+  const map = { machines: 'panelMachines', models: 'panelModels', app: 'panelApp' };
+  const activeId = map[tab] || 'panelMachines';
+  ['panelMachines', 'panelModels', 'panelApp'].forEach(id => {
+    const el = byId(id);
+    if (el) el.hidden = id !== activeId;
+  });
+  if (tab === 'machines') _renderMachineList();
+}
+
+function setStatus(text, type) {
+  const el = byId('settingsStatus');
+  el.textContent = text;
+  el.className = type ? `toast ${type}` : '';
+  if (type === 'success') setTimeout(() => { el.textContent = ''; el.className = ''; }, 2000);
+}
+
+// ── Machines ──────────────────────────────────────────────────────────────────────
+
+async function loadMachines() {
+  try {
+    const resp = await apiFetch('/api/machines');
+    if (resp.ok) _machines = (await resp.json()).machines || [];
+  } catch { _machines = []; }
+  // Check for a stored active machine
+  const stored = storageGet('wc_active_machine');
+  if (stored && _machines.some(m => m.id === stored)) {
+    _activeMachineId = stored;
+  }
+}
+
+function _renderMachineList() {
+  const list = byId('machineList');
+  list.replaceChildren();
+  if (!_machines.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sidebar-empty';
+    empty.textContent = 'No machines yet. Add one below.';
+    list.appendChild(empty);
+    return;
+  }
+  _machines.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'machine-card';
+    if (m.active) card.classList.add('machine-active');
+
+    const top = document.createElement('div');
+    top.className = 'machine-card-top';
+
+    const name = document.createElement('span');
+    name.className = 'machine-name';
+    name.textContent = m.name;
+    if (m.active) {
+      const badge = document.createElement('span');
+      badge.className = 'machine-badge';
+      badge.textContent = 'Active';
+      top.appendChild(badge);
+    }
+    top.appendChild(name);
+
+    const meta = document.createElement('div');
+    meta.className = 'machine-meta';
+    meta.textContent = `${m.host}:${m.port} · ${m.model}`;
+    top.appendChild(meta);
+
+    card.appendChild(top);
+
+    const actions = document.createElement('div');
+    actions.className = 'machine-actions';
+
+    if (!m.active) {
+      const activateBtn = document.createElement('button');
+      activateBtn.type = 'button';
+      activateBtn.className = 'machine-action';
+      activateBtn.textContent = 'Activate';
+      activateBtn.addEventListener('click', () => _activateMachine(m.id));
+      actions.appendChild(activateBtn);
+    }
+
+    const testBtn = document.createElement('button');
+    testBtn.type = 'button';
+    testBtn.className = 'machine-action';
+    testBtn.textContent = 'Test';
+    testBtn.addEventListener('click', () => _testMachine(m.id));
+    actions.appendChild(testBtn);
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'machine-action';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => _editMachine(m.id));
+    actions.appendChild(editBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'machine-action machine-action-danger';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => _deleteMachine(m.id));
+    actions.appendChild(delBtn);
+
+    card.appendChild(actions);
+    list.appendChild(card);
+  });
+}
+
+async function _activateMachine(id) {
+  try {
+    const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/activate`, {method: 'POST'});
+    if (!resp.ok) throw new Error('Could not activate machine');
+    await loadMachines();
+    _activeMachineId = id;
+    storageSet('wc_active_machine', id);
+    _renderMachineList();
+    showToast('Machine activated');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function _testMachine(id) {
+  const btn = document.querySelector(`.machine-card:nth-child(${_machines.findIndex(m => m.id === id) + 1}) .machine-action:nth-child(2)`);
+  if (btn) { btn.textContent = 'Testing…'; btn.disabled = true; }
+  try {
+    const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/test`, {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+      showToast(`Connected to ${data.host}:${data.port}`);
+    } else {
+      showToast(`Connection failed: ${data.error || 'unreachable'}`, 'error');
+    }
+  } catch (error) {
+    showToast(`Test failed: ${error.message}`, 'error');
+  } finally {
+    if (btn) { btn.textContent = 'Test'; btn.disabled = false; }
+  }
+}
+
+async function _deleteMachine(id) {
+  try {
+    const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}`, {method: 'DELETE'});
+    if (!resp.ok) throw new Error('Could not delete machine');
+    if (_activeMachineId === id) _activeMachineId = null;
+    await loadMachines();
+    _renderMachineList();
+    showToast('Machine deleted');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+function _editMachine(id) {
+  const m = _machines.find(x => x.id === id);
+  if (!m) return;
+  _machineEditing = id;
+  byId('machineFormTitle').textContent = 'Edit machine';
+  byId('machineName').value = m.name;
+  byId('machineHost').value = m.host;
+  byId('machinePort').value = m.port;
+  byId('machineModel').value = m.model;
+  byId('machineBaseUrl').value = m.base_url || '';
+  byId('machineApiKey').value = '';
+  byId('machineApiKey').placeholder = 'Leave blank to keep current';
+  byId('machineDescription').value = m.description || '';
+  byId('machineForm').hidden = false;
+  byId('addMachineBtn').hidden = true;
+  byId('machineName').focus();
+}
+
+async function _saveMachine() {
+  const name = byId('machineName').value.trim();
+  const host = byId('machineHost').value.trim();
+  const port = parseInt(byId('machinePort').value) || 9000;
+  const model = byId('machineModel').value.trim() || 'claude-sonnet-4-20250514';
+  const base_url = byId('machineBaseUrl').value.trim() || null;
+  const description = byId('machineDescription').value.trim() || null;
+  const api_key = byId('machineApiKey').value.trim() || null;
+
+  if (!name) { byId('machineName').focus(); return; }
+  if (!host) { byId('machineHost').focus(); return; }
+
+  const save = byId('saveMachine');
+  save.disabled = true;
+  try {
+    let resp;
+    if (_machineEditing) {
+      const body = { name, host, port, model, base_url, description };
+      if (api_key !== null) body.api_key = api_key;
+      resp = await apiFetch(`/api/machines/${encodeURIComponent(_machineEditing)}`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+      });
+    } else {
+      resp = await apiFetch('/api/machines', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name, host, port, model, base_url, description }),
+      });
+    }
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || 'Could not save machine');
+    }
+    _machineEditing = null;
+    byId('machineForm').hidden = true;
+    byId('addMachineBtn').hidden = false;
+    await loadMachines();
+    _renderMachineList();
+    setStatus('Machine saved', 'success');
+  } catch (error) {
+    setStatus(error.message, 'error');
+  } finally {
+    save.disabled = false;
+  }
+}
+
+function _showAddMachine() {
+  _machineEditing = null;
+  byId('machineFormTitle').textContent = 'Add machine';
+  byId('machineName').value = '';
+  byId('machineHost').value = '';
+  byId('machinePort').value = '9000';
+  byId('machineModel').value = '';
+  byId('machineBaseUrl').value = '';
+  byId('machineApiKey').value = '';
+  byId('machineApiKey').placeholder = 'Optional';
+  byId('machineDescription').value = '';
+  byId('machineForm').hidden = false;
+  byId('addMachineBtn').hidden = true;
+  byId('machineName').focus();
+}
+
+// ── Settings save ───────────────────────────────────────────────────────────────────
+
+async function saveSettings(event) {
+  if (event) event.preventDefault();
+  const save = byId('settingsSave');
+  save.disabled = true;
+  try {
+    const body = {};
+    // Old: ai_machine_host
+    const host = byId('settingsHost').value.trim();
+    if (host) body.ai_machine_host = host;
+    // App tab settings
+    const sessionTtl = parseInt(byId('sessionTtl')?.value);
+    if (sessionTtl) body.session_ttl = sessionTtl;
+    const turnTimeout = parseInt(byId('turnTimeout')?.value);
+    if (turnTimeout) body.turn_timeout = turnTimeout;
+    const promptMax = parseInt(byId('promptMax')?.value);
+    if (promptMax) body.prompt_max = promptMax;
+    if (!Object.keys(body).length) {
+      setStatus('No changes to save', 'success');
+      save.disabled = false;
+      return;
+    }
+    const resp = await apiFetch('/api/settings', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || 'Could not save settings');
+    }
+    setStatus('Settings saved', 'success');
+  } catch (error) {
+    setStatus(error.message, 'error');
+  } finally {
+    save.disabled = false;
+  }
+}
+
 async function saveChatDialog(event) {
   event.preventDefault();
   const save = byId('dialogSave');
@@ -199,6 +497,7 @@ function updateCurrentUi(chat) {
   byId('composerArea').style.display = 'block';
   storageSet('wc_last_chat', chat.id);
   listController.render(state.chats, chat.id);
+  updateModelDisplay(chat.model);
 }
 
 async function selectChat(id) {
@@ -288,8 +587,37 @@ async function resumeCliSession(sessionId) {
   }
 }
 
+async function loadSettings() {
+  try {
+    const response = await apiFetch('/api/settings');
+    if (response.ok) {
+      const data = await response.json();
+      byId('settingsHost').value = data.ai_machine_host || '';
+      byId('ver').textContent = data.version || '';
+      if (data.session_ttl_s) byId('sessionTtl').value = data.session_ttl_s;
+      if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
+      if (data.prompt_max) byId('promptMax').value = data.prompt_max;
+      return data;
+    }
+  } catch {}
+  return {};
+}
+
+async function updateModelDisplay(model) {
+  const label = byId('modelLabel');
+  if (model) {
+    const short = model.replace(/^claude-/, '').replace(/-.*$/, '');
+    label.textContent = `Model: ${model}`;
+    label.title = `Using ${model}`;
+    label.hidden = false;
+  } else {
+    label.hidden = true;
+  }
+}
+
 async function loadInitialData() {
   try {
+    const settings = await loadSettings();
     await refreshChats();
     const response = await apiFetch('/api/sessions');
     if (response.ok) {
@@ -319,6 +647,17 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('sidebarOverlay').addEventListener('click', closeSidebar);
   byId('logoutBtn').addEventListener('click', logout);
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
+  byId('settingsBtn').addEventListener('click', openSettingsDialog);
+  byId('settingsCancel').addEventListener('click', closeSettingsDialog);
+  byId('settingsForm').addEventListener('submit', saveSettings);
+  byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });
+  byId('settingsSave').addEventListener('click', saveSettings);
+  byId('addMachineBtn').addEventListener('click', _showAddMachine);
+  byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
+  byId('saveMachine').addEventListener('click', _saveMachine);
+  document.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.addEventListener('click', () => _switchTab(tab.dataset.tab));
+  });
   byId('dialogCancel').addEventListener('click', closeDialog);
   byId('chatForm').addEventListener('submit', saveChatDialog);
   byId('chatDialog').addEventListener('click', event => { if (event.target === byId('chatDialog')) closeDialog(); });
@@ -351,7 +690,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', event => {
     trapDialogFocus(event);
     if (event.key === 'Escape') {
-      if (byId('chatDialog').classList.contains('open')) closeDialog();
+      if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
+      else if (byId('chatDialog').classList.contains('open')) closeDialog();
       else closeSidebar();
     }
   });

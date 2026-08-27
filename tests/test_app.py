@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
 """App-layer tests for conversation management APIs.
 
 Covers: list (pinned fields), pin/unpin, delete 404, Markdown export,
 title/description/archive mutations, workspace preservation.
 """
+import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,6 @@ import app
 import auth
 import config
 import db
-
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -343,6 +343,294 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Export Test", response.body.decode("utf-8"))
         disp = response.headers.get("content-disposition", "")
         self.assertIn("export-test.md", disp)
+
+
+class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/projects")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        self.work_dir = Path(config.PROJECTS_ROOT) / "stream"
+        self.work_dir.mkdir(parents=True)
+        self.chat_id = "s" * 32
+        await db.chat_create(self.chat_id, "Stream", None, str(self.work_dir), "admin")
+        self.request = SimpleNamespace(
+            cookies={"wc_session": "valid"},
+            json=AsyncMock(return_value={"content": "hello"}),
+        )
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def _run_stream(self, events):
+        async def fake_stream(*args, **kwargs):
+            for event in events:
+                yield event
+
+        with patch.object(auth, "session_get", return_value={"user": "admin"}), \
+             patch.object(app.runner, "stream_turn", fake_stream):
+            response = await app.stream_handler(self.request, self.chat_id)
+            chunks = [chunk async for chunk in response.body_iterator]
+            return "".join(
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                for chunk in chunks
+            )
+
+    async def test_oversized_stream_prompt_is_rejected_before_runner(self):
+        self.request.json = AsyncMock(return_value={"content": "x" * (config.PROMPT_MAX_CHARS + 1)})
+        with patch.object(auth, "session_get", return_value={"user": "admin"}), \
+             patch.object(app.runner, "stream_turn") as stream_turn:
+            from fastapi import HTTPException
+            with self.assertRaises(HTTPException) as ctx:
+                await app.stream_handler(self.request, self.chat_id)
+        self.assertEqual(ctx.exception.status_code, 400)
+        stream_turn.assert_not_called()
+
+    async def test_complete_stream_persists_pair_and_session(self):
+        body = await self._run_stream([
+            {"type": "session_id", "session_id": "session-new"},
+            {"type": "text", "content": "hello back"},
+            {"type": "done"},
+        ])
+        self.assertIn('\"type\": \"done\"', body)
+        messages = await db.messages_get(self.chat_id)
+        self.assertEqual(
+            [(message["role"], message["content"]) for message in messages],
+            [("user", "hello"), ("assistant", "hello back")],
+        )
+        chat = await db.chat_get(self.chat_id, "admin")
+        self.assertEqual(chat["session_id"], "session-new")
+
+    async def test_incomplete_stream_does_not_persist_partial_turn(self):
+        body = await self._run_stream([
+            {"type": "session_id", "session_id": "discard-me"},
+            {"type": "text", "content": "partial"},
+        ])
+        self.assertIn("Stream ended before completion", body)
+        self.assertEqual(await db.messages_get(self.chat_id), [])
+        chat = await db.chat_get(self.chat_id, "admin")
+        self.assertIsNone(chat["session_id"])
+
+    async def test_failed_retry_does_not_duplicate_user_prompt(self):
+        failed_body = await self._run_stream([
+            {"type": "text", "content": "partial"},
+            {"type": "error", "error": "failed"},
+            {"type": "done"},
+        ])
+        self.assertNotIn('\"type\": \"done\"', failed_body)
+        await self._run_stream([
+            {"type": "text", "content": "complete"},
+            {"type": "done"},
+        ])
+        messages = await db.messages_get(self.chat_id)
+        self.assertEqual(
+            [(message["role"], message["content"]) for message in messages],
+            [("user", "hello"), ("assistant", "complete")],
+        )
+
+    async def test_cancelled_stream_closes_runner_without_persisting(self):
+        runner_closed = asyncio.Event()
+
+        async def fake_stream(*args, **kwargs):
+            try:
+                yield {"type": "text", "content": "partial"}
+                await asyncio.Event().wait()
+            finally:
+                runner_closed.set()
+
+        with patch.object(auth, "session_get", return_value={"user": "admin"}), \
+             patch.object(app.runner, "stream_turn", fake_stream):
+            response = await app.stream_handler(self.request, self.chat_id)
+            iterator = response.body_iterator
+            await anext(iterator)
+            await anext(iterator)
+            await iterator.aclose()
+
+        await asyncio.wait_for(runner_closed.wait(), timeout=1)
+        self.assertEqual(await db.messages_get(self.chat_id), [])
+
+
+class MachineTests(unittest.IsolatedAsyncioTestCase):
+    """AI machine CRUD and activation endpoints."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        await auth.bootstrap_admin()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    def _make_request(self, **extra):
+        return SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}), **extra)
+
+    async def test_machine_list_empty(self):
+        resp = await app.handle_machines_list(self._make_request())
+        data = json.loads(resp.body)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data["machines"], [])
+
+    async def test_machine_create_and_list(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={
+                "name": "GCP", "host": "10.0.1.5", "port": 9001,
+                "model": "claude-sonnet-4-20250514",
+            }),
+        )
+        resp = await app.handle_machine_create(request)
+        data = json.loads(resp.body)
+        self.assertTrue(data["ok"])
+        self.assertIsNotNone(data["id"])
+        # Verify it appears in the list (api key hidden)
+        list_resp = await app.handle_machines_list(self._make_request())
+        list_data = json.loads(list_resp.body)
+        self.assertEqual(len(list_data["machines"]), 1)
+        self.assertNotIn("api_key", list_data["machines"][0])
+
+    async def test_machine_create_rejects_empty_name(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={"name": "", "host": "10.0.0.1", "port": 9000}),
+        )
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_machine_create(request)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_machine_create_rejects_bad_host(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={"name": "X", "host": "not a host!", "port": 9000}),
+        )
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_machine_create(request)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_machine_get(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={
+                "name": "Local", "host": "127.0.0.1", "port": 9000,
+            }),
+        )
+        create_resp = await app.handle_machine_create(request)
+        mid = json.loads(create_resp.body)["id"]
+        get_resp = await app.handle_machine_get(self._make_request(), mid)
+        data = json.loads(get_resp.body)
+        self.assertEqual(data["machine"]["name"], "Local")
+        self.assertIsInstance(data["machine"]["has_api_key"], bool)
+
+    async def test_machine_get_404(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_machine_get(self._make_request(), "zz" * 32)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_machine_activate(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={"name": "A", "host": "10.0.0.1", "port": 9000}),
+        )
+        resp = await app.handle_machine_create(request)
+        mid = (json.loads(resp.body))["id"]
+        act_resp = await app.handle_machine_activate(self._make_request(), mid)
+        data = json.loads(act_resp.body)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["activated"])
+
+    async def test_machine_patch(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={"name": "Old", "host": "10.0.0.1", "port": 9000}),
+        )
+        resp = await app.handle_machine_create(request)
+        mid = (json.loads(resp.body))["id"]
+        patch_resp = await app.handle_machine_patch(
+            self._make_request(json=AsyncMock(return_value={"name": "New"})), mid,
+        )
+        data = json.loads(patch_resp.body)
+        self.assertTrue(data["ok"])
+
+    async def test_machine_delete(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={"name": "X", "host": "10.0.0.1", "port": 9000}),
+        )
+        resp = await app.handle_machine_create(request)
+        mid = (json.loads(resp.body))["id"]
+        del_resp = await app.handle_machine_delete(self._make_request(), mid)
+        data = json.loads(del_resp.body)
+        self.assertTrue(data["ok"])
+        # Should now be gone
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_machine_delete(self._make_request(), mid)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_machine_list_no_api_keys(self):
+        request = self._make_request(
+            json=AsyncMock(return_value={
+                "name": "Secret", "host": "10.0.0.2", "port": 9000,
+                "api_key": "supersecret",
+            }),
+        )
+        await app.handle_machine_create(request)
+        list_resp = await app.handle_machines_list(self._make_request())
+        list_data = json.loads(list_resp.body)
+        self.assertNotIn("api_key", list_data["machines"][0])
+
+
+class SettingsTests(unittest.IsolatedAsyncioTestCase):
+    """App settings (session TTL, turn timeout, prompt max) persistence."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        await auth.bootstrap_admin()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    def _make_request(self, **extra):
+        return SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}), **extra)
+
+    async def test_settings_get_includes_defaults(self):
+        resp = await app.handle_settings_get(self._make_request())
+        data = json.loads(resp.body)
+        self.assertIn("session_ttl_s", data)
+        self.assertIn("turn_timeout_s", data)
+        self.assertIn("prompt_max", data)
+        self.assertIn("version", data)
+
+    async def test_settings_patch_updates_session_ttl(self):
+        resp = await app.handle_settings_patch(
+            self._make_request(json=AsyncMock(return_value={"session_ttl": 7200})),
+        )
+        data = json.loads(resp.body)
+        self.assertTrue(data["ok"])
+
+    async def test_settings_patch_rejects_invalid_ttl(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_settings_patch(
+                self._make_request(json=AsyncMock(return_value={"session_ttl": 5})),
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

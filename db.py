@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -15,14 +16,14 @@ import aiosqlite
 
 import config
 
-
 db_conn: aiosqlite.Connection | None = None
 _messages_batch_lock: asyncio.Lock | None = None
 
 
 async def init() -> None:
     """Create the database and tables. Idempotent."""
-    global db_conn
+    global db_conn, _messages_batch_lock
+    _messages_batch_lock = asyncio.Lock()
     root = Path(config.PROJECTS_ROOT).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +48,24 @@ async def init() -> None:
             archived      INTEGER NOT NULL DEFAULT 0,
             pinned        INTEGER NOT NULL DEFAULT 0,
             pinned_at     TEXT,
-            deleted_at    TEXT
+            deleted_at    TEXT,
+            model         TEXT,
+            ai_machine_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_machines (
+            id            TEXT PRIMARY KEY,
+            name          TEXT NOT NULL,
+            host          TEXT NOT NULL,
+            port          INTEGER NOT NULL DEFAULT 9000,
+            api_key       TEXT,
+            model         TEXT NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+            base_url      TEXT,
+            description   TEXT,
+            active        INTEGER NOT NULL DEFAULT 0,
+            owner_id      TEXT NOT NULL DEFAULT 'admin',
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -67,6 +85,12 @@ async def init() -> None:
             role     TEXT NOT NULL DEFAULT 'admin',
             created_at TEXT NOT NULL DEFAULT ''
         );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
     """)
     await _ensure_chat_columns()
     await db_conn.commit()
@@ -80,10 +104,23 @@ async def _ensure_chat_columns() -> None:
         "pinned": "ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
         "pinned_at": "ALTER TABLE chats ADD COLUMN pinned_at TEXT",
         "deleted_at": "ALTER TABLE chats ADD COLUMN deleted_at TEXT",
+        "model": "ALTER TABLE chats ADD COLUMN model TEXT",
+        "ai_machine_id": "ALTER TABLE chats ADD COLUMN ai_machine_id TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:
             await db_conn.execute(sql)
+
+    # Migrate ai_machines table for existing databases
+    try:
+        ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
+        ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
+    except Exception:
+        ma_columns = set()
+    if "owner_id" not in ma_columns:
+        await db_conn.execute("ALTER TABLE ai_machines ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'")
+
+    await db_conn.commit()
 
 
 async def close() -> None:
@@ -98,9 +135,9 @@ async def close() -> None:
 
 _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
-    "updated_at, archived, pinned, pinned_at, deleted_at"
+    "updated_at, archived, pinned, pinned_at, deleted_at, model, ai_machine_id"
 )
-_ALLOWED_CHAT_FIELDS = {"title", "description", "archived", "pinned", "pinned_at"}
+_ALLOWED_CHAT_FIELDS = {"title", "description", "archived", "pinned", "pinned_at", "model", "ai_machine_id"}
 
 
 async def chat_list(owner_id: str) -> list[dict[str, Any]]:
@@ -193,6 +230,14 @@ async def chat_set_session(chat_id: str, session_id: str) -> None:
     await db_conn.commit()
 
 
+async def chat_set_model(chat_id: str, model: str) -> None:
+    await db_conn.execute(
+        "UPDATE chats SET model = ?, updated_at = ? WHERE id = ?",
+        (model, _now(), chat_id),
+    )
+    await db_conn.commit()
+
+
 async def chat_set_title(chat_id: str, title: str) -> None:
     await db_conn.execute(
         "UPDATE chats SET title = ?, updated_at = ? WHERE id = ?",
@@ -269,6 +314,128 @@ async def user_create(name: str, email: str | None, password: str, role: str = "
     await db_conn.commit()
 
 
+# ── Application settings ────────────────────────────────────────────────────────────────
+
+
+async def setting_get(key: str) -> str | None:
+    cur = await db_conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = await cur.fetchone()
+    return row["value"] if row else None
+
+
+async def setting_set(key: str, value: str) -> None:
+    await db_conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        (key, value, _now()),
+    )
+    await db_conn.commit()
+
+
+# ── AI Machines ────────────────────────────────────────────────────────────────────────
+
+
+async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
+    cur = await db_conn.execute(
+        "SELECT id, name, host, port, model, base_url, description, "
+        "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
+        "created_at, updated_at "
+        "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
+        (owner_id,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
+    cur = await db_conn.execute(
+        "SELECT id, name, host, port, model, base_url, description, "
+        "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
+        "created_at, updated_at "
+        "FROM ai_machines WHERE id = ? AND owner_id = ?",
+        (id, owner_id),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def ai_machine_create(
+    machine_id: str,
+    name: str,
+    host: str,
+    port: int,
+    api_key: str | None,
+    model: str,
+    base_url: str | None,
+    description: str | None,
+    owner_id: str,
+) -> str:
+    now = _now()
+    await db_conn.execute(
+        "INSERT INTO ai_machines "
+        "(id, name, host, port, api_key, model, base_url, description, active, owner_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        (machine_id, name, host, port, api_key, model, base_url, description, owner_id, now, now),
+    )
+    await db_conn.commit()
+    return now
+
+
+async def ai_machine_update(
+    machine_id: str, owner_id: str, name: str | None = None,
+    host: str | None = None, port: int | None = None,
+    api_key: str | None = None, model: str | None = None,
+    base_url: str | None = None, description: str | None = None,
+) -> bool:
+    pairs: list[tuple[str, Any]] = [
+        ("name", name), ("host", host), ("port", port),
+        ("api_key", api_key), ("model", model),
+        ("base_url", base_url), ("description", description),
+    ]
+    sets: list[str] = []
+    vals: list[Any] = []
+    for field, value in pairs:
+        if value is not None:
+            sets.append(f"{field} = ?")
+            vals.append(value)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    vals.append(_now())
+    vals.extend([machine_id, owner_id])
+    sql = "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
+    cur = await db_conn.execute(sql, vals)
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
+    """Deactivate all machines and activate the one requested."""
+    try:
+        await db_conn.execute("BEGIN")
+        await db_conn.execute(
+            "UPDATE ai_machines SET active = 0 WHERE owner_id = ?",
+            (owner_id,),
+        )
+        cur = await db_conn.execute(
+            "UPDATE ai_machines SET active = 1, updated_at = ? WHERE id = ? AND owner_id = ?",
+            (_now(), machine_id, owner_id),
+        )
+        await db_conn.commit()
+        return cur.rowcount > 0
+    except Exception:
+        await db_conn.rollback()
+        raise
+
+
+async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
+    cur = await db_conn.execute(
+        "DELETE FROM ai_machines WHERE id = ? AND owner_id = ?",
+        (machine_id, owner_id),
+    )
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -278,7 +445,6 @@ def _now() -> str:
 
 def slug_from_title(title: str) -> str:
     """Derive a slug from a chat title: lowercase, alphanumeric-hyphens, max 40 chars."""
-    import re
     slug = re.sub(r"[^a-z0-9-]", "-", title.lower())
     slug = "-".join(p for p in slug.split("-") if p)
     return slug[:40] or "untitled"
@@ -290,7 +456,6 @@ def slug_pattern(slug: str) -> str | None:
     Returns the slug if valid, None otherwise.
     Slugs must not start or end with a dash.
     """
-    import re
     if not re.fullmatch(r"[a-z0-9-]{3,40}", slug):
         return None
     if slug.startswith("-") or slug.endswith("-"):
@@ -332,8 +497,8 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
 
     for fpath in files:
         try:
-            with open(fpath) as f:
-                data = json.load(f)
+            content = await asyncio.to_thread(fpath.read_text)
+            data = json.loads(content)
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -341,7 +506,11 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
         # WebConsole writes these files with its own PID so the CLI can discover
         # them; filtering by PID alone would hide the bidirectional-sync record.
         pid = data.get("pid")
-        if pid and int(pid) == current_pid and data.get("entrypoint") != "webconsole":
+        try:
+            same_process = bool(pid) and int(pid) == current_pid
+        except (TypeError, ValueError):
+            same_process = False
+        if same_process and data.get("entrypoint") != "webconsole":
             continue
 
         name = data.get("name", "")
@@ -361,6 +530,10 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
         if not updated_at:
             updated_at = ""
 
+        model = data.get("model", "")
+        if not model and session_id:
+            model = _lookup_session_model(session_id) or ""
+
         sessions.append({
             "id": session_id if session_id else fpath.stem,
             "name": name or "Untitled",
@@ -369,12 +542,13 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
             "startedAt": started_at,
             "updatedAt": updated_at,
             "sessionId": session_id,
+            "model": model,
         })
 
     return sessions
 
 
-def _format_timestamp(ts: int | float | str | None) -> str:
+def _format_timestamp(ts: float | str | None) -> str:
     """Convert epoch milliseconds to ISO 8601 string."""
     if ts is None:
         return ""
@@ -387,7 +561,83 @@ def _format_timestamp(ts: int | float | str | None) -> str:
         return ""
 
 
-def write_claude_session_file(session_id: str, name: str, cwd: str) -> None:
+# ── Transcript-backed model discovery ───────────────────────────────────────────
+
+_CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"
+
+# In-process cache keyed by session_id; refreshed each read_claude_sessions call
+_model_cache: dict[str, str] = {}
+
+
+def _extract_model_from_transcript(session_id: str) -> str | None:
+    """Return the last non-synthetic model from Claude transcript JSONL files.
+
+    Scans every *.jsonl under ~/.claude/projects/*.jsonl looking for assistant
+    messages that carry a ``model`` field matching *session_id*.  The last
+    non-``<synthetic>`` model found is returned.
+
+    Returns None when no matching transcript line is found.
+    """
+    project_dir = _CLAUDE_PROJECTS_DIR
+    if not project_dir.is_dir():
+        return None
+
+    try:
+        jsonl_files = list(project_dir.glob("*.jsonl"))
+    except (PermissionError, OSError):
+        return None
+
+    last_model: str | None = None
+
+    for fpath in jsonl_files:
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in content.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record: dict = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # Assistant message line carries the model in message.model
+            if record.get("type") != "assistant":
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "assistant":
+                continue
+            if record.get("sessionId") != session_id:
+                continue
+            model = message.get("model")
+            if model and model != "<synthetic>":
+                last_model = model
+
+    return last_model
+
+
+def _lookup_session_model(session_id: str) -> str | None:
+    """Resolve the model for *session_id* (session file or transcript).
+
+    On first call for a session, the transcript is scanned and the result is
+    cached in memory for the lifetime of the process.
+    """
+    if session_id in _model_cache:
+        return _model_cache.get(session_id) or None
+
+    model = _extract_model_from_transcript(session_id)
+    if model:
+        _model_cache[session_id] = model
+    else:
+        _model_cache[session_id] = ""
+
+    return model or None
+
+
+def write_claude_session_file(session_id: str, name: str, cwd: str, model: str = "") -> None:
     """Write a session file to ~/.claude/sessions/<session_id>.json so CLI can pick it up.
 
     This enables bidirectional sync: Web sessions become visible to CLI.
@@ -420,6 +670,7 @@ def write_claude_session_file(session_id: str, name: str, cwd: str) -> None:
             "nameSource": "webconsole",
             "nameSince": now_ms,
             "updatedAt": now_ms,
+            "model": model,
         }
 
         # Atomic write: write to temp, rename

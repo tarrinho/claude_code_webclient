@@ -240,7 +240,8 @@ export function createConversationController(dependencies) {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      while (true) {
+      let streamCompleted = false;
+      streamLoop: while (true) {
         const result = await reader.read();
         if (result.done) break;
         buffer += decoder.decode(result.value, {stream: true});
@@ -269,10 +270,12 @@ export function createConversationController(dependencies) {
           } else if (event.type === 'error') {
             throw new Error(event.error || 'Claude failed');
           } else if (event.type === 'done') {
-            succeeded = true;
+            streamCompleted = true;
+            break streamLoop;
           }
         }
       }
+      if (!streamCompleted) throw new Error('Response stream ended before completion');
       succeeded = true;
     } catch (error) {
       if (error.name === 'AbortError') {

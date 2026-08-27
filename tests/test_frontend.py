@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
 ASSETS = WEB / "assets"
@@ -28,6 +27,12 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("export class ApiError", self.api)
         self.assertIn("export async function apiFetch", self.api)
         self.assertIn("export async function downloadMarkdown", self.api)
+
+    def test_api_expired_session_redirects_to_login(self):
+        self.assertIn("response.status === 401", self.api)
+        self.assertIn("window.location.replace('/login')", self.api)
+        self.assertIn("Session expired", self.api)
+        self.assertIn("credentials: 'same-origin'", self.api)
 
     def test_chat_list_exports_contract(self):
         self.assertIn("export function filterChats", self.chat_list)
@@ -71,6 +76,8 @@ class FrontendStructureTests(unittest.TestCase):
             self.assertIn(f"{state}:", self.conversation)
         self.assertIn("new AbortController()", self.conversation)
         self.assertIn("abortController.abort()", self.conversation)
+        self.assertIn("streamCompleted = false", self.conversation)
+        self.assertIn("Response stream ended before completion", self.conversation)
         self.assertIn("lastAttempt", self.conversation)
         self.assertIn("Jump to latest", self.html)
         self.assertIn("area.scrollHeight - area.scrollTop - area.clientHeight", self.conversation)
@@ -85,11 +92,37 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("focus-visible", self.css)
         self.assertIn("100dvh", self.css)
 
+    def test_cli_sessions_render_contract(self):
+        self.assertIn("setCliSessions", self.chat_list)
+        self.assertIn("cliSessions = []", self.chat_list)
+        self.assertIn("renderCli", self.chat_list)
+
+    def test_cli_sessions_resume_action_contract(self):
+        self.assertIn("resume-cli", self.chat_list)
+        self.assertIn("onResumeCli", self.chat_list)
+        self.assertIn("button.dataset.sessionId", self.chat_list)
+        self.assertIn("resumeCliSession", self.app)
+        self.assertIn("/api/sessions/", self.app)
+
+    def test_cli_sessions_filtering_contract(self):
+        self.assertIn("session.name", self.chat_list)
+        self.assertIn("session.cwd", self.chat_list)
+        self.assertIn("cliSessions.filter", self.chat_list)
+
+    def test_cli_sessions_no_duplicate_webchat(self):
+        self.assertIn("!item.webchat", self.app)
+
     def test_dialog_focus_trap_and_drawer_contract(self):
         self.assertIn("trapDialogFocus", self.app)
         self.assertIn("event.shiftKey", self.app)
         self.assertIn("aria-hidden", self.html)
         self.assertIn("aria-expanded", self.html)
+        self.assertIn("inert>", self.html)
+        self.assertIn("byId('sidebar').inert = false", self.app)
+        self.assertIn("byId('sidebar').inert = true", self.app)
+        self.assertIn(".chat-menu button,", self.css)
+        self.assertIn("min-width:44px", self.css)
+        self.assertIn("min-height:44px", self.css)
 
 
 if __name__ == "__main__":

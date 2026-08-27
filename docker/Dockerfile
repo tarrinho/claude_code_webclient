@@ -9,7 +9,7 @@ RUN useradd -m -s /bin/bash appuser
 
 # Copy application files
 WORKDIR /app
-COPY app.py auth.py config.py db.py runner.py ./
+COPY app.py auth.py config.py db.py runner.py claude_proxy.py ./
 COPY web/ web/
 
 # Create data and projects directories

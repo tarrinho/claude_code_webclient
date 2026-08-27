@@ -43,6 +43,28 @@ class ProxyAuthenticationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(launched)
 
+    async def test_proxy_handles_disconnect_before_turn(self):
+        server = await asyncio.start_server(
+            lambda reader, writer: claude_proxy.handle_client(
+                reader, writer, "claude", "correct-token-with-at-least-32-characters",
+            ),
+            "127.0.0.1",
+            0,
+        )
+        port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write((json.dumps({
+            "type": "handshake", "protocol": claude_proxy.PROTOCOL,
+            "token": "correct-token-with-at-least-32-characters",
+        }) + "\n").encode())
+        await writer.drain()
+        self.assertEqual(json.loads(await reader.readline()), {"type": "ack"})
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0)
+        server.close()
+        await server.wait_closed()
+
 
 class FrameNormalisationTests(unittest.TestCase):
     def test_system_init_yields_session_id(self):
@@ -174,9 +196,9 @@ class ProxyRunnerTests(unittest.IsolatedAsyncioTestCase):
         ])
         with patch.object(runner.config, "PROXY_HOST", "127.0.0.1"), \
              patch.object(runner.config, "PROXY_PORT", port), \
-             patch.object(runner.config, "PROXY_TURN_TIMEOUT_S", 2):
-            with self.assertRaisesRegex(runner.TurnError, "rate limited"):
-                await runner._execute_proxy("test", None, str(self.work_dir), "chat-3")
+             patch.object(runner.config, "PROXY_TURN_TIMEOUT_S", 2), \
+             self.assertRaisesRegex(runner.TurnError, "rate limited"):
+            await runner._execute_proxy("test", None, str(self.work_dir), "chat-3")
         server.close()
         await server.wait_closed()
 
@@ -192,6 +214,21 @@ class ProxyRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actual[0]["type"], "error")
         self.assertIn("timed out", actual[0]["error"])
 
+    async def test_stream_proxy_rejects_eof_without_done(self):
+        server, port, _ = await self._serve([
+            {"type": "text", "content": "partial"},
+        ])
+        with patch.object(runner.config, "PROXY_HOST", "127.0.0.1"), \
+             patch.object(runner.config, "PROXY_PORT", port), \
+             patch.object(runner.config, "PROXY_TURN_TIMEOUT_S", 2):
+            actual = [event async for event in runner._do_proxy_stream(
+                "test", None, str(self.work_dir), "chat-5")]
+        server.close()
+        await server.wait_closed()
+        self.assertEqual(actual[0], {"type": "text", "content": "partial"})
+        self.assertEqual(actual[1]["type"], "error")
+        self.assertIn("before completion", actual[1]["error"])
+
 
 class AppPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_blocking_handler_persists_session(self):
@@ -204,14 +241,17 @@ class AppPersistenceTests(unittest.IsolatedAsyncioTestCase):
             "work_dir": "/tmp/project", "owner_id": "admin",
         }
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
-             patch.object(app.db, "messages_append", AsyncMock()) as append, \
+             patch.object(app.db, "messages_batch", AsyncMock()) as batch, \
              patch.object(app.db, "chat_set_session", AsyncMock()) as set_session, \
              patch.object(app.runner, "run_turn", AsyncMock(return_value=(["hello", " world"], "session-5"))):
             response = await app.handle_submit_message(request, "chat-1")
 
         self.assertEqual(response.status_code, 200)
         set_session.assert_awaited_once_with("chat-1", "session-5")
-        append.assert_any_await("chat-1", "assistant", "hello world")
+        batch.assert_awaited_once_with("chat-1", [
+            ("user", "hello"),
+            ("assistant", "hello world"),
+        ])
 
 
 if __name__ == "__main__":

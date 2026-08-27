@@ -73,7 +73,7 @@ TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)      # 5 min wall-clock per turn
 PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000) # cap on user prompt length
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.1.0"
+VERSION = "WebConsole_0.2.0"
 
 
 # Validate at import time -- don't silently boot with weak secrets.

@@ -44,8 +44,11 @@ def _normalise_cli_frame(obj: dict) -> list[dict]:
     events: list[dict] = []
 
     if frame_type == "system":
-        if subtype == "init" and obj.get("session_id"):
-            events.append({"type": "session_id", "session_id": obj["session_id"]})
+        if subtype == "init":
+            if obj.get("session_id"):
+                events.append({"type": "session_id", "session_id": obj["session_id"]})
+            if obj.get("model"):
+                events.append({"type": "model", "model": obj["model"]})
         elif subtype == "api_retry":
             events.append({
                 "type": "status", "status": "api_retry",
@@ -80,6 +83,19 @@ def _normalise_cli_frame(obj: dict) -> list[dict]:
 # ── Concurrency gate (singleton, lazy init) ──────────────────────────────────
 
 _sem: object = None
+_models_by_chat: dict[str, str] = {}
+
+
+def take_last_model(chat_id: str) -> str:
+    """Return and clear the last model reported for a blocking turn."""
+    return _models_by_chat.pop(chat_id, "")
+
+
+async def get_proxy_host() -> str:
+    """Return the runtime AI machine host, falling back to environment config."""
+    import db
+
+    return await db.setting_get("ai_machine_host") or config.PROXY_HOST
 
 
 def _get_sem() -> asyncio.Semaphore:
@@ -114,15 +130,16 @@ async def _execute_proxy(prompt: str, session_id: str | None, work_dir: str, cha
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
+    proxy_host = await get_proxy_host()
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(config.PROXY_HOST, config.PROXY_PORT),
+            asyncio.open_connection(proxy_host, config.PROXY_PORT),
             timeout=connect_timeout,
         )
     except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
         _log.error("proxy connect failed host=%s port=%d: %s",
-                   config.PROXY_HOST, config.PROXY_PORT, exc)
-        raise TurnError(f"Cannot connect to proxy at {config.PROXY_HOST}:{config.PROXY_PORT}",
+                   proxy_host, config.PROXY_PORT, exc)
+        raise TurnError(f"Cannot connect to proxy at {proxy_host}:{config.PROXY_PORT}",
                         fatal=False)
 
     try:
@@ -171,6 +188,8 @@ async def _execute_proxy(prompt: str, session_id: str | None, work_dir: str, cha
                     msg_type = obj.get("type", "")
                     if msg_type == "session_id" and obj.get("session_id"):
                         sid = obj["session_id"]
+                    elif msg_type == "model" and obj.get("model"):
+                        _models_by_chat[chat_id] = obj["model"]
                     elif msg_type == "text":
                         text = obj.get("content", "") or obj.get("text", "")
                         if text:
@@ -191,7 +210,7 @@ async def _execute_proxy(prompt: str, session_id: str | None, work_dir: str, cha
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:
+        except (ConnectionError, OSError):
             pass
 
 
@@ -278,7 +297,7 @@ async def _execute_direct(prompt: str, session_id: str | None, work_dir: str, ch
 
     try:
         chunks, sid = await asyncio.wait_for(
-            _collect_chunks(proc), timeout=config.TURN_TIMEOUT_S
+            _collect_chunks(proc, chat_id), timeout=config.TURN_TIMEOUT_S
         )
     except asyncio.TimeoutError:
         await _kill_process(proc)
@@ -287,7 +306,7 @@ async def _execute_direct(prompt: str, session_id: str | None, work_dir: str, ch
     return chunks, sid
 
 
-async def _collect_chunks(proc: asyncio.subprocess.Process
+async def _collect_chunks(proc: asyncio.subprocess.Process, chat_id: str
                          ) -> tuple[list[str], str | None]:
     """Read Claude NDJSON from stdout and extract text and session ID."""
     chunks: list[str] = []
@@ -312,6 +331,8 @@ async def _collect_chunks(proc: asyncio.subprocess.Process
                 chunks.append(event["content"])
             elif event["type"] == "session_id":
                 session_id_val = event["session_id"]
+            elif event["type"] == "model":
+                _models_by_chat[chat_id] = event["model"]
             elif event["type"] == "error":
                 error = event["error"]
 
@@ -347,14 +368,15 @@ async def _do_proxy_stream(prompt: str, session_id: str | None, work_dir: str, c
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
+    proxy_host = await get_proxy_host()
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(config.PROXY_HOST, config.PROXY_PORT),
+            asyncio.open_connection(proxy_host, config.PROXY_PORT),
             timeout=config.PROXY_CONNECT_TIMEOUT_S,
         )
     except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
         _log.error("proxy connect failed: %s", exc)
-        yield {"type": "error", "error": f"Cannot connect to proxy at {config.PROXY_HOST}:{config.PROXY_PORT}"}
+        yield {"type": "error", "error": f"Cannot connect to proxy at {proxy_host}:{config.PROXY_PORT}"}
         return
 
     try:
@@ -397,7 +419,7 @@ async def _do_proxy_stream(prompt: str, session_id: str | None, work_dir: str, c
                         continue
 
                     msg_type = obj.get("type", "")
-                    if msg_type in ("text", "session_id", "status", "error"):
+                    if msg_type in ("text", "session_id", "model", "status", "error"):
                         yield obj
                     elif msg_type == "done":
                         completed = True
@@ -412,7 +434,7 @@ async def _do_proxy_stream(prompt: str, session_id: str | None, work_dir: str, c
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:
+        except (ConnectionError, OSError):
             pass
 
 
@@ -478,7 +500,7 @@ async def _do_direct_stream(prompt: str, session_id: str | None, work_dir: str, 
     except asyncio.CancelledError:
         await _kill_process(proc)
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- relay subprocess failures as stream errors
         await _kill_process(proc)
         yield {"type": "error", "error": str(e)}
 

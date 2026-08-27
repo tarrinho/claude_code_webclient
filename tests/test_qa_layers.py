@@ -100,6 +100,32 @@ class UnitQA(unittest.TestCase):
         })
         self.assertEqual([f["content"] for f in frames if f["type"] == "text"], ["one", "two"])
 
+    def test_turn_error_exposes_message_and_fatality(self):
+        error = runner.TurnError("invalid workspace", fatal=True)
+        self.assertEqual(str(error), "invalid workspace")
+        self.assertEqual(error.message, "invalid workspace")
+        self.assertTrue(error.fatal)
+
+    def test_config_bool_parser_accepts_truthy_values_only(self):
+        with patch.dict(os.environ, {"QA_BOOL": "yes"}, clear=False):
+            self.assertTrue(config._bool("QA_BOOL", False))
+        with patch.dict(os.environ, {"QA_BOOL": "off"}, clear=False):
+            self.assertFalse(config._bool("QA_BOOL", True))
+
+    def test_config_int_parser_falls_back_on_invalid_value(self):
+        with patch.dict(os.environ, {"QA_INT": "invalid"}, clear=False):
+            self.assertEqual(config._int("QA_INT", 42), 42)
+
+    def test_render_chat_markdown_uses_safe_role_labels(self):
+        chat = {"title": "Unit", "created_at": "bad-date", "work_dir": None, "session_id": None}
+        markdown = app.render_chat_markdown(chat, [{"role": "attacker", "content": "payload"}])
+        self.assertIn("## Message", markdown)
+        self.assertNotIn("## attacker", markdown)
+
+    def test_config_string_parser_strips_whitespace(self):
+        with patch.dict(os.environ, {"QA_STRING": "  value  "}, clear=False):
+            self.assertEqual(config._str("QA_STRING"), "value")
+
 
 class TemporaryDBMixin:
     async def init_temp_db(self):
@@ -175,13 +201,33 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_handler_links_web_chat_to_cli_session(self):
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
-        with patch.object(db, "write_claude_session_file") as write_file:
+        available = [{"sessionId": "cli-session-123", "name": "CLI", "cwd": "/tmp/cli"}]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=available)), \
+             patch.object(db, "write_claude_session_file") as write_file:
             response = await app.handle_sessions_resume(request, "cli-session-123")
         payload = json.loads(response.body)
         self.assertEqual(payload["session_id"], "cli-session-123")
         chat = await db.chat_get(payload["id"], "alice", include_archived=True)
         self.assertEqual(chat["session_id"], "cli-session-123")
         write_file.assert_called_once()
+
+    async def test_resume_handler_rejects_unknown_cli_session(self):
+        request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])), \
+             self.assertRaises(HTTPException) as ctx:
+            await app.handle_sessions_resume(request, "../../unknown")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_resume_handler_reuses_existing_linked_chat(self):
+        await db.chat_create("existing", "Existing", None, "/tmp/existing", "alice")
+        await db.chat_set_session("existing", "cli-existing")
+        request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
+        available = [{"sessionId": "cli-existing", "name": "CLI", "cwd": "/tmp/cli"}]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=available)):
+            response = await app.handle_sessions_resume(request, "cli-existing")
+        payload = json.loads(response.body)
+        self.assertEqual(payload["id"], "existing")
+        self.assertEqual(len(await db.chat_list("alice")), 1)
 
     async def test_sessions_list_merges_cli_and_web_records(self):
         await db.chat_create("web-chat", "Web Chat", None, "/tmp/web", "alice")
@@ -194,6 +240,57 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.body)
         self.assertEqual({item["id"] for item in payload["sessions"]}, {"cli", "web-chat"})
 
+    async def test_chat_update_allowlist_blocks_sql_identifier_injection(self):
+        await db.chat_create("safe", "Safe", None, "/tmp/safe", "alice")
+        self.assertFalse(await db.chat_update("safe", "alice", **{"title = archived": "1"}))
+        chat = await db.chat_get("safe", "alice")
+        self.assertEqual(chat["title"], "Safe")
+
+    async def test_session_reader_handles_malformed_pid(self):
+        session_dir = Path(self.tmp.name) / "sessions-pid"
+        session_dir.mkdir()
+        (session_dir / "malformed.json").write_text(json.dumps({
+            "pid": "not-a-number", "kind": "interactive", "name": "Malformed PID",
+            "sessionId": "malformed", "cwd": "/tmp/work",
+        }))
+        with patch.object(db, "_CLAUDE_SESSIONS_DIR", session_dir):
+            sessions = await db.read_claude_sessions()
+        self.assertEqual([session["sessionId"] for session in sessions], ["malformed"])
+
+    async def test_sessions_list_deduplicates_linked_cli_session(self):
+        await db.chat_create("web-chat", "Web Chat", None, "/tmp/web", "alice")
+        await db.chat_set_session("web-chat", "linked-session")
+        request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[{
+            "id": "linked-session", "name": "CLI Session", "cwd": "/tmp/cli",
+            "kind": "interactive", "startedAt": "", "updatedAt": "",
+            "sessionId": "linked-session",
+        }])):
+            response = await app.handle_sessions_list(request)
+        items = json.loads(response.body)["sessions"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "web-chat")
+        self.assertTrue(items[0]["webchat"])
+
+    async def test_migration_adds_missing_chat_columns(self):
+        await db.db_conn.execute("DROP TABLE chats")
+        await db.db_conn.execute("CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT, description TEXT, work_dir TEXT, owner_id TEXT, created_at TEXT, updated_at TEXT, archived INTEGER)")
+        await db.db_conn.commit()
+        await db._ensure_chat_columns()
+        cursor = await db.db_conn.execute("PRAGMA table_info(chats)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        self.assertTrue({"pinned", "pinned_at", "deleted_at"}.issubset(columns))
+
+    async def test_messages_batch_empty_input_is_safe(self):
+        await db.chat_create("empty-batch", "Empty", None, "/tmp/empty", "alice")
+        self.assertEqual(await db.messages_batch("empty-batch", []), [])
+
+    async def test_user_creation_and_lookup_round_trip(self):
+        await db.user_create("alice", "alice@example.test", "hashed")
+        user = await db.user_get_by_name("alice")
+        self.assertEqual(user["email"], "alice@example.test")
+        self.assertEqual(user["password"], "hashed")
+
 
 class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
     """Single API/service contracts with dependencies mocked at boundaries."""
@@ -205,9 +302,22 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         )
         chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
-             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn:
-            with self.assertRaises(HTTPException) as ctx:
-                await app.handle_submit_message(request, "chat")
+             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn, \
+             self.assertRaises(HTTPException) as ctx:
+            await app.handle_submit_message(request, "chat")
+        self.assertEqual(ctx.exception.status_code, 400)
+        run_turn.assert_not_awaited()
+
+    async def test_submit_message_rejects_oversized_prompt_before_runner(self):
+        request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "alice"}),
+            json=AsyncMock(return_value={"content": "x" * (config.PROMPT_MAX_CHARS + 1)}),
+        )
+        chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
+        with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
+             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn, \
+             self.assertRaises(HTTPException) as ctx:
+            await app.handle_submit_message(request, "chat")
         self.assertEqual(ctx.exception.status_code, 400)
         run_turn.assert_not_awaited()
 
@@ -218,13 +328,12 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         )
         chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
-             patch.object(app.db, "messages_append", AsyncMock()) as append, \
+             patch.object(app.db, "messages_batch", AsyncMock()) as batch, \
              patch.object(app.db, "chat_set_session", AsyncMock()) as set_session, \
              patch.object(app.runner, "run_turn", AsyncMock(return_value=(["answer"], "sid"))):
             response = await app.handle_submit_message(request, "chat")
         self.assertEqual(response.status_code, 200)
-        append.assert_any_await("chat", "user", "hello")
-        append.assert_any_await("chat", "assistant", "answer")
+        batch.assert_awaited_once_with("chat", [("user", "hello"), ("assistant", "answer")])
         set_session.assert_awaited_once_with("chat", "sid")
 
     async def test_patch_rejects_unknown_fields(self):
@@ -235,6 +344,30 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await app.handle_chat_patch(request, "chat")
         self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_security_middleware_wraps_auth_rejections(self):
+        self.assertIs(app.app.user_middleware[0].cls, app.SecurityMiddleware)
+        self.assertIs(app.app.user_middleware[1].cls, app.AuthMiddleware)
+
+    async def test_expired_browser_page_redirects_to_login(self):
+        request = SimpleNamespace(
+            cookies={},
+            state=SimpleNamespace(session=None),
+            url=SimpleNamespace(path="/"),
+        )
+        response = await app.AuthMiddleware(None).dispatch(request, AsyncMock())
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/login")
+
+    async def test_expired_api_response_advertises_login_redirect(self):
+        request = SimpleNamespace(
+            cookies={},
+            state=SimpleNamespace(session=None),
+            url=SimpleNamespace(path="/api/chats"),
+        )
+        response = await app.AuthMiddleware(None).dispatch(request, AsyncMock())
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(json.loads(response.body), {"error": "Session expired", "redirect": "/login"})
 
     async def test_route_contract_contains_required_api_methods(self):
         routes = {
@@ -252,6 +385,59 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await app.stream_handler(request, "chat")
         self.assertEqual(ctx.exception.status_code, 401)
+
+    async def test_chat_create_defaults_title_and_truncates_input(self):
+        request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "alice"}),
+            json=AsyncMock(return_value={"title": "x" * 300}),
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(config, "PROJECTS_ROOT", tmp), \
+             patch.object(app.db, "chat_create", AsyncMock(return_value="now")):
+            response = await app.handle_chat_create(request)
+            payload = json.loads(response.body)
+            self.assertEqual(len(payload["title"]), 200)
+            self.assertTrue(Path(payload["work_dir"]).is_dir())
+
+    async def test_patch_rejects_non_text_description(self):
+        request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "alice"}),
+            json=AsyncMock(return_value={"description": 123}),
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_chat_patch(request, "chat")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_submit_maps_runner_error_to_json_contract(self):
+        request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "alice"}),
+            json=AsyncMock(return_value={"content": "hello"}),
+        )
+        chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
+        with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
+             patch.object(app.db, "messages_append", AsyncMock()), \
+             patch.object(app.runner, "run_turn", AsyncMock(side_effect=runner.TurnError("proxy down", fatal=False))):
+            response = await app.handle_submit_message(request, "chat")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(json.loads(response.body), {"error": "proxy down", "fatal": False})
+
+    async def test_submit_rejects_missing_chat_before_runner(self):
+        request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "alice"}),
+            json=AsyncMock(return_value={"content": "hello"}),
+        )
+        with patch.object(app.db, "chat_get", AsyncMock(return_value=None)), \
+             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn, \
+             self.assertRaises(HTTPException) as ctx:
+            await app.handle_submit_message(request, "missing")
+        self.assertEqual(ctx.exception.status_code, 404)
+        run_turn.assert_not_awaited()
+
+    async def test_http_exception_handler_escapes_html_details(self):
+        request = SimpleNamespace(headers={"accept": "text/html"})
+        response = await app.handle_http_exception(request, HTTPException(status_code=400, detail="<script>x</script>"))
+        self.assertNotIn("<script>", response.body.decode())
+        self.assertIn("&lt;script&gt;", response.body.decode())
 
 
 class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
@@ -285,6 +471,51 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m["role"] for m in payload["messages"]], ["user", "assistant"])
         self.assertEqual(payload["chat"]["session_id"], "e2e-session")
 
+    async def test_create_submit_and_export_is_complete_business_flow(self):
+        create_request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": self.owner}),
+            json=AsyncMock(return_value={"title": "Export Flow"}),
+        )
+        created = await app.handle_chat_create(create_request)
+        chat_id = json.loads(created.body)["id"]
+        with patch.object(app.runner, "run_turn", AsyncMock(return_value=(["finished"], "flow-session"))):
+            submit_request = SimpleNamespace(
+                state=SimpleNamespace(session={"user": self.owner}),
+                json=AsyncMock(return_value={"content": "complete this"}),
+            )
+            await app.handle_submit_message(submit_request, chat_id)
+        export = await app.handle_chat_export(self.request, chat_id)
+        body = export.body.decode()
+        self.assertIn("# Export Flow", body)
+        self.assertIn("complete this", body)
+        self.assertIn("finished", body)
+
+    async def test_create_duplicate_titles_get_distinct_workspaces(self):
+        request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": self.owner}),
+            json=AsyncMock(return_value={"title": "Same Title"}),
+        )
+        first = json.loads((await app.handle_chat_create(request)).body)
+        second = json.loads((await app.handle_chat_create(request)).body)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertNotEqual(first["work_dir"], second["work_dir"])
+
+    async def test_failed_turn_keeps_user_message_and_returns_error(self):
+        create_request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": self.owner}),
+            json=AsyncMock(return_value={"title": "Failure Flow"}),
+        )
+        chat_id = json.loads((await app.handle_chat_create(create_request)).body)["id"]
+        with patch.object(app.runner, "run_turn", AsyncMock(side_effect=runner.TurnError("model unavailable", fatal=False))):
+            submit_request = SimpleNamespace(
+                state=SimpleNamespace(session={"user": self.owner}),
+                json=AsyncMock(return_value={"content": "hello"}),
+            )
+            response = await app.handle_submit_message(submit_request, chat_id)
+        self.assertEqual(response.status_code, 500)
+        messages = await db.messages_get(chat_id)
+        self.assertEqual(messages, [])
+
 
 class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     """Business-facing acceptance checks mapped to sidebar and chat requirements."""
@@ -297,10 +528,12 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await self.close_temp_db()
 
     async def test_user_can_resume_cli_session_into_web_chat(self):
-        with patch.object(db, "write_claude_session_file"):
+        available = [{"sessionId": "cli-uat", "name": "CLI", "cwd": "/tmp/cli"}]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=available)), \
+             patch.object(db, "write_claude_session_file"):
             resumed = await app.handle_sessions_resume(self.request, "cli-uat")
-        resumed_payload = json.loads(resumed.body)
-        listed = await app.handle_sessions_list(self.request)
+            resumed_payload = json.loads(resumed.body)
+            listed = await app.handle_sessions_list(self.request)
         items = json.loads(listed.body)["sessions"]
         matching = [item for item in items if item["id"] == resumed_payload["id"]]
         self.assertEqual(len(matching), 1)
@@ -322,6 +555,36 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await app.handle_chat_get(self.request, "private")
         self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_archiving_removes_chat_from_default_user_view(self):
+        await db.chat_create("archive-uat", "Archive me", None, "/tmp/archive", "uat-user")
+        patch_request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "uat-user"}),
+            json=AsyncMock(return_value={"archived": True}),
+        )
+        response = await app.handle_chat_patch(patch_request, "archive-uat")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(await db.chat_get("archive-uat", "uat-user"))
+        self.assertIsNotNone(await db.chat_get("archive-uat", "uat-user", include_archived=True))
+
+    async def test_user_sees_only_their_own_sidebar_sessions(self):
+        await db.chat_create("mine", "Mine", None, "/tmp/mine", "uat-user")
+        await db.chat_create("other", "Other", None, "/tmp/other", "other-user")
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])):
+            response = await app.handle_sessions_list(self.request)
+        items = json.loads(response.body)["sessions"]
+        self.assertEqual([item["id"] for item in items], ["mine"])
+
+    async def test_resume_result_creates_usable_workspace_for_followup_chat(self):
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[{
+            "id": "cli-follow-up", "sessionId": "cli-follow-up", "name": "CLI Follow Up",
+            "cwd": "/tmp/cli", "kind": "interactive", "startedAt": "", "updatedAt": "",
+        }])), patch.object(db, "write_claude_session_file"):
+            response = await app.handle_sessions_resume(self.request, "cli-follow-up")
+        payload = json.loads(response.body)
+        chat = await db.chat_get(payload["id"], "uat-user")
+        self.assertTrue(Path(chat["work_dir"]).is_dir())
+        self.assertEqual(chat["session_id"], "cli-follow-up")
 
 
 if __name__ == "__main__":

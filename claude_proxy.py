@@ -62,6 +62,9 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
             session_id = obj.get("session_id")
             if session_id:
                 frames.append({"type": "session_id", "session_id": session_id})
+            model = obj.get("model")
+            if model:
+                frames.append({"type": "model", "model": model})
         elif subtype == "api_retry":
             frames.append({
                 "type": "status",
@@ -154,6 +157,10 @@ async def handle_client(
         log.warning("timeout waiting for turn from %s", peer)
         writer.close()
         return
+    except (asyncio.IncompleteReadError, ConnectionError):
+        log.info("client disconnected before turn from %s", peer)
+        writer.close()
+        return
 
     try:
         turn = json.loads(raw)
@@ -184,7 +191,8 @@ async def handle_client(
         claude_cmd.extend(["--session-id", str(uuid.uuid4())])
 
     try:
-        import shutil as _shutil, os as _os
+        import os as _os
+        import shutil as _shutil
         _resolved = _shutil.which(claude_path) if not _os.path.isabs(claude_path) else claude_path
         log.info("spawn: claude_path=%s resolved=%s PATH=%s work_dir=%s",
                  claude_path, _resolved, _os.environ.get("PATH","?")[:80], work_dir)

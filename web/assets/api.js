@@ -8,10 +8,16 @@ export class ApiError extends Error {
   }
 }
 
+function redirectToLogin() {
+  if (window.__webConsoleRedirecting) return;
+  window.__webConsoleRedirecting = true;
+  window.location.replace('/login');
+}
+
 export async function apiFetch(url, options = {}) {
   const response = await fetch(url, {...options, credentials: 'same-origin'});
   if (response.status === 401) {
-    window.location.assign('/login');
+    redirectToLogin();
     throw new ApiError('Session expired', 401);
   }
   return response;

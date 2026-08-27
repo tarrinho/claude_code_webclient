@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # app.py -- WebConsole FastAPI application.
 #
 # Chat front-end for a local Claude Code CLI. Serves HTML pages, JSON APIs,
@@ -10,6 +9,7 @@ import asyncio
 import datetime
 import json
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from html import escape as html_escape
@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Final
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -30,6 +36,10 @@ _log = logging.getLogger("wc.app")
 
 _WEB_DIR: Final[Path] = Path(__file__).parent / "web"
 _assets_dir: Final[Path] = _WEB_DIR / "assets"
+_HOST_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|"
+    r"\[[0-9A-Fa-f:]+\]|[0-9A-Fa-f:]+)$"
+)
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────────
@@ -41,8 +51,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         public_route = request.url.path == "/login" or request.url.path.startswith("/assets/")
         if not public_route and request.state.session is None:
             if request.url.path.startswith("/api/"):
-                return JSONResponse(status_code=401, content={"error": "Authentication required"})
-            return JSONResponse(status_code=401, content={"error": "Authentication required"})
+                # API callers need the status for fetch-based auth handling;
+                # the browser client turns this into a /login redirect.
+                return JSONResponse(status_code=401, content={"error": "Session expired", "redirect": "/login"})
+            return RedirectResponse(url="/login", status_code=303)
         return await handler(request)
 
 
@@ -89,6 +101,7 @@ async def handle_login(request: Request):
 
     user = await db.user_get_by_name(username)
     if not user or not auth.verify_password(password, user["password"]):
+        _log.warning("login failed user=%s ip=%s", username, ip)
         should_backoff, wait = auth.login_record_failure(ip)
         if should_backoff:
             return JSONResponse(
@@ -127,7 +140,7 @@ async def handle_chats_list(request: Request):
                    "work_dir": c["work_dir"], "created_at": c["created_at"],
                    "updated_at": c["updated_at"], "archived": bool(c["archived"]),
                    "pinned": bool(c["pinned"]), "pinned_at": c.get("pinned_at"),
-                   "session_id": c.get("session_id"),
+                   "session_id": c.get("session_id"), "model": c.get("model") or "",
                    }
                   for c in chats],
     })
@@ -142,7 +155,7 @@ async def handle_chat_create(request: Request):
     slug = db.slug_from_title(title)
     slug = db.slug_pattern(slug) or "untitled"
 
-    date_suffix = datetime.date.today().isoformat()
+    date_suffix = datetime.datetime.now(datetime.UTC).date().isoformat()
     work_dir = str(Path(config.PROJECTS_ROOT).resolve() / f"{slug}-{date_suffix}")
     base = work_dir
     counter = 0
@@ -168,7 +181,7 @@ async def handle_chat_get(request: Request, chat_id: str):
     return JSONResponse({
         "chat": {**{k: chat[k] for k in (
             "id", "title", "description", "session_id", "work_dir", "archived",
-            "pinned", "pinned_at",
+            "pinned", "pinned_at", "model",
         )}, "archived": bool(chat["archived"]), "pinned": bool(chat["pinned"])},
         "messages": [{"role": m["role"], "content": m["content"], "created_at": m["created_at"]} for m in messages],
     })
@@ -271,8 +284,8 @@ async def handle_submit_message(request: Request, chat_id: str):
     prompt = (data.get("content") or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-
-    await db.messages_append(chat_id, "user", prompt)
+    if len(prompt) > config.PROMPT_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Prompt is too long")
 
     try:
         chunks, session_id = await runner.run_turn(
@@ -281,12 +294,17 @@ async def handle_submit_message(request: Request, chat_id: str):
     except runner.TurnError as e:
         return JSONResponse(status_code=500, content={"error": str(e), "fatal": e.fatal})
 
+    full_response = "".join(chunks) if chunks else ""
+    await db.messages_batch(chat_id, [
+        ("user", prompt),
+        ("assistant", full_response),
+    ])
     if session_id and session_id != chat["session_id"]:
         await db.chat_set_session(chat_id, session_id)
-    full_response = "".join(chunks) if chunks else ""
-    if full_response:
-        await db.messages_append(chat_id, "assistant", full_response)
-    return JSONResponse({"response": full_response, "chunks": len(chunks)})
+    model = runner.take_last_model(chat_id)
+    if model and model != chat.get("model"):
+        await db.chat_set_model(chat_id, model)
+    return JSONResponse({"response": full_response, "chunks": len(chunks), "model": model})
 
 
 async def stream_handler(request: Request, chat_id: str):
@@ -304,14 +322,18 @@ async def stream_handler(request: Request, chat_id: str):
     prompt = (data.get("content") or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-
-    await db.messages_append(chat_id, "user", prompt)
+    if len(prompt) > config.PROMPT_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Prompt is too long")
 
     async def event_generator():
         yield f"data: {json.dumps({'type': 'start', 'chat_id': chat_id})}\n\n"
 
         try:
             full_response_parts: list[str] = []
+            pending_session_id = chat["session_id"]
+            pending_model = chat.get("model") or ""
+            completed = False
+            failed = False
 
             async for event in runner.stream_turn(
                 prompt,
@@ -319,21 +341,38 @@ async def stream_handler(request: Request, chat_id: str):
                 chat["work_dir"],
                 chat_id,
             ):
-                if event.get("type") == "session_id":
-                    session_id = event.get("session_id")
-                    if session_id and session_id != chat["session_id"]:
-                        await db.chat_set_session(chat_id, session_id)
-                elif event.get("type") == "text":
+                event_type = event.get("type")
+                if event_type == "session_id":
+                    pending_session_id = event.get("session_id") or pending_session_id
+                elif event_type == "model":
+                    pending_model = event.get("model") or pending_model
+                elif event_type == "text":
                     full_response_parts.append(event.get("content", ""))
+                elif event_type == "error":
+                    failed = True
+                elif event_type == "done":
+                    if failed:
+                        break
+                    full_response = "".join(full_response_parts)
+                    await db.messages_batch(chat_id, [
+                        ("user", prompt),
+                        ("assistant", full_response),
+                    ])
+                    if pending_session_id and pending_session_id != chat["session_id"]:
+                        await db.chat_set_session(chat_id, pending_session_id)
+                    if pending_model and pending_model != chat.get("model"):
+                        await db.chat_set_model(chat_id, pending_model)
+                    completed = True
 
                 yield f"data: {json.dumps(event)}\n\n"
                 await asyncio.sleep(0)
 
-            full_response = "".join(full_response_parts)
-            if full_response:
-                await db.messages_append(chat_id, "assistant", full_response)
+            if not completed and not failed:
+                yield f"data: {json.dumps({'type': 'error', 'error': 'Stream ended before completion'})}\n\n"
 
-        except Exception as e:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 -- convert stream failures to SSE errors
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -377,8 +416,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="WebConsole", version=config.VERSION, lifespan=lifespan)
-app.add_middleware(SecurityMiddleware)
 app.add_middleware(AuthMiddleware)
+app.add_middleware(SecurityMiddleware)
 @app.exception_handler(HTTPException)
 async def handle_http_exception(request: Request, exc: HTTPException):
     if "text/html" in request.headers.get("accept", ""):
@@ -433,6 +472,221 @@ async def _api_stream(request: Request, chat_id: str):
     return await stream_handler(request, chat_id)
 
 
+async def handle_settings_get(request: Request):
+    """GET /api/settings -- return non-secret runtime and app settings."""
+    host = await runner.get_proxy_host()
+    try:
+        session_ttl = int(await db.setting_get("session_ttl") or config.SESSION_TTL_S)
+    except (TypeError, ValueError):
+        session_ttl = config.SESSION_TTL_S
+    try:
+        turn_timeout = int(await db.setting_get("turn_timeout") or config.TURN_TIMEOUT_S)
+    except (TypeError, ValueError):
+        turn_timeout = config.TURN_TIMEOUT_S
+    try:
+        prompt_max = int(await db.setting_get("prompt_max") or config.PROMPT_MAX_CHARS)
+    except (TypeError, ValueError):
+        prompt_max = config.PROMPT_MAX_CHARS
+    return JSONResponse({
+        "ai_machine_host": host,
+        "ai_machine_port": config.PROXY_PORT,
+        "proxy_enabled": config.PROXY_ENABLED,
+        "version": config.VERSION.removeprefix("WebConsole_"),
+        "session_ttl_s": session_ttl,
+        "turn_timeout_s": turn_timeout,
+        "prompt_max": prompt_max,
+    })
+
+
+async def handle_settings_patch(request: Request):
+    """PATCH /api/settings -- update runtime or app settings."""
+    session = request.state.session
+    data = await request.json()
+    if "ai_machine_host" in data:
+        host = data.get("ai_machine_host")
+        if not isinstance(host, str):
+            raise HTTPException(status_code=400, detail="AI machine host must be text")
+        host = host.strip()
+        if not _HOST_PATTERN.fullmatch(host):
+            raise HTTPException(status_code=400, detail="Enter a valid hostname or IP address")
+        await db.setting_set("ai_machine_host", host)
+        _log.info("AI machine host updated by user=%s host=%s", session["user"], host)
+    for key, default in (
+        ("session_ttl", config.SESSION_TTL_S),
+        ("turn_timeout", config.TURN_TIMEOUT_S),
+        ("prompt_max", config.PROMPT_MAX_CHARS),
+    ):
+        if key in data:
+            val = data[key]
+            if not isinstance(val, int) or val < 30 or val > 86400:
+                raise HTTPException(status_code=400, detail=f"{key} must be 30-86400")
+            await db.setting_set(key, str(val))
+    return JSONResponse({"ok": True})
+
+
+_MACHINE_ALLOWED_FIELDS = {"name", "host", "port", "api_key", "model", "base_url", "description"}
+_MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9_\-\.]+$")
+_HOST_PATTERN_LOCAL = _HOST_PATTERN
+
+
+async def handle_machines_list(request: Request):
+    """GET /api/machines -- list AI machines for the current user."""
+    session = request.state.session
+    machines = await db.ai_machines_list(session["user"])
+    # Don't leak API keys in the listing
+    return JSONResponse({
+        "machines": [
+            {k: v for k, v in m.items() if k != "api_key"}
+            for m in machines
+        ],
+    })
+
+
+async def handle_machine_get(request: Request, machine_id: str):
+    """GET /api/machines/{id} -- get AI machine details."""
+    session = request.state.session
+    machine = await db.ai_machine_get(machine_id, session["user"])
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    m = {k: v for k, v in machine.items() if k != "api_key"}
+    m["has_api_key"] = bool(machine.get("api_key"))
+    return JSONResponse({"machine": m})
+
+
+async def handle_machine_create(request: Request):
+    """POST /api/machines -- create a new AI machine."""
+    session = request.state.session
+    data = await request.json()
+    name = (data.get("name") or "").strip()[:100]
+    host = (data.get("host") or "").strip()
+    try:
+        port = int(data.get("port", 9000))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Port must be a number")
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be 1-65535")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not _HOST_PATTERN_LOCAL.fullmatch(host):
+        raise HTTPException(status_code=400, detail="Enter a valid hostname or IP address")
+    model = (data.get("model") or "claude-sonnet-4-20250514").strip()
+    if not _MODEL_RE.fullmatch(model):
+        raise HTTPException(status_code=400, detail="Model name contains invalid characters")
+    base_url = (data.get("base_url") or "").strip() or None
+    if base_url and not _HOST_PATTERN_LOCAL.search(base_url.split("://")[-1].split("/")[0]):
+        raise HTTPException(status_code=400, detail="Enter a valid base URL")
+    api_key = (data.get("api_key") or "").strip() or None
+    description = (data.get("description") or "").strip()[:500] or None
+    machine_id = uuid.uuid4().hex
+    await db.ai_machine_create(
+        machine_id, name, host, port, api_key, model, base_url, description, session["user"],
+    )
+    _log.info("ai_machine created by user=%s name=%s", session["user"], name)
+    return JSONResponse({
+        "ok": True,
+        "id": machine_id,
+        "name": name,
+    })
+
+
+async def handle_machine_patch(request: Request, machine_id: str):
+    """PATCH /api/machines/{id} -- update AI machine."""
+    session = request.state.session
+    data = await request.json()
+    if not data or not set(data).issubset(_MACHINE_ALLOWED_FIELDS):
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    # Validate port
+    if "port" in data and data["port"] is not None:
+        try:
+            p = int(data["port"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Port must be a number")
+        if p < 1 or p > 65535:
+            raise HTTPException(status_code=400, detail="Port must be 1-65535")
+        data["port"] = p
+    # Validate host
+    if "host" in data and data["host"] is not None:
+        host = data["host"].strip()
+        if not _HOST_PATTERN_LOCAL.fullmatch(host):
+            raise HTTPException(status_code=400, detail="Enter a valid hostname or IP address")
+        data["host"] = host
+    # Validate model
+    if "model" in data and data["model"] is not None:
+        if not _MODEL_RE.fullmatch(data["model"]):
+            raise HTTPException(status_code=400, detail="Model name contains invalid characters")
+    # Validate name
+    if "name" in data and data["name"] is not None:
+        name = data["name"].strip()[:100]
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        data["name"] = name
+    # Validate description
+    if "description" in data and data["description"] is not None:
+        data["description"] = data["description"][:500]
+    # Validate base_url
+    if "base_url" in data and data["base_url"] is not None:
+        bu = data["base_url"].strip() or None
+        if bu and not _HOST_PATTERN_LOCAL.search(bu.split("://")[-1].split("/")[0]):
+            raise HTTPException(status_code=400, detail="Enter a valid base URL")
+        data["base_url"] = bu
+    # Clear api_key if explicitly None
+    if "api_key" in data and data["api_key"] is not None:
+        data["api_key"] = data["api_key"].strip() or None
+    updated = await db.ai_machine_update(machine_id, session["user"], **data)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    _log.info("ai_machine updated by user=%s id=%s", session["user"], machine_id)
+    return JSONResponse({"ok": True})
+
+
+async def handle_machine_activate(request: Request, machine_id: str):
+    """POST /api/machines/{id}/activate -- activate an AI machine."""
+    session = request.state.session
+    exists = await db.ai_machine_get(machine_id, session["user"])
+    if not exists:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    activated = await db.ai_machine_activate(machine_id, session["user"])
+    _log.info("ai_machine activated by user=%s id=%s", session["user"], machine_id)
+    return JSONResponse({"ok": True, "activated": activated})
+
+
+async def handle_machine_delete(request: Request, machine_id: str):
+    """DELETE /api/machines/{id} -- delete AI machine."""
+    session = request.state.session
+    deleted = await db.ai_machine_delete(machine_id, session["user"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    _log.info("ai_machine deleted by user=%s id=%s", session["user"], machine_id)
+    return JSONResponse({"ok": True})
+
+
+async def handle_machine_test(request: Request, machine_id: str):
+    """POST /api/machines/{id}/test -- test connection to AI machine."""
+    session = request.state.session
+    machine = await db.ai_machine_get(machine_id, session["user"])
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    host = machine["host"]
+    port = machine["port"]
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=5.0,
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (ConnectionError, OSError):
+            pass
+        return JSONResponse({"ok": True, "status": "reachable", "host": host, "port": port})
+    except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
+        return JSONResponse(
+            {"ok": False, "status": "unreachable", "error": str(exc), "host": host, "port": port},
+            status_code=502,
+        )
+
+
 async def handle_sessions_list(request: Request):
     """GET /api/sessions -- list CLI sessions + Web chats for sidebar."""
     session = request.state.session
@@ -444,7 +698,7 @@ async def handle_sessions_list(request: Request):
     items = cli_sessions + [
         {"id": c["id"], "name": c["title"], "cwd": c["work_dir"],
          "kind": "web", "startedAt": c["created_at"], "updatedAt": c["updated_at"],
-         "sessionId": c.get("session_id", ""), "webchat": True}
+         "sessionId": c.get("session_id", ""), "model": c.get("model") or "", "webchat": True}
         for c in web_chats
     ]
     return JSONResponse({"sessions": items})
@@ -453,28 +707,51 @@ async def handle_sessions_list(request: Request):
 async def handle_sessions_resume(request: Request, session_id: str):
     """POST /api/sessions/{session_id}/resume -- open a WebConsole chat for a CLI session."""
     session = request.state.session
-    # Create a new WebConsole chat linked to the CLI session
-    import datetime as _dt
-    from pathlib import Path as _Path
-    import uuid as _uuid
+    available = await db.read_claude_sessions()
+    source = next((item for item in available if item.get("sessionId") == session_id), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="CLI session not found")
 
-    chat_id = _uuid.uuid4().hex
+    existing = next(
+        (chat for chat in await db.chat_list(session["user"]) if chat.get("session_id") == session_id),
+        None,
+    )
+    if existing:
+        return JSONResponse({
+            "id": existing["id"],
+            "title": existing["title"],
+            "session_id": session_id,
+        })
+
+    # Create a new WebConsole chat linked to the CLI session
+    chat_id = uuid.uuid4().hex
     title = f"CLI: {session_id[:12]}..."
-    work_dir = str(_Path(config.PROJECTS_ROOT).resolve() / f"cli-import-{session_id[:8]}-{_dt.date.today().isoformat()}")
-    _Path(work_dir).mkdir(parents=True, exist_ok=True)
+    date_suffix = datetime.datetime.now(datetime.UTC).date().isoformat()
+    work_dir = str(Path(config.PROJECTS_ROOT).resolve() / f"cli-import-{session_id[:8]}-{date_suffix}")
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
     await db.chat_create(chat_id, title, None, work_dir, session["user"])
     # Link the CLI session ID
     await db.chat_set_session(chat_id, session_id)
     # Write session file so CLI can see it too
     try:
         db.write_claude_session_file(session_id, title, work_dir)
-    except Exception:
-        pass
+    except (OSError, ValueError) as exc:
+        _log.warning("could not write CLI session file session_id=%s: %s", session_id, exc)
 
     return JSONResponse({"id": chat_id, "title": title, "session_id": session_id})
 
 
 # ── Session routes ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/settings")
+async def _api_settings_get(request: Request):
+    return await handle_settings_get(request)
+
+
+@app.patch("/api/settings")
+async def _api_settings_patch(request: Request):
+    return await handle_settings_patch(request)
+
 
 @app.get("/api/sessions")
 async def _api_sessions_list(request: Request):
@@ -484,6 +761,43 @@ async def _api_sessions_list(request: Request):
 @app.post("/api/sessions/{session_id}/resume")
 async def _api_sessions_resume(request: Request, session_id: str):
     return await handle_sessions_resume(request, session_id)
+
+
+# ── Machine routes ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/machines")
+async def _api_machines_list(request: Request):
+    return await handle_machines_list(request)
+
+
+@app.post("/api/machines")
+async def _api_machine_create(request: Request):
+    return await handle_machine_create(request)
+
+
+@app.get("/api/machines/{machine_id}")
+async def _api_machine_get(request: Request, machine_id: str):
+    return await handle_machine_get(request, machine_id)
+
+
+@app.patch("/api/machines/{machine_id}")
+async def _api_machine_patch(request: Request, machine_id: str):
+    return await handle_machine_patch(request, machine_id)
+
+
+@app.post("/api/machines/{machine_id}/activate")
+async def _api_machine_activate(request: Request, machine_id: str):
+    return await handle_machine_activate(request, machine_id)
+
+
+@app.post("/api/machines/{machine_id}/test")
+async def _api_machine_test(request: Request, machine_id: str):
+    return await handle_machine_test(request, machine_id)
+
+
+@app.delete("/api/machines/{machine_id}")
+async def _api_machine_delete(request: Request, machine_id: str):
+    return await handle_machine_delete(request, machine_id)
 
 
 if __name__ == "__main__":

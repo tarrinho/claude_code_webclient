@@ -80,8 +80,10 @@ export function createChatListController(dependencies) {
       title.title = chat.title;
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
-      meta.textContent = formatTime(chat.updated_at);
-      meta.title = formatAbsoluteTime(chat.updated_at);
+      let metaParts = [formatTime(chat.updated_at)];
+      if (chat.model) metaParts.push(chat.model);
+      meta.textContent = metaParts.join(' · ');
+      if (chat.model) meta.title = `Last model: ${chat.model}`;
       open.append(title, meta);
 
       const actions = document.createElement('div');
@@ -129,7 +131,11 @@ export function createChatListController(dependencies) {
       name.textContent = session.name;
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
-      meta.textContent = session.kind === 'interactive' ? 'Terminal' : 'Web';
+      const metaParts = [];
+      metaParts.push(session.kind === 'interactive' ? 'Terminal' : 'Web');
+      if (session.model) metaParts.push(session.model);
+      meta.textContent = metaParts.join(' · ');
+      if (session.model) meta.title = `Last model: ${session.model}`;
       title.append(name, meta);
       const button = document.createElement('button');
       button.type = 'button';

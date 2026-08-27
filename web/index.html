@@ -27,13 +27,15 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver">0.1.0</span>
+    <span class="ver" id="ver">0.2.0</span>
     <button class="btn-icon" id="editChatBtn" aria-label="Edit conversation" title="Edit conversation" hidden>✎</button>
+    <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
     <button class="btn-logout" id="logoutBtn">Log out</button>
   </header>
   <div class="workspace-strip" id="workspaceStrip">
     <span class="workspace-path" id="workspacePath"></span>
+    <span class="model-label" id="modelLabel" hidden></span>
     <span class="run-state" id="runState" data-state="ready">Ready</span>
   </div>
   <section class="messages-wrap">
@@ -60,6 +62,89 @@
     </div>
     <div class="dialog-actions"><button type="button" class="btn-secondary" id="dialogCancel">Cancel</button><button type="submit" class="btn-primary" id="dialogSave">Create conversation</button></div>
   </form>
+</div>
+<div class="dialog-backdrop" id="settingsDialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  <div class="dialog settings-dialog" id="settingsForm">
+    <h2 id="settingsTitle">Settings</h2>
+    <div class="settings-tabs" role="tablist">
+      <button class="settings-tab active" role="tab" aria-selected="true" data-tab="machines" aria-controls="panelMachines">Machines</button>
+      <button class="settings-tab" role="tab" aria-selected="false" data-tab="models" aria-controls="panelModels">Models</button>
+      <button class="settings-tab" role="tab" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
+    </div>
+    <div class="settings-body">
+      <!-- Machines tab -->
+      <div class="settings-panel" id="panelMachines">
+        <p>Manage AI machine connections. Each machine is a separate backend you can route chats to.</p>
+        <div class="machine-list" id="machineList"></div>
+        <button class="btn-secondary btn-add-machine" id="addMachineBtn">＋ Add machine</button>
+        <div class="machine-form" id="machineForm" hidden>
+          <h3 id="machineFormTitle">Add machine</h3>
+          <label for="machineName">Name</label>
+          <input id="machineName" maxlength="100" placeholder="e.g. Production, Staging, GCP">
+          <label for="machineHost">Host</label>
+          <input id="machineHost" maxlength="253" placeholder="e.g. 10.0.0.1 or hostname">
+          <label for="machinePort">Port</label>
+          <input id="machinePort" type="number" min="1" max="65535" value="9000">
+          <label for="machineModel">Default model</label>
+          <input id="machineModel" maxlength="100" placeholder="claude-sonnet-4-20250514">
+          <label for="machineBaseUrl">Base URL <span aria-hidden="true">· optional</span></label>
+          <input id="machineBaseUrl" placeholder="https://api.example.com/v1">
+          <label for="machineApiKey">API Key <span aria-hidden="true">· optional</span></label>
+          <input id="machineApiKey" type="password" autocomplete="off">
+          <label for="machineDescription">Description <span aria-hidden="true">· optional</span></label>
+          <textarea id="machineDescription" maxlength="500"></textarea>
+          <div class="machine-form-actions">
+            <button class="btn-secondary" id="cancelMachine">Cancel</button>
+            <button class="btn-primary" id="saveMachine">Save</button>
+          </div>
+        </div>
+      </div>
+      <!-- Models tab -->
+      <div class="settings-panel" id="panelModels" hidden>
+        <p>Configure default models and known model presets.</p>
+        <div class="model-row">
+          <label for="defaultModel">Default model</label>
+          <input id="defaultModel" list="modelSuggestions" maxlength="100" placeholder="claude-sonnet-4-20250514">
+          <datalist id="modelSuggestions">
+            <option value="claude-sonnet-4-20250514">
+            <option value="claude-opus-4-20250514">
+            <option value="claude-haiku-4-20250514">
+            <option value="claude-3.5-sonnet-20241022">
+          </datalist>
+        </div>
+        <div class="model-row">
+          <label for="fallbackModel">Fallback model</label>
+          <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-20250514">
+        </div>
+      </div>
+      <!-- App tab -->
+      <div class="settings-panel" id="panelApp" hidden>
+        <p>Application-wide settings.</p>
+        <div class="app-setting-row">
+          <label for="sessionTtl">Session TTL (seconds)</label>
+          <input id="sessionTtl" type="number" min="30" max="86400">
+          <span class="setting-hint">Session expires after this many seconds of inactivity.</span>
+        </div>
+        <div class="app-setting-row">
+          <label for="turnTimeout">Turn timeout (seconds)</label>
+          <input id="turnTimeout" type="number" min="30" max="86400">
+          <span class="setting-hint">Maximum time for a turn to complete.</span>
+        </div>
+        <div class="app-setting-row">
+          <label for="promptMax">Prompt max chars</label>
+          <input id="promptMax" type="number" min="100" max="500000">
+          <span class="setting-hint">Maximum prompt length in characters.</span>
+        </div>
+      </div>
+    </div>
+    <div class="settings-footer">
+      <div id="settingsStatus" aria-live="polite"></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn-secondary" id="settingsCancel">Close</button>
+        <button type="button" class="btn-primary" id="settingsSave">Save all</button>
+      </div>
+    </div>
+  </div>
 </div>
 <script type="module" src="/assets/app.js"></script>
 </body>

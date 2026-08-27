@@ -25,7 +25,11 @@ _DKLEN = 32
 
 try:
     from argon2 import PasswordHasher
-    from argon2.exceptions import VerifyMismatchError, VerificationError
+    from argon2.exceptions import (
+        InvalidHashError,
+        VerificationError,
+        VerifyMismatchError,
+    )
 
     _PH = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=1)
 
@@ -35,14 +39,8 @@ try:
     def verify_password(pw: str, stored: str) -> bool:
         try:
             _PH.verify(stored, pw)
-            try:
-                _PH.hash_check_needed(stored)
-            except Exception:
-                pass  # rehash not needed
             return True
-        except (VerifyMismatchError, VerificationError):
-            return False
-        except Exception:
+        except (InvalidHashError, VerifyMismatchError, VerificationError):
             return False
 
 except ImportError:
@@ -50,7 +48,7 @@ except ImportError:
     def hash_password(pw: str) -> str:
         salt = secrets.token_bytes(16)
         dk = hashlib.scrypt(pw.encode(), salt=salt, n=_N, r=_R, p=_P, dklen=_DKLEN)
-        b64 = lambda b: base64.b64encode(b).decode()  # noqa: E731
+        b64 = lambda b: base64.b64encode(b).decode()
         return f"scrypt${_N}${_R}${_P}${b64(salt)}${b64(dk)}"
 
     def verify_password(pw: str, stored: str) -> bool:
@@ -62,7 +60,7 @@ except ImportError:
             expected = base64.b64decode(hash_b64)
             dk = hashlib.scrypt(pw.encode(), salt=salt, n=int(n), r=int(r), p=int(p), dklen=len(expected))
             return hmac.compare_digest(dk, expected)
-        except Exception:
+        except (ValueError, TypeError, UnicodeError):
             return False
 
 

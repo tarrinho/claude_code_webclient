@@ -72,6 +72,19 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await db.chat_update("one", "admin", session_id="unsafe"))
         self.assertFalse(await db.chat_update("one", "other", title="No"))
 
+    async def test_concurrent_message_batches_return_their_exact_ids(self):
+        import asyncio
+
+        await db.chat_create("one", "One", None, f"{self.tmp.name}/one", "admin")
+        first, second = await asyncio.gather(
+            db.messages_batch("one", [("user", "first-u"), ("assistant", "first-a")]),
+            db.messages_batch("one", [("user", "second-u"), ("assistant", "second-a")]),
+        )
+        self.assertEqual(len(set(first + second)), 4)
+        messages = {message["id"]: message["content"] for message in await db.messages_get("one")}
+        self.assertEqual([messages[row_id] for row_id in first], ["first-u", "first-a"])
+        self.assertEqual([messages[row_id] for row_id in second], ["second-u", "second-a"])
+
 
 if __name__ == "__main__":
     unittest.main()

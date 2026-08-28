@@ -12,7 +12,7 @@
 <nav class="sidebar-shell sidebar-mobile" id="sidebar" aria-label="Conversations" aria-hidden="true" inert>
   <div class="sidebar-header"><h2>Conversations</h2><button class="btn-icon" id="sidebarCloseBtn" aria-label="Close conversations">&times;</button></div>
   <button class="btn-new new-chat-btn">＋ New conversation</button>
-  <div class="sidebar-search"><label for="chatSearch" hidden>Search conversations</label><input id="chatSearch" type="search" placeholder="Search conversations"></div>
+  <div class="sidebar-search"><label for="chatSearch" hidden>Search conversations</label><input id="chatSearch" type="search" placeholder="Search conversations"><button class="btn-icon search-toggle" id="searchModeBtn" type="button" aria-label="Toggle message search" title="Search messages">≡</button></div>
   <div class="chat-list" id="chatList"></div>
 </nav>
 <aside class="sidebar-desktop" aria-label="Conversations">
@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.2.0</span>
+    <span class="ver" id="ver">0.3.0</span>
     <button class="btn-icon" id="editChatBtn" aria-label="Edit conversation" title="Edit conversation" hidden>✎</button>
     <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
@@ -35,6 +35,10 @@
   </header>
   <div class="workspace-strip" id="workspaceStrip">
     <span class="workspace-path" id="workspacePath"></span>
+    <label class="conversation-model-wrap" for="conversationModel">Next model</label>
+    <select id="conversationModel" class="conversation-model" aria-label="Model for next turn">
+      <option value="">Automatic</option>
+    </select>
     <span class="model-label" id="modelLabel" hidden></span>
     <span class="run-state" id="runState" data-state="ready">Ready</span>
   </div>
@@ -69,6 +73,7 @@
     <div class="settings-tabs" role="tablist">
       <button class="settings-tab active" role="tab" aria-selected="true" data-tab="machines" aria-controls="panelMachines">Machines</button>
       <button class="settings-tab" role="tab" aria-selected="false" data-tab="models" aria-controls="panelModels">Models</button>
+      <button class="settings-tab" role="tab" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" role="tab" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
     </div>
     <div class="settings-body">
@@ -116,6 +121,11 @@
           <label for="fallbackModel">Fallback model</label>
           <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-20250514">
         </div>
+      </div>
+      <!-- Skills tab -->
+      <div class="settings-panel" id="panelSkills" hidden>
+        <p>Installed skills and skills observed in the current Claude session.</p>
+        <div class="skills-list" id="skillsList"></div>
       </div>
       <!-- App tab -->
       <div class="settings-panel" id="panelApp" hidden>

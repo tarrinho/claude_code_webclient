@@ -169,7 +169,7 @@ The suite is layered across the QA pyramid:
 - **System/E2E tests** run a complete create → submit → persist → reload transcript flow with a fake Claude turn.
 - **Acceptance/UAT tests** validate user requirements for CLI-session resume, conversation export, sidebar session visibility, and cross-user privacy.
 
-The layered additions are in `tests/test_qa_layers.py`. They use temporary databases and mocked Claude boundaries, so the suite is deterministic and does not require a live model. The current suite contains 106 automated tests, including coverage for malformed session metadata, migration recovery, error contracts, duplicate workspace names, failed turns, and full export workflows.
+The layered additions are in `tests/test_qa_layers.py`. They use temporary databases and mocked Claude boundaries, so the suite is deterministic and does not require a live model. The current suite contains 173 automated tests, including coverage for malformed session metadata, migration recovery, error contracts, duplicate workspace names, failed turns, model selection, skills inventory, and full export workflows.
 
 Install development and security tooling with:
 

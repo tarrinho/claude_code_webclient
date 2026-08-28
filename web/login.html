@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole — Login</title>
 <link rel="icon" href="/assets/favicon.svg">
-<script>
+<script nonce="__CSP_NONCE__">
 // Minimal login page — no framework, no build step.
 // Dark-first theme, mirrors the AI-Monitoring design system.
 </script>
@@ -76,6 +76,7 @@ body {
       <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" required>
     </div>
+    <input type="hidden" id="csrfInput">
     <button class="btn" type="submit" id="submitBtn">Sign in</button>
     <div class="error-msg" id="errorMsg" role="alert" aria-live="assertive"></div>
   </form>
@@ -102,6 +103,11 @@ function toggleTheme() {
   } catch (e) {}
 })();
 
+function getCsrfCookie() {
+  var m = document.cookie.match(/(?:^|;\s*)wc_csrf=([^;]*)/);
+  return m ? m[1] : '';
+}
+
 async function handleLogin(e) {
   e.preventDefault();
   var btn = document.getElementById('submitBtn');
@@ -116,7 +122,10 @@ async function handleLogin(e) {
   try {
     var resp = await fetch('/login', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': getCsrfCookie(),
+      },
       body: JSON.stringify({username: user, password: pass}),
       credentials: 'same-origin',
     });

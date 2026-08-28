@@ -112,6 +112,21 @@ class FrontendStructureTests(unittest.TestCase):
     def test_cli_sessions_no_duplicate_webchat(self):
         self.assertIn("!item.webchat", self.app)
 
+    def test_model_settings_fields_are_wired(self):
+        for field in ("defaultModel", "fallbackModel"):
+            self.assertIn(f"id=\"{field}\"", self.html)
+            self.assertIn(f"byId('{field}')", self.app)
+        self.assertNotIn("settingsHost", self.app)
+
+    def test_model_settings_save_contract(self):
+        self.assertIn("default_model", self.app)
+        self.assertIn("fallback_model", self.app)
+        self.assertIn("data.default_model", self.app)
+        self.assertIn("data.fallback_model", self.app)
+
+    def test_settings_has_no_stale_host_field(self):
+        self.assertNotIn("settingsHost", self.app)
+
     def test_dialog_focus_trap_and_drawer_contract(self):
         self.assertIn("trapDialogFocus", self.app)
         self.assertIn("event.shiftKey", self.app)

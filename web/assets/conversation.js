@@ -205,7 +205,8 @@ export function createConversationController(dependencies) {
     const content = (forcedContent ?? elements.composerInput.value).trim();
     if (!chatId || !content) return;
 
-    lastAttempt = {chatId, content};
+    const model = elements.modelPicker?.value || null;
+    lastAttempt = {chatId, content, model};
     elements.retryButton.style.display = 'none';
     const empty = elements.messages.querySelector('.empty-state');
     if (empty) empty.remove();
@@ -225,7 +226,7 @@ export function createConversationController(dependencies) {
         method: 'POST',
         signal: abortController.signal,
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({content}),
+        body: JSON.stringify({content, model}),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -301,6 +302,7 @@ export function createConversationController(dependencies) {
       await refreshChats();
       if (succeeded) {
         lastAttempt = null;
+        if (elements.modelPicker) elements.modelPicker.value = '';
         setStreamState('ready');
         await refreshCurrent();
       }
@@ -313,7 +315,10 @@ export function createConversationController(dependencies) {
   }
 
   function retry() {
-    if (lastAttempt && state.currentChat?.id === lastAttempt.chatId) send(lastAttempt.content);
+    if (lastAttempt && state.currentChat?.id === lastAttempt.chatId) {
+      if (elements.modelPicker) elements.modelPicker.value = lastAttempt.model || '';
+      send(lastAttempt.content);
+    }
   }
 
   function destroy() {

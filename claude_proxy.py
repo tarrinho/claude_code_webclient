@@ -14,6 +14,7 @@ doesn't need to understand Claude's internal event shapes.
 
 Usage:  WC_PROXY_TOKEN=... python3 claude_proxy.py [--host 127.0.0.1] [--port 9000]
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -66,14 +67,16 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
             if model:
                 frames.append({"type": "model", "model": model})
         elif subtype == "api_retry":
-            frames.append({
-                "type": "status",
-                "status": "api_retry",
-                "attempt": obj.get("attempt"),
-                "max_retries": obj.get("max_retries"),
-                "retry_delay_ms": obj.get("retry_delay_ms"),
-                "error": obj.get("error", "API request failed"),
-            })
+            frames.append(
+                {
+                    "type": "status",
+                    "status": "api_retry",
+                    "attempt": obj.get("attempt"),
+                    "max_retries": obj.get("max_retries"),
+                    "retry_delay_ms": obj.get("retry_delay_ms"),
+                    "error": obj.get("error", "API request failed"),
+                }
+            )
         elif subtype == "error":
             error = obj.get("message") or obj.get("error") or json.dumps(obj)
             frames.append({"type": "error", "error": error})
@@ -85,15 +88,22 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
             if isinstance(block, dict) and block.get("type") == "text":
                 frames.append({"type": "text", "content": block.get("text", "")})
 
+    elif frame_type == "tool_use":
+        name = obj.get("name") or obj.get("input", {}).get("skill")
+        if name:
+            frames.append({"type": "skill", "name": name})
+
     elif frame_type == "assistant":
         msg = obj.get("message", {})
         if not isinstance(msg, dict):
             return []
-        frames.append({
-            "type": "message",
-            "role": msg.get("role", "assistant"),
-            "id": msg.get("id", ""),
-        })
+        frames.append(
+            {
+                "type": "message",
+                "role": msg.get("role", "assistant"),
+                "id": msg.get("id", ""),
+            }
+        )
         for block in msg.get("content", []):
             if isinstance(block, dict) and block.get("type") == "text":
                 frames.append({"type": "text", "content": block.get("text", "")})
@@ -103,7 +113,12 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
         if session_id:
             frames.append({"type": "session_id", "session_id": session_id})
         if obj.get("is_error") or subtype not in ("", "success"):
-            error = obj.get("error") or obj.get("result") or obj.get("errors") or "Claude turn failed"
+            error = (
+                obj.get("error")
+                or obj.get("result")
+                or obj.get("errors")
+                or "Claude turn failed"
+            )
             if not isinstance(error, str):
                 error = json.dumps(error)
             frames.append({"type": "error", "error": error})
@@ -172,19 +187,32 @@ async def handle_client(
     prompt = turn.get("prompt", "")
     session_id = turn.get("session_id")
     work_dir = turn.get("work_dir", "")
+    requested_model = turn.get("model")
 
-    log.info("turn from %s: %d chars session=%s dir=%s",
-             peer, len(prompt), session_id, work_dir)
+    log.info(
+        "turn from %s: %d chars session=%s dir=%s model=%s",
+        peer,
+        len(prompt),
+        session_id,
+        work_dir,
+        requested_model,
+    )
 
     # ── 4. Launch Claude Code subprocess ─────────────────────────────────────
     claude_cmd = [
-        claude_path, "-p", prompt,
-        "--output-format", "stream-json", "--verbose",
+        claude_path,
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
     ]
-    claude_model = os.environ.get("WC_CLAUDE_MODEL")
+    claude_model = requested_model or os.environ.get("WC_CLAUDE_MODEL")
     if claude_model:
         claude_cmd.extend(["--model", claude_model])
+    # Sentinel: everything after ``--`` is treated as data by claude-code.
+    claude_cmd.append("--")
     if session_id:
         claude_cmd.extend(["--resume", session_id])
     else:
@@ -193,9 +221,19 @@ async def handle_client(
     try:
         import os as _os
         import shutil as _shutil
-        _resolved = _shutil.which(claude_path) if not _os.path.isabs(claude_path) else claude_path
-        log.info("spawn: claude_path=%s resolved=%s PATH=%s work_dir=%s",
-                 claude_path, _resolved, _os.environ.get("PATH","?")[:80], work_dir)
+
+        _resolved = (
+            _shutil.which(claude_path)
+            if not _os.path.isabs(claude_path)
+            else claude_path
+        )
+        log.info(
+            "spawn: claude_path=%s resolved=%s PATH=%s work_dir=%s",
+            claude_path,
+            _resolved,
+            _os.environ.get("PATH", "?")[:80],
+            work_dir,
+        )
 
         # Validate Claude binary exists before attempting spawn
         if not _resolved or not _os.path.isfile(_resolved):
@@ -206,8 +244,12 @@ async def handle_client(
         # Resolve work_dir: Docker-internal paths don't exist on host — fall back to /tmp
         _cwd = work_dir or None
         if _cwd and not _os.path.isdir(_cwd):
-            _fallback = os.environ.get("WC_PROXY_FALLBACK_DIR", "/tmp")  # nosec B108: configurable private fallback
-            log.info("work_dir %s not found on host, falling back to %s", _cwd, _fallback)
+            _fallback = os.environ.get(
+                "WC_PROXY_FALLBACK_DIR", "/tmp"
+            )  # nosec B108: configurable private fallback
+            log.info(
+                "work_dir %s not found on host, falling back to %s", _cwd, _fallback
+            )
             _cwd = _fallback
 
         log.info("spawn cmd: %s cwd=%s", " ".join(_cmd[:3]), _cwd)
@@ -219,7 +261,11 @@ async def handle_client(
             cwd=_cwd,
         )
     except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as _e:
-        _msg = "claude binary not found" if isinstance(_e, FileNotFoundError) else f"spawn failed: {_e}"
+        _msg = (
+            "claude binary not found"
+            if isinstance(_e, FileNotFoundError)
+            else f"spawn failed: {_e}"
+        )
         log.error("claude spawn failed: %s", _e)
         writer.write((json.dumps({"type": "error", "error": _msg}) + "\n").encode())
         writer.write((json.dumps({"type": "done"}) + "\n").encode())
@@ -277,7 +323,8 @@ async def handle_client(
     # ── 6. Wait for Claude exit, client cancellation, or timeout ─────────────
     try:
         done, _ = await asyncio.wait(
-            {process_task, disconnect_task}, timeout=300.0,
+            {process_task, disconnect_task},
+            timeout=300.0,
             return_when=asyncio.FIRST_COMPLETED,
         )
         if not done:
@@ -309,7 +356,11 @@ async def handle_client(
     elif timed_out:
         await send_frame({"type": "error", "error": "Claude turn timed out after 300s"})
     elif proc.returncode and not error_sent:
-        detail = stderr_text[-2000:] if stderr_text else f"Claude exited with code {proc.returncode}"
+        detail = (
+            stderr_text[-2000:]
+            if stderr_text
+            else f"Claude exited with code {proc.returncode}"
+        )
         await send_frame({"type": "error", "error": detail})
 
     # ── 7. done + close ─────────────────────────────────────────────────────
@@ -355,7 +406,9 @@ async def main():
     server = await asyncio.start_server(
         lambda r, w: handle_client(r, w, claude_path, proxy_token), host, port
     )
-    log.info("listening on %s:%d  claude=%s  protocol=%s", host, port, claude_path, PROTOCOL)
+    log.info(
+        "listening on %s:%d  claude=%s  protocol=%s", host, port, claude_path, PROTOCOL
+    )
 
     async with server:
         await server.serve_forever()

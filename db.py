@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -77,6 +78,17 @@ async def init() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
 
+        -- FTS5 index for full-text chat search on message bodies.
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            content_rowid=id
+        );
+        -- Manually maintained via _refresh_fts_sync() — the
+        -- content=auto-trigger path is known to be broken on some
+        -- SQLite 3.46.x builds (MATCH returns 0 despite entries).
+        -- Manually maintained via _refresh_fts_sync() — content=auto
+        -- triggers don't work on some SQLite builds.
+
         CREATE TABLE IF NOT EXISTS users (
             id       TEXT PRIMARY KEY,
             email    TEXT,
@@ -115,10 +127,12 @@ async def _ensure_chat_columns() -> None:
     try:
         ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
         ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
-    except Exception:
+    except Exception:  # noqa: BLE001 -- PRAGMA can fail on new tables
         ma_columns = set()
     if "owner_id" not in ma_columns:
-        await db_conn.execute("ALTER TABLE ai_machines ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'")
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
+        )
 
     await db_conn.commit()
 
@@ -137,12 +151,21 @@ _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
     "updated_at, archived, pinned, pinned_at, deleted_at, model, ai_machine_id"
 )
-_ALLOWED_CHAT_FIELDS = {"title", "description", "archived", "pinned", "pinned_at", "model", "ai_machine_id"}
+_ALLOWED_CHAT_FIELDS = {
+    "title",
+    "description",
+    "archived",
+    "pinned",
+    "pinned_at",
+    "model",
+    "ai_machine_id",
+}
 
 
 async def chat_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db_conn.execute(
-        f"SELECT {_CHAT_COLUMNS} FROM chats WHERE owner_id = ? AND deleted_at IS NULL "  # nosec B608: columns are static
+        f"SELECT {_CHAT_COLUMNS} FROM chats "  # nosec B608: columns are static
+        "WHERE owner_id = ? AND deleted_at IS NULL "
         "ORDER BY archived ASC, "
         "CASE WHEN archived = 0 THEN pinned ELSE 0 END DESC, "
         "CASE WHEN archived = 0 AND pinned = 1 THEN pinned_at END DESC, "
@@ -154,12 +177,15 @@ async def chat_list(owner_id: str) -> list[dict[str, Any]]:
 
 
 async def chat_get(
-    chat_id: str, owner_id: str, include_archived: bool = False,
+    chat_id: str,
+    owner_id: str,
+    include_archived: bool = False,
 ) -> dict[str, Any] | None:
     archived_filter = "" if include_archived else " AND archived = 0"
     cur = await db_conn.execute(
         f"SELECT {_CHAT_COLUMNS} FROM chats "
-        f"WHERE id = ? AND owner_id = ? AND deleted_at IS NULL{archived_filter}",  # nosec B608: filter is static
+        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
+        + archived_filter,  # nosec B608: filter is static, values parameterized
         (chat_id, owner_id),
     )
     row = await cur.fetchone()
@@ -190,7 +216,11 @@ async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
         fields["pinned_at"] = _now() if fields["pinned"] else None
     sets = ", ".join(k + " = ?" for k in fields)
     sets += ", updated_at = ?"
-    sql = "UPDATE chats SET " + sets + " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"  # nosec B608: fields are allowlisted
+    sql = (
+        "UPDATE chats SET "
+        + sets
+        + " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
+    )  # nosec B608: fields are allowlisted
     vals = list(fields.values()) + [_now(), chat_id, owner_id]
     cur = await db_conn.execute(sql, vals)
     await db_conn.commit()
@@ -210,16 +240,77 @@ async def chat_delete(chat_id: str, owner_id: str) -> bool:
     if await cur.fetchone() is None:
         return False
     try:
-        await db_conn.execute("BEGIN")
         await db_conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         await db_conn.execute(
-            "DELETE FROM chats WHERE id = ? AND owner_id = ?", (chat_id, owner_id),
+            "DELETE FROM chats WHERE id = ? AND owner_id = ?",
+            (chat_id, owner_id),
         )
         await db_conn.commit()
+        _refresh_fts_sync(chat_id)
     except Exception:
         await db_conn.rollback()
         raise
     return True
+
+
+async def chat_fork(
+    src_chat_id: str,
+    owner_id: str,
+) -> dict[str, Any] | None:
+    """Duplicate a chat's metadata and messages, returning the new chat dict.
+
+    The forked chat gets a fresh UUID, an appended title suffix, and
+    an empty work_dir under the same projects root.
+    """
+    src = await chat_get(src_chat_id, owner_id)
+    if not src:
+        return None
+
+    new_chat_id = uuid.uuid4().hex
+    now = _now()
+    new_title = src["title"] + " (fork)"
+
+    # Create a sibling workspace directory.
+    work_dir = Path(src["work_dir"]).parent / f"{new_chat_id}_workspace"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    await db_conn.execute(
+        "INSERT INTO chats (id, title, description, work_dir, owner_id, "
+        "created_at, updated_at, pinned, pinned_at, model, ai_machine_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)",
+        (
+            new_chat_id,
+            new_title,
+            src.get("description"),
+            str(work_dir),
+            owner_id,
+            now,
+            now,
+            src.get("model"),
+            src.get("ai_machine_id"),
+        ),
+    )
+
+    # Copy messages in bulk.
+    rows: list[tuple[str, str]] = []
+    cur = await db_conn.execute(
+        "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id ASC",
+        (src_chat_id,),
+    )
+    for row in await cur.fetchall():
+        rows.append((row["role"], row["content"]))
+
+    if rows:
+        now2 = _now()
+        for role, content in rows:
+            await db_conn.execute(
+                "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                (new_chat_id, role, content, now2),
+            )
+        await db_conn.commit()
+        _refresh_fts_sync(new_chat_id)
+
+    return await chat_get(new_chat_id, owner_id)
 
 
 async def chat_set_session(chat_id: str, session_id: str) -> None:
@@ -246,6 +337,53 @@ async def chat_set_title(chat_id: str, title: str) -> None:
     await db_conn.commit()
 
 
+# ── Chat FTS5 Search ──────────────────────────────────────────────────────────────────
+
+async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
+    """Search message bodies using FTS5.
+
+    Returns a list of unique chats that match *query*, ordered by
+    FTS5 rank (best match first).  Each entry is a chat dict with an
+    added ``snippet`` key showing the matching fragment.
+    """
+    # FTS5 MATCH query — values are parameterized, the MATCH keyword is SQL.
+    rows: list[dict[str, Any]] = []
+    try:
+        cur = await db_conn.execute(
+            "SELECT id FROM messages_fts "  # nosec B608: MATCH is SQL keyword
+            "WHERE content MATCH ?",
+            (query,),
+        )
+        match_ids = [row["id"] for row in await cur.fetchall()]
+    except Exception:  # noqa: BLE001 -- FTS5 may not exist on fresh DBs
+        match_ids = []
+
+    if not match_ids:
+        return []
+
+    # Fetch full chat details for matching rows, deduplicate by chat_id.
+    _placeholders = ",".join("?" for _ in match_ids)
+    cur = await db_conn.execute(
+        f"SELECT {_CHAT_COLUMNS}, m.id AS msg_id, m.content AS msg_snippet "  # nosec B608: static SQL
+        "FROM chats c "
+        f"JOIN messages m ON m.chat_id = c.id AND m.id IN ({_placeholders}) "
+        "WHERE c.owner_id = ? AND c.deleted_at IS NULL "
+        "ORDER BY c.updated_at DESC",
+        match_ids + [owner_id],
+    )
+    seen: set[str] = set()
+    for row in await cur.fetchall():
+        chat_id = row["id"]
+        if chat_id in seen:
+            continue
+        seen.add(chat_id)
+        d = dict(row)
+        d["snippet"] = d.pop("msg_snippet", "") or ""
+        rows.append(d)
+
+    return rows
+
+
 # ── Messages ───────────────────────────────────────────────────────────────────────────
 
 
@@ -258,13 +396,62 @@ async def messages_get(chat_id: str) -> list[dict[str, Any]]:
     return [dict(r) for r in await cur.fetchall()]
 
 
+# ── FTS5 index maintenance ──────────────────────────────────────────────────────────
+
+def _refresh_fts_sync(chat_id: str | None = None) -> None:
+    """Rebuild the FTS5 index for the given chat (or all chats).
+
+    Uses a separate synchronous sqlite3 connection to avoid aiosqlite
+    transaction conflicts.  Called after messages are inserted /
+    deleted.
+    """
+    try:
+        sync = sqlite3.connect(str(Path(config.DB_PATH)), check_same_thread=False)
+        sync.execute("PRAGMA journal_mode=WAL")
+        sync.execute("PRAGMA foreign_keys=ON")
+
+        if chat_id:
+            # Delete stale entries for this chat.
+            sync.execute(
+                "DELETE FROM messages_fts WHERE rowid IN "
+                "(SELECT id FROM messages WHERE chat_id = ?)",
+                (chat_id,),
+            )
+        else:
+            sync.execute("DELETE FROM messages_fts")
+
+        # Re-insert all message content.
+        rows = sync.execute(
+            "SELECT id, content FROM messages"
+            + (" WHERE chat_id = ?" if chat_id else "")
+            + (" ORDER BY id ASC" if chat_id else ""),
+            (chat_id,) if chat_id else (),
+        )
+        for row in rows:
+            content = row[1]
+            if content:
+                sync.execute(
+                    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+                    (row[0], content),
+                )
+        sync.commit()
+        sync.close()
+    except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
+        try:
+            sync.close()
+        except Exception:  # noqa: BLE001,S110
+            pass
+
+
 async def messages_append(chat_id: str, role: str, content: str) -> int:
     cur = await db_conn.execute(
         "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
         (chat_id, role, content, _now()),
     )
     await db_conn.commit()
-    return cur.lastrowid
+    last_id = cur.lastrowid
+    _refresh_fts_sync(chat_id)
+    return last_id
 
 
 async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]:
@@ -289,6 +476,7 @@ async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]
         except Exception:
             await db_conn.rollback()
             raise
+        _refresh_fts_sync(chat_id)
         return ids
 
 
@@ -304,7 +492,9 @@ async def user_get_by_name(name: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-async def user_create(name: str, email: str | None, password: str, role: str = "admin") -> None:
+async def user_create(
+    name: str, email: str | None, password: str, role: str = "admin"
+) -> None:
     user_id = uuid.uuid4().hex
     now = _now()
     await db_conn.execute(
@@ -333,6 +523,17 @@ async def setting_set(key: str, value: str) -> None:
 
 
 # ── AI Machines ────────────────────────────────────────────────────────────────────────
+
+
+async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
+    """Return the owner's active machine without exposing its API key."""
+    cur = await db_conn.execute(
+        "SELECT id, name, host, port, model, base_url, description, active "
+        "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
+        (owner_id,),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
@@ -374,22 +575,43 @@ async def ai_machine_create(
         "INSERT INTO ai_machines "
         "(id, name, host, port, api_key, model, base_url, description, active, owner_id, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
-        (machine_id, name, host, port, api_key, model, base_url, description, owner_id, now, now),
+        (
+            machine_id,
+            name,
+            host,
+            port,
+            api_key,
+            model,
+            base_url,
+            description,
+            owner_id,
+            now,
+            now,
+        ),
     )
     await db_conn.commit()
     return now
 
 
 async def ai_machine_update(
-    machine_id: str, owner_id: str, name: str | None = None,
-    host: str | None = None, port: int | None = None,
-    api_key: str | None = None, model: str | None = None,
-    base_url: str | None = None, description: str | None = None,
+    machine_id: str,
+    owner_id: str,
+    name: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    description: str | None = None,
 ) -> bool:
     pairs: list[tuple[str, Any]] = [
-        ("name", name), ("host", host), ("port", port),
-        ("api_key", api_key), ("model", model),
-        ("base_url", base_url), ("description", description),
+        ("name", name),
+        ("host", host),
+        ("port", port),
+        ("api_key", api_key),
+        ("model", model),
+        ("base_url", base_url),
+        ("description", description),
     ]
     sets: list[str] = []
     vals: list[Any] = []
@@ -402,7 +624,9 @@ async def ai_machine_update(
     sets.append("updated_at = ?")
     vals.append(_now())
     vals.extend([machine_id, owner_id])
-    sql = "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
+    sql = (
+        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
+    )  # nosec B608: fields are allowlisted
     cur = await db_conn.execute(sql, vals)
     await db_conn.commit()
     return cur.rowcount > 0
@@ -461,6 +685,85 @@ def slug_pattern(slug: str) -> str | None:
     if slug.startswith("-") or slug.endswith("-"):
         return None
     return slug
+
+
+# ── Database backup / restore ────────────────────────────────────────────────────────
+
+
+async def db_backup() -> bytes:
+    """Return a gzip-compressed SQLite backup of the entire database."""
+    backup_path = f"{config.DB_PATH}.backup.{int(time.time())}"
+    try:
+        # Use sqlite3 synchronous module to create a backup.
+        sync_conn = sqlite3.connect(str(backup_path))
+        db_conn_sync = sqlite3.connect(str(config.DB_PATH))
+        db_conn_sync.backup(sync_conn)
+        db_conn_sync.close()
+        sync_conn.close()
+
+        # Read the backup file and gzip it.
+        backup_data = Path(backup_path).read_bytes()
+        import gzip as _gzip
+
+        return _gzip.compress(backup_data)
+    finally:
+        try:
+            Path(backup_path).unlink()
+        except OSError:
+            pass
+
+
+async def db_restore(data: bytes) -> bool:
+    """Replace the current database with the provided gzip-compressed data.
+
+    The database is replaced atomically: write to a temp file, then rename.
+    The connection is re-opened after the swap.
+    """
+    import gzip as _gzip
+
+    try:
+        decompressed = _gzip.decompress(data)
+    except Exception:  # noqa: BLE001 -- silently reject bad input
+        return False
+
+    if not decompressed:
+        return False
+
+    db_path = Path(config.DB_PATH)
+    tmp_path = Path(config.DB_PATH).with_suffix(".restore.tmp")
+
+    try:
+        # Write compressed data to temp file, then replace.
+        tmp_path.write_bytes(decompressed)
+
+        # Close existing connection before swapping files.
+        await close()
+
+        # Atomic rename.
+        tmp_path.rename(db_path)
+
+        # Re-open the database.
+        global db_conn
+        db_conn = await aiosqlite.connect(str(db_path))
+        db_conn.row_factory = aiosqlite.Row
+        await db_conn.execute("PRAGMA journal_mode=WAL")
+        await db_conn.execute("PRAGMA foreign_keys=ON")
+
+        return True
+    except Exception:  # noqa: BLE001 -- recover best-effort on failure
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        # Re-open original DB if possible.
+        try:
+            db_conn = await aiosqlite.connect(str(db_path))
+            db_conn.row_factory = aiosqlite.Row
+            await db_conn.execute("PRAGMA journal_mode=WAL")
+            await db_conn.execute("PRAGMA foreign_keys=ON")
+        except Exception:  # noqa: BLE001 -- final fallback, connection may be broken
+            db_conn = None
+        return False
 
 
 # ── Claude Code session files ──────────────────────────────────────────────────────
@@ -534,16 +837,18 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
         if not model and session_id:
             model = _lookup_session_model(session_id) or ""
 
-        sessions.append({
-            "id": session_id if session_id else fpath.stem,
-            "name": name or "Untitled",
-            "cwd": data.get("cwd", ""),
-            "kind": kind,
-            "startedAt": started_at,
-            "updatedAt": updated_at,
-            "sessionId": session_id,
-            "model": model,
-        })
+        sessions.append(
+            {
+                "id": session_id if session_id else fpath.stem,
+                "name": name or "Untitled",
+                "cwd": data.get("cwd", ""),
+                "kind": kind,
+                "startedAt": started_at,
+                "updatedAt": updated_at,
+                "sessionId": session_id,
+                "model": model,
+            }
+        )
 
     return sessions
 
@@ -637,13 +942,20 @@ def _lookup_session_model(session_id: str) -> str | None:
     return model or None
 
 
-def write_claude_session_file(session_id: str, name: str, cwd: str, model: str = "") -> None:
+def write_claude_session_file(
+    session_id: str, name: str, cwd: str, model: str = ""
+) -> None:
     """Write a session file to ~/.claude/sessions/<session_id>.json so CLI can pick it up.
 
     This enables bidirectional sync: Web sessions become visible to CLI.
     Uses atomic write (write to temp then rename) to avoid partial reads.
+    Validates session_id to prevent path traversal.
     """
     import os as _os
+
+    # ── Security: reject path-traversal sequences ─────────────────────────────
+    if ".." in session_id or "/" in session_id or "\\" in session_id:
+        raise ValueError("Invalid session_id (contains path separators or ..)")
 
     try:
         sessions_dir = _CLAUDE_SESSIONS_DIR

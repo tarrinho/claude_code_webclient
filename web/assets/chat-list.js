@@ -10,6 +10,25 @@ export function filterChats(chats, query) {
   );
 }
 
+export function filterSearchResults(results, query) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...results];
+  return results.filter(r =>
+    (r.title || '').toLowerCase().includes(needle) ||
+    (r.snippet || '').toLowerCase().includes(needle)
+  );
+}
+
+function highlightSnippet(snippet, query) {
+  if (!snippet || !query) return snippet;
+  const idx = snippet.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return snippet;
+  const before = snippet.slice(0, idx);
+  const match = snippet.slice(idx, idx + query.length);
+  const after = snippet.slice(idx + query.length);
+  return `${before}<mark>${match}</mark>${after}`;
+}
+
 export function groupChats(chats) {
   return {
     pinned: chats.filter(chat => !chat.archived && chat.pinned),
@@ -41,9 +60,14 @@ export function createChatListController(dependencies) {
 
   let query = '';
   let cliSessions = [];
+  let messageResults = [];
+  let messageQuery = '';
+  let messageDebounce = null;
+  let messageCallback = null;
   let lastChats = [];
   let lastCurrentId = null;
   let openTrigger = null;
+  let _searchMode = 'title';
 
   function closeMenus(restoreFocus = false) {
     for (const menu of document.querySelectorAll('.chat-menu.open')) {
@@ -53,6 +77,50 @@ export function createChatListController(dependencies) {
     }
     if (restoreFocus && openTrigger) openTrigger.focus();
     openTrigger = null;
+  }
+
+  function renderSearchResults(list, results, currentId) {
+    if (!results.length) return;
+    const heading = document.createElement('div');
+    heading.className = 'chat-section-label';
+    heading.textContent = `Search results · ${results.length}`;
+    list.appendChild(heading);
+
+    results.forEach(chat => {
+      const item = document.createElement('div');
+      item.className = `chat-item${chat.id === currentId ? ' active' : ''}`;
+      item.dataset.chatId = chat.id;
+
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'chat-open';
+      open.dataset.action = 'open';
+      open.dataset.chatId = chat.id;
+
+      const title = document.createElement('div');
+      title.className = 'chat-title';
+      title.textContent = chat.title;
+      title.title = chat.title;
+      open.appendChild(title);
+
+      const meta = document.createElement('div');
+      meta.className = 'chat-meta';
+      const metaParts = [formatTime(chat.updated_at)];
+      if (chat.model) metaParts.push(chat.model);
+      meta.textContent = metaParts.join(' · ');
+
+      // Display snippet with highlighting
+      if (chat.snippet) {
+        const snippetEl = document.createElement('div');
+        snippetEl.className = 'chat-snippet';
+        snippetEl.innerHTML = highlightSnippet(chat.snippet, query || messageQuery);
+        meta.appendChild(snippetEl);
+      }
+
+      open.appendChild(meta);
+      item.appendChild(open);
+      list.appendChild(item);
+    });
   }
 
   function renderSection(list, label, chats, currentId) {
@@ -105,6 +173,7 @@ export function createChatListController(dependencies) {
       menu.append(
         makeButton(`${chat.pinned ? 'Unpin' : 'Pin'} ${chat.title}`, 'pin', chat.id),
         makeButton(`Rename ${chat.title}`, 'rename', chat.id),
+        makeButton(`Fork ${chat.title}`, 'fork', chat.id),
         makeButton(`Export ${chat.title}`, 'export', chat.id),
         makeButton(`${chat.archived ? 'Restore' : 'Archive'} ${chat.title}`, chat.archived ? 'restore' : 'archive', chat.id),
         makeButton(`Delete ${chat.title}`, 'delete', chat.id),
@@ -162,14 +231,19 @@ export function createChatListController(dependencies) {
     lists.forEach(list => {
       list.replaceChildren();
       renderCli(list, cli);
-      renderSection(list, 'Pinned', groups.pinned, currentId);
-      renderSection(list, 'Recent', groups.recent, currentId);
-      renderSection(list, 'Archived', groups.archived, currentId);
-      if (!cli.length && !filtered.length) {
-        const empty = document.createElement('div');
-        empty.className = 'sidebar-empty';
-        empty.textContent = query ? 'No matching sessions' : 'No sessions yet';
-        list.appendChild(empty);
+      // When message search has results, show those instead of regular chat groups
+      if (messageResults.length) {
+        renderSearchResults(list, messageResults, currentId);
+      } else {
+        renderSection(list, 'Pinned', groups.pinned, currentId);
+        renderSection(list, 'Recent', groups.recent, currentId);
+        renderSection(list, 'Archived', groups.archived, currentId);
+        if (!cli.length && !filtered.length) {
+          const empty = document.createElement('div');
+          empty.className = 'sidebar-empty';
+          empty.textContent = query ? 'No matching sessions' : 'No sessions yet';
+          list.appendChild(empty);
+        }
       }
     });
   }
@@ -177,7 +251,35 @@ export function createChatListController(dependencies) {
   function setQuery(value) {
     query = value.trim().toLowerCase();
     searchInputs.forEach(input => { input.value = value; });
+    // If in message search mode, debounce and call the API
+    if (_searchMode === 'message' && value.trim().length >= 2) {
+      messageQuery = value.trim();
+      if (messageDebounce) clearTimeout(messageDebounce);
+      messageDebounce = setTimeout(() => {
+        if (messageCallback) {
+          messageCallback(messageQuery);
+        }
+      }, 300);
+    } else {
+      messageResults = [];
+      messageQuery = '';
+      if (messageDebounce) {
+        clearTimeout(messageDebounce);
+        messageDebounce = null;
+      }
+    }
     render();
+  }
+
+  function setOnMessageSearch(callback) {
+    messageCallback = callback;
+  }
+
+  function setSearchMode(mode) {
+    _searchMode = mode;
+    messageResults = [];
+    messageQuery = '';
+    query = '';
   }
 
   function setCliSessions(sessions) {
@@ -218,5 +320,5 @@ export function createChatListController(dependencies) {
     if (!event.target.closest('.chat-actions')) closeMenus();
   });
 
-  return {render, setQuery, setCliSessions, closeMenus};
+  return {render, setQuery, setCliSessions, closeMenus, setOnMessageSearch, setSearchMode};
 }

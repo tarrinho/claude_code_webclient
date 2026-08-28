@@ -22,6 +22,9 @@ let _activeMachineId = null;
 let _machines = [];
 let _machineEditing = null;
 let _currentTab = 'machines';
+let _modelOptions = [];
+let _searchMode = 'title'; // 'title' | 'message'
+let _searchDebounce = null;
 
 function showToast(message, type = '') {
   const toast = document.createElement('div');
@@ -137,7 +140,6 @@ function openSettingsDialog() {
   _machineEditing = null;
   byId('machineForm').hidden = true;
   _switchTab('machines');
-  byId('settingsHost').value = '';
 }
 
 function closeSettingsDialog() {
@@ -154,13 +156,14 @@ function _switchTab(tab) {
     t.classList.toggle('active', active);
     t.setAttribute('aria-selected', String(active));
   });
-  const map = { machines: 'panelMachines', models: 'panelModels', app: 'panelApp' };
+  const map = { machines: 'panelMachines', models: 'panelModels', skills: 'panelSkills', app: 'panelApp' };
   const activeId = map[tab] || 'panelMachines';
-  ['panelMachines', 'panelModels', 'panelApp'].forEach(id => {
+  ['panelMachines', 'panelModels', 'panelSkills', 'panelApp'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
   if (tab === 'machines') _renderMachineList();
+  if (tab === 'skills') loadSkills();
 }
 
 function setStatus(text, type) {
@@ -171,6 +174,45 @@ function setStatus(text, type) {
 }
 
 // ── Machines ──────────────────────────────────────────────────────────────────────
+
+async function loadSkills() {
+  const list = byId('skillsList');
+  if (!list) return;
+  list.replaceChildren();
+  try {
+    const chatId = state.currentChat?.id ? `?chat_id=${encodeURIComponent(state.currentChat.id)}` : '';
+    const response = await apiFetch(`/api/skills${chatId}`);
+    if (!response.ok) throw new Error('Could not load skills');
+    const skills = (await response.json()).skills || [];
+    if (!skills.length) {
+      const empty = document.createElement('div');
+      empty.className = 'sidebar-empty';
+      empty.textContent = 'No installed skills found.';
+      list.appendChild(empty);
+      return;
+    }
+    skills.forEach(skill => {
+      const card = document.createElement('div');
+      card.className = 'skill-card';
+      const title = document.createElement('div');
+      title.className = 'skill-name';
+      title.textContent = skill.name;
+      const status = document.createElement('span');
+      status.className = skill.active ? 'skill-badge skill-active' : 'skill-badge';
+      status.textContent = skill.active ? 'Active this session' : 'Installed';
+      title.appendChild(status);
+      const description = document.createElement('p');
+      description.textContent = skill.description || 'No description provided.';
+      card.append(title, description);
+      list.appendChild(card);
+    });
+  } catch (error) {
+    const message = document.createElement('div');
+    message.className = 'sidebar-empty';
+    message.textContent = error.message;
+    list.appendChild(message);
+  }
+}
 
 async function loadMachines() {
   try {
@@ -390,9 +432,10 @@ async function saveSettings(event) {
   save.disabled = true;
   try {
     const body = {};
-    // Old: ai_machine_host
-    const host = byId('settingsHost').value.trim();
-    if (host) body.ai_machine_host = host;
+    const defaultModel = byId('defaultModel').value.trim();
+    if (defaultModel) body.default_model = defaultModel;
+    const fallbackModel = byId('fallbackModel').value.trim();
+    if (fallbackModel) body.fallback_model = fallbackModel;
     // App tab settings
     const sessionTtl = parseInt(byId('sessionTtl')?.value);
     if (sessionTtl) body.session_ttl = sessionTtl;
@@ -498,6 +541,9 @@ function updateCurrentUi(chat) {
   storageSet('wc_last_chat', chat.id);
   listController.render(state.chats, chat.id);
   updateModelDisplay(chat.model);
+  const picker = byId('conversationModel');
+  if (picker) picker.value = '';
+  populateModelPicker();
 }
 
 async function selectChat(id) {
@@ -558,6 +604,8 @@ async function handleChatAction(action, id) {
       openChatDialog('edit', chat);
     } else if (action === 'export') {
       await downloadMarkdown(chat);
+    } else if (action === 'fork') {
+      await forkChat(chat);
     } else if (action === 'archive' || action === 'restore') {
       const archived = action === 'archive';
       await patchChat(chat, {archived}, archived ? 'Conversation archived' : 'Conversation restored');
@@ -587,20 +635,81 @@ async function resumeCliSession(sessionId) {
   }
 }
 
+async function forkChat(chat) {
+  try {
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}/fork`, {method: 'POST'});
+    if (!response.ok) throw new Error('Could not fork conversation');
+    const data = await response.json();
+    await refreshChats();
+    closeSidebar();
+    showToast(`Forked as “${data.title}”`);
+    await selectChat(data.id);
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+function toggleSearchMode() {
+  _searchMode = _searchMode === 'title' ? 'message' : 'title';
+  const btn = byId('searchModeBtn');
+  if (btn) {
+    btn.title = _searchMode === 'message' ? 'Search in messages' : 'Search titles only';
+    btn.textContent = _searchMode === 'message' ? 'M' : '≡';
+    btn.setAttribute('aria-label', _searchMode === 'message' ? 'Switch to title search' : 'Switch to message search');
+  }
+  _clearSearch();
+  listController.setSearchMode(_searchMode);
+  _searchModeLabel();
+}
+
+function _clearSearch() {
+  if (_searchDebounce) {
+    clearTimeout(_searchDebounce);
+    _searchDebounce = null;
+  }
+  listController.setQuery('');
+}
+
+function _searchModeLabel() {
+  byId('chatSearch').placeholder = _searchMode === 'message' ? 'Search messages' : 'Search conversations';
+  byId('chatSearchDesktop').placeholder = _searchMode === 'message' ? 'Search messages' : 'Search conversations';
+}
+
 async function loadSettings() {
   try {
     const response = await apiFetch('/api/settings');
     if (response.ok) {
       const data = await response.json();
-      byId('settingsHost').value = data.ai_machine_host || '';
+      byId('defaultModel').value = data.default_model || '';
+      byId('fallbackModel').value = data.fallback_model || '';
       byId('ver').textContent = data.version || '';
       if (data.session_ttl_s) byId('sessionTtl').value = data.session_ttl_s;
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
+      _modelOptions = [data.default_model, data.fallback_model];
+      populateModelPicker();
       return data;
     }
   } catch {}
   return {};
+}
+
+function populateModelPicker() {
+  const picker = byId('conversationModel');
+  if (!picker) return;
+  const current = picker.value;
+  picker.replaceChildren();
+  const automatic = document.createElement('option');
+  automatic.value = '';
+  automatic.textContent = 'Automatic';
+  picker.appendChild(automatic);
+  [...new Set(_modelOptions.filter(Boolean))].forEach(model => {
+    const option = document.createElement('option');
+    option.value = model;
+    option.textContent = model;
+    picker.appendChild(option);
+  });
+  picker.value = current;
 }
 
 async function updateModelDisplay(model) {
@@ -623,6 +732,8 @@ async function loadInitialData() {
     if (response.ok) {
       const sessions = (await response.json()).sessions || [];
       listController.setCliSessions(sessions.filter(item => !item.webchat));
+      _modelOptions.push(...sessions.map(item => item.model));
+      populateModelPicker();
       listController.render(state.chats, null);
     }
     const lastId = storageGet('wc_last_chat');
@@ -652,6 +763,10 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });
   byId('settingsSave').addEventListener('click', saveSettings);
+  byId('conversationModel')?.addEventListener('change', event => {
+    const model = event.target.value;
+    if (model) showToast(`Next turn will use ${model}`);
+  });
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);
@@ -661,6 +776,7 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('dialogCancel').addEventListener('click', closeDialog);
   byId('chatForm').addEventListener('submit', saveChatDialog);
   byId('chatDialog').addEventListener('click', event => { if (event.target === byId('chatDialog')) closeDialog(); });
+  byId('searchModeBtn')?.addEventListener('click', toggleSearchMode);
 
   listController = createChatListController({
     lists: [byId('chatList'), byId('chatListDesktop')],
@@ -671,11 +787,27 @@ document.addEventListener('DOMContentLoaded', () => {
     onAction: handleChatAction,
     onResumeCli: resumeCliSession,
   });
+  listController.setOnMessageSearch(async (q) => {
+    try {
+      const response = await apiFetch('/api/chats/search', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: q}),
+      });
+      if (!response.ok) throw new Error('Search failed');
+      const data = await response.json();
+      listController.render(data.results || [], state.currentChat?.id);
+    } catch {
+      listController.render([], state.currentChat?.id);
+    }
+  });
+  listController.setSearchMode(_searchMode);
 
   conversationController = createConversationController({
     state,
     elements: {
       messages: byId('messagesArea'), composerInput: byId('composerInput'),
+      modelPicker: byId('conversationModel'),
       sendButton: byId('sendBtn'), retryButton: byId('retryBtn'),
       jumpButton: byId('jumpToLatest'), runState: byId('runState'),
       composerStatus: byId('composerStatus'),

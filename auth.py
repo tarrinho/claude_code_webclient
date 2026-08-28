@@ -12,6 +12,7 @@ import logging
 import re
 import secrets
 import time
+from typing import Final
 
 import config
 
@@ -34,7 +35,7 @@ try:
     _PH = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=1)
 
     def hash_password(pw: str) -> str:
-        return _PH.hash(pw)
+        return _PH.hash(pw[:_MAX_PASSWORD_BYTES])
 
     def verify_password(pw: str, stored: str) -> bool:
         try:
@@ -47,9 +48,14 @@ except ImportError:
     # Fallback to scrypt if argon2-cffi not installed.
     def hash_password(pw: str) -> str:
         salt = secrets.token_bytes(16)
-        dk = hashlib.scrypt(pw.encode(), salt=salt, n=_N, r=_R, p=_P, dklen=_DKLEN)
-        b64 = lambda b: base64.b64encode(b).decode()
-        return f"scrypt${_N}${_R}${_P}${b64(salt)}${b64(dk)}"
+        dk = hashlib.scrypt(
+            pw[:_MAX_PASSWORD_BYTES].encode(), salt=salt, n=_N, r=_R, p=_P, dklen=_DKLEN
+        )
+
+        def _b64(b):
+            return base64.b64encode(b).decode()
+
+        return f"scrypt${_N}${_R}${_P}${_b64(salt)}${_b64(dk)}"
 
     def verify_password(pw: str, stored: str) -> bool:
         try:
@@ -58,16 +64,28 @@ except ImportError:
                 return False
             salt = base64.b64decode(salt_b64)
             expected = base64.b64decode(hash_b64)
-            dk = hashlib.scrypt(pw.encode(), salt=salt, n=int(n), r=int(r), p=int(p), dklen=len(expected))
+            dk = hashlib.scrypt(
+                pw.encode(),
+                salt=salt,
+                n=int(n),
+                r=int(r),
+                p=int(p),
+                dklen=len(expected),
+            )
             return hmac.compare_digest(dk, expected)
         except (ValueError, TypeError, UnicodeError):
             return False
 
 
+# Argon2 effective entropy cap: 72 bytes (same as bcrypt). Longer inputs
+# are wasted work for the defender and enable slow-login DoS.
+_MAX_PASSWORD_BYTES: Final[int] = 72
+
+
 def password_error(pw: str) -> str | None:
     if not pw or len(pw) < 8:
         return "password must be at least 8 characters"
-    if len(pw) > 256:
+    if len(pw) > _MAX_PASSWORD_BYTES:
         return "password too long"
     return None
 
@@ -120,6 +138,43 @@ def session_drop(sid: str | None) -> None:
         _sessions.pop(sid, None)
 
 
+# Stateless CSRF token: one token per browser, stored in a secure cookie.
+# The value is persisted across sessions so the server can validate it on
+# mutating requests.  A new token is generated when a login succeeds.
+_csrf_store: dict[str, str] = {}  # id → token  (id is the cookie value)
+
+
+def csrf_generate() -> tuple[str, str]:
+    """Return (cookie_value, header_value).
+
+    The cookie_value is what the browser stores; header_value is what the
+    client must send back.  They are identical — the server stores a copy
+    keyed by cookie_value so that the cookie *is* the token.  This is a
+    standard pattern: the client sends it back in a header.
+    """
+    token = secrets.token_urlsafe(32)
+    _csrf_store[token] = token  # idempotent storage; key == value
+    return token, token
+
+
+def csrf_consume(id_value: str) -> bool:
+    """Consume and validate a CSRF token.  Returns True on success."""
+    return _csrf_store.pop(id_value, None) is not None
+
+
+def _csrf_valid(cookie_token: str, header_token: str) -> bool:
+    """Check that header matches a known-good token.
+
+    Used after-login when the wc_csrf cookie is present.  The cookie value
+    is a session-scoped CSRF id (set at login) whose value we stored as the
+    session's ``csrf`` field.  So we look up the session and compare.
+    """
+    for _s in _sessions.values():
+        if _s["csrf"] == cookie_token:
+            return _s["csrf"] == header_token
+    return False
+
+
 # ───────────────────────────── login rate-limiting ───────────────────────────────────────
 _login_attempts: dict[str, list[float]] = {}
 
@@ -154,6 +209,7 @@ def login_record_failure(ip: str) -> tuple[bool, float]:
 
 # ───────────────────────────── bootstrap admin ───────────────────────────────────────────
 
+
 async def bootstrap_admin() -> str | None:
     """Create first admin from env. Idempotent."""
     name = config._str("WC_ADMIN_USER", "admin")
@@ -162,11 +218,13 @@ async def bootstrap_admin() -> str | None:
         return None
     # Check if any user exists (import here avoids circular import at top level)
     from db import user_get_by_name as _ugb
+
     existing = await _ugb(name)
     if existing:
         return None
     if password_error(pw):
         return None
     from db import user_create as _uc
+
     await _uc(name, None, hash_password(pw))
     return name

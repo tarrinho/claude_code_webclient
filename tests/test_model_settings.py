@@ -32,10 +32,10 @@ class _FakeRequest:
 # ── Config / version ───────────────────────────────────────────────────────────
 
 class VersionTests(unittest.TestCase):
-    """VERSION constant must contain 0.2.0."""
+    """VERSION constant must contain 0.3.0."""
 
-    def test_version_contains_020(self):
-        self.assertIn("0.2.0", config.VERSION)
+    def test_version_contains_030(self):
+        self.assertIn("0.3.0", config.VERSION)
 
 
 # ── DB: model column migration ─────────────────────────────────────────────────
@@ -244,7 +244,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(resp.body.decode())
         self.assertIn("ai_machine_host", body)
         self.assertIn("version", body)
-        self.assertEqual(body["version"], "0.2.0")
+        self.assertEqual(body["version"], "0.3.0")
 
     async def test_settings_patch_updates_host(self):
         handler = app.handle_settings_patch
@@ -263,6 +263,29 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["ok"])
         value = await db.setting_get("session_ttl")
         self.assertEqual(value, "3600")
+
+    async def test_settings_patch_updates_models(self):
+        handler = app.handle_settings_patch
+        req = _FakeRequest(json_data={
+            "default_model": "claude-opus-5",
+            "fallback_model": "claude-haiku-4-20250514",
+        })
+        resp = await handler(req)
+        self.assertTrue(json.loads(resp.body.decode())["ok"])
+        self.assertEqual(await db.setting_get("default_model"), "claude-opus-5")
+        self.assertEqual(await db.setting_get("fallback_model"), "claude-haiku-4-20250514")
+
+    async def test_settings_get_returns_models(self):
+        await db.setting_set("default_model", "claude-opus-5")
+        await db.setting_set("fallback_model", "claude-haiku-4-20250514")
+        body = json.loads((await app.handle_settings_get(_FakeRequest())).body.decode())
+        self.assertEqual(body["default_model"], "claude-opus-5")
+        self.assertEqual(body["fallback_model"], "claude-haiku-4-20250514")
+
+    async def test_settings_patch_rejects_invalid_model(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_settings_patch(_FakeRequest(json_data={"default_model": "bad model"}))
+        self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_updates_multiple(self):
         handler = app.handle_settings_patch

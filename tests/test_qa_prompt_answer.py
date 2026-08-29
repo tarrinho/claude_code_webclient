@@ -15,8 +15,13 @@ navigation key or an option digit can ever be delivered.
 from __future__ import annotations
 
 import json
+import os
+import pathlib
+import tempfile
 import unittest
+from shutil import rmtree as shutil_rmtree
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 import prompts
@@ -130,29 +135,43 @@ class SnapshotReadingQA(unittest.TestCase):
 
 
 class AimingQA(unittest.TestCase):
+    """The window a keystroke goes to.
+
+    ``_environ`` is patched per-pid rather than with a single return value,
+    because ``locate`` now reads the environment of two different processes --
+    the session's and its own -- and a fixture that answers identically for
+    both cannot tell the guard from the thing it guards against.
+    """
+
+    SERVER: ClassVar[dict[str, str]] = {"STY": "server.host", "WINDOW": "0"}
+
+    def _locate(self, session_id, env_by_pid, session_pid=99, chain=None):
+        chain = chain or [(session_pid, "claude")]
+        our_pid = os.getpid()
+        env_by_pid = {our_pid: self.SERVER, **env_by_pid}
+        with patch.object(prompts, "session_pid", return_value=session_pid), \
+             patch.object(prompts, "_parents",
+                          side_effect=lambda pid, limit=12: (
+                              [(our_pid, "python3")] if pid == our_pid else chain)), \
+             patch.object(prompts, "_environ",
+                          side_effect=lambda pid: env_by_pid.get(pid, {})):
+            return prompts.locate(session_id)
+
     def test_the_window_comes_from_the_process_environment(self):
         # screen exports STY and WINDOW into every window, so the window is
         # stated rather than guessed.
-        with patch.object(prompts, "session_pid", return_value=99), \
-             patch.object(prompts, "_parents", return_value=[(99, "claude")]), \
-             patch.object(prompts, "_environ",
-                          return_value={"STY": "123.pts-6.host", "WINDOW": "2"}):
-            self.assertEqual(prompts.locate("sess"),
-                             {"kind": "screen", "session": "123.pts-6.host",
-                              "window": "2"})
+        target = self._locate("sess", {99: {"STY": "123.pts-6.host", "WINDOW": "2"}})
+        self.assertEqual(
+            {k: target[k] for k in ("kind", "session", "window")},
+            {"kind": "screen", "session": "123.pts-6.host", "window": "2"})
 
     def test_a_tmux_pane_is_identified_by_its_own_variable(self):
-        with patch.object(prompts, "session_pid", return_value=99), \
-             patch.object(prompts, "_parents", return_value=[(99, "claude")]), \
-             patch.object(prompts, "_environ",
-                          return_value={"TMUX_PANE": "%7", "TMUX": "/tmp/sock,1,0"}):
-            self.assertEqual(prompts.locate("sess")["window"], "%7")
+        target = self._locate(
+            "sess", {99: {"TMUX_PANE": "%7", "TMUX": "/tmp/sock,1,0"}})
+        self.assertEqual(target["window"], "%7")
 
     def test_a_session_outside_a_multiplexer_has_no_window(self):
-        with patch.object(prompts, "session_pid", return_value=99), \
-             patch.object(prompts, "_parents", return_value=[(99, "claude")]), \
-             patch.object(prompts, "_environ", return_value={"TERM": "xterm"}):
-            self.assertIsNone(prompts.locate("sess"))
+        self.assertIsNone(self._locate("sess", {99: {"TERM": "xterm"}}))
 
     def test_two_sessions_in_one_screen_are_not_confused(self):
         """The bug this replaced: selection by screen content.
@@ -163,13 +182,89 @@ class AimingQA(unittest.TestCase):
         Observed live, not hypothetical -- so the window must come from the
         process, and content is only ever a confirmation.
         """
-        env = {"other": {"STY": "1.host", "WINDOW": "0"},
-               "target": {"STY": "1.host", "WINDOW": "2"}}
-        for who, expected in (("other", "0"), ("target", "2")):
-            with patch.object(prompts, "session_pid", return_value=1), \
-                 patch.object(prompts, "_parents", return_value=[(1, "claude")]), \
-                 patch.object(prompts, "_environ", return_value=env[who]):
-                self.assertEqual(prompts.locate(who)["window"], expected, who)
+        for who, window in (("other", "3"), ("target", "2")):
+            target = self._locate(who, {99: {"STY": "1.host", "WINDOW": window}})
+            self.assertEqual(target["window"], window, who)
+
+    def test_sharing_the_servers_window_is_reported_not_refused(self):
+        """The obvious guard here is wrong, so it is a flag rather than a veto.
+
+        The console runs inside screen and an interactive agent runs in the same
+        window. Refusing our own window would refuse that agent -- the one the
+        routing feature exists to reach -- while the hole it was meant to close
+        (a session file naming the server's own pid) is already closed by the
+        ancestry check in session_pid.
+        """
+        target = self._locate("sess", {99: dict(self.SERVER)})
+        self.assertIsNotNone(target)
+        self.assertTrue(target["shares_server_window"])
+
+    def test_a_window_elsewhere_is_not_flagged(self):
+        target = self._locate("sess", {99: {"STY": "other.host", "WINDOW": "0"}})
+        self.assertFalse(target["shares_server_window"])
+
+    def test_a_sibling_window_in_the_servers_screen_is_not_flagged(self):
+        # Same screen session, different window: not the server's window.
+        sibling = {"STY": self.SERVER["STY"], "WINDOW": "4"}
+        target = self._locate("sess", {99: sibling})
+        self.assertEqual(target["window"], "4")
+        self.assertFalse(target["shares_server_window"])
+
+
+class SessionPidTrustQA(unittest.TestCase):
+    """``~/.claude/sessions/*.json`` is a claim, not an authority (F-02)."""
+
+    def _sessions_dir(self, files):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil_rmtree, tmp)
+        for name, body in files.items():
+            (pathlib.Path(tmp) / name).write_text(json.dumps(body))
+        return pathlib.Path(tmp)
+
+    def _resolve(self, files, claude_pids, ancestors=(4242,)):
+        directory = self._sessions_dir(files)
+        with patch.object(prompts, "_SESSIONS_DIR", directory), \
+             patch.object(prompts, "_is_claude",
+                          side_effect=lambda pid: pid in claude_pids), \
+             patch.object(prompts, "_self_and_ancestors",
+                          return_value=set(ancestors)):
+            return prompts.session_pid("sess-1")
+
+    def test_a_live_claude_pid_resolves(self):
+        self.assertEqual(
+            self._resolve({"501.json": {"sessionId": "sess-1", "pid": 501}}, {501}),
+            501)
+
+    def test_a_pid_that_is_not_claude_is_refused(self):
+        # Otherwise a file naming any live pid aims keystrokes at its terminal.
+        self.assertIsNone(
+            self._resolve({"501.json": {"sessionId": "sess-1", "pid": 501}}, set()))
+
+    def test_the_servers_own_ancestry_is_refused(self):
+        self.assertIsNone(
+            self._resolve({"a.json": {"sessionId": "sess-1", "pid": 4242}},
+                          {4242}, ancestors=(4242,)))
+
+    def test_two_pids_claiming_one_session_is_refused_not_resolved(self):
+        """A contradiction is an attack signal, so neither claim wins.
+
+        Choosing one would let a planted file race the real entry, and the
+        planted one only has to be read first.
+        """
+        self.assertIsNone(self._resolve(
+            {"501.json": {"sessionId": "sess-1", "pid": 501},
+             "777.json": {"sessionId": "sess-1", "pid": 777}},
+            {501, 777}))
+
+    def test_the_same_pid_named_twice_is_not_a_contradiction(self):
+        # The filename and the recorded pid agreeing is the normal case.
+        self.assertEqual(self._resolve(
+            {"501.json": {"sessionId": "sess-1", "pid": 501}}, {501}), 501)
+
+    def test_an_unrelated_session_is_ignored(self):
+        self.assertIsNone(self._resolve(
+            {"501.json": {"sessionId": "other", "pid": 501}}, {501}))
+
 
     def test_a_window_that_is_not_prompting_is_not_a_target(self):
         # Identity alone is not enough: navigation keys sent to a window that

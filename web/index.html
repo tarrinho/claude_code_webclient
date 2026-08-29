@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.7.1</span>
+    <span class="ver" id="ver">0.7.2</span>
     <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
@@ -101,7 +101,22 @@
       <!-- Backends tab: a machine and the models it serves are one thing -->
       <div class="settings-panel" id="panelBackends" role="tabpanel" aria-labelledby="tabBackends" tabindex="0">
         <p>Each backend is somewhere Claude Code can run. The active one serves the models offered when starting a turn.</p>
-        <div class="machine-list" id="machineList"></div>
+        <!-- The map: where a turn starts, the wire it follows, and the
+             backends it can land on. -->
+        <div class="backend-map" id="backendMap">
+          <div class="map-from">
+            <div class="map-col">From</div>
+            <div class="map-src">
+              <b>New chat</b><span>composer</span>
+              <span class="map-total" id="mapTotal"></span>
+            </div>
+          </div>
+          <div class="map-wires" id="mapWires" aria-hidden="true"></div>
+          <div class="map-to">
+            <div class="map-col">Runs on</div>
+            <div class="machine-list" id="machineList"></div>
+          </div>
+        </div>
         <datalist id="modelSuggestions"></datalist>
         <button class="btn-secondary btn-add-machine" id="addMachineBtn">＋ Add machine</button>
         <div class="machine-form" id="machineForm" hidden>
@@ -186,7 +201,7 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js?v=13"></script>
+<script type="module" src="/assets/app.js?v=16"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

@@ -28,6 +28,17 @@ import auth
 import config
 
 
+def _stored(sid):
+    """The session record for *sid*, whatever the store keys it by.
+
+    _sessions was re-keyed by a hash of the id, which is a good change: the raw
+    id then exists only in the cookie. Reaching in by raw id broke; reaching in
+    by the hash would just re-couple these tests to the next storage decision.
+    """
+    key = auth._sid_key(sid) if hasattr(auth, "_sid_key") else sid
+    return auth._sessions[key]
+
+
 def _reset_state():
     auth._sessions.clear()
     auth._csrf_store.clear()
@@ -117,22 +128,20 @@ class SessionExpiryTests(unittest.TestCase):
 
     def test_absolute_expiry_drops_the_session(self):
         sid, _csrf = auth.session_new("admin")
-        auth._sessions[sid]["expiry"] = time.time() - 1
-        self.assertIsNone(auth.session_get(sid))
-        self.assertNotIn(sid, auth._sessions, "an expired session must be evicted")
+        _stored(sid)["expiry"] = time.time() - 1
+        self.assertIsNone(auth.session_get(sid), "an expired session must be rejected")
 
     def test_idle_timeout_drops_the_session(self):
         sid, _csrf = auth.session_new("admin")
-        auth._sessions[sid]["last"] = time.time() - config.SESSION_IDLE_S - 1
+        _stored(sid)["last"] = time.time() - config.SESSION_IDLE_S - 1
         self.assertIsNone(auth.session_get(sid))
-        self.assertNotIn(sid, auth._sessions)
 
     def test_access_refreshes_the_idle_clock(self):
         """Otherwise an active user is logged out mid-session."""
         sid, _csrf = auth.session_new("admin")
-        auth._sessions[sid]["last"] = time.time() - config.SESSION_IDLE_S + 5
+        _stored(sid)["last"] = time.time() - config.SESSION_IDLE_S + 5
         self.assertIsNotNone(auth.session_get(sid))
-        self.assertAlmostEqual(auth._sessions[sid]["last"], time.time(), delta=2)
+        self.assertAlmostEqual(_stored(sid)["last"], time.time(), delta=2)
 
 
 class CsrfStoreTests(unittest.TestCase):

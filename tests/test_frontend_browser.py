@@ -33,6 +33,36 @@ try:
 except ImportError:  # pragma: no cover - exercised only without the dev deps
     sync_playwright = None
 
+
+def _driver_status() -> tuple[bool, str]:
+    """Whether playwright's own node driver can start, and why not if it can't.
+
+    Importing playwright proves nothing: it shells out to a node binary it
+    ships itself, and where that is missing it falls back to /usr/bin/node and
+    dies at launch. Guarding on the import alone made every test here raise
+    FileNotFoundError on machines without a system node instead of skipping.
+
+    compute_driver_executable is private and returned a bare string in older
+    releases, hence the isinstance check -- do not "simplify" it to one path.
+    The reason is returned so the skip message says `playwright install`
+    rather than something unactionable.
+    """
+    try:
+        from playwright._impl._driver import compute_driver_executable
+    except Exception as exc:  # noqa: BLE001 -- any import failure means unusable
+        return False, f"playwright not importable: {exc.__class__.__name__}"
+    try:
+        parts = compute_driver_executable()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"driver path unresolvable: {exc.__class__.__name__}"
+    for path in (parts if isinstance(parts, (list, tuple)) else [parts]):
+        if not os.path.exists(path):
+            return False, f"driver missing: {path} (try: playwright install)"
+    return True, "ok"
+
+
+DRIVER_OK, DRIVER_WHY = _driver_status()
+
 ROOT = Path(__file__).resolve().parents[1]
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
 BOOT_TIMEOUT_S = 30
@@ -127,6 +157,10 @@ class _BrowserFixture(unittest.TestCase):
         # By id: the theme toggle is also type=submit and comes first in the DOM.
         page.click("#submitBtn")
         page.wait_for_load_state("networkidle")
+        # networkidle resolves before the module renders the toolbar, and the
+        # login page has its own template -- a query here would silently run
+        # against the wrong document.
+        page.wait_for_selector("#settingsBtn", timeout=15_000)
 
     def _open_backends(self):
         self.page.click("#settingsBtn")
@@ -173,7 +207,7 @@ class _BrowserFixture(unittest.TestCase):
         self.fail("could not restore every model to offered")
 
 
-@unittest.skipIf(sync_playwright is None, "playwright not installed")
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class BackendsPanelBrowserTests(_BrowserFixture):
     """The Backends tab, exercised the way a person exercises it."""
@@ -271,7 +305,7 @@ class BackendsPanelBrowserTests(_BrowserFixture):
         self.assertTrue(self.page.query_selector(".models-refresh"))
 
 
-@unittest.skipIf(sync_playwright is None, "playwright not installed")
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorBrowserTests(_BrowserFixture):
     """The supervisor section, driven the way the user drives it.
@@ -354,8 +388,13 @@ class SupervisorBrowserTests(_BrowserFixture):
             "Which way do you want it?",
         )
 
-    def test_jumping_opens_the_conversation_and_clears_its_badge(self):
-        """The two things asked for: get me there, and stop telling me."""
+    def test_jumping_opens_the_conversation(self):
+        """Get me there in one tap.
+
+        The badge deliberately does NOT clear here: opening a conversation is
+        not answering its question, and a highlight that vanished on a glance
+        was the complaint that changed this rule.
+        """
         self._load()
         before = self._badge()
         row = next(
@@ -368,7 +407,10 @@ class SupervisorBrowserTests(_BrowserFixture):
         # The conversation name lives in the workspace strip, not the topbar.
         self.assertEqual(self.page.query_selector("#workspaceName").inner_text(), self.chat_title)
         self.assertIn("Which way do you want it?", self.page.query_selector("#messagesArea").inner_text())
-        self.assertEqual(self._badge(), before - 1)
+        self.assertEqual(
+            self._badge(), before,
+            "an unanswered question must survive being looked at",
+        )
         self.assertEqual(self.errors, [])
 
     def test_supervisor_rows_are_not_draggable(self):
@@ -377,6 +419,165 @@ class SupervisorBrowserTests(_BrowserFixture):
         self._load()
         for row in self._supervisor_rows():
             self.assertNotEqual(row.get_attribute("draggable"), "true")
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class DeviceAlertBrowserTests(_BrowserFixture):
+    """Alerting the device, which is the point of viewing this on a phone.
+
+    Three levels: the tab title (always), a system notification (permission),
+    and a vibration (Android). Only the title is testable without granting
+    permission, so this grants it and captures the Notification constructor.
+    """
+
+    DESKTOP = "#chatListDesktop"
+
+    def _seed(self, role="assistant", text="Which way do you want it?"):
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"al-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,created_at,"
+            "updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (chat_id, f"Alert {chat_id}", stamp, stamp),
+        )
+        con.execute(
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES (?,?,?,?)",
+            (chat_id, role, text, stamp),
+        )
+        con.commit()
+        con.close()
+        return chat_id
+
+    def test_tab_title_carries_the_count_without_any_permission(self):
+        """The one level that always works, on any device, with no prompt."""
+        self._seed()
+        self.page.reload(wait_until="networkidle")
+        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$")
+
+    def _answer(self, chat_id):
+        """Reply as the user, which is what actually retires a question."""
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES (?,?,?,?)",
+            (chat_id, "user", "the second one", stamp),
+        )
+        con.commit()
+        con.close()
+
+    def test_the_count_survives_merely_looking_at_it(self):
+        """Opening a conversation is not answering its question.
+
+        Clearing on read let an unanswered question be dismissed by glancing
+        at it, which is the opposite of what the badge is for.
+        """
+        chat_id = self._seed()
+        self.page.reload(wait_until="networkidle")
+        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        before = self.page.title()
+        self.assertRegex(before, r"^\(\d+\) WebConsole$")
+
+        row = next(
+            r for r in self.page.query_selector_all(f"{self.DESKTOP} .supervisor-item")
+            if chat_id[-8:] in r.query_selector(".chat-title").inner_text()
+            or "Alert" in r.query_selector(".chat-title").inner_text()
+        )
+        row.query_selector(".chat-open").click()
+        self.page.wait_for_timeout(3000)
+        self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$",
+                         "the badge cleared just from opening the conversation")
+
+    def test_the_count_clears_once_the_question_is_answered(self):
+        chat_id = self._seed()
+        self.page.reload(wait_until="networkidle")
+        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$")
+
+        before = int(self.page.title().split(")")[0].lstrip("("))
+        self._answer(chat_id)
+        # The class shares a database, so other tests' unanswered questions are
+        # legitimately still waiting: assert this one left, not that the queue
+        # emptied. Waits out a poll rather than assuming an instant refresh.
+        self.page.wait_for_function(
+            "(n) => { const m = /^\\((\\d+)\\)/.exec(document.title);"
+            "  return m ? Number(m[1]) < n : true; }",
+            arg=before, timeout=40_000,
+        )
+
+    def test_the_alert_toggle_is_offered(self):
+        self.assertFalse(self.page.query_selector("#alertToggle").is_hidden())
+
+    def test_a_notification_fires_for_a_new_waiting_agent(self):
+        """Granting permission and capturing the constructor, so this asserts a
+        notification was really raised rather than that the code looks right."""
+        self.browser.contexts[0].grant_permissions(["notifications"])
+        self.page.goto(f"{self.base}/", wait_until="networkidle")
+        # Record every Notification the page constructs.
+        self.page.evaluate("""() => {
+            window.__notes = [];
+            const Real = window.Notification;
+            window.Notification = function (title, opts) {
+                window.__notes.push({title, body: (opts || {}).body});
+            };
+            window.Notification.permission = 'granted';
+            window.Notification.requestPermission = () => Promise.resolve('granted');
+        }""")
+        self.page.evaluate("() => localStorage.setItem('wc_alerts', 'on')")
+        # The page must not be the focused thing, or alerting would be noise.
+        self.page.evaluate("() => Object.defineProperty(document, 'hasFocus', {value: () => false})")
+        self._seed()
+        # The supervisor polls every 15s and three browser suites contend for
+        # this machine, so allow several cycles rather than assuming the first
+        # one lands promptly.
+        self.page.wait_for_function(
+            "() => window.__notes && window.__notes.length > 0", timeout=90_000
+        )
+        notes = self.page.evaluate("() => window.__notes")
+        self.assertTrue(notes)
+        self.assertEqual(notes[0]["title"], "WebConsole")
+        self.assertIn("needs an answer", notes[0]["body"])
+
+    def test_no_notification_while_the_page_is_in_front_of_you(self):
+        """Being looked at already counts as being told."""
+        self.browser.contexts[0].grant_permissions(["notifications"])
+        self.page.goto(f"{self.base}/", wait_until="networkidle")
+        self.page.evaluate("""() => {
+            window.__notes = [];
+            window.Notification = function (t, o) { window.__notes.push({t, o}); };
+            window.Notification.permission = 'granted';
+        }""")
+        self.page.evaluate("() => localStorage.setItem('wc_alerts', 'on')")
+        self.page.evaluate("() => Object.defineProperty(document, 'hasFocus', {value: () => true})")
+        self._seed()
+        self.page.wait_for_timeout(20_000)
+        self.assertEqual(self.page.evaluate("() => window.__notes.length"), 0)
+
+    def test_routine_output_raises_no_alert_at_all(self):
+        """Pedro's rule: only when information is required or important."""
+        self.browser.contexts[0].grant_permissions(["notifications"])
+        self.page.goto(f"{self.base}/", wait_until="networkidle")
+        self.page.evaluate("""() => {
+            window.__notes = [];
+            window.Notification = function (t, o) { window.__notes.push({t, o}); };
+            window.Notification.permission = 'granted';
+        }""")
+        self.page.evaluate("() => localStorage.setItem('wc_alerts', 'on')")
+        self.page.evaluate("() => Object.defineProperty(document, 'hasFocus', {value: () => false})")
+        before = self.page.title()
+        self._seed(text="Done. Suite is green, ruff clean.")
+        self.page.wait_for_timeout(20_000)
+        self.assertEqual(self.page.evaluate("() => window.__notes.length"), 0)
+        # Routine output must not move the count either. Compared against the
+        # title we started with, since questions left unanswered by other tests
+        # in this class are legitimately still counted.
+        self.assertEqual(self.page.title(), before)
 
 
 if __name__ == "__main__":

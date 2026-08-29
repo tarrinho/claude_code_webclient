@@ -2483,6 +2483,31 @@ _REPORTS_A_BLOCKER: Final[tuple[str, ...]] = (
 )
 
 
+def _pending_question(turns: list[dict]) -> str | None:
+    """An AskUserQuestion still awaiting a reply, or None.
+
+    The CLI records the question and its outcome as separate blocks, matched by
+    id. A question with no matching answer is genuinely outstanding; once the
+    answer arrives the highlight has to go, which is the whole point of pairing
+    them rather than just spotting a question.
+    """
+    answered: set[str] = set()
+    for turn in turns:
+        for block in turn.get("blocks", []):
+            if block.get("kind") == "answer" and block.get("id"):
+                answered.add(block["id"])
+    for turn in reversed(turns):
+        for block in reversed(turn.get("blocks", [])):
+            if block.get("kind") != "question":
+                continue
+            if block.get("id") in answered:
+                # The newest question has been resolved, so nothing is pending.
+                return None
+            first = (block.get("questions") or [{}])[0]
+            return str(first.get("question") or "").strip() or "A question is waiting"
+    return None
+
+
 def _last_thing_said(turns: list[dict]) -> str:
     """The newest assistant text in *turns*, skipping tool calls.
 
@@ -2574,14 +2599,17 @@ async def handle_supervisor(request: Request):
         # actually answered, which for a conversation means the newest message
         # stops being the agent's. Opening it is not answering it -- clearing
         # on read let a question be dismissed by glancing at it.
+        mark = marks.get(("chat", chat["id"]), {})
+        stamp = last.get("created_at") or ""
         reason = _attention(last.get("preview") or "")
         if reason:
-            waiting.append({**entry, "status": "waiting", "reason": reason})
+            # Only an explicit dismissal silences an unanswered question.
+            if not (mark.get("dismissed_at") and stamp <= mark["dismissed_at"]):
+                waiting.append({**entry, "status": "waiting", "reason": reason})
             continue
         # Routine output is different: seeing it IS the whole point, so a read
         # mark retires it.
-        seen = marks.get(("chat", chat["id"]))
-        if seen and (last.get("created_at") or "") <= seen:
+        if mark.get("read_at") and stamp <= mark["read_at"]:
             continue
         updated.append({**entry, "status": "updated"})
 
@@ -2604,7 +2632,8 @@ async def handle_supervisor(request: Request):
         file_touched = datetime.datetime.fromtimestamp(
             meta.get("updated_at") or 0, datetime.UTC
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        seen = marks.get(("session", session_id))
+        mark = marks.get(("session", session_id), {})
+        seen = mark.get("read_at", "")
         status = (cli.get("status") or "").strip().lower()
         # A busy agent needs no transcript read at all, which is what keeps
         # this cheap enough to poll: it is the common case.
@@ -2639,13 +2668,20 @@ async def handle_supervisor(request: Request):
         # working again, which only happens once someone answers it. A read
         # mark deliberately does not retire this.
         if status:
-            said = _last_thing_said(turns)
+            spoke_at = cli.get("status_updated_at") or file_touched
+            dismissed = mark.get("dismissed_at") or ""
+            if dismissed and spoke_at <= dismissed:
+                continue
+            # A structured question outranks prose: it is an unambiguous ask,
+            # and its answer block is an unambiguous resolution.
+            pending = _pending_question(turns)
+            said = pending or _last_thing_said(turns)
             waiting.append({
                 **entry,
-                "since": cli.get("status_updated_at") or file_touched,
+                "since": spoke_at,
                 "preview": _one_line(said),
                 "status": "waiting",
-                "reason": _attention(said) or "idle",
+                "reason": "asks" if pending else (_attention(said) or "idle"),
             })
             continue
         last_turn = turns[-1]
@@ -2671,11 +2707,16 @@ async def handle_supervisor(request: Request):
             for b in last_turn.get("blocks", [])
             if b.get("kind") == "text"
         ).strip()
-        reason = _attention(text)
+        pending = _pending_question(turns)
+        if pending:
+            text = pending
+        reason = "asks" if pending else _attention(text)
         row = {**entry, "since": spoke_at, "preview": _one_line(text)}
         if reason:
             # Unanswered outranks read, same as for conversations.
-            waiting.append({**row, "status": "waiting", "reason": reason})
+            dismissed = mark.get("dismissed_at") or ""
+            if not (dismissed and spoke_at <= dismissed):
+                waiting.append({**row, "status": "waiting", "reason": reason})
         elif not (seen and spoke_at <= seen):
             updated.append({**row, "status": "updated"})
 
@@ -2700,6 +2741,18 @@ async def handle_supervisor_read(request: Request):
     """POST /api/supervisor/read -- mark an agent as seen, clearing its badge."""
     session = request.state.session
     data = await request.json()
+    if data.get("all"):
+        # Clear everything currently listed. Deliberate, so it silences
+        # unanswered questions too -- which opening one does not.
+        current = json.loads((await handle_supervisor(request)).body)
+        cleared = 0
+        for entry in [*current.get("waiting", []), *current.get("updated", [])]:
+            await db.read_mark_set(
+                session["user"], entry["kind"], entry["id"], dismiss=True
+            )
+            cleared += 1
+        _log.info("supervisor cleared by user=%s entries=%d", session["user"], cleared)
+        return JSONResponse({"ok": True, "cleared": cleared})
     kind = (data.get("kind") or "").strip()
     ref_id = (data.get("id") or "").strip()
     if kind not in ("chat", "session"):
@@ -2708,7 +2761,9 @@ async def handle_supervisor_read(request: Request):
     # hex and a dashed Claude session id, and nothing usable for traversal.
     if not ref_id or not _HEX_SESSION_ID_RE.match(ref_id):
         raise HTTPException(status_code=400, detail="Invalid id")
-    read_at = await db.read_mark_set(session["user"], kind, ref_id)
+    read_at = await db.read_mark_set(
+        session["user"], kind, ref_id, dismiss=bool(data.get("dismiss"))
+    )
     return JSONResponse({"ok": True, "read_at": read_at})
 
 

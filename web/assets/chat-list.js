@@ -90,6 +90,7 @@ export function createChatListController(dependencies) {
     onResumeCli,
     onRemoveCli,
     onReorder,
+    onClearSupervisor,
   } = dependencies;
 
   let query = '';
@@ -450,6 +451,16 @@ export function createChatListController(dependencies) {
       badge.title = `${waiting.length} agent${waiting.length === 1 ? '' : 's'} waiting for you`;
       heading.appendChild(badge);
     }
+    if (waiting.length || updated.length) {
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'chat-action supervisor-clear';
+      clear.dataset.action = 'clear-supervisor';
+      clear.textContent = '✕';
+      clear.title = 'Clear all alerts';
+      clear.setAttribute('aria-label', 'Clear all alerts');
+      heading.appendChild(clear);
+    }
     list.appendChild(heading);
 
     waiting.forEach(entry => {
@@ -610,6 +621,7 @@ export function createChatListController(dependencies) {
     const action = button.dataset.action;
     if (action === 'open') return onSelect(button.dataset.chatId);
     if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
+    if (action === 'clear-supervisor') return onClearSupervisor?.();
     if (action === 'jump-agent') {
       // A supervisor row is a pointer at something listed elsewhere: a web
       // chat opens, a terminal session resumes into one.

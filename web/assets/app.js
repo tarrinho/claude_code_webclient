@@ -30,6 +30,8 @@ let _modelsSource = null;
 // cleared to "" is recognised as a change and actually sent.
 let _loadedSettings = {};
 let _searchDebounce = null;
+let _usageData = null;          // last GET /api/usage payload
+let _usageFetchedFor = null;    // range the payload was fetched for
 let _skillsData = null;          // last successful /api/skills payload
 let _skillsFetchedFor = null;    // chat id the payload was fetched for
 let _skillFilter = '';
@@ -167,9 +169,9 @@ function _switchTab(tab) {
     t.setAttribute('aria-selected', String(active));
     t.tabIndex = active ? 0 : -1;
   });
-  const map = { machines: 'panelMachines', models: 'panelModels', skills: 'panelSkills', app: 'panelApp' };
+  const map = { machines: 'panelMachines', models: 'panelModels', usage: 'panelUsage', skills: 'panelSkills', app: 'panelApp' };
   const activeId = map[tab] || 'panelMachines';
-  ['panelMachines', 'panelModels', 'panelSkills', 'panelApp'].forEach(id => {
+  ['panelMachines', 'panelModels', 'panelUsage', 'panelSkills', 'panelApp'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -177,10 +179,162 @@ function _switchTab(tab) {
   // through their own form and Skills is read-only, so showing it there offered
   // a control that silently did nothing.
   const save = byId('settingsSave');
-  if (save) save.hidden = tab === 'machines' || tab === 'skills';
+  if (save) save.hidden = tab === 'machines' || tab === 'skills' || tab === 'usage';
   if (tab === 'machines') _renderMachineList();
   if (tab === 'models') loadModels();
+  // Always refetch: usage is checked right after running turns, so a cached
+  // payload from earlier in the session would show stale numbers.
+  if (tab === 'usage') loadUsage(true);
   if (tab === 'skills') loadSkills();
+}
+
+// ── Usage ─────────────────────────────────────────────────────────────────────────
+
+/** Compact a token count, keeping the exact value for the title attribute. */
+function _abbrev(n) {
+  const value = Number(n) || 0;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)} B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)} M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)} K`;
+  return String(value);
+}
+
+function _cell(text, className, title) {
+  const cell = document.createElement('span');
+  cell.className = className;
+  cell.textContent = text;
+  if (title) cell.title = title;
+  return cell;
+}
+
+function _renderUsage() {
+  const body = byId('usageBody');
+  if (!body || !_usageData) return;
+  const totals = _usageData.totals || [];
+  const recent = _usageData.recent || [];
+  const overall = _usageData.overall || {};
+
+  const count = byId('usageCount');
+  count.textContent = overall.requests
+    ? `${overall.requests} requests · ${_abbrev(overall.input_tokens)} in · ${_abbrev(overall.output_tokens)} out`
+    : 'No requests yet';
+
+  if (!totals.length) {
+    // An empty range is not the same as zero usage; say which it is.
+    const notice = document.createElement('div');
+    notice.className = 'skills-notice';
+    notice.textContent = _usageData.days
+      ? `No turns recorded in the last ${_usageData.days} days.`
+      : 'No turns recorded yet. Usage is collected from now on.';
+    body.replaceChildren(notice);
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+
+  const table = document.createElement('div');
+  table.className = 'usage-table';
+  const head = document.createElement('div');
+  head.className = 'usage-row usage-head';
+  head.append(
+    _cell('Model', 'usage-model'), _cell('Reqs', 'usage-num'),
+    _cell('Input', 'usage-num'), _cell('Output', 'usage-num'),
+    _cell('Cost', 'usage-num'),
+  );
+  table.appendChild(head);
+
+  totals.forEach(row => {
+    const line = document.createElement('div');
+    line.className = 'usage-row';
+    // The badge is a sibling of the ellipsised name, not a child: nested in the
+    // clipped element it disappeared for any model with a long id.
+    const name = document.createElement('span');
+    name.className = 'usage-model';
+    name.appendChild(_cell(row.model, 'usage-name', row.model));
+    if (row.errors) {
+      name.appendChild(_cell(`${row.errors} failed`, 'usage-errors'));
+    }
+    const cost = row.cost_usd === null || row.cost_usd === undefined
+      ? _cell('—', 'usage-num usage-muted',
+              row.cost_note || 'Not available for this backend.')
+      : _cell(`$${Number(row.cost_usd).toFixed(2)}`, 'usage-num');
+    line.append(
+      name,
+      _cell(String(row.requests), 'usage-num'),
+      _cell(_abbrev(row.input_tokens), 'usage-num', `${row.input_tokens} tokens`),
+      _cell(_abbrev(row.output_tokens), 'usage-num', `${row.output_tokens} tokens`),
+      cost,
+    );
+    table.appendChild(line);
+  });
+  frag.appendChild(table);
+
+  if (recent.length) {
+    const heading = document.createElement('div');
+    heading.className = 'chat-section-label';
+    heading.textContent = `Recent turns · ${recent.length}`;
+    frag.appendChild(heading);
+
+    const list = document.createElement('ul');
+    list.className = 'usage-recent';
+    recent.forEach(turn => {
+      const item = document.createElement('li');
+      item.className = turn.is_error ? 'usage-turn usage-turn-error' : 'usage-turn';
+      item.append(
+        _cell(formatTime(turn.created_at), 'usage-when',
+              formatAbsoluteTime(turn.created_at)),
+        _cell(turn.chat_title || 'deleted conversation', 'usage-chat',
+              turn.chat_title || 'The conversation has since been deleted.'),
+        _cell(turn.model, 'usage-turn-model', turn.model),
+        _cell(`${_abbrev(turn.input_tokens)} → ${_abbrev(turn.output_tokens)}`,
+              'usage-num', `${turn.input_tokens} in, ${turn.output_tokens} out`),
+      );
+      if (turn.is_error) item.appendChild(_cell('failed', 'usage-errors'));
+      list.appendChild(item);
+    });
+    frag.appendChild(list);
+  }
+
+  const foot = document.createElement('p');
+  foot.className = 'skills-session';
+  foot.textContent = _usageData.retention_days
+    ? `Kept for ${_usageData.retention_days} days.`
+    : 'Kept indefinitely.';
+  frag.appendChild(foot);
+
+  body.replaceChildren(frag);
+}
+
+async function loadUsage(force = false) {
+  const body = byId('usageBody');
+  if (!body) return;
+  const range = byId('usageRange')?.value || '30';
+  if (!force && _usageData && _usageFetchedFor === range) {
+    _renderUsage();
+    return;
+  }
+  const rows = Array.from({length: 4}, () => {
+    const row = document.createElement('div');
+    row.className = 'skill-skeleton';
+    return row;
+  });
+  body.replaceChildren(...rows);
+  byId('usageCount').textContent = 'Loading…';
+  try {
+    const resp = await apiFetch(`/api/usage?days=${encodeURIComponent(range)}`);
+    if (!resp.ok) throw new Error('Could not load usage');
+    _usageData = await resp.json();
+    _usageFetchedFor = range;
+    _renderUsage();
+  } catch (error) {
+    _usageData = null;
+    _usageFetchedFor = null;
+    byId('usageCount').textContent = '';
+    const notice = document.createElement('div');
+    notice.className = 'skills-notice';
+    notice.textContent = error.message;
+    body.replaceChildren(notice);
+  }
 }
 
 // Report the outcome of an action inside whichever surface the user is looking
@@ -1187,6 +1341,7 @@ document.addEventListener('DOMContentLoaded', () => {
       settingsTabs[next].focus();
     });
   });
+  byId('usageRange')?.addEventListener('change', () => loadUsage());
   byId('skillSearch')?.addEventListener('input', event => {
     _skillFilter = event.target.value;
     clearTimeout(_skillDebounce);

@@ -173,7 +173,7 @@ async def _ensure_chat_columns() -> None:
     try:
         ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
         ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
-    except Exception:
+    except Exception:  # noqa: BLE001 -- PRAGMA can fail on new tables
         ma_columns = set()
     if "owner_id" not in ma_columns:
         await db_conn.execute(
@@ -424,7 +424,7 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
             (query,),
         )
         match_ids = [row["rowid"] for row in await cur.fetchall()]
-    except Exception:
+    except Exception:  # noqa: BLE001 -- FTS5 may not exist on fresh DBs
         match_ids = []
 
     if not match_ids:
@@ -517,13 +517,13 @@ def _fts_index_ids_sync(msg_ids: Sequence[int | None]) -> None:
                     (msg_id, text),
                 )
         sync.commit()
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
         pass
     finally:
         if sync is not None:
             try:
                 sync.close()
-            except Exception:
+            except Exception:  # noqa: BLE001,S110
                 pass
 
 
@@ -546,13 +546,13 @@ def _fts_forget_ids_sync(msg_ids: Sequence[int | None]) -> None:
             ids,
         )
         sync.commit()
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
         pass
     finally:
         if sync is not None:
             try:
                 sync.close()
-            except Exception:
+            except Exception:  # noqa: BLE001,S110
                 pass
 
 
@@ -593,13 +593,13 @@ def _refresh_fts_sync(chat_id: str | None = None) -> None:
                     (msg_id, text),
                 )
         sync.commit()
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
         pass
     finally:
         if sync is not None:
             try:
                 sync.close()
-            except Exception:
+            except Exception:  # noqa: BLE001,S110
                 pass
 
 
@@ -1006,7 +1006,7 @@ async def usage_record(
         )
         await db_conn.commit()
         return cur.lastrowid
-    except Exception:
+    except Exception:  # noqa: BLE001 -- never fail a turn that already succeeded
         return None
 
 
@@ -1063,7 +1063,9 @@ async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
         "u.output_tokens, u.cost_usd, u.duration_ms, u.is_error, c.title AS chat_title "
         "FROM usage_events u LEFT JOIN chats c ON c.id = u.chat_id "
         "WHERE u.owner_id = ? ORDER BY u.id DESC LIMIT ?",
-        (owner_id, max(1, min(int(limit or 50), 500))),
+        # `limit or 50` would read 0 as "use the default", disagreeing with the
+        # API layer which clamps 0 to 1. Only None means "unspecified".
+        (owner_id, max(1, min(50 if limit is None else int(limit), 500))),
     )
     return [dict(row) for row in await cur.fetchall()]
 
@@ -1078,7 +1080,7 @@ async def usage_prune(days: int) -> int:
         )
         await db_conn.commit()
         return cur.rowcount or 0
-    except Exception:
+    except Exception:  # noqa: BLE001 -- pruning must never block startup
         return 0
 
 
@@ -1190,7 +1192,7 @@ async def db_restore(data: bytes) -> bool:
 
     try:
         decompressed = _gzip.decompress(data)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- silently reject bad input
         return False
 
     # Reject anything that is not a SQLite database outright.
@@ -1220,12 +1222,12 @@ async def db_restore(data: bytes) -> bool:
 
         await _reopen()
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 -- recover best-effort on failure
         tmp_path.unlink(missing_ok=True)
         # Leaving db_conn as None would 500 every later request until restart.
         try:
             await _reopen()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- final fallback, DB may be unusable
             global db_conn
             db_conn = None
         return False

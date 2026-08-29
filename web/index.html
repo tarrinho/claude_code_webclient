@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.5.1</span>
+    <span class="ver" id="ver">0.6.0</span>
     <button class="btn-icon" id="editChatBtn" aria-label="Edit conversation" title="Edit conversation" hidden>✎</button>
     <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
@@ -73,6 +73,7 @@
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
       <button class="settings-tab active" id="tabMachines" role="tab" tabindex="0" aria-selected="true" data-tab="machines" aria-controls="panelMachines">Machines</button>
       <button class="settings-tab" id="tabModels" role="tab" tabindex="-1" aria-selected="false" data-tab="models" aria-controls="panelModels">Models</button>
+      <button class="settings-tab" id="tabUsage" role="tab" tabindex="-1" aria-selected="false" data-tab="usage" aria-controls="panelUsage">Usage</button>
       <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
     </div>
@@ -128,6 +129,20 @@
           <label for="fallbackModel">Fallback model</label>
           <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-5">
         </div>
+      </div>
+      <!-- Usage tab -->
+      <div class="settings-panel" id="panelUsage" role="tabpanel" aria-labelledby="tabUsage" tabindex="0" hidden>
+        <p>Requests and tokens per model, from what Claude Code reports at the end of each turn.</p>
+        <div class="skills-toolbar usage-toolbar">
+          <label for="usageRange" hidden>Time range</label>
+          <select id="usageRange" aria-label="Time range">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+          <span class="skills-count" id="usageCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="usage-body" id="usageBody"></div>
       </div>
       <!-- Skills tab -->
       <div class="settings-panel" id="panelSkills" role="tabpanel" aria-labelledby="tabSkills" tabindex="0" hidden>

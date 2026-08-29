@@ -2444,6 +2444,25 @@ async def handle_transcripts_list(request: Request):
     return JSONResponse({"transcripts": await transcripts.list_recent(limit)})
 
 
+async def handle_agent_traffic(request: Request):
+    """GET /api/agent-traffic -- messages exchanged between concurrent sessions.
+
+    Read out of the transcripts, not off the sockets the sessions actually talk
+    over: a log rather than an interception layer, and it needs no knowledge of
+    that private protocol.
+    """
+    try:
+        limit = int(request.query_params.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        scan = int(request.query_params.get("files", 12))
+    except (TypeError, ValueError):
+        scan = 12
+    messages = await transcripts.agent_traffic(limit=limit, scan_files=scan)
+    return JSONResponse({"messages": messages, "count": len(messages)})
+
+
 async def handle_transcript_get(request: Request, session_id: str):
     """GET /api/transcripts/{id} -- one conversation's history.
 
@@ -2519,6 +2538,11 @@ async def handle_transcript_stream(request: Request, session_id: str):
 @app.get("/api/transcripts")
 async def _api_transcripts_list(request: Request):
     return await handle_transcripts_list(request)
+
+
+@app.get("/api/agent-traffic")
+async def _api_agent_traffic(request: Request):
+    return await handle_agent_traffic(request)
 
 
 @app.get("/api/transcripts/{session_id}")

@@ -196,6 +196,27 @@ button{touch-action:manipulation}
 .setting-hint{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-top:3px;display:block}
 .settings-footer{border-top:1px solid var(--line);padding-top:12px;margin-top:16px}
 
+/* Usage panel */
+.usage-toolbar select{flex:1;min-width:0;max-width:200px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--input-bg);color:var(--fg);font-size:12px}
+.usage-body{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+/* minmax(0,1fr) throughout: a long model id must ellipsise, not widen the dialog. */
+.usage-table{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;min-width:0}
+.usage-row{display:grid;grid-template-columns:minmax(0,1fr) 3.5rem 4.5rem 4.5rem 4rem;gap:6px;align-items:baseline;padding:6px 8px;border-radius:6px;min-width:0}
+.usage-row:not(.usage-head):nth-child(even){background:var(--input-bg)}
+.usage-head{border-bottom:1px solid var(--line);color:var(--muted);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase}
+.usage-model{display:flex;align-items:baseline;gap:6px;min-width:0}
+.usage-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
+.usage-num{text-align:right;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap}
+.usage-muted{color:var(--muted)}
+.usage-errors{flex:none;display:inline-block;white-space:nowrap;font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;text-transform:uppercase;color:var(--bad);background:rgba(248,81,73,.12);padding:1px 5px;border-radius:8px;vertical-align:middle}
+.usage-recent{list-style:none;display:grid;grid-template-columns:minmax(0,1fr);gap:2px;min-width:0}
+.usage-turn{display:grid;grid-template-columns:4.5rem minmax(0,1fr) minmax(0,1fr) 6.5rem auto;gap:8px;align-items:baseline;padding:5px 8px;border-radius:6px;min-width:0;font-size:11.5px}
+.usage-turn:nth-child(even){background:var(--input-bg)}
+.usage-turn-error{border-left:2px solid var(--bad)}
+.usage-when{color:var(--muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap}
+.usage-chat,.usage-turn-model{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage-turn-model{color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
+
 /* Skills panel */
 /* Sticky so the filter stays reachable while scrolling a long list. */
 .skills-toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:2px 0 8px;background:var(--panel)}
@@ -233,4 +254,5 @@ button{touch-action:manipulation}
 @media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
 /* Reclaim chrome on small screens so the scrolling panel gets usable height. */
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
+@media(max-width:480px){.usage-row{grid-template-columns:minmax(0,1fr) 2.6rem 3.6rem 3.6rem}.usage-row>:nth-child(5){display:none}.usage-turn{grid-template-columns:minmax(0,1fr) 5.5rem auto}.usage-turn>.usage-when,.usage-turn>.usage-turn-model{display:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}

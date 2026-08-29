@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,7 +40,6 @@ import auth
 import config
 import db
 import runner
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -464,11 +462,13 @@ class MachineTestTests(unittest.IsolatedAsyncioTestCase):
             return (AsyncMock(), mock_writer)
         async def _fake_wait_for(fut, timeout=None):
             return await fut
-        with patch("app._resolve_host", return_value="8.8.8.8"):
-            with patch("asyncio.open_connection", _fake_connect):
-                with patch("asyncio.wait_for", _fake_wait_for):
-                    resp = await app.handle_machine_test(req, mid)
-                    self.assertEqual(resp.media_type, "application/json")
+        with (
+            patch("app._resolve_host", return_value="8.8.8.8"),
+            patch("asyncio.open_connection", _fake_connect),
+            patch("asyncio.wait_for", _fake_wait_for),
+        ):
+            resp = await app.handle_machine_test(req, mid)
+            self.assertEqual(resp.media_type, "application/json")
 
 
 class MachineActivateTests(unittest.IsolatedAsyncioTestCase):
@@ -801,27 +801,30 @@ class SkillsGetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(data["skills"], list)
 
     async def test_skill_entries_have_required_fields(self):
-        skills_dir = Path.home() / ".claude" / "skills"
-        fake_skill = skills_dir / "test-qacoverage-skill"
-        fake_skill.mkdir(parents=True, exist_ok=True)
-        try:
+        # Uses a temporary root rather than the developer's real
+        # ~/.claude/skills, and asserts unconditionally -- the assertions used
+        # to sit behind `if name in names`, so they were skipped entirely
+        # whenever discovery failed, which is the case worth catching.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skills"
+            fake_skill = root / "test-qacoverage-skill"
+            fake_skill.mkdir(parents=True)
             (fake_skill / "SKILL.md").write_text(
-                "# Test Skill\n\ndescription: A QA test skill\n",
+                "---\nname: test-qacoverage-skill\n"
+                "description: A QA test skill\n---\n",
                 encoding="utf-8",
             )
-            resp = await app.handle_skills_get(self._req())
+            with patch.object(app, "_USER_SKILLS_ROOT", root):
+                resp = await app.handle_skills_get(self._req())
             data = json.loads(resp.body)
             names = [s["name"] for s in data["skills"]]
-            if "test-qacoverage-skill" in names:
-                skill = [s for s in data["skills"] if s["name"] == "test-qacoverage-skill"][0]
-                self.assertIn("description", skill)
-                self.assertIn("installed", skill)
-                self.assertIn("active", skill)
-        finally:
-            try:
-                shutil.rmtree(fake_skill)
-            except OSError:
-                pass
+            self.assertIn("test-qacoverage-skill", names)
+            skill = next(
+                s for s in data["skills"] if s["name"] == "test-qacoverage-skill"
+            )
+            self.assertIn("description", skill)
+            self.assertIn("installed", skill)
+            self.assertIn("active", skill)
 
 
 # ── Cross-Feature: fork → search ──────────────────────────────────────────

@@ -688,6 +688,7 @@ class APIChatListTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_returns_chats_key(self):
         await db.chat_create("api-1", "API List", None, f"{self.tmpdir.name}/api-1", "admin")
         from fastapi.testclient import TestClient
+
         from app import app as web_app  # type: ignore
         client = TestClient(web_app, raise_server_exceptions=False)
         resp = client.post("/login", json={"username": "admin", "password": "admin"})
@@ -703,6 +704,7 @@ class APIChatListTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_empty(self):
         from fastapi.testclient import TestClient
+
         from app import app as web_app  # type: ignore
         client = TestClient(web_app, raise_server_exceptions=False)
         response = client.get("/api/chats")

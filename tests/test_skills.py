@@ -7,7 +7,11 @@ installed_plugins.json, namespaced plugin names, and the response grouping.
 All discovery roots are patched to temporary directories, so no test reads or
 writes the real ~/.claude tree.
 """
+import asyncio
+import gzip
 import json
+import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +20,9 @@ from unittest.mock import AsyncMock, patch
 
 import app
 import auth
+import claude_proxy
 import config
+import db
 import runner
 
 
@@ -450,3 +456,173 @@ class CsrfBindingTests(unittest.TestCase):
     def test_legacy_call_without_sid_still_works(self):
         self.assertTrue(auth._csrf_valid(self.csrf_a, self.csrf_a))
         self.assertFalse(auth._csrf_valid("bogus-token", "bogus-token"))
+
+
+# ── db_restore validation ─────────────────────────────────────────────────────
+
+
+class DbRestoreTests(unittest.IsolatedAsyncioTestCase):
+    """db_restore must reject anything that is not a sound backup of this app."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patches = [
+            patch.object(config, "DB_PATH", f"{self.tmp.name}/webconsole.db"),
+            patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/projects"),
+        ]
+        for p in self.patches:
+            p.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    async def _good_backup(self) -> bytes:
+        await db.chat_create("keep-me", "Keep", None, f"{self.tmp.name}/p", "admin")
+        return await db.db_backup()
+
+    async def test_rejects_non_gzip(self):
+        self.assertFalse(await db.db_restore(b"not gzip at all"))
+        self.assertIsNotNone(db.db_conn)
+
+    async def test_rejects_gzip_that_is_not_sqlite(self):
+        blob = gzip.compress(b"just some text, definitely not a database")
+        self.assertFalse(await db.db_restore(blob))
+        # The live database must survive a rejected upload.
+        self.assertIsNotNone(db.db_conn)
+        self.assertIsNotNone(await db.chat_list("admin"))
+
+    async def test_rejects_sqlite_without_our_schema(self):
+        other = Path(self.tmp.name) / "other.db"
+        conn = sqlite3.connect(str(other))
+        conn.execute("CREATE TABLE unrelated (x INTEGER)")
+        conn.commit()
+        conn.close()
+        blob = gzip.compress(other.read_bytes())
+        self.assertFalse(await db.db_restore(blob))
+        self.assertIsNotNone(db.db_conn)
+
+    async def test_rejects_corrupt_sqlite(self):
+        # Correct magic, garbage payload -- integrity_check must catch it.
+        blob = gzip.compress(db._SQLITE_MAGIC + b"\x00" * 4096)
+        self.assertFalse(await db.db_restore(blob))
+        self.assertIsNotNone(db.db_conn)
+
+    async def test_accepts_a_real_backup_and_reopens(self):
+        blob = await self._good_backup()
+        self.assertTrue(await db.db_restore(blob))
+        self.assertIsNotNone(db.db_conn)
+        chats = await db.chat_list("admin")
+        self.assertIn("keep-me", [c["id"] for c in chats])
+
+    async def test_restore_clears_stale_wal_sidecars(self):
+        blob = await self._good_backup()
+        stale = Path(f"{self.tmp.name}/webconsole.db-wal")
+        stale.write_bytes(b"stale wal content")
+        self.assertTrue(await db.db_restore(blob))
+        self.assertFalse(
+            stale.exists() and stale.read_bytes() == b"stale wal content",
+            "the previous database's WAL must not survive the swap",
+        )
+
+    async def test_restore_applies_migrations(self):
+        # A backup missing a newer column must come back usable, because the
+        # reconnect runs init() rather than a bare connect.
+        blob = await self._good_backup()
+        self.assertTrue(await db.db_restore(blob))
+        cur = await db.db_conn.execute("PRAGMA table_info(chats)")
+        columns = {row["name"] for row in await cur.fetchall()}
+        self.assertIn("ai_machine_id", columns)
+        self.assertIn("pinned_at", columns)
+
+    async def test_database_still_usable_after_failed_restore(self):
+        self.assertFalse(await db.db_restore(gzip.compress(b"garbage")))
+        await db.chat_create("after", "After", None, f"{self.tmp.name}/p", "admin")
+        chats = await db.chat_list("admin")
+        self.assertIn("after", [c["id"] for c in chats])
+
+
+# ── Proxy hardening (#6, #7) ──────────────────────────────────────────────────
+
+
+class ProxySafeCwdTests(unittest.TestCase):
+    """_safe_cwd confines a client-supplied work_dir to the allowed root."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "projects"
+        (self.root / "chat-a").mkdir(parents=True)
+        self.outside = Path(self.tmp.name) / "elsewhere"
+        self.outside.mkdir()
+        self.fallback = Path(self.tmp.name) / "fallback"
+        self.fallback.mkdir()
+        self.env = patch.dict(
+            os.environ,
+            {
+                "WC_PROXY_ALLOWED_ROOT": str(self.root),
+                "WC_PROXY_FALLBACK_DIR": str(self.fallback),
+            },
+        )
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_none_stays_none(self):
+        self.assertIsNone(claude_proxy._safe_cwd(None))
+        self.assertIsNone(claude_proxy._safe_cwd(""))
+
+    def test_dir_inside_root_is_kept(self):
+        target = str(self.root / "chat-a")
+        self.assertEqual(claude_proxy._safe_cwd(target), target)
+
+    def test_root_itself_is_allowed(self):
+        self.assertEqual(claude_proxy._safe_cwd(str(self.root)), str(self.root))
+
+    def test_dir_outside_root_falls_back(self):
+        self.assertEqual(
+            claude_proxy._safe_cwd(str(self.outside)), str(self.fallback)
+        )
+
+    def test_absolute_system_dir_falls_back(self):
+        self.assertEqual(claude_proxy._safe_cwd("/etc"), str(self.fallback))
+
+    def test_missing_dir_falls_back(self):
+        self.assertEqual(
+            claude_proxy._safe_cwd(str(self.root / "nope")), str(self.fallback)
+        )
+
+    def test_traversal_out_of_root_falls_back(self):
+        sneaky = str(self.root / "chat-a" / ".." / ".." / "elsewhere")
+        self.assertEqual(claude_proxy._safe_cwd(sneaky), str(self.fallback))
+
+    def test_without_a_configured_root_existing_dir_is_kept(self):
+        # Preserves prior behaviour when neither root variable is set.
+        with patch.dict(os.environ, {"WC_PROXY_ALLOWED_ROOT": "", "WC_PROJECTS_ROOT": ""}):
+            self.assertEqual(
+                claude_proxy._safe_cwd(str(self.outside)), str(self.outside)
+            )
+
+
+class ProxyLimitTests(unittest.TestCase):
+    """Stream and concurrency limits are set to sane values."""
+
+    def test_stream_limit_exceeds_asyncio_default(self):
+        # The asyncio default is 64 KiB, which large stream-json frames exceed.
+        self.assertGreater(claude_proxy._STREAM_LIMIT, 64 * 1024)
+
+    def test_concurrency_is_at_least_one(self):
+        self.assertGreaterEqual(claude_proxy._MAX_CONCURRENT, 1)
+
+    def test_slots_semaphore_is_lazy_and_cached(self):
+        async def _check():
+            claude_proxy._slots = None
+            first = claude_proxy._get_slots()
+            self.assertIs(claude_proxy._get_slots(), first)
+            self.assertEqual(first._value, claude_proxy._MAX_CONCURRENT)
+        asyncio.run(_check())
+        claude_proxy._slots = None

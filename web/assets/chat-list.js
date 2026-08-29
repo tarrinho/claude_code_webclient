@@ -89,6 +89,7 @@ export function createChatListController(dependencies) {
     onAction,
     onResumeCli,
     onRemoveCli,
+    onReorder,
   } = dependencies;
 
   let query = '';
@@ -102,6 +103,31 @@ export function createChatListController(dependencies) {
   let openTrigger = null;
   let activeTurnId = null;
   let historyEntries = [];
+  let dragging = null;
+
+  // Persist the order of one section. Sends the whole section rather than a
+  // single moved id: the server writes it as one transaction, so a drop cannot
+  // half-apply and leave an order the user never chose.
+  function commitOrder(container) {
+    if (!onReorder) return;
+    const ids = [...container.querySelectorAll('.chat-item[data-chat-id]')]
+      .map(node => node.dataset.chatId);
+    if (ids.length) onReorder(ids);
+  }
+
+  // Move a conversation one slot within its section. Drag is unusable on a
+  // phone, and this console is used from one.
+  function nudge(chatId, delta) {
+    const row = document.querySelector(`.chat-item[data-chat-id="${CSS.escape(chatId)}"]`);
+    if (!row || !row.parentElement) return;
+    const siblings = [...row.parentElement.querySelectorAll('.chat-item[data-chat-id]')];
+    const index = siblings.indexOf(row);
+    const next = index + delta;
+    if (index < 0 || next < 0 || next >= siblings.length) return;
+    if (delta < 0) row.parentElement.insertBefore(row, siblings[next]);
+    else row.parentElement.insertBefore(siblings[next], row);
+    commitOrder(row.parentElement);
+  }
 
   function closeMenus(restoreFocus = false) {
     for (const menu of document.querySelectorAll('.chat-menu.open')) {
@@ -208,6 +234,23 @@ export function createChatListController(dependencies) {
 
       const actions = document.createElement('div');
       actions.className = 'chat-actions';
+
+      // Favouriting is one click on the row. It was previously the first item
+      // in the ⋯ menu, which made the most-used action the hardest to reach.
+      const favourite = document.createElement('button');
+      favourite.type = 'button';
+      favourite.className = 'chat-action chat-favourite';
+      favourite.dataset.action = 'pin';
+      favourite.dataset.chatId = chat.id;
+      favourite.textContent = chat.pinned ? '★' : '☆';
+      favourite.title = chat.pinned ? 'Remove from favourites' : 'Add to favourites';
+      favourite.setAttribute('aria-pressed', String(Boolean(chat.pinned)));
+      favourite.setAttribute(
+        'aria-label',
+        `${chat.pinned ? 'Remove' : 'Add'} ${chat.title} ${chat.pinned ? 'from' : 'to'} favourites`);
+      if (chat.pinned) favourite.classList.add('on');
+      actions.appendChild(favourite);
+
       const trigger = document.createElement('button');
       trigger.type = 'button';
       trigger.className = 'chat-action';
@@ -226,7 +269,10 @@ export function createChatListController(dependencies) {
       separator.className = 'chat-menu-sep';
       separator.setAttribute('role', 'separator');
       menu.append(
-        makeButton(chat.pinned ? 'Unpin' : 'Pin', 'pin', chat.id, chat.title),
+        // Favouriting moved to a star on the row itself; keeping it here too
+        // would be two controls doing one job, which is how this menu grew.
+        makeButton('Move up', 'move-up', chat.id, chat.title),
+        makeButton('Move down', 'move-down', chat.id, chat.title),
         makeButton('Rename', 'rename', chat.id, chat.title),
         makeButton('Fork', 'fork', chat.id, chat.title),
         makeButton('Export', 'export', chat.id, chat.title),
@@ -243,6 +289,29 @@ export function createChatListController(dependencies) {
         makeButton('Delete', 'delete', chat.id, chat.title, 'danger'),
       );
       actions.append(trigger, menu);
+      // Dragging reorders within this section only, so moving a favourite
+      // cannot silently reshuffle the rest of the list.
+      item.draggable = true;
+      item.addEventListener('dragstart', event => {
+        dragging = item;
+        item.classList.add('dragging');
+        event.dataTransfer.effectAllowed = 'move';
+        // Firefox needs data set or the drag never starts.
+        event.dataTransfer.setData('text/plain', chat.id);
+      });
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        dragging = null;
+        commitOrder(target);
+      });
+      item.addEventListener('dragover', event => {
+        if (!dragging || dragging === item || dragging.parentElement !== target) return;
+        event.preventDefault();
+        const box = item.getBoundingClientRect();
+        const below = event.clientY > box.top + box.height / 2;
+        target.insertBefore(dragging, below ? item.nextSibling : item);
+      });
+
       item.append(open, actions);
       target.appendChild(item);
     });
@@ -365,7 +434,7 @@ export function createChatListController(dependencies) {
 
     lists.forEach(list => {
       list.replaceChildren();
-      renderSection(list, 'Pinned', groups.pinned, currentId);
+      renderSection(list, 'Favourites', groups.pinned, currentId);
       renderSection(list, 'Recent', groups.recent, currentId);
       renderSection(list, 'Archived', groups.archived, currentId, true);
       if (extraHits.length) renderSearchResults(list, extraHits, currentId);
@@ -465,6 +534,10 @@ export function createChatListController(dependencies) {
       return;
     }
     closeMenus();
+    if (action === 'move-up' || action === 'move-down') {
+      nudge(button.dataset.chatId, action === 'move-up' ? -1 : 1);
+      return;
+    }
     onAction(action, button.dataset.chatId);
   }
 

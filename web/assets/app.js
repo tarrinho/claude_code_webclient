@@ -1044,13 +1044,77 @@ function updateCurrentUi(chat) {
   byId('workspacePath').textContent = chat.work_dir;
   byId('workspacePath').title = chat.work_dir;
   byId('editChatBtn').hidden = false;
+  // Only a chat linked to a CLI session has a transcript to refresh from.
+  byId('syncBtn').hidden = !chat.session_id;
   byId('composerArea').style.display = 'block';
   storageSet('wc_last_chat', chat.id);
   listController.render(state.chats, chat.id);
   updateModelDisplay(chat.model);
-  const picker = byId('conversationModel');
-  if (picker) picker.value = '';
-  populateModelPicker();
+  populateBackendPicker(chat);
+  ensurePinnedModels(chat);
+  // The pickers show this conversation's own routing, not a blank slate: both
+  // are persisted per conversation, so two chats can sit on different backends.
+  populateModelPicker(chat);
+}
+
+function _machineLabel(machine) {
+  const kind = {
+    'anthropic': 'Anthropic API',
+    'anthropic-compatible': 'Anthropic-compatible',
+    'proxy': 'Claude Code proxy',
+  }[machine.backend_kind] || machine.backend_kind || '';
+  // Don't repeat yourself: a machine literally named "Anthropic API" would
+  // otherwise render as "Anthropic API · Anthropic API".
+  return kind && kind !== machine.name ? `${machine.name} · ${kind}` : machine.name;
+}
+
+/** Fill the backend picker with the owner's machines, selecting this chat's. */
+function populateBackendPicker(chat) {
+  const picker = byId('conversationBackend');
+  if (!picker) return;
+  const active = _machines.find(m => m.active);
+  const follow = document.createElement('option');
+  follow.value = '';
+  // Naming the machine makes "Follow active" concrete rather than mysterious.
+  follow.textContent = active ? `Follow active · ${active.name}` : 'Follow active';
+  const options = [follow];
+  _machines.forEach(machine => {
+    const option = document.createElement('option');
+    option.value = machine.id;
+    option.textContent = _machineLabel(machine);
+    options.push(option);
+  });
+  picker.replaceChildren(...options);
+  // A pin to a machine that no longer exists falls back to following, which is
+  // what the server does too.
+  const pinned = chat?.ai_machine_id || '';
+  picker.value = _machines.some(m => m.id === pinned) ? pinned : '';
+}
+
+async function setConversationRouting(fields, describe) {
+  const chat = state.currentChat;
+  if (!chat) return;
+  try {
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(fields),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not update this conversation');
+    }
+    Object.assign(chat, fields);
+    const stored = findChat(chat.id);
+    if (stored) Object.assign(stored, fields);
+    showToast(describe);
+  } catch (error) {
+    showToast(error.message, 'error');
+    // Put the control back to the stored value rather than leaving it showing
+    // a change that did not happen.
+    populateBackendPicker(chat);
+    populateModelPicker(chat);
+  }
 }
 
 async function selectChat(id) {
@@ -1062,14 +1126,75 @@ async function selectChat(id) {
   } catch (error) {
     showToast(error.message, 'error');
   }
+  startTranscriptSync();
+}
+
+// ── Live transcript sync ────────────────────────────────────────────────────────────
+
+// A chat linked to a CLI session keeps moving in the terminal after it is
+// opened here. Polling the sync endpoint keeps the two views level; the server
+// reads from a stored byte offset, so a poll on a 20 MB transcript costs
+// nothing once it has caught up.
+const SYNC_INTERVAL_MS = 5000;
+// Mirrors ACTIVE_STATES in conversation.js, which is module-private. Kept here
+// rather than exported so the sync does not reach into the renderer's internals.
+const SYNC_BUSY_STATES = new Set(['connecting', 'thinking', 'retrying', 'responding']);
+let _syncTimer = null;
+let _syncing = false;
+
+function stopTranscriptSync() {
+  if (_syncTimer) {
+    clearInterval(_syncTimer);
+    _syncTimer = null;
+  }
+}
+
+function startTranscriptSync() {
+  stopTranscriptSync();
+  // Only linked chats have a transcript to follow; polling anything else would
+  // be a request every five seconds that can never return a message.
+  if (!state.currentChat?.session_id) return;
+  _syncTimer = setInterval(() => { syncTranscript(); }, SYNC_INTERVAL_MS);
+}
+
+async function syncTranscript({announce = false} = {}) {
+  const chatId = state.currentChat?.id;
+  if (!chatId || !state.currentChat?.session_id) {
+    if (announce) showToast('This conversation is not linked to a CLI session');
+    return 0;
+  }
+  // A slow poll must not stack on the next tick, and must never fire while a
+  // turn is streaming -- the reply would be replaced mid-render.
+  if (_syncing || SYNC_BUSY_STATES.has(state.streamState)) return 0;
+  _syncing = true;
+  try {
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(chatId)}/sync`, {method: 'POST'});
+    if (!response.ok) throw new Error('Could not refresh history');
+    const data = await response.json();
+    const count = (data.messages || []).length;
+    if (count) await conversationController.refreshCurrent();
+    if (announce) {
+      showToast(count ? `${count} new message${count === 1 ? '' : 's'}` : 'Already up to date');
+    }
+    return count;
+  } catch (error) {
+    if (announce) showToast(error.message, 'error');
+    return 0;
+  } finally {
+    _syncing = false;
+  }
 }
 
 function showWelcome() {
   conversationController?.persistDraft();
+  // No chat is open, so nothing to follow. Left running, the timer would poll
+  // a chat the user has already navigated away from.
+  stopTranscriptSync();
   state.currentChat = null;
   byId('topbarTitle').textContent = 'WebConsole';
   byId('workspaceStrip').style.display = 'none';
   byId('editChatBtn').hidden = true;
+  byId('syncBtn').hidden = true;
   byId('composerArea').style.display = 'none';
   const area = byId('messagesArea');
   area.replaceChildren();
@@ -1221,18 +1346,25 @@ async function loadSettings() {
   return {};
 }
 
-function populateModelPicker() {
+function populateModelPicker(chat = state.currentChat) {
   const picker = byId('conversationModel');
   if (!picker) return;
-  const current = picker.value;
+  // A conversation pinned to a backend must be offered THAT backend's models,
+  // not the active one's: offering the active machine's list would put ids in
+  // the picker the pinned backend has never served.
+  const pinnedId = chat?.ai_machine_id || '';
+  const pinnedEntry = pinnedId ? _modelsByMachine.get(pinnedId) : null;
+  const current = chat?.model || '';
   // Offer the configured default and fallback first, then whatever the active
   // machine actually serves. This used to read a hardcoded datalist out of the
   // DOM and, worse, every model id harvested from old transcripts -- so it
   // offered models the current backend has never served and the turn failed.
   // Only the models this backend is set to offer. An empty active list means
   // every served model is offered, so the feature stays opt-in.
-  const active = _modelsSource?.active || [];
-  const served = _servedModels
+  const source = pinnedEntry || _modelsSource;
+  const active = source?.active || [];
+  const catalogue = pinnedEntry ? (pinnedEntry.models || []) : _servedModels;
+  const served = catalogue
     .map(model => model.id)
     .filter(id => !active.length || active.includes(id));
   // The global default is only the fallback for when no backend is active.
@@ -1244,7 +1376,7 @@ function populateModelPicker() {
   // Keep whatever this chat already uses, so a model that was later
   // deactivated stays selectable rather than silently becoming Automatic --
   // hiding a model must never break a conversation already using it.
-  const chatModel = state.currentChat?.model;
+  const chatModel = chat?.model;
   const models = [...globals, ...served, chatModel, current];
 
   picker.replaceChildren();
@@ -1259,6 +1391,14 @@ function populateModelPicker() {
     picker.appendChild(option);
   });
   picker.value = current;
+}
+
+/** Load a pinned backend's model list on demand, then refresh the picker. */
+async function ensurePinnedModels(chat) {
+  const pinned = chat?.ai_machine_id;
+  if (!pinned || _modelsByMachine.has(pinned)) return;
+  await loadModelsFor(pinned);
+  if (state.currentChat?.id === chat.id) populateModelPicker(chat);
 }
 
 // Open the Backends tab: machines first so the cards exist, then the models
@@ -1468,14 +1608,43 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('sidebarOverlay').addEventListener('click', closeSidebar);
   byId('logoutBtn').addEventListener('click', logout);
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
+  byId('syncBtn').addEventListener('click', () => syncTranscript({announce: true}));
   byId('settingsBtn').addEventListener('click', openSettingsDialog);
   byId('settingsCancel').addEventListener('click', closeSettingsDialog);
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });
   byId('settingsSave').addEventListener('click', saveSettings);
   byId('conversationModel')?.addEventListener('change', event => {
-    const model = event.target.value;
-    if (model) showToast(`Next turn will use ${model}`);
+    const model = event.target.value || null;
+    setConversationRouting(
+      {model},
+      model ? `This conversation will use ${model}` : 'Model set to automatic',
+    );
+  });
+  byId('conversationBackend')?.addEventListener('change', async event => {
+    const machineId = event.target.value || null;
+    const machine = _machines.find(m => m.id === machineId);
+    await setConversationRouting(
+      {ai_machine_id: machineId},
+      machine
+        ? `This conversation will use ${machine.name}`
+        : 'This conversation follows the active backend',
+    );
+    // The new backend serves a different catalogue, so the model list has to
+    // follow. Clear a pinned model the new backend does not serve rather than
+    // sending it an id it will reject.
+    const chat = state.currentChat;
+    if (!chat) return;
+    await ensurePinnedModels(chat);
+    const entry = machineId ? _modelsByMachine.get(machineId) : _modelsSource;
+    const offered = (entry?.models || _servedModels).map(m => m.id);
+    if (chat.model && offered.length && !offered.includes(chat.model)) {
+      await setConversationRouting(
+        {model: null},
+        `${machine ? machine.name : 'This backend'} does not serve ${chat.model}; model set to automatic`,
+      );
+    }
+    populateModelPicker(chat);
   });
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
@@ -1518,6 +1687,19 @@ document.addEventListener('DOMContentLoaded', () => {
     onSelect: selectChat,
     onAction: handleChatAction,
     onResumeCli: resumeCliSession,
+    // One drag is one write: the server takes the whole ordered section and
+    // applies it in a transaction, so a drop cannot half-apply.
+    onReorder: async ids => {
+      try {
+        await apiFetch('/api/chats/order', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({order: ids}),
+        });
+      } catch {
+        showToast('Could not save the new order', 'error');
+      }
+    },
     onRemoveCli: removeCliSession,
   });
   listController.setOnMessageSearch(async (q) => {

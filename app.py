@@ -425,6 +425,9 @@ async def handle_chats_list(request: Request):
                     "pinned_at": c.get("pinned_at"),
                     "session_id": c.get("session_id"),
                     "model": c.get("model") or "",
+                    # The sidebar populates the workspace pickers before the
+                    # detail request lands, so the pin has to travel here too.
+                    "ai_machine_id": c.get("ai_machine_id"),
                 }
                 for c in chats
             ],
@@ -495,6 +498,10 @@ async def handle_chat_get(request: Request, chat_id: str):
                         "pinned",
                         "pinned_at",
                         "model",
+                        # The conversation's pinned backend. Without it the
+                        # workspace picker cannot show which backend this
+                        # conversation is on when it is reopened.
+                        "ai_machine_id",
                     )
                 },
                 "archived": bool(chat["archived"]),
@@ -513,11 +520,17 @@ async def handle_chat_get(request: Request, chat_id: str):
 
 
 async def handle_chat_patch(request: Request, chat_id: str):
-    """PATCH /api/chats/{id} -- rename, edit description, archive, pin."""
+    """PATCH /api/chats/{id} -- rename, describe, archive, pin, or route.
+
+    ``ai_machine_id`` pins the conversation to one backend and ``model`` pins
+    its model, so two conversations can run on different backends and models at
+    the same time. Either set to null clears the pin and the conversation
+    follows the owner's active machine again.
+    """
     session = request.state.session
     data = await request.json()
 
-    allowed = {"title", "description", "archived", "pinned"}
+    allowed = {"title", "description", "archived", "pinned", "ai_machine_id", "model"}
     if not data or not set(data).issubset(allowed):
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
@@ -545,11 +558,66 @@ async def handle_chat_patch(request: Request, chat_id: str):
             raise HTTPException(status_code=400, detail="Pinned must be a boolean")
         fields["pinned"] = int(data["pinned"])
         fields["pinned_at"] = db._now() if data["pinned"] else None
+    if "ai_machine_id" in data:
+        machine_id = data["ai_machine_id"]
+        if machine_id is not None and not isinstance(machine_id, str):
+            raise HTTPException(
+                status_code=400, detail="ai_machine_id must be text or null"
+            )
+        machine_id = (machine_id or "").strip() or None
+        # Confirm the machine exists and belongs to this user, so a pin can
+        # never route a conversation at somebody else's backend.
+        if machine_id and not await db.ai_machine_get(machine_id, session["user"]):
+            raise HTTPException(status_code=404, detail="Machine not found")
+        fields["ai_machine_id"] = machine_id
+    if "model" in data:
+        model = data["model"]
+        if model is not None and not isinstance(model, str):
+            raise HTTPException(status_code=400, detail="Model must be text or null")
+        model = (model or "").strip() or None
+        if model and not _MODEL_RE.fullmatch(model):
+            raise HTTPException(
+                status_code=400, detail="Model name contains invalid characters"
+            )
+        fields["model"] = model
 
     updated = await db.chat_update(chat_id, session["user"], **fields)
     if not updated:
         raise HTTPException(status_code=404, detail="Chat not found")
     return JSONResponse({"ok": True})
+
+
+async def handle_chats_reorder(request: Request):
+    """PUT /api/chats/order -- place conversations in an explicit order.
+
+    Takes the whole ordered list rather than a position per conversation: one
+    drag is one user action, and applying it as a cascade of individual updates
+    could half-succeed and leave an order nobody chose.
+
+    ``{"order": []}`` clears every placement and returns the list to recency.
+    """
+    session = request.state.session
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001 -- a malformed body is a client error
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    order = data.get("order")
+    if not isinstance(order, list):
+        raise HTTPException(status_code=400, detail="order must be a list of ids")
+    if len(order) > 500:
+        raise HTTPException(status_code=400, detail="Too many conversations")
+    if not all(isinstance(item, str) and item for item in order):
+        raise HTTPException(status_code=400, detail="order must contain ids")
+
+    if not order:
+        cleared = await db.chats_clear_order(session["user"])
+        _log.info("chat_order_cleared user=%s count=%d", session["user"], cleared)
+        return JSONResponse({"ok": True, "placed": 0, "cleared": cleared})
+
+    placed = await db.chats_reorder(session["user"], order)
+    _log.info("chat_order_set user=%s placed=%d", session["user"], placed)
+    return JSONResponse({"ok": True, "placed": placed})
 
 
 async def handle_chat_delete(request: Request, chat_id: str):
@@ -750,6 +818,10 @@ async def handle_submit_message(request: Request, chat_id: str):
     )
     if session_id and session_id != chat["session_id"]:
         await db.chat_set_session(chat_id, session_id)
+    # This turn was just stored above and the runner also appended it to the
+    # CLI transcript, so step the sync past it or the next poll shows it twice.
+    if session_id or chat.get("session_id"):
+        await _skip_transcript_to_end(chat_id, session_id or chat["session_id"])
     model = runner.take_last_model(chat_id)
     if model and model != chat.get("model"):
         await db.chat_set_model(chat_id, model)
@@ -843,6 +915,12 @@ async def stream_handler(request: Request, chat_id: str):
                         await db.chat_set_session(chat_id, pending_session_id)
                     if pending_model and pending_model != chat.get("model"):
                         await db.chat_set_model(chat_id, pending_model)
+                    # Same reason as the blocking path: the runner appended
+                    # this turn to the transcript too, so move the sync past
+                    # it rather than letting the next poll echo it back.
+                    _linked = pending_session_id or chat.get("session_id")
+                    if _linked:
+                        await _skip_transcript_to_end(chat_id, _linked)
                     completed = True
 
                 yield f"data: {json.dumps(event)}\n\n"
@@ -1016,6 +1094,12 @@ async def _api_chat_create(request: Request):
     return await handle_chat_create(request)
 
 
+# Registered before /api/chats/{chat_id} so "order" is never captured as an id.
+@app.put("/api/chats/order")
+async def _api_chats_reorder(request: Request):
+    return await handle_chats_reorder(request)
+
+
 @app.get("/api/chats/{chat_id}")
 async def _api_chat_get(request: Request, chat_id: str):
     return await handle_chat_get(request, chat_id)
@@ -1039,6 +1123,11 @@ async def _api_chat_export(request: Request, chat_id: str):
 @app.post("/api/chats/{chat_id}/messages")
 async def _api_submit_message(request: Request, chat_id: str):
     return await handle_submit_message(request, chat_id)
+
+
+@app.post("/api/chats/{chat_id}/sync")
+async def _api_chat_sync(request: Request, chat_id: str):
+    return await handle_chat_sync(request, chat_id)
 
 
 @app.post("/api/chats/{chat_id}/stream")
@@ -2173,6 +2262,124 @@ async def handle_machine_models_set(request: Request, machine_id: str):
     return JSONResponse({"ok": True, "active": active, "default": default})
 
 
+def _one_line(text: str, limit: int = 120) -> str:
+    """First line of *text*, collapsed, for the supervisor's preview column."""
+    flat = " ".join((text or "").split())
+    return flat[: limit - 1] + "…" if len(flat) > limit else flat
+
+
+async def handle_supervisor(request: Request):
+    """GET /api/supervisor -- which agents are waiting on the user.
+
+    "Waiting" is unread: the agent produced output after the last time the user
+    looked at it, and is not mid-turn. Defining it that way is what makes the
+    badge worth having -- "finished at some point" would mark every completed
+    conversation forever and the number would be ignored within a day.
+
+    Mid-turn is read off the last message rather than any in-flight registry:
+    a turn that has completed has persisted its assistant reply, so a chat
+    whose newest message is from the user is still working.
+    """
+    session = request.state.session
+    owner = session["user"]
+    marks = await db.read_marks_get(owner)
+    waiting: list[dict] = []
+    working: list[dict] = []
+
+    # ── Web conversations ───────────────────────────────────────────────
+    chats = await db.chat_list(owner)
+    activity = await db.chat_last_activity(owner)
+    for chat in chats:
+        if chat.get("archived"):
+            continue
+        last = activity.get(chat["id"])
+        if not last:
+            continue
+        entry = {
+            "kind": "chat",
+            "id": chat["id"],
+            "title": chat.get("title") or "Untitled",
+            "preview": _one_line(last.get("preview") or ""),
+            "since": last.get("created_at") or "",
+        }
+        if last.get("role") != "assistant":
+            working.append({**entry, "status": "working"})
+            continue
+        seen = marks.get(("chat", chat["id"]))
+        if not seen or (last.get("created_at") or "") > seen:
+            waiting.append({**entry, "status": "waiting"})
+
+    # ── CLI / terminal sessions ─────────────────────────────────────────
+    try:
+        cli_sessions = await db.read_claude_sessions()
+    except Exception:  # noqa: BLE001 -- the sidebar must render without them
+        cli_sessions = []
+    transcripts_by_id = {t["session_id"]: t for t in await transcripts.list_recent(200)}
+
+    for cli in cli_sessions:
+        session_id = cli.get("sessionId") or ""
+        # A WebConsole shadow record describes a chat that is already listed.
+        if not session_id or cli.get("entrypoint") == "webconsole":
+            continue
+        meta = transcripts_by_id.get(session_id)
+        if not meta:
+            continue
+        # Epoch seconds from the file, ISO from the marks: compare like for like.
+        updated = datetime.datetime.fromtimestamp(
+            meta.get("updated_at") or 0, datetime.UTC
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = {
+            "kind": "session",
+            "id": session_id,
+            "title": cli.get("name") or meta.get("title") or session_id,
+            "preview": "",
+            "since": updated,
+        }
+        seen = marks.get(("session", session_id))
+        if seen and updated <= seen:
+            continue
+        # Only now read the transcript: the mtime check above keeps this off
+        # every session on every poll.
+        page = await transcripts.read_turns(session_id)
+        turns = page.get("turns") or []
+        if not turns:
+            continue
+        last_turn = turns[-1]
+        if last_turn.get("role") != "assistant":
+            working.append({**entry, "status": "working"})
+            continue
+        text = next(
+            (b.get("text", "") for b in last_turn.get("blocks", []) if b.get("kind") == "text"),
+            "",
+        )
+        waiting.append({**entry, "preview": _one_line(text), "status": "waiting"})
+
+    waiting.sort(key=lambda e: e["since"])
+    return JSONResponse(
+        {
+            "waiting": waiting,
+            "working": working,
+            "counts": {"waiting": len(waiting), "working": len(working)},
+        }
+    )
+
+
+async def handle_supervisor_read(request: Request):
+    """POST /api/supervisor/read -- mark an agent as seen, clearing its badge."""
+    session = request.state.session
+    data = await request.json()
+    kind = (data.get("kind") or "").strip()
+    ref_id = (data.get("id") or "").strip()
+    if kind not in ("chat", "session"):
+        raise HTTPException(status_code=400, detail="kind must be chat or session")
+    # Same charset the transcript routes enforce: covers both a chat's uuid4
+    # hex and a dashed Claude session id, and nothing usable for traversal.
+    if not ref_id or not _HEX_SESSION_ID_RE.match(ref_id):
+        raise HTTPException(status_code=400, detail="Invalid id")
+    read_at = await db.read_mark_set(session["user"], kind, ref_id)
+    return JSONResponse({"ok": True, "read_at": read_at})
+
+
 async def handle_sessions_list(request: Request):
     """GET /api/sessions -- list CLI sessions + Web chats for sidebar."""
     session = request.state.session
@@ -2399,6 +2606,9 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
         for row in (_turn_to_message(turn) for turn in payload.get("turns") or [])
         if row is not None
     ]
+    # Record the read position even when nothing was worth importing, so the
+    # sync does not re-examine the same bytes on every poll.
+    await db.chat_set_transcript_offset(chat_id, int(payload.get("offset") or 0))
     if not rows:
         return 0
     await db.messages_batch(chat_id, rows)
@@ -2407,6 +2617,76 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
         chat_id, session_id, len(rows), bool(payload.get("truncated")),
     )
     return len(rows)
+
+
+async def _skip_transcript_to_end(chat_id: str, session_id: str) -> None:
+    """Advance the read position without importing anything.
+
+    A turn sent from WebConsole is stored in ``messages`` by the handler and
+    is *also* appended to the CLI transcript, because the runner resumes the
+    same session. Without this the next sync would read those bytes back and
+    show every web turn a second time. Skipping past them leaves the sync
+    reporting only what arrived from elsewhere -- which is the terminal.
+    """
+    try:
+        payload = await transcripts.read_turns(session_id, 0)
+    except OSError:
+        return
+    if payload.get("found"):
+        await db.chat_set_transcript_offset(chat_id, int(payload.get("offset") or 0))
+
+
+async def handle_chat_sync(request: Request, chat_id: str):
+    """POST /api/chats/{id}/sync -- pull in turns added outside WebConsole.
+
+    Polled while a session-linked chat is open, so it must stay cheap: the
+    read starts at the stored byte offset rather than re-parsing a transcript
+    that routinely runs to tens of megabytes.
+    """
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    session_id = chat.get("session_id")
+    if not session_id:
+        return JSONResponse({"messages": [], "linked": False})
+
+    offset = int(chat.get("transcript_offset") or 0)
+    # A chat imported before transcript_offset existed carries the column
+    # default of 0 while already holding its history, so reading from the
+    # start would import every turn a second time. Treat it as caught up and
+    # record where it actually is.
+    if offset == 0 and await db.messages_get(chat_id):
+        await _skip_transcript_to_end(chat_id, session_id)
+        return JSONResponse({"messages": [], "linked": True})
+
+    try:
+        payload = await transcripts.read_turns(session_id, offset)
+    except OSError as exc:
+        _log.warning("transcript_sync_failed chat_id=%s: %s", chat_id, exc)
+        return JSONResponse({"messages": [], "linked": True})
+    if not payload.get("found"):
+        return JSONResponse({"messages": [], "linked": True})
+
+    rows = [
+        row
+        for row in (_turn_to_message(turn) for turn in payload.get("turns") or [])
+        if row is not None
+    ]
+    new_offset = int(payload.get("offset") or offset)
+    if new_offset != offset:
+        await db.chat_set_transcript_offset(chat_id, new_offset)
+    if not rows:
+        return JSONResponse({"messages": [], "linked": True})
+
+    await db.messages_batch(chat_id, rows)
+    _log.info("transcript_synced chat_id=%s turns=%d", chat_id, len(rows))
+    return JSONResponse(
+        {
+            "messages": [{"role": role, "content": content} for role, content in rows],
+            "linked": True,
+        }
+    )
 
 
 async def handle_session_delete(request: Request, session_id: str):
@@ -2573,6 +2853,16 @@ async def _api_transcript_get(request: Request, session_id: str):
 @app.get("/api/transcripts/{session_id}/stream")
 async def _api_transcript_stream(request: Request, session_id: str):
     return await handle_transcript_stream(request, session_id)
+
+
+@app.get("/api/supervisor")
+async def _api_supervisor(request: Request):
+    return await handle_supervisor(request)
+
+
+@app.post("/api/supervisor/read")
+async def _api_supervisor_read(request: Request):
+    return await handle_supervisor_read(request)
 
 
 @app.get("/api/models")

@@ -58,6 +58,15 @@ button{touch-action:manipulation}
 .chat-menu.open{display:grid}
 .chat-menu button{border:0;border-radius:5px;background:transparent;color:var(--fg);padding:8px 10px;text-align:left;white-space:nowrap;cursor:pointer}
 .chat-menu button:hover,.chat-menu button:focus-visible{background:var(--panel2)}
+/* Favouriting is a single click on the row rather than a menu item. */
+.chat-favourite{font-size:15px;line-height:1}
+.chat-favourite.on{color:var(--warn)}
+.chat-favourite:hover,.chat-favourite:focus-visible{color:var(--warn)}
+/* Manual ordering. Rows are draggable on a pointer device; the ⋯ menu carries
+   Move up / Move down because dragging is unusable on a phone. */
+.chat-item[draggable="true"]{cursor:grab}
+.chat-item.dragging{opacity:.5;cursor:grabbing}
+.chat-item.dragging .chat-actions{visibility:hidden}
 .sidebar-empty{padding:24px 12px;text-align:center;color:var(--muted);font-size:12px}
 /* Collapsed sections: archived chats and CLI sessions stay reachable without
    pushing the active conversations off screen. */

@@ -241,22 +241,26 @@ async def get_proxy_host() -> str:
 async def get_default_model(chat_id: str | None = None) -> str:
     """Return the model a new turn should use.
 
-    Resolution order: the active machine's own default, then the global
-    setting, then environment config. The machine comes first because a model
-    id is only meaningful against the backend serving it -- a gateway default
-    of "vllm/Qwen3.6-..." is wrong for the Anthropic endpoint and vice versa.
-    The machine's `model` column existed for this and was never read.
+    Resolution order: the conversation's own model, then its backend's default,
+    then the global setting, then environment config.
+
+    The conversation comes first so a model chosen for one chat sticks across
+    its turns without following the others. Its backend comes next -- and it is
+    the conversation's backend, not merely the active one, because a model id is
+    only meaningful against the backend serving it: a gateway default of
+    "vllm/Qwen3.6-..." is wrong for the Anthropic endpoint and vice versa.
     """
     import db
 
     if db.db_conn is None:
         return config.MODEL_NAME
     if chat_id:
-        owner = await db.chat_owner(chat_id)
-        if owner:
-            machine = await db.ai_machine_backend(owner)
-            if machine and (machine.get("model") or "").strip():
-                return machine["model"].strip()
+        routing = await db.chat_routing(chat_id)
+        if (routing.get("model") or "").strip():
+            return routing["model"].strip()
+        machine = routing.get("machine")
+        if machine and (machine.get("model") or "").strip():
+            return machine["model"].strip()
     return await db.setting_get("default_model") or config.MODEL_NAME
 
 
@@ -284,19 +288,23 @@ def normalise_base_url(base_url: str | None) -> str | None:
 
 
 async def get_backend(chat_id: str) -> dict[str, str]:
-    """Return the provider settings for the active machine of *chat_id*'s owner.
+    """Return the provider settings for the machine *chat_id* should run on.
 
-    Empty when no machine is active, which leaves the CLI on its own defaults --
+    A conversation pinned to a machine uses that one, so two conversations can
+    sit on different backends at once; an unpinned conversation follows the
+    owner's active machine, as every conversation did before pinning existed.
+
+    Empty when no machine applies, which leaves the CLI on its own defaults --
     the host's `claude` login against the official API.
     """
     import db
 
     if db.db_conn is None:
         return {}
-    owner = await db.chat_owner(chat_id)
-    if not owner:
+    routing = await db.chat_routing(chat_id)
+    if not routing["owner"]:
         return {}
-    machine = await db.ai_machine_backend(owner)
+    machine = routing["machine"]
     if not machine or machine.get("provider") != "anthropic":
         return {}
     backend: dict[str, str] = {"provider": "anthropic"}

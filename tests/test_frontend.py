@@ -112,6 +112,29 @@ class FrontendStructureTests(unittest.TestCase):
         )[0]
         self.assertIn("await loadSettings()", save_body)
 
+    def test_live_history_polls_every_five_seconds(self):
+        """A linked chat follows the terminal without the user asking."""
+        self.assertIn("const SYNC_INTERVAL_MS = 5000", self.app)
+        self.assertIn("setInterval", self.app)
+        self.assertIn("/sync", self.app)
+
+    def test_sync_is_scoped_and_guarded(self):
+        """Only linked chats poll, and never over a turn in flight.
+
+        Polling an unlinked chat is a request every five seconds that can
+        never return anything; polling mid-stream would re-render the reply
+        while it is still being written.
+        """
+        self.assertIn("if (!state.currentChat?.session_id) return;", self.app)
+        self.assertIn("SYNC_BUSY_STATES", self.app)
+        self.assertIn("stopTranscriptSync()", self.app)
+
+    def test_refresh_button_exists_and_is_wired(self):
+        self.assertIn('id="syncBtn"', self.html)
+        self.assertIn("byId('syncBtn').addEventListener", self.app)
+        # Hidden unless the open chat actually has a transcript behind it.
+        self.assertIn("byId('syncBtn').hidden = !chat.session_id", self.app)
+
     def test_api_exports_contract(self):
         self.assertIn("export class ApiError", self.api)
         self.assertIn("export async function apiFetch", self.api)
@@ -145,9 +168,20 @@ class FrontendStructureTests(unittest.TestCase):
     def test_conversation_actions_are_accessible(self):
         for text in (
             "aria-haspopup", "aria-expanded", "role', 'menu'",
-            "Unpin", "Rename", "Export", "Archive", "Delete", "Restore",
+            "Rename", "Export", "Archive", "Delete", "Restore",
         ):
             self.assertIn(text, self.chat_list)
+
+    def test_favouriting_is_a_row_control_not_a_menu_item(self):
+        """Pin/Unpin left the ⋯ menu for a star on the row itself.
+
+        It was the most-used action sitting behind the most clicks. The star
+        still has to announce its state, or it is a toggle a screen reader
+        cannot read.
+        """
+        self.assertIn("chat-favourite", self.chat_list)
+        self.assertIn("aria-pressed", self.chat_list)
+        self.assertIn("data-action", self.chat_list.replace("dataset.action", "data-action"))
 
     def test_archived_rows_stay_openable(self):
         """Archived conversations are marked, not disabled.

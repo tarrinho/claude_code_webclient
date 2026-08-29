@@ -60,6 +60,9 @@ async def init() -> None:
             archived      INTEGER NOT NULL DEFAULT 0,
             pinned        INTEGER NOT NULL DEFAULT 0,
             pinned_at     TEXT,
+            -- Manual slot in the sidebar. NULL means unplaced, which
+            -- keeps sorting by recency; a value pins it to that spot.
+            position      INTEGER,
             deleted_at    TEXT,
             model         TEXT,
             ai_machine_id TEXT
@@ -125,6 +128,18 @@ async def init() -> None:
             updated_at TEXT NOT NULL
         );
 
+        -- When the user last looked at an agent, so the supervisor can tell
+        -- "produced output you have not seen" from "finished a while ago".
+        -- Its own table rather than a chats column because it also has to
+        -- cover CLI sessions, which are files on disk and have no chats row.
+        CREATE TABLE IF NOT EXISTS read_marks (
+            owner_id TEXT NOT NULL,
+            kind     TEXT NOT NULL,   -- 'chat' | 'session'
+            ref_id   TEXT NOT NULL,   -- chat id or Claude session id
+            read_at  TEXT NOT NULL,
+            PRIMARY KEY (owner_id, kind, ref_id)
+        );
+
         -- One row per model per completed turn, from Claude Code's `result`
         -- frame. provider is denormalised here so the cost-display rule
         -- survives the machine later being edited, renamed, or deleted.
@@ -168,6 +183,13 @@ async def _ensure_chat_columns() -> None:
         "deleted_at": "ALTER TABLE chats ADD COLUMN deleted_at TEXT",
         "model": "ALTER TABLE chats ADD COLUMN model TEXT",
         "ai_machine_id": "ALTER TABLE chats ADD COLUMN ai_machine_id TEXT",
+        "position": "ALTER TABLE chats ADD COLUMN position INTEGER",
+        # Byte position already consumed from the linked CLI transcript. The
+        # sync reads from here rather than re-reading the file, which matters:
+        # a working transcript is tens of megabytes and this is polled.
+        "transcript_offset": (
+            "ALTER TABLE chats ADD COLUMN transcript_offset INTEGER NOT NULL DEFAULT 0"
+        ),
     }
     for name, sql in migrations.items():
         if name not in columns:
@@ -218,7 +240,8 @@ async def close() -> None:
 
 _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
-    "updated_at, archived, pinned, pinned_at, deleted_at, model, ai_machine_id"
+    "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
+    "transcript_offset"
 )
 _ALLOWED_CHAT_FIELDS = {
     "title",
@@ -235,8 +258,12 @@ async def chat_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db_conn.execute(
         f"SELECT {_CHAT_COLUMNS} FROM chats "  # nosec B608: columns are static
         "WHERE owner_id = ? AND deleted_at IS NULL "
+        # A conversation the user has placed keeps its slot even when it
+        # gets new activity -- that is the point of placing it. Unplaced
+        # ones sort below by recency, exactly as before.
         "ORDER BY archived ASC, "
         "CASE WHEN archived = 0 THEN pinned ELSE 0 END DESC, "
+        "position IS NULL, position ASC, "
         "CASE WHEN archived = 0 AND pinned = 1 THEN pinned_at END DESC, "
         "updated_at DESC",
         (owner_id,),
@@ -299,6 +326,45 @@ async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
     if updated and "title" in fields:
         await _fts_rebuild(chat_id)
     return updated
+
+
+async def chats_reorder(owner_id: str, chat_ids: list[str]) -> int:
+    """Place *chat_ids* in the given order. Returns how many were placed.
+
+    Written as one transaction: a reorder is a single user action, and applying
+    half of it would leave the sidebar in an order the user never chose.
+
+    Only the listed conversations are placed. Anything omitted keeps its
+    existing position, so reordering one section cannot disturb another.
+    """
+    if not chat_ids:
+        return 0
+    try:
+        await db_conn.execute("BEGIN")
+        placed = 0
+        for index, chat_id in enumerate(chat_ids):
+            cur = await db_conn.execute(
+                "UPDATE chats SET position = ? "
+                "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+                (index, chat_id, owner_id),
+            )
+            placed += cur.rowcount
+        await db_conn.commit()
+    except Exception:
+        await db_conn.rollback()
+        raise
+    return placed
+
+
+async def chats_clear_order(owner_id: str) -> int:
+    """Unplace every conversation, returning the list to pure recency order."""
+    cur = await db_conn.execute(
+        "UPDATE chats SET position = NULL "
+        "WHERE owner_id = ? AND position IS NOT NULL",
+        (owner_id,),
+    )
+    await db_conn.commit()
+    return cur.rowcount
 
 
 async def chat_archive(chat_id: str, owner_id: str, archived: int = 1) -> bool:
@@ -399,6 +465,20 @@ async def chat_set_session(chat_id: str, session_id: str) -> None:
     await db_conn.execute(
         "UPDATE chats SET session_id = ?, updated_at = ? WHERE id = ?",
         (session_id, _now(), chat_id),
+    )
+    await db_conn.commit()
+
+
+async def chat_set_transcript_offset(chat_id: str, offset: int) -> None:
+    """Record how far the linked transcript has been consumed.
+
+    Deliberately does not touch updated_at: advancing the read position is
+    bookkeeping, and letting it bump the timestamp would reorder the sidebar
+    every few seconds while a chat is merely being polled.
+    """
+    await db_conn.execute(
+        "UPDATE chats SET transcript_offset = ? WHERE id = ?",
+        (int(offset), chat_id),
     )
     await db_conn.commit()
 
@@ -864,6 +944,11 @@ async def chat_owner(chat_id: str) -> str | None:
     return row["owner_id"] if row else None
 
 
+_BACKEND_COLUMNS = (
+    "id, name, provider, host, port, model, base_url, api_key"
+)
+
+
 async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
     """Return the active machine *including* its API key, for the runner only.
 
@@ -871,12 +956,125 @@ async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
     which omit ``api_key`` so it cannot reach an API response by accident.
     """
     cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, base_url, api_key "
+        f"SELECT {_BACKEND_COLUMNS} "  # nosec B608: columns are static
         "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
         (owner_id,),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
+
+
+async def ai_machine_backend_by_id(
+    machine_id: str, owner_id: str
+) -> dict[str, Any] | None:
+    """Return one specific machine including its API key, for the runner only.
+
+    Owner-scoped, so pinning a conversation to a machine id cannot reach another
+    user's backend or its credential.
+    """
+    if not machine_id:
+        return None
+    cur = await db_conn.execute(
+        f"SELECT {_BACKEND_COLUMNS} "  # nosec B608: columns are static
+        "FROM ai_machines WHERE id = ? AND owner_id = ? LIMIT 1",
+        (machine_id, owner_id),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def chat_routing(chat_id: str) -> dict[str, Any]:
+    """Resolve where a conversation's next turn should go.
+
+    Returns ``{"owner", "model", "machine", "pinned"}``:
+
+    * ``machine`` -- the conversation's own machine when ``ai_machine_id`` is
+      set, otherwise the owner's active machine, which is what every
+      conversation followed before pinning existed. A pin to a machine that has
+      since been deleted falls back rather than failing the turn.
+    * ``model`` -- the conversation's model column. This doubles as the pin and
+      as the record of what actually ran: a turn writes back the model the CLI
+      reports, so if a gateway substitutes a different model the conversation
+      reflects the truth rather than a stale intention.
+    * ``pinned`` -- whether the machine came from the pin or the active fallback.
+    """
+    cur = await db_conn.execute(
+        "SELECT owner_id, model, ai_machine_id FROM chats WHERE id = ?", (chat_id,)
+    )
+    row = await cur.fetchone()
+    if not row:
+        return {"owner": None, "model": None, "machine": None, "pinned": False}
+    owner = row["owner_id"]
+    if row["ai_machine_id"]:
+        machine = await ai_machine_backend_by_id(row["ai_machine_id"], owner)
+        if machine:
+            return {"owner": owner, "model": row["model"],
+                    "machine": machine, "pinned": True}
+    return {
+        "owner": owner,
+        "model": row["model"],
+        "machine": await ai_machine_backend(owner),
+        "pinned": False,
+    }
+
+
+async def chat_set_machine(chat_id: str, owner_id: str, machine_id: str | None) -> bool:
+    """Pin a conversation to a machine, or clear the pin with None."""
+    cur = await db_conn.execute(
+        "UPDATE chats SET ai_machine_id = ?, updated_at = ? "
+        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+        (machine_id or None, _now(), chat_id, owner_id),
+    )
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def read_marks_get(owner_id: str) -> dict[tuple[str, str], str]:
+    """Return {(kind, ref_id): read_at} for one owner."""
+    cur = await db_conn.execute(
+        "SELECT kind, ref_id, read_at FROM read_marks WHERE owner_id = ?",
+        (owner_id,),
+    )
+    return {(r["kind"], r["ref_id"]): r["read_at"] for r in await cur.fetchall()}
+
+
+async def read_mark_set(
+    owner_id: str, kind: str, ref_id: str, read_at: str | None = None
+) -> str:
+    """Record that *ref_id* has been looked at, and return the timestamp used."""
+    stamp = read_at or _now()
+    await db_conn.execute(
+        "INSERT INTO read_marks (owner_id, kind, ref_id, read_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(owner_id, kind, ref_id) DO UPDATE SET read_at = excluded.read_at",
+        (owner_id, kind, ref_id, stamp),
+    )
+    await db_conn.commit()
+    return stamp
+
+
+async def chat_last_activity(owner_id: str) -> dict[str, dict[str, Any]]:
+    """Latest message per chat: {chat_id: {role, created_at, preview}}.
+
+    One grouped query rather than a read per conversation -- the supervisor
+    polls, so this runs repeatedly.
+    """
+    cur = await db_conn.execute(
+        "SELECT m.chat_id, m.role, m.created_at, substr(m.content, 1, 200) AS preview "
+        "FROM messages m "
+        "JOIN chats c ON c.id = m.chat_id "
+        "JOIN (SELECT chat_id, MAX(id) AS last_id FROM messages GROUP BY chat_id) t "
+        "  ON t.chat_id = m.chat_id AND t.last_id = m.id "
+        "WHERE c.owner_id = ? AND c.deleted_at IS NULL",
+        (owner_id,),
+    )
+    return {
+        r["chat_id"]: {
+            "role": r["role"],
+            "created_at": r["created_at"],
+            "preview": r["preview"],
+        }
+        for r in await cur.fetchall()
+    }
 
 
 def parse_active_models(raw: Any) -> list[str]:

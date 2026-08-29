@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -25,14 +26,20 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertNotIn("<script>\n", self.html)
 
     def test_machine_form_script_matches_markup(self):
-        """app.js must not read machine inputs that index.html no longer defines.
+        """Script and markup must agree on which machine inputs exist.
 
-        Sending fields the form does not collect makes the server reject the
-        whole PATCH body, which is what broke machine editing in 0.3.1.
+        Reading an input the markup does not define sends a field the form
+        never collected, and handle_machine_patch rejects the whole body if
+        any key falls outside its allowlist -- that is what broke every
+        machine edit in 0.3.1. The invariant is agreement, not absence:
+        machineBaseUrl is collected by the Anthropic provider form and must
+        appear in both files.
         """
-        for element_id in ("machinePort", "machineBaseUrl", "machineDescription"):
+        for element_id in ("machinePort", "machineDescription"):
             self.assertNotIn(element_id, self.html)
             self.assertNotIn(element_id, self.app)
+        self.assertIn("machineBaseUrl", self.html)
+        self.assertIn("machineBaseUrl", self.app)
 
     def test_test_machine_receives_its_own_button(self):
         """_testMachine takes the button as an argument, never re-finds it.
@@ -78,14 +85,25 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("_loadedSettings.default_model", self.app)
         self.assertIn("_loadedSettings.fallback_model", self.app)
 
-    def test_model_picker_includes_datalist_presets(self):
-        """The picker reads #modelSuggestions rather than default+fallback only.
+    def test_model_picker_offers_more_than_default_and_fallback(self):
+        """The picker sources models from the backend, not two settings fields.
 
-        With only two entries a turn could never be routed to a third model
-        without changing the global default first.
+        With only default+fallback a turn could never be routed to a third
+        model without changing the global default first. The list used to come
+        from a hardcoded #modelSuggestions datalist; it now comes from
+        GET /api/models, so the datalist is populated at runtime instead.
         """
-        self.assertIn("#modelSuggestions option", self.app)
+        self.assertIn("_servedModels", self.app)
         self.assertIn('id="modelSuggestions"', self.html)
+
+    def test_picker_does_not_harvest_models_from_transcripts(self):
+        """A session's `model` records what an old chat used, not what is served.
+
+        Pushing those ids into the picker turned a historical record into a
+        menu of offers, so a model the current backend does not serve was
+        selectable and every turn using it failed.
+        """
+        self.assertNotIn("_modelOptions.push(...sessions.map", self.app)
 
     def test_saving_settings_reloads_them(self):
         """saveSettings re-reads the server so the picker is not left stale."""
@@ -219,6 +237,56 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn(".chat-menu button,", self.css)
         self.assertIn("min-width:44px", self.css)
         self.assertIn("min-height:44px", self.css)
+
+    # ── History section (past conversations read from transcripts) ──────────
+
+    @staticmethod
+    def _without_comments(source):
+        """Strip // and /* */ comments so assertions see executable code only.
+
+        The comments in chat-list.js discuss innerHTML at length precisely
+        because it was removed, so a naive substring check matches the
+        explanation rather than any real use.
+        """
+        source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+        return "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("//")
+        )
+
+    def test_chat_list_never_uses_innerHTML(self):
+        """Assigning markup into innerHTML was a stored XSS in search snippets.
+
+        A message containing HTML was rendered as HTML, so anything a
+        conversation had ever quoted could execute in the sidebar. Every node
+        is built with textContent now; a structural assertion is the only
+        guard the test harness can offer against it coming back.
+        """
+        code = self._without_comments(self.chat_list)
+        # Guard the guard: if comment-stripping ever eats the whole file this
+        # assertion would pass vacuously.
+        self.assertIn("createElement", code)
+        self.assertNotIn("innerHTML", code)
+
+    def test_history_rows_offer_reading_the_transcript(self):
+        self.assertIn("renderHistory", self.chat_list)
+        self.assertIn("read-transcript", self.chat_list)
+
+    def test_history_opens_the_viewer_through_an_event(self):
+        """chat-list.js must not hold a handle on the viewer.
+
+        The viewer mounts itself from transcript.js, so a direct reference
+        would couple the two modules and break whichever loads second.
+        """
+        self.assertIn("wc:open-transcript", self.chat_list)
+        self.assertIn("dispatchEvent", self.chat_list)
+
+    def test_history_is_populated_through_set_history(self):
+        self.assertIn("setHistory", self.chat_list)
+
+    def test_history_does_not_repeat_sessions_already_listed(self):
+        """A live CLI session appears in its own section; showing it again
+        under History listed the same conversation twice."""
+        self.assertIn("alreadyShown", self.chat_list)
 
 
 if __name__ == "__main__":

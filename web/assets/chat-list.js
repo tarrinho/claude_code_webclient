@@ -88,6 +88,7 @@ export function createChatListController(dependencies) {
     onSelect,
     onAction,
     onResumeCli,
+    onRemoveCli,
   } = dependencies;
 
   let query = '';
@@ -100,6 +101,7 @@ export function createChatListController(dependencies) {
   let lastCurrentId = null;
   let openTrigger = null;
   let activeTurnId = null;
+  let historyEntries = [];
 
   function closeMenus(restoreFocus = false) {
     for (const menu of document.querySelectorAll('.chat-menu.open')) {
@@ -228,6 +230,7 @@ export function createChatListController(dependencies) {
         makeButton('Rename', 'rename', chat.id, chat.title),
         makeButton('Fork', 'fork', chat.id, chat.title),
         makeButton('Export', 'export', chat.id, chat.title),
+        makeButton('Continue in terminal', 'terminal', chat.id, chat.title),
         makeButton(
           chat.archived ? 'Restore' : 'Archive',
           chat.archived ? 'restore' : 'archive',
@@ -262,8 +265,13 @@ export function createChatListController(dependencies) {
       const metaParts = [];
       metaParts.push(session.kind === 'interactive' ? 'Terminal' : 'Web');
       if (session.model) metaParts.push(session.model);
+      // A session whose process has exited stays listed: its transcript is
+      // still readable and worth resuming. It is marked rather than hidden.
+      const ended = session.live === false;
+      if (ended) metaParts.push('ended');
       meta.textContent = metaParts.join(' · ');
       if (session.model) meta.title = `Last model: ${session.model}`;
+      if (ended) item.classList.add('session-ended');
       title.append(name, meta);
       const button = document.createElement('button');
       button.type = 'button';
@@ -273,6 +281,68 @@ export function createChatListController(dependencies) {
       button.textContent = '↗';
       button.setAttribute('aria-label', `Open ${session.name} in WebConsole`);
       item.append(title, button);
+      // Removal is offered only for ended sessions. A live one has a running
+      // process behind it, and the server refuses to delete its record anyway.
+      if (ended) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'chat-action chat-action-remove';
+        remove.dataset.action = 'remove-cli';
+        remove.dataset.sessionId = session.id;
+        remove.textContent = '×';
+        remove.title = 'Remove this ended session from the list';
+        remove.setAttribute('aria-label', `Remove ended session ${session.name}`);
+        item.append(remove);
+      }
+      details.appendChild(item);
+    });
+  }
+
+  // Past conversations, read from transcripts on disk. The live registry in
+  // ~/.claude/sessions only knows about sessions that are still running, so
+  // without this the sidebar could never show a finished conversation -- the
+  // reason old work appeared to have vanished.
+  function renderHistory(list, entries, alreadyShown) {
+    const items = entries.filter(entry => !alreadyShown.has(entry.session_id));
+    if (!items.length) return;
+    const details = makeDisclosure('History', items.length, false);
+    list.appendChild(details);
+
+    items.forEach(entry => {
+      const item = document.createElement('div');
+      item.className = 'chat-item';
+
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'chat-open';
+      open.dataset.action = 'read-transcript';
+      open.dataset.sessionId = entry.session_id;
+
+      const name = document.createElement('div');
+      name.className = 'chat-title';
+      name.textContent = entry.title || entry.session_id;
+      name.title = entry.title || entry.session_id;
+
+      const meta = document.createElement('div');
+      meta.className = 'chat-meta';
+      const when = entry.updated_at
+        ? new Date(entry.updated_at * 1000).toLocaleString()
+        : '';
+      meta.textContent = [when, 'read-only'].filter(Boolean).join(' · ');
+
+      open.append(name, meta);
+
+      const resume = document.createElement('button');
+      resume.type = 'button';
+      resume.className = 'chat-action';
+      resume.dataset.action = 'resume-cli';
+      resume.dataset.sessionId = entry.session_id;
+      resume.textContent = '↗';
+      resume.title = 'Continue this conversation here';
+      resume.setAttribute(
+        'aria-label', `Continue ${entry.title || entry.session_id} in WebConsole`);
+
+      item.append(open, resume);
       details.appendChild(item);
     });
   }
@@ -300,8 +370,15 @@ export function createChatListController(dependencies) {
       renderSection(list, 'Archived', groups.archived, currentId, true);
       if (extraHits.length) renderSearchResults(list, extraHits, currentId);
       renderCli(list, cli);
+      // A conversation already listed as a live session or as a chat of its own
+      // must not appear a second time under History.
+      const alreadyShown = new Set([
+        ...cliSessions.map(s => s.sessionId).filter(Boolean),
+        ...chats.map(c => c.session_id).filter(Boolean),
+      ]);
+      renderHistory(list, historyEntries, alreadyShown);
 
-      if (!cli.length && !filtered.length && !extraHits.length) {
+      if (!cli.length && !filtered.length && !extraHits.length && !historyEntries.length) {
         const empty = document.createElement('div');
         empty.className = 'sidebar-empty';
         empty.textContent = query ? 'No matching sessions' : 'No sessions yet';
@@ -345,6 +422,11 @@ export function createChatListController(dependencies) {
     render();
   }
 
+  function setHistory(entries) {
+    historyEntries = Array.isArray(entries) ? entries : [];
+    render();
+  }
+
   function setActiveTurn(chatId) {
     if (activeTurnId === chatId) return;
     activeTurnId = chatId;
@@ -361,6 +443,15 @@ export function createChatListController(dependencies) {
     const action = button.dataset.action;
     if (action === 'open') return onSelect(button.dataset.chatId);
     if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
+    if (action === 'read-transcript') {
+      // The viewer mounts itself from transcript.js; an event keeps the two
+      // modules decoupled rather than reaching across for a handle.
+      document.dispatchEvent(new CustomEvent('wc:open-transcript', {
+        detail: {sessionId: button.dataset.sessionId},
+      }));
+      return;
+    }
+    if (action === 'remove-cli') return onRemoveCli?.(button.dataset.sessionId);
     if (action === 'menu') {
       const menu = button.nextElementSibling;
       const opening = !menu.classList.contains('open');
@@ -397,5 +488,6 @@ export function createChatListController(dependencies) {
     setOnMessageSearch,
     setMessageResults,
     setActiveTurn,
+    setHistory,
   };
 }

@@ -1,0 +1,627 @@
+"""QA coverage for reading CLI transcripts and reopening past conversations.
+
+Covers:
+* Record parsing -- which JSONL records become turns and which are noise.
+* Tool-call summarising, including malformed ``input``.
+* Transcript location and the charset guard that keeps a session id from
+  widening the search or escaping the projects directory.
+* Forward reads, tail truncation, and paging backwards through a long file.
+* Reading a session's cwd and title back out of its own transcript.
+* The three /api/transcripts endpoints.
+* Workspace adoption when resuming, including every fallback path.
+* Resume falling back to a transcript when no session is running.
+
+Everything runs against a temporary projects directory; the real ~/.claude
+tree is never read or written.
+"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import time
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
+
+import app
+import config
+import db
+import transcripts
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def assistant(text, session_id="s1", model="claude-opus-5", **extra):
+    record = {
+        "type": "assistant",
+        "sessionId": session_id,
+        "message": {"role": "assistant", "model": model,
+                    "content": [{"type": "text", "text": text}]},
+    }
+    record.update(extra)
+    return record
+
+
+def user(text, **extra):
+    record = {"type": "user", "message": {"role": "user",
+              "content": [{"type": "text", "text": text}]}}
+    record.update(extra)
+    return record
+
+
+def write_transcript(root: Path, session_id: str, records, project="-home-kali-demo"):
+    """Write records the way Claude stores them: <projects>/<dir>/<id>.jsonl."""
+    directory = root / project
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.jsonl"
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+    return path
+
+
+def make_request(query=None, session=None):
+    request = types.SimpleNamespace(
+        method="GET",
+        url=types.SimpleNamespace(path="/api/transcripts"),
+        cookies={},
+        headers={},
+        client=types.SimpleNamespace(host="127.0.0.1"),
+        state=types.SimpleNamespace(
+            session=session or {"user": "admin", "role": "admin"}),
+        query_params=dict(query or {}),
+    )
+    request.json = AsyncMock(return_value={})
+    request.is_disconnected = AsyncMock(return_value=False)
+    return request
+
+
+class TranscriptRootMixin:
+    """Point the transcript code at a temporary projects directory."""
+
+    def set_up_root(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        # Both transcripts.list_recent and db._session_transcript_paths read
+        # this one module attribute, so patching it isolates the whole feature.
+        self.root_patch = patch.object(db, "_CLAUDE_PROJECTS_DIR", self.root)
+        self.root_patch.start()
+
+    def tear_down_root(self):
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+
+# ── Record parsing ───────────────────────────────────────────────────────────
+
+
+class RecordParsingTests(unittest.TestCase):
+    """Only user and assistant records carry conversation; the rest is noise."""
+
+    def test_assistant_text_becomes_a_turn(self):
+        turn = transcripts._turn_from_record(assistant("hello"))
+        self.assertEqual(turn["role"], "assistant")
+        self.assertEqual(turn["blocks"], [{"kind": "text", "text": "hello"}])
+        self.assertEqual(turn["model"], "claude-opus-5")
+
+    def test_user_text_becomes_a_turn(self):
+        turn = transcripts._turn_from_record(user("do the thing"))
+        self.assertEqual(turn["role"], "user")
+        self.assertEqual(turn["blocks"][0]["text"], "do the thing")
+
+    def test_bare_string_content_is_accepted(self):
+        """message.content is sometimes a plain string rather than blocks."""
+        record = {"type": "user", "message": {"role": "user", "content": "plain"}}
+        turn = transcripts._turn_from_record(record)
+        self.assertEqual(turn["blocks"], [{"kind": "text", "text": "plain"}])
+
+    def test_machinery_record_types_are_dropped(self):
+        """A real transcript is mostly non-conversational bookkeeping."""
+        for kind in ("attachment", "file-history-snapshot", "mode",
+                     "queue-operation", "system", "last-prompt"):
+            record = {"type": kind, "message": {"role": "user",
+                      "content": [{"type": "text", "text": "x"}]}}
+            self.assertIsNone(transcripts._turn_from_record(record), kind)
+
+    def test_tool_result_blocks_are_dropped(self):
+        """Tool output is replayed into the next user record; it is not speech."""
+        record = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "huge output"}]}}
+        self.assertIsNone(transcripts._turn_from_record(record))
+
+    def test_empty_thinking_is_dropped_but_real_thinking_is_kept(self):
+        """Stored thinking blocks are often signature-only with no text."""
+        empty = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "", "signature": "abc"}]}}
+        self.assertIsNone(transcripts._turn_from_record(empty))
+
+        real = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "weighing it up", "signature": "abc"}]}}
+        turn = transcripts._turn_from_record(real)
+        self.assertEqual(turn["blocks"], [{"kind": "thinking", "text": "weighing it up"}])
+
+    def test_message_that_is_not_a_dict_is_dropped(self):
+        self.assertIsNone(
+            transcripts._turn_from_record({"type": "user", "message": "nope"}))
+
+    def test_non_dict_record_is_dropped(self):
+        self.assertIsNone(transcripts._turn_from_record(["not", "a", "record"]))
+
+    def test_sidechain_is_flagged(self):
+        turn = transcripts._turn_from_record(assistant("sub", isSidechain=True))
+        self.assertTrue(turn["sidechain"])
+
+
+class ToolSummaryTests(unittest.TestCase):
+    """Tool calls collapse to one readable line."""
+
+    def test_description_is_preferred(self):
+        summary = transcripts._tool_summary(
+            {"name": "Bash", "input": {"command": "ls -la", "description": "List files"}})
+        self.assertEqual(summary, "Bash(List files)")
+
+    def test_falls_back_to_another_known_key(self):
+        summary = transcripts._tool_summary(
+            {"name": "Read", "input": {"file_path": "/tmp/x.py"}})
+        self.assertEqual(summary, "Read(/tmp/x.py)")
+
+    def test_name_only_when_no_useful_input(self):
+        self.assertEqual(
+            transcripts._tool_summary({"name": "Task", "input": {"other": 1}}), "Task")
+
+    def test_non_dict_input_does_not_raise(self):
+        """input is not always an object, and assuming it was crashed the parse."""
+        for payload in ("a string", ["a", "list"], 7, None):
+            self.assertEqual(
+                transcripts._tool_summary({"name": "Weird", "input": payload}), "Weird")
+
+    def test_long_detail_is_clipped(self):
+        summary = transcripts._tool_summary(
+            {"name": "Bash", "input": {"command": "x" * 400}})
+        self.assertLessEqual(len(summary), transcripts._TOOL_SUMMARY_MAX + len("Bash()") + 1)
+        # The ellipsis marks the clipped detail, inside the parentheses.
+        self.assertTrue(summary.startswith("Bash("))
+        self.assertTrue(summary.endswith(")"))
+        self.assertIn("…", summary)
+
+
+# ── Locating a transcript ────────────────────────────────────────────────────
+
+
+class TranscriptPathTests(TranscriptRootMixin, unittest.TestCase):
+
+    def setUp(self):
+        self.set_up_root()
+
+    def tearDown(self):
+        self.tear_down_root()
+
+    def test_finds_a_transcript_one_level_down(self):
+        written = write_transcript(self.root, "abc123", [assistant("hi", "abc123")])
+        self.assertEqual(transcripts.transcript_path("abc123"), written)
+
+    def test_missing_session_returns_none(self):
+        self.assertIsNone(transcripts.transcript_path("nope"))
+
+    def test_path_traversal_ids_are_refused(self):
+        """The id is interpolated into a glob, so its charset is restricted."""
+        for bad in ("../../etc/passwd", "a/../../", "..", "a/b", "x\\y", ""):
+            self.assertIsNone(transcripts.transcript_path(bad), bad)
+
+    def test_a_traversal_that_would_otherwise_resolve_is_refused(self):
+        """The charset guard must be what blocks this, not luck.
+
+        Ids like ``../../etc/passwd`` match nothing through the glob whether or
+        not the guard exists, so a test using only those passes even with the
+        guard deleted -- confirmed by mutating it away. ``*/../<dir>/<name>``
+        genuinely resolves, so this is the shape that exercises the guard.
+        """
+        write_transcript(self.root, "secret", [assistant("private", "secret")],
+                         project="-home-kali-demo")
+        reachable = sorted(self.root.glob("*/../-home-kali-demo/secret.jsonl"))
+        self.assertEqual(len(reachable), 1,
+                         "fixture must be reachable by traversal or this proves nothing")
+        self.assertIsNone(transcripts.transcript_path("../-home-kali-demo/secret"))
+
+
+# ── Reading and paging ───────────────────────────────────────────────────────
+
+
+class ReadTurnsTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_unknown_session_is_reported_not_found(self):
+        page = await transcripts.read_turns("missing")
+        self.assertFalse(page["found"])
+        self.assertEqual(page["turns"], [])
+
+    async def test_short_transcript_is_returned_whole(self):
+        write_transcript(self.root, "s1", [user("q"), assistant("a", "s1")])
+        page = await transcripts.read_turns("s1")
+        self.assertTrue(page["found"])
+        self.assertEqual([t["role"] for t in page["turns"]], ["user", "assistant"])
+        self.assertFalse(page["truncated"])
+        self.assertTrue(page["at_start"])
+
+    async def test_offset_resumes_without_repeating(self):
+        write_transcript(self.root, "s2", [user("one"), assistant("two", "s2")])
+        first = await transcripts.read_turns("s2")
+        again = await transcripts.read_turns("s2", first["offset"])
+        self.assertEqual(again["turns"], [], "resuming at the end must yield nothing")
+        self.assertEqual(again["offset"], first["offset"])
+
+    async def test_long_transcript_is_truncated_to_the_tail(self):
+        records = [assistant(f"line {i}", "s3") for i in range(400)]
+        write_transcript(self.root, "s3", records)
+        with patch.object(transcripts, "HISTORY_TAIL_BYTES", 2000):
+            page = await transcripts.read_turns("s3")
+        self.assertTrue(page["truncated"])
+        self.assertFalse(page["at_start"])
+        self.assertGreater(page["start"], 0)
+        self.assertLess(len(page["turns"]), 400)
+        # The tail must be the *end* of the conversation. A fix that returned
+        # the right number of turns from the wrong window would pass a count
+        # check and still show the user the wrong part of their history.
+        self.assertEqual(page["turns"][-1]["blocks"][0]["text"], "line 399")
+
+
+class PageBackwardsTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_before_zero_is_the_start(self):
+        write_transcript(self.root, "s1", [assistant("only", "s1")])
+        page = await transcripts.read_before("s1", 0)
+        self.assertTrue(page["at_start"])
+        self.assertEqual(page["turns"], [])
+
+    async def test_paging_backwards_recovers_every_turn(self):
+        """Without this a long conversation was only ever readable from its tail."""
+        total = 300
+        write_transcript(self.root, "s4",
+                         [assistant(f"line {i}", "s4") for i in range(total)])
+        with patch.object(transcripts, "HISTORY_TAIL_BYTES", 1500):
+            page = await transcripts.read_turns("s4")
+            seen = list(page["turns"])
+            earliest, at_start, guard = page["start"], page["at_start"], 0
+            while not at_start and guard < 500:
+                guard += 1
+                older = await transcripts.read_before("s4", earliest)
+                self.assertLessEqual(older["start"], earliest, "paging must move back")
+                seen = older["turns"] + seen
+                earliest, at_start = older["start"], older["at_start"]
+
+        self.assertTrue(at_start, "paging must terminate at the beginning")
+        self.assertEqual(len(seen), total, "every turn must be recovered exactly once")
+        self.assertEqual(seen[0]["blocks"][0]["text"], "line 0")
+        self.assertEqual(seen[-1]["blocks"][0]["text"], f"line {total - 1}")
+
+    async def test_unknown_session_is_reported_not_found(self):
+        page = await transcripts.read_before("missing", 100)
+        self.assertFalse(page["found"])
+
+    async def test_paging_recovers_everything_when_a_window_exceeds_the_cap(self):
+        """A single window can hold far more turns than MAX_TURNS.
+
+        Capping the page while leaving ``start`` at the beginning of the whole
+        window silently strips history: the caller then pages back from a byte
+        position *below* the turns that were dropped, so no call ever returns
+        them. With ~400-byte records one 512 KiB window holds ~1300 turns, and
+        walking a 2000-turn transcript recovered exactly half of it.
+
+        The first version of this test used records large enough that a window
+        never exceeded the cap, so the capping path never ran and it passed
+        against the bug. Small records are what make it fire.
+        """
+        total = 300
+        write_transcript(self.root, "cap",
+                         [user(f"turn {i}") for i in range(total)])
+        # A window that holds well over the cap, without needing a large file.
+        with patch.object(transcripts, "MAX_TURNS", 50), \
+             patch.object(transcripts, "HISTORY_TAIL_BYTES", 8000):
+            page = await transcripts.read_turns("cap")
+            self.assertLessEqual(len(page["turns"]), 50, "the cap must apply")
+            seen = list(page["turns"])
+            earliest, at_start, guard = page["start"], page["at_start"], 0
+            while not at_start and guard < 200:
+                guard += 1
+                older = await transcripts.read_before("cap", earliest)
+                self.assertLess(older["start"], earliest, "paging must move back")
+                seen = older["turns"] + seen
+                earliest, at_start = older["start"], older["at_start"]
+
+        self.assertTrue(at_start)
+        recovered = [t["blocks"][0]["text"] for t in seen]
+        self.assertEqual(len(recovered), total, "capping must not drop turns")
+        self.assertEqual(recovered, [f"turn {i}" for i in range(total)],
+                         "turns must come back in order, with no gaps or repeats")
+
+
+class SessionMetadataTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_cwd_is_read_from_the_transcript(self):
+        """The project directory name is lossy, so the record is the source."""
+        write_transcript(self.root, "s5", [
+            {"type": "system", "subtype": "init", "cwd": "/home/kali/projects"},
+            assistant("hi", "s5"),
+        ])
+        self.assertEqual(await transcripts.session_cwd("s5"), "/home/kali/projects")
+
+    async def test_missing_cwd_is_empty_not_an_error(self):
+        write_transcript(self.root, "s6", [assistant("hi", "s6")])
+        self.assertEqual(await transcripts.session_cwd("s6"), "")
+
+    async def test_unknown_session_has_no_cwd(self):
+        self.assertEqual(await transcripts.session_cwd("missing"), "")
+
+    async def test_title_comes_from_the_opening_prompt(self):
+        write_transcript(self.root, "s7", [user("Fix the login bug\nmore detail"),
+                                           assistant("ok", "s7")])
+        self.assertEqual(await transcripts.session_title("s7"), "Fix the login bug")
+
+    async def test_slash_command_is_not_used_as_a_title(self):
+        write_transcript(self.root, "s8", [user("/init"), user("Real question"),
+                                           assistant("ok", "s8")])
+        self.assertEqual(await transcripts.session_title("s8"), "Real question")
+
+
+class ListRecentTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_empty_root_lists_nothing(self):
+        self.assertEqual(await transcripts.list_recent(), [])
+
+    async def test_entries_carry_identity_and_title(self):
+        write_transcript(self.root, "s9", [user("Ship the thing"), assistant("ok", "s9")])
+        listed = await transcripts.list_recent()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["session_id"], "s9")
+        self.assertEqual(listed[0]["title"], "Ship the thing")
+        self.assertGreater(listed[0]["size"], 0)
+
+    async def test_newest_first(self):
+        first = write_transcript(self.root, "old", [assistant("a", "old")])
+        second = write_transcript(self.root, "new", [assistant("b", "new")])
+        os.utime(first, (time.time() - 500, time.time() - 500))
+        listed = await transcripts.list_recent()
+        self.assertEqual([e["session_id"] for e in listed], ["new", "old"])
+        self.assertTrue(second.exists())
+
+    async def test_limit_is_clamped(self):
+        for i in range(5):
+            write_transcript(self.root, f"s{i}", [assistant("x", f"s{i}")])
+        self.assertEqual(len(await transcripts.list_recent(limit=2)), 2)
+        # Absurd limits must not be passed through to the filesystem walk.
+        self.assertLessEqual(len(await transcripts.list_recent(limit=10_000)), 5)
+
+
+# ── HTTP endpoints ───────────────────────────────────────────────────────────
+
+
+class TranscriptEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_list_returns_transcripts(self):
+        write_transcript(self.root, "e1", [user("Hello there"), assistant("hi", "e1")])
+        response = await app.handle_transcripts_list(make_request({"limit": "10"}))
+        payload = json.loads(response.body)
+        self.assertEqual(len(payload["transcripts"]), 1)
+        self.assertEqual(payload["transcripts"][0]["title"], "Hello there")
+
+    async def test_list_survives_a_junk_limit(self):
+        write_transcript(self.root, "e2", [assistant("x", "e2")])
+        response = await app.handle_transcripts_list(make_request({"limit": "abc"}))
+        self.assertEqual(response.status_code, 200)
+
+    async def test_get_returns_history(self):
+        write_transcript(self.root, "e3", [user("q"), assistant("a", "e3")])
+        response = await app.handle_transcript_get(make_request(), "e3")
+        payload = json.loads(response.body)
+        self.assertEqual(len(payload["turns"]), 2)
+        self.assertIn("offset", payload)
+        self.assertIn("start", payload)
+
+    async def test_get_unknown_session_is_404(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_transcript_get(make_request(), "missing")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_get_rejects_a_traversal_id(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_transcript_get(make_request(), "../../etc/passwd")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_get_refuses_a_traversal_that_would_resolve(self):
+        """An id that really would reach another file must still be refused."""
+        write_transcript(self.root, "hidden", [assistant("private", "hidden")],
+                         project="-home-kali-demo")
+        self.assertEqual(
+            len(sorted(self.root.glob("*/../-home-kali-demo/hidden.jsonl"))), 1)
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_transcript_get(
+                make_request(), "../-home-kali-demo/hidden")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_before_parameter_pages_backwards(self):
+        write_transcript(self.root, "e4",
+                         [assistant(f"line {i}", "e4") for i in range(200)])
+        with patch.object(transcripts, "HISTORY_TAIL_BYTES", 1200):
+            first = json.loads(
+                (await app.handle_transcript_get(make_request(), "e4")).body)
+            older = json.loads((await app.handle_transcript_get(
+                make_request({"before": str(first["start"])}), "e4")).body)
+        self.assertTrue(older["turns"], "paging back must return earlier turns")
+        self.assertLess(older["start"], first["start"])
+
+    async def test_before_must_be_a_number(self):
+        write_transcript(self.root, "e5", [assistant("x", "e5")])
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_transcript_get(make_request({"before": "soon"}), "e5")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_stream_unknown_session_is_404(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_transcript_stream(make_request(), "missing")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_stream_opens_with_a_start_frame(self):
+        write_transcript(self.root, "e6", [assistant("x", "e6")])
+        response = await app.handle_transcript_stream(
+            make_request({"offset": "0"}), "e6")
+        iterator = response.body_iterator
+        try:
+            frame = await iterator.__anext__()
+        finally:
+            await iterator.aclose()
+        self.assertTrue(frame.startswith("data: "))
+        self.assertEqual(json.loads(frame[len("data: "):])["type"], "start")
+
+
+# ── Workspace adoption ───────────────────────────────────────────────────────
+
+
+class AdoptSessionCwdTests(unittest.TestCase):
+    """work_dir is where Claude runs, and it must never leave PROJECTS_ROOT."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.patch = patch.object(config, "PROJECTS_ROOT", str(self.root))
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_a_cwd_inside_the_root_is_adopted(self):
+        inside = self.root / "workspace"
+        inside.mkdir()
+        self.assertEqual(app._adopt_session_cwd(str(inside), "abcd1234"), str(inside))
+
+    def test_the_root_itself_is_adopted(self):
+        self.assertEqual(app._adopt_session_cwd(str(self.root), "abcd1234"), str(self.root))
+
+    def test_a_cwd_outside_the_root_falls_back(self):
+        result = app._adopt_session_cwd("/etc", "abcd1234")
+        self.assertNotEqual(result, "/etc")
+        self.assertTrue(Path(result).resolve().is_relative_to(self.root))
+
+    def test_a_missing_directory_falls_back(self):
+        result = app._adopt_session_cwd(str(self.root / "gone"), "abcd1234")
+        self.assertTrue(Path(result).is_dir())
+        self.assertTrue(Path(result).resolve().is_relative_to(self.root))
+
+    def test_blank_and_null_fall_back(self):
+        for value in ("", "   ", None):
+            result = app._adopt_session_cwd(value, "abcd1234")
+            self.assertTrue(Path(result).resolve().is_relative_to(self.root))
+
+    def test_every_outcome_stays_inside_the_root(self):
+        """The fallback is the boundary's last line; it must never leak."""
+        for value in ("/etc", "/", "../../..", str(self.root / "nope"), "", None):
+            result = app._adopt_session_cwd(value, "abcd1234")
+            self.assertTrue(
+                Path(result).resolve().is_relative_to(self.root), f"escaped for {value!r}")
+
+
+# ── Resuming a past conversation ─────────────────────────────────────────────
+
+
+class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+    """~/.claude/sessions lists only running sessions, so resume must not rely
+    on it alone -- otherwise every finished conversation is unreachable."""
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+        self.dbtmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.dbtmp.name) / "projects"
+        self.workspace.mkdir(parents=True)
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.dbtmp.name}/db")
+        self.proj_patch = patch.object(config, "PROJECTS_ROOT", str(self.workspace))
+        self.db_patch.start()
+        self.proj_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.proj_patch.stop()
+        self.db_patch.stop()
+        self.dbtmp.cleanup()
+        self.tear_down_root()
+
+    async def test_resumes_a_finished_conversation(self):
+        write_transcript(self.root, "dead1", [
+            {"type": "system", "subtype": "init", "cwd": str(self.workspace)},
+            user("Investigate the outage"), assistant("looking", "dead1"),
+        ])
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])):
+            response = await app.handle_sessions_resume(make_request(), "dead1")
+        payload = json.loads(response.body)
+        chat = await db.chat_get(payload["id"], "admin")
+        self.assertEqual(chat["session_id"], "dead1")
+        self.assertEqual(chat["work_dir"], str(self.workspace))
+        self.assertEqual(chat["title"], "Investigate the outage")
+
+    async def test_a_live_session_name_wins_over_the_prompt(self):
+        write_transcript(self.root, "live1", [user("Some prompt"),
+                                              assistant("ok", "live1")])
+        live = [{"sessionId": "live1", "name": "cweb9", "cwd": str(self.workspace)}]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=live)):
+            response = await app.handle_sessions_resume(make_request(), "live1")
+        chat = await db.chat_get(json.loads(response.body)["id"], "admin")
+        self.assertEqual(chat["title"], "cweb9")
+
+    async def test_unknown_session_with_no_transcript_is_404(self):
+        with (
+            patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])),
+            self.assertRaises(HTTPException) as ctx,
+        ):
+            await app.handle_sessions_resume(make_request(), "nothing")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("no running session and no transcript", ctx.exception.detail)
+
+    async def test_resuming_twice_reuses_the_same_chat(self):
+        write_transcript(self.root, "dead2", [
+            {"type": "system", "subtype": "init", "cwd": str(self.workspace)},
+            user("Second look"), assistant("ok", "dead2"),
+        ])
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])):
+            first = json.loads(
+                (await app.handle_sessions_resume(make_request(), "dead2")).body)
+            second = json.loads(
+                (await app.handle_sessions_resume(make_request(), "dead2")).body)
+        self.assertEqual(first["id"], second["id"],
+                         "resuming again must not create a duplicate chat")
+
+
+if __name__ == "__main__":
+    unittest.main()

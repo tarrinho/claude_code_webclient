@@ -86,12 +86,24 @@
           <h3 id="machineFormTitle">Add machine</h3>
           <label for="machineName">Name</label>
           <input id="machineName" maxlength="100" placeholder="e.g. Production, Staging, GCP">
-          <label for="machineHost">Host</label>
-          <input id="machineHost" maxlength="253" placeholder="e.g. 10.0.0.1 or hostname">
+          <label for="machineProvider">Provider</label>
+          <select id="machineProvider">
+            <option value="anthropic">Anthropic API</option>
+            <option value="proxy">Claude Code proxy</option>
+          </select>
+          <div id="machineProxyFields">
+            <label for="machineHost">Host</label>
+            <input id="machineHost" maxlength="253" placeholder="e.g. 10.0.0.1 or hostname">
+          </div>
+          <div id="machineAnthropicFields">
+            <label for="machineBaseUrl">Base URL</label>
+            <input id="machineBaseUrl" maxlength="500" placeholder="https://api.anthropic.com">
+          </div>
           <label for="machineModel">Default model</label>
           <input id="machineModel" maxlength="100" placeholder="claude-sonnet-5">
           <label for="machineApiKey">API Key <span aria-hidden="true">· optional</span></label>
           <input id="machineApiKey" type="password" autocomplete="off">
+          <p class="machine-hint" id="machineApiKeyHint">Leave blank to use this host's existing Claude login.</p>
           <div class="machine-form-actions">
             <button class="btn-secondary" id="cancelMachine">Cancel</button>
             <button class="btn-primary" id="saveMachine">Save</button>
@@ -100,20 +112,21 @@
       </div>
       <!-- Models tab -->
       <div class="settings-panel" id="panelModels" role="tabpanel" aria-labelledby="tabModels" tabindex="0" hidden>
-        <p>Configure default models and known model presets.</p>
+        <p>Configure default models. The list below comes from the active machine.</p>
+        <div class="models-toolbar">
+          <span class="models-status" id="modelsStatus" role="status" aria-live="polite"></span>
+          <button type="button" class="btn-secondary" id="refreshModels">Refresh</button>
+        </div>
+        <div class="models-list" id="modelsList"></div>
+        <datalist id="modelSuggestions"></datalist>
         <div class="model-row">
           <label for="defaultModel">Default model</label>
           <input id="defaultModel" list="modelSuggestions" maxlength="100" placeholder="claude-sonnet-5">
-          <datalist id="modelSuggestions">
-            <option value="claude-sonnet-5">
-            <option value="claude-opus-5">
-            <option value="claude-fable-5">
-            <option value="claude-haiku-4-5-20251001">
-          </datalist>
+          <span class="setting-hint">Any id the backend accepts — the list is a suggestion, not a limit.</span>
         </div>
         <div class="model-row">
           <label for="fallbackModel">Fallback model</label>
-          <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-5-20251001">
+          <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-5">
         </div>
       </div>
       <!-- Skills tab -->
@@ -156,7 +169,7 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js?v=4"></script>
+<script type="module" src="/assets/app.js?v=6"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

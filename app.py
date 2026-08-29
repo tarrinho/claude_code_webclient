@@ -615,6 +615,65 @@ async def handle_chat_export(request: Request, chat_id: str):
     )
 
 
+def _usage_provider(machine: dict | None) -> str:
+    """Classify a machine for usage accounting. See _record_turn_usage."""
+    if not machine or machine.get("provider") != "anthropic":
+        return "proxy"
+    base_url = (machine.get("base_url") or "").strip()
+    if not base_url:
+        # No override means the CLI's own default: the official API.
+        return "anthropic"
+    host = base_url.split("://", 1)[-1].split("/")[0].split(":")[0].lower()
+    return "anthropic" if host in ("api.anthropic.com", "") else "anthropic-compatible"
+
+
+async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
+    """Persist a usage frame as one row per model.
+
+    ``provider`` is resolved to one of three values and stored on the row,
+    because the machine may later be edited or deleted:
+
+    * ``anthropic`` -- the official API, where ``total_cost_usd`` is real.
+    * ``anthropic-compatible`` -- an Anthropic-protocol gateway at a custom
+      base_url (LiteLLM, a proxy, a self-hosted model). The machine's
+      ``provider`` column says ``anthropic`` for these too, since that only
+      describes the wire protocol, but the CLI still prices them with
+      Anthropic's rates so the cost is not meaningful.
+    * ``proxy`` -- a claude_proxy host.
+
+    ``total_cost_usd`` covers the whole turn, not each model, so it is recorded
+    against the first row only -- putting it on every row would multiply the
+    reported spend by the number of models the turn touched.
+    """
+    if not frame:
+        return
+    models = frame.get("models") or {}
+    if not models:
+        return
+    try:
+        machine = await db.ai_machine_active(owner)
+    except Exception:  # noqa: BLE001 -- accounting must not break a live turn
+        machine = None
+    provider = _usage_provider(machine)
+    cost = frame.get("cost_usd")
+    for index, (model, stats) in enumerate(models.items()):
+        if not isinstance(stats, dict):
+            continue
+        await db.usage_record(
+            chat_id,
+            owner,
+            model or "unknown",
+            provider,
+            input_tokens=stats.get("input_tokens", 0),
+            output_tokens=stats.get("output_tokens", 0),
+            cache_read_tokens=stats.get("cache_read_tokens", 0),
+            cache_creation_tokens=stats.get("cache_creation_tokens", 0),
+            cost_usd=cost if index == 0 else None,
+            duration_ms=frame.get("duration_ms"),
+            is_error=bool(frame.get("is_error")),
+        )
+
+
 # Safe messages for SSE errors so internal details never leak.
 _SSE_INTERNAL = "An internal error occurred — see server logs."
 _SSE_TIMEOUT = "The turn timed out."
@@ -685,6 +744,7 @@ async def handle_submit_message(request: Request, chat_id: str):
     model = runner.take_last_model(chat_id)
     if model and model != chat.get("model"):
         await db.chat_set_model(chat_id, model)
+    await _record_turn_usage(chat_id, session["user"], runner.take_last_usage(chat_id))
     return JSONResponse(
         {"response": full_response, "chunks": len(chunks), "model": model}
     )
@@ -751,6 +811,10 @@ async def stream_handler(request: Request, chat_id: str):
                     pending_session_id = event.get("session_id") or pending_session_id
                 elif event_type == "model":
                     pending_model = event.get("model") or pending_model
+                elif event_type == "usage":
+                    # Recorded as it arrives: the tokens were spent whether or
+                    # not the rest of the turn completes.
+                    await _record_turn_usage(chat_id, session["user"], event)
                 elif event_type == "text":
                     full_response_parts.append(event.get("content", ""))
                 elif event_type == "error":
@@ -1290,6 +1354,56 @@ async def handle_db_restore(request: Request):
     return JSONResponse({"ok": True, "message": "Database restored successfully"})
 
 
+async def handle_usage_get(request: Request):
+    """GET /api/usage -- per-model token totals and a recent-turn log.
+
+    Scoped to the signed-in user's own rows. Like the settings GET, readable by
+    any authenticated user rather than admin-only, and for the same reason: it
+    is their own data and carries no secret.
+
+    ``cost_usd`` is reported only for ``provider='anthropic'`` rows. Claude Code
+    prices every turn with Anthropic's rates, so the figure is meaningless for a
+    self-hosted or third-party gateway; ``cost_note`` tells the client why the
+    value is absent so the UI can explain the blank rather than just show one.
+    """
+    session = request.state.session
+    owner = session["user"]
+
+    raw_days = request.query_params.get("days", "30")
+    days: int | None
+    if raw_days in ("all", "0", ""):
+        days = None
+    else:
+        try:
+            days = max(1, min(int(raw_days), 3650))
+        except (TypeError, ValueError):
+            days = 30
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "50")), 500))
+    except (TypeError, ValueError):
+        limit = 50
+
+    totals = await db.usage_totals(owner, days)
+    for row in totals:
+        if row.get("provider") != "anthropic":
+            row["cost_usd"] = None
+            row["cost_note"] = "Priced with Anthropic rates; not meaningful for this backend."
+    recent = await db.usage_recent(owner, limit)
+    for row in recent:
+        if row.get("provider") != "anthropic":
+            row["cost_usd"] = None
+
+    return JSONResponse(
+        {
+            "days": days if days is not None else 0,
+            "retention_days": config.USAGE_RETENTION_DAYS,
+            "overall": await db.usage_overall(owner, days),
+            "totals": totals,
+            "recent": recent,
+        }
+    )
+
+
 async def handle_settings_get(request: Request):
     """GET /api/settings -- return non-secret runtime and app settings.
 
@@ -1319,7 +1433,6 @@ async def handle_settings_get(request: Request):
             "ai_machine_port": config.PROXY_PORT,
             "proxy_enabled": config.PROXY_ENABLED,
             "default_model": await db.setting_get("default_model") or config.MODEL_NAME,
-            "fallback_model": await db.setting_get("fallback_model") or "",
             "version": config.VERSION.removeprefix("WebConsole_"),
             "session_ttl_s": session_ttl,
             "turn_timeout_s": turn_timeout,
@@ -1382,7 +1495,10 @@ async def handle_settings_patch(request: Request):
                     raise HTTPException(status_code=400, detail=error)
             await db.setting_set(db_key, value.strip() if value is not None else None)
 
-    for key in ("default_model", "fallback_model"):
+    # fallback_model was accepted and stored here but never read by anything --
+    # a settings control implying a retry behaviour that did not exist. Removed
+    # rather than left dead; the per-machine default is the real control now.
+    for key in ("default_model",):
         if key in data:
             value = data[key]
             if not isinstance(value, str) or len(value.strip()) > 100:
@@ -1857,7 +1973,22 @@ def _parse_model_list(body: bytes) -> list[dict[str, str]]:
     return models
 
 
-def _builtin_models(reason: str, endpoint: str | None = None) -> JSONResponse:
+def _machine_model_selection(machine: dict | None) -> dict:
+    """The active/default selection to report alongside a model list."""
+    if not machine:
+        return {"machine_id": None, "active": [], "default": ""}
+    return {
+        "machine_id": machine["id"],
+        # Empty means "everything served is offered" -- the UI renders that as
+        # all-checked rather than none, so the feature stays opt-in.
+        "active": db.parse_active_models(machine.get("active_models")),
+        "default": (machine.get("model") or "").strip(),
+    }
+
+
+def _builtin_models(
+    reason: str, endpoint: str | None = None, machine: dict | None = None
+) -> JSONResponse:
     """Fall back to the ids shipped with the app, saying why.
 
     The page previously showed a hardcoded list with no indication that it was
@@ -1870,20 +2001,33 @@ def _builtin_models(reason: str, endpoint: str | None = None) -> JSONResponse:
             "source": "builtin",
             "endpoint": endpoint,
             "reason": reason,
+            **_machine_model_selection(machine),
         }
     )
 
 
 async def handle_models_list(request: Request):
-    """GET /api/models -- models the active machine actually serves."""
+    """GET /api/models -- models a machine actually serves.
+
+    Defaults to the active machine. ``?machine_id=`` inspects another one
+    without activating it, so choosing which models a backend offers does not
+    require making it live first.
+    """
     session = request.state.session
-    machine = await db.ai_machine_active(session["user"])
+    machine_id = (request.query_params.get("machine_id") or "").strip()
+    if machine_id:
+        machine = await db.ai_machine_get(machine_id, session["user"])
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+    else:
+        machine = await db.ai_machine_active(session["user"])
     if not machine:
         return _builtin_models("No machine is active.")
     if machine.get("provider") != "anthropic":
         return _builtin_models(
-            "The active machine is a Claude Code proxy, which does not "
-            "publish a model list."
+            "This is a Claude Code proxy, which does not publish a model list.",
+            None,
+            machine,
         )
     base_url = runner.normalise_base_url(machine.get("base_url")) or (
         config.ANTHROPIC_BASE_URL
@@ -1897,6 +2041,7 @@ async def handle_models_list(request: Request):
                 "source": "endpoint",
                 "endpoint": base_url,
                 "reason": None,
+                **_machine_model_selection(machine),
             }
         )
     host = _base_url_host(base_url)
@@ -1912,26 +2057,27 @@ async def handle_models_list(request: Request):
         )
     except (asyncio.TimeoutError, TimeoutError):
         _log.warning("model list timeout %s", host)
-        return _builtin_models("The endpoint timed out.", base_url)
+        return _builtin_models("The endpoint timed out.", base_url, machine)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         _log.warning("model list failed %s: %s", host, exc)
-        return _builtin_models("Could not reach the endpoint.", base_url)
+        return _builtin_models("Could not reach the endpoint.", base_url, machine)
     if status in (401, 403):
         return _builtin_models(
             "The endpoint rejected the API key."
             if api_key
             else "The endpoint requires an API key.",
             base_url,
+            machine,
         )
     if status != 200:
-        return _builtin_models(f"The endpoint returned HTTP {status}.", base_url)
+        return _builtin_models(f"The endpoint returned HTTP {status}.", base_url, machine)
     try:
         models = _parse_model_list(body)
     except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
         _log.warning("model list unparseable from %s", host)
-        return _builtin_models("The endpoint returned an unreadable list.", base_url)
+        return _builtin_models("The endpoint returned an unreadable list.", base_url, machine)
     if not models:
-        return _builtin_models("The endpoint listed no models.", base_url)
+        return _builtin_models("The endpoint listed no models.", base_url, machine)
     _models_cache[base_url] = (now, models)
     return JSONResponse(
         {
@@ -1939,8 +2085,72 @@ async def handle_models_list(request: Request):
             "source": "endpoint",
             "endpoint": base_url,
             "reason": None,
+            **_machine_model_selection(machine),
         }
     )
+
+
+async def handle_machine_models_set(request: Request, machine_id: str):
+    """PUT /api/machines/{id}/models -- choose which models this machine offers.
+
+    Deliberately its own route rather than a field on PATCH /api/machines: that
+    handler rejects the whole body if any key falls outside its allowlist, and
+    the shape of that allowlist is still unsettled.
+
+    The selection only decides what the picker shows. A turn naming a model
+    outside it is still executed -- an old conversation whose model was later
+    deactivated must keep working, and a gateway will accept ids it does not
+    advertise.
+    """
+    session = request.state.session
+    machine = await db.ai_machine_get(machine_id, session["user"])
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    data = await request.json()
+
+    raw_active = data.get("active", [])
+    if not isinstance(raw_active, list):
+        raise HTTPException(status_code=400, detail="active must be a list of models")
+    active: list[str] = []
+    for entry in raw_active:
+        if not isinstance(entry, str):
+            raise HTTPException(status_code=400, detail="Model ids must be text")
+        entry = entry.strip()
+        if not entry:
+            continue
+        if not _MODEL_RE.fullmatch(entry):
+            raise HTTPException(
+                status_code=400, detail="Model name contains invalid characters"
+            )
+        if entry not in active:
+            active.append(entry[:200])
+
+    default = data.get("default")
+    if default is not None and not isinstance(default, str):
+        raise HTTPException(status_code=400, detail="default must be text or null")
+    default = (default or "").strip()
+    if default:
+        if not _MODEL_RE.fullmatch(default):
+            raise HTTPException(
+                status_code=400, detail="Model name contains invalid characters"
+            )
+        # A default outside the offered set would be unreachable in the picker
+        # while still being applied to every new chat.
+        if active and default not in active:
+            raise HTTPException(
+                status_code=400, detail="The default model must be one of the active models"
+            )
+        default = default[:200]
+
+    await db.ai_machine_set_models(machine_id, session["user"], active, default or None)
+    _log.info(
+        "machine models set by user=%s id=%s active=%d default=%s",
+        session["user"],
+        machine_id,
+        len(active),
+        default or "(unchanged)",
+    )
+    return JSONResponse({"ok": True, "active": active, "default": default})
 
 
 async def handle_sessions_list(request: Request):
@@ -2073,6 +2283,11 @@ async def handle_sessions_resume(request: Request, session_id: str):
         None,
     )
     if existing:
+        # Backfill a chat resumed before the import existed, which would
+        # otherwise stay permanently empty. Guarded on the chat having no
+        # messages so a conversation continued here is never duplicated.
+        if not await db.messages_get(existing["id"]):
+            await _import_transcript(existing["id"], session_id)
         return JSONResponse(
             {
                 "id": existing["id"],
@@ -2095,6 +2310,9 @@ async def handle_sessions_resume(request: Request, session_id: str):
     await db.chat_create(chat_id, title, None, work_dir, session["user"])
     # Link the CLI session ID
     await db.chat_set_session(chat_id, session_id)
+    # Seed the chat with the conversation already on disk, so it opens where
+    # the terminal left off rather than blank.
+    imported = await _import_transcript(chat_id, session_id)
     # Write session file so CLI can see it too
     try:
         db.write_claude_session_file(session_id, title, work_dir)
@@ -2103,7 +2321,72 @@ async def handle_sessions_resume(request: Request, session_id: str):
             "could not write CLI session file session_id=%s: %s", session_id, exc
         )
 
-    return JSONResponse({"id": chat_id, "title": title, "session_id": session_id})
+    return JSONResponse(
+        {
+            "id": chat_id,
+            "title": title,
+            "session_id": session_id,
+            "imported_messages": imported,
+        }
+    )
+
+
+def _turn_to_message(turn: dict) -> tuple[str, str] | None:
+    """Flatten one transcript turn into a (role, content) message row.
+
+    The messages table holds a role and a body, with nowhere to record that a
+    turn came from a subagent, so sidechain traffic is dropped rather than
+    replayed unlabelled among the user's own turns -- the transcript viewer
+    already shows it marked. Thinking blocks are dropped for the same reason:
+    the terminal collapses them, so replaying them inline would show more than
+    the conversation the user actually saw.
+    """
+    if turn.get("sidechain"):
+        return None
+    parts: list[str] = []
+    for block in turn.get("blocks") or []:
+        kind, text = block.get("kind"), (block.get("text") or "").strip()
+        if not text:
+            continue
+        if kind == "text":
+            parts.append(text)
+        elif kind == "tool":
+            parts.append(f"`{text}`")
+    if not parts:
+        return None
+    role = "assistant" if turn.get("role") == "assistant" else "user"
+    return role, "\n\n".join(parts)
+
+
+async def _import_transcript(chat_id: str, session_id: str) -> int:
+    """Seed a resumed chat with the conversation already on disk.
+
+    A resumed CLI session used to open empty: the history lived only in the
+    transcript viewer, so the chat gave no sense of what had been discussed.
+    Importing it once at resume makes the conversation read as if it had
+    always been here -- scrollable, searchable, exportable and forkable like
+    any other, because it is now ordinary message rows.
+    """
+    try:
+        payload = await transcripts.read_turns(session_id)
+    except OSError as exc:
+        _log.warning("transcript_import_failed session_id=%s: %s", session_id, exc)
+        return 0
+    if not payload.get("found"):
+        return 0
+    rows = [
+        row
+        for row in (_turn_to_message(turn) for turn in payload.get("turns") or [])
+        if row is not None
+    ]
+    if not rows:
+        return 0
+    await db.messages_batch(chat_id, rows)
+    _log.info(
+        "transcript_imported chat_id=%s session_id=%s turns=%d truncated=%s",
+        chat_id, session_id, len(rows), bool(payload.get("truncated")),
+    )
+    return len(rows)
 
 
 async def handle_session_delete(request: Request, session_id: str):
@@ -2135,6 +2418,11 @@ async def handle_session_delete(request: Request, session_id: str):
 @app.get("/api/skills")
 async def _api_skills_get(request: Request):
     return await handle_skills_get(request)
+
+
+@app.get("/api/usage")
+async def _api_usage_get(request: Request):
+    return await handle_usage_get(request)
 
 
 @app.get("/api/settings")
@@ -2246,6 +2534,11 @@ async def _api_transcript_stream(request: Request, session_id: str):
 @app.get("/api/models")
 async def _api_models_list(request: Request):
     return await handle_models_list(request)
+
+
+@app.put("/api/machines/{machine_id}/models")
+async def _api_machine_models_set(request: Request, machine_id: str):
+    return await handle_machine_models_set(request, machine_id)
 
 
 @app.get("/api/sessions")

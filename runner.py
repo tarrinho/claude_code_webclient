@@ -37,6 +37,64 @@ class TurnError(Exception):
         super().__init__(message)
 
 
+def _int_or_zero(value: object) -> int:
+    try:
+        return max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def usage_frame(obj: dict) -> dict | None:
+    """Build a ``usage`` event from a Claude Code ``result`` frame.
+
+    Mirrors claude_proxy.usage_frame — the proxy runs as a standalone host
+    process and imports nothing from this package, so the parser exists on both
+    sides rather than being shared. Keep the two in step.
+
+    ``modelUsage`` is keyed by model id and preferred; its keys are camelCase
+    while flat ``usage`` is snake_case. When only the flat form is present the
+    model is unknown here and reported under "", for the caller to resolve.
+    """
+    models: dict[str, dict[str, int]] = {}
+    model_usage = obj.get("modelUsage")
+    if isinstance(model_usage, dict):
+        for name, stats in model_usage.items():
+            if not isinstance(name, str) or not isinstance(stats, dict):
+                continue
+            models[name] = {
+                "input_tokens": _int_or_zero(stats.get("inputTokens")),
+                "output_tokens": _int_or_zero(stats.get("outputTokens")),
+                "cache_read_tokens": _int_or_zero(stats.get("cacheReadInputTokens")),
+                "cache_creation_tokens": _int_or_zero(
+                    stats.get("cacheCreationInputTokens")
+                ),
+            }
+    if not models:
+        usage = obj.get("usage")
+        if isinstance(usage, dict):
+            totals = {
+                "input_tokens": _int_or_zero(usage.get("input_tokens")),
+                "output_tokens": _int_or_zero(usage.get("output_tokens")),
+                "cache_read_tokens": _int_or_zero(usage.get("cache_read_input_tokens")),
+                "cache_creation_tokens": _int_or_zero(
+                    usage.get("cache_creation_input_tokens")
+                ),
+            }
+            if any(totals.values()):
+                models[""] = totals
+    if not models:
+        return None
+
+    cost = obj.get("total_cost_usd")
+    return {
+        "type": "usage",
+        "models": models,
+        "cost_usd": cost if isinstance(cost, (int, float)) else None,
+        "duration_ms": _int_or_zero(obj.get("duration_ms")) or None,
+        "is_error": bool(obj.get("is_error")),
+    }
+
+
 def _normalise_cli_frame(obj: dict) -> list[dict]:
     """Translate Claude Code stream-json output into runner events."""
     frame_type = obj.get("type", "")
@@ -88,6 +146,9 @@ def _normalise_cli_frame(obj: dict) -> list[dict]:
     elif frame_type == "result":
         if obj.get("session_id"):
             events.append({"type": "session_id", "session_id": obj["session_id"]})
+        usage = usage_frame(obj)
+        if usage:
+            events.append(usage)
         if obj.get("is_error") or subtype not in ("", "success"):
             error = (
                 obj.get("error")
@@ -116,12 +177,39 @@ def _normalise_cli_frame(obj: dict) -> list[dict]:
 
 _sem: object = None
 _models_by_chat: dict[str, str] = {}
+_usage_by_chat: dict[str, dict] = {}
 _skills_by_session: dict[str, set[str]] = {}
 
 
 def take_last_model(chat_id: str) -> str:
     """Return and clear the last model reported for a blocking turn."""
     return _models_by_chat.pop(chat_id, "")
+
+
+def take_last_usage(chat_id: str) -> dict:
+    """Return and clear the usage reported for a blocking turn.
+
+    Same hand-off as take_last_model: the blocking paths consume frames
+    internally, so the handler collects the result afterwards. Streaming paths
+    yield the usage event straight through and are recorded by the handler as
+    the event arrives.
+    """
+    return _usage_by_chat.pop(chat_id, {})
+
+
+def record_usage_frame(chat_id: str, frame: dict) -> None:
+    """Stash a usage frame, resolving the model when the frame did not know it.
+
+    A flat ``usage`` object carries no model name, so it arrives keyed by "".
+    The session's model is known here, so substitute it rather than storing a
+    row that cannot be attributed.
+    """
+    models = frame.get("models") or {}
+    if "" in models:
+        resolved = _models_by_chat.get(chat_id) or ""
+        models = {(resolved or "unknown"): models.pop("")} | models
+        frame = {**frame, "models": models}
+    _usage_by_chat[chat_id] = frame
 
 
 def active_skills(session_id: str | None) -> list[str]:
@@ -145,12 +233,25 @@ async def get_proxy_host() -> str:
     return await db.setting_get("ai_machine_host") or config.PROXY_HOST
 
 
-async def get_default_model() -> str:
-    """Return the persisted default model, falling back to environment config."""
+async def get_default_model(chat_id: str | None = None) -> str:
+    """Return the model a new turn should use.
+
+    Resolution order: the active machine's own default, then the global
+    setting, then environment config. The machine comes first because a model
+    id is only meaningful against the backend serving it -- a gateway default
+    of "vllm/Qwen3.6-..." is wrong for the Anthropic endpoint and vice versa.
+    The machine's `model` column existed for this and was never read.
+    """
     import db
 
     if db.db_conn is None:
         return config.MODEL_NAME
+    if chat_id:
+        owner = await db.chat_owner(chat_id)
+        if owner:
+            machine = await db.ai_machine_backend(owner)
+            if machine and (machine.get("model") or "").strip():
+                return machine["model"].strip()
     return await db.setting_get("default_model") or config.MODEL_NAME
 
 
@@ -296,7 +397,7 @@ async def _execute_proxy(
             "prompt": prompt,
             "session_id": session_id,
             "work_dir": work_dir,
-            "model": model or await get_default_model(),
+            "model": model or await get_default_model(chat_id),
         }
         backend = await get_backend(chat_id)
         if backend:
@@ -327,6 +428,8 @@ async def _execute_proxy(
                         sid = obj["session_id"]
                     elif msg_type == "model" and obj.get("model"):
                         _models_by_chat[chat_id] = obj["model"]
+                    elif msg_type == "usage":
+                        record_usage_frame(chat_id, obj)
                     elif msg_type == "skill":
                         _record_skill(sid, obj.get("name"))
                     elif msg_type == "text":
@@ -514,6 +617,8 @@ async def _collect_chunks(
                 session_id_val = event["session_id"]
             elif event["type"] == "model":
                 _models_by_chat[chat_id] = event["model"]
+            elif event["type"] == "usage":
+                record_usage_frame(chat_id, event)
             elif event["type"] == "error":
                 error = event["error"]
 
@@ -598,21 +703,22 @@ async def _do_proxy_stream(
         except (asyncio.TimeoutError, ValueError, json.JSONDecodeError):
             _log.warning("proxy handshake ACK unexpected")
 
-        # Send turn
-        writer.write(
-            (
-                json.dumps(
-                    {
-                        "type": "turn",
-                        "prompt": prompt,
-                        "session_id": session_id,
-                        "work_dir": work_dir,
-                        "model": model or await get_default_model(),
-                    }
-                )
-                + "\n"
-            ).encode()
-        )
+        # Send turn. The backend must travel with the streaming turn exactly as
+        # it does with the blocking one: without it the proxy spawns the CLI
+        # against the default Anthropic endpoint, so a chat routed to a custom
+        # gateway failed on every streamed turn while the same prompt through
+        # /messages succeeded.
+        turn_payload: dict[str, object] = {
+            "type": "turn",
+            "prompt": prompt,
+            "session_id": session_id,
+            "work_dir": work_dir,
+            "model": model or await get_default_model(chat_id),
+        }
+        backend = await get_backend(chat_id)
+        if backend:
+            turn_payload["backend"] = backend
+        writer.write((json.dumps(turn_payload) + "\n").encode())
         await writer.drain()
 
         # Stream events. A clean turn must include an explicit done frame.
@@ -634,7 +740,16 @@ async def _do_proxy_stream(
                     if msg_type == "skill":
                         _record_skill(session_id, obj.get("name"))
                         yield obj
-                    elif msg_type in ("text", "session_id", "model", "status", "error"):
+                    elif msg_type in (
+                        "text",
+                        "session_id",
+                        "model",
+                        "status",
+                        "error",
+                        # Streaming records usage in the handler as the event
+                        # arrives, so it is passed through rather than stashed.
+                        "usage",
+                    ):
                         yield obj
                     elif msg_type == "done":
                         completed = True

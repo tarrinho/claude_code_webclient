@@ -23,6 +23,9 @@ let _machines = [];
 let _machineEditing = null;
 let _currentTab = 'machines';
 let _modelOptions = [];
+// Last GET /api/models payload: what the active machine reports it serves.
+let _servedModels = [];
+let _modelsSource = null;
 // Last payload from GET /api/settings. Save compares against it so a field
 // cleared to "" is recognised as a change and actually sent.
 let _loadedSettings = {};
@@ -176,7 +179,19 @@ function _switchTab(tab) {
   const save = byId('settingsSave');
   if (save) save.hidden = tab === 'machines' || tab === 'skills';
   if (tab === 'machines') _renderMachineList();
+  if (tab === 'models') loadModels();
   if (tab === 'skills') loadSkills();
+}
+
+// Report the outcome of an action inside whichever surface the user is looking
+// at. A toast renders in .toast-region (z-index 300) while the settings dialog
+// is .dialog-backdrop (z-index 400), so a toast raised from Settings is painted
+// underneath the modal overlay -- the result appeared to land on the page
+// behind. #settingsStatus is the dialog's own aria-live region, so it is both
+// visible and announced.
+function notifyResult(message, type = '') {
+  if (settingsVisible) setStatus(message, type === 'error' ? 'error' : 'success');
+  else showToast(message, type);
 }
 
 function setStatus(text, type) {
@@ -409,8 +424,18 @@ function _renderMachineList() {
 
     const meta = document.createElement('div');
     meta.className = 'machine-meta';
-    meta.textContent = `${m.host}${m.model ? ' · ' + m.model : ''}`;
+    // Anthropic machines are identified by their endpoint; host/port only
+    // describe the transport and would read as noise on the card.
+    const where = m.provider === 'anthropic'
+      ? (m.base_url || 'https://api.anthropic.com')
+      : m.host;
+    meta.textContent = `${where}${m.model ? ' · ' + m.model : ''}`;
     top.appendChild(meta);
+
+    const provider = document.createElement('span');
+    provider.className = 'machine-provider';
+    provider.textContent = m.provider === 'anthropic' ? 'Anthropic API' : 'Proxy';
+    top.appendChild(provider);
 
     card.appendChild(top);
 
@@ -462,9 +487,9 @@ async function _activateMachine(id) {
     _activeMachineId = id;
     storageSet('wc_active_machine', id);
     _renderMachineList();
-    showToast('Machine activated');
+    notifyResult('Machine activated');
   } catch (error) {
-    showToast(error.message, 'error');
+    notifyResult(error.message, 'error');
   }
 }
 
@@ -478,12 +503,12 @@ async function _testMachine(id, btn) {
     const machine = _machines.find(m => m.id === id);
     const target = machine ? `${machine.host}:${machine.port}` : 'machine';
     if (data.ok) {
-      showToast(`Connected to ${target}`);
+      notifyResult(`Connected to ${target}`);
     } else {
-      showToast(`Could not reach ${target}: ${data.error || data.status || 'unreachable'}`, 'error');
+      notifyResult(`Could not reach ${target}: ${data.error || data.status || 'unreachable'}`, 'error');
     }
   } catch (error) {
-    showToast(`Test failed: ${error.message}`, 'error');
+    notifyResult(`Test failed: ${error.message}`, 'error');
   } finally {
     if (btn) { btn.textContent = 'Test'; btn.disabled = false; }
   }
@@ -496,10 +521,21 @@ async function _deleteMachine(id) {
     if (_activeMachineId === id) _activeMachineId = null;
     await loadMachines();
     _renderMachineList();
-    showToast('Machine deleted');
+    notifyResult('Machine deleted');
   } catch (error) {
-    showToast(error.message, 'error');
+    notifyResult(error.message, 'error');
   }
+}
+
+// Anthropic machines are configured by endpoint, proxy machines by host, so
+// only one of the two field groups is ever relevant.
+function _syncMachineProviderFields() {
+  const provider = byId('machineProvider').value;
+  const isAnthropic = provider === 'anthropic';
+  byId('machineProxyFields').hidden = isAnthropic;
+  byId('machineAnthropicFields').hidden = !isAnthropic;
+  byId('machineApiKeyHint').hidden = !isAnthropic;
+  byId('machineModel').placeholder = isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5';
 }
 
 function _editMachine(id) {
@@ -508,10 +544,13 @@ function _editMachine(id) {
   _machineEditing = id;
   byId('machineFormTitle').textContent = 'Edit machine';
   byId('machineName').value = m.name;
+  byId('machineProvider').value = m.provider === 'anthropic' ? 'anthropic' : 'proxy';
   byId('machineHost').value = m.host;
+  byId('machineBaseUrl').value = m.base_url || '';
   byId('machineModel').value = m.model;
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Leave blank to keep current';
+  _syncMachineProviderFields();
   byId('machineForm').hidden = false;
   byId('addMachineBtn').hidden = true;
   byId('machineName').focus();
@@ -519,12 +558,16 @@ function _editMachine(id) {
 
 async function _saveMachine() {
   const name = byId('machineName').value.trim();
+  const provider = byId('machineProvider').value === 'anthropic' ? 'anthropic' : 'proxy';
+  const isAnthropic = provider === 'anthropic';
   const host = byId('machineHost').value.trim();
-  const model = (byId('machineModel').value || '').trim() || 'claude-sonnet-5';
+  const base_url = byId('machineBaseUrl').value.trim();
+  const model = (byId('machineModel').value || '').trim()
+    || (isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5');
   const api_key = byId('machineApiKey').value.trim() || null;
 
   if (!name) { byId('machineName').focus(); return; }
-  if (!host) { byId('machineHost').focus(); return; }
+  if (!isAnthropic && !host) { byId('machineHost').focus(); return; }
 
   const save = byId('saveMachine');
   save.disabled = true;
@@ -532,7 +575,13 @@ async function _saveMachine() {
     let resp;
     // Only send fields the form actually collects — the server rejects the
     // whole request if the body carries any field outside its allowlist.
-    const body = { name, host, model };
+    const body = { name, provider, model };
+    if (isAnthropic) {
+      // Blank means "the default endpoint"; the server fills it in.
+      if (base_url) body.base_url = base_url;
+    } else {
+      body.host = host;
+    }
     if (api_key !== null) body.api_key = api_key;
     if (_machineEditing) {
       resp = await apiFetch(`/api/machines/${encodeURIComponent(_machineEditing)}`, {
@@ -583,10 +632,14 @@ function _showAddMachine() {
   _machineEditing = null;
   byId('machineFormTitle').textContent = 'Add machine';
   byId('machineName').value = '';
+  // Default to the API Claude Code itself uses, rather than the proxy.
+  byId('machineProvider').value = 'anthropic';
   byId('machineHost').value = '';
+  byId('machineBaseUrl').value = '';
   byId('machineModel').value = '';
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Optional';
+  _syncMachineProviderFields();
   byId('machineForm').hidden = false;
   byId('addMachineBtn').hidden = true;
   byId('machineName').focus();
@@ -773,6 +826,27 @@ async function patchChat(chat, body, success) {
   showToast(success);
 }
 
+// Hand a conversation back to a terminal. `claude --resume <id>` resolves the
+// session from anywhere -- verified: a session created in one directory resumes
+// from another and keeps appending to its original transcript, it does not fork.
+// The `cd` is still worth including so Claude runs where the conversation's
+// files are.
+async function copyTerminalCommand(chat) {
+  if (!chat.session_id) {
+    showToast('This conversation has no session yet — send a message first.');
+    return;
+  }
+  const command = `cd ${chat.work_dir} && claude --resume ${chat.session_id}`;
+  try {
+    await navigator.clipboard.writeText(command);
+    showToast('Terminal command copied');
+  } catch {
+    // Clipboard needs a secure context and permission; showing the command is
+    // still useful when it is unavailable.
+    showToast(command);
+  }
+}
+
 async function handleChatAction(action, id) {
   const chat = findChat(id);
   if (!chat) return;
@@ -792,6 +866,8 @@ async function handleChatAction(action, id) {
         storageRemove('wc_last_chat');
         showWelcome();
       }
+    } else if (action === 'terminal') {
+      await copyTerminalCommand(chat);
     } else if (action === 'delete') {
       openChatDialog('delete', chat);
     }
@@ -809,6 +885,20 @@ async function resumeCliSession(sessionId) {
     await refreshChats();
     await selectChat(data.id);
     showToast(`Opened session “${data.title}”`);
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function removeCliSession(sessionId) {
+  try {
+    const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {method: 'DELETE'});
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not remove session');
+    }
+    await refreshSessions();
+    showToast('Session removed');
   } catch (error) {
     showToast(error.message, 'error');
   }
@@ -860,18 +950,15 @@ function populateModelPicker() {
   const picker = byId('conversationModel');
   if (!picker) return;
   const current = picker.value;
-  // Offer the configured default and fallback first, then the presets from the
-  // Models tab datalist. Reading the datalist from the DOM keeps the list in
-  // one place -- editing index.html updates this picker too. Previously only
-  // default and fallback appeared, so a turn could never be sent to a third
-  // model without changing the global setting first.
-  const suggestions = Array.from(
-    document.querySelectorAll('#modelSuggestions option'),
-  ).map(option => option.value);
+  // Offer the configured default and fallback first, then whatever the active
+  // machine actually serves. This used to read a hardcoded datalist out of the
+  // DOM and, worse, every model id harvested from old transcripts -- so it
+  // offered models the current backend has never served and the turn failed.
+  const served = _servedModels.map(model => model.id);
   // Keep whatever this chat already uses, so an unlisted model stays selectable
   // instead of silently falling back to Automatic.
   const chatModel = state.currentChat?.model;
-  const models = [..._modelOptions, ...suggestions, chatModel, current];
+  const models = [..._modelOptions, ...served, chatModel, current];
 
   picker.replaceChildren();
   const automatic = document.createElement('option');
@@ -887,6 +974,115 @@ function populateModelPicker() {
   picker.value = current;
 }
 
+async function loadModels() {
+  const status = byId('modelsStatus');
+  if (status) status.textContent = 'Loading…';
+  try {
+    const response = await apiFetch('/api/models');
+    if (!response.ok) throw new Error('Could not load models');
+    const data = await response.json();
+    _servedModels = data.models || [];
+    _modelsSource = data;
+  } catch {
+    _servedModels = [];
+    _modelsSource = {source: 'error', reason: 'Could not load the model list.'};
+  }
+  _renderModelsList();
+  _syncModelSuggestions();
+  populateModelPicker();
+}
+
+// The two model inputs are free text on purpose: a gateway will accept ids it
+// does not advertise, so the list narrows typing without forbidding anything.
+function _syncModelSuggestions() {
+  const list = byId('modelSuggestions');
+  if (!list) return;
+  list.replaceChildren();
+  _servedModels.forEach(model => {
+    const option = document.createElement('option');
+    option.value = model.id;
+    if (model.display_name && model.display_name !== model.id) {
+      option.label = model.display_name;
+    }
+    list.appendChild(option);
+  });
+}
+
+function _renderModelsList() {
+  const list = byId('modelsList');
+  const status = byId('modelsStatus');
+  if (!list) return;
+  list.replaceChildren();
+
+  if (status) {
+    const count = _servedModels.length;
+    if (_modelsSource?.source === 'endpoint') {
+      status.textContent = `${count} model${count === 1 ? '' : 's'} from ${_modelsSource.endpoint}`;
+      status.className = 'models-status';
+    } else {
+      // Say why these are guesses. The old page showed a frozen list with no
+      // hint that it might not match the backend at all.
+      status.textContent = _modelsSource?.reason
+        ? `${_modelsSource.reason} Showing built-in suggestions.`
+        : 'Showing built-in suggestions.';
+      status.className = 'models-status models-status-warn';
+    }
+  }
+
+  if (!_servedModels.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sidebar-empty';
+    empty.textContent = 'No models to show.';
+    list.appendChild(empty);
+    return;
+  }
+
+  const currentDefault = byId('defaultModel')?.value.trim();
+  _servedModels.forEach(model => {
+    const row = document.createElement('div');
+    row.className = 'model-item';
+
+    const name = document.createElement('span');
+    name.className = 'model-item-id';
+    name.textContent = model.id;
+    row.appendChild(name);
+
+    if (model.display_name && model.display_name !== model.id) {
+      const display = document.createElement('span');
+      display.className = 'model-item-name';
+      display.textContent = model.display_name;
+      row.appendChild(display);
+    }
+
+    if (model.id === currentDefault) {
+      const badge = document.createElement('span');
+      badge.className = 'machine-badge';
+      badge.textContent = 'Default';
+      row.appendChild(badge);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'model-item-actions';
+    [['Set default', 'defaultModel'], ['Set fallback', 'fallbackModel']].forEach(
+      ([label, target]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'machine-action';
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          byId(target).value = model.id;
+          // Save is the footer button on this tab, so re-render to show the
+          // badge moving without implying the change is already persisted.
+          _renderModelsList();
+        });
+        actions.appendChild(button);
+      },
+    );
+    row.appendChild(actions);
+    list.appendChild(row);
+  });
+}
+
 async function updateModelDisplay(model) {
   const label = byId('modelLabel');
   if (model) {
@@ -899,19 +1095,42 @@ async function updateModelDisplay(model) {
   }
 }
 
+// Reload the CLI session list. Extracted from loadInitialData so removing a
+// dead session can refresh the sidebar without a full page reload.
+async function refreshSessions() {
+  const response = await apiFetch('/api/sessions');
+  if (!response.ok) return;
+  const sessions = (await response.json()).sessions || [];
+  listController.setCliSessions(sessions.filter(item => !item.webchat));
+  // The `model` on a session is archaeology -- the last model that old
+  // transcript used -- and never a statement that the backend still serves it.
+  // Harvesting it into the picker turned a historical record into a menu of
+  // offers, which is how a dead model id got selected and every turn failed.
+  populateModelPicker();
+  await refreshHistory();
+  listController.render(state.chats, state.currentChat?.id ?? null);
+}
+
+// Past conversations, read from transcripts rather than the live registry.
+// ~/.claude/sessions only lists sessions that are still running, so finished
+// work is invisible to /api/sessions no matter how recent it is.
+async function refreshHistory() {
+  try {
+    const response = await apiFetch('/api/transcripts?limit=50');
+    if (!response.ok) return;
+    listController.setHistory((await response.json()).transcripts || []);
+  } catch {
+    // History is supplementary; the live list must still render without it.
+  }
+}
+
 async function loadInitialData() {
   try {
     const settings = await loadSettings();
     await refreshChats();
-    const response = await apiFetch('/api/sessions');
-    if (response.ok) {
-      const sessions = (await response.json()).sessions || [];
-      listController.setCliSessions(sessions.filter(item => !item.webchat));
-      _modelOptions.push(...sessions.map(item => item.model));
-      populateModelPicker();
-      listController.render(state.chats, null);
-    }
+    await refreshSessions();
     await loadMachines();
+    await loadModels();
     const lastId = storageGet('wc_last_chat');
     const last = findChat(lastId);
     if (last && !last.archived) await selectChat(last.id);
@@ -946,6 +1165,8 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);
+  byId('machineProvider').addEventListener('change', _syncMachineProviderFields);
+  byId('refreshModels').addEventListener('click', loadModels);
   const settingsTabs = Array.from(document.querySelectorAll('.settings-tab'));
   settingsTabs.forEach((tab, index) => {
     tab.addEventListener('click', () => _switchTab(tab.dataset.tab));
@@ -982,6 +1203,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onSelect: selectChat,
     onAction: handleChatAction,
     onResumeCli: resumeCliSession,
+    onRemoveCli: removeCliSession,
   });
   listController.setOnMessageSearch(async (q) => {
     try {

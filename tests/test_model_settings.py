@@ -325,21 +325,26 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_settings_patch_updates_models(self):
         handler = app.handle_settings_patch
-        req = _FakeRequest(json_data={
-            "default_model": "claude-opus-5",
-            "fallback_model": "claude-haiku-4-20250514",
-        })
+        req = _FakeRequest(json_data={"default_model": "claude-opus-5"})
         resp = await handler(req)
         self.assertTrue(json.loads(resp.body.decode())["ok"])
         self.assertEqual(await db.setting_get("default_model"), "claude-opus-5")
-        self.assertEqual(await db.setting_get("fallback_model"), "claude-haiku-4-20250514")
+
+    async def test_settings_patch_ignores_the_removed_fallback_model(self):
+        """fallback_model was stored but never read -- a control implying a
+        retry behaviour that did not exist. It is no longer accepted."""
+        req = _FakeRequest(json_data={"fallback_model": "claude-haiku-4-5"})
+        await app.handle_settings_patch(req)
+        self.assertIsNone(await db.setting_get("fallback_model"))
 
     async def test_settings_get_returns_models(self):
         await db.setting_set("default_model", "claude-opus-5")
-        await db.setting_set("fallback_model", "claude-haiku-4-20250514")
         body = json.loads((await app.handle_settings_get(_FakeRequest())).body.decode())
         self.assertEqual(body["default_model"], "claude-opus-5")
-        self.assertEqual(body["fallback_model"], "claude-haiku-4-20250514")
+
+    async def test_settings_get_no_longer_reports_a_fallback_model(self):
+        body = json.loads((await app.handle_settings_get(_FakeRequest())).body.decode())
+        self.assertNotIn("fallback_model", body)
 
     async def test_settings_patch_rejects_invalid_model(self):
         with self.assertRaises(HTTPException) as ctx:

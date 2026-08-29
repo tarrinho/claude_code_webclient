@@ -45,6 +45,12 @@ button{touch-action:manipulation}
 .chat-item:hover .chat-actions,.chat-item:focus-within .chat-actions{opacity:1}
 .chat-action{min-width:34px;min-height:34px;border:0;border-radius:5px;background:none;color:var(--muted);cursor:pointer}
 .chat-action:hover{background:var(--line);color:var(--fg)}
+/* An ended CLI session stays listed but reads as inactive; its remove
+   cross is the only destructive control in the sidebar, so it is the only
+   one tinted red. */
+.chat-item.session-ended .chat-title{color:var(--muted)}
+.chat-action-remove{color:#f85149;font-size:18px;line-height:1}
+.chat-action-remove:hover,.chat-action-remove:focus-visible{background:rgba(248,81,73,.12);color:#f85149}
 .chat-snippet{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chat-snippet mark{background:rgba(88,166,255,.25);color:var(--fg);border-radius:2px;padding:0 2px}
 .chat-actions{position:relative}
@@ -117,7 +123,12 @@ button{touch-action:manipulation}
 .composer{display:none;border-top:1px solid var(--line);background:var(--panel);padding:10px 16px 12px}
 .composer-inner{display:flex;gap:8px;align-items:flex-end;background:var(--input-bg);border:1px solid var(--line);border-radius:12px;padding:8px 9px 8px 12px}
 .composer-inner:focus-within{border-color:var(--accent)}
-#composerInput{flex:1;border:0;background:none;color:var(--fg);resize:none;max-height:150px;outline:none;padding:3px 0}
+/* min-height matches .btn-send so the row has no slack. .composer-inner is
+   align-items:flex-end (right for a grown textarea, which should keep Send at
+   the bottom), but a one-line textarea is shorter than the button, so it sank
+   to the bottom and left a line of blank space above the placeholder. The
+   padding centres the single line within that height. */
+#composerInput{flex:1;border:0;background:none;color:var(--fg);resize:none;min-height:36px;max-height:150px;outline:none;padding:7px 0}
 .btn-send{width:36px;height:36px;flex:none;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-size:16px}
 .btn-send:hover{background:var(--accent2)}.btn-send:disabled{opacity:.45;cursor:not-allowed}.btn-send.stop{background:var(--bad)}
 .composer-meta{display:flex;justify-content:space-between;gap:10px;min-height:20px;padding:4px 4px 0}
@@ -126,7 +137,9 @@ button{touch-action:manipulation}
 .retry-btn{display:none;border:0;background:none;color:var(--accent);cursor:pointer;padding:0;font-size:11px}
 
 /* Dialogs and notices */
-.toast-region{position:fixed;right:16px;bottom:90px;z-index:300;display:grid;gap:8px;width:min(360px,calc(100vw - 32px))}
+/* Above .dialog-backdrop (400): at 300 any toast raised while a dialog was open
+   was painted underneath the overlay and never seen. */
+.toast-region{position:fixed;right:16px;bottom:90px;z-index:500;display:grid;gap:8px;width:min(360px,calc(100vw - 32px))}
 .toast{padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:7px;background:var(--panel);box-shadow:0 8px 28px rgba(0,0,0,.25)}
 .toast.error{border-left-color:var(--bad)}
 .dialog-backdrop{position:fixed;inset:0;z-index:400;display:none;place-items:center;padding:18px;background:rgba(0,0,0,.62);overflow-y:auto}
@@ -161,6 +174,8 @@ button{touch-action:manipulation}
 .machine-name{font-weight:600;font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .machine-badge{font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ok);background:rgba(63,185,80,.12);padding:2px 7px;border-radius:10px;white-space:nowrap}
 .machine-meta{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-bottom:8px}
+.machine-provider{font:600 10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);border:1px solid var(--line);padding:1px 6px;border-radius:10px;white-space:nowrap;margin-bottom:8px;display:inline-block}
+.machine-hint{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-top:4px}
 .machine-actions{display:flex;gap:6px;flex-wrap:wrap}
 .machine-action{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid var(--line);border-radius:5px;background:none;color:var(--muted);padding:3px 8px;cursor:pointer;min-height:28px;min-width:34px}
 .machine-action:hover{color:var(--fg);border-color:var(--muted)}
@@ -168,6 +183,14 @@ button{touch-action:manipulation}
 .machine-form{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:8px;background:var(--panel)}
 .machine-form h3{font-size:14px;margin-bottom:10px}
 .machine-form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.models-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.models-status{flex:1;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+.models-status-warn{color:var(--warn)}
+.models-list{display:grid;gap:4px;margin-bottom:14px;max-height:220px;overflow-y:auto}
+.model-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel2)}
+.model-item-id{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-item-name{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);white-space:nowrap}
+.model-item-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
 .model-row{margin-bottom:10px}
 .app-setting-row{margin-bottom:12px}
 .setting-hint{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-top:3px;display:block}
@@ -207,7 +230,7 @@ button{touch-action:manipulation}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 @media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
 /* Reclaim chrome on small screens so the scrolling panel gets usable height. */
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}

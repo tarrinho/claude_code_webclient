@@ -70,6 +70,67 @@ async def read_lines(reader: asyncio.StreamReader):
         pass
 
 
+def _int_or_zero(value: object) -> int:
+    try:
+        return max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def usage_frame(obj: dict) -> dict | None:
+    """Build a ``usage`` frame from a Claude Code ``result`` frame.
+
+    ``modelUsage`` is preferred because it is keyed by model id, so a turn that
+    touched more than one model is attributed exactly. Its keys are camelCase
+    while the flat ``usage`` object is snake_case; both are normalised here.
+
+    When only the flat form is present the model is unknown at this layer, so
+    it is reported under the empty-string key and the consumer fills it in from
+    the session's model. Returns None when there is nothing to record.
+    """
+    models: dict[str, dict[str, int]] = {}
+    model_usage = obj.get("modelUsage")
+    if isinstance(model_usage, dict):
+        for name, stats in model_usage.items():
+            if not isinstance(name, str) or not isinstance(stats, dict):
+                continue
+            models[name] = {
+                "input_tokens": _int_or_zero(stats.get("inputTokens")),
+                "output_tokens": _int_or_zero(stats.get("outputTokens")),
+                "cache_read_tokens": _int_or_zero(stats.get("cacheReadInputTokens")),
+                "cache_creation_tokens": _int_or_zero(
+                    stats.get("cacheCreationInputTokens")
+                ),
+            }
+    if not models:
+        usage = obj.get("usage")
+        if isinstance(usage, dict):
+            totals = {
+                "input_tokens": _int_or_zero(usage.get("input_tokens")),
+                "output_tokens": _int_or_zero(usage.get("output_tokens")),
+                "cache_read_tokens": _int_or_zero(
+                    usage.get("cache_read_input_tokens")
+                ),
+                "cache_creation_tokens": _int_or_zero(
+                    usage.get("cache_creation_input_tokens")
+                ),
+            }
+            if any(totals.values()):
+                models[""] = totals
+    if not models:
+        return None
+
+    cost = obj.get("total_cost_usd")
+    duration = obj.get("duration_ms")
+    return {
+        "type": "usage",
+        "models": models,
+        "cost_usd": cost if isinstance(cost, (int, float)) else None,
+        "duration_ms": _int_or_zero(duration) or None,
+        "is_error": bool(obj.get("is_error")),
+    }
+
+
 def normalise_claude_frame(obj: dict) -> list[dict]:
     """Normalise Claude Code stream-json frames to the webconsole protocol."""
     frame_type = obj.get("type", "")
@@ -130,6 +191,9 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
         session_id = obj.get("session_id")
         if session_id:
             frames.append({"type": "session_id", "session_id": session_id})
+        usage = usage_frame(obj)
+        if usage:
+            frames.append(usage)
         if obj.get("is_error") or subtype not in ("", "success"):
             error = (
                 obj.get("error")

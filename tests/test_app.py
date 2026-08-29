@@ -477,11 +477,17 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
     def _make_request(self, **extra):
         return SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": "admin"}), **extra)
 
-    async def test_machine_list_empty(self):
+    async def test_machine_list_seeds_anthropic_only(self):
+        """A fresh account starts with the Anthropic API entry and nothing else.
+
+        Claude Code's native backend is always on offer, so the list is never
+        empty -- it was, before machines carried a provider.
+        """
         resp = await app.handle_machines_list(self._make_request())
         data = json.loads(resp.body)
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(data["machines"], [])
+        self.assertEqual(len(data["machines"]), 1)
+        self.assertEqual(data["machines"][0]["provider"], "anthropic")
 
     async def test_machine_create_and_list(self):
         request = self._make_request(
@@ -494,11 +500,14 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
         self.assertIsNotNone(data["id"])
-        # Verify it appears in the list (api key hidden)
+        # Verify it appears in the list (api key hidden), alongside the
+        # seeded Anthropic entry every account gets.
         list_resp = await app.handle_machines_list(self._make_request())
         list_data = json.loads(list_resp.body)
-        self.assertEqual(len(list_data["machines"]), 1)
-        self.assertNotIn("api_key", list_data["machines"][0])
+        self.assertEqual(len(list_data["machines"]), 2)
+        created = next(m for m in list_data["machines"] if m["name"] == "GCP")
+        self.assertEqual(created["provider"], "proxy")
+        self.assertNotIn("api_key", created)
 
     async def test_machine_create_rejects_empty_name(self):
         request = self._make_request(

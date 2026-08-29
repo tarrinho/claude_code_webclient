@@ -75,11 +75,33 @@ PROXY_CONNECT_TIMEOUT_S = _int("WC_PROXY_CONNECT_TIMEOUT_S", 10)
 PROXY_TURN_TIMEOUT_S = _int("WC_PROXY_TURN_TIMEOUT_S", 300)
 PROXY_TOKEN = _str("WC_PROXY_TOKEN")
 
+# --- Anthropic API (Claude Code's native backend) ---------------------------
+# The CLI talks to https://api.anthropic.com unless ANTHROPIC_BASE_URL says
+# otherwise, and authenticates with ANTHROPIC_API_KEY if set, falling back to
+# the host's own `claude` login. A machine with provider='anthropic' carries
+# these values to the CLI; leaving the key empty keeps the login fallback.
+ANTHROPIC_BASE_URL = _str("WC_ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+ANTHROPIC_MODEL = _str("WC_ANTHROPIC_MODEL", "claude-opus-5")
+
+# Shown only when the active machine cannot be asked what it serves. The UI
+# labels these as a fallback rather than presenting them as the real list.
+KNOWN_MODELS = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-haiku-4-5",
+)
+
 # --- Fallback: direct Claude Code subprocess --------------------------------
 # These are used only when PROXY_ENABLED=False (not recommended for container).
 MODEL_BASE_URL = _str("WC_MODEL_BASE_URL", "http://127.0.0.1:11434/v1")
 MODEL_API_KEY = _str("WC_MODEL_API_KEY", "")
 MODEL_NAME = _str("WC_MODEL_NAME", "claude-sonnet-5")
+
+# --- usage accounting ------------------------------------------------------
+# How long per-turn usage rows are kept. Pruned once per startup; 0 disables
+# pruning and keeps everything.
+USAGE_RETENTION_DAYS = _int("WC_USAGE_RETENTION_DAYS", 90)
 
 MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn

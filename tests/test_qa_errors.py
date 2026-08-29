@@ -569,10 +569,13 @@ class SessionsResumeErrorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await app.handle_sessions_resume(request, "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
-        self.assertIn("claude-code is running", ctx.exception.detail)
+        # Resume now falls back to the transcript when no session is running, so
+        # a 404 means neither exists. The message no longer blames a stopped CLI,
+        # which was misleading for a conversation that simply never existed.
+        self.assertIn("no running session and no transcript", ctx.exception.detail)
         log_text = self.buf.getvalue()
         self.assertIn("cli_session_not_found", log_text)
-        self.assertIn("claude-code is running", log_text)
+        self.assertIn("no transcript on disk", log_text)
 
 
 # ── Integration: end-to-end error chain ─────────────────────────────────────

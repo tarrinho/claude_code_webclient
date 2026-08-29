@@ -123,26 +123,59 @@ def _turn_from_record(record: Any) -> dict[str, Any] | None:
     }
 
 
-def _turns_from_bytes(raw: bytes) -> list[dict[str, Any]]:
-    turns: list[dict[str, Any]] = []
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
+def _turns_with_offsets(raw: bytes) -> list[tuple[int, dict[str, Any]]]:
+    """Turns paired with the byte offset, within *raw*, of the line each came from.
+
+    The offsets are what let a capped page report where it actually begins.
+    Splitting on bytes rather than decoding first keeps those offsets exact for
+    multi-byte characters.
+    """
+    pairs: list[tuple[int, dict[str, Any]]] = []
+    position = 0
+    for line in raw.split(b"\n"):
+        line_start = position
+        position += len(line) + 1  # + the newline that was split away
+        text = line.strip()
+        if not text:
             continue
         try:
-            record = json.loads(line)
+            record = json.loads(text.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             continue
         turn = _turn_from_record(record)
         if turn:
-            turns.append(turn)
-    return turns
+            pairs.append((line_start, turn))
+    return pairs
+
+
+def _turns_from_bytes(raw: bytes) -> list[dict[str, Any]]:
+    return [turn for _offset, turn in _turns_with_offsets(raw)]
+
+
+def _cap(
+    pairs: list[tuple[int, dict[str, Any]]], start: int, truncated: bool
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Keep at most MAX_TURNS, and move *start* to the first turn kept.
+
+    Slicing the turns while leaving *start* at the beginning of the whole
+    window silently strips history: the caller pages back from a byte position
+    below the turns that were dropped, so nothing ever returns them. With
+    400-byte records a single window holds ~1300 turns, and walking a
+    2000-turn transcript recovered only half of it.
+    """
+    if len(pairs) <= MAX_TURNS:
+        return [turn for _offset, turn in pairs], start, truncated
+    kept = pairs[-MAX_TURNS:]
+    return [turn for _offset, turn in kept], kept[0][0], True
 
 
 def _read_range_sync(
     path: Path, offset: int
-) -> tuple[list[dict[str, Any]], int, int, bool]:
-    """Read from *offset* to EOF. Returns (turns, start, end, truncated).
+) -> tuple[list[tuple[int, dict[str, Any]]], int, int, bool]:
+    """Read from *offset* to EOF. Returns (pairs, start, end, truncated).
+
+    Each pair is (absolute byte offset of the line, turn), so a caller that
+    caps the page can still say truthfully where the page begins.
 
     When *offset* is 0 and the file is large, this starts near the end instead
     and reports ``truncated``. *start* is the byte the returned window begins
@@ -177,13 +210,16 @@ def _read_range_sync(
     if end < 0:
         return [], start, start, truncated
     consumed = raw[: end + 1]
-    return _turns_from_bytes(consumed), start, start + len(consumed), truncated
+    pairs = [(start + rel, turn) for rel, turn in _turns_with_offsets(consumed)]
+    return pairs, start, start + len(consumed), truncated
 
 
-def _read_before_sync(path: Path, before: int) -> tuple[list[dict[str, Any]], int]:
+def _read_before_sync(
+    path: Path, before: int
+) -> tuple[list[tuple[int, dict[str, Any]]], int]:
     """Read the window of turns immediately preceding byte *before*.
 
-    Returns (turns, start). *before* is always a line boundary -- it is a
+    Returns (pairs, start), each pair being (absolute byte offset, turn). *before* is always a line boundary -- it is a
     ``start`` this module returned earlier -- so only the first line of the
     window can be partial, and that happens solely when the window does not
     reach the beginning of the file.
@@ -202,7 +238,7 @@ def _read_before_sync(path: Path, before: int) -> tuple[list[dict[str, Any]], in
         raw = raw[skip:]
         start += skip
 
-    return _turns_from_bytes(raw), start
+    return [(start + rel, turn) for rel, turn in _turns_with_offsets(raw)], start
 
 
 def transcript_path(session_id: str) -> Path | None:
@@ -223,15 +259,13 @@ async def read_turns(session_id: str, offset: int = 0) -> dict[str, Any]:
         return _empty(found=False)
 
     try:
-        turns, start, end, truncated = await asyncio.to_thread(
+        pairs, start, end, truncated = await asyncio.to_thread(
             _read_range_sync, path, offset
         )
     except OSError:
         return _empty(found=False)
 
-    if len(turns) > MAX_TURNS:
-        turns = turns[-MAX_TURNS:]
-        truncated = True
+    turns, start, truncated = _cap(pairs, start, truncated)
     return {
         "turns": turns,
         "start": start,
@@ -255,16 +289,14 @@ async def read_before(session_id: str, before: int) -> dict[str, Any]:
         return _empty(found=False)
 
     try:
-        turns, start = await asyncio.to_thread(_read_before_sync, path, before)
+        pairs, start = await asyncio.to_thread(_read_before_sync, path, before)
     except OSError:
         return _empty(found=False)
 
-    truncated = False
-    if len(turns) > MAX_TURNS:
-        # Keep the *end* of the window so it stays contiguous with what the
-        # caller already has below it.
-        turns = turns[-MAX_TURNS:]
-        truncated = True
+    # Keep the *end* of the window so it stays contiguous with what the caller
+    # already has below it, and move start to match so the turns dropped off
+    # the front are still reachable by the next page back.
+    turns, start, truncated = _cap(pairs, start, False)
     return {
         "turns": turns,
         "start": start,
@@ -284,6 +316,50 @@ def _empty(found: bool) -> dict[str, Any]:
         "at_start": True,
         "found": found,
     }
+
+
+def _cwd_sync(path: Path) -> str:
+    """Read the working directory a session ran in, from its own transcript.
+
+    Needed to resume a session that is no longer running: the live registry in
+    ~/.claude/sessions only describes running sessions, but every transcript
+    records its cwd, so a finished conversation can still be reopened in the
+    directory its files are in. The project directory name is not usable for
+    this -- it is the path with separators replaced, and underscores are
+    flattened to dashes too, so it cannot be reversed unambiguously.
+    """
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(HISTORY_TAIL_BYTES)
+    except OSError:
+        return ""
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("cwd"), str):
+            return record["cwd"]
+    return ""
+
+
+async def session_cwd(session_id: str) -> str:
+    """Return the directory *session_id* ran in, or "" if unknown."""
+    path = transcript_path(session_id)
+    if path is None:
+        return ""
+    return await asyncio.to_thread(_cwd_sync, path)
+
+
+async def session_title(session_id: str) -> str:
+    """A readable title for a session, taken from its opening prompt."""
+    path = transcript_path(session_id)
+    if path is None:
+        return ""
+    return await asyncio.to_thread(_first_prompt_sync, path)
 
 
 def _first_prompt_sync(path: Path) -> str:

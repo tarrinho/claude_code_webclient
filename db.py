@@ -74,9 +74,14 @@ async def init() -> None:
             host          TEXT NOT NULL,
             port          INTEGER NOT NULL DEFAULT 9000,
             api_key       TEXT,
-            -- Keep in step with config.MODEL_NAME. A retired model id here
-            -- makes every turn fail on a fresh database.
+            -- The default model for turns on this machine. Keep in step with
+            -- config.MODEL_NAME: a retired model id here makes every turn fail
+            -- on a fresh database.
             model         TEXT NOT NULL DEFAULT 'claude-sonnet-5',
+            -- JSON array of model ids offered in the picker. Empty means every
+            -- model the backend serves is offered, so the feature is opt-in
+            -- and an untouched machine can never present an empty picker.
+            active_models TEXT NOT NULL DEFAULT '[]',
             base_url      TEXT,
             description   TEXT,
             active        INTEGER NOT NULL DEFAULT 0,
@@ -119,9 +124,34 @@ async def init() -> None:
             value      TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        -- One row per model per completed turn, from Claude Code's `result`
+        -- frame. provider is denormalised here so the cost-display rule
+        -- survives the machine later being edited, renamed, or deleted.
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id               TEXT NOT NULL,
+            owner_id              TEXT NOT NULL,
+            model                 TEXT NOT NULL,
+            provider              TEXT NOT NULL DEFAULT 'proxy',
+            input_tokens          INTEGER NOT NULL DEFAULT 0,
+            output_tokens         INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd              REAL,
+            duration_ms           INTEGER,
+            is_error              INTEGER NOT NULL DEFAULT 0,
+            created_at            TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_usage_owner_time
+            ON usage_events(owner_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_usage_owner_model
+            ON usage_events(owner_id, model);
     """)
     await _ensure_chat_columns()
     await db_conn.commit()
+    # Bounded growth without a scheduler: one indexed DELETE per startup.
+    await usage_prune(config.USAGE_RETENTION_DAYS)
 
 
 async def _ensure_chat_columns() -> None:
@@ -143,7 +173,7 @@ async def _ensure_chat_columns() -> None:
     try:
         ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
         ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
-    except Exception:  # noqa: BLE001 -- PRAGMA can fail on new tables
+    except Exception:
         ma_columns = set()
     if "owner_id" not in ma_columns:
         await db_conn.execute(
@@ -153,6 +183,11 @@ async def _ensure_chat_columns() -> None:
         # Existing rows are all claude_proxy hosts -- the default matches them.
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'proxy'"
+        )
+    if ma_columns and "active_models" not in ma_columns:
+        # '[]' means "offer everything served", which is what existing rows did.
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN active_models TEXT NOT NULL DEFAULT '[]'"
         )
 
     await db_conn.commit()
@@ -389,7 +424,7 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
             (query,),
         )
         match_ids = [row["rowid"] for row in await cur.fetchall()]
-    except Exception:  # noqa: BLE001 -- FTS5 may not exist on fresh DBs
+    except Exception:
         match_ids = []
 
     if not match_ids:
@@ -482,13 +517,13 @@ def _fts_index_ids_sync(msg_ids: Sequence[int | None]) -> None:
                     (msg_id, text),
                 )
         sync.commit()
-    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
+    except Exception:
         pass
     finally:
         if sync is not None:
             try:
                 sync.close()
-            except Exception:  # noqa: BLE001,S110
+            except Exception:
                 pass
 
 
@@ -511,13 +546,13 @@ def _fts_forget_ids_sync(msg_ids: Sequence[int | None]) -> None:
             ids,
         )
         sync.commit()
-    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
+    except Exception:
         pass
     finally:
         if sync is not None:
             try:
                 sync.close()
-            except Exception:  # noqa: BLE001,S110
+            except Exception:
                 pass
 
 
@@ -558,13 +593,13 @@ def _refresh_fts_sync(chat_id: str | None = None) -> None:
                     (msg_id, text),
                 )
         sync.commit()
-    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
+    except Exception:
         pass
     finally:
         if sync is not None:
             try:
                 sync.close()
-            except Exception:  # noqa: BLE001,S110
+            except Exception:
                 pass
 
 
@@ -668,7 +703,7 @@ async def setting_set(key: str, value: str) -> None:
 async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
     """Return the owner's active machine without exposing its API key."""
     cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, base_url, description, active "
+        "SELECT id, name, provider, host, port, model, active_models, base_url, description, active "
         "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
         (owner_id,),
     )
@@ -678,7 +713,7 @@ async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
 
 async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, base_url, description, "
+        "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         "created_at, updated_at "
         "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
@@ -689,7 +724,7 @@ async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
 
 async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, base_url, description, "
+        "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         # Derived in SQL so callers can report whether a key is configured
         # without the value ever leaving this layer. Computing it from an
@@ -831,6 +866,50 @@ async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def parse_active_models(raw: Any) -> list[str]:
+    """Decode the active_models column into a list of ids.
+
+    Anything unreadable decodes to empty, which means "offer everything the
+    backend serves" -- the safe direction, because the alternative is a picker
+    with nothing in it.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        entries = raw
+    else:
+        try:
+            entries = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(entries, list):
+        return []
+    seen: set[str] = set()
+    models: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str) and entry.strip() and entry.strip() not in seen:
+            seen.add(entry.strip())
+            models.append(entry.strip()[:200])
+    return models
+
+
+async def ai_machine_set_models(
+    machine_id: str, owner_id: str, active: list[str], default: str | None
+) -> bool:
+    """Set which models a machine offers, and which one it defaults to."""
+    sets = ["active_models = ?", "updated_at = ?"]
+    vals: list[Any] = [json.dumps(active), _now()]
+    if default:
+        sets.insert(1, "model = ?")
+        vals.insert(1, default)
+    cur = await db_conn.execute(
+        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?",
+        [*vals, machine_id, owner_id],
+    )  # nosec B608: column names are literals, values parameterised
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
 async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
     """Return one machine's API key. Kept separate from ai_machine_get so the
     key is only ever fetched where it is deliberately needed."""
@@ -871,6 +950,136 @@ async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
         provider="anthropic",
     )
     return machine_id
+
+
+# ── Usage accounting ───────────────────────────────────────────────────────────────────
+
+
+def _cutoff(days: int) -> str:
+    """Return the ISO timestamp *days* before now, matching _now()'s format."""
+    return time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - max(0, days) * 86400)
+    )
+
+
+async def usage_record(
+    chat_id: str,
+    owner_id: str,
+    model: str,
+    provider: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cost_usd: float | None = None,
+    duration_ms: int | None = None,
+    is_error: bool = False,
+) -> int | None:
+    """Record one model's usage for a completed turn.
+
+    Returns the row id, or None if the write failed. Accounting must never
+    break a turn that has already succeeded, so failures are swallowed.
+    """
+    if not chat_id or not owner_id or not model:
+        return None
+    try:
+        cur = await db_conn.execute(
+            "INSERT INTO usage_events "
+            "(chat_id, owner_id, model, provider, input_tokens, output_tokens, "
+            " cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, "
+            " is_error, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                chat_id,
+                owner_id,
+                model,
+                provider or "proxy",
+                int(input_tokens or 0),
+                int(output_tokens or 0),
+                int(cache_read_tokens or 0),
+                int(cache_creation_tokens or 0),
+                cost_usd,
+                duration_ms,
+                1 if is_error else 0,
+                _now(),
+            ),
+        )
+        await db_conn.commit()
+        return cur.lastrowid
+    except Exception:
+        return None
+
+
+async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
+    """Per-model aggregates for *owner_id*. ``days=None`` means all time."""
+    params: list[Any] = [owner_id]
+    where = "owner_id = ?"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db_conn.execute(
+        "SELECT model, provider, COUNT(*) AS requests, "
+        "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
+        "SUM(cache_read_tokens) AS cache_read_tokens, "
+        "SUM(cache_creation_tokens) AS cache_creation_tokens, "
+        "SUM(COALESCE(cost_usd, 0)) AS cost_usd, "
+        "SUM(is_error) AS errors, MAX(created_at) AS last_used "
+        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY model, provider ORDER BY requests DESC, model ASC",
+        params,
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
+    """Totals across every model, so the header does not re-sum in the client."""
+    params: list[Any] = [owner_id]
+    where = "owner_id = ?"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db_conn.execute(
+        "SELECT COUNT(*) AS requests, "
+        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+        "COALESCE(SUM(is_error), 0) AS errors, "
+        "COUNT(DISTINCT model) AS models "
+        f"FROM usage_events WHERE {where}",  # nosec B608: clause is static
+        params,
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else {}
+
+
+async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Most recent turns, with the conversation title joined in.
+
+    LEFT JOIN so a deleted conversation still appears in the log rather than
+    silently dropping the usage it accounted for.
+    """
+    cur = await db_conn.execute(
+        "SELECT u.created_at, u.chat_id, u.model, u.provider, u.input_tokens, "
+        "u.output_tokens, u.cost_usd, u.duration_ms, u.is_error, c.title AS chat_title "
+        "FROM usage_events u LEFT JOIN chats c ON c.id = u.chat_id "
+        "WHERE u.owner_id = ? ORDER BY u.id DESC LIMIT ?",
+        (owner_id, max(1, min(int(limit or 50), 500))),
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def usage_prune(days: int) -> int:
+    """Delete rows older than *days*. Returns the number removed."""
+    if not days or days <= 0:
+        return 0
+    try:
+        cur = await db_conn.execute(
+            "DELETE FROM usage_events WHERE created_at < ?", (_cutoff(days),)
+        )
+        await db_conn.commit()
+        return cur.rowcount or 0
+    except Exception:
+        return 0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────────────
@@ -981,7 +1190,7 @@ async def db_restore(data: bytes) -> bool:
 
     try:
         decompressed = _gzip.decompress(data)
-    except Exception:  # noqa: BLE001 -- silently reject bad input
+    except Exception:
         return False
 
     # Reject anything that is not a SQLite database outright.
@@ -1011,12 +1220,12 @@ async def db_restore(data: bytes) -> bool:
 
         await _reopen()
         return True
-    except Exception:  # noqa: BLE001 -- recover best-effort on failure
+    except Exception:
         tmp_path.unlink(missing_ok=True)
         # Leaving db_conn as None would 500 every later request until restart.
         try:
             await _reopen()
-        except Exception:  # noqa: BLE001 -- final fallback, DB may be unusable
+        except Exception:
             global db_conn
             db_conn = None
         return False
@@ -1059,6 +1268,12 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
             content = await asyncio.to_thread(fpath.read_text)
             data = json.loads(content)
         except (json.JSONDecodeError, OSError):
+            continue
+        # Valid JSON that isn't an object still has no .get(): a single file
+        # holding a list or a bare string raised AttributeError out of the
+        # loop and failed the whole listing, rather than being skipped like
+        # every other unusable file here.
+        if not isinstance(data, dict):
             continue
 
         # Skip the active CLI process, but retain WebConsole-created session files.

@@ -302,6 +302,16 @@ export function mountTranscriptViewer() {
     if (lastFocus && lastFocus.focus) lastFocus.focus();
   }
 
+  // The sidebar's History rows ask for a specific conversation by event rather
+  // than reaching in for a handle, so the two modules stay independent.
+  document.addEventListener('wc:open-transcript', event => {
+    const sessionId = event.detail && event.detail.sessionId;
+    if (!sessionId) return;
+    lastFocus = document.activeElement;
+    panel.dataset.open = 'true';
+    openSession({session_id: sessionId, title: ''});
+  });
+
   launch.addEventListener('click', open);
   close.addEventListener('click', shut);
   back.addEventListener('click', showList);

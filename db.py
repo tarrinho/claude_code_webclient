@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -17,6 +18,8 @@ from typing import Any, Final
 import aiosqlite
 
 import config
+
+_log = logging.getLogger("wc.db")
 
 db_conn: aiosqlite.Connection | None = None
 _messages_batch_lock: asyncio.Lock | None = None
@@ -1193,6 +1196,13 @@ async def usage_record(
     break a turn that has already succeeded, so failures are swallowed.
     """
     if not chat_id or not owner_id or not model:
+        # Silent rejection here is how an empty Usage tab looks from the
+        # outside: the turn succeeds, nothing is written, nothing is said.
+        _log.warning(
+            "usage_record_rejected: chat_id=%r owner_id=%r model=%r "
+            "(all three are required to attribute a row)",
+            chat_id, owner_id, model,
+        )
         return None
     try:
         cur = await db_conn.execute(
@@ -1218,8 +1228,18 @@ async def usage_record(
             ),
         )
         await db_conn.commit()
+        _log.debug(
+            "usage_recorded chat_id=%s model=%s provider=%s in=%s out=%s",
+            chat_id, model, provider, input_tokens, output_tokens,
+        )
         return cur.lastrowid
-    except Exception:  # noqa: BLE001 -- never fail a turn that already succeeded
+    except Exception as exc:  # noqa: BLE001 -- never fail a turn that already succeeded
+        # Swallowed so accounting cannot break a completed turn, but a write
+        # that fails on every turn must not also be invisible.
+        _log.error(
+            "usage_record_failed: chat_id=%s model=%s provider=%s: %s",
+            chat_id, model, provider, exc,
+        )
         return None
 
 

@@ -108,11 +108,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/skills":
             return self._json({"skills": [], "sources": [], "total": 0,
                                "active_count": 0, "session_id": ""})
-        if path.startswith(("/api/sessions", "/api/transcripts")):
-            return self._json({"sessions": [], "transcripts": [], "turns": []})
+        if path.startswith(("/api/sessions", "/api/transcripts", "/api/supervisor")):
+            return self._json({"sessions": [], "transcripts": [], "turns": [],
+                               "peers": [], "messages": []})
         if path in ("/", "/index.html"):
             self.path = "/index.html"
         return super().do_GET()
+
+    def do_POST(self):
+        # Endpoints other sessions have added since; answered so their polling
+        # does not show up as a console error in this test.
+        return self._json({"ok": True, "peers": [], "messages": []})
 
     def do_PATCH(self):
         parsed = urlparse(self.path)

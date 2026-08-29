@@ -724,14 +724,34 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     against the first row only -- putting it on every row would multiply the
     reported spend by the number of models the turn touched.
     """
+    # Both of these were bare returns. Between them they are every way the
+    # Usage tab ends up empty while turns plainly succeed, so each says which
+    # link of the chain gave out: the CLI's result frame -> claude_proxy's
+    # usage_frame -> the runner -> here -> db.usage_record.
     if not frame:
+        _log.warning(
+            "usage_missing: chat_id=%s (no usage frame reached the handler; "
+            "the CLI result frame carried none, or claude_proxy is running "
+            "code older than its source and never emitted one)",
+            chat_id,
+        )
         return
     models = frame.get("models") or {}
     if not models:
+        _log.warning(
+            "usage_frame_has_no_models: chat_id=%s frame_keys=%s "
+            "(a usage frame arrived but named no model, so nothing can be "
+            "attributed)",
+            chat_id, sorted(frame),
+        )
         return
     try:
         machine = await db.ai_machine_active(owner)
-    except Exception:  # noqa: BLE001 -- accounting must not break a live turn
+    except Exception as exc:  # noqa: BLE001 -- accounting must not break a live turn
+        _log.warning(
+            "usage_provider_unresolved: chat_id=%s (%s) — rows fall back to the "
+            "default provider label", chat_id, exc,
+        )
         machine = None
     provider = backend_kind(machine)
     cost = frame.get("cost_usd")
@@ -752,6 +772,10 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             duration_ms=frame.get("duration_ms"),
             is_error=bool(frame.get("is_error")),
         )
+    _log.info(
+        "usage_recorded chat_id=%s provider=%s models=%s",
+        chat_id, provider, list(models),
+    )
 
 
 # Safe messages for SSE errors so internal details never leak.
@@ -790,6 +814,7 @@ async def handle_submit_message(request: Request, chat_id: str):
             )
 
     try:
+        await _prepare_transcript_for_backend(chat)
         chunks, session_id = await runner.run_turn(
             prompt,
             chat["session_id"],
@@ -832,6 +857,42 @@ async def handle_submit_message(request: Request, chat_id: str):
     return JSONResponse(
         {"response": full_response, "chunks": len(chunks), "model": model}
     )
+
+
+async def _prepare_transcript_for_backend(chat: dict) -> None:
+    """Make a conversation replayable before it runs on a strict backend.
+
+    A gateway that streams its reply can record assistant messages whose only
+    content is an empty text block. It replays those happily; the Anthropic API
+    rejects the entire request with "text content blocks must be non-empty", so
+    a conversation started on such a gateway fails the moment it is moved to
+    Anthropic -- before the new prompt is even considered.
+
+    Only Anthropic backends need this, and the check is a byte scan that finds
+    nothing on a healthy transcript, so the common path stays cheap.
+    """
+    session_id = chat.get("session_id")
+    if not session_id:
+        return
+    try:
+        backend = await runner.get_backend(chat["id"])
+    except Exception:  # noqa: BLE001 -- routing must never block a turn
+        return
+    if backend.get("provider") != "anthropic":
+        return
+    try:
+        result = await transcripts.repair_if_needed(session_id)
+    except OSError as exc:
+        _log.warning(
+            "transcript_repair_failed session_id=%s: %s — the turn may be "
+            "rejected by the API", session_id, exc,
+        )
+        return
+    if result["repaired"]:
+        _log.info(
+            "transcript_repaired session_id=%s removed=%d relinked=%d backup=%s",
+            session_id, result["removed"], result["relinked"], result["backup"],
+        )
 
 
 async def stream_handler(request: Request, chat_id: str):
@@ -883,6 +944,7 @@ async def stream_handler(request: Request, chat_id: str):
             completed = False
             failed = False
 
+            await _prepare_transcript_for_backend(chat)
             async for event in runner.stream_turn(
                 prompt,
                 chat["session_id"],
@@ -2265,6 +2327,61 @@ async def handle_machine_models_set(request: Request, machine_id: str):
     return JSONResponse({"ok": True, "active": active, "default": default})
 
 
+# An agent that merely finished talking is not a reason to interrupt anyone.
+# The badge fires only when the last thing it said either asks for something or
+# reports that it is stuck. Both lists are deliberately short: a wide net makes
+# the count meaningless, and a missed alert costs one scroll of the sidebar
+# while a false one costs the badge its credibility.
+_ASKS_FOR_INPUT: Final[tuple[str, ...]] = (
+    "let me know",
+    "do you want",
+    "would you like",
+    "shall i",
+    "should i",
+    "your call",
+    "say the word",
+    "which would you",
+    "confirm",
+    "please choose",
+    "waiting for your",
+    "waiting on your",
+)
+_REPORTS_A_BLOCKER: Final[tuple[str, ...]] = (
+    "blocked",
+    "cannot proceed",
+    "can't proceed",
+    "needs your",
+    "need your",
+    "waiting on you",
+    "permission denied",
+    "requires your",
+    "i was denied",
+)
+
+
+def _attention(text: str) -> str | None:
+    """Why this output needs the user, or None if it is just talk.
+
+    Returns "asks" when the agent wants something back and "blocked" when it
+    reports it cannot continue. Everything else -- progress, results, a
+    finished piece of work -- is left silent on purpose.
+    """
+    body = (text or "").strip()
+    if not body:
+        return None
+    lowered = body.lower()
+    # A trailing question is the clearest possible request for input. Only the
+    # end of the message counts: a question quoted mid-explanation is not an ask.
+    tail = lowered.rstrip().rstrip("`*_)\"'")
+    if tail.endswith("?"):
+        return "asks"
+    if any(phrase in lowered for phrase in _ASKS_FOR_INPUT):
+        return "asks"
+    if any(phrase in lowered for phrase in _REPORTS_A_BLOCKER):
+        return "blocked"
+    return None
+
+
 def _one_line(text: str, limit: int = 120) -> str:
     """First line of *text*, collapsed, for the supervisor's preview column."""
     flat = " ".join((text or "").split())
@@ -2286,8 +2403,9 @@ async def handle_supervisor(request: Request):
     session = request.state.session
     owner = session["user"]
     marks = await db.read_marks_get(owner)
-    waiting: list[dict] = []
-    working: list[dict] = []
+    waiting: list[dict] = []   # asked for something, or reported a blocker
+    working: list[dict] = []   # mid-turn
+    updated: list[dict] = []   # said something unread, but nothing is needed
 
     # ── Web conversations ───────────────────────────────────────────────
     chats = await db.chat_list(owner)
@@ -2309,8 +2427,15 @@ async def handle_supervisor(request: Request):
             working.append({**entry, "status": "working"})
             continue
         seen = marks.get(("chat", chat["id"]))
-        if not seen or (last.get("created_at") or "") > seen:
-            waiting.append({**entry, "status": "waiting"})
+        if seen and (last.get("created_at") or "") <= seen:
+            continue
+        # Unread is necessary but not sufficient: only an ask or a blocker is
+        # worth a badge. Anything else is recorded as an update and stays quiet.
+        reason = _attention(last.get("preview") or "")
+        if reason:
+            waiting.append({**entry, "status": "waiting", "reason": reason})
+        else:
+            updated.append({**entry, "status": "updated"})
 
     # ── CLI / terminal sessions ─────────────────────────────────────────
     try:
@@ -2364,16 +2489,26 @@ async def handle_supervisor(request: Request):
             (b.get("text", "") for b in last_turn.get("blocks", []) if b.get("kind") == "text"),
             "",
         )
-        waiting.append(
-            {**entry, "since": spoke_at, "preview": _one_line(text), "status": "waiting"}
-        )
+        reason = _attention(text)
+        row = {**entry, "since": spoke_at, "preview": _one_line(text)}
+        if reason:
+            waiting.append({**row, "status": "waiting", "reason": reason})
+        else:
+            updated.append({**row, "status": "updated"})
 
     waiting.sort(key=lambda e: e["since"])
+    updated.sort(key=lambda e: e["since"])
     return JSONResponse(
         {
             "waiting": waiting,
             "working": working,
-            "counts": {"waiting": len(waiting), "working": len(working)},
+            "updated": updated,
+            # Only `waiting` is badged. The others are context, not a summons.
+            "counts": {
+                "waiting": len(waiting),
+                "working": len(working),
+                "updated": len(updated),
+            },
         }
     )
 

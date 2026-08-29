@@ -108,7 +108,7 @@ TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn
 PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000)  # cap on user prompt length
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.7.2"
+VERSION = "WebConsole_0.8.0"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

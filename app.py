@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+import configparser
 import datetime
 import json
 import logging
+import logging.config
 import re
 import socket
 import time
@@ -41,6 +43,78 @@ import prompts
 import runner
 import transcripts
 
+
+# loguru keeps its own sinks, entirely separate from logging.conf, so
+# runner.py's records -- turn launches, proxy connect failures, handshake
+# problems and turn timeouts -- went to stderr and never reached the log file.
+# Forwarding them into the stdlib logger the config already declares is
+# cheaper and less risky than rewriting ten call sites, and it makes the
+# wc.runner entry in logging.conf mean something again.
+def _forward_loguru_to_logging() -> None:
+    try:
+        from loguru import logger as _loguru
+    except ImportError:  # loguru is optional; runner falls back on its own
+        return
+    target = logging.getLogger("wc.runner")
+    # loguru has levels stdlib does not (TRACE, SUCCESS); map them onto the
+    # nearest stdlib level rather than dropping the record.
+    levels = {
+        "TRACE": logging.DEBUG, "DEBUG": logging.DEBUG, "INFO": logging.INFO,
+        "SUCCESS": logging.INFO, "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL,
+    }
+
+    def _sink(message) -> None:
+        record = message.record
+        target.log(levels.get(record["level"].name, logging.INFO), record["message"])
+
+    # Drop loguru's default stderr sink: the stdlib config already writes to
+    # the console, and leaving it would print every runner line twice.
+    _loguru.remove()
+    _loguru.add(_sink, level="DEBUG")
+
+
+def _configure_logging() -> None:
+    """Attach handlers to the wc.* loggers at import time.
+
+    This has to run on import, not under ``__main__``: the server is started as
+    ``python3 -m uvicorn app:app``, so this module is imported and the
+    ``__main__`` block never executes. Without it the wc.* records went nowhere
+    -- uvicorn configures only its own loggers, root was left with no handler,
+    and logging's last-resort fallback emits WARNING and above. Every
+    ``_log.info`` in the codebase was silently discarded, so the login,
+    chat-creation and turn-timeout records §3 (A09) calls for did not exist. The
+    file that looked like a log was only the shell's stdout redirect of
+    uvicorn's access lines.
+
+    ``logging.conf`` is honoured when present so the rotation policy lives in
+    one place; anything else falls back to a stream handler, because losing log
+    formatting must never stop the server from booting.
+    """
+    _forward_loguru_to_logging()
+    conf = Path(__file__).parent / "logging.conf"
+    if conf.is_file():
+        try:
+            # disable_existing_loggers would silence uvicorn's own loggers,
+            # which are created before this module is imported.
+            logging.config.fileConfig(str(conf), disable_existing_loggers=False)
+            return
+        # RuntimeError is what fileConfig raises for a file with no section
+        # headers, which is the likeliest way this one gets corrupted.
+        except (OSError, KeyError, ValueError, RuntimeError, configparser.Error):
+            # A malformed config is worth reporting, but not worth refusing to
+            # start over -- fall through to the stream handler below.
+            logging.basicConfig(level=logging.INFO)
+            logging.getLogger("wc.app").exception("logging_config_failed path=%s", conf)
+            return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
+_configure_logging()
 _log = logging.getLogger("wc.app")
 
 _WEB_DIR: Final[Path] = Path(__file__).parent / "web"
@@ -848,6 +922,40 @@ _SSE_TIMEOUT = "The turn timed out."
 _SSE_UNKNOWN = "Connection lost during streaming."
 
 
+async def _route_to_live_terminal(chat: dict, prompt: str) -> dict | None:
+    """Type *prompt* into the terminal running this chat's session, if any.
+
+    A conversation linked to a live interactive session has two possible
+    homes for a turn: a fresh `claude --resume` process, or the terminal the
+    user is actually looking at. Spawning the second process does the work
+    correctly and invisibly -- and leaves two processes appending to one
+    transcript. Delivering to the live window instead means the request and
+    every step of the answer appear where the user is watching, and the web
+    conversation picks them up through the existing transcript sync.
+
+    Returns None when there is no live window, so the caller falls back to the
+    headless turn that has always run.
+    """
+    session_id = (chat.get("session_id") or "").strip()
+    if not session_id:
+        return None
+    outcome = await asyncio.to_thread(prompts.deliver_request, session_id, prompt)
+    if not outcome.get("delivered"):
+        if outcome.get("target"):
+            # A window was found but refused the input: worth a log, since
+            # falling back silently would hide a broken multiplexer.
+            _log.warning(
+                "live delivery failed chat=%s session=%s reason=%s",
+                chat.get("id"), session_id, outcome.get("reason"),
+            )
+        return None
+    _log.info(
+        "prompt delivered to live terminal chat=%s session=%s target=%s",
+        chat.get("id"), session_id, (outcome.get("target") or {}).get("kind"),
+    )
+    return outcome
+
+
 async def handle_submit_message(request: Request, chat_id: str):
     """POST /api/chats/{id}/messages -- submit a prompt, return the assistant's response."""
     session = request.state.session
@@ -876,6 +984,18 @@ async def handle_submit_message(request: Request, chat_id: str):
             raise HTTPException(
                 status_code=400, detail="Model name contains invalid characters"
             )
+
+    # A conversation with a live terminal behind it gets the request typed
+    # into that terminal, so the user sees it and its steps where they are
+    # looking. The reply arrives in the web chat through transcript sync.
+    routed = await _route_to_live_terminal(chat, prompt)
+    if routed:
+        await db.messages_batch(chat_id, [("user", prompt)])
+        return JSONResponse({
+            "response": "",
+            "delivered_to": "terminal",
+            "session_id": chat.get("session_id"),
+        })
 
     try:
         await _prepare_transcript_for_backend(chat)
@@ -1000,6 +1120,30 @@ async def stream_handler(request: Request, chat_id: str):
 
     async def event_generator():
         yield f"data: {json.dumps({'type': 'start', 'chat_id': chat_id})}\n\n"
+
+        # If a live terminal is running this conversation, the request belongs
+        # there: the user watches it and every step of the answer in the window
+        # they already have open, instead of a second headless process doing the
+        # work invisibly against the same transcript. The reply reaches this
+        # page through the existing transcript sync.
+        routed = await _route_to_live_terminal(chat, prompt)
+        if routed:
+            await db.messages_batch(chat_id, [("user", prompt)])
+            # Sent as `text`, which the client already renders: inventing a
+            # new event type would have shown the user nothing at all, since
+            # conversation.js ignores types it does not know.
+            yield (
+                "data: "
+                + json.dumps({
+                    "type": "text",
+                    "content": "Sent to the terminal session running this "
+                               "conversation — the request and its steps appear "
+                               "there, and sync back here when the turn ends.",
+                })
+                + "\n\n"
+            )
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
 
         try:
             full_response_parts: list[str] = []
@@ -3469,9 +3613,4 @@ async def _api_machine_delete(request: Request, machine_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
     uvicorn.run("app:app", host=config.LISTEN_HOST, port=config.PORT, log_level="info")

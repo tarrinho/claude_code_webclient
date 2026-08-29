@@ -416,6 +416,19 @@ def _server_window() -> tuple[str, str]:
     return _os.environ.get("STY", ""), _os.environ.get("WINDOW", "")
 
 
+def _process_name(pid: int) -> str:
+    """The command name of *pid*, or "" if it is gone or unreadable.
+
+    Its own function so the identification guard has a seam a test can hold:
+    patching pathlib globally reached other readers and let the guard's test
+    pass down an exception path instead of exercising the check.
+    """
+    try:
+        return Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return ""
+
+
 def _is_claude_process(pid: int | None) -> bool:
     """Whether *pid* is a running claude, and not this process or an ancestor.
 
@@ -435,11 +448,10 @@ def _is_claude_process(pid: int | None) -> bool:
     for _ancestor_pid, _name in _parents(_os.getpid()):
         if _ancestor_pid == pid:
             return False
-    try:
-        comm = Path(f"/proc/{pid}/comm").read_text().strip()
-    except OSError:
+    name = _process_name(pid)
+    if not name:
         return False
-    return "claude" in comm.lower()
+    return "claude" in name.lower()
 
 
 def deliver_request(session_id: str, text: str) -> dict[str, Any]:
@@ -459,22 +471,26 @@ def deliver_request(session_id: str, text: str) -> dict[str, Any]:
     target = locate(session_id)
     if not target:
         return {"delivered": False, "reason": "no live terminal window", "target": None}
-    # Belt and braces: even a correctly identified pid must not resolve to the
-    # window the server itself was launched from.
-    if target.get("kind") == "screen":
-        sty, window = _server_window()
-        if sty and str(target.get("session")) == sty and str(target.get("window")) == window:
-            return {
-                "delivered": False,
-                "reason": "target is the server's own window",
-                "target": None,
-            }
+    # Sharing the server's window is NOT a veto, though it looks like one.
+    # Measured on this deployment: the console runs in STY 2126909.pts-5
+    # window 0 and cweb2's claude runs in the same window, because the console
+    # was launched with `&` from it. Refusing a window match would refuse every
+    # agent started that way -- including the session this routing exists for.
+    #
+    # It is also redundant. F-01 works by naming the console's own pid so the
+    # walk upwards lands in the console's window; refusing our pid and our
+    # whole ancestry kills that at the source. A pid that has passed those
+    # checks is a different, live, verified claude, and a window match then
+    # means only that it shares a window with us. Logged, not refused, so a
+    # delivery stays attributable afterwards.
+    shared = bool(target.get("shares_server_window"))
     ok = send_text(target, text)
     return {
         "delivered": ok,
         "reason": "" if ok else "the terminal refused the input",
         "target": target,
         "pid": pid,
+        "shares_server_window": shared,
     }
 
 

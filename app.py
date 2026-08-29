@@ -2359,6 +2359,26 @@ _REPORTS_A_BLOCKER: Final[tuple[str, ...]] = (
 )
 
 
+def _last_thing_said(turns: list[dict]) -> str:
+    """The newest assistant text in *turns*, skipping tool calls.
+
+    A turn carrying only a tool call has role="assistant" and no text, so
+    reading the last turn alone finds nothing and the agent looks silent --
+    which is what stopped every terminal session from ever being surfaced.
+    """
+    for turn in reversed(turns):
+        if turn.get("role") != "assistant":
+            continue
+        text = " ".join(
+            (block.get("text") or "").strip()
+            for block in turn.get("blocks", [])
+            if block.get("kind") == "text"
+        ).strip()
+        if text:
+            return text
+    return ""
+
+
 def _attention(text: str) -> str | None:
     """Why this output needs the user, or None if it is just talk.
 
@@ -2426,16 +2446,20 @@ async def handle_supervisor(request: Request):
         if last.get("role") != "assistant":
             working.append({**entry, "status": "working"})
             continue
-        seen = marks.get(("chat", chat["id"]))
-        if seen and (last.get("created_at") or "") <= seen:
-            continue
-        # Unread is necessary but not sufficient: only an ask or a blocker is
-        # worth a badge. Anything else is recorded as an update and stays quiet.
+        # An ask or a blocker outranks everything: it stays listed until it is
+        # actually answered, which for a conversation means the newest message
+        # stops being the agent's. Opening it is not answering it -- clearing
+        # on read let a question be dismissed by glancing at it.
         reason = _attention(last.get("preview") or "")
         if reason:
             waiting.append({**entry, "status": "waiting", "reason": reason})
-        else:
-            updated.append({**entry, "status": "updated"})
+            continue
+        # Routine output is different: seeing it IS the whole point, so a read
+        # mark retires it.
+        seen = marks.get(("chat", chat["id"]))
+        if seen and (last.get("created_at") or "") <= seen:
+            continue
+        updated.append({**entry, "status": "updated"})
 
     # ── CLI / terminal sessions ─────────────────────────────────────────
     try:
@@ -2457,14 +2481,22 @@ async def handle_supervisor(request: Request):
             meta.get("updated_at") or 0, datetime.UTC
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         seen = marks.get(("session", session_id))
-        # mtime is only trustworthy as a negative: an untouched file certainly
-        # has nothing new, so this skips the read. It must NOT decide "waiting"
-        # on its own -- a transcript is written by things that are not
-        # conversation. One cross-session message deposits dozens of
-        # queue-operation and attachment records into the receiving session,
-        # so with several agents talking to each other the mtime is never
-        # still and every one of them would show as waiting on the user.
-        if seen and file_touched <= seen:
+        status = (cli.get("status") or "").strip().lower()
+        # A busy agent needs no transcript read at all, which is what keeps
+        # this cheap enough to poll: it is the common case.
+        if status == "busy":
+            working.append({
+                "kind": "session", "id": session_id,
+                "title": cli.get("name") or meta.get("title") or session_id,
+                "preview": "", "since": file_touched, "status": "working",
+            })
+            continue
+        # Without a status field, fall back to mtime as a negative filter only:
+        # an untouched file certainly has nothing new. It must never decide
+        # "waiting" on its own -- one cross-session message deposits dozens of
+        # queue-operation and attachment records into the receiving session, so
+        # with several agents talking the mtime is never still.
+        if not status and seen and file_touched <= seen:
             continue
         page = await transcripts.read_turns(session_id)
         turns = page.get("turns") or []
@@ -2476,8 +2508,31 @@ async def handle_supervisor(request: Request):
             "title": cli.get("name") or meta.get("title") or session_id,
             "preview": "",
         }
+        # Claude Code reports its own state, which beats inferring one from the
+        # transcript: a session at a permission prompt and one running a tool
+        # look identical in the file. Any non-busy value means it has stopped
+        # and is waiting on a human -- and it stays listed until it starts
+        # working again, which only happens once someone answers it. A read
+        # mark deliberately does not retire this.
+        if status:
+            said = _last_thing_said(turns)
+            waiting.append({
+                **entry,
+                "since": cli.get("status_updated_at") or file_touched,
+                "preview": _one_line(said),
+                "status": "waiting",
+                "reason": _attention(said) or "idle",
+            })
+            continue
         last_turn = turns[-1]
-        if last_turn.get("role") != "assistant":
+        # A trailing tool call means the agent is still running, not that it
+        # has stopped with something to say. Checking only role was wrong:
+        # every tool turn carries role="assistant" too.
+        last_is_speech = last_turn.get("role") == "assistant" and any(
+            b.get("kind") == "text" and (b.get("text") or "").strip()
+            for b in last_turn.get("blocks", [])
+        )
+        if not last_is_speech:
             working.append({**entry, "since": file_touched, "status": "working"})
             continue
         # The real signal: when the agent last said something, not when its
@@ -2485,15 +2540,19 @@ async def handle_supervisor(request: Request):
         spoke_at = str(last_turn.get("timestamp") or "") or file_touched
         if seen and spoke_at <= seen:
             continue
-        text = next(
-            (b.get("text", "") for b in last_turn.get("blocks", []) if b.get("kind") == "text"),
-            "",
-        )
+        # The last block of the turn, not the first: a turn often opens with a
+        # sentence of narration and ends with the actual question.
+        text = " ".join(
+            (b.get("text") or "").strip()
+            for b in last_turn.get("blocks", [])
+            if b.get("kind") == "text"
+        ).strip()
         reason = _attention(text)
         row = {**entry, "since": spoke_at, "preview": _one_line(text)}
         if reason:
+            # Unanswered outranks read, same as for conversations.
             waiting.append({**row, "status": "waiting", "reason": reason})
-        else:
+        elif not (seen and spoke_at <= seen):
             updated.append({**row, "status": "updated"})
 
     waiting.sort(key=lambda e: e["since"])
@@ -2707,6 +2766,46 @@ async def handle_sessions_resume(request: Request, session_id: str):
     )
 
 
+_QUESTION_PENDING_NOTE = "(waiting for an answer in the terminal)"
+
+
+def _question_to_text(block: dict) -> str:
+    """Render a question and every option as plain text for a message body.
+
+    Message bodies are shown with textContent, not Markdown, so the shape has
+    to survive as plain text.
+    """
+    lines: list[str] = []
+    for entry in block.get("questions") or []:
+        if not isinstance(entry, dict):
+            continue
+        header = str(entry.get("header") or "").strip()
+        question = str(entry.get("question") or "").strip()
+        lines.append(f"Question — {header}" if header else "Question")
+        if question:
+            lines.append(question)
+        if entry.get("multi_select"):
+            lines.append("(choose one or more)")
+        for option in entry.get("options") or []:
+            if not isinstance(option, dict):
+                continue
+            label = str(option.get("label") or "").strip()
+            if not label:
+                continue
+            description = str(option.get("description") or "").strip()
+            lines.append(f"  • {label} — {description}" if description else f"  • {label}")
+        lines.append(_QUESTION_PENDING_NOTE)
+    return "\n".join(lines).strip()
+
+
+def _answer_to_text(block: dict) -> str:
+    """Render how a question was resolved."""
+    status = block.get("status") or "resolved"
+    label = {"answered": "Answered", "declined": "Declined"}.get(status, "Resolved")
+    text = " ".join(str(block.get("text") or "").split())
+    return f"{label} in the terminal: {text}" if text else f"{label} in the terminal"
+
+
 def _turn_to_message(turn: dict) -> tuple[str, str] | None:
     """Flatten one transcript turn into a (role, content) message row.
 
@@ -2721,7 +2820,22 @@ def _turn_to_message(turn: dict) -> tuple[str, str] | None:
         return None
     parts: list[str] = []
     for block in turn.get("blocks") or []:
-        kind, text = block.get("kind"), (block.get("text") or "").strip()
+        kind = block.get("kind")
+        # A question carries no "text" -- its content is the question and its
+        # options -- so reading block["text"] dropped it from the conversation
+        # entirely. A question the user has to answer is the last thing that
+        # should go missing here.
+        if kind == "question":
+            rendered = _question_to_text(block)
+            if rendered:
+                parts.append(rendered)
+            continue
+        if kind == "answer":
+            rendered = _answer_to_text(block)
+            if rendered:
+                parts.append(rendered)
+            continue
+        text = (block.get("text") or "").strip()
         if not text:
             continue
         if kind == "text":

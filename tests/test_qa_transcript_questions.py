@@ -166,3 +166,108 @@ class AnswerPairingQA(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── The conversation on the site, not just the transcript viewer ──────────────
+
+
+class ConversationSyncQA(unittest.TestCase):
+    """A synced question must reach the conversation's own messages.
+
+    _turn_to_message reads block["text"], and a question block has no such key
+    -- its content is the question and its options -- so questions were dropped
+    from the conversation even after the transcript viewer learned to render
+    them. A question the user has to answer is the last thing that should go
+    missing on the way in.
+    """
+
+    def _msg(self, blocks, role="assistant"):
+        import app
+        return app._turn_to_message({"role": role, "blocks": blocks})
+
+    def _question(self, **over):
+        entry = {
+            "question": "Should I keep this session named cweb5?",
+            "header": "Session name",
+            "multi_select": False,
+            "options": [
+                {"label": "Yes, keep it", "description": "Keep the name cweb5"},
+                {"label": "No, rename it", "description": "Pick a different name"},
+            ],
+        }
+        entry.update(over)
+        return {"kind": "question", "id": "q1", "questions": [entry]}
+
+    def test_a_question_is_no_longer_dropped(self):
+        result = self._msg([self._question()])
+        self.assertIsNotNone(result)
+        self.assertIn("Should I keep this session named cweb5?", result[1])
+
+    def test_every_option_and_description_reaches_the_message(self):
+        _role, body = self._msg([self._question()])
+        self.assertIn("Yes, keep it — Keep the name cweb5", body)
+        self.assertIn("No, rename it — Pick a different name", body)
+
+    def test_the_header_is_shown(self):
+        self.assertIn("Question — Session name", self._msg([self._question()])[1])
+
+    def test_a_pending_question_says_where_to_answer(self):
+        # Otherwise it reads as a rhetorical question in the log.
+        self.assertIn("waiting for an answer in the terminal",
+                      self._msg([self._question()])[1])
+
+    def test_multi_select_is_stated(self):
+        self.assertIn("choose one or more",
+                      self._msg([self._question(multi_select=True)])[1])
+
+    def test_an_option_without_a_description_still_appears(self):
+        body = self._msg([self._question(
+            options=[{"label": "Just do it", "description": ""}])])[1]
+        self.assertIn("Just do it", body)
+
+    def test_text_and_question_both_survive_in_one_turn(self):
+        _role, body = self._msg([
+            {"kind": "text", "text": "One thing before I start."},
+            self._question(),
+        ])
+        self.assertIn("One thing before I start.", body)
+        self.assertIn("Session name", body)
+
+    def test_an_answer_is_recorded_in_the_conversation(self):
+        _role, body = self._msg([{
+            "kind": "answer", "id": "q1", "status": "answered",
+            "text": 'Your questions have been answered: "Session name"="Yes, keep it"',
+        }], role="user")
+        self.assertIn("Answered in the terminal", body)
+        self.assertIn("Yes, keep it", body)
+
+    def test_a_declined_answer_says_declined(self):
+        _role, body = self._msg([{"kind": "answer", "id": "q1",
+                                  "status": "declined", "text": "was rejected"}])
+        self.assertIn("Declined in the terminal", body)
+
+    def test_a_malformed_question_does_not_produce_an_empty_message(self):
+        for bad in ({"kind": "question", "id": "q", "questions": []},
+                    {"kind": "question", "id": "q", "questions": ["nope"]},
+                    {"kind": "question", "id": "q"}):
+            self.assertIsNone(self._msg([bad]), repr(bad))
+
+    def test_subagent_turns_are_still_dropped(self):
+        import app
+        self.assertIsNone(app._turn_to_message(
+            {"role": "assistant", "sidechain": True, "blocks": [self._question()]}))
+
+    def test_a_real_transcript_question_reaches_the_conversation(self):
+        # End to end over the reader and the converter, from raw records.
+        ask = {"type": "tool_use", "id": "qz", "name": "AskUserQuestion",
+               "input": {"questions": [{
+                   "question": "Proceed?", "header": "Confirm",
+                   "options": [{"label": "Yes", "description": "go ahead"}]}]}}
+        raw = json.dumps({"type": "assistant",
+                          "message": {"role": "assistant", "content": [ask]}}).encode()
+        turns = transcripts._turns_from_bytes(raw)
+        import app
+        rows = [r for r in (app._turn_to_message(t) for t in turns) if r]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("Proceed?", rows[0][1])
+        self.assertIn("Yes — go ahead", rows[0][1])

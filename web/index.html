@@ -27,8 +27,9 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.7.0</span>
+    <span class="ver" id="ver">0.7.1</span>
     <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
+    <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
     <button class="btn-logout" id="logoutBtn">Log out</button>
   </header>
@@ -53,6 +54,15 @@
       <span class="run-state" id="runState" data-state="ready">Ready</span>
     </div>
   </div>
+  <!-- A prompt the linked terminal session is waiting on, answerable here -->
+  <section class="question-bar" id="questionBar" aria-live="polite" hidden>
+    <div class="question-head">
+      <span class="question-tag" id="questionTag"></span>
+      <span class="question-ask" id="questionAsk"></span>
+    </div>
+    <div class="question-options" id="questionOptions" role="group" aria-label="Answers"></div>
+    <p class="question-note" id="questionNote"></p>
+  </section>
   <section class="messages-wrap">
     <section class="messages" id="messagesArea" aria-label="Conversation">
       <div class="empty-state"><div class="icon">⌁</div><strong>Start from a workspace</strong><p>Create or choose a conversation to begin.</p><button class="btn-primary new-chat-btn">New conversation</button></div>
@@ -176,7 +186,7 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js?v=9"></script>
+<script type="module" src="/assets/app.js?v=13"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

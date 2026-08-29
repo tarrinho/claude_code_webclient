@@ -612,6 +612,101 @@ async def repair_if_needed(session_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(_repair_sync, path)
 
 
+# Token accounting for turns that ran in a terminal rather than through this
+# app. Every assistant record carries the model and a usage object, so a
+# session's spend is recoverable without the app having been involved in it.
+_USAGE_MARKER: Final[bytes] = b'"usage"'
+
+
+def _usage_from_record(record: Any) -> dict[str, Any] | None:
+    """Token counts for one assistant record, or None if it carries none."""
+    if not isinstance(record, dict) or record.get("type") != "assistant":
+        return None
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return None
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    def count(key: str) -> int:
+        value = usage.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    model = str(message.get("model") or "").strip()
+    # A synthetic reply is the CLI reporting an error in the model's voice; it
+    # bought nothing and must not appear as spend.
+    if not model or model == "<synthetic>":
+        return None
+    tokens = {
+        "input_tokens": count("input_tokens"),
+        "output_tokens": count("output_tokens"),
+        "cache_read_tokens": count("cache_read_input_tokens"),
+        "cache_creation_tokens": count("cache_creation_input_tokens"),
+    }
+    if not any(tokens.values()):
+        return None
+
+    cost = record.get("costUSD")
+    if not isinstance(cost, (int, float)):
+        cost = None
+    return {
+        "model": model,
+        **tokens,
+        # Carried through only when the transcript states one. A third-party
+        # gateway reports no trustworthy cost, and inventing one would make the
+        # total read as authoritative when it is not.
+        "cost_usd": float(cost) if cost is not None else None,
+        "timestamp": str(record.get("timestamp") or ""),
+    }
+
+
+def _usage_since_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], int]:
+    """Usage rows appended after *offset*, with the new cursor position.
+
+    A cursor is what makes this affordable and correct: the archive is tens of
+    megabytes, and re-reading from the start would count every earlier turn
+    again on each run.
+    """
+    size = path.stat().st_size
+    if offset >= size:
+        return [], size
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        raw = handle.read()
+
+    end = raw.rfind(b"\n")
+    if end < 0:
+        return [], offset
+    consumed = raw[: end + 1]
+
+    rows: list[dict[str, Any]] = []
+    if _USAGE_MARKER in consumed:
+        for line in consumed.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            row = _usage_from_record(record)
+            if row:
+                rows.append(row)
+    return rows, offset + len(consumed)
+
+
+async def usage_since(session_id: str, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+    """Usage recorded for *session_id* after *offset*."""
+    path = transcript_path(session_id)
+    if path is None:
+        return [], offset
+    try:
+        return await asyncio.to_thread(_usage_since_sync, path, offset)
+    except OSError:
+        return [], offset
+
+
 def _cwd_sync(path: Path) -> str:
     """Read the working directory a session ran in, from its own transcript.
 
@@ -813,3 +908,64 @@ async def list_recent(limit: int = 50) -> list[dict[str, Any]]:
     """
     limit = max(1, min(int(limit), 200))
     return await asyncio.to_thread(_list_sync, limit)
+
+
+def pending_question(session_id: str) -> dict[str, Any] | None:
+    """Return the question *session_id* is still waiting on, or None.
+
+    A question is pending when its tool_use has no matching tool_result. The
+    whole transcript is scanned rather than a tail, because a session can sit on
+    a prompt for a long time while nothing else is appended.
+
+    ``needle`` is the question text, used to confirm the prompt really is on
+    screen before a keystroke is delivered to that window.
+    """
+    path = transcript_path(session_id)
+    if path is None:
+        return None
+    paths = [path]
+    asked: dict[str, dict[str, Any]] = {}
+    answered: set[str] = set()
+    for path in paths:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        for line in raw.split(b"\n"):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                record = json.loads(text.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if (
+                    block.get("type") == "tool_use"
+                    and block.get("name") == _QUESTION_TOOL
+                    and block.get("id")
+                ):
+                    built = _question_block(block)
+                    if built:
+                        asked[str(block["id"])] = built
+                elif block.get("type") == "tool_result" and block.get("tool_use_id"):
+                    answered.add(str(block["tool_use_id"]))
+
+    for qid, built in reversed(list(asked.items())):
+        if qid in answered:
+            continue
+        first = (built.get("questions") or [{}])[0]
+        return {
+            "id": qid,
+            "questions": built.get("questions") or [],
+            "needle": str(first.get("question") or "").strip(),
+        }
+    return None

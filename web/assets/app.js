@@ -619,22 +619,46 @@ function _buildModelSection(machine) {
 
   if (!entry) return section;
 
-  const list = document.createElement('div');
-  list.className = 'models-list';
   // An empty active list means every served model is offered. Rendering that
   // as all-checked keeps the feature opt-in; rendering it as none-checked
   // would imply the picker is empty, which it is not.
   const offersAll = entry.active.length === 0;
-  entry.models.forEach(model => {
-    list.appendChild(_buildModelRow(machine, model, entry, offersAll));
+
+  // The rail is the point of this layout: it runs down the live backend and
+  // terminates on the default row, so "this backend, this model" is one thing
+  // to read rather than two facts to assemble.
+  const body = document.createElement('div');
+  body.className = 'models-body';
+  body.appendChild(document.createElement('div')).className = 'models-rail';
+
+  const grid = document.createElement('div');
+  grid.className = 'models-grid';
+
+  // The two controls were unlabelled, so nothing said which column offered a
+  // model and which made it the default.
+  const header = document.createElement('div');
+  header.className = 'models-head';
+  ['Offered', 'Default', 'Model'].forEach(label => {
+    const cell = document.createElement('span');
+    cell.textContent = label;
+    header.appendChild(cell);
   });
-  section.appendChild(list);
+  grid.appendChild(header);
+
+  entry.models.forEach(model => {
+    grid.appendChild(_buildModelRow(machine, model, entry, offersAll));
+  });
+  body.appendChild(grid);
+  section.appendChild(body);
 
   const hint = document.createElement('p');
   hint.className = 'machine-hint';
+  // Both controls are explained in either state. The all-offered wording used
+  // to describe only the tickbox, so in the state every backend starts in, the
+  // radio column was never accounted for at all.
   hint.textContent = offersAll
-    ? 'All models are offered. Tick a subset to narrow the picker.'
-    : 'Ticked models are offered when starting a turn; ● is the default for new chats.';
+    ? 'All models are offered — tick a subset to narrow the picker. The selected ● is this backend’s default for new chats.'
+    : 'Ticked models are offered when starting a turn; the selected ● is this backend’s default for new chats.';
   section.appendChild(hint);
   return section;
 }
@@ -642,11 +666,17 @@ function _buildModelSection(machine) {
 function _buildModelRow(machine, model, entry, offersAll) {
   const row = document.createElement('div');
   row.className = 'model-item';
+  // The rail's terminating node hangs off this class, so the default row is
+  // what visually closes the path from the LIVE chip.
+  if (entry.default === model.id) row.classList.add('model-item-default');
 
   const offered = document.createElement('input');
   offered.type = 'checkbox';
   offered.checked = offersAll || entry.active.includes(model.id);
   offered.setAttribute('aria-label', `Offer ${model.id}`);
+  // Also a tooltip: the two controls sit unlabelled side by side, so a mouse
+  // user had no way to tell the "offered" column from the "default" one.
+  offered.title = `Offer ${model.id} when starting a turn`;
   offered.addEventListener('change', () => _toggleModelOffered(machine, model.id));
   row.appendChild(offered);
 
@@ -655,13 +685,25 @@ function _buildModelRow(machine, model, entry, offersAll) {
   isDefault.name = `default-model-${machine.id}`;
   isDefault.checked = entry.default === model.id;
   isDefault.setAttribute('aria-label', `Default to ${model.id}`);
+  isDefault.title = `Make ${model.id} this backend's default for new chats`;
   isDefault.addEventListener('change', () => _setModelDefault(machine, model.id));
   row.appendChild(isDefault);
 
   const name = document.createElement('span');
   name.className = 'model-item-id';
-  name.textContent = model.id;
   name.title = model.id;
+  // "azure_ai/" repeated down the column buries the part that differs, so the
+  // family is dimmed and the distinguishing name reads first.
+  const slash = model.id.indexOf('/');
+  if (slash > 0) {
+    const family = document.createElement('span');
+    family.className = 'model-item-family';
+    family.textContent = model.id.slice(0, slash + 1);
+    name.appendChild(family);
+    name.appendChild(document.createTextNode(model.id.slice(slash + 1)));
+  } else {
+    name.textContent = model.id;
+  }
   row.appendChild(name);
 
   if (model.display_name && model.display_name !== model.id) {
@@ -691,16 +733,21 @@ function _renderMachineList() {
     const top = document.createElement('div');
     top.className = 'machine-card-top';
 
+    // Which backend is live was previously a 3px border. It is the single most
+    // important fact on this panel, so it is stated in words.
+    const state = document.createElement('span');
+    state.className = m.active ? 'machine-state machine-state-live' : 'machine-state';
+    state.textContent = m.active ? 'LIVE' : 'STANDBY';
+    top.appendChild(state);
+
+    const ident = document.createElement('div');
+    ident.className = 'machine-ident';
+
     const name = document.createElement('span');
     name.className = 'machine-name';
     name.textContent = m.name;
-    if (m.active) {
-      const badge = document.createElement('span');
-      badge.className = 'machine-badge';
-      badge.textContent = 'Active';
-      top.appendChild(badge);
-    }
-    top.appendChild(name);
+    name.title = m.name;
+    ident.appendChild(name);
 
     const meta = document.createElement('div');
     meta.className = 'machine-meta';
@@ -709,8 +756,10 @@ function _renderMachineList() {
     const where = m.provider === 'anthropic'
       ? (m.base_url || 'https://api.anthropic.com')
       : m.host;
-    meta.textContent = `${where}${m.model ? ' · ' + m.model : ''}`;
-    top.appendChild(meta);
+    meta.textContent = where;
+    meta.title = where;
+    ident.appendChild(meta);
+    top.appendChild(ident);
 
     const provider = document.createElement('span');
     provider.className = 'machine-provider';
@@ -1057,6 +1106,8 @@ function updateCurrentUi(chat) {
   updateModelDisplay(chat.model);
   populateBackendPicker(chat);
   ensurePinnedModels(chat);
+  refreshQuestion();
+  startQuestionPolling();
   // The pickers show this conversation's own routing, not a blank slate: both
   // are persisted per conversation, so two chats can sit on different backends.
   populateModelPicker(chat);
@@ -1120,6 +1171,130 @@ async function setConversationRouting(fields, describe) {
     populateBackendPicker(chat);
     populateModelPicker(chat);
   }
+}
+
+// ── Pending question from the linked terminal session ─────────────────────────
+// A question asked in the terminal blocks that session until somebody chooses.
+// Showing it here with every option, and delivering the choice, means the user
+// does not have to go and find the terminal to unblock it.
+const QUESTION_POLL_MS = 4000;
+let _questionTimer = null;
+let _questionState = null;
+let _answering = false;
+
+function _clearQuestion() {
+  _questionState = null;
+  const bar = byId('questionBar');
+  if (bar) bar.hidden = true;
+}
+
+function _renderQuestion(data) {
+  const bar = byId('questionBar');
+  if (!bar) return;
+  if (!data || !data.pending) { _clearQuestion(); return; }
+  const first = (data.questions || [])[0] || {};
+  byId('questionTag').textContent = first.header || 'Question';
+  byId('questionAsk').textContent = first.question || 'A question is waiting';
+
+  // Descriptions come from the tool call; the option list comes from the live
+  // terminal, which offers more than the call declared (free text, "Chat about
+  // this"). Match them up by label so each button keeps its explanation.
+  const described = new Map(
+    (first.options || []).map(option => [option.label, option.description]),
+  );
+  const box = byId('questionOptions');
+  const note = byId('questionNote');
+  note.classList.remove('qo-error');
+
+  if (!data.answerable) {
+    box.replaceChildren();
+    (first.options || []).forEach(option => {
+      const shown = document.createElement('div');
+      shown.className = 'question-option';
+      shown.appendChild(_qoText('qo-label', option.label));
+      if (option.description) shown.appendChild(_qoText('qo-desc', option.description));
+      box.appendChild(shown);
+    });
+    note.textContent = data.reason || 'This one can only be answered at its terminal.';
+    bar.hidden = false;
+    return;
+  }
+
+  box.replaceChildren();
+  (data.options || []).forEach(option => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'question-option';
+    if (option.selected) button.classList.add('qo-current');
+    button.appendChild(_qoText('qo-label', `${option.index}. ${option.label}`));
+    const description = described.get(option.label);
+    if (description) button.appendChild(_qoText('qo-desc', description));
+    button.addEventListener('click', () => _answerQuestion(option));
+    box.appendChild(button);
+  });
+  note.textContent = 'Choosing sends the answer to the terminal session.';
+  bar.hidden = false;
+  _questionState = data;
+}
+
+function _qoText(className, text) {
+  const span = document.createElement('span');
+  span.className = className;
+  span.textContent = text;
+  return span;
+}
+
+async function _answerQuestion(option) {
+  const chat = state.currentChat;
+  if (!chat || _answering) return;
+  _answering = true;
+  const buttons = [...document.querySelectorAll('.question-option')];
+  buttons.forEach(button => { button.disabled = true; });
+  const note = byId('questionNote');
+  note.classList.remove('qo-error');
+  note.textContent = `Answering “${option.label}”…`;
+  try {
+    const response = await apiFetch(
+      `/api/chats/${encodeURIComponent(chat.id)}/question`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: option.index}),
+      },
+    );
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not answer');
+    }
+    showToast(`Answered “${option.label}”`);
+    _clearQuestion();
+    await refreshQuestion();
+  } catch (error) {
+    note.textContent = error.message;
+    note.classList.add('qo-error');
+    buttons.forEach(button => { button.disabled = false; });
+  } finally {
+    _answering = false;
+  }
+}
+
+async function refreshQuestion() {
+  const chat = state.currentChat;
+  if (!chat) { _clearQuestion(); return; }
+  try {
+    const response = await apiFetch(
+      `/api/chats/${encodeURIComponent(chat.id)}/question`);
+    if (!response.ok) { _clearQuestion(); return; }
+    _renderQuestion(await response.json());
+  } catch {
+    _clearQuestion();
+  }
+}
+
+function startQuestionPolling() {
+  if (_questionTimer) return;
+  _questionTimer = setInterval(refreshQuestion, QUESTION_POLL_MS);
+  refreshQuestion();
 }
 
 async function selectChat(id) {
@@ -1571,11 +1746,108 @@ async function updateModelDisplay(model) {
 const SUPERVISOR_POLL_MS = 15000;
 let _supervisorTimer = null;
 
+// ── Device alerts ─────────────────────────────────────────────────────────────
+// Three levels, because on a phone the page is usually not the thing in front
+// of you:
+//   1. the tab title, which always works and needs no permission;
+//   2. a system notification, which on Android reaches the notification
+//      shade and needs permission granted from a real tap;
+//   3. a short vibration, which is the only one you notice in a pocket.
+// Only a RISE in the count fires 2 and 3 -- the supervisor re-polls every few
+// seconds and re-alerting on the same unanswered question would be unusable.
+const BASE_TITLE = 'WebConsole';
+// null until the first poll: opening the page must not announce agents that
+// were already waiting before you arrived. The first result sets the baseline
+// silently, and only a later rise is worth interrupting for.
+let _lastWaitingCount = null;
+
+function _alertsEnabled() {
+  return storageGet('wc_alerts') === 'on'
+    && typeof Notification !== 'undefined'
+    && Notification.permission === 'granted';
+}
+
+function _syncAlertToggle() {
+  const button = byId('alertToggle');
+  if (!button) return;
+  // Hidden entirely where the API does not exist rather than offering a
+  // control that cannot work.
+  const supported = typeof Notification !== 'undefined';
+  button.hidden = !supported;
+  if (!supported) return;
+  const on = _alertsEnabled();
+  button.setAttribute('aria-pressed', String(on));
+  button.textContent = on ? '🔔' : '🔕';
+  button.title = on
+    ? 'Alerts on — you will be notified when an agent needs you'
+    : 'Alerts off — tap to be notified when an agent needs you';
+}
+
+async function toggleAlerts() {
+  if (typeof Notification === 'undefined') return;
+  if (_alertsEnabled()) {
+    storageSet('wc_alerts', 'off');
+    _syncAlertToggle();
+    return;
+  }
+  // Must be called from the tap itself: Android refuses a permission prompt
+  // that is not tied to a user gesture.
+  let permission = Notification.permission;
+  if (permission === 'default') {
+    try {
+      permission = await Notification.requestPermission();
+    } catch {
+      permission = 'denied';
+    }
+  }
+  if (permission === 'granted') {
+    storageSet('wc_alerts', 'on');
+    notifyResult('Alerts on', 'success');
+  } else {
+    storageSet('wc_alerts', 'off');
+    notifyResult('Android blocked notifications for this site', 'error');
+  }
+  _syncAlertToggle();
+}
+
+function _applyDeviceAlert(waiting) {
+  const count = waiting.length;
+  document.title = count ? `(${count}) ${BASE_TITLE}` : BASE_TITLE;
+
+  const first = _lastWaitingCount === null;
+  const rose = !first && count > _lastWaitingCount;
+  _lastWaitingCount = count;
+  if (!rose || !_alertsEnabled()) return;
+  // Looking at the page already counts as being told.
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
+
+  const newest = waiting[waiting.length - 1] || {};
+  const who = newest.title || 'An agent';
+  const body = newest.reason === 'blocked'
+    ? `${who} is blocked`
+    : `${who} needs an answer`;
+  try {
+    new Notification('WebConsole', {
+      body: newest.preview ? `${body} — ${newest.preview}` : body,
+      tag: 'wc-supervisor',   // replaces its predecessor instead of stacking
+      renotify: false,
+    });
+  } catch {
+    // Some Android builds only allow notifications from a service worker.
+    // The title badge above still carries the count.
+  }
+  if (navigator.vibrate) {
+    try { navigator.vibrate(200); } catch { /* not supported */ }
+  }
+}
+
 async function refreshSupervisor() {
   try {
     const response = await apiFetch('/api/supervisor');
     if (!response.ok) return;
-    listController.setSupervisor(await response.json());
+    const data = await response.json();
+    listController.setSupervisor(data);
+    _applyDeviceAlert(data.waiting || []);
   } catch {
     // Supervision is supplementary; the sidebar must render without it.
   }
@@ -1588,6 +1860,21 @@ function startSupervisorPolling() {
 
 // Opening an agent is what clears its badge -- that is what keeps the count
 // meaningful rather than a number that only ever grows.
+// Clearing is deliberate, so it also silences unanswered questions -- which
+// opening one does not.
+async function clearSupervisor() {
+  try {
+    await apiFetch('/api/supervisor/read', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({all: true}),
+    });
+  } catch {
+    notifyResult('Could not clear alerts', 'error');
+  }
+  await refreshSupervisor();
+}
+
 async function markAgentSeen(kind, id) {
   if (!id) return;
   try {
@@ -1660,6 +1947,8 @@ async function logout() {
 document.addEventListener('DOMContentLoaded', () => {
   applySavedTheme();
   byId('themeToggle').addEventListener('click', toggleTheme);
+  byId('alertToggle')?.addEventListener('click', toggleAlerts);
+  _syncAlertToggle();
   byId('menuBtn').addEventListener('click', openSidebar);
   byId('sidebarCloseBtn').addEventListener('click', closeSidebar);
   byId('sidebarOverlay').addEventListener('click', closeSidebar);
@@ -1744,6 +2033,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onSelect: selectChat,
     onAction: handleChatAction,
     onResumeCli: resumeCliSession,
+    onClearSupervisor: clearSupervisor,
     // One drag is one write: the server takes the whole ordered section and
     // applies it in a transaction, so a drop cannot half-apply.
     onReorder: async ids => {

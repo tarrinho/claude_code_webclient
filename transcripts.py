@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any, Final
 
@@ -318,6 +319,95 @@ def _empty(found: bool) -> dict[str, Any]:
     }
 
 
+# Messages between concurrent Claude sessions. They are recorded in four
+# different record shapes -- queue-operation, attachment, user and an assistant
+# tool_use -- so the same message appears more than once and the conversational
+# parser above deliberately drops most of them as machinery. This is a separate
+# extractor rather than a mode of the other one.
+_AGENT_MARKER: Final[bytes] = b"cross-session-message"
+_AGENT_RE: Final[re.Pattern[str]] = re.compile(
+    r'<cross-session-message\b[^>]*\bfrom-name="([^"]+)"[^>]*>(.*?)</cross-session-message>',
+    re.DOTALL,
+)
+# Enough of the body to tell two messages apart when the same one is recorded
+# by several record types.
+_AGENT_DEDUPE_CHARS: Final[int] = 400
+
+
+def _iter_strings(value: Any):
+    """Yield every string anywhere in a nested record."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_strings(item)
+
+
+def _agent_events_sync(path: Path, session_id: str, title: str) -> list[dict[str, Any]]:
+    """Extract messages sent to and received from other sessions."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    if _AGENT_MARKER not in raw and b"SendMessage" not in raw:
+        return []
+
+    events: list[dict[str, Any]] = []
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        timestamp = str(record.get("timestamp") or "")
+
+        # Outgoing: this session calling SendMessage.
+        message = record.get("message")
+        if record.get("type") == "assistant" and isinstance(message, dict):
+            content = message.get("content")
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") != "SendMessage":
+                    continue
+                payload = block.get("input")
+                if not isinstance(payload, dict):
+                    continue
+                events.append({
+                    "direction": "out",
+                    "peer": str(payload.get("to") or "?"),
+                    "summary": str(payload.get("summary") or ""),
+                    "text": str(payload.get("message") or ""),
+                    "timestamp": timestamp,
+                    "session_id": session_id,
+                    "session_title": title,
+                })
+            continue
+
+        # Incoming: a wrapped message, wherever in the record it happens to sit.
+        for text in _iter_strings(record):
+            if "<cross-session-message" not in text:
+                continue
+            for peer, body in _AGENT_RE.findall(text):
+                events.append({
+                    "direction": "in",
+                    "peer": peer,
+                    "summary": "",
+                    "text": body.strip(),
+                    "timestamp": timestamp,
+                    "session_id": session_id,
+                    "session_title": title,
+                })
+    return events
+
+
 def _cwd_sync(path: Path) -> str:
     """Read the working directory a session ran in, from its own transcript.
 
@@ -409,6 +499,106 @@ def _list_sync(limit: int) -> list[dict[str, Any]]:
             }
         )
     return listed
+
+
+def _session_names_sync() -> tuple[dict[str, str], dict[str, str]]:
+    """Map session ids and socket paths to the names sessions call each other by.
+
+    A message names its peer inconsistently: a session addressed by name
+    records "cweb3", while a reply addressed back down the socket it arrived on
+    records "uds:/run/user/1000/cc-socks/3194261.sock". Both denote one session,
+    and the registry is what resolves them to the same name.
+    """
+    by_session: dict[str, str] = {}
+    by_socket: dict[str, str] = {}
+    directory = Path.home() / ".claude" / "sessions"
+    try:
+        files = sorted(directory.glob("*.json"))
+    except (OSError, PermissionError):
+        return by_session, by_socket
+    for candidate in files:
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = str(data.get("name") or "").strip()
+        if not name:
+            continue
+        session_id = str(data.get("sessionId") or "")
+        socket_path = str(data.get("messagingSocketPath") or "")
+        if session_id:
+            by_session.setdefault(session_id, name)
+        if socket_path:
+            by_socket[socket_path] = name
+    return by_session, by_socket
+
+
+def _resolve_peer(peer: str, by_socket: dict[str, str]) -> str:
+    """Turn a uds: address into the name the session is known by."""
+    if peer.startswith("uds:"):
+        return by_socket.get(peer[len("uds:"):], peer)
+    return peer
+
+
+def _agent_traffic_sync(limit: int, scan_files: int) -> list[dict[str, Any]]:
+    by_session, by_socket = _session_names_sync()
+    entries = _list_sync(scan_files)
+
+    events: list[dict[str, Any]] = []
+    for entry in entries:
+        path = _transcript_for_entry(entry)
+        if path is None:
+            continue
+        session_id = entry["session_id"]
+        # The name a session is known by, falling back to its opening prompt.
+        own = by_session.get(session_id) or entry["title"] or session_id[:8]
+        for event in _agent_events_sync(path, session_id, entry["title"]):
+            peer = _resolve_peer(event["peer"], by_socket)
+            # Recorded from one end; store it as sender -> recipient so both
+            # ends collapse to the single message that actually happened.
+            if event["direction"] == "out":
+                event["sender"], event["recipient"] = own, peer
+            else:
+                event["sender"], event["recipient"] = peer, own
+            events.append(event)
+
+    # One message is written into several record types, and again into the
+    # transcript at each end, so collapse on who said what to whom.
+    unique: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for event in events:
+        key = (event["sender"], event["recipient"],
+               event["text"][:_AGENT_DEDUPE_CHARS])
+        # Keep the earliest sighting: the sender records it before the
+        # recipient does, so that timestamp is when it was actually sent.
+        if key not in unique or event["timestamp"] < unique[key]["timestamp"]:
+            unique[key] = event
+
+    ordered = sorted(unique.values(), key=lambda e: e["timestamp"], reverse=True)
+    return ordered[:limit]
+
+
+def _transcript_for_entry(entry: dict[str, Any]) -> Path | None:
+    """Rebuild the path for a listing entry."""
+    path = db._CLAUDE_PROJECTS_DIR / entry["project"] / f"{entry['session_id']}.jsonl"
+    return path if path.is_file() else None
+
+
+async def agent_traffic(limit: int = 200, scan_files: int = 12) -> list[dict[str, Any]]:
+    """Messages exchanged between concurrent sessions, newest first.
+
+    Reads what was recorded in transcripts rather than tapping the sockets the
+    sessions actually talk over: this is a log, not an interception layer, and
+    it needs no knowledge of that private protocol.
+
+    Only the most recent transcripts are scanned -- the archive runs to tens of
+    megabytes and traffic older than the current run of sessions is rarely what
+    anyone is looking for.
+    """
+    limit = max(1, min(int(limit), 1000))
+    scan_files = max(1, min(int(scan_files), 60))
+    return await asyncio.to_thread(_agent_traffic_sync, limit, scan_files)
 
 
 async def list_recent(limit: int = 50) -> list[dict[str, Any]]:

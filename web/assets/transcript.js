@@ -44,6 +44,18 @@ const STYLES = `
 .tx-think { font-style: italic; opacity: .65; white-space: pre-wrap;
   overflow-wrap: anywhere; border-left: 2px dotted currentColor; padding-left: .5rem; }
 .tx-note { opacity: .7; font-size: .85rem; padding: .5rem 0; }
+.tx-msg { margin: 0 0 .75rem; padding: .55rem .7rem; border-radius: 6px;
+  border: 1px solid var(--line, #d7dde5); border-left: 3px solid #8a8f98; }
+.tx-msg[data-mine="true"] { border-left-color: var(--accent, #2b6cb0); }
+.tx-route { font-family: ui-monospace, monospace; font-size: .78rem;
+  opacity: .75; margin-bottom: .3rem; }
+.tx-arrow { opacity: .55; padding: 0 .3rem; }
+.tx-when { float: right; opacity: .55; font-weight: 400; }
+.tx-msg-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }
+.tx-msg-body.clipped { display: -webkit-box; -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical; overflow: hidden; }
+.tx-more { background: none; border: 0; color: var(--accent, #2b6cb0);
+  cursor: pointer; font: inherit; font-size: .8rem; padding: .2rem 0; }
 .tx-earlier { margin-bottom: .75rem; }
 .tx-earlier[hidden] { display: none; }
 .tx-earlier .tx-item { text-align: center; }
@@ -95,6 +107,11 @@ export function mountTranscriptViewer() {
   back.title = 'Back to session list';
   back.setAttribute('aria-label', 'Back to session list');
   back.hidden = true;
+  const traffic = el('button', 'btn-icon', '⇄');
+  traffic.type = 'button';
+  traffic.title = 'Messages between sessions';
+  traffic.setAttribute('aria-label', 'Messages between sessions');
+
   const title = el('h2', null, 'Terminal sessions');
   const follow = el('button', 'btn-icon tx-follow', '⏵');
   follow.type = 'button';
@@ -105,7 +122,7 @@ export function mountTranscriptViewer() {
   close.type = 'button';
   close.title = 'Close';
   close.setAttribute('aria-label', 'Close terminal sessions');
-  head.append(back, title, follow, close);
+  head.append(back, title, traffic, follow, close);
 
   const body = el('div', 'tx-body');
   const live = el('div', 'tx-note');
@@ -249,6 +266,64 @@ export function mountTranscriptViewer() {
     };
   }
 
+  // Messages the concurrent sessions sent each other, newest first. Each is
+  // recorded at both ends and in several record shapes; the server collapses
+  // that to one row per message, so this renders a single conversation rather
+  // than one session's view of it.
+  async function showTraffic() {
+    stopFollowing();
+    current = null;
+    back.hidden = false;
+    follow.hidden = true;
+    title.textContent = 'Messages between sessions';
+    body.replaceChildren();
+    live.textContent = 'Loading…';
+
+    let messages;
+    try {
+      const res = await fetch('/api/agent-traffic?limit=200', {credentials: 'same-origin'});
+      if (!res.ok) throw new Error(String(res.status));
+      messages = (await res.json()).messages || [];
+    } catch {
+      live.textContent = 'Could not load session messages.';
+      return;
+    }
+
+    live.textContent = '';
+    if (!messages.length) {
+      body.appendChild(el('div', 'tx-note', 'No messages between sessions yet.'));
+      return;
+    }
+
+    messages.forEach(msg => {
+      const wrap = el('div', 'tx-msg');
+      const route = el('div', 'tx-route');
+      route.appendChild(el('span', null, msg.sender || '?'));
+      route.appendChild(el('span', 'tx-arrow', '→'));
+      route.appendChild(el('span', null, msg.recipient || '?'));
+      if (msg.timestamp) {
+        const when = new Date(msg.timestamp);
+        route.appendChild(el('span', 'tx-when',
+          Number.isNaN(when.getTime()) ? '' : when.toLocaleString()));
+      }
+      wrap.appendChild(route);
+
+      // Messages run long; clip and let the reader open the ones they want.
+      const text = el('div', 'tx-msg-body clipped', msg.text || '');
+      wrap.appendChild(text);
+      if ((msg.text || '').length > 320) {
+        const more = el('button', 'tx-more', 'Show more');
+        more.type = 'button';
+        more.addEventListener('click', () => {
+          const clipped = text.classList.toggle('clipped');
+          more.textContent = clipped ? 'Show more' : 'Show less';
+        });
+        wrap.appendChild(more);
+      }
+      body.appendChild(wrap);
+    });
+  }
+
   async function showList() {
     stopFollowing();
     current = null;
@@ -315,6 +390,7 @@ export function mountTranscriptViewer() {
   launch.addEventListener('click', open);
   close.addEventListener('click', shut);
   back.addEventListener('click', showList);
+  traffic.addEventListener('click', showTraffic);
   follow.addEventListener('click', () => {
     if (stream) stopFollowing(); else startFollowing();
   });

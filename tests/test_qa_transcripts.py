@@ -623,5 +623,177 @@ class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
                          "resuming again must not create a duplicate chat")
 
 
+# ── Messages between concurrent sessions ─────────────────────────────────────
+
+
+def incoming(peer, body, **extra):
+    """A message from another session, as the CLI records it."""
+    record = {
+        "type": "user",
+        "timestamp": "2026-08-29T10:00:00Z",
+        "message": {"role": "user", "content":
+                    f'<cross-session-message from="uds:/run/x.sock" '
+                    f'from-name="{peer}">{body}</cross-session-message>'},
+    }
+    record.update(extra)
+    return record
+
+
+def sent(to, body, summary="", **extra):
+    """This session calling SendMessage."""
+    record = {
+        "type": "assistant",
+        "timestamp": "2026-08-29T10:00:05Z",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "SendMessage",
+             "input": {"to": to, "message": body, "summary": summary}}]},
+    }
+    record.update(extra)
+    return record
+
+
+class AgentTrafficTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+    """Messages are recorded at both ends and in several record shapes."""
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_incoming_and_outgoing_are_both_found(self):
+        write_transcript(self.root, "a1", [
+            incoming("cweb2", "please hold app.js"),
+            sent("cweb2", "holding, thanks"),
+        ])
+        messages = await transcripts.agent_traffic()
+        bodies = {m["text"] for m in messages}
+        self.assertIn("please hold app.js", bodies)
+        self.assertIn("holding, thanks", bodies)
+
+    async def test_direction_becomes_sender_and_recipient(self):
+        write_transcript(self.root, "a2", [incoming("cweb3", "your file is red")])
+        message = (await transcripts.agent_traffic())[0]
+        self.assertEqual(message["sender"], "cweb3")
+        # No registry entry for this fixture, so the receiver falls back to a
+        # readable identifier rather than showing nothing.
+        self.assertTrue(message["recipient"])
+
+    async def test_the_same_message_at_both_ends_collapses_to_one(self):
+        """Sender and recipient each record it; the view must show it once.
+
+        Collapsing depends on resolving each session's *own* name from the
+        registry: the sender records "to cweb2" while the receiver records
+        "from cweb1", and only naming both ends makes those the same message.
+        """
+        body = "the suite is green, go ahead"
+        names = ({"s-a": "cweb1", "s-b": "cweb2"}, {})
+        with patch.object(transcripts, "_session_names_sync", lambda: names):
+            write_transcript(self.root, "s-a", [sent("cweb2", body)],
+                             project="-proj-one")
+            write_transcript(self.root, "s-b", [incoming("cweb1", body)],
+                             project="-proj-two")
+            messages = await transcripts.agent_traffic()
+
+        matching = [m for m in messages if m["text"] == body]
+        self.assertEqual(len(matching), 1, "one message must not appear twice")
+        self.assertEqual(matching[0]["sender"], "cweb1")
+        self.assertEqual(matching[0]["recipient"], "cweb2")
+
+    async def test_an_unnamed_session_still_reports_its_traffic(self):
+        """Without a registry entry the ends cannot be matched up.
+
+        Both copies then survive, which is the honest outcome -- better than
+        collapsing two messages that could not be shown to be the same one.
+        """
+        body = "no registry for either end"
+        with patch.object(transcripts, "_session_names_sync", lambda: ({}, {})):
+            write_transcript(self.root, "s-c", [sent("cweb2", body)])
+            messages = await transcripts.agent_traffic()
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["recipient"], "cweb2")
+        self.assertTrue(messages[0]["sender"], "sender must fall back to something")
+
+    async def test_repeated_record_shapes_collapse_to_one(self):
+        """The CLI writes the same message as several record types."""
+        body = "claiming db.py"
+        wrapped = ('<cross-session-message from="uds:/run/x.sock" '
+                   f'from-name="cweb2">{body}</cross-session-message>')
+        write_transcript(self.root, "a3", [
+            {"type": "queue-operation", "timestamp": "2026-08-29T10:00:00Z",
+             "content": wrapped},
+            {"type": "attachment", "timestamp": "2026-08-29T10:00:00Z",
+             "attachment": {"content": wrapped}},
+            incoming("cweb2", body),
+        ])
+        matching = [m for m in await transcripts.agent_traffic()
+                    if m["text"] == body]
+        self.assertEqual(len(matching), 1)
+
+    async def test_a_transcript_with_no_traffic_contributes_nothing(self):
+        write_transcript(self.root, "quiet", [user("hello"), assistant("hi", "quiet")])
+        self.assertEqual(await transcripts.agent_traffic(), [])
+
+    async def test_newest_first(self):
+        write_transcript(self.root, "a4", [
+            incoming("cweb1", "first", timestamp="2026-08-29T09:00:00Z"),
+            incoming("cweb1", "second", timestamp="2026-08-29T11:00:00Z"),
+        ])
+        messages = await transcripts.agent_traffic()
+        self.assertEqual([m["text"] for m in messages], ["second", "first"])
+
+    async def test_limit_is_clamped(self):
+        write_transcript(self.root, "a5",
+                         [incoming("cweb1", f"msg {i}") for i in range(30)])
+        self.assertEqual(len(await transcripts.agent_traffic(limit=5)), 5)
+
+    async def test_malformed_send_input_does_not_raise(self):
+        """SendMessage input is not always the shape we expect."""
+        write_transcript(self.root, "a6", [
+            {"type": "assistant", "timestamp": "2026-08-29T10:00:00Z",
+             "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "name": "SendMessage", "input": "not a dict"}]}},
+            incoming("cweb1", "still parsed"),
+        ])
+        messages = await transcripts.agent_traffic()
+        self.assertEqual([m["text"] for m in messages], ["still parsed"])
+
+    async def test_a_socket_address_resolves_to_a_session_name(self):
+        names = ({}, {"/run/user/1000/cc-socks/999.sock": "cweb7"})
+        with patch.object(transcripts, "_session_names_sync", lambda: names):
+            write_transcript(self.root, "a7", [
+                {"type": "assistant", "timestamp": "2026-08-29T10:00:00Z",
+                 "message": {"role": "assistant", "content": [
+                     {"type": "tool_use", "name": "SendMessage", "input": {
+                         "to": "uds:/run/user/1000/cc-socks/999.sock",
+                         "message": "replying down the socket"}}]}},
+            ])
+            message = (await transcripts.agent_traffic())[0]
+        self.assertEqual(message["recipient"], "cweb7",
+                         "a uds address must resolve to the session's name")
+
+
+class AgentTrafficEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_endpoint_returns_messages_and_count(self):
+        write_transcript(self.root, "e1", [incoming("cweb2", "hello there")])
+        response = await app.handle_agent_traffic(make_request())
+        payload = json.loads(response.body)
+        self.assertEqual(payload["count"], len(payload["messages"]))
+        self.assertEqual(payload["messages"][0]["text"], "hello there")
+
+    async def test_junk_parameters_do_not_break_it(self):
+        write_transcript(self.root, "e2", [incoming("cweb2", "hi")])
+        response = await app.handle_agent_traffic(
+            make_request({"limit": "lots", "files": "many"}))
+        self.assertEqual(response.status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

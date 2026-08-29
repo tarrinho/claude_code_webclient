@@ -64,26 +64,26 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertNotIn("data.port", self.app)
 
     def test_settings_save_button_scoped_to_tabs_it_writes(self):
-        """The footer Save writes only Models and App fields.
+        """The footer Save writes only the App tab's fields.
 
-        Machines save through their own form and Skills is read-only, so the
-        button is hidden there rather than silently reporting "No changes".
+        Backends save through their own controls, and Skills and Usage are
+        read-only, so the button is hidden there rather than silently
+        reporting "No changes".
         """
         self.assertIn('id="settingsSave">Save<', self.html)
         self.assertNotIn("Save all", self.html)
-        self.assertIn("save.hidden = tab === 'machines' || tab === 'skills'", self.app)
+        self.assertIn("save.hidden = tab !== 'app'", self.app)
 
-    def test_model_fields_can_be_cleared(self):
-        """Saving compares against the loaded value, not truthiness.
+    def test_settings_no_longer_carries_global_model_fields(self):
+        """The default model is per-backend; the global inputs are gone.
 
-        `if (defaultModel) body.default_model = ...` skipped empty strings, so
-        blanking a model field and saving reported "No changes to save" and the
-        old value stayed. The API accepts "" and clears the setting.
+        They were two free-text boxes describing whichever machine happened to
+        be active, and fallback_model was never read by anything at all.
         """
-        self.assertNotIn("if (defaultModel) body.default_model", self.app)
-        self.assertNotIn("if (fallbackModel) body.fallback_model", self.app)
-        self.assertIn("_loadedSettings.default_model", self.app)
-        self.assertIn("_loadedSettings.fallback_model", self.app)
+        for removed in ("defaultModel", "fallbackModel"):
+            self.assertNotIn(f'id="{removed}"', self.html)
+            self.assertNotIn(f"byId('{removed}')", self.app)
+        self.assertNotIn("fallback_model", self.app)
 
     def test_model_picker_offers_more_than_default_and_fallback(self):
         """The picker sources models from the backend, not two settings fields.
@@ -211,17 +211,29 @@ class FrontendStructureTests(unittest.TestCase):
     def test_cli_sessions_no_duplicate_webchat(self):
         self.assertIn("!item.webchat", self.app)
 
-    def test_model_settings_fields_are_wired(self):
-        for field in ("defaultModel", "fallbackModel"):
-            self.assertIn(f"id=\"{field}\"", self.html)
-            self.assertIn(f"byId('{field}')", self.app)
-        self.assertNotIn("settingsHost", self.app)
+    def test_backends_tab_replaces_machines_and_models(self):
+        """One tab: a model only means something against a backend.
 
-    def test_model_settings_save_contract(self):
-        self.assertIn("default_model", self.app)
-        self.assertIn("fallback_model", self.app)
-        self.assertIn("data.default_model", self.app)
-        self.assertIn("data.fallback_model", self.app)
+        Two tabs let the model list describe whichever machine happened to be
+        active, with nothing on screen saying so.
+        """
+        self.assertIn('data-tab="backends"', self.html)
+        self.assertIn('id="panelBackends"', self.html)
+        self.assertNotIn('data-tab="models"', self.html)
+        self.assertNotIn('id="panelModels"', self.html)
+        self.assertNotIn("panelModels", self.app)
+
+    def test_models_render_inside_the_backend_that_serves_them(self):
+        self.assertIn("_buildModelSection", self.app)
+        self.assertIn("machine-models", self.app)
+        self.assertIn("loadModelsFor", self.app)
+        self.assertIn("machine_id=", self.app)
+
+    def test_model_selection_saves_to_its_own_route(self):
+        """PATCH /api/machines rejects the whole body on an unknown field, so
+        the selection has its own endpoint."""
+        self.assertIn("/models", self.app)
+        self.assertIn("method: 'PUT'", self.app)
 
     def test_settings_has_no_stale_host_field(self):
         self.assertNotIn("settingsHost", self.app)

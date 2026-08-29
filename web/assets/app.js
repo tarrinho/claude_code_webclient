@@ -21,7 +21,7 @@ let settingsVisible = false;
 let _activeMachineId = null;
 let _machines = [];
 let _machineEditing = null;
-let _currentTab = 'machines';
+let _currentTab = 'backends';
 let _modelOptions = [];
 // Last GET /api/models payload: what the active machine reports it serves.
 let _servedModels = [];
@@ -151,7 +151,7 @@ function openSettingsDialog() {
   settingsVisible = true;
   _machineEditing = null;
   byId('machineForm').hidden = true;
-  _switchTab('machines');
+  _switchTab('backends');
 }
 
 function closeSettingsDialog() {
@@ -169,9 +169,9 @@ function _switchTab(tab) {
     t.setAttribute('aria-selected', String(active));
     t.tabIndex = active ? 0 : -1;
   });
-  const map = { machines: 'panelMachines', models: 'panelModels', usage: 'panelUsage', skills: 'panelSkills', app: 'panelApp' };
-  const activeId = map[tab] || 'panelMachines';
-  ['panelMachines', 'panelModels', 'panelUsage', 'panelSkills', 'panelApp'].forEach(id => {
+  const map = { backends: 'panelBackends', usage: 'panelUsage', skills: 'panelSkills', app: 'panelApp' };
+  const activeId = map[tab] || 'panelBackends';
+  ['panelBackends', 'panelUsage', 'panelSkills', 'panelApp'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -179,9 +179,10 @@ function _switchTab(tab) {
   // through their own form and Skills is read-only, so showing it there offered
   // a control that silently did nothing.
   const save = byId('settingsSave');
-  if (save) save.hidden = tab === 'machines' || tab === 'skills' || tab === 'usage';
-  if (tab === 'machines') _renderMachineList();
-  if (tab === 'models') loadModels();
+  // Only the App tab has fields the footer Save writes. Backends save through
+  // their own controls, Skills and Usage are read-only.
+  if (save) save.hidden = tab !== 'app';
+  if (tab === 'backends') loadBackends();
   // Always refetch: usage is checked right after running turns, so a cached
   // payload from earlier in the session would show stale numbers.
   if (tab === 'usage') loadUsage(true);
@@ -547,6 +548,117 @@ async function loadMachines() {
   }
 }
 
+// 'anthropic' is the wire protocol, not the vendor: a gateway speaking the
+// Anthropic API at a custom base_url is still provider='anthropic'. Say which
+// it actually is, since that is what decides how a backend behaves.
+function _providerLabel(machine) {
+  if (machine.provider !== 'anthropic') return 'Claude Code proxy';
+  const url = (machine.base_url || '').trim();
+  if (!url || url.includes('api.anthropic.com')) return 'Anthropic API';
+  return 'Anthropic-compatible';
+}
+
+// Per-machine model state, keyed by machine id: {models, active, default,
+// source, reason, endpoint}. Fetched lazily so opening Settings does not
+// query every configured backend at once.
+const _modelsByMachine = new Map();
+
+function _buildModelSection(machine) {
+  const section = document.createElement('div');
+  section.className = 'machine-models';
+
+  if (machine.provider !== 'anthropic') {
+    const note = document.createElement('p');
+    note.className = 'machine-hint';
+    note.textContent = 'A Claude Code proxy does not publish a model list.';
+    section.appendChild(note);
+    return section;
+  }
+
+  const entry = _modelsByMachine.get(machine.id);
+  const toolbar = document.createElement('div');
+  toolbar.className = 'models-toolbar';
+
+  const status = document.createElement('span');
+  status.className = 'models-status';
+  if (!entry) {
+    status.textContent = 'Loading models…';
+  } else if (entry.source === 'endpoint') {
+    const count = entry.models.length;
+    status.textContent = `${count} model${count === 1 ? '' : 's'} from ${entry.endpoint}`;
+  } else {
+    // Never present a guess as the real list -- say why it is a guess.
+    status.classList.add('models-status-warn');
+    status.textContent = entry.reason
+      ? `${entry.reason} Showing built-in suggestions.`
+      : 'Showing built-in suggestions.';
+  }
+  toolbar.appendChild(status);
+
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'machine-action';
+  refresh.textContent = 'Refresh';
+  refresh.addEventListener('click', () => loadModelsFor(machine.id, true));
+  toolbar.appendChild(refresh);
+  section.appendChild(toolbar);
+
+  if (!entry) return section;
+
+  const list = document.createElement('div');
+  list.className = 'models-list';
+  // An empty active list means every served model is offered. Rendering that
+  // as all-checked keeps the feature opt-in; rendering it as none-checked
+  // would imply the picker is empty, which it is not.
+  const offersAll = entry.active.length === 0;
+  entry.models.forEach(model => {
+    list.appendChild(_buildModelRow(machine, model, entry, offersAll));
+  });
+  section.appendChild(list);
+
+  const hint = document.createElement('p');
+  hint.className = 'machine-hint';
+  hint.textContent = offersAll
+    ? 'All models are offered. Tick a subset to narrow the picker.'
+    : 'Ticked models are offered when starting a turn; ● is the default for new chats.';
+  section.appendChild(hint);
+  return section;
+}
+
+function _buildModelRow(machine, model, entry, offersAll) {
+  const row = document.createElement('div');
+  row.className = 'model-item';
+
+  const offered = document.createElement('input');
+  offered.type = 'checkbox';
+  offered.checked = offersAll || entry.active.includes(model.id);
+  offered.setAttribute('aria-label', `Offer ${model.id}`);
+  offered.addEventListener('change', () => _toggleModelOffered(machine, model.id));
+  row.appendChild(offered);
+
+  const isDefault = document.createElement('input');
+  isDefault.type = 'radio';
+  isDefault.name = `default-model-${machine.id}`;
+  isDefault.checked = entry.default === model.id;
+  isDefault.setAttribute('aria-label', `Default to ${model.id}`);
+  isDefault.addEventListener('change', () => _setModelDefault(machine, model.id));
+  row.appendChild(isDefault);
+
+  const name = document.createElement('span');
+  name.className = 'model-item-id';
+  name.textContent = model.id;
+  name.title = model.id;
+  row.appendChild(name);
+
+  if (model.display_name && model.display_name !== model.id) {
+    const display = document.createElement('span');
+    display.className = 'model-item-name';
+    display.textContent = model.display_name;
+    row.appendChild(display);
+  }
+  return row;
+}
+
 function _renderMachineList() {
   const list = byId('machineList');
   list.replaceChildren();
@@ -588,10 +700,15 @@ function _renderMachineList() {
 
     const provider = document.createElement('span');
     provider.className = 'machine-provider';
-    provider.textContent = m.provider === 'anthropic' ? 'Anthropic API' : 'Proxy';
+    provider.textContent = _providerLabel(m);
     top.appendChild(provider);
 
     card.appendChild(top);
+
+    // The models a backend serves belong to the backend, so they render inside
+    // its card rather than in a separate tab that silently described whichever
+    // machine happened to be active.
+    card.appendChild(_buildModelSection(m));
 
     const actions = document.createElement('div');
     actions.className = 'machine-actions';
@@ -807,17 +924,7 @@ async function saveSettings(event) {
   save.disabled = true;
   try {
     const body = {};
-    // Compare against what was loaded rather than testing truthiness: an empty
-    // string is a legitimate value meaning "clear this", and gating on
-    // truthiness made the field impossible to clear from the UI.
-    const defaultModel = byId('defaultModel').value.trim();
-    if (defaultModel !== (_loadedSettings.default_model || '')) {
-      body.default_model = defaultModel;
-    }
-    const fallbackModel = byId('fallbackModel').value.trim();
-    if (fallbackModel !== (_loadedSettings.fallback_model || '')) {
-      body.fallback_model = fallbackModel;
-    }
+    // The default model is per-backend now and saves through the Backends tab.
     // App tab settings
     const sessionTtl = parseInt(byId('sessionTtl')?.value);
     if (sessionTtl) body.session_ttl = sessionTtl;
@@ -1086,13 +1193,13 @@ async function loadSettings() {
     if (response.ok) {
       const data = await response.json();
       _loadedSettings = data;
-      byId('defaultModel').value = data.default_model || '';
-      byId('fallbackModel').value = data.fallback_model || '';
       byId('ver').textContent = data.version || '';
       if (data.session_ttl_s) byId('sessionTtl').value = data.session_ttl_s;
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
-      _modelOptions = [data.default_model, data.fallback_model];
+      // The global default is only a fallback for when no backend is active;
+      // it is still worth offering in the picker.
+      _modelOptions = [data.default_model];
       populateModelPicker();
       return data;
     }
@@ -1108,9 +1215,15 @@ function populateModelPicker() {
   // machine actually serves. This used to read a hardcoded datalist out of the
   // DOM and, worse, every model id harvested from old transcripts -- so it
   // offered models the current backend has never served and the turn failed.
-  const served = _servedModels.map(model => model.id);
-  // Keep whatever this chat already uses, so an unlisted model stays selectable
-  // instead of silently falling back to Automatic.
+  // Only the models this backend is set to offer. An empty active list means
+  // every served model is offered, so the feature stays opt-in.
+  const active = _modelsSource?.active || [];
+  const served = _servedModels
+    .map(model => model.id)
+    .filter(id => !active.length || active.includes(id));
+  // Keep whatever this chat already uses, so a model that was later
+  // deactivated stays selectable rather than silently becoming Automatic --
+  // hiding a model must never break a conversation already using it.
   const chatModel = state.currentChat?.model;
   const models = [..._modelOptions, ...served, chatModel, current];
 
@@ -1128,22 +1241,122 @@ function populateModelPicker() {
   picker.value = current;
 }
 
-async function loadModels() {
-  const status = byId('modelsStatus');
-  if (status) status.textContent = 'Loading…';
+// Open the Backends tab: machines first so the cards exist, then the models
+// each one serves. Only Anthropic-protocol backends publish a list.
+async function loadBackends() {
+  await loadMachines();
+  _renderMachineList();
+  await Promise.all(
+    _machines
+      .filter(machine => machine.provider === 'anthropic')
+      .map(machine => loadModelsFor(machine.id)),
+  );
+}
+
+async function loadModelsFor(machineId, force = false) {
+  if (!force && _modelsByMachine.has(machineId)) return;
   try {
-    const response = await apiFetch('/api/models');
+    const response = await apiFetch(`/api/models?machine_id=${encodeURIComponent(machineId)}`);
     if (!response.ok) throw new Error('Could not load models');
     const data = await response.json();
-    _servedModels = data.models || [];
-    _modelsSource = data;
+    _modelsByMachine.set(machineId, {
+      models: data.models || [],
+      active: data.active || [],
+      default: data.default || '',
+      source: data.source,
+      reason: data.reason,
+      endpoint: data.endpoint,
+    });
   } catch {
-    _servedModels = [];
-    _modelsSource = {source: 'error', reason: 'Could not load the model list.'};
+    _modelsByMachine.set(machineId, {
+      models: [],
+      active: [],
+      default: '',
+      source: 'error',
+      reason: 'Could not load the model list.',
+    });
   }
-  _renderModelsList();
+  _refreshServedModels();
+  _renderMachineList();
+}
+
+// The picker follows the active machine, so that is the entry it reads.
+function _refreshServedModels() {
+  const active = _machines.find(machine => machine.active);
+  const entry = active ? _modelsByMachine.get(active.id) : null;
+  _servedModels = entry ? entry.models : [];
+  _modelsSource = entry;
   _syncModelSuggestions();
   populateModelPicker();
+}
+
+async function _toggleModelOffered(machine, modelId) {
+  const entry = _modelsByMachine.get(machine.id);
+  if (!entry) return;
+  const offersAll = entry.active.length === 0;
+  // Narrowing from "everything" starts from the full served list, so
+  // unticking one model does not silently drop all the others.
+  const current = offersAll ? entry.models.map(model => model.id) : [...entry.active];
+  const index = current.indexOf(modelId);
+  if (index === -1) current.push(modelId);
+  else current.splice(index, 1);
+
+  // Unticking everything means "offer everything" rather than an empty picker.
+  const next = current.length === entry.models.length || current.length === 0
+    ? []
+    : current;
+  // The server rejects a default outside the offered set, and it would be
+  // unpickable anyway, so move it rather than sending a request that fails.
+  let nextDefault = entry.default;
+  if (next.length && nextDefault && !next.includes(nextDefault)) {
+    nextDefault = next[0];
+  }
+  await _saveMachineModels(machine, next, nextDefault);
+}
+
+async function _setModelDefault(machine, modelId) {
+  const entry = _modelsByMachine.get(machine.id);
+  if (!entry) return;
+  // Choosing a default implies offering it.
+  const next = entry.active.length && !entry.active.includes(modelId)
+    ? [...entry.active, modelId]
+    : entry.active;
+  await _saveMachineModels(machine, next, modelId);
+}
+
+async function _saveMachineModels(machine, active, defaultModel) {
+  try {
+    const response = await apiFetch(
+      `/api/machines/${encodeURIComponent(machine.id)}/models`,
+      {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({active, default: defaultModel || null}),
+      },
+    );
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const data = await response.json();
+        detail = data.error || data.detail || '';
+      } catch { /* fall through to the generic message */ }
+      throw new Error(detail || 'Could not save the model selection');
+    }
+    const saved = await response.json();
+    const entry = _modelsByMachine.get(machine.id);
+    entry.active = saved.active || [];
+    entry.default = saved.default || '';
+    // The machine card shows the default in its meta line.
+    const listed = _machines.find(item => item.id === machine.id);
+    if (listed && entry.default) listed.model = entry.default;
+    _refreshServedModels();
+    _renderMachineList();
+    notifyResult('Model selection saved', 'success');
+  } catch (error) {
+    notifyResult(error.message, 'error');
+    // Re-read rather than leave the checkboxes showing a state that failed.
+    await loadModelsFor(machine.id, true);
+  }
 }
 
 // The two model inputs are free text on purpose: a gateway will accept ids it
@@ -1159,81 +1372,6 @@ function _syncModelSuggestions() {
       option.label = model.display_name;
     }
     list.appendChild(option);
-  });
-}
-
-function _renderModelsList() {
-  const list = byId('modelsList');
-  const status = byId('modelsStatus');
-  if (!list) return;
-  list.replaceChildren();
-
-  if (status) {
-    const count = _servedModels.length;
-    if (_modelsSource?.source === 'endpoint') {
-      status.textContent = `${count} model${count === 1 ? '' : 's'} from ${_modelsSource.endpoint}`;
-      status.className = 'models-status';
-    } else {
-      // Say why these are guesses. The old page showed a frozen list with no
-      // hint that it might not match the backend at all.
-      status.textContent = _modelsSource?.reason
-        ? `${_modelsSource.reason} Showing built-in suggestions.`
-        : 'Showing built-in suggestions.';
-      status.className = 'models-status models-status-warn';
-    }
-  }
-
-  if (!_servedModels.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sidebar-empty';
-    empty.textContent = 'No models to show.';
-    list.appendChild(empty);
-    return;
-  }
-
-  const currentDefault = byId('defaultModel')?.value.trim();
-  _servedModels.forEach(model => {
-    const row = document.createElement('div');
-    row.className = 'model-item';
-
-    const name = document.createElement('span');
-    name.className = 'model-item-id';
-    name.textContent = model.id;
-    row.appendChild(name);
-
-    if (model.display_name && model.display_name !== model.id) {
-      const display = document.createElement('span');
-      display.className = 'model-item-name';
-      display.textContent = model.display_name;
-      row.appendChild(display);
-    }
-
-    if (model.id === currentDefault) {
-      const badge = document.createElement('span');
-      badge.className = 'machine-badge';
-      badge.textContent = 'Default';
-      row.appendChild(badge);
-    }
-
-    const actions = document.createElement('div');
-    actions.className = 'model-item-actions';
-    [['Set default', 'defaultModel'], ['Set fallback', 'fallbackModel']].forEach(
-      ([label, target]) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'machine-action';
-        button.textContent = label;
-        button.addEventListener('click', () => {
-          byId(target).value = model.id;
-          // Save is the footer button on this tab, so re-render to show the
-          // badge moving without implying the change is already persisted.
-          _renderModelsList();
-        });
-        actions.appendChild(button);
-      },
-    );
-    row.appendChild(actions);
-    list.appendChild(row);
   });
 }
 
@@ -1284,7 +1422,10 @@ async function loadInitialData() {
     await refreshChats();
     await refreshSessions();
     await loadMachines();
-    await loadModels();
+    // Only the active backend's models are needed to fill the picker at boot;
+    // the rest load when the Backends tab is opened.
+    const active = _machines.find(machine => machine.active);
+    if (active && active.provider === 'anthropic') await loadModelsFor(active.id);
     const lastId = storageGet('wc_last_chat');
     const last = findChat(lastId);
     if (last && !last.archived) await selectChat(last.id);
@@ -1320,7 +1461,6 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);
   byId('machineProvider').addEventListener('change', _syncMachineProviderFields);
-  byId('refreshModels').addEventListener('click', loadModels);
   const settingsTabs = Array.from(document.querySelectorAll('.settings-tab'));
   settingsTabs.forEach((tab, index) => {
     tab.addEventListener('click', () => _switchTab(tab.dataset.tab));

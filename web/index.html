@@ -71,17 +71,17 @@
   <div class="dialog settings-dialog" id="settingsForm">
     <h2 id="settingsTitle">Settings</h2>
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-      <button class="settings-tab active" id="tabMachines" role="tab" tabindex="0" aria-selected="true" data-tab="machines" aria-controls="panelMachines">Machines</button>
-      <button class="settings-tab" id="tabModels" role="tab" tabindex="-1" aria-selected="false" data-tab="models" aria-controls="panelModels">Models</button>
+      <button class="settings-tab active" id="tabBackends" role="tab" tabindex="0" aria-selected="true" data-tab="backends" aria-controls="panelBackends">Backends</button>
       <button class="settings-tab" id="tabUsage" role="tab" tabindex="-1" aria-selected="false" data-tab="usage" aria-controls="panelUsage">Usage</button>
       <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
     </div>
     <div class="settings-body">
-      <!-- Machines tab -->
-      <div class="settings-panel" id="panelMachines" role="tabpanel" aria-labelledby="tabMachines" tabindex="0">
-        <p>Manage AI machine connections. Each machine is a separate backend you can route chats to.</p>
+      <!-- Backends tab: a machine and the models it serves are one thing -->
+      <div class="settings-panel" id="panelBackends" role="tabpanel" aria-labelledby="tabBackends" tabindex="0">
+        <p>Each backend is somewhere Claude Code can run. The active one serves the models offered when starting a turn.</p>
         <div class="machine-list" id="machineList"></div>
+        <datalist id="modelSuggestions"></datalist>
         <button class="btn-secondary btn-add-machine" id="addMachineBtn">＋ Add machine</button>
         <div class="machine-form" id="machineForm" hidden>
           <h3 id="machineFormTitle">Add machine</h3>
@@ -109,25 +109,6 @@
             <button class="btn-secondary" id="cancelMachine">Cancel</button>
             <button class="btn-primary" id="saveMachine">Save</button>
           </div>
-        </div>
-      </div>
-      <!-- Models tab -->
-      <div class="settings-panel" id="panelModels" role="tabpanel" aria-labelledby="tabModels" tabindex="0" hidden>
-        <p>Configure default models. The list below comes from the active machine.</p>
-        <div class="models-toolbar">
-          <span class="models-status" id="modelsStatus" role="status" aria-live="polite"></span>
-          <button type="button" class="btn-secondary" id="refreshModels">Refresh</button>
-        </div>
-        <div class="models-list" id="modelsList"></div>
-        <datalist id="modelSuggestions"></datalist>
-        <div class="model-row">
-          <label for="defaultModel">Default model</label>
-          <input id="defaultModel" list="modelSuggestions" maxlength="100" placeholder="claude-sonnet-5">
-          <span class="setting-hint">Any id the backend accepts — the list is a suggestion, not a limit.</span>
-        </div>
-        <div class="model-row">
-          <label for="fallbackModel">Fallback model</label>
-          <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-5">
         </div>
       </div>
       <!-- Usage tab -->
@@ -184,7 +165,7 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js?v=6"></script>
+<script type="module" src="/assets/app.js?v=7"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

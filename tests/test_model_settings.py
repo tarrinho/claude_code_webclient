@@ -33,10 +33,10 @@ class _FakeRequest:
 # ── Config / version ───────────────────────────────────────────────────────────
 
 class VersionTests(unittest.TestCase):
-    """VERSION constant must contain 0.5.1."""
+    """VERSION constant must contain 0.6.0."""
 
     def test_version_contains_051(self):
-        self.assertIn("0.5.1", config.VERSION)
+        self.assertIn("0.6.0", config.VERSION)
 
 
 # ── DB: model column migration ─────────────────────────────────────────────────
@@ -303,7 +303,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(resp.body.decode())
         self.assertIn("ai_machine_host", body)
         self.assertIn("version", body)
-        self.assertEqual(body["version"], "0.5.1")
+        self.assertEqual(body["version"], "0.6.0")
 
     async def test_settings_patch_updates_host(self):
         handler = app.handle_settings_patch

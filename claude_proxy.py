@@ -35,6 +35,24 @@ log = logging.getLogger("claude-proxy")
 
 PROTOCOL = "webconsole-v1"
 
+# Max bytes for a single stream-json line from Claude. The asyncio default is
+# 64 KiB, which a large tool result exceeds and truncates the turn.
+_STREAM_LIMIT = 16 * 1024 * 1024
+
+# Cap concurrent Claude subprocesses here, on the server side. runner.py has its
+# own semaphore, but that only bounds one client: a restarted app, a second
+# instance, or any other holder of the token could otherwise spawn without limit.
+_MAX_CONCURRENT = max(1, int(os.environ.get("WC_PROXY_MAX_CONCURRENT", "4")))
+_slots: asyncio.Semaphore | None = None
+
+
+def _get_slots() -> asyncio.Semaphore:
+    """Lazily build the semaphore, so it binds to the running loop."""
+    global _slots
+    if _slots is None:
+        _slots = asyncio.Semaphore(_MAX_CONCURRENT)
+    return _slots
+
 
 async def read_lines(reader: asyncio.StreamReader):
     """Yield bytes lines until EOF or cancel."""
@@ -130,7 +148,78 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
     return frames
 
 
+def _fallback_dir() -> str:
+    return os.environ.get(
+        "WC_PROXY_FALLBACK_DIR", "/tmp"
+    )  # nosec B108: configurable private fallback
+
+
+def _safe_cwd(work_dir: str | None) -> str | None:
+    """Return a cwd for the subprocess, confined to the allowed root.
+
+    *work_dir* arrives from the client, so an unvalidated value lets the caller
+    choose any directory on the host. Anything missing or outside the root
+    falls back, preserving the existing behaviour for Docker-internal paths
+    that legitimately do not exist here.
+    """
+    if not work_dir:
+        return None
+    fallback = _fallback_dir()
+    root = os.environ.get("WC_PROXY_ALLOWED_ROOT") or os.environ.get(
+        "WC_PROJECTS_ROOT", ""
+    )
+    if not os.path.isdir(work_dir):
+        log.info("work_dir %s not found on host, falling back to %s", work_dir, fallback)
+        return fallback
+    if root:
+        try:
+            resolved = os.path.realpath(work_dir)
+            root_resolved = os.path.realpath(root)
+            if (
+                resolved != root_resolved
+                and not resolved.startswith(root_resolved + os.sep)
+            ):
+                log.warning(
+                    "work_dir %s is outside allowed root %s, falling back to %s",
+                    work_dir,
+                    root_resolved,
+                    fallback,
+                )
+                return fallback
+        except OSError:
+            return fallback
+    return work_dir
+
+
 async def handle_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    claude_path: str,
+    proxy_token: str,
+):
+    """Bound concurrent subprocesses, then serve the connection.
+
+    The cap is enforced here rather than only in runner.py, whose semaphore
+    bounds a single client: a restarted app, a second instance, or any other
+    holder of the token could otherwise spawn Claude processes without limit.
+
+    The slot covers the handshake as well as the subprocess, so an unauthenticated
+    connection can occupy one for as long as the handshake timeout (10s). That is
+    accepted: the proxy binds to 127.0.0.1 by default, and holding the slot for
+    the whole connection is what guarantees it is always released.
+    """
+    slots = _get_slots()
+    if slots.locked():
+        log.warning(
+            "at capacity (%d concurrent); queueing client %s",
+            _MAX_CONCURRENT,
+            writer.get_extra_info("peername"),
+        )
+    async with slots:
+        await _handle_client(reader, writer, claude_path, proxy_token)
+
+
+async def _handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     claude_path: str,
@@ -244,16 +333,11 @@ async def handle_client(
 
         _cmd = [_resolved] + claude_cmd[1:]
 
-        # Resolve work_dir: Docker-internal paths don't exist on host — fall back to /tmp
-        _cwd = work_dir or None
-        if _cwd and not _os.path.isdir(_cwd):
-            _fallback = os.environ.get(
-                "WC_PROXY_FALLBACK_DIR", "/tmp"
-            )  # nosec B108: configurable private fallback
-            log.info(
-                "work_dir %s not found on host, falling back to %s", _cwd, _fallback
-            )
-            _cwd = _fallback
+        # Resolve work_dir: Docker-internal paths don't exist on host — fall back
+        # to the configured directory. The path is client-supplied, so it is also
+        # confined to an allowed root; without that the proxy would happily run
+        # Claude with its cwd anywhere on the host filesystem.
+        _cwd = _safe_cwd(work_dir)
 
         log.info("spawn cmd: %s cwd=%s", " ".join(_cmd[:3]), _cwd)
         proc = await asyncio.create_subprocess_exec(
@@ -262,6 +346,10 @@ async def handle_client(
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE,
             cwd=_cwd,
+            # Claude's stream-json frames routinely exceed the default 64 KiB
+            # StreamReader limit (a single large tool result is enough). Hitting
+            # it raises LimitOverrunError mid-turn and truncates the response.
+            limit=_STREAM_LIMIT,
         )
     except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as _e:
         _msg = (

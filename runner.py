@@ -205,7 +205,7 @@ async def _execute_proxy(
         )
     except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
         _log.error(
-            "proxy connect failed host=%s port=%d: %s",
+            "proxy connect failed host={} port={}: {}",
             proxy_host,
             config.PROXY_PORT,
             exc,
@@ -269,7 +269,7 @@ async def _execute_proxy(
                     try:
                         obj = json.loads(line)
                     except json.JSONDecodeError:
-                        _log.debug("non-JSON from proxy: %s", line[:200])
+                        _log.debug("non-JSON from proxy: {}", line[:200])
                         continue
 
                     msg_type = obj.get("type", "")
@@ -288,7 +288,7 @@ async def _execute_proxy(
                     elif msg_type == "done":
                         break
         except TimeoutError:
-            _log.warning("proxy read timed out (turn_timeout=%ds)", turn_timeout)
+            _log.warning("proxy read timed out (turn_timeout={}s)", turn_timeout)
             raise TurnError(f"Turn timed out after {turn_timeout}s", fatal=False)
 
         if error:
@@ -388,7 +388,7 @@ async def _execute_direct(
     """Core subprocess execution with NDJSON parsing (blocking path)."""
     cmd = _build_cmd_direct(prompt, session_id, model)
 
-    _log.info("launch chat=%s work_dir=%s cmd=%s", chat_id, work_dir, cmd[:4])
+    _log.info("launch chat={} work_dir={} cmd={}", chat_id, work_dir, cmd[:4])
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -430,7 +430,7 @@ async def _collect_chunks(
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
-            _log.debug("non-JSON line: %s", line[:200])
+            _log.debug("non-JSON line: {}", line[:200])
             continue
 
         for event in _normalise_cli_frame(obj):
@@ -495,7 +495,7 @@ async def _do_proxy_stream(
             timeout=config.PROXY_CONNECT_TIMEOUT_S,
         )
     except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
-        _log.error("proxy connect failed: %s", exc)
+        _log.error("proxy connect failed: {}", exc)
         yield {
             "type": "error",
             "error": f"Cannot connect to proxy at {proxy_host}:{config.PROXY_PORT}",
@@ -553,7 +553,7 @@ async def _do_proxy_stream(
                     try:
                         obj = json.loads(line)
                     except json.JSONDecodeError:
-                        _log.debug("non-JSON from proxy: %s", line[:200])
+                        _log.debug("non-JSON from proxy: {}", line[:200])
                         continue
 
                     msg_type = obj.get("type", "")
@@ -613,7 +613,7 @@ async def _do_direct_stream(
     """Core subprocess streaming (behind semaphore)."""
     cmd = _build_cmd_direct(prompt, session_id, model)
 
-    _log.info("stream chat=%s work_dir=%s", chat_id, work_dir)
+    _log.info("stream chat={} work_dir={}", chat_id, work_dir)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

@@ -161,69 +161,86 @@ def _tmux_panes() -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _multiplexer(pid: int | None) -> tuple[str, int] | None:
-    """Return (kind, pid) of the screen/tmux process hosting *pid*."""
+def refresh(target: dict[str, Any]) -> str:
+    """Re-read what *target* is displaying."""
+    if target.get("kind") == "screen":
+        return screen_snapshot(str(target.get("session")), str(target.get("window")))
+    if target.get("kind") == "tmux":
+        result = _run(["tmux", "capture-pane", "-p", "-t", str(target.get("window"))])
+        return result.stdout if result else ""
+    return ""
+
+
+def _environ(pid: int) -> dict[str, str]:
+    """Read a process's environment, or {} if it cannot be read."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for chunk in raw.split(b"\0"):
+        if b"=" not in chunk:
+            continue
+        key, _, value = chunk.partition(b"=")
+        out[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return out
+
+
+def locate(session_id: str) -> dict[str, str] | None:
+    """Identify the multiplexer window a session runs in, from its own process.
+
+    screen exports STY (session) and WINDOW (index) into every window, and tmux
+    exports TMUX_PANE, so the window is stated by the environment rather than
+    inferred. This replaced matching on screen contents, which was actively
+    dangerous: two sessions in the same screen session were distinguished only
+    by what was on their screens, and quoting one session's question inside
+    another's output was enough to select the wrong window -- observed, not
+    hypothetical.
+    """
+    pid = session_pid(session_id)
     if not pid:
         return None
-    for parent, name in _parents(pid):
-        lowered = name.lower()
-        if "screen" in lowered:
-            return "screen", parent
-        if "tmux" in lowered:
-            return "tmux", parent
+    for candidate, _name in _parents(pid):
+        env = _environ(candidate)
+        pane = env.get("TMUX_PANE")
+        if pane:
+            return {"kind": "tmux", "session": env.get("TMUX", ""), "window": pane}
+        sty, window = env.get("STY"), env.get("WINDOW")
+        if sty and window and window.isdigit():
+            return {"kind": "screen", "session": sty, "window": window}
     return None
 
 
-def find_target(session_id: str, needle: str) -> dict[str, Any] | None:
-    """Locate the multiplexer window hosting *session_id*.
+def looks_like_a_prompt(snapshot: str) -> bool:
+    """Whether *snapshot* shows a selectable prompt awaiting an answer.
 
-    *needle* is required, not optional: it is a distinctive string expected to
-    be on screen, normally the question text. Two reasons it is mandatory.
-    Neither screen nor tmux publishes a window-to-pid mapping, so matching on
-    what a window is actually displaying is the only reliable way to pick one --
-    and delivering a keystroke to a window we have not confirmed is showing the
-    prompt could type into an unrelated terminal.
-
-    The candidate windows are further restricted to the multiplexer that
-    actually hosts this session, found by walking its process tree, so a
-    coincidental text match elsewhere on the machine cannot be selected.
+    Delivering navigation keys to a window that is not prompting would type
+    into whatever it is doing instead, so identity is not enough on its own --
+    the window has to be visibly asking something.
     """
-    if not needle or not needle.strip():
-        return None
-    host = _multiplexer(session_pid(session_id))
-    if host is None:
-        return None
-    kind, host_pid = host
-    probe = needle.strip()[:60]
+    if not snapshot:
+        return False
+    has_options = bool(re.search(r"^\s*[❯>]?\s*\d+\.\s+\S", snapshot, re.MULTILINE))
+    hints = ("Enter to select", "to navigate", "Esc to cancel")
+    return has_options and any(hint in snapshot for hint in hints)
 
-    if kind == "screen":
-        # A screen session is named "<pid>.<tty>.<host>", so the hosting
-        # process identifies its session exactly.
-        for session in _screen_sessions():
-            if not session.startswith(f"{host_pid}."):
-                continue
-            for window in _screen_windows(session):
-                snapshot = screen_snapshot(session, window)
-                if snapshot and probe in snapshot:
-                    return {
-                        "kind": "screen",
-                        "session": session,
-                        "window": window,
-                        "snapshot": snapshot,
-                    }
-        return None
 
-    for line in _tmux_panes():
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        pane = parts[0]
-        result = _run(["tmux", "capture-pane", "-p", "-t", pane])
-        snapshot = result.stdout if result else ""
-        if snapshot and probe in snapshot:
-            return {"kind": "tmux", "session": "", "window": pane,
-                    "snapshot": snapshot}
-    return None
+def find_target(session_id: str, needle: str = "") -> dict[str, Any] | None:
+    """Return the window hosting *session_id*, if it is showing a prompt.
+
+    *needle* is an extra confirmation, not the means of selection: the window
+    comes from the process environment, and the needle merely checks that the
+    prompt on screen is the question we think we are answering.
+    """
+    target = locate(session_id)
+    if target is None:
+        return None
+    snapshot = refresh(target)
+    if not looks_like_a_prompt(snapshot):
+        return None
+    if needle and needle.strip()[:60] not in snapshot:
+        return None
+    return {**target, "snapshot": snapshot}
 
 
 def deliver(target: dict[str, Any], key: str) -> bool:
@@ -305,16 +322,6 @@ def visible_options(snapshot: str) -> list[dict[str, Any]]:
             "selected": "❯" in line,
         })
     return sorted(options, key=lambda option: option["index"])
-
-
-def refresh(target: dict[str, Any]) -> str:
-    """Re-read what *target* is displaying."""
-    if target.get("kind") == "screen":
-        return screen_snapshot(str(target.get("session")), str(target.get("window")))
-    if target.get("kind") == "tmux":
-        result = _run(["tmux", "capture-pane", "-p", "-t", str(target.get("window"))])
-        return result.stdout if result else ""
-    return ""
 
 
 def answer(target: dict[str, Any], want: int, max_moves: int = 12) -> dict[str, Any]:

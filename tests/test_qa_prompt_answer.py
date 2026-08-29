@@ -130,29 +130,70 @@ class SnapshotReadingQA(unittest.TestCase):
 
 
 class AimingQA(unittest.TestCase):
-    def test_a_target_is_refused_without_a_needle(self):
-        # Delivering to a window we have not confirmed shows the prompt could
-        # type into an unrelated terminal.
-        self.assertIsNone(prompts.find_target("sess", ""))
-        self.assertIsNone(prompts.find_target("sess", "   "))
-
-    def test_a_session_with_no_multiplexer_has_no_target(self):
-        with patch.object(prompts, "session_pid", return_value=4242), \
-             patch.object(prompts, "_parents", return_value=[(4242, "claude"),
-                                                             (1, "systemd")]):
-            self.assertIsNone(prompts.find_target("sess", "Which of these"))
-
-    def test_only_the_hosting_screen_session_is_considered(self):
-        # A coincidental text match in someone else's screen must not be picked.
+    def test_the_window_comes_from_the_process_environment(self):
+        # screen exports STY and WINDOW into every window, so the window is
+        # stated rather than guessed.
         with patch.object(prompts, "session_pid", return_value=99), \
-             patch.object(prompts, "_parents",
-                          return_value=[(99, "claude"), (123, "screen")]), \
-             patch.object(prompts, "_screen_sessions",
-                          return_value=["999.pts-1.host", "123.pts-6.host"]), \
-             patch.object(prompts, "_screen_windows", return_value=["2"]), \
-             patch.object(prompts, "screen_snapshot", return_value=PROMPT):
-            target = prompts.find_target("sess", "Which of these")
-        self.assertEqual(target["session"], "123.pts-6.host")
+             patch.object(prompts, "_parents", return_value=[(99, "claude")]), \
+             patch.object(prompts, "_environ",
+                          return_value={"STY": "123.pts-6.host", "WINDOW": "2"}):
+            self.assertEqual(prompts.locate("sess"),
+                             {"kind": "screen", "session": "123.pts-6.host",
+                              "window": "2"})
+
+    def test_a_tmux_pane_is_identified_by_its_own_variable(self):
+        with patch.object(prompts, "session_pid", return_value=99), \
+             patch.object(prompts, "_parents", return_value=[(99, "claude")]), \
+             patch.object(prompts, "_environ",
+                          return_value={"TMUX_PANE": "%7", "TMUX": "/tmp/sock,1,0"}):
+            self.assertEqual(prompts.locate("sess")["window"], "%7")
+
+    def test_a_session_outside_a_multiplexer_has_no_window(self):
+        with patch.object(prompts, "session_pid", return_value=99), \
+             patch.object(prompts, "_parents", return_value=[(99, "claude")]), \
+             patch.object(prompts, "_environ", return_value={"TERM": "xterm"}):
+            self.assertIsNone(prompts.locate("sess"))
+
+    def test_two_sessions_in_one_screen_are_not_confused(self):
+        """The bug this replaced: selection by screen content.
+
+        cweb3 and cweb5 shared a screen session. Quoting cweb5's question in
+        cweb3's own output was enough for a content match to pick cweb3's
+        window, which would have typed the answer into the wrong terminal.
+        Observed live, not hypothetical -- so the window must come from the
+        process, and content is only ever a confirmation.
+        """
+        env = {"other": {"STY": "1.host", "WINDOW": "0"},
+               "target": {"STY": "1.host", "WINDOW": "2"}}
+        for who, expected in (("other", "0"), ("target", "2")):
+            with patch.object(prompts, "session_pid", return_value=1), \
+                 patch.object(prompts, "_parents", return_value=[(1, "claude")]), \
+                 patch.object(prompts, "_environ", return_value=env[who]):
+                self.assertEqual(prompts.locate(who)["window"], expected, who)
+
+    def test_a_window_that_is_not_prompting_is_not_a_target(self):
+        # Identity alone is not enough: navigation keys sent to a window that
+        # is not asking anything would type into whatever it is doing.
+        with patch.object(prompts, "locate",
+                          return_value={"kind": "screen", "session": "s",
+                                        "window": "2"}), \
+             patch.object(prompts, "refresh", return_value="just some output"):
+            self.assertIsNone(prompts.find_target("sess"))
+
+    def test_a_prompt_is_recognised_by_its_shape(self):
+        self.assertTrue(prompts.looks_like_a_prompt(PROMPT))
+        self.assertFalse(prompts.looks_like_a_prompt("● Ran a command\n❯ "))
+        self.assertFalse(prompts.looks_like_a_prompt(""))
+        # Options without the confirmation hint are not a live prompt.
+        self.assertFalse(prompts.looks_like_a_prompt("  1. one\n  2. two\n"))
+
+    def test_a_mismatched_needle_refuses_the_target(self):
+        with patch.object(prompts, "locate",
+                          return_value={"kind": "screen", "session": "s",
+                                        "window": "2"}), \
+             patch.object(prompts, "refresh", return_value=PROMPT):
+            self.assertIsNone(prompts.find_target("sess", "a different question"))
+            self.assertIsNotNone(prompts.find_target("sess", "Which of these"))
 
     def test_answer_refuses_when_the_selection_cannot_be_seen(self):
         with patch.object(prompts, "refresh", return_value="no prompt here"):

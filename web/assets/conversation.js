@@ -18,6 +18,87 @@ export function parseTimestamp(iso) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+// Markdown ![alt](path) and bare paths ending in an image extension. Kept
+// deliberately narrow: anything matched here becomes a request for a file, so
+// a loose pattern would turn ordinary prose into fetches.
+//
+// The bare-path branch lists the characters a path may contain rather than
+// using \S+. \S+ also matches the punctuation around a path, so a filename
+// written in prose as `shot.png` was requested with the backtick attached and
+// could never be found.
+const IMAGE_REF =
+  /!\[([^\]]*)\]\(([^)\s]+)\)|([A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\.(?:png|jpe?g|gif|webp|svg))\b/gi;
+
+/** The chat whose workspace image paths resolve against. Set by the controller. */
+let _imageChatId = null;
+export function setImageContext(chatId) { _imageChatId = chatId; }
+
+function imageChip(label, path) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'image-chip';
+  chip.textContent = label || path.split('/').pop();
+  chip.title = `Show ${path}`;
+  chip.addEventListener('click', () => openImageViewer(path, label));
+  return chip;
+}
+
+/** Full-size viewer. A CSS tooltip cannot be dismissed, zoomed or scrolled,
+ *  and a screenshot is usually taller than the message it sits in. */
+export function openImageViewer(path, label) {
+  if (!_imageChatId) return;
+  const back = document.createElement('div');
+  back.className = 'image-viewer';
+  back.setAttribute('role', 'dialog');
+  back.setAttribute('aria-modal', 'true');
+  back.setAttribute('aria-label', label || path);
+
+  const img = document.createElement('img');
+  img.alt = label || path;
+  img.src = `/api/chats/${encodeURIComponent(_imageChatId)}/file?path=${encodeURIComponent(path)}`;
+
+  const cap = document.createElement('div');
+  cap.className = 'image-viewer-cap';
+  cap.textContent = path;
+
+  img.addEventListener('error', () => { cap.textContent = `Could not load ${path}`; });
+
+  const shut = () => {
+    back.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  function onKey(event) { if (event.key === 'Escape') shut(); }
+  back.addEventListener('click', event => { if (event.target === back) shut(); });
+  document.addEventListener('keydown', onKey);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'image-viewer-x';
+  close.textContent = '\u00d7';
+  close.setAttribute('aria-label', 'Close image');
+  close.addEventListener('click', shut);
+
+  back.append(img, cap, close);
+  document.body.appendChild(back);
+  close.focus();
+}
+
+function renderProse(container, text) {
+  let last = 0;
+  IMAGE_REF.lastIndex = 0;
+  for (let m = IMAGE_REF.exec(text); m; m = IMAGE_REF.exec(text)) {
+    if (m.index > last) {
+      container.appendChild(document.createTextNode(text.slice(last, m.index)));
+    }
+    const path = m[2] || m[3];
+    container.appendChild(imageChip(m[1], path));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    container.appendChild(document.createTextNode(text.slice(last)));
+  }
+}
+
 export function renderSafeText(container, text) {
   container.replaceChildren();
   String(text).split(/```/).forEach((part, index) => {
@@ -29,7 +110,9 @@ export function renderSafeText(container, text) {
       pre.appendChild(code);
       container.appendChild(pre);
     } else if (part) {
-      container.appendChild(document.createTextNode(part));
+      // Only prose is scanned: a path inside a fenced block is being shown as
+      // text, not offered as a thing to open.
+      renderProse(container, part);
     }
   });
 }
@@ -177,6 +260,9 @@ export function createConversationController(dependencies) {
       return false;
     }
     persistDraft();
+    // Image paths in a message resolve against the chat's own workspace, so
+    // the renderer needs to know which chat it is drawing before it draws.
+    setImageContext(chat.id);
     const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}`);
     if (!response.ok) throw new Error('Could not open conversation');
     const data = await response.json();

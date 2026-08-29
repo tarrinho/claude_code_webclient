@@ -211,10 +211,15 @@ class ConversationSyncQA(unittest.TestCase):
     def test_the_header_is_shown(self):
         self.assertIn("Question — Session name", self._msg([self._question()])[1])
 
-    def test_a_pending_question_says_where_to_answer(self):
+    def test_a_question_says_where_to_answer(self):
         # Otherwise it reads as a rhetorical question in the log.
-        self.assertIn("waiting for an answer in the terminal",
-                      self._msg([self._question()])[1])
+        self.assertIn("answer this in the terminal", self._msg([self._question()])[1])
+
+    def test_the_note_does_not_claim_the_question_is_still_waiting(self):
+        # The body is fixed at import time and cannot be revised when the answer
+        # lands in a later sync, so it must not assert a state that will age.
+        body = self._msg([self._question()])[1]
+        self.assertNotIn("waiting", body.lower())
 
     def test_multi_select_is_stated(self):
         self.assertIn("choose one or more",

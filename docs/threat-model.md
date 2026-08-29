@@ -173,12 +173,30 @@ target window is sitting at a shell — the interactive agent exited, the window
 was reused — the text is typed at `bash` and Enter runs it. An authenticated web
 request becomes a shell command.
 
-*Fix:* verify the pid actually is a `claude` process for the claimed session
-before trusting its environment (`/proc/<pid>/comm`, and cross-check `cwd` or
-the transcript), gate `deliver_request` on `looks_like_a_prompt()` the way
-`find_target` does, and refuse any target whose window resolves to the server's
-own `STY`/`WINDOW`. That last check is one comparison and it closes this case
-outright.
+**Status: fixed in `80ba161`.** `session_pid()` now requires the pid to identify
+as `claude` in `/proc` and to be neither this process nor any ancestor of it.
+Refusing the whole ancestry — not just the exact pid — is what closes it, since
+walking up from the server's pid is how the wrong window was reached. Verified
+live: a file naming the calling process is refused even with `_is_claude` forced
+true; a genuine peer session still resolves. Mutation-checked.
+
+**One recommendation in the first draft of this document was wrong** and is
+recorded here because it was acted on. I proposed refusing any target whose
+`STY`/`WINDOW` matches the server's own, and called it "one comparison that
+closes the case outright". It does not: an interactive agent runs *in* the
+server's window on this deployment, so that check refuses a legitimate target
+rather than an attack — it would have made the one session that motivated the
+routing feature unreachable. The ancestry check already covers the mechanism.
+`locate()` therefore reports `shares_server_window` and lets the caller decide.
+The flag is relative to the calling process, so it reads `False` from a test
+harness in another window and `True` from the server itself.
+
+Still open: `deliver_request` does not gate on the window being at a prompt.
+After discussion this is **correct** — a request routed to a live session is
+precisely the case where the terminal is at its composer or busy, so gating on
+`looks_like_a_prompt()` would refuse every legitimate delivery. Positive
+identification of the process is the property that path needs, and it now has
+it.
 
 ### F-02 — `~/.claude/sessions/` is an untrusted targeting oracle **[verified]**
 
@@ -196,9 +214,30 @@ left `dead1.json`, `dead2.json` and `live1.json` in the real
 `~/.claude/sessions/` — verified present. Tests writing into a directory the
 security of a keystroke path depends on is its own problem; fix that too.
 
-*Fix:* treat the file as a hint, never as authority. Confirm the pid's `comm`
-is `claude`, that its `/proc/<pid>/cwd` or open transcript matches the session,
-and that its start time predates the request. Point tests at a temp dir.
+**Status: narrowed in `80ba161`, not closed — and it cannot be closed here.**
+`session_pid()` now refuses a pid that is not `claude`, refuses our own
+ancestry, and refuses a *contradiction*: two live pids claiming one session id
+returns `None` rather than picking one, because choosing would let a planted
+file win a race against the real entry by being read first.
+
+A file naming a genuinely live, unrelated `claude` process still passes every
+one of those checks. Corroborating against the kernel was attempted and does not
+work: `claude` appends to its transcript and closes it, so no live process holds
+an fd on the file that would identify it (checked on all five running sessions —
+zero open transcript descriptors). `/proc` can say *what* a pid is; nothing on
+disk can say which session it owns except the file being validated.
+
+The honest conclusion is that F-02 is not solvable at this layer. While the
+agents run under the same uid as the console, any file-based mapping is
+agent-writable, and so is any database the console might keep instead. The real
+fix is a privilege boundary — run spawned agents as a different uid — which is a
+deployment change, not a code change. Until then this is narrowed and documented,
+which is the accurate description of its state.
+
+*Also still to do:* point the test suite at a temp directory. It currently
+writes `dead1.json`, `dead2.json` and `live1.json` into the real
+`~/.claude/sessions/`, which is the very directory whose trustworthiness this
+finding is about.
 
 ### F-03 — Proxy cwd confinement is inert as deployed **[verified]**
 
@@ -588,30 +627,33 @@ could be specific rather than generic.
 
 ## 8. Recommendations, in order
 
-**Do before the keystroke feature ships:**
-1. F-01 — verify pid identity; gate `deliver_request` on `looks_like_a_prompt`;
-   refuse targets matching the server's own `STY`/`WINDOW`.
-2. F-02 — treat `~/.claude/sessions/*.json` as a hint; point tests at a temp dir.
+**Done:**
+1. ~~F-01~~ — fixed in `80ba161` (pid identity + ancestry refusal). The
+   `STY`/`WINDOW` veto in the original recommendation was withdrawn as wrong;
+   see the finding.
+2. F-02 — narrowed in `80ba161` as far as this layer allows. Residual accepted
+   and documented; the only real fix is a uid boundary.
+3. ~~F-05~~ — `.env` set to 0600. **Rotate the credentials it held**; the
+   exposure window is unknown. Still to do: refuse to boot on a loose mode.
 
 **Do this week:**
-3. F-05 — `chmod 600 .env`; rotate the credentials it held; refuse to boot on a
-   loose mode.
 4. F-04 — private 0700 snapshot directory, unpredictable name, unlink after read.
 5. F-03 — fail closed without an allowed root; export it from `launch.sh`.
 6. F-08 / F-09 — validate `base_url` like `host`; connect to the validated IP;
    disable redirect following.
+7. F-02 follow-up — point the test suite at a temp `~/.claude/sessions`.
 
 **Do next:**
-7. F-07 — revalidate against the DB, or correct the docstring.
-8. F-06 — encrypt secret columns (gives `WC_SESSION_SECRET` a real job) or
+8. F-07 — revalidate against the DB, or correct the docstring.
+9. F-06 — encrypt secret columns (gives `WC_SESSION_SECRET` a real job) or
    exclude them from export.
-9. F-11 — per-user turn rate limit and a spend ceiling.
-10. F-10 — scope the FTS pre-filter by owner.
-11. F-13 — either use `WC_SESSION_SECRET` or stop requiring it; delete
+10. F-11 — per-user turn rate limit and a spend ceiling.
+11. F-10 — scope the FTS pre-filter by owner.
+12. F-13 — either use `WC_SESSION_SECRET` or stop requiring it; delete
     `_csrf_store`.
-12. F-16, F-17, F-20 — attachment/sandbox for SVG; allowlist the proxy child's
+13. F-16, F-17, F-20 — attachment/sandbox for SVG; allowlist the proxy child's
     env; stop relaying stderr.
-13. F-19 — replicate the single-operator caveat at all six sites now; gate on
+14. F-19 — replicate the single-operator caveat at all six sites now; gate on
     admin before a second account exists.
 
 ## 9. Not assessed

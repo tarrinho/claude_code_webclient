@@ -554,13 +554,19 @@ async function loadMachines() {
 }
 
 // 'anthropic' is the wire protocol, not the vendor: a gateway speaking the
-// Anthropic API at a custom base_url is still provider='anthropic'. Say which
-// it actually is, since that is what decides how a backend behaves.
+// Anthropic API at a custom base_url is still provider='anthropic'. The server
+// classifies this (app.backend_kind) and the Usage tab gates its cost column on
+// the same value, so read it rather than re-deriving it here -- two
+// implementations agreeing by coincidence is a latent disagreement.
+const _BACKEND_KIND_LABELS = {
+  'anthropic': 'Anthropic API',
+  'anthropic-compatible': 'Anthropic-compatible',
+  'proxy': 'Claude Code proxy',
+};
+
 function _providerLabel(machine) {
-  if (machine.provider !== 'anthropic') return 'Claude Code proxy';
-  const url = (machine.base_url || '').trim();
-  if (!url || url.includes('api.anthropic.com')) return 'Anthropic API';
-  return 'Anthropic-compatible';
+  return _BACKEND_KIND_LABELS[machine.backend_kind]
+    || (machine.provider === 'anthropic' ? 'Anthropic API' : 'Claude Code proxy');
 }
 
 // Per-machine model state, keyed by machine id: {models, active, default,
@@ -602,7 +608,10 @@ function _buildModelSection(machine) {
 
   const refresh = document.createElement('button');
   refresh.type = 'button';
-  refresh.className = 'machine-action';
+  // Its own class: it sits above .machine-actions, so sharing that class made
+  // it the first .machine-action in the card and any selector reaching for
+  // "the first action" landed on Refresh instead of Activate.
+  refresh.className = 'machine-action models-refresh';
   refresh.textContent = 'Refresh';
   refresh.addEventListener('click', () => loadModelsFor(machine.id, true));
   toolbar.appendChild(refresh);
@@ -1226,11 +1235,17 @@ function populateModelPicker() {
   const served = _servedModels
     .map(model => model.id)
     .filter(id => !active.length || active.includes(id));
+  // The global default is only the fallback for when no backend is active.
+  // Offering it alongside a backend's own list put a model in the picker that
+  // the active backend had been told not to offer -- verified in a browser:
+  // untick claude-sonnet-5 and it stayed selectable because it happened to be
+  // the global default.
+  const globals = served.length ? [] : _modelOptions;
   // Keep whatever this chat already uses, so a model that was later
   // deactivated stays selectable rather than silently becoming Automatic --
   // hiding a model must never break a conversation already using it.
   const chatModel = state.currentChat?.model;
-  const models = [..._modelOptions, ...served, chatModel, current];
+  const models = [...globals, ...served, chatModel, current];
 
   picker.replaceChildren();
   const automatic = document.createElement('option');

@@ -8,6 +8,8 @@ ruff>=0.9,<1
 # reading code. pytest-cov wires it into the existing pytest invocation.
 coverage>=7.4,<8
 pytest-cov>=5.0,<7
-# Pure-Python JS parser. There is no node on the dev box, so app.js was only
-# ever checked by substring assertions -- a syntax error would ship green.
-esprima>=4.0,<5
+# JS parser for the frontend syntax gate. There is no node on the dev box, so
+# app.js was only ever checked by substring assertions and a syntax error would
+# ship green. QuickJS rather than esprima: esprima's grammar predates optional
+# catch binding (ES2019), which this codebase uses, so it rejects valid source.
+quickjs>=1.19,<2

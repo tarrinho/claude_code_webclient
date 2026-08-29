@@ -1039,7 +1039,12 @@ async function refreshChats() {
 }
 
 function updateCurrentUi(chat) {
-  byId('topbarTitle').textContent = chat.title;
+  // The conversation name sits in the strip, ahead of its directory, so the
+  // two read as name-then-location on one line. The topbar keeps the product
+  // name rather than swapping between the two.
+  byId('topbarTitle').textContent = 'WebConsole';
+  byId('workspaceName').textContent = chat.title;
+  byId('workspaceName').title = chat.title;
   byId('workspaceStrip').style.display = 'flex';
   byId('workspacePath').textContent = chat.work_dir;
   byId('workspacePath').title = chat.work_dir;
@@ -1127,6 +1132,8 @@ async function selectChat(id) {
     showToast(error.message, 'error');
   }
   startTranscriptSync();
+  markAgentSeen('chat', chat.id);
+  if (chat.session_id) markAgentSeen('session', chat.session_id);
 }
 
 // ── Live transcript sync ────────────────────────────────────────────────────────────
@@ -1192,6 +1199,7 @@ function showWelcome() {
   stopTranscriptSync();
   state.currentChat = null;
   byId('topbarTitle').textContent = 'WebConsole';
+  byId('workspaceName').textContent = '';
   byId('workspaceStrip').style.display = 'none';
   byId('editChatBtn').hidden = true;
   byId('syncBtn').hidden = true;
@@ -1266,6 +1274,16 @@ async function handleChatAction(action, id) {
         storageRemove('wc_last_chat');
         showWelcome();
       }
+    } else if (action === 'reset-order') {
+      // An empty order clears every placement and returns the list to recency.
+      const response = await apiFetch('/api/chats/order', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order: []}),
+      });
+      if (!response.ok) throw new Error('Could not reset the order');
+      await refreshChats();
+      showToast('List order reset');
     } else if (action === 'terminal') {
       await copyTerminalCommand(chat);
     } else if (action === 'delete') {
@@ -1547,6 +1565,43 @@ async function updateModelDisplay(model) {
   }
 }
 
+// ── Supervisor ────────────────────────────────────────────────────────────────
+// How often to ask which agents are waiting. Cheap on the server: unchanged
+// transcripts are skipped by an mtime check before anything is read.
+const SUPERVISOR_POLL_MS = 15000;
+let _supervisorTimer = null;
+
+async function refreshSupervisor() {
+  try {
+    const response = await apiFetch('/api/supervisor');
+    if (!response.ok) return;
+    listController.setSupervisor(await response.json());
+  } catch {
+    // Supervision is supplementary; the sidebar must render without it.
+  }
+}
+
+function startSupervisorPolling() {
+  if (_supervisorTimer) return;
+  _supervisorTimer = setInterval(refreshSupervisor, SUPERVISOR_POLL_MS);
+}
+
+// Opening an agent is what clears its badge -- that is what keeps the count
+// meaningful rather than a number that only ever grows.
+async function markAgentSeen(kind, id) {
+  if (!id) return;
+  try {
+    await apiFetch('/api/supervisor/read', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind, id}),
+    });
+  } catch {
+    // A failed mark just means it stays listed; nothing to tell the user.
+  }
+  await refreshSupervisor();
+}
+
 // Reload the CLI session list. Extracted from loadInitialData so removing a
 // dead session can refresh the sidebar without a full page reload.
 async function refreshSessions() {
@@ -1586,6 +1641,8 @@ async function loadInitialData() {
     // the rest load when the Backends tab is opened.
     const active = _machines.find(machine => machine.active);
     if (active && active.provider === 'anthropic') await loadModelsFor(active.id);
+    await refreshSupervisor();
+    startSupervisorPolling();
     const lastId = storageGet('wc_last_chat');
     const last = findChat(lastId);
     if (last && !last.archived) await selectChat(last.id);
@@ -1691,13 +1748,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // applies it in a transaction, so a drop cannot half-apply.
     onReorder: async ids => {
       try {
-        await apiFetch('/api/chats/order', {
+        const response = await apiFetch('/api/chats/order', {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({order: ids}),
         });
+        // apiFetch resolves for 4xx/5xx too, so without this check a rejected
+        // save looked identical to a successful one.
+        if (!response.ok) throw new Error('Save rejected');
+        // state.chats still holds the old order; any later render would redraw
+        // from it and visibly undo the move even though the server saved it.
+        await refreshChats();
       } catch {
         showToast('Could not save the new order', 'error');
+        await refreshChats();
       }
     },
     onRemoveCli: removeCliSession,

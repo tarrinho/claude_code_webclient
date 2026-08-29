@@ -67,6 +67,13 @@ button{touch-action:manipulation}
 .chat-item[draggable="true"]{cursor:grab}
 .chat-item.dragging{opacity:.5;cursor:grabbing}
 .chat-item.dragging .chat-actions{visibility:hidden}
+/* Supervisor: which agents are blocked on the user. Sits above everything
+   because it is the one section that is about now rather than about history. */
+.supervisor-label{display:flex;align-items:center;gap:6px;color:var(--warn)}
+.supervisor-badge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--warn);color:#0d1117;font:700 11px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center}
+.supervisor-item{box-shadow:inset 2px 0 var(--warn)}
+.supervisor-dot{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--warn);vertical-align:middle}
+.supervisor-note{padding:2px 10px 8px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 .sidebar-empty{padding:24px 12px;text-align:center;color:var(--muted);font-size:12px}
 /* Collapsed sections: archived chats and CLI sessions stay reachable without
    pushing the active conversations off screen. */
@@ -95,7 +102,17 @@ button{touch-action:manipulation}
 .workspace-strip{min-height:34px;padding:6px 16px;display:none;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 .workspace-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.run-state{margin-left:auto;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+/* The auto margin lives on the group so the edit/refresh pair rides right
+   with the status, instead of being stranded beside the model selects. */
+.strip-right{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
+.run-state{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+/* The conversation name is a title, not a path: normal UI font and colour so
+   it does not read as one long monospace run with the directory. */
+.workspace-name{font:600 13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40%}
+/* .btn-icon carries a 34px minimum that would fatten a 34px strip. Coarse
+   pointers still get the 44px target from the media query further down. */
+.strip-action{min-width:24px;min-height:24px;font-size:13px;line-height:1;padding:0}
+
 .run-state::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--muted)}
 .run-state[data-state="ready"]::before{background:var(--ok)}
 .run-state[data-state="working"]::before{background:var(--accent);animation:pulse 1.2s infinite}

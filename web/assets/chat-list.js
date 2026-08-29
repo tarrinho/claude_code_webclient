@@ -103,14 +103,21 @@ export function createChatListController(dependencies) {
   let openTrigger = null;
   let activeTurnId = null;
   let historyEntries = [];
+  // {waiting: [...], working: [...]} from GET /api/supervisor.
+  let supervisor = {waiting: [], working: []};
   let dragging = null;
 
   // Persist the order of one section. Sends the whole section rather than a
   // single moved id: the server writes it as one transaction, so a drop cannot
   // half-apply and leave an order the user never chose.
-  function commitOrder(container) {
+  function commitOrder(container, sectionKey) {
     if (!onReorder) return;
+    // Sections that are not collapsed share one container, so selecting every
+    // row in it swept Recent into a drag made inside Favourites -- silently
+    // converting a recency-ordered section to a manual one. Only the rows
+    // belonging to this section are sent.
     const ids = [...container.querySelectorAll('.chat-item[data-chat-id]')]
+      .filter(node => !sectionKey || node.dataset.section === sectionKey)
       .map(node => node.dataset.chatId);
     if (ids.length) onReorder(ids);
   }
@@ -120,13 +127,14 @@ export function createChatListController(dependencies) {
   function nudge(chatId, delta) {
     const row = document.querySelector(`.chat-item[data-chat-id="${CSS.escape(chatId)}"]`);
     if (!row || !row.parentElement) return;
-    const siblings = [...row.parentElement.querySelectorAll('.chat-item[data-chat-id]')];
+    const siblings = [...row.parentElement.querySelectorAll('.chat-item[data-chat-id]')]
+      .filter(node => node.dataset.section === row.dataset.section);
     const index = siblings.indexOf(row);
     const next = index + delta;
     if (index < 0 || next < 0 || next >= siblings.length) return;
     if (delta < 0) row.parentElement.insertBefore(row, siblings[next]);
     else row.parentElement.insertBefore(siblings[next], row);
-    commitOrder(row.parentElement);
+    commitOrder(row.parentElement, row.dataset.section);
   }
 
   function closeMenus(restoreFocus = false) {
@@ -202,6 +210,7 @@ export function createChatListController(dependencies) {
       item.className = `chat-item${chat.id === currentId ? ' active' : ''}`;
       if (chat.archived) item.classList.add('archived');
       item.dataset.chatId = chat.id;
+      item.dataset.section = label;
 
       const open = document.createElement('button');
       open.type = 'button';
@@ -273,6 +282,8 @@ export function createChatListController(dependencies) {
         // would be two controls doing one job, which is how this menu grew.
         makeButton('Move up', 'move-up', chat.id, chat.title),
         makeButton('Move down', 'move-down', chat.id, chat.title),
+        // List-level, but it belongs where the ordering controls are.
+        makeButton('Reset list order', 'reset-order', chat.id, chat.title),
         makeButton('Rename', 'rename', chat.id, chat.title),
         makeButton('Fork', 'fork', chat.id, chat.title),
         makeButton('Export', 'export', chat.id, chat.title),
@@ -302,10 +313,11 @@ export function createChatListController(dependencies) {
       item.addEventListener('dragend', () => {
         item.classList.remove('dragging');
         dragging = null;
-        commitOrder(target);
+        commitOrder(target, label);
       });
       item.addEventListener('dragover', event => {
         if (!dragging || dragging === item || dragging.parentElement !== target) return;
+        if (dragging.dataset.section !== item.dataset.section) return;
         event.preventDefault();
         const box = item.getBoundingClientRect();
         const below = event.clientY > box.top + box.height / 2;
@@ -416,6 +428,75 @@ export function createChatListController(dependencies) {
     });
   }
 
+  // Agents waiting on the user, above everything else. This section is the
+  // answer to "is anything blocked on me" -- which is otherwise only knowable
+  // by opening every conversation and every terminal in turn.
+  function renderSupervisor(list, state) {
+    const waiting = state.waiting || [];
+    const working = state.working || [];
+    if (!waiting.length && !working.length) return;
+
+    const heading = document.createElement('div');
+    heading.className = 'chat-section-label supervisor-label';
+    heading.appendChild(document.createTextNode('Supervisor'));
+    if (waiting.length) {
+      const badge = document.createElement('span');
+      badge.className = 'supervisor-badge';
+      badge.textContent = String(waiting.length);
+      badge.title = `${waiting.length} agent${waiting.length === 1 ? '' : 's'} waiting for you`;
+      heading.appendChild(badge);
+    }
+    list.appendChild(heading);
+
+    waiting.forEach(entry => {
+      const item = document.createElement('div');
+      // Deliberately not draggable: these rows are a view onto other sections,
+      // and a drop here would ask the reorder handler to place a conversation
+      // in a container that does not own the ordering.
+      item.className = 'chat-item supervisor-item';
+
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'chat-open';
+      open.dataset.action = 'jump-agent';
+      open.dataset.agentKind = entry.kind;
+      open.dataset.agentId = entry.id;
+
+      const title = document.createElement('div');
+      title.className = 'chat-title';
+      const dot = document.createElement('span');
+      dot.className = 'supervisor-dot';
+      dot.setAttribute('aria-label', 'Waiting for you');
+      title.append(dot, document.createTextNode(entry.title || entry.id));
+      title.title = entry.title || entry.id;
+
+      const meta = document.createElement('div');
+      meta.className = 'chat-meta';
+      meta.textContent = [
+        entry.kind === 'session' ? 'terminal' : 'web',
+        entry.since ? `waiting ${formatTime(entry.since)}` : 'waiting',
+      ].filter(Boolean).join(' · ');
+
+      open.append(title, meta);
+      if (entry.preview) {
+        const preview = document.createElement('div');
+        preview.className = 'chat-snippet';
+        preview.textContent = entry.preview;
+        preview.title = entry.preview;
+        open.appendChild(preview);
+      }
+      item.appendChild(open);
+      list.appendChild(item);
+    });
+
+    if (working.length) {
+      const note = document.createElement('div');
+      note.className = 'supervisor-note';
+      note.textContent = `${working.length} working · nothing needed`;
+      list.appendChild(note);
+    }
+  }
+
   function render(chats = lastChats, currentId = lastCurrentId) {
     lastChats = chats;
     lastCurrentId = currentId;
@@ -434,6 +515,7 @@ export function createChatListController(dependencies) {
 
     lists.forEach(list => {
       list.replaceChildren();
+      renderSupervisor(list, supervisor);
       renderSection(list, 'Favourites', groups.pinned, currentId);
       renderSection(list, 'Recent', groups.recent, currentId);
       renderSection(list, 'Archived', groups.archived, currentId, true);
@@ -496,6 +578,14 @@ export function createChatListController(dependencies) {
     render();
   }
 
+  function setSupervisor(state) {
+    supervisor = {
+      waiting: Array.isArray(state?.waiting) ? state.waiting : [],
+      working: Array.isArray(state?.working) ? state.working : [],
+    };
+    render();
+  }
+
   function setActiveTurn(chatId) {
     if (activeTurnId === chatId) return;
     activeTurnId = chatId;
@@ -512,6 +602,12 @@ export function createChatListController(dependencies) {
     const action = button.dataset.action;
     if (action === 'open') return onSelect(button.dataset.chatId);
     if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
+    if (action === 'jump-agent') {
+      // A supervisor row is a pointer at something listed elsewhere: a web
+      // chat opens, a terminal session resumes into one.
+      const {agentKind, agentId} = button.dataset;
+      return agentKind === 'session' ? onResumeCli(agentId) : onSelect(agentId);
+    }
     if (action === 'read-transcript') {
       // The viewer mounts itself from transcript.js; an event keeps the two
       // modules decoupled rather than reaching across for a handle.
@@ -562,5 +658,6 @@ export function createChatListController(dependencies) {
     setMessageResults,
     setActiveTurn,
     setHistory,
+    setSupervisor,
   };
 }

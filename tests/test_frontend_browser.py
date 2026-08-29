@@ -44,10 +44,12 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-@unittest.skipIf(sync_playwright is None, "playwright not installed")
-@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
-class BackendsPanelBrowserTests(unittest.TestCase):
-    """The Backends tab, exercised the way a person exercises it."""
+class _BrowserFixture(unittest.TestCase):
+    """Server + browser lifecycle. No tests of its own.
+
+    Kept separate so a second suite can reuse it: subclassing a class that has
+    test methods re-runs every one of them under the new name.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -170,7 +172,11 @@ class BackendsPanelBrowserTests(unittest.TestCase):
             self.page.wait_for_timeout(900)
         self.fail("could not restore every model to offered")
 
-    # ── the page loads at all ────────────────────────────────────────────
+
+@unittest.skipIf(sync_playwright is None, "playwright not installed")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class BackendsPanelBrowserTests(_BrowserFixture):
+    """The Backends tab, exercised the way a person exercises it."""
 
     def test_settings_opens_without_script_errors(self):
         self._open_backends()
@@ -263,6 +269,103 @@ class BackendsPanelBrowserTests(unittest.TestCase):
         ]
         self.assertNotIn("Refresh", actions)
         self.assertTrue(self.page.query_selector(".models-refresh"))
+
+
+@unittest.skipIf(sync_playwright is None, "playwright not installed")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class SupervisorBrowserTests(_BrowserFixture):
+    """The supervisor section, driven the way the user drives it.
+
+    Inherits the server/browser fixture. The seeded conversation ends on an
+    assistant reply that was never read, so it must appear as waiting.
+    """
+
+    # Scoped to the desktop list: the markup renders two sidebars, and the
+    # mobile one is hidden -- an unscoped selector finds its rows first and
+    # every click times out on an invisible element.
+    DESKTOP = "#chatListDesktop"
+
+    def _seed_waiting_chat(self):
+        import sqlite3
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT OR IGNORE INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES ('sup1','Waiting chat',NULL,'/tmp','admin',"
+            "'2026-08-29T10:00:00Z','2026-08-29T10:00:00Z')"
+        )
+        con.execute(
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES "
+            "('sup1','user','do it','2026-08-29T10:00:00Z')"
+        )
+        con.execute(
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES "
+            "('sup1','assistant','Which way do you want it?','2026-08-29T10:01:00Z')"
+        )
+        con.commit()
+        con.close()
+
+    def _supervisor_rows(self):
+        return self.page.query_selector_all(f"{self.DESKTOP} .supervisor-item")
+
+    def _badge(self):
+        node = self.page.query_selector(f"{self.DESKTOP} .supervisor-badge")
+        return int(node.inner_text()) if node else 0
+
+    def _load(self):
+        self._seed_waiting_chat()
+        self.page.reload(wait_until="networkidle")
+        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+
+    def test_supervisor_sits_above_the_other_sections(self):
+        self._load()
+        labels = [
+            e.inner_text().split("·")[0].split("\n")[0].strip()
+            for e in self.page.query_selector_all(f"{self.DESKTOP} .chat-section-label")
+        ]
+        self.assertTrue(labels, "the sidebar rendered no sections")
+        self.assertEqual(labels[0].lower(), "supervisor")
+        self.assertEqual(self.errors, [])
+
+    def test_badge_counts_the_waiting_agents(self):
+        self._load()
+        self.assertGreaterEqual(self._badge(), 1)
+        self.assertEqual(self._badge(), len(self._supervisor_rows()))
+
+    def test_a_waiting_row_shows_what_the_agent_last_said(self):
+        self._load()
+        row = next(
+            r for r in self._supervisor_rows()
+            if "Waiting chat" in r.query_selector(".chat-title").inner_text()
+        )
+        self.assertIn("web", row.query_selector(".chat-meta").inner_text())
+        self.assertEqual(
+            row.query_selector(".chat-snippet").inner_text().strip(),
+            "Which way do you want it?",
+        )
+
+    def test_jumping_opens_the_conversation_and_clears_its_badge(self):
+        """The two things asked for: get me there, and stop telling me."""
+        self._load()
+        before = self._badge()
+        row = next(
+            r for r in self._supervisor_rows()
+            if "Waiting chat" in r.query_selector(".chat-title").inner_text()
+        )
+        row.query_selector(".chat-open").click()
+        self.page.wait_for_timeout(3500)
+
+        # The conversation name lives in the workspace strip, not the topbar.
+        self.assertEqual(self.page.query_selector("#workspaceName").inner_text(), "Waiting chat")
+        self.assertIn("Which way do you want it?", self.page.query_selector("#messagesArea").inner_text())
+        self.assertEqual(self._badge(), before - 1)
+        self.assertEqual(self.errors, [])
+
+    def test_supervisor_rows_are_not_draggable(self):
+        """They point at conversations owned by other sections; a drop here
+        would ask the reorder handler to reorder a container it does not own."""
+        self._load()
+        for row in self._supervisor_rows():
+            self.assertNotEqual(row.get_attribute("draggable"), "true")
 
 
 if __name__ == "__main__":

@@ -135,6 +135,46 @@ class FrontendStructureTests(unittest.TestCase):
         # Hidden unless the open chat actually has a transcript behind it.
         self.assertIn("byId('syncBtn').hidden = !chat.session_id", self.app)
 
+    def test_conversation_name_precedes_its_directory(self):
+        """Name then location, on one line, in that order.
+
+        The name used to be the topbar <h1> while the directory sat in the
+        strip below, so the two were never read together.
+        """
+        self.assertIn('id="workspaceName"', self.html)
+        self.assertLess(
+            self.html.index('id="workspaceName"'),
+            self.html.index('id="workspacePath"'),
+        )
+        self.assertIn("byId('workspaceName').textContent = chat.title", self.app)
+
+    def test_topbar_keeps_the_product_name(self):
+        """It no longer swaps to the conversation title, which moved down."""
+        self.assertNotIn("byId('topbarTitle').textContent = chat.title", self.app)
+
+    def test_edit_and_refresh_sit_just_before_the_status(self):
+        """Both move with the run state, not stranded beside the selects.
+
+        .run-state carries margin-left:auto, so a button placed before it in
+        source order would render at the far left of the strip. Grouping them
+        is what keeps them adjacent to the status dot.
+        """
+        strip = self.html.split('id="workspaceStrip"')[1].split("</div>\n  <section")[0]
+        for marker in ('id="editChatBtn"', 'id="syncBtn"', 'id="runState"'):
+            self.assertIn(marker, strip)
+        self.assertLess(strip.index('id="editChatBtn"'), strip.index('id="runState"'))
+        self.assertLess(strip.index('id="syncBtn"'), strip.index('id="runState"'))
+        self.assertIn("strip-right", self.html)
+        self.assertIn(".strip-right{margin-left:auto", self.css)
+
+    def test_strip_buttons_do_not_fatten_the_strip(self):
+        """.btn-icon's 34px minimum would grow a 34px-tall strip."""
+        self.assertIn(".strip-action{min-width:24px;min-height:24px", self.css)
+        # Coarse pointers must still reach 44px, via the later media query.
+        self.assertLess(
+            self.css.index(".strip-action{"), self.css.index("@media(pointer:coarse)")
+        )
+
     def test_api_exports_contract(self):
         self.assertIn("export class ApiError", self.api)
         self.assertIn("export async function apiFetch", self.api)

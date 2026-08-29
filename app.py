@@ -266,7 +266,10 @@ class CsrfMiddleware(BaseHTTPMiddleware):
     GET, OPTIONS, and HEAD are exempt.
     """
 
-    _MUTATING: ClassVar[set] = {"POST", "PATCH", "DELETE"}
+    # PUT was missing, so every PUT route was unguarded -- a cross-site request
+    # could reorder a user's conversations, and any future PUT would have
+    # inherited the same hole silently.
+    _MUTATING: ClassVar[set] = {"POST", "PUT", "PATCH", "DELETE"}
     _EXEMPT_PATHS: ClassVar[set] = {"/login"}
 
     async def dispatch(self, request: Request, handler):
@@ -2325,34 +2328,45 @@ async def handle_supervisor(request: Request):
         if not meta:
             continue
         # Epoch seconds from the file, ISO from the marks: compare like for like.
-        updated = datetime.datetime.fromtimestamp(
+        file_touched = datetime.datetime.fromtimestamp(
             meta.get("updated_at") or 0, datetime.UTC
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        seen = marks.get(("session", session_id))
+        # mtime is only trustworthy as a negative: an untouched file certainly
+        # has nothing new, so this skips the read. It must NOT decide "waiting"
+        # on its own -- a transcript is written by things that are not
+        # conversation. One cross-session message deposits dozens of
+        # queue-operation and attachment records into the receiving session,
+        # so with several agents talking to each other the mtime is never
+        # still and every one of them would show as waiting on the user.
+        if seen and file_touched <= seen:
+            continue
+        page = await transcripts.read_turns(session_id)
+        turns = page.get("turns") or []
+        if not turns:
+            continue
         entry = {
             "kind": "session",
             "id": session_id,
             "title": cli.get("name") or meta.get("title") or session_id,
             "preview": "",
-            "since": updated,
         }
-        seen = marks.get(("session", session_id))
-        if seen and updated <= seen:
-            continue
-        # Only now read the transcript: the mtime check above keeps this off
-        # every session on every poll.
-        page = await transcripts.read_turns(session_id)
-        turns = page.get("turns") or []
-        if not turns:
-            continue
         last_turn = turns[-1]
         if last_turn.get("role") != "assistant":
-            working.append({**entry, "status": "working"})
+            working.append({**entry, "since": file_touched, "status": "working"})
+            continue
+        # The real signal: when the agent last said something, not when its
+        # file was last written.
+        spoke_at = str(last_turn.get("timestamp") or "") or file_touched
+        if seen and spoke_at <= seen:
             continue
         text = next(
             (b.get("text", "") for b in last_turn.get("blocks", []) if b.get("kind") == "text"),
             "",
         )
-        waiting.append({**entry, "preview": _one_line(text), "status": "waiting"})
+        waiting.append(
+            {**entry, "since": spoke_at, "preview": _one_line(text), "status": "waiting"}
+        )
 
     waiting.sort(key=lambda e: e["since"])
     return JSONResponse(

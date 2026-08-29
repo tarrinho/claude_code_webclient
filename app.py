@@ -11,6 +11,9 @@ import json
 import logging
 import re
 import socket
+import time
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from html import escape as html_escape
@@ -1409,6 +1412,7 @@ async def handle_settings_patch(request: Request):
 
 _MACHINE_ALLOWED_FIELDS = {
     "name",
+    "provider",
     "host",
     "port",
     "api_key",
@@ -1417,10 +1421,33 @@ _MACHINE_ALLOWED_FIELDS = {
     "description",
 }
 # Fields that must be a string (or null) when present in a machine PATCH.
-_MACHINE_TEXT_FIELDS = ("name", "host", "api_key", "model", "base_url", "description")
+_MACHINE_TEXT_FIELDS = (
+    "name",
+    "provider",
+    "host",
+    "api_key",
+    "model",
+    "base_url",
+    "description",
+)
+
+# How a machine is reached. 'anthropic' is the official API -- what Claude Code
+# talks to out of the box; 'proxy' is a host running claude_proxy.py.
+_MACHINE_PROVIDERS = {"anthropic", "proxy"}
+_ANTHROPIC_PORT = 443
+# Required on every Anthropic API request; used for the probe and the model list.
+_ANTHROPIC_API_VERSION = "2023-06-01"
+# The model list comes from a user-configured endpoint, so cap what we read.
+_MODELS_BODY_MAX = 1_048_576
+# Opening Settings should not re-query the endpoint on every render.
+_MODELS_CACHE_TTL_S = 60.0
+_models_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 _MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
-# Tightened: removed '/' to prevent downstream misinterpretation.
-_MODEL_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
+# Square brackets are allowed for the documented "[1m]" context-window suffix
+# (e.g. "claude-opus-5[1m]"), which the CLI itself tells users to append. The
+# value is passed to the subprocess as a single argv entry, never through a
+# shell, so the brackets carry no meaning downstream.
+_MODEL_RE = re.compile(r"^[A-Za-z0-9_.:/\[\]-]+$")
 _HOST_PATTERN_LOCAL = _HOST_PATTERN
 
 # Allowed URL schemes for base_url validation.
@@ -1495,6 +1522,9 @@ def _validate_projects_root(value: str) -> str:
 async def handle_machines_list(request: Request):
     """GET /api/machines -- list AI machines for the current user."""
     session = request.state.session
+    # Claude Code's native backend should always be on offer, so materialise it
+    # for accounts created before the provider column existed.
+    await db.ai_machine_seed_anthropic(session["user"])
     machines = await db.ai_machines_list(session["user"])
     # Don't leak API keys in the listing
     return JSONResponse(
@@ -1513,7 +1543,9 @@ async def handle_machine_get(request: Request, machine_id: str):
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
     m = {k: v for k, v in machine.items() if k != "api_key"}
-    m["has_api_key"] = bool(machine.get("api_key"))
+    # ai_machine_get does not select api_key, so this reads the flag the query
+    # derives instead; deriving it from the absent column was always false.
+    m["has_api_key"] = bool(machine.get("has_api_key"))
     return JSONResponse({"machine": m})
 
 
@@ -1522,7 +1554,17 @@ async def handle_machine_create(request: Request):
     session = request.state.session
     data = await request.json()
     name = (data.get("name") or "").strip()[:100]
+    provider = (data.get("provider") or "proxy").strip()
+    if provider not in _MACHINE_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    base_url = (data.get("base_url") or "").strip() or None
     host = (data.get("host") or "").strip()
+    if provider == "anthropic":
+        # The endpoint is the transport, so derive host/port from it rather
+        # than asking for them twice and letting the two disagree.
+        base_url = base_url or config.ANTHROPIC_BASE_URL
+        host = host or _base_url_host(base_url)
+        data.setdefault("port", _ANTHROPIC_PORT)
     try:
         port = int(data.get("port", 9000))
     except (TypeError, ValueError):
@@ -1539,12 +1581,14 @@ async def handle_machine_create(request: Request):
         )
     # SSRF: block internal IPs on creation.
     _validate_host(host)
-    model = (data.get("model") or config.MODEL_NAME).strip()
+    default_model = (
+        config.ANTHROPIC_MODEL if provider == "anthropic" else config.MODEL_NAME
+    )
+    model = (data.get("model") or default_model).strip()
     if not _MODEL_RE.fullmatch(model):
         raise HTTPException(
             status_code=400, detail="Model name contains invalid characters"
         )
-    base_url = (data.get("base_url") or "").strip() or None
     if base_url:
         base_url = _validate_base_url(base_url)
     api_key = (data.get("api_key") or "").strip() or None
@@ -1560,13 +1604,20 @@ async def handle_machine_create(request: Request):
         base_url,
         description,
         session["user"],
+        provider=provider,
     )
-    _log.info("ai_machine created by user=%s name=%s", session["user"], name)
+    _log.info(
+        "ai_machine created by user=%s name=%s provider=%s",
+        session["user"],
+        name,
+        provider,
+    )
     return JSONResponse(
         {
             "ok": True,
             "id": machine_id,
             "name": name,
+            "provider": provider,
         }
     )
 
@@ -1591,6 +1642,12 @@ async def handle_machine_patch(request: Request, machine_id: str):
         if p < 1 or p > 65535:
             raise HTTPException(status_code=400, detail="Port must be 1-65535")
         data["port"] = p
+    # Validate provider
+    if "provider" in data and data["provider"] is not None:
+        prov = data["provider"].strip()
+        if prov not in _MACHINE_PROVIDERS:
+            raise HTTPException(status_code=400, detail="Unknown provider")
+        data["provider"] = prov
     # Validate host
     if "host" in data and data["host"] is not None:
         host = data["host"].strip()
@@ -1657,12 +1714,79 @@ async def handle_machine_delete(request: Request, machine_id: str):
     return JSONResponse({"ok": True})
 
 
+def _probe_anthropic(url: str, api_key: str | None) -> tuple[int, bytes]:
+    """GET *url* and return (status, body). Runs in a worker thread.
+
+    The body is capped: it comes from a user-configured endpoint, so an
+    unbounded read would let a hostile or broken one exhaust memory.
+    """
+    headers = {"anthropic-version": _ANTHROPIC_API_VERSION}
+    if api_key:
+        headers["x-api-key"] = api_key
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:  # nosec B310: scheme checked
+            return resp.status, resp.read(_MODELS_BODY_MAX)
+    except urllib.error.HTTPError as exc:
+        return exc.code, b""
+
+
+async def _test_anthropic_endpoint(machine: dict, api_key: str | None):
+    """Probe the API itself, rather than only opening a TCP socket.
+
+    A bare connect reports "reachable" for an endpoint that rejects every turn
+    -- wrong key, wrong URL -- which reads as "this machine works". Asking
+    /v1/models separates reachable, unauthenticated and broken.
+    """
+    base_url = runner.normalise_base_url(machine.get("base_url")) or (
+        config.ANTHROPIC_BASE_URL
+    )
+    host = _base_url_host(base_url)
+    # Same SSRF blocklist the transport path applies before connecting out.
+    _resolve_host(host)
+    url = f"{base_url}/v1/models"
+    try:
+        status, _body = await asyncio.wait_for(
+            asyncio.to_thread(_probe_anthropic, url, api_key), timeout=10.0
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        _log.warning("anthropic probe timeout %s", host)
+        return JSONResponse(
+            {"ok": False, "status": "unreachable", "error": "Connection timed out"},
+            status_code=502,
+        )
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        _log.warning("anthropic probe failed %s: %s", host, exc)
+        return JSONResponse(
+            {"ok": False, "status": "unreachable", "error": "Connection failed"},
+            status_code=502,
+        )
+    if status == 200:
+        return JSONResponse({"ok": True, "status": "reachable"})
+    if status in (401, 403):
+        detail = (
+            "Endpoint rejected the API key"
+            if api_key
+            else "Endpoint requires an API key"
+        )
+        return JSONResponse(
+            {"ok": False, "status": "auth_failed", "error": detail}, status_code=502
+        )
+    return JSONResponse(
+        {"ok": False, "status": "error", "error": f"Endpoint returned HTTP {status}"},
+        status_code=502,
+    )
+
+
 async def handle_machine_test(request: Request, machine_id: str):
     """POST /api/machines/{id}/test -- test connection to AI machine."""
     session = request.state.session
     machine = await db.ai_machine_get(machine_id, session["user"])
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
+    if machine.get("provider") == "anthropic":
+        api_key = await db.ai_machine_api_key(machine_id, session["user"])
+        return await _test_anthropic_endpoint(machine, api_key)
     host = machine["host"]
     port = machine["port"]
     try:
@@ -1692,6 +1816,131 @@ async def handle_machine_test(request: Request, machine_id: str):
             {"ok": False, "status": "unreachable", "error": "Connection failed"},
             status_code=502,
         )
+
+
+def _parse_model_list(body: bytes) -> list[dict[str, str]]:
+    """Pull model ids out of a /v1/models response.
+
+    Anthropic returns {"data": [{"id", "display_name", ...}]} and an
+    OpenAI-compatible gateway returns {"data": [{"id", ...}]}, so the same
+    shape covers both. Entries without an id are skipped rather than rendered
+    as blanks.
+    """
+    payload = json.loads(body.decode("utf-8", errors="replace"))
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise TypeError("response has no model list")
+    models: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        model_id = model_id.strip()[:200]
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        display = entry.get("display_name")
+        models.append(
+            {
+                "id": model_id,
+                "display_name": (
+                    display.strip()[:200]
+                    if isinstance(display, str) and display.strip()
+                    else model_id
+                ),
+            }
+        )
+    models.sort(key=lambda m: m["id"])
+    return models
+
+
+def _builtin_models(reason: str, endpoint: str | None = None) -> JSONResponse:
+    """Fall back to the ids shipped with the app, saying why.
+
+    The page previously showed a hardcoded list with no indication that it was
+    a guess, so a model the service does not serve looked identical to one it
+    does. The reason is surfaced instead of hidden.
+    """
+    return JSONResponse(
+        {
+            "models": [{"id": m, "display_name": m} for m in config.KNOWN_MODELS],
+            "source": "builtin",
+            "endpoint": endpoint,
+            "reason": reason,
+        }
+    )
+
+
+async def handle_models_list(request: Request):
+    """GET /api/models -- models the active machine actually serves."""
+    session = request.state.session
+    machine = await db.ai_machine_active(session["user"])
+    if not machine:
+        return _builtin_models("No machine is active.")
+    if machine.get("provider") != "anthropic":
+        return _builtin_models(
+            "The active machine is a Claude Code proxy, which does not "
+            "publish a model list."
+        )
+    base_url = runner.normalise_base_url(machine.get("base_url")) or (
+        config.ANTHROPIC_BASE_URL
+    )
+    now = time.monotonic()
+    cached = _models_cache.get(base_url)
+    if cached and now - cached[0] < _MODELS_CACHE_TTL_S:
+        return JSONResponse(
+            {
+                "models": cached[1],
+                "source": "endpoint",
+                "endpoint": base_url,
+                "reason": None,
+            }
+        )
+    host = _base_url_host(base_url)
+    # Same SSRF blocklist the transport path applies before connecting out.
+    _resolve_host(host)
+    api_key = await db.ai_machine_api_key(machine["id"], session["user"])
+    # limit is Anthropic's page size; an OpenAI-compatible gateway ignores it
+    # and returns everything anyway.
+    url = f"{base_url}/v1/models?limit=1000"
+    try:
+        status, body = await asyncio.wait_for(
+            asyncio.to_thread(_probe_anthropic, url, api_key), timeout=10.0
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        _log.warning("model list timeout %s", host)
+        return _builtin_models("The endpoint timed out.", base_url)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        _log.warning("model list failed %s: %s", host, exc)
+        return _builtin_models("Could not reach the endpoint.", base_url)
+    if status in (401, 403):
+        return _builtin_models(
+            "The endpoint rejected the API key."
+            if api_key
+            else "The endpoint requires an API key.",
+            base_url,
+        )
+    if status != 200:
+        return _builtin_models(f"The endpoint returned HTTP {status}.", base_url)
+    try:
+        models = _parse_model_list(body)
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        _log.warning("model list unparseable from %s", host)
+        return _builtin_models("The endpoint returned an unreadable list.", base_url)
+    if not models:
+        return _builtin_models("The endpoint listed no models.", base_url)
+    _models_cache[base_url] = (now, models)
+    return JSONResponse(
+        {
+            "models": models,
+            "source": "endpoint",
+            "endpoint": base_url,
+            "reason": None,
+        }
+    )
 
 
 async def handle_sessions_list(request: Request):
@@ -1746,6 +1995,46 @@ def _sanitize_session_id(session_id: str) -> str:
     return session_id
 
 
+def _adopt_session_cwd(source_cwd: str | None, session_id: str) -> str:
+    """Pick the work_dir for a chat adopting a CLI session.
+
+    work_dir is the directory Claude actually runs in, so a resumed
+    conversation that gets a freshly minted ``cli-import-<id>`` folder keeps
+    its whole history but lands somewhere empty, unable to read the files it
+    was just discussing. Adopting the terminal's own cwd fixes that.
+
+    The transcript is not the reason: a session stays anchored to wherever it
+    was created and keeps appending there no matter which directory it is
+    resumed from, so nothing forks either way.
+
+    The cwd still has to sit inside PROJECTS_ROOT -- runner.py rejects
+    anything outside it before spawning a turn, and this must not be the hole
+    in that boundary. Anything missing or outside falls back to the old
+    scratch directory, which is worse but always valid.
+    """
+    root = Path(config.PROJECTS_ROOT).resolve()
+    candidate: Path | None = None
+    if source_cwd and source_cwd.strip():
+        try:
+            candidate = Path(source_cwd.strip()).resolve()
+        except (OSError, RuntimeError):
+            candidate = None
+
+    if candidate and candidate.is_dir() and candidate.is_relative_to(root):
+        return str(candidate)
+
+    if candidate:
+        _log.info(
+            "cli_session_cwd_not_adopted: cwd=%s (missing, or outside "
+            "PROJECTS_ROOT=%s) — falling back to a scratch workspace",
+            candidate, root,
+        )
+    date_suffix = datetime.datetime.now(datetime.UTC).date().isoformat()
+    fallback = root / f"cli-import-{session_id[:8]}-{date_suffix}"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return str(fallback)
+
+
 async def handle_sessions_resume(request: Request, session_id: str):
     """POST /api/sessions/{session_id}/resume -- open a WebConsole chat for a CLI session."""
     session = request.state.session
@@ -1755,13 +2044,25 @@ async def handle_sessions_resume(request: Request, session_id: str):
         (item for item in available if item.get("sessionId") == session_id), None
     )
     if source is None:
-        _log.error(
-            "cli_session_not_found: user=%s session_id=%s "
-            "(CLI session may have been closed or never started) — "
-            "ensure claude-code is running and a session exists at %s",
-            session["user"], session_id, config.PROJECTS_ROOT,
-        )
-        raise HTTPException(status_code=404, detail="CLI session not found — check that claude-code is running")
+        # ~/.claude/sessions only lists sessions that are still running, so a
+        # finished conversation is absent from it while its transcript lives on.
+        # Fall back to the transcript, which records the cwd the session ran in,
+        # so any past conversation can be reopened -- not just a live terminal.
+        cwd = await transcripts.session_cwd(session_id)
+        if cwd:
+            source = {"sessionId": session_id, "cwd": cwd}
+        else:
+            _log.error(
+                "cli_session_not_found: user=%s session_id=%s "
+                "(no running session and no transcript on disk) — "
+                "ensure claude-code is running, or that the conversation "
+                "exists under the projects directory",
+                session["user"], session_id,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found — no running session and no transcript",
+            )
 
     existing = next(
         (
@@ -1782,13 +2083,15 @@ async def handle_sessions_resume(request: Request, session_id: str):
 
     # Create a new WebConsole chat linked to the CLI session
     chat_id = uuid.uuid4().hex
-    title = f"CLI: {session_id[:12]}..."
-    date_suffix = datetime.datetime.now(datetime.UTC).date().isoformat()
-    work_dir = str(
-        Path(config.PROJECTS_ROOT).resolve()
-        / f"cli-import-{session_id[:8]}-{date_suffix}"
-    )
-    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    # Prefer a name a human would recognise: the terminal's own session name,
+    # else the conversation's opening prompt. "CLI: 5bfd4035-b6d..." tells the
+    # reader nothing about which conversation it is.
+    title = (
+        (source.get("name") or "").strip()
+        or (await transcripts.session_title(session_id)).strip()
+        or f"CLI: {session_id[:12]}..."
+    )[:200]
+    work_dir = _adopt_session_cwd(source.get("cwd"), session_id)
     await db.chat_create(chat_id, title, None, work_dir, session["user"])
     # Link the CLI session ID
     await db.chat_set_session(chat_id, session_id)
@@ -1801,6 +2104,29 @@ async def handle_sessions_resume(request: Request, session_id: str):
         )
 
     return JSONResponse({"id": chat_id, "title": title, "session_id": session_id})
+
+
+async def handle_session_delete(request: Request, session_id: str):
+    """DELETE /api/sessions/{session_id} -- drop a dead CLI session entry.
+
+    Only removes the shadow record WebConsole itself wrote when the session
+    was resumed. db.delete_claude_session_file refuses anything else, so a
+    running session cannot be cleared out of the sidebar by accident.
+    """
+    session = request.state.session
+    session_id = _sanitize_session_id(session_id)
+    try:
+        removed = await asyncio.to_thread(db.delete_claude_session_file, session_id)
+    except ValueError as exc:
+        _log.warning(
+            "session_delete_refused: user=%s session_id=%s (%s)",
+            session["user"], session_id, exc,
+        )
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not removed:
+        raise HTTPException(status_code=404, detail="Session entry not found")
+    _log.info("session_entry_removed session_id=%s user=%s", session_id, session["user"])
+    return JSONResponse({"ok": True})
 
 
 # ── Session routes ─────────────────────────────────────────────────────────────────
@@ -1917,6 +2243,11 @@ async def _api_transcript_stream(request: Request, session_id: str):
     return await handle_transcript_stream(request, session_id)
 
 
+@app.get("/api/models")
+async def _api_models_list(request: Request):
+    return await handle_models_list(request)
+
+
 @app.get("/api/sessions")
 async def _api_sessions_list(request: Request):
     return await handle_sessions_list(request)
@@ -1925,6 +2256,11 @@ async def _api_sessions_list(request: Request):
 @app.post("/api/sessions/{session_id}/resume")
 async def _api_sessions_resume(request: Request, session_id: str):
     return await handle_sessions_resume(request, session_id)
+
+
+@app.delete("/api/sessions/{session_id}")
+async def _api_sessions_delete(request: Request, session_id: str):
+    return await handle_session_delete(request, session_id)
 
 
 # ── Machine routes ─────────────────────────────────────────────────────────────────

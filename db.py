@@ -27,6 +27,10 @@ _FTS_BUSY_TIMEOUT_MS: Final[int] = 5000
 # Every SQLite database file starts with this. Used to reject non-DB uploads.
 _SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
 
+# host/port are NOT NULL and describe the transport, so an Anthropic machine
+# stores the API endpoint there. It also makes the reachability test meaningful.
+_ANTHROPIC_HOST: Final[str] = "api.anthropic.com"
+
 
 async def init() -> None:
     """Create the database and tables. Idempotent."""
@@ -687,6 +691,11 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     cur = await db_conn.execute(
         "SELECT id, name, provider, host, port, model, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
+        # Derived in SQL so callers can report whether a key is configured
+        # without the value ever leaving this layer. Computing it from an
+        # api_key this query deliberately omits made it always false.
+        "CASE WHEN api_key IS NOT NULL AND TRIM(api_key) <> '' THEN 1 ELSE 0 END "
+        "AS has_api_key, "
         "created_at, updated_at "
         "FROM ai_machines WHERE id = ? AND owner_id = ?",
         (id, owner_id),
@@ -800,6 +809,13 @@ async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
     return cur.rowcount > 0
 
 
+async def chat_owner(chat_id: str) -> str | None:
+    """Return the owner of *chat_id*, so the runner can resolve its backend."""
+    cur = await db_conn.execute("SELECT owner_id FROM chats WHERE id = ?", (chat_id,))
+    row = await cur.fetchone()
+    return row["owner_id"] if row else None
+
+
 async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
     """Return the active machine *including* its API key, for the runner only.
 
@@ -813,6 +829,17 @@ async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
     )
     row = await cur.fetchone()
     return dict(row) if row else None
+
+
+async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
+    """Return one machine's API key. Kept separate from ai_machine_get so the
+    key is only ever fetched where it is deliberately needed."""
+    cur = await db_conn.execute(
+        "SELECT api_key FROM ai_machines WHERE id = ? AND owner_id = ?",
+        (machine_id, owner_id),
+    )
+    row = await cur.fetchone()
+    return row["api_key"] if row else None
 
 
 async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
@@ -1077,10 +1104,122 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
                 "updatedAt": updated_at,
                 "sessionId": session_id,
                 "model": model,
+                "entrypoint": data.get("entrypoint", ""),
+                "live": _pid_is_running(pid),
+                "file": fpath.name,
             }
         )
 
-    return sessions
+    return _dedupe_sessions(sessions)
+
+
+def _pid_is_running(pid: Any) -> bool:
+    """Return True if *pid* names a live process.
+
+    Signal 0 performs the permission and existence checks without delivering
+    anything, which is the cheapest liveness probe available.
+    """
+    import os as _os
+
+    try:
+        _os.kill(int(pid), 0)
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    return True
+
+
+def _dedupe_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse records that describe the same CLI session.
+
+    Resuming a CLI session writes a second file, ~/.claude/sessions/<id>.json
+    with entrypoint "webconsole", so the CLI can see the link. The real CLI
+    already has its own PID-named file for that same sessionId, so listing the
+    directory returned both and the sidebar showed every resumed session twice
+    -- once under its real name ("cweb2") and once as "CLI: b198eb69...".
+    Each resume added another, permanently.
+
+    The CLI record wins: it carries the name the user actually chose and the
+    live process. A "webconsole" record survives only when no CLI record
+    claims that sessionId, which is how a session whose process has exited
+    stays visible and removable.
+    """
+    best: dict[str, dict[str, Any]] = {}
+    unkeyed: list[dict[str, Any]] = []
+    for item in sessions:
+        key = item.get("sessionId")
+        if not key:
+            unkeyed.append(item)
+            continue
+        current = best.get(key)
+        if current is None or _session_rank(item) > _session_rank(current):
+            best[key] = item
+    return [*best.values(), *unkeyed]
+
+
+def _session_rank(item: dict[str, Any]) -> tuple[int, int]:
+    """Order candidates for the same sessionId; highest wins."""
+    return (
+        1 if item.get("entrypoint") == "cli" else 0,
+        1 if item.get("live") else 0,
+    )
+
+
+def _session_is_live(session_id: str) -> bool:
+    """True if any record for *session_id* has a running process behind it."""
+    try:
+        files = list(_CLAUDE_SESSIONS_DIR.glob("*.json"))
+    except (PermissionError, OSError):
+        return False
+    for path in files:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("sessionId") == session_id and _pid_is_running(data.get("pid")):
+            return True
+    return False
+
+
+def delete_claude_session_file(session_id: str) -> bool:
+    """Remove the WebConsole shadow record for *session_id*.
+
+    Only ever deletes a file this application wrote. The CLI's own PID-named
+    files belong to Claude Code and are left alone even when the process has
+    exited -- reaping those is not WebConsole's business, and a live session
+    must never lose its record because someone clicked a cross in a sidebar.
+
+    Returns True if a file was removed.
+    """
+    import os as _os
+
+    if ".." in session_id or "/" in session_id or "\\" in session_id:
+        raise ValueError("Invalid session_id (contains path separators or ..)")
+
+    path = _CLAUDE_SESSIONS_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    if data.get("entrypoint") != "webconsole":
+        raise ValueError("Refusing to delete a session file WebConsole did not write")
+
+    # Liveness has to be judged across every record for this sessionId, not
+    # from this file's own pid. A shadow record stores the pid of whichever
+    # WebConsole process wrote it, which is long dead by the time anyone looks
+    # -- so trusting it alone let a running CLI session be cleared from the
+    # sidebar, because the session's real liveness lives in the CLI's separate
+    # PID-named file.
+    if _session_is_live(session_id):
+        raise ValueError("Refusing to delete a session file whose process is running")
+
+    try:
+        _os.unlink(path)
+    except OSError:
+        return False
+    return True
 
 
 def _format_timestamp(ts: float | str | None) -> str:

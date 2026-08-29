@@ -54,15 +54,19 @@ class UsageRecordDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_required_field_is_named_when_missing(self):
         for args in (("", "admin", "m"), ("c1", "", "m"), ("c1", "admin", "")):
-            with self.subTest(args=args):
-                with self.assertLogs("wc.db", level="WARNING"):
-                    self.assertIsNone(await db.usage_record(*args, "anthropic"))
+            with (
+                self.subTest(args=args),
+                self.assertLogs("wc.db", level="WARNING"),
+            ):
+                self.assertIsNone(await db.usage_record(*args, "anthropic"))
 
     async def test_write_failure_is_logged_not_only_swallowed(self):
         """The write still must not break the turn -- but it must be visible."""
-        with patch.object(db.db_conn, "execute", AsyncMock(side_effect=RuntimeError("disk"))):
-            with self.assertLogs("wc.db", level="ERROR") as caught:
-                result = await db.usage_record("c1", "admin", "m", "anthropic")
+        with (
+            patch.object(db.db_conn, "execute", AsyncMock(side_effect=RuntimeError("disk"))),
+            self.assertLogs("wc.db", level="ERROR") as caught,
+        ):
+            result = await db.usage_record("c1", "admin", "m", "anthropic")
         self.assertIsNone(result)          # swallowed, as designed
         self.assertIn("usage_record_failed", "\n".join(caught.output))
 
@@ -89,10 +93,12 @@ class RecordTurnUsageDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_usable_frame_logs_what_it_recorded(self):
         frame = {"models": {"m": {"input_tokens": 1, "output_tokens": 2}}}
-        with patch.object(db, "ai_machine_active", AsyncMock(return_value=None)), \
-             patch.object(db, "usage_record", AsyncMock(return_value=1)):
-            with self.assertLogs("wc.app", level="INFO") as caught:
-                await app._record_turn_usage("c1", "admin", frame)
+        with (
+            patch.object(db, "ai_machine_active", AsyncMock(return_value=None)),
+            patch.object(db, "usage_record", AsyncMock(return_value=1)),
+            self.assertLogs("wc.app", level="INFO") as caught,
+        ):
+            await app._record_turn_usage("c1", "admin", frame)
         self.assertIn("usage_recorded", "\n".join(caught.output))
 
 

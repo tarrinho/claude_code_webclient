@@ -359,6 +359,12 @@ async def _execute_proxy(
     connect_timeout = config.PROXY_CONNECT_TIMEOUT_S
     turn_timeout = config.PROXY_TURN_TIMEOUT_S
 
+    # The direct path logs every launch; the proxy path logged only failures,
+    # so a turn that worked left no trace of having run and one that hung left
+    # nothing to say where it stopped. Proxy mode is the default, which made
+    # this the common case rather than the rare one.
+    _log.info("proxy turn chat={} work_dir={} model={}", chat_id, work_dir, model or "default")
+
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 

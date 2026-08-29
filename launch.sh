@@ -106,12 +106,17 @@ pkill -f "uvicorn app:app" 2>/dev/null || true
 sleep 0.5
 
 # ── Launch WebConsole with HTTPS ──────────────────────────────────────
+# Application records go to logs/webconsole.log through logging.conf's rotating
+# handler. Uvicorn's own access lines only ever reach stdout, so without this
+# they die with whatever shell started the server -- which is how a backgrounded
+# launch ended up with no request log at all.
+mkdir -p logs
 python3 -m uvicorn app:app \
     --host "${TAILNET_IP}" \
     --port 443 \
     --ssl-certfile "$CERT_FILE" \
     --ssl-keyfile "$KEY_FILE" \
-    --log-level info &
+    --log-level info >> logs/uvicorn.out.log 2>&1 &
 
 WC_PID=$!
 echo "  PID      : ${WC_PID}"

@@ -175,6 +175,108 @@ class FrontendStructureTests(unittest.TestCase):
             self.css.index(".strip-action{"), self.css.index("@media(pointer:coarse)")
         )
 
+    def test_dialog_checkboxes_are_not_stretched_to_full_width(self):
+        """.dialog input sets width:100% for text fields; it caught these too.
+
+        The checkbox filled its row with the glyph centred, pushing the radio
+        and the model name off the right edge — so the per-model list showed a
+        column of lone checkboxes, with no model names and no reachable
+        default.
+        """
+        self.assertIn('.dialog input[type="checkbox"]', self.css)
+        self.assertIn('.dialog input[type="radio"]', self.css)
+        rule = self.css.split('.dialog input[type="checkbox"]')[1].split("}")[0]
+        self.assertIn("width:auto", rule)
+
+    def test_model_row_explains_both_controls(self):
+        """The all-offered wording described only the tickbox.
+
+        That is the state every backend starts in, so the radio column went
+        unexplained exactly when a reader most needed it.
+        """
+        self.assertIn("this backend\u2019s default for new chats", self.app)
+        self.assertIn("offered.title", self.app)
+        self.assertIn("isDefault.title", self.app)
+
+    def test_backend_state_is_worded_not_only_a_border(self):
+        """Which backend is live was a 3px border — the panel's most important
+        fact encoded as its least visible element."""
+        self.assertIn("machine-state-live", self.app)
+        self.assertIn("'LIVE'", self.app)
+        self.assertIn("'STANDBY'", self.app)
+        self.assertIn(".machine-state-live{", self.css)
+
+    def test_model_columns_are_labelled(self):
+        """The checkbox and radio sat unlabelled; nothing said which was which."""
+        self.assertIn("models-head", self.app)
+        for label in ("'Offered'", "'Default'", "'Model'"):
+            self.assertIn(label, self.app)
+        self.assertIn(".models-head", self.css)
+
+    def test_rail_terminates_on_the_default_row(self):
+        """The signature of this layout: LIVE chip to default model, one path.
+
+        The node hangs at a negative offset from its row, so the scroll
+        container must be .models-body — clipping on .models-grid would cut it
+        off exactly when a backend serves enough models to scroll.
+        """
+        self.assertIn("model-item-default", self.app)
+        self.assertIn(".machine-active .models-rail::before", self.css)
+        self.assertIn(".machine-active .model-item-default::after", self.css)
+        # Anchored to a line start: ".machine-models .models-body{" also
+        # contains ".models-body{" and would match the wrong rule.
+        body = self.css.split("\n.models-body{")[1].split("}")[0]
+        self.assertIn("overflow-y:auto", body)
+        grid = self.css.split("\n.models-grid{")[1].split("}")[0]
+        self.assertNotIn("overflow", grid)
+
+    def test_backend_name_is_not_truncated_by_its_endpoint(self):
+        """The name shared a flex row with the endpoint and was cut to
+        "Current AI...". They are now stacked in one identity block."""
+        self.assertIn("machine-ident", self.app)
+        self.assertIn(".machine-ident{", self.css)
+
+    def test_model_family_prefix_is_dimmed(self):
+        """"azure_ai/" repeated down the column buries the part that differs."""
+        self.assertIn("model-item-family", self.app)
+        self.assertIn(".model-item-family{", self.css)
+
+    def test_messages_can_show_images(self):
+        """The renderer emitted only text nodes and code, so an image named in
+        a message was unreachable from the web UI by any route."""
+        self.assertIn("export function openImageViewer", self.conversation)
+        self.assertIn("image-chip", self.conversation)
+        self.assertIn("/file?path=", self.conversation)
+        self.assertIn(".image-viewer{", self.css)
+
+    def test_image_paths_resolve_against_the_open_chat(self):
+        """A path means nothing without knowing whose workspace it is in."""
+        self.assertIn("setImageContext", self.conversation)
+        self.assertIn("setImageContext(chat.id)", self.conversation)
+
+    def test_code_blocks_are_not_scanned_for_images(self):
+        """A path inside a fence is being shown as text, not offered to open."""
+        body = self.conversation.split("export function renderSafeText")[1]
+        fenced = body.split("} else if (part) {")[0]
+        self.assertIn("code.textContent", fenced)
+        self.assertNotIn("renderProse", fenced)
+
+    def test_viewer_can_be_dismissed(self):
+        """A CSS tooltip cannot be closed; this is a dialog, so it must be."""
+        self.assertIn("'Escape'", self.conversation)
+        self.assertIn("aria-modal", self.conversation)
+
+    def test_image_pattern_excludes_surrounding_punctuation(self):
+        """A path written in prose as `shot.png` must not carry the backtick.
+
+        The first version used \\S+, which matched the punctuation around a
+        path too, so every filename quoted in a message was requested with a
+        leading backtick attached and could never be found.
+        """
+        pattern = self.conversation.split("const IMAGE_REF =")[1].split(";")[0]
+        self.assertNotIn("\\S+", pattern)
+        self.assertIn("A-Za-z0-9._~-", pattern)
+
     def test_api_exports_contract(self):
         self.assertIn("export class ApiError", self.api)
         self.assertIn("export async function apiFetch", self.api)

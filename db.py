@@ -24,6 +24,9 @@ _messages_batch_lock: asyncio.Lock | None = None
 # How long index maintenance waits for the SQLite writer lock before giving up.
 _FTS_BUSY_TIMEOUT_MS: Final[int] = 5000
 
+# Every SQLite database file starts with this. Used to reject non-DB uploads.
+_SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
+
 
 async def init() -> None:
     """Create the database and tables. Idempotent."""
@@ -435,7 +438,7 @@ def _fts_connect() -> sqlite3.Connection:
     return sync
 
 
-def _fts_index_ids_sync(msg_ids: Sequence[int]) -> None:
+def _fts_index_ids_sync(msg_ids: Sequence[int | None]) -> None:
     """Index exactly *msg_ids*, replacing any existing entries for them.
 
     Cost is proportional to len(msg_ids), not to the size of the conversation.
@@ -467,7 +470,7 @@ def _fts_index_ids_sync(msg_ids: Sequence[int]) -> None:
                     (msg_id, text),
                 )
         sync.commit()
-    except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
+    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
         pass
     finally:
         if sync is not None:
@@ -477,7 +480,7 @@ def _fts_index_ids_sync(msg_ids: Sequence[int]) -> None:
                 pass
 
 
-def _fts_forget_ids_sync(msg_ids: Sequence[int]) -> None:
+def _fts_forget_ids_sync(msg_ids: Sequence[int | None]) -> None:
     """Drop *msg_ids* from the index.
 
     Callers must capture the ids **before** deleting the message rows: a purge
@@ -496,7 +499,7 @@ def _fts_forget_ids_sync(msg_ids: Sequence[int]) -> None:
             ids,
         )
         sync.commit()
-    except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
+    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
         pass
     finally:
         if sync is not None:
@@ -543,7 +546,7 @@ def _refresh_fts_sync(chat_id: str | None = None) -> None:
                     (msg_id, text),
                 )
         sync.commit()
-    except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
+    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
         pass
     finally:
         if sync is not None:
@@ -556,11 +559,11 @@ def _refresh_fts_sync(chat_id: str | None = None) -> None:
 # ── Async wrappers: keep the blocking sqlite3 work off the event loop ──────────
 
 
-async def _fts_index_ids(msg_ids: Sequence[int]) -> None:
+async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
     await asyncio.to_thread(_fts_index_ids_sync, list(msg_ids))
 
 
-async def _fts_forget_ids(msg_ids: Sequence[int]) -> None:
+async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
     await asyncio.to_thread(_fts_forget_ids_sync, list(msg_ids))
 
 
@@ -846,11 +849,48 @@ async def db_backup() -> bytes:
             pass
 
 
+def _validate_sqlite_file(path: Path) -> bool:
+    """Return True if *path* is a sound SQLite database with our schema.
+
+    Runs before the live file is touched, so a corrupt or unrelated upload is
+    rejected rather than swapped in.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+        if not row or row[0] != "ok":
+            return False
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        # A valid backup of *this* app, not just any SQLite file.
+        return {"chats", "messages", "users"}.issubset(names)
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+
+async def _reopen() -> None:
+    """Reconnect and apply additive migrations. Never leaves db_conn as None."""
+    await init()
+
+
 async def db_restore(data: bytes) -> bool:
     """Replace the current database with the provided gzip-compressed data.
 
-    The database is replaced atomically: write to a temp file, then rename.
-    The connection is re-opened after the swap.
+    The candidate is validated before the swap (gzip, SQLite magic, integrity
+    check, expected tables), the swap itself is an atomic rename, and the
+    reconnect goes through :func:`init` so schema migrations are applied -- a
+    restored older backup would otherwise be missing columns the app expects.
     """
     import gzip as _gzip
 
@@ -859,42 +899,40 @@ async def db_restore(data: bytes) -> bool:
     except Exception:  # noqa: BLE001 -- silently reject bad input
         return False
 
-    if not decompressed:
+    # Reject anything that is not a SQLite database outright.
+    if not decompressed.startswith(_SQLITE_MAGIC):
         return False
 
     db_path = Path(config.DB_PATH)
-    tmp_path = Path(config.DB_PATH).with_suffix(".restore.tmp")
+    tmp_path = db_path.with_suffix(".restore.tmp")
 
     try:
-        # Write compressed data to temp file, then replace.
         tmp_path.write_bytes(decompressed)
+        if not await asyncio.to_thread(_validate_sqlite_file, tmp_path):
+            tmp_path.unlink(missing_ok=True)
+            return False
 
         # Close existing connection before swapping files.
         await close()
 
+        # Drop the old write-ahead log and shared-memory sidecars. Left in
+        # place, SQLite can replay the previous database's WAL over the
+        # restored file and corrupt it.
+        for suffix in ("-wal", "-shm"):
+            Path(str(db_path) + suffix).unlink(missing_ok=True)
+
         # Atomic rename.
-        tmp_path.rename(db_path)
+        tmp_path.replace(db_path)
 
-        # Re-open the database.
-        global db_conn
-        db_conn = await aiosqlite.connect(str(db_path))
-        db_conn.row_factory = aiosqlite.Row
-        await db_conn.execute("PRAGMA journal_mode=WAL")
-        await db_conn.execute("PRAGMA foreign_keys=ON")
-
+        await _reopen()
         return True
     except Exception:  # noqa: BLE001 -- recover best-effort on failure
+        tmp_path.unlink(missing_ok=True)
+        # Leaving db_conn as None would 500 every later request until restart.
         try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-        # Re-open original DB if possible.
-        try:
-            db_conn = await aiosqlite.connect(str(db_path))
-            db_conn.row_factory = aiosqlite.Row
-            await db_conn.execute("PRAGMA journal_mode=WAL")
-            await db_conn.execute("PRAGMA foreign_keys=ON")
-        except Exception:  # noqa: BLE001 -- final fallback, connection may be broken
+            await _reopen()
+        except Exception:  # noqa: BLE001 -- final fallback, DB may be unusable
+            global db_conn
             db_conn = None
         return False
 

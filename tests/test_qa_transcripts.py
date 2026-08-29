@@ -930,5 +930,152 @@ class TranscriptRepairTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCas
         self.assertFalse(result["repaired"], "a record carrying a tool call must stay")
 
 
+# ── Usage from terminal sessions ─────────────────────────────────────────────
+
+
+def spent(model="claude-opus-5", inp=100, out=20, read=5, create=7, **extra):
+    record = {
+        "type": "assistant", "timestamp": "2026-08-28T09:00:00Z",
+        "message": {"role": "assistant", "model": model,
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": inp, "output_tokens": out,
+                              "cache_read_input_tokens": read,
+                              "cache_creation_input_tokens": create}},
+    }
+    record.update(extra)
+    return record
+
+
+class CliUsageExtractionTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+    """Turns run in a terminal never reach this app, so their spend is only
+    recoverable from the transcript afterwards."""
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    async def test_token_counts_are_read_from_an_assistant_record(self):
+        write_transcript(self.root, "u1", [spent()])
+        rows, offset = await transcripts.usage_since("u1")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["model"], "claude-opus-5")
+        self.assertEqual(rows[0]["input_tokens"], 100)
+        self.assertEqual(rows[0]["output_tokens"], 20)
+        self.assertEqual(rows[0]["cache_read_tokens"], 5)
+        self.assertEqual(rows[0]["cache_creation_tokens"], 7)
+        self.assertGreater(offset, 0)
+
+    async def test_the_cursor_stops_a_second_pass_counting_again(self):
+        """Without this every poll would inflate the totals."""
+        write_transcript(self.root, "u2", [spent(), spent()])
+        first, offset = await transcripts.usage_since("u2")
+        again, offset2 = await transcripts.usage_since("u2", offset)
+        self.assertEqual(len(first), 2)
+        self.assertEqual(again, [])
+        self.assertEqual(offset, offset2)
+
+    async def test_only_new_records_are_returned_after_the_cursor(self):
+        path = write_transcript(self.root, "u3", [spent(inp=10)])
+        _first, offset = await transcripts.usage_since("u3")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(spent(inp=999)) + "\n")
+        rows, _ = await transcripts.usage_since("u3", offset)
+        self.assertEqual([r["input_tokens"] for r in rows], [999])
+
+    async def test_a_synthetic_model_is_not_counted_as_spend(self):
+        """A synthetic reply is the CLI reporting an error, and bought nothing."""
+        write_transcript(self.root, "u4", [spent(model="<synthetic>")])
+        rows, _ = await transcripts.usage_since("u4")
+        self.assertEqual(rows, [])
+
+    async def test_a_record_with_no_tokens_is_skipped(self):
+        write_transcript(self.root, "u5", [spent(inp=0, out=0, read=0, create=0)])
+        rows, _ = await transcripts.usage_since("u5")
+        self.assertEqual(rows, [])
+
+    async def test_user_records_carry_no_usage(self):
+        write_transcript(self.root, "u6", [user("hello"), spent()])
+        rows, _ = await transcripts.usage_since("u6")
+        self.assertEqual(len(rows), 1)
+
+    async def test_cost_is_absent_rather_than_invented(self):
+        """A third-party gateway reports no trustworthy cost."""
+        write_transcript(self.root, "u7", [spent()])
+        rows, _ = await transcripts.usage_since("u7")
+        self.assertIsNone(rows[0]["cost_usd"])
+
+    async def test_a_partial_trailing_line_is_not_parsed(self):
+        path = write_transcript(self.root, "u8", [spent()])
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write('{"type": "assistant", "message": {"usa')  # mid-write
+        rows, offset = await transcripts.usage_since("u8")
+        self.assertEqual(len(rows), 1)
+        self.assertLess(offset, path.stat().st_size,
+                        "the cursor must stop before the incomplete line")
+
+    async def test_an_unknown_session_yields_nothing(self):
+        rows, offset = await transcripts.usage_since("missing", 0)
+        self.assertEqual((rows, offset), ([], 0))
+
+
+class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+        self.dbtmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.dbtmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", self.dbtmp.name)
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.root_patch.stop()
+        self.db_patch.stop()
+        self.dbtmp.cleanup()
+        self.tear_down_root()
+
+    async def test_imported_rows_reach_the_usage_totals(self):
+        write_transcript(self.root, "i1", [spent(inp=500, out=50)])
+        imported = await app._import_cli_usage("admin")
+        self.assertEqual(imported, 1)
+        totals = await db.usage_totals("admin", days=None)
+        row = next(t for t in totals if t["model"] == "claude-opus-5")
+        self.assertEqual(row["input_tokens"], 500)
+
+    async def test_importing_twice_does_not_double_the_totals(self):
+        write_transcript(self.root, "i2", [spent(inp=500)])
+        await app._import_cli_usage("admin")
+        again = await app._import_cli_usage("admin")
+        self.assertEqual(again, 0, "a second import must add nothing")
+        totals = await db.usage_totals("admin", days=None)
+        row = next(t for t in totals if t["model"] == "claude-opus-5")
+        self.assertEqual(row["input_tokens"], 500, "totals must not climb on a re-run")
+
+    async def test_the_turns_keep_the_time_they_happened(self):
+        """Stamping imported history 'now' would break every windowed query."""
+        write_transcript(self.root, "i3", [spent()])
+        await app._import_cli_usage("admin")
+        cur = await db.db_conn.execute(
+            "SELECT created_at FROM usage_events WHERE provider='cli'")
+        self.assertEqual((await cur.fetchone())["created_at"], "2026-08-28T09:00:00Z")
+
+    async def test_rows_are_marked_as_coming_from_the_cli(self):
+        write_transcript(self.root, "i4", [spent()])
+        await app._import_cli_usage("admin")
+        cur = await db.db_conn.execute(
+            "SELECT provider, chat_id, session_id FROM usage_events")
+        row = await cur.fetchone()
+        self.assertEqual(row["provider"], "cli")
+        # The session goes in its own column. usage_recent LEFT JOINs chat_id
+        # against chats, so a session id there would join nothing and render a
+        # blank title beside real numbers.
+        self.assertEqual(row["session_id"], "i4")
+        self.assertEqual(row["chat_id"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

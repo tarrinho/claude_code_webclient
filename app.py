@@ -24,6 +24,7 @@ from typing import ClassVar, Final
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
@@ -36,6 +37,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import auth
 import config
 import db
+import prompts
 import runner
 import transcripts
 
@@ -666,6 +668,68 @@ def render_chat_markdown(chat: dict, messages: list[dict]) -> str:
 _render_chat_markdown = render_chat_markdown
 
 
+# Images a turn produced are worth seeing, and the message renderer is
+# text-only, so they were unreachable from the web UI entirely. Serving them
+# needs care: this is the first endpoint that reads a user-named file, in an
+# application whose runner already launches Claude with
+# --dangerously-skip-permissions. The boundary is therefore the narrowest one
+# that still works -- a chat may read files inside its own work_dir and
+# nowhere else, checked the same way runner.py checks a launch directory.
+_IMAGE_TYPES: Final[dict[str, str]] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
+# Large enough for a screenshot, small enough that a stray path cannot stream
+# a database file out through an <img> tag.
+_IMAGE_MAX_BYTES: Final[int] = 12 * 1024 * 1024
+
+
+async def handle_chat_file(request: Request, chat_id: str):
+    """GET /api/chats/{id}/file?path=... -- read an image from the workspace."""
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    raw = (request.query_params.get("path") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="A path is required")
+
+    root = Path(chat["work_dir"]).resolve()
+    try:
+        candidate = (root / raw).resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    # resolve() collapses "..", so this rejects traversal and symlinks that
+    # point outside the workspace, which a bare prefix check would not.
+    if not candidate.is_relative_to(root):
+        _log.warning(
+            "chat_file_outside_workspace: user=%s chat_id=%s path=%r",
+            session["user"], chat_id, raw,
+        )
+        raise HTTPException(status_code=403, detail="Path is outside the workspace")
+
+    media_type = _IMAGE_TYPES.get(candidate.suffix.lower())
+    if media_type is None:
+        raise HTTPException(status_code=415, detail="Not an image this app serves")
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if candidate.stat().st_size > _IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Image is too large to display")
+
+    _log.info("chat_file_served chat_id=%s path=%s", chat_id, candidate.name)
+    return FileResponse(
+        candidate,
+        media_type=media_type,
+        # inline so the browser renders it; nosniff is applied globally.
+        headers={"Content-Disposition": f'inline; filename="{candidate.name}"'},
+    )
+
+
 async def handle_chat_export(request: Request, chat_id: str):
     """GET /api/chats/{id}/export -- download chat as Markdown."""
     session = request.state.session
@@ -1090,6 +1154,9 @@ async def lifespan(app: FastAPI):
     # Load DB settings into env so config.py can see them at runtime.
     await _load_settings_from_db()
     config.validate()
+    restored = auth.load_sessions()
+    if restored:
+        _log.info("restored %d session(s) across the restart", restored)
     admin = await auth.bootstrap_admin()
     if admin:
         _log.info("bootstrapped admin: %s", admin)
@@ -1188,6 +1255,21 @@ async def _api_chat_export(request: Request, chat_id: str):
 @app.post("/api/chats/{chat_id}/messages")
 async def _api_submit_message(request: Request, chat_id: str):
     return await handle_submit_message(request, chat_id)
+
+
+@app.get("/api/chats/{chat_id}/file")
+async def _api_chat_file(request: Request, chat_id: str):
+    return await handle_chat_file(request, chat_id)
+
+
+@app.get("/api/chats/{chat_id}/question")
+async def _api_chat_question_get(request: Request, chat_id: str):
+    return await handle_chat_question_get(request)
+
+
+@app.post("/api/chats/{chat_id}/question")
+async def _api_chat_question_answer(request: Request, chat_id: str):
+    return await handle_chat_question_answer(request)
 
 
 @app.post("/api/chats/{chat_id}/sync")
@@ -1517,6 +1599,47 @@ async def handle_db_restore(request: Request):
     return JSONResponse({"ok": True, "message": "Database restored successfully"})
 
 
+# Terminal sessions have no signed-in user, so their spend is attributed here.
+# A fixed owner rather than whoever happens to open the tab: the byte cursor is
+# per transcript, not per user, so attributing to the viewer would let the first
+# person to look claim every row and leave the second an empty report. Correct
+# only while this is a single-operator console -- the day a second account
+# exists, this line is the bug.
+CLI_USAGE_OWNER: Final[str] = "admin"
+
+
+async def _import_cli_usage(owner: str = CLI_USAGE_OWNER) -> int:
+    """Fold terminal-session spend into the usage table.
+
+    Turns run in a terminal never pass through this app, so without this the
+    Usage tab reports only what was typed into the website -- which on this
+    machine was 6 events against roughly nine thousand real ones.
+
+    Every assistant record in a transcript carries its model and token counts,
+    so the history is recoverable after the fact. A byte cursor per transcript
+    keeps a re-run from counting the same turns twice; the first import pays
+    for the whole archive, later ones read only what was appended.
+    """
+    imported = 0
+    try:
+        entries = await transcripts.list_recent(limit=60)
+    except OSError:
+        return 0
+    for entry in entries:
+        session_id = entry["session_id"]
+        try:
+            cursor = await db.usage_cursor_get(session_id)
+            rows, new_offset = await transcripts.usage_since(session_id, cursor)
+            if new_offset != cursor:
+                imported += await db.usage_import(owner, session_id, rows, new_offset)
+        except (OSError, ValueError) as exc:
+            # One unreadable transcript must not cost the whole report.
+            _log.warning("cli_usage_import_failed session_id=%s: %s", session_id, exc)
+    if imported:
+        _log.info("cli_usage_imported owner=%s rows=%d", owner, imported)
+    return imported
+
+
 async def handle_usage_get(request: Request):
     """GET /api/usage -- per-model token totals and a recent-turn log.
 
@@ -1529,6 +1652,7 @@ async def handle_usage_get(request: Request):
     self-hosted or third-party gateway; ``cost_note`` tells the client why the
     value is absent so the UI can explain the blank rather than just show one.
     """
+    await _import_cli_usage()
     session = request.state.session
     owner = session["user"]
 
@@ -2766,7 +2890,12 @@ async def handle_sessions_resume(request: Request, session_id: str):
     )
 
 
-_QUESTION_PENDING_NOTE = "(waiting for an answer in the terminal)"
+# A location hint, not a state claim. The message body is fixed at import time
+# and cannot be revised when the answer arrives in a later sync, so "waiting for
+# an answer" would keep asserting that forever -- including next to the
+# "Declined in the terminal" message that immediately follows it. Where to
+# answer stays true either way; the outcome is reported by its own message.
+_QUESTION_PENDING_NOTE = "(answer this in the terminal)"
 
 
 def _question_to_text(block: dict) -> str:
@@ -2897,6 +3026,97 @@ async def _skip_transcript_to_end(chat_id: str, session_id: str) -> None:
         return
     if payload.get("found"):
         await db.chat_set_transcript_offset(chat_id, int(payload.get("offset") or 0))
+
+
+async def handle_chat_question_get(request: Request):
+    """GET /api/chats/{id}/question -- the prompt this chat's session is waiting on.
+
+    Options are read off the live terminal, not from the tool call, because the
+    prompt offers more than the call declared: Claude appends its own choices,
+    such as free text and "Chat about this". Showing only the declared two would
+    hide answers that are genuinely available.
+    """
+    session = request.state.session
+    chat_id = request.path_params["chat_id"]
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    session_id = chat.get("session_id")
+    if not session_id:
+        return JSONResponse({"pending": False, "reason": "not linked to a session"})
+
+    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    if not pending:
+        return JSONResponse({"pending": False})
+
+    target = await asyncio.to_thread(
+        prompts.find_target, session_id, pending.get("needle") or ""
+    )
+    if not target:
+        # The question is real but unreachable: nothing hosts the session in a
+        # way that accepts input. Say so rather than offering dead controls.
+        return JSONResponse({
+            "pending": True,
+            "answerable": False,
+            "reason": "This session is not running inside screen or tmux, "
+                      "so it can only be answered at its own terminal.",
+            **{k: v for k, v in pending.items() if k != "needle"},
+        })
+    snapshot = target.get("snapshot") or ""
+    return JSONResponse({
+        "pending": True,
+        "answerable": True,
+        "selected": prompts.selected_index(snapshot),
+        "options": prompts.visible_options(snapshot),
+        **{k: v for k, v in pending.items() if k != "needle"},
+    })
+
+
+async def handle_chat_question_answer(request: Request):
+    """POST /api/chats/{id}/question -- choose one of the prompt's options."""
+    session = request.state.session
+    chat_id = request.path_params["chat_id"]
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    session_id = chat.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Chat is not linked to a session")
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    try:
+        want = int(data.get("index"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="index must be a number") from None
+    if not 1 <= want <= 9:
+        raise HTTPException(status_code=400, detail="index out of range")
+
+    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    if not pending:
+        raise HTTPException(status_code=409, detail="No question is waiting")
+    target = await asyncio.to_thread(
+        prompts.find_target, session_id, pending.get("needle") or ""
+    )
+    if not target:
+        raise HTTPException(
+            status_code=409,
+            detail="This session cannot be answered from here — it is not "
+                   "running inside screen or tmux",
+        )
+    result = await asyncio.to_thread(prompts.answer, target, want)
+    if not result.get("ok"):
+        _log.warning(
+            "question_answer_failed chat_id=%s index=%s reason=%s",
+            chat_id, want, result.get("reason"),
+        )
+        raise HTTPException(status_code=409, detail=result.get("reason") or "Failed")
+    _log.info(
+        "question_answered chat_id=%s user=%s index=%s label=%s",
+        chat_id, session["user"], want, result.get("label"),
+    )
+    return JSONResponse({"ok": True, "index": want, "label": result.get("label")})
 
 
 async def handle_chat_sync(request: Request, chat_id: str):

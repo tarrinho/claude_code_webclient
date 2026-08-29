@@ -125,6 +125,27 @@ async def init() -> None:
             created_at TEXT NOT NULL DEFAULT ''
         );
 
+        -- Sessions outlive a restart. Keyed by a hash of the session id:
+        -- the id itself lives only in the user's cookie, so a copy of this
+        -- database -- including one taken through /api/admin/export -- cannot
+        -- be replayed as a login.
+        -- How far each terminal transcript has been read for usage
+        -- accounting. Without it an import would re-count every earlier turn
+        -- on every run, and the totals would climb on their own.
+        CREATE TABLE IF NOT EXISTS usage_cursors (
+            session_id TEXT PRIMARY KEY,
+            offset     INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            sid_key    TEXT PRIMARY KEY,
+            user       TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            expiry     REAL NOT NULL,
+            last       REAL NOT NULL,
+            csrf       TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS settings (
             key        TEXT PRIMARY KEY,
             value      TEXT NOT NULL,
@@ -140,6 +161,11 @@ async def init() -> None:
             kind     TEXT NOT NULL,   -- 'chat' | 'session'
             ref_id   TEXT NOT NULL,   -- chat id or Claude session id
             read_at  TEXT NOT NULL,
+            -- Set only by an explicit "clear". Opening an agent marks it read,
+            -- which retires routine updates but deliberately leaves an
+            -- unanswered question listed; dismissing is the considered act
+            -- that also silences those.
+            dismissed_at TEXT,
             PRIMARY KEY (owner_id, kind, ref_id)
         );
 
@@ -161,6 +187,8 @@ async def init() -> None:
             -- ('unknown' for third-party models). Explains a suppressed
             -- cost; never decides it.
             cost_basis            TEXT,
+            -- Set for turns that ran in a terminal; chat_id is empty for those.
+            session_id            TEXT,
             duration_ms           INTEGER,
             is_error              INTEGER NOT NULL DEFAULT 0,
             created_at            TEXT NOT NULL
@@ -216,12 +244,25 @@ async def _ensure_chat_columns() -> None:
         ue_columns = set()
     if ue_columns and "cost_basis" not in ue_columns:
         await db_conn.execute("ALTER TABLE usage_events ADD COLUMN cost_basis TEXT")
+    if ue_columns and "session_id" not in ue_columns:
+        # Terminal turns have no chat. usage_recent LEFT JOINs chat_id against
+        # chats, so borrowing that column for a session id joins nothing and
+        # renders a blank title beside real numbers.
+        await db_conn.execute("ALTER TABLE usage_events ADD COLUMN session_id TEXT")
 
     if ma_columns and "provider" not in ma_columns:
         # Existing rows are all claude_proxy hosts -- the default matches them.
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'proxy'"
         )
+    try:
+        rm_cursor = await db_conn.execute("PRAGMA table_info(read_marks)")
+        rm_columns = {row["name"] for row in await rm_cursor.fetchall()}
+    except Exception:  # noqa: BLE001 -- PRAGMA can fail on a new table
+        rm_columns = set()
+    if rm_columns and "dismissed_at" not in rm_columns:
+        await db_conn.execute("ALTER TABLE read_marks ADD COLUMN dismissed_at TEXT")
+
     if ma_columns and "active_models" not in ma_columns:
         # '[]' means "offer everything served", which is what existing rows did.
         await db_conn.execute(
@@ -349,7 +390,7 @@ async def chats_reorder(owner_id: str, chat_ids: list[str]) -> int:
             cur = await db_conn.execute(
                 "UPDATE chats SET position = ? "
                 "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-                (index, chat_id, owner_id),
+                    (index, chat_id, owner_id),
             )
             placed += cur.rowcount
         await db_conn.commit()
@@ -1032,24 +1073,44 @@ async def chat_set_machine(chat_id: str, owner_id: str, machine_id: str | None) 
     return cur.rowcount > 0
 
 
-async def read_marks_get(owner_id: str) -> dict[tuple[str, str], str]:
-    """Return {(kind, ref_id): read_at} for one owner."""
+async def read_marks_get(owner_id: str) -> dict[tuple[str, str], dict[str, str]]:
+    """Return {(kind, ref_id): {"read_at": ..., "dismissed_at": ...}}."""
     cur = await db_conn.execute(
-        "SELECT kind, ref_id, read_at FROM read_marks WHERE owner_id = ?",
+        "SELECT kind, ref_id, read_at, dismissed_at FROM read_marks "
+        "WHERE owner_id = ?",
         (owner_id,),
     )
-    return {(r["kind"], r["ref_id"]): r["read_at"] for r in await cur.fetchall()}
+    return {
+        (r["kind"], r["ref_id"]): {
+            "read_at": r["read_at"],
+            "dismissed_at": r["dismissed_at"] or "",
+        }
+        for r in await cur.fetchall()
+    }
 
 
 async def read_mark_set(
-    owner_id: str, kind: str, ref_id: str, read_at: str | None = None
+    owner_id: str,
+    kind: str,
+    ref_id: str,
+    read_at: str | None = None,
+    dismiss: bool = False,
 ) -> str:
-    """Record that *ref_id* has been looked at, and return the timestamp used."""
+    """Record that *ref_id* has been looked at, and return the timestamp used.
+
+    With *dismiss* the same timestamp is also written to dismissed_at, which
+    additionally silences an unanswered question. Reading alone never does.
+    """
     stamp = read_at or _now()
+    dismissed = stamp if dismiss else None
     await db_conn.execute(
-        "INSERT INTO read_marks (owner_id, kind, ref_id, read_at) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(owner_id, kind, ref_id) DO UPDATE SET read_at = excluded.read_at",
-        (owner_id, kind, ref_id, stamp),
+        "INSERT INTO read_marks (owner_id, kind, ref_id, read_at, dismissed_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(owner_id, kind, ref_id) DO UPDATE SET "
+        "  read_at = excluded.read_at, "
+        # Never unset an existing dismissal by merely reading it again.
+        "  dismissed_at = COALESCE(excluded.dismissed_at, read_marks.dismissed_at)",
+        (owner_id, kind, ref_id, stamp, dismissed),
     )
     await db_conn.commit()
     return stamp
@@ -1213,7 +1274,7 @@ async def usage_record(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id,
-                owner_id,
+                    owner_id,
                 model,
                 provider or "proxy",
                 int(input_tokens or 0),
@@ -1241,6 +1302,90 @@ async def usage_record(
             chat_id, model, provider, exc,
         )
         return None
+
+
+# Rows per transaction when importing terminal usage.
+USAGE_IMPORT_BATCH = 500
+
+
+async def usage_cursor_get(session_id: str) -> int:
+    """How far a transcript has been consumed for usage accounting."""
+    cur = await db_conn.execute(
+        "SELECT offset FROM usage_cursors WHERE session_id = ?", (session_id,)
+    )
+    row = await cur.fetchone()
+    return int(row["offset"]) if row else 0
+
+
+async def usage_import(
+    owner_id: str, session_id: str, rows: list[dict[str, Any]], offset: int
+) -> int:
+    """Record usage read out of a terminal transcript. Returns rows written.
+
+    Written with the cursor in one transaction: if the insert succeeded and the
+    cursor did not, the next run would count the same turns again, and a usage
+    total that drifts upward on its own is worse than one that is late.
+
+    ``created_at`` comes from the record rather than the clock -- these turns
+    already happened, and stamping them "now" would pile months of history into
+    today and break every windowed query over this table.
+    """
+    if not rows:
+        if offset:
+            await db_conn.execute(
+                "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
+                (session_id, int(offset)),
+            )
+            await db_conn.commit()
+        return 0
+    # Committed in batches: a first import can be tens of thousands of rows, and
+    # holding SQLite's writer lock for all of them starves every other writer --
+    # db.py opens with a 5s busy timeout, so a long hold surfaces as a failed
+    # request somewhere else entirely.
+    written = 0
+    for start in range(0, len(rows), USAGE_IMPORT_BATCH):
+        batch = rows[start : start + USAGE_IMPORT_BATCH]
+        last = start + USAGE_IMPORT_BATCH >= len(rows)
+        # Each batch advances the cursor to its own last row, so an interruption
+        # leaves the cursor exactly at what was committed: the next run resumes
+        # from there, counting nothing twice and skipping nothing. Only the
+        # final batch may move it past the last usage row, up to the end of the
+        # data actually read.
+        checkpoint = int(offset) if last else int(batch[-1].get("offset") or offset)
+        try:
+            await db_conn.execute("BEGIN")
+            for row in batch:
+                await db_conn.execute(
+                    "INSERT INTO usage_events "
+                    "(chat_id, session_id, owner_id, model, provider, input_tokens, "
+                    " output_tokens, cache_read_tokens, cache_creation_tokens, "
+                    " cost_usd, cost_basis, duration_ms, is_error, created_at) "
+                    "VALUES ('', ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?)",
+                    (
+                        session_id,
+                        owner_id,
+                        row["model"],
+                        int(row["input_tokens"]),
+                        int(row["output_tokens"]),
+                        int(row["cache_read_tokens"]),
+                        int(row["cache_creation_tokens"]),
+                        row.get("cost_usd"),
+                        "transcript" if row.get("cost_usd") is not None else "unknown",
+                        row.get("timestamp") or _now(),
+                    ),
+                )
+            await db_conn.execute(
+                "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
+                (session_id, checkpoint),
+            )
+            await db_conn.commit()
+            written += len(batch)
+        except Exception:
+            await db_conn.rollback()
+            raise
+    return written
 
 
 async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
@@ -1296,7 +1441,8 @@ async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     cur = await db_conn.execute(
         "SELECT u.created_at, u.chat_id, u.model, u.provider, u.input_tokens, "
         "u.output_tokens, u.cost_usd, u.cost_basis, u.duration_ms, u.is_error, "
-        "c.title AS chat_title "
+        # A terminal turn has no chat to join, so fall back to its session.
+        "COALESCE(c.title, 'Terminal ' || substr(u.session_id, 1, 8)) AS chat_title "
         "FROM usage_events u LEFT JOIN chats c ON c.id = u.chat_id "
         "WHERE u.owner_id = ? ORDER BY u.id DESC LIMIT ?",
         # `limit or 50` would read 0 as "use the default", disagreeing with the
@@ -1558,6 +1704,11 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
                 "sessionId": session_id,
                 "model": model,
                 "entrypoint": data.get("entrypoint", ""),
+                # Claude Code reports its own state here. Observed value is
+                # "busy"; older builds omit the field entirely, so absence
+                # means "unknown", not "idle".
+                "status": data.get("status") or "",
+                "status_updated_at": _format_timestamp(data.get("statusUpdatedAt")) or "",
                 "live": _pid_is_running(pid),
                 "file": fpath.name,
             }

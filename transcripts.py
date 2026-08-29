@@ -682,8 +682,14 @@ def _usage_since_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], in
 
     rows: list[dict[str, Any]] = []
     if _USAGE_MARKER in consumed:
-        for line in consumed.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
+        # Each row carries the byte offset just past its own line so the writer
+        # can checkpoint part-way through a large import: stopping between
+        # batches then leaves the cursor exactly at what was stored, which is
+        # what keeps a retry from counting the same turns twice.
+        cursor = offset
+        for raw_line in consumed.split(b"\n")[:-1]:
+            cursor += len(raw_line) + 1
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:
@@ -692,6 +698,7 @@ def _usage_since_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], in
                 continue
             row = _usage_from_record(record)
             if row:
+                row["offset"] = cursor
                 rows.append(row)
     return rows, offset + len(consumed)
 

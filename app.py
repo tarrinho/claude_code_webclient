@@ -906,7 +906,7 @@ async def handle_http_exception(request: Request, exc: HTTPException):
             getattr(getattr(request, "client", None), "host", "?") or "?",
             session.get("user", "anonymous") if isinstance(session, dict) else "anonymous",
         )
-    except Exception:  # noqa: BLE001 -- logging must never mask the real error
+    except Exception:  # noqa: BLE001,S110 -- logging must never mask the real error
         pass
     if "text/html" in (getattr(request, "headers", None) or {}).get("accept", ""):
         return HTMLResponse(
@@ -1833,13 +1833,23 @@ async def handle_transcripts_list(request: Request):
 async def handle_transcript_get(request: Request, session_id: str):
     """GET /api/transcripts/{id} -- one conversation's history.
 
-    ``offset`` resumes from a byte position; omit it for the most recent page.
+    Omit both parameters for the most recent page. ``before`` pages backwards
+    through a long session; ``offset`` resumes forwards from a byte position.
     """
-    try:
-        offset = max(0, int(request.query_params.get("offset", 0)))
-    except (TypeError, ValueError):
-        offset = 0
-    page = await transcripts.read_turns(session_id, offset)
+    raw_before = request.query_params.get("before")
+    if raw_before is not None:
+        try:
+            before = max(0, int(raw_before))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="before must be a number")
+        page = await transcripts.read_before(session_id, before)
+    else:
+        try:
+            offset = max(0, int(request.query_params.get("offset", 0)))
+        except (TypeError, ValueError):
+            offset = 0
+        page = await transcripts.read_turns(session_id, offset)
+
     if not page["found"]:
         raise HTTPException(status_code=404, detail="Transcript not found")
     return JSONResponse(page)

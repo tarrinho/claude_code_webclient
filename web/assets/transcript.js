@@ -44,6 +44,9 @@ const STYLES = `
 .tx-think { font-style: italic; opacity: .65; white-space: pre-wrap;
   overflow-wrap: anywhere; border-left: 2px dotted currentColor; padding-left: .5rem; }
 .tx-note { opacity: .7; font-size: .85rem; padding: .5rem 0; }
+.tx-earlier { margin-bottom: .75rem; }
+.tx-earlier[hidden] { display: none; }
+.tx-earlier .tx-item { text-align: center; }
 .tx-follow[data-on="true"] { outline: 2px solid var(--accent, #2b6cb0); }
 @media (prefers-reduced-motion: reduce) { .tx-panel { transition: none; } }
 `;
@@ -112,9 +115,47 @@ export function mountTranscriptViewer() {
   document.body.append(launch, panel);
 
   let stream = null;
-  let cursor = 0;
+  let cursor = 0;      // forward resume point, for the live tail
+  let earliest = 0;    // first byte currently loaded, for paging backwards
+  let atStart = true;
   let current = null;
   let lastFocus = null;
+
+  // "Load earlier" lives at the top of the scroll area. A long session is read
+  // from its tail, so without this most of the conversation is unreachable.
+  const earlierWrap = el('div', 'tx-earlier');
+  const earlierBtn = el('button', 'tx-item', 'Load earlier messages');
+  earlierBtn.type = 'button';
+  earlierWrap.appendChild(earlierBtn);
+
+  async function loadEarlier() {
+    if (!current || atStart) return;
+    earlierBtn.disabled = true;
+    earlierBtn.textContent = 'Loading…';
+    const anchorHeight = body.scrollHeight;
+    try {
+      const res = await fetch(
+        `/api/transcripts/${encodeURIComponent(current.session_id)}?before=${earliest}`,
+        { credentials: 'same-origin' });
+      if (!res.ok) throw new Error(String(res.status));
+      const page = await res.json();
+      earliest = page.start;
+      atStart = page.at_start;
+      // Prepend in order, directly after the button, then restore the scroll
+      // position so the view does not jump.
+      const frag = document.createDocumentFragment();
+      page.turns.forEach(turn => frag.appendChild(buildTurn(turn)));
+      earlierWrap.after(frag);
+      body.scrollTop += body.scrollHeight - anchorHeight;
+    } catch {
+      live.textContent = 'Could not load earlier messages.';
+    } finally {
+      earlierBtn.disabled = false;
+      earlierBtn.textContent = 'Load earlier messages';
+      earlierWrap.hidden = atStart;
+    }
+  }
+  earlierBtn.addEventListener('click', loadEarlier);
 
   function stopFollowing() {
     if (stream) {
@@ -126,7 +167,7 @@ export function mountTranscriptViewer() {
     if (live.textContent === POLL_LABEL) live.textContent = '';
   }
 
-  function renderTurn(turn) {
+  function buildTurn(turn) {
     const wrap = el('div', 'tx-turn');
     wrap.dataset.role = turn.role;
     const who = turn.role === 'assistant' ? 'assistant' : 'you';
@@ -144,7 +185,11 @@ export function mountTranscriptViewer() {
         wrap.appendChild(el('p', 'tx-text', block.text));
       }
     });
-    body.appendChild(wrap);
+    return wrap;
+  }
+
+  function renderTurn(turn) {
+    body.appendChild(buildTurn(turn));
   }
 
   async function openSession(entry) {
@@ -168,10 +213,10 @@ export function mountTranscriptViewer() {
     }
 
     cursor = page.offset || 0;
-    if (page.truncated) {
-      body.appendChild(el('div', 'tx-note',
-        `Showing the most recent ${page.turns.length} turns of a long session.`));
-    }
+    earliest = page.start || 0;
+    atStart = page.at_start;
+    earlierWrap.hidden = atStart;
+    body.appendChild(earlierWrap);
     page.turns.forEach(renderTurn);
     live.textContent = page.turns.length ? '' : 'No conversation recorded yet.';
     body.scrollTop = body.scrollHeight;

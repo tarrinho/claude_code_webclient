@@ -34,6 +34,66 @@ class FrontendStructureTests(unittest.TestCase):
             self.assertNotIn(element_id, self.html)
             self.assertNotIn(element_id, self.app)
 
+    def test_test_machine_receives_its_own_button(self):
+        """_testMachine takes the button as an argument, never re-finds it.
+
+        The old positional lookup counted siblings inside .machine-actions, but
+        an active machine has no Activate button — so :nth-child(2) resolved to
+        Test on inactive cards and Edit on active ones, and clicking Test
+        relabelled Edit.
+        """
+        self.assertIn("async function _testMachine(id, btn)", self.app)
+        self.assertIn("_testMachine(m.id, testBtn)", self.app)
+        self.assertNotIn(".machine-action:nth-child(", self.app)
+        self.assertNotIn(".machine-card:nth-child(", self.app)
+
+    def test_machine_test_toast_uses_fields_the_api_returns(self):
+        """POST /api/machines/{id}/test returns {ok,status,error} only.
+
+        Reading data.host/data.port off that response rendered the toast as
+        "Connected to undefined:undefined".
+        """
+        self.assertNotIn("data.host", self.app)
+        self.assertNotIn("data.port", self.app)
+
+    def test_settings_save_button_scoped_to_tabs_it_writes(self):
+        """The footer Save writes only Models and App fields.
+
+        Machines save through their own form and Skills is read-only, so the
+        button is hidden there rather than silently reporting "No changes".
+        """
+        self.assertIn('id="settingsSave">Save<', self.html)
+        self.assertNotIn("Save all", self.html)
+        self.assertIn("save.hidden = tab === 'machines' || tab === 'skills'", self.app)
+
+    def test_model_fields_can_be_cleared(self):
+        """Saving compares against the loaded value, not truthiness.
+
+        `if (defaultModel) body.default_model = ...` skipped empty strings, so
+        blanking a model field and saving reported "No changes to save" and the
+        old value stayed. The API accepts "" and clears the setting.
+        """
+        self.assertNotIn("if (defaultModel) body.default_model", self.app)
+        self.assertNotIn("if (fallbackModel) body.fallback_model", self.app)
+        self.assertIn("_loadedSettings.default_model", self.app)
+        self.assertIn("_loadedSettings.fallback_model", self.app)
+
+    def test_model_picker_includes_datalist_presets(self):
+        """The picker reads #modelSuggestions rather than default+fallback only.
+
+        With only two entries a turn could never be routed to a third model
+        without changing the global default first.
+        """
+        self.assertIn("#modelSuggestions option", self.app)
+        self.assertIn('id="modelSuggestions"', self.html)
+
+    def test_saving_settings_reloads_them(self):
+        """saveSettings re-reads the server so the picker is not left stale."""
+        save_body = self.app.split("async function saveSettings")[1].split(
+            "async function saveChatDialog"
+        )[0]
+        self.assertIn("await loadSettings()", save_body)
+
     def test_api_exports_contract(self):
         self.assertIn("export class ApiError", self.api)
         self.assertIn("export async function apiFetch", self.api)
@@ -70,7 +130,17 @@ class FrontendStructureTests(unittest.TestCase):
             "Unpin", "Rename", "Export", "Archive", "Delete", "Restore",
         ):
             self.assertIn(text, self.chat_list)
-        self.assertIn("disabled = Boolean(chat.archived)", self.chat_list)
+
+    def test_archived_rows_stay_openable(self):
+        """Archived conversations are marked, not disabled.
+
+        Disabling the row made restoring a conversation the only way to read
+        it -- mutating state just to look at something. The archived state is
+        still visible through the class and the meta line.
+        """
+        self.assertNotIn("disabled = Boolean(chat.archived)", self.chat_list)
+        self.assertIn("classList.add('archived')", self.chat_list)
+        self.assertIn("metaParts.push('archived')", self.chat_list)
 
     def test_management_actions_and_restoration_exist(self):
         self.assertIn("downloadMarkdown(chat)", self.app)

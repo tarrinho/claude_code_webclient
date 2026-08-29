@@ -139,13 +139,18 @@ def _turns_from_bytes(raw: bytes) -> list[dict[str, Any]]:
     return turns
 
 
-def _read_range_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], int, bool]:
-    """Read from *offset* to EOF. Returns (turns, new_offset, truncated).
+def _read_range_sync(
+    path: Path, offset: int
+) -> tuple[list[dict[str, Any]], int, int, bool]:
+    """Read from *offset* to EOF. Returns (turns, start, end, truncated).
 
     When *offset* is 0 and the file is large, this starts near the end instead
-    and reports ``truncated`` so the caller can say so. Reads stop on the last
-    complete line, and the returned offset points at it, so a partially written
-    final line is re-read next time rather than parsed in half.
+    and reports ``truncated``. *start* is the byte the returned window begins
+    at, which is what ``read_before`` needs to walk further back; *end* is the
+    resume point for following the file forwards.
+
+    Reads stop on the last complete line, so a partially written final line is
+    re-read next time rather than parsed in half.
     """
     truncated = False
     size = path.stat().st_size
@@ -154,7 +159,7 @@ def _read_range_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], int
         start = size - HISTORY_TAIL_BYTES
         truncated = True
     if start >= size:
-        return [], size, False
+        return [], size, size, False
 
     with path.open("rb") as handle:
         handle.seek(start)
@@ -163,15 +168,41 @@ def _read_range_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], int
     if truncated:
         # Drop the partial line the seek landed inside.
         newline = raw.find(b"\n")
-        raw = raw[newline + 1 :] if newline >= 0 else b""
-        start += (newline + 1) if newline >= 0 else len(raw)
+        skip = (newline + 1) if newline >= 0 else len(raw)
+        raw = raw[skip:]
+        start += skip
 
     # Keep only complete lines; leave a trailing partial for the next read.
     end = raw.rfind(b"\n")
     if end < 0:
-        return [], start, truncated
+        return [], start, start, truncated
     consumed = raw[: end + 1]
-    return _turns_from_bytes(consumed), start + len(consumed), truncated
+    return _turns_from_bytes(consumed), start, start + len(consumed), truncated
+
+
+def _read_before_sync(path: Path, before: int) -> tuple[list[dict[str, Any]], int]:
+    """Read the window of turns immediately preceding byte *before*.
+
+    Returns (turns, start). *before* is always a line boundary -- it is a
+    ``start`` this module returned earlier -- so only the first line of the
+    window can be partial, and that happens solely when the window does not
+    reach the beginning of the file.
+    """
+    if before <= 0:
+        return [], 0
+
+    start = max(0, before - HISTORY_TAIL_BYTES)
+    with path.open("rb") as handle:
+        handle.seek(start)
+        raw = handle.read(before - start)
+
+    if start > 0:
+        newline = raw.find(b"\n")
+        skip = (newline + 1) if newline >= 0 else len(raw)
+        raw = raw[skip:]
+        start += skip
+
+    return _turns_from_bytes(raw), start
 
 
 def transcript_path(session_id: str) -> Path | None:
@@ -181,31 +212,77 @@ def transcript_path(session_id: str) -> Path | None:
 
 
 async def read_turns(session_id: str, offset: int = 0) -> dict[str, Any]:
-    """Read a session's conversation from *offset*.
+    """Read a session's conversation from *offset* to the end.
 
-    Returns ``{"turns": [...], "offset": int, "truncated": bool, "found": bool}``.
-    ``offset`` is a byte position to pass back in to resume, which is what the
-    live tail does.
+    Returns ``{turns, start, offset, truncated, at_start, found}``. ``offset``
+    is the resume point for following forwards; ``start`` is the byte the
+    window begins at, which ``read_before`` takes to page further back.
     """
     path = transcript_path(session_id)
     if path is None:
-        return {"turns": [], "offset": 0, "truncated": False, "found": False}
+        return _empty(found=False)
 
     try:
-        turns, new_offset, truncated = await asyncio.to_thread(
+        turns, start, end, truncated = await asyncio.to_thread(
             _read_range_sync, path, offset
         )
     except OSError:
-        return {"turns": [], "offset": offset, "truncated": False, "found": False}
+        return _empty(found=False)
 
     if len(turns) > MAX_TURNS:
         turns = turns[-MAX_TURNS:]
         truncated = True
     return {
         "turns": turns,
-        "offset": new_offset,
+        "start": start,
+        "offset": end,
         "truncated": truncated,
+        "at_start": start <= 0,
         "found": True,
+    }
+
+
+async def read_before(session_id: str, before: int) -> dict[str, Any]:
+    """Read the window of turns preceding byte *before*, for paging backwards.
+
+    Without this a long session could only ever be read from its tail: the
+    forward offset walks towards the end of the file, never back towards the
+    beginning, so on a multi-megabyte transcript most of the conversation was
+    unreachable.
+    """
+    path = transcript_path(session_id)
+    if path is None:
+        return _empty(found=False)
+
+    try:
+        turns, start = await asyncio.to_thread(_read_before_sync, path, before)
+    except OSError:
+        return _empty(found=False)
+
+    truncated = False
+    if len(turns) > MAX_TURNS:
+        # Keep the *end* of the window so it stays contiguous with what the
+        # caller already has below it.
+        turns = turns[-MAX_TURNS:]
+        truncated = True
+    return {
+        "turns": turns,
+        "start": start,
+        "offset": max(before, start),
+        "truncated": truncated,
+        "at_start": start <= 0,
+        "found": True,
+    }
+
+
+def _empty(found: bool) -> dict[str, Any]:
+    return {
+        "turns": [],
+        "start": 0,
+        "offset": 0,
+        "truncated": False,
+        "at_start": True,
+        "found": found,
     }
 
 

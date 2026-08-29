@@ -12,14 +12,14 @@
 <nav class="sidebar-shell sidebar-mobile" id="sidebar" aria-label="Conversations" aria-hidden="true" inert>
   <div class="sidebar-header"><h2>Conversations</h2><button class="btn-icon" id="sidebarCloseBtn" aria-label="Close conversations">&times;</button></div>
   <button class="btn-new new-chat-btn">＋ New conversation</button>
-  <div class="sidebar-search"><label for="chatSearch" hidden>Search conversations</label><input id="chatSearch" type="search" placeholder="Search conversations"><button class="btn-icon search-toggle" id="searchModeBtn" type="button" aria-label="Toggle message search" title="Search messages">≡</button></div>
+  <div class="sidebar-search"><label for="chatSearch" hidden>Search conversations</label><input id="chatSearch" type="search" placeholder="Search conversations and messages"></div>
   <div class="chat-list" id="chatList"></div>
 </nav>
 <aside class="sidebar-desktop" aria-label="Conversations">
   <div class="sidebar-shell">
     <div class="sidebar-header"><h2>Conversations</h2></div>
     <button class="btn-new new-chat-btn">＋ New conversation</button>
-    <div class="sidebar-search"><label for="chatSearchDesktop" hidden>Search conversations</label><input id="chatSearchDesktop" type="search" placeholder="Search conversations"></div>
+    <div class="sidebar-search"><label for="chatSearchDesktop" hidden>Search conversations</label><input id="chatSearchDesktop" type="search" placeholder="Search conversations and messages"></div>
     <div class="chat-list" id="chatListDesktop"></div>
   </div>
 </aside>
@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.5.0</span>
+    <span class="ver" id="ver">0.5.1</span>
     <button class="btn-icon" id="editChatBtn" aria-label="Edit conversation" title="Edit conversation" hidden>✎</button>
     <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
@@ -151,12 +151,12 @@
       <div id="settingsStatus" aria-live="polite"></div>
       <div class="dialog-actions">
         <button type="button" class="btn-secondary" id="settingsCancel">Close</button>
-        <button type="button" class="btn-primary" id="settingsSave">Save all</button>
+        <button type="button" class="btn-primary" id="settingsSave">Save</button>
       </div>
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js?v=2"></script>
+<script type="module" src="/assets/app.js?v=4"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

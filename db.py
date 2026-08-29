@@ -64,6 +64,9 @@ async def init() -> None:
         CREATE TABLE IF NOT EXISTS ai_machines (
             id            TEXT PRIMARY KEY,
             name          TEXT NOT NULL,
+            -- 'anthropic' talks to the official API (what Claude Code uses by
+            -- default); 'proxy' reaches a host running claude_proxy.py.
+            provider      TEXT NOT NULL DEFAULT 'proxy',
             host          TEXT NOT NULL,
             port          INTEGER NOT NULL DEFAULT 9000,
             api_key       TEXT,
@@ -141,6 +144,11 @@ async def _ensure_chat_columns() -> None:
     if "owner_id" not in ma_columns:
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
+        )
+    if ma_columns and "provider" not in ma_columns:
+        # Existing rows are all claude_proxy hosts -- the default matches them.
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'proxy'"
         )
 
     await db_conn.commit()
@@ -656,7 +664,7 @@ async def setting_set(key: str, value: str) -> None:
 async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
     """Return the owner's active machine without exposing its API key."""
     cur = await db_conn.execute(
-        "SELECT id, name, host, port, model, base_url, description, active "
+        "SELECT id, name, provider, host, port, model, base_url, description, active "
         "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
         (owner_id,),
     )
@@ -666,7 +674,7 @@ async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
 
 async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db_conn.execute(
-        "SELECT id, name, host, port, model, base_url, description, "
+        "SELECT id, name, provider, host, port, model, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         "created_at, updated_at "
         "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
@@ -677,7 +685,7 @@ async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
 
 async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     cur = await db_conn.execute(
-        "SELECT id, name, host, port, model, base_url, description, "
+        "SELECT id, name, provider, host, port, model, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         "created_at, updated_at "
         "FROM ai_machines WHERE id = ? AND owner_id = ?",
@@ -697,15 +705,17 @@ async def ai_machine_create(
     base_url: str | None,
     description: str | None,
     owner_id: str,
+    provider: str = "proxy",
 ) -> str:
     now = _now()
     await db_conn.execute(
         "INSERT INTO ai_machines "
-        "(id, name, host, port, api_key, model, base_url, description, active, owner_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        "(id, name, provider, host, port, api_key, model, base_url, description, active, owner_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         (
             machine_id,
             name,
+            provider,
             host,
             port,
             api_key,
@@ -731,9 +741,11 @@ async def ai_machine_update(
     model: str | None = None,
     base_url: str | None = None,
     description: str | None = None,
+    provider: str | None = None,
 ) -> bool:
     pairs: list[tuple[str, Any]] = [
         ("name", name),
+        ("provider", provider),
         ("host", host),
         ("port", port),
         ("api_key", api_key),
@@ -786,6 +798,52 @@ async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
     )
     await db_conn.commit()
     return cur.rowcount > 0
+
+
+async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
+    """Return the active machine *including* its API key, for the runner only.
+
+    Every other reader goes through ``ai_machine_active``/``ai_machines_list``,
+    which omit ``api_key`` so it cannot reach an API response by accident.
+    """
+    cur = await db_conn.execute(
+        "SELECT id, name, provider, host, port, model, base_url, api_key "
+        "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
+        (owner_id,),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
+    """Ensure the owner has an Anthropic API machine, and return its id.
+
+    Claude Code's native backend is the official API, so every account gets an
+    entry for it. Seeded inactive and with no API key: an unset key makes the
+    CLI fall back to the host's own login, which is the normal setup.
+    """
+    cur = await db_conn.execute(
+        "SELECT id FROM ai_machines WHERE owner_id = ? AND provider = 'anthropic' "
+        "LIMIT 1",
+        (owner_id,),
+    )
+    row = await cur.fetchone()
+    if row:
+        return row["id"]
+    machine_id = uuid.uuid4().hex
+    await ai_machine_create(
+        machine_id,
+        "Anthropic API",
+        _ANTHROPIC_HOST,
+        443,
+        None,
+        config.ANTHROPIC_MODEL,
+        config.ANTHROPIC_BASE_URL,
+        "Official Anthropic API — Claude Code's default backend.",
+        owner_id,
+        provider="anthropic",
+    )
+    return machine_id
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────────────

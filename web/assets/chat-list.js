@@ -50,14 +50,33 @@ export function groupChats(chats) {
   };
 }
 
-function makeButton(label, action, chatId) {
+// The visible label is the bare verb; the conversation title goes to
+// aria-label. Both used to live in textContent, so the menu rendered as six
+// lines each restating the full title ("Pin <title>", "Rename <title>"…),
+// which is unreadable for anything but the shortest names.
+function makeButton(label, action, chatId, chatTitle, extraClass) {
   const button = document.createElement('button');
   button.type = 'button';
   button.dataset.action = action;
   button.dataset.chatId = chatId;
   button.textContent = label;
   button.setAttribute('role', 'menuitem');
+  button.setAttribute('aria-label', `${label} ${chatTitle}`);
+  if (extraClass) button.className = extraClass;
   return button;
+}
+
+// A collapsed section: keeps archived conversations and CLI sessions reachable
+// without letting them push the active list off screen.
+function makeDisclosure(label, count, open) {
+  const details = document.createElement('details');
+  details.className = 'chat-group';
+  details.open = open;
+  const summary = document.createElement('summary');
+  summary.className = 'chat-section-label';
+  summary.textContent = `${label} · ${count}`;
+  details.appendChild(summary);
+  return details;
 }
 
 export function createChatListController(dependencies) {
@@ -80,7 +99,7 @@ export function createChatListController(dependencies) {
   let lastChats = [];
   let lastCurrentId = null;
   let openTrigger = null;
-  let _searchMode = 'title';
+  let activeTurnId = null;
 
   function closeMenus(restoreFocus = false) {
     for (const menu of document.querySelectorAll('.chat-menu.open')) {
@@ -96,7 +115,7 @@ export function createChatListController(dependencies) {
     if (!results.length) return;
     const heading = document.createElement('div');
     heading.className = 'chat-section-label';
-    heading.textContent = `Search results · ${results.length}`;
+    heading.textContent = `In messages · ${results.length}`;
     list.appendChild(heading);
 
     results.forEach(chat => {
@@ -136,16 +155,24 @@ export function createChatListController(dependencies) {
     });
   }
 
-  function renderSection(list, label, chats, currentId) {
+  function renderSection(list, label, chats, currentId, collapsed = false) {
     if (!chats.length) return;
-    const heading = document.createElement('div');
-    heading.className = 'chat-section-label';
-    heading.textContent = `${label} · ${chats.length}`;
-    list.appendChild(heading);
+    let target = list;
+    if (collapsed) {
+      const details = makeDisclosure(label, chats.length, false);
+      list.appendChild(details);
+      target = details;
+    } else {
+      const heading = document.createElement('div');
+      heading.className = 'chat-section-label';
+      heading.textContent = `${label} · ${chats.length}`;
+      list.appendChild(heading);
+    }
 
     chats.forEach(chat => {
       const item = document.createElement('div');
       item.className = `chat-item${chat.id === currentId ? ' active' : ''}`;
+      if (chat.archived) item.classList.add('archived');
       item.dataset.chatId = chat.id;
 
       const open = document.createElement('button');
@@ -153,16 +180,26 @@ export function createChatListController(dependencies) {
       open.className = 'chat-open';
       open.dataset.action = 'open';
       open.dataset.chatId = chat.id;
-      open.disabled = Boolean(chat.archived);
+      // Archived rows stay clickable. Disabling them meant the only way to read
+      // an archived conversation was to restore it first -- mutating state just
+      // to look at something.
 
       const title = document.createElement('div');
       title.className = 'chat-title';
       title.textContent = chat.title;
       title.title = chat.title;
+      if (chat.id === activeTurnId) {
+        const dot = document.createElement('span');
+        dot.className = 'chat-running';
+        dot.setAttribute('aria-label', 'Response in progress');
+        dot.title = 'Response in progress';
+        title.prepend(dot);
+      }
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
-      let metaParts = [formatTime(chat.updated_at)];
+      const metaParts = [formatTime(chat.updated_at)];
       if (chat.model) metaParts.push(chat.model);
+      if (chat.archived) metaParts.push('archived');
       meta.textContent = metaParts.join(' · ');
       if (chat.model) meta.title = `Last model: ${chat.model}`;
       open.append(title, meta);
@@ -183,26 +220,35 @@ export function createChatListController(dependencies) {
       const menu = document.createElement('div');
       menu.className = 'chat-menu';
       menu.setAttribute('role', 'menu');
+      const separator = document.createElement('div');
+      separator.className = 'chat-menu-sep';
+      separator.setAttribute('role', 'separator');
       menu.append(
-        makeButton(`${chat.pinned ? 'Unpin' : 'Pin'} ${chat.title}`, 'pin', chat.id),
-        makeButton(`Rename ${chat.title}`, 'rename', chat.id),
-        makeButton(`Fork ${chat.title}`, 'fork', chat.id),
-        makeButton(`Export ${chat.title}`, 'export', chat.id),
-        makeButton(`${chat.archived ? 'Restore' : 'Archive'} ${chat.title}`, chat.archived ? 'restore' : 'archive', chat.id),
-        makeButton(`Delete ${chat.title}`, 'delete', chat.id),
+        makeButton(chat.pinned ? 'Unpin' : 'Pin', 'pin', chat.id, chat.title),
+        makeButton('Rename', 'rename', chat.id, chat.title),
+        makeButton('Fork', 'fork', chat.id, chat.title),
+        makeButton('Export', 'export', chat.id, chat.title),
+        makeButton(
+          chat.archived ? 'Restore' : 'Archive',
+          chat.archived ? 'restore' : 'archive',
+          chat.id,
+          chat.title,
+        ),
+        separator,
+        // Delete is irreversible, so it is set apart rather than sitting flush
+        // against Export as one more equal-weight choice.
+        makeButton('Delete', 'delete', chat.id, chat.title, 'danger'),
       );
       actions.append(trigger, menu);
       item.append(open, actions);
-      list.appendChild(item);
+      target.appendChild(item);
     });
   }
 
   function renderCli(list, sessions) {
     if (!sessions.length) return;
-    const heading = document.createElement('div');
-    heading.className = 'chat-section-label';
-    heading.textContent = `CLI Sessions · ${sessions.length}`;
-    list.appendChild(heading);
+    const details = makeDisclosure('CLI Sessions', sessions.length, false);
+    list.appendChild(details);
     sessions.forEach(session => {
       const item = document.createElement('div');
       item.className = 'chat-item';
@@ -227,7 +273,7 @@ export function createChatListController(dependencies) {
       button.textContent = '↗';
       button.setAttribute('aria-label', `Open ${session.name} in WebConsole`);
       item.append(title, button);
-      list.appendChild(item);
+      details.appendChild(item);
     });
   }
 
@@ -241,22 +287,25 @@ export function createChatListController(dependencies) {
       (session.cwd || '').toLowerCase().includes(query)
     ) : cliSessions;
 
+    // Message hits are appended below the title matches, never in place of
+    // them: replacing the list meant a message search hid every conversation
+    // whose title did not also match, including the one you were reading.
+    const titleIds = new Set(filtered.map(chat => chat.id));
+    const extraHits = messageResults.filter(chat => !titleIds.has(chat.id));
+
     lists.forEach(list => {
       list.replaceChildren();
+      renderSection(list, 'Pinned', groups.pinned, currentId);
+      renderSection(list, 'Recent', groups.recent, currentId);
+      renderSection(list, 'Archived', groups.archived, currentId, true);
+      if (extraHits.length) renderSearchResults(list, extraHits, currentId);
       renderCli(list, cli);
-      // When message search has results, show those instead of regular chat groups
-      if (messageResults.length) {
-        renderSearchResults(list, messageResults, currentId);
-      } else {
-        renderSection(list, 'Pinned', groups.pinned, currentId);
-        renderSection(list, 'Recent', groups.recent, currentId);
-        renderSection(list, 'Archived', groups.archived, currentId);
-        if (!cli.length && !filtered.length) {
-          const empty = document.createElement('div');
-          empty.className = 'sidebar-empty';
-          empty.textContent = query ? 'No matching sessions' : 'No sessions yet';
-          list.appendChild(empty);
-        }
+
+      if (!cli.length && !filtered.length && !extraHits.length) {
+        const empty = document.createElement('div');
+        empty.className = 'sidebar-empty';
+        empty.textContent = query ? 'No matching sessions' : 'No sessions yet';
+        list.appendChild(empty);
       }
     });
   }
@@ -264,14 +313,14 @@ export function createChatListController(dependencies) {
   function setQuery(value) {
     query = value.trim().toLowerCase();
     searchInputs.forEach(input => { input.value = value; });
-    // If in message search mode, debounce and call the API
-    if (_searchMode === 'message' && value.trim().length >= 2) {
+    // One search, not two modes. Titles filter as you type; message bodies are
+    // queried in the background and appended. The old mode toggle only existed
+    // in the mobile sidebar, so desktop could never reach message search at all.
+    if (value.trim().length >= 2) {
       messageQuery = value.trim();
       if (messageDebounce) clearTimeout(messageDebounce);
       messageDebounce = setTimeout(() => {
-        if (messageCallback) {
-          messageCallback(messageQuery);
-        }
+        if (messageCallback) messageCallback(messageQuery);
       }, 300);
     } else {
       messageResults = [];
@@ -288,11 +337,18 @@ export function createChatListController(dependencies) {
     messageCallback = callback;
   }
 
-  function setSearchMode(mode) {
-    _searchMode = mode;
-    messageResults = [];
-    messageQuery = '';
-    query = '';
+  // Receives FTS hits from the search endpoint. Previously the caller passed
+  // these straight to render() as if they were the chat list, so they were
+  // re-filtered by title and silently discarded -- message search never worked.
+  function setMessageResults(results) {
+    messageResults = Array.isArray(results) ? results : [];
+    render();
+  }
+
+  function setActiveTurn(chatId) {
+    if (activeTurnId === chatId) return;
+    activeTurnId = chatId;
+    render();
   }
 
   function setCliSessions(sessions) {
@@ -333,5 +389,13 @@ export function createChatListController(dependencies) {
     if (!event.target.closest('.chat-actions')) closeMenus();
   });
 
-  return {render, setQuery, setCliSessions, closeMenus, setOnMessageSearch, setSearchMode};
+  return {
+    render,
+    setQuery,
+    setCliSessions,
+    closeMenus,
+    setOnMessageSearch,
+    setMessageResults,
+    setActiveTurn,
+  };
 }

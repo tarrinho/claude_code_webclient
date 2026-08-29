@@ -23,7 +23,9 @@ let _machines = [];
 let _machineEditing = null;
 let _currentTab = 'machines';
 let _modelOptions = [];
-let _searchMode = 'title'; // 'title' | 'message'
+// Last payload from GET /api/settings. Save compares against it so a field
+// cleared to "" is recognised as a change and actually sent.
+let _loadedSettings = {};
 let _searchDebounce = null;
 let _skillsData = null;          // last successful /api/skills payload
 let _skillsFetchedFor = null;    // chat id the payload was fetched for
@@ -168,6 +170,11 @@ function _switchTab(tab) {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
+  // The footer Save button only writes the Models and App fields. Machines save
+  // through their own form and Skills is read-only, so showing it there offered
+  // a control that silently did nothing.
+  const save = byId('settingsSave');
+  if (save) save.hidden = tab === 'machines' || tab === 'skills';
   if (tab === 'machines') _renderMachineList();
   if (tab === 'skills') loadSkills();
 }
@@ -423,7 +430,9 @@ function _renderMachineList() {
     testBtn.type = 'button';
     testBtn.className = 'machine-action';
     testBtn.textContent = 'Test';
-    testBtn.addEventListener('click', () => _testMachine(m.id));
+    // Pass the button itself: an active machine has no Activate button, so any
+    // positional lookup lands on a different action for active vs inactive cards.
+    testBtn.addEventListener('click', () => _testMachine(m.id, testBtn));
     actions.appendChild(testBtn);
 
     const editBtn = document.createElement('button');
@@ -459,16 +468,19 @@ async function _activateMachine(id) {
   }
 }
 
-async function _testMachine(id) {
-  const btn = document.querySelector(`.machine-card:nth-child(${_machines.findIndex(m => m.id === id) + 1}) .machine-action:nth-child(2)`);
+async function _testMachine(id, btn) {
   if (btn) { btn.textContent = 'Testing…'; btn.disabled = true; }
   try {
     const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/test`, {method: 'POST'});
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
+    // The endpoint reports {ok, status, error} only — the address comes from
+    // the machine record we already hold, not from the response.
+    const machine = _machines.find(m => m.id === id);
+    const target = machine ? `${machine.host}:${machine.port}` : 'machine';
     if (data.ok) {
-      showToast(`Connected to ${data.host}:${data.port}`);
+      showToast(`Connected to ${target}`);
     } else {
-      showToast(`Connection failed: ${data.error || 'unreachable'}`, 'error');
+      showToast(`Could not reach ${target}: ${data.error || data.status || 'unreachable'}`, 'error');
     }
   } catch (error) {
     showToast(`Test failed: ${error.message}`, 'error');
@@ -588,10 +600,17 @@ async function saveSettings(event) {
   save.disabled = true;
   try {
     const body = {};
+    // Compare against what was loaded rather than testing truthiness: an empty
+    // string is a legitimate value meaning "clear this", and gating on
+    // truthiness made the field impossible to clear from the UI.
     const defaultModel = byId('defaultModel').value.trim();
-    if (defaultModel) body.default_model = defaultModel;
+    if (defaultModel !== (_loadedSettings.default_model || '')) {
+      body.default_model = defaultModel;
+    }
     const fallbackModel = byId('fallbackModel').value.trim();
-    if (fallbackModel) body.fallback_model = fallbackModel;
+    if (fallbackModel !== (_loadedSettings.fallback_model || '')) {
+      body.fallback_model = fallbackModel;
+    }
     // App tab settings
     const sessionTtl = parseInt(byId('sessionTtl')?.value);
     if (sessionTtl) body.session_ttl = sessionTtl;
@@ -613,6 +632,10 @@ async function saveSettings(event) {
       const data = await resp.json().catch(() => ({}));
       throw new Error(data.error || data.detail || 'Could not save settings');
     }
+    // Re-read so the inputs and the model picker show what was actually
+    // stored. Without this the picker kept the pre-save options until a full
+    // page reload, which looked like the save had not taken effect.
+    await loadSettings();
     setStatus('Settings saved', 'success');
   } catch (error) {
     setStatus(error.message, 'error');
@@ -805,19 +828,6 @@ async function forkChat(chat) {
   }
 }
 
-function toggleSearchMode() {
-  _searchMode = _searchMode === 'title' ? 'message' : 'title';
-  const btn = byId('searchModeBtn');
-  if (btn) {
-    btn.title = _searchMode === 'message' ? 'Search in messages' : 'Search titles only';
-    btn.textContent = _searchMode === 'message' ? 'M' : '≡';
-    btn.setAttribute('aria-label', _searchMode === 'message' ? 'Switch to title search' : 'Switch to message search');
-  }
-  _clearSearch();
-  listController.setSearchMode(_searchMode);
-  _searchModeLabel();
-}
-
 function _clearSearch() {
   if (_searchDebounce) {
     clearTimeout(_searchDebounce);
@@ -826,16 +836,12 @@ function _clearSearch() {
   listController.setQuery('');
 }
 
-function _searchModeLabel() {
-  byId('chatSearch').placeholder = _searchMode === 'message' ? 'Search messages' : 'Search conversations';
-  byId('chatSearchDesktop').placeholder = _searchMode === 'message' ? 'Search messages' : 'Search conversations';
-}
-
 async function loadSettings() {
   try {
     const response = await apiFetch('/api/settings');
     if (response.ok) {
       const data = await response.json();
+      _loadedSettings = data;
       byId('defaultModel').value = data.default_model || '';
       byId('fallbackModel').value = data.fallback_model || '';
       byId('ver').textContent = data.version || '';
@@ -854,12 +860,25 @@ function populateModelPicker() {
   const picker = byId('conversationModel');
   if (!picker) return;
   const current = picker.value;
+  // Offer the configured default and fallback first, then the presets from the
+  // Models tab datalist. Reading the datalist from the DOM keeps the list in
+  // one place -- editing index.html updates this picker too. Previously only
+  // default and fallback appeared, so a turn could never be sent to a third
+  // model without changing the global setting first.
+  const suggestions = Array.from(
+    document.querySelectorAll('#modelSuggestions option'),
+  ).map(option => option.value);
+  // Keep whatever this chat already uses, so an unlisted model stays selectable
+  // instead of silently falling back to Automatic.
+  const chatModel = state.currentChat?.model;
+  const models = [..._modelOptions, ...suggestions, chatModel, current];
+
   picker.replaceChildren();
   const automatic = document.createElement('option');
   automatic.value = '';
   automatic.textContent = 'Automatic';
   picker.appendChild(automatic);
-  [...new Set(_modelOptions.filter(Boolean))].forEach(model => {
+  [...new Set(models.filter(Boolean))].forEach(model => {
     const option = document.createElement('option');
     option.value = model;
     option.textContent = model;
@@ -955,8 +974,6 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('dialogCancel').addEventListener('click', closeDialog);
   byId('chatForm').addEventListener('submit', saveChatDialog);
   byId('chatDialog').addEventListener('click', event => { if (event.target === byId('chatDialog')) closeDialog(); });
-  byId('searchModeBtn')?.addEventListener('click', toggleSearchMode);
-
   listController = createChatListController({
     lists: [byId('chatList'), byId('chatListDesktop')],
     searchInputs: [byId('chatSearch'), byId('chatSearchDesktop')],
@@ -975,12 +992,26 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       if (!response.ok) throw new Error('Search failed');
       const data = await response.json();
-      listController.render(data.results || [], state.currentChat?.id);
+      // Hand the hits to the controller as message results. Passing them to
+      // render() treated them as the chat list, so they were re-filtered by
+      // title and dropped -- which is why message search showed nothing.
+      listController.setMessageResults(data.results || []);
     } catch {
-      listController.render([], state.currentChat?.id);
+      listController.setMessageResults([]);
     }
   });
-  listController.setSearchMode(_searchMode);
+
+  // conversation.js owns the turn lifecycle and writes it to #runState. Observing
+  // that attribute keeps the sidebar dot in sync without reaching into its
+  // internals or adding a callback across the module boundary.
+  const runStateEl = byId('runState');
+  if (runStateEl) {
+    const ACTIVE = new Set(['connecting', 'thinking', 'responding', 'retrying']);
+    new MutationObserver(() => {
+      const running = ACTIVE.has(runStateEl.dataset.state);
+      listController.setActiveTurn(running ? (state.currentChat?.id ?? null) : null);
+    }).observe(runStateEl, {attributes: true, attributeFilter: ['data-state']});
+  }
 
   conversationController = createConversationController({
     state,

@@ -286,20 +286,31 @@ class SupervisorBrowserTests(_BrowserFixture):
     DESKTOP = "#chatListDesktop"
 
     def _seed_waiting_chat(self):
+        """Insert a conversation ending on an unread assistant reply.
+
+        A fresh id and a current timestamp per test: the class shares one
+        database, so a fixed id would inherit the read mark left by whichever
+        test ran first and the row would never be waiting.
+        """
+        import datetime
         import sqlite3
+        now = datetime.datetime.now(datetime.UTC)
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.chat_id = f"sup-{secrets.token_hex(4)}"
+        self.chat_title = f"Waiting {self.chat_id}"
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
-            "INSERT OR IGNORE INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES ('sup1','Waiting chat',NULL,'/tmp','admin',"
-            "'2026-08-29T10:00:00Z','2026-08-29T10:00:00Z')"
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (self.chat_id, self.chat_title, stamp, stamp),
         )
         con.execute(
-            "INSERT INTO messages (chat_id,role,content,created_at) VALUES "
-            "('sup1','user','do it','2026-08-29T10:00:00Z')"
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES (?,?,?,?)",
+            (self.chat_id, "user", "do it", stamp),
         )
         con.execute(
-            "INSERT INTO messages (chat_id,role,content,created_at) VALUES "
-            "('sup1','assistant','Which way do you want it?','2026-08-29T10:01:00Z')"
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES (?,?,?,?)",
+            (self.chat_id, "assistant", "Which way do you want it?", stamp),
         )
         con.commit()
         con.close()
@@ -335,7 +346,7 @@ class SupervisorBrowserTests(_BrowserFixture):
         self._load()
         row = next(
             r for r in self._supervisor_rows()
-            if "Waiting chat" in r.query_selector(".chat-title").inner_text()
+            if self.chat_title in r.query_selector(".chat-title").inner_text()
         )
         self.assertIn("web", row.query_selector(".chat-meta").inner_text())
         self.assertEqual(
@@ -349,13 +360,13 @@ class SupervisorBrowserTests(_BrowserFixture):
         before = self._badge()
         row = next(
             r for r in self._supervisor_rows()
-            if "Waiting chat" in r.query_selector(".chat-title").inner_text()
+            if self.chat_title in r.query_selector(".chat-title").inner_text()
         )
         row.query_selector(".chat-open").click()
         self.page.wait_for_timeout(3500)
 
         # The conversation name lives in the workspace strip, not the topbar.
-        self.assertEqual(self.page.query_selector("#workspaceName").inner_text(), "Waiting chat")
+        self.assertEqual(self.page.query_selector("#workspaceName").inner_text(), self.chat_title)
         self.assertIn("Which way do you want it?", self.page.query_selector("#messagesArea").inner_text())
         self.assertEqual(self._badge(), before - 1)
         self.assertEqual(self.errors, [])

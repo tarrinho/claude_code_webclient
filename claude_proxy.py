@@ -199,6 +199,13 @@ def normalise_claude_frame(obj: dict) -> list[dict]:
         usage = usage_frame(obj)
         if usage:
             frames.append(usage)
+        else:
+            # Every turn ends in a result frame, so this firing on each turn is
+            # what an empty Usage tab looks like from the proxy's side.
+            log.warning(
+                "result frame carried no usage (keys=%s); nothing to account",
+                sorted(obj),
+            )
         if obj.get("is_error") or subtype not in ("", "success"):
             error = (
                 obj.get("error")
@@ -604,8 +611,23 @@ async def main():
     server = await asyncio.start_server(
         lambda r, w: handle_client(r, w, claude_path, proxy_token), host, port
     )
+    # Nothing supervises this process, so it happily serves code from whenever
+    # it was started while the file on disk moves on. That has now silently
+    # broken three separate features -- the proxy token, the backend
+    # environment, and usage accounting -- each presenting as "the feature
+    # does nothing" with no error anywhere. Stamping the source it is actually
+    # running makes the staleness checkable from the log alone.
+    try:
+        import datetime as _dt
+
+        _src_mtime = _dt.datetime.fromtimestamp(
+            os.stat(__file__).st_mtime, tz=_dt.timezone.utc
+        ).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        _src_mtime = "unknown"
     log.info(
-        "listening on %s:%d  claude=%s  protocol=%s", host, port, claude_path, PROTOCOL
+        "listening on %s:%d  claude=%s  protocol=%s  source_mtime=%s",
+        host, port, claude_path, PROTOCOL, _src_mtime,
     )
 
     async with server:

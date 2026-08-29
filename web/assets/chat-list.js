@@ -434,7 +434,11 @@ export function createChatListController(dependencies) {
   function renderSupervisor(list, state) {
     const waiting = state.waiting || [];
     const working = state.working || [];
-    if (!waiting.length && !working.length) return;
+    const updated = state.updated || [];
+    // Only `waiting` is a summons -- an agent that asked for something or
+    // reported it is stuck. An agent that merely finished speaking is counted
+    // quietly below, because badging every reply makes the number worthless.
+    if (!waiting.length && !working.length && !updated.length) return;
 
     const heading = document.createElement('div');
     heading.className = 'chat-section-label supervisor-label';
@@ -474,7 +478,8 @@ export function createChatListController(dependencies) {
       meta.className = 'chat-meta';
       meta.textContent = [
         entry.kind === 'session' ? 'terminal' : 'web',
-        entry.since ? `waiting ${formatTime(entry.since)}` : 'waiting',
+        entry.reason === 'blocked' ? 'blocked' : 'needs an answer',
+        entry.since ? formatTime(entry.since) : '',
       ].filter(Boolean).join(' · ');
 
       open.append(title, meta);
@@ -489,10 +494,13 @@ export function createChatListController(dependencies) {
       list.appendChild(item);
     });
 
-    if (working.length) {
+    const quiet = [];
+    if (working.length) quiet.push(`${working.length} working`);
+    if (updated.length) quiet.push(`${updated.length} with new output`);
+    if (quiet.length) {
       const note = document.createElement('div');
       note.className = 'supervisor-note';
-      note.textContent = `${working.length} working · nothing needed`;
+      note.textContent = `${quiet.join(' · ')} · nothing needed`;
       list.appendChild(note);
     }
   }

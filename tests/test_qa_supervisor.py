@@ -170,18 +170,18 @@ class SupervisorChatTests(unittest.IsolatedAsyncioTestCase):
         """The count must fall when the user looks, or the badge is noise."""
         await _chat_with(
             "c1",
-            ("assistant", "2026-08-29T10:01:00Z", "done"),
+            ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"),
         )
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
         await db.read_mark_set("admin", "chat", "c1", "2026-08-29T10:02:00Z")
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
     async def test_new_output_after_reading_waits_again(self):
-        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "done"))
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         await db.read_mark_set("admin", "chat", "c1", "2026-08-29T10:02:00Z")
         await db.db_conn.execute(
             "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?,?,?,?)",
-            ("c1", "assistant", "and another thing", "2026-08-29T10:03:00Z"),
+            ("c1", "assistant", "One more thing -- shall I?", "2026-08-29T10:03:00Z"),
         )
         await db.db_conn.commit()
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
@@ -195,24 +195,24 @@ class SupervisorChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["working"][0]["status"], "working")
 
     async def test_archived_chats_are_ignored(self):
-        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "done"))
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         await db.chat_update("c1", "admin", archived=1)
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
     async def test_empty_conversation_is_neither(self):
         await db.chat_create("empty", "Empty", None, "/tmp", "admin")
         data = await self._get()
-        self.assertEqual(data["counts"], {"waiting": 0, "working": 0})
+        self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
 
     async def test_oldest_wait_is_listed_first(self):
-        await _chat_with("new", ("assistant", "2026-08-29T12:00:00Z", "recent"))
-        await _chat_with("old", ("assistant", "2026-08-29T09:00:00Z", "ancient"))
+        await _chat_with("new", ("assistant", "2026-08-29T12:00:00Z", "Shall I? (recent)"))
+        await _chat_with("old", ("assistant", "2026-08-29T09:00:00Z", "Shall I? (ancient)"))
         self.assertEqual(
             [e["id"] for e in (await self._get())["waiting"]], ["old", "new"]
         )
 
     async def test_another_owner_sees_nothing(self):
-        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "done"))
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         request = _request()
         request.state.session = {"user": "bob", "role": "user"}
         data = json.loads((await app.handle_supervisor(request)).body)
@@ -280,17 +280,17 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         data = await self._get(
             [self._cli(entrypoint="webconsole")],
             [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}],
-            self._turns("assistant", "done"),
+            self._turns("assistant", "Shall I continue?"),
         )
-        self.assertEqual(data["counts"], {"waiting": 0, "working": 0})
+        self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
 
     async def test_session_without_a_transcript_is_skipped(self):
-        data = await self._get([self._cli()], [], self._turns("assistant", "done"))
+        data = await self._get([self._cli()], [], self._turns("assistant", "Shall I continue?"))
         self.assertEqual(data["counts"]["waiting"], 0)
 
     async def test_reading_a_session_clears_it(self):
         listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
-        turns = self._turns("assistant", "done")
+        turns = self._turns("assistant", "Shall I continue?")
         self.assertEqual((await self._get([self._cli()], listing, turns))["counts"]["waiting"], 1)
         # A mark later than the transcript's mtime.
         await db.read_mark_set("admin", "session", SESSION_ID, "2036-01-01T00:00:00Z")
@@ -301,12 +301,34 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         every transcript on disk."""
         listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
         await db.read_mark_set("admin", "session", SESSION_ID, "2036-01-01T00:00:00Z")
-        read = AsyncMock(return_value=self._turns("assistant", "done"))
+        read = AsyncMock(return_value=self._turns("assistant", "Shall I continue?"))
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
                 patch.object(app.transcripts, "read_turns", read):
             await app.handle_supervisor(_request())
         read.assert_not_called()
+
+    async def test_a_terminal_agent_that_merely_reported_is_quiet(self):
+        """The literal complaint: four terminals badged for having spoken.
+
+        A session that finished a task and said so is an update, not a summons.
+        """
+        data = await self._get(
+            [self._cli()],
+            [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}],
+            self._turns("assistant", "Done. Suite is green, ruff clean."),
+        )
+        self.assertEqual(data["counts"]["waiting"], 0)
+        self.assertEqual(data["counts"]["updated"], 1)
+
+    async def test_a_terminal_agent_reporting_a_blocker_does_wait(self):
+        data = await self._get(
+            [self._cli()],
+            [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}],
+            self._turns("assistant", "I am blocked: the endpoint needs your API key."),
+        )
+        self.assertEqual(data["counts"]["waiting"], 1)
+        self.assertEqual(data["waiting"][0]["reason"], "blocked")
 
     async def test_a_touched_transcript_alone_does_not_mean_waiting(self):
         """The false positive that would have made the badge worthless.
@@ -325,7 +347,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         data = await self._get(
             [self._cli()],
             listing,
-            self._turns("assistant", "said earlier", timestamp="2026-08-29T10:00:00Z"),
+            self._turns("assistant", "Shall I continue?", timestamp="2026-08-29T10:00:00Z"),
         )
         self.assertEqual(
             data["counts"]["waiting"], 0,
@@ -339,7 +361,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         data = await self._get(
             [self._cli()],
             listing,
-            self._turns("assistant", "just answered", timestamp="2026-08-29T12:00:00Z"),
+            self._turns("assistant", "Shall I continue?", timestamp="2026-08-29T12:00:00Z"),
         )
         self.assertEqual(data["counts"]["waiting"], 1)
         self.assertEqual(data["waiting"][0]["since"], "2026-08-29T12:00:00Z")
@@ -348,7 +370,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db, "read_claude_sessions", AsyncMock(side_effect=OSError("nope"))), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=[])):
             data = json.loads((await app.handle_supervisor(_request())).body)
-        self.assertEqual(data["counts"], {"waiting": 0, "working": 0})
+        self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
 
 
 class SupervisorReadEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -375,6 +397,98 @@ class SupervisorReadEndpointTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(ref=bad), self.assertRaises(HTTPException) as ctx:
                 await app.handle_supervisor_read(_request({"kind": "chat", "id": bad}))
             self.assertEqual(ctx.exception.status_code, 400)
+
+
+class AttentionTests(unittest.TestCase):
+    """What earns a badge.
+
+    The rule Pedro set after seeing the first version light up for four
+    terminals that had merely finished speaking: alert when information is
+    required or something important is reported, not on every new message.
+    """
+
+    def test_a_trailing_question_asks(self):
+        self.assertEqual(app._attention("Which way do you want it?"), "asks")
+
+    def test_a_question_mid_message_does_not(self):
+        """Quoting a question while explaining is not a request for input."""
+        self.assertIsNone(
+            app._attention("I wondered whether it was cached? It was not. Fixed.")
+        )
+
+    def test_trailing_markdown_does_not_hide_the_question(self):
+        self.assertEqual(app._attention("Shall I go ahead?**"), "asks")
+
+    def test_explicit_asks_without_a_question_mark(self):
+        for text in (
+            "Say the word and I will build it.",
+            "Let me know which you prefer.",
+            "Your call.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(app._attention(text), "asks")
+
+    def test_blockers_are_flagged(self):
+        for text in (
+            "I am blocked on the credentials.",
+            "Cannot proceed without the API key.",
+            "This needs your approval first.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(app._attention(text), "blocked")
+
+    def test_routine_output_is_silent(self):
+        for text in (
+            "Done. 931 passed, ruff clean.",
+            "Added the migration and wired the endpoint.",
+            "Here is the summary of what changed.",
+            "",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(app._attention(text))
+
+
+class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
+    """An agent that merely finished talking must not summon anyone."""
+
+    async def asyncSetUp(self):
+        await _setup(self)
+
+    async def asyncTearDown(self):
+        await _teardown(self)
+
+    async def _get(self):
+        return json.loads((await app.handle_supervisor(_request())).body)
+
+    async def test_a_plain_reply_is_an_update_not_a_wait(self):
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Done, all green."))
+        data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 0)
+        self.assertEqual(data["counts"]["updated"], 1)
+        self.assertEqual(data["updated"][0]["status"], "updated")
+
+    async def test_a_question_still_waits(self):
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
+        data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 1)
+        self.assertEqual(data["waiting"][0]["reason"], "asks")
+
+    async def test_a_blocker_waits(self):
+        await _chat_with(
+            "c1", ("assistant", "2026-08-29T10:01:00Z", "I am blocked without the key.")
+        )
+        data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 1)
+        self.assertEqual(data["waiting"][0]["reason"], "blocked")
+
+    async def test_many_chatty_agents_leave_the_badge_at_zero(self):
+        """The exact complaint: four terminals that had simply spoken."""
+        for index in range(4):
+            await _chat_with(
+                f"c{index}",
+                ("assistant", "2026-08-29T10:01:00Z", f"Finished task {index}."),
+            )
+        self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
 
 class OneLineTests(unittest.TestCase):

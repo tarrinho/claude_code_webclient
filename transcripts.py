@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
+import time
 from pathlib import Path
 from typing import Any, Final
 
@@ -406,6 +408,118 @@ def _agent_events_sync(path: Path, session_id: str, title: str) -> list[dict[str
                     "session_title": title,
                 })
     return events
+
+
+# A gateway that streams its reply in chunks can emit a leading chunk carrying
+# an empty text block. The gateway itself replays those happily; the Anthropic
+# API rejects the whole request with "text content blocks must be non-empty",
+# so a conversation started on such a gateway cannot later be resumed on
+# Anthropic until they are removed.
+_EMPTY_TEXT_MARKERS: Final[tuple[bytes, ...]] = (b'"text": ""', b'"text":""')
+
+
+def _is_empty_text_assistant(record: Any) -> bool:
+    """True for an assistant record whose only content is an empty text block."""
+    if not isinstance(record, dict) or record.get("type") != "assistant":
+        return False
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    return (
+        isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and not str(content[0].get("text", "")).strip()
+    )
+
+
+def _needs_repair_sync(path: Path) -> bool:
+    """Cheap pre-check so a healthy transcript is never fully parsed."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return False
+    return any(marker in raw for marker in _EMPTY_TEXT_MARKERS)
+
+
+def _repair_sync(path: Path) -> dict[str, Any]:
+    """Drop empty assistant records, relinking anything that pointed at them.
+
+    Removing them naively orphans their children: most carry a parentUuid
+    chain, so each child is relinked to the nearest surviving ancestor.
+
+    Lines that are not being changed are written back byte for byte, and the
+    original is copied aside first, so a conversation cannot be damaged by a
+    repair that goes wrong.
+    """
+    raw_lines = [
+        line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+    parsed: list[Any] = []
+    for line in raw_lines:
+        try:
+            parsed.append(json.loads(line))
+        except json.JSONDecodeError:
+            parsed.append(None)  # keep unreadable lines exactly as they are
+
+    dropped: dict[str, str | None] = {
+        record["uuid"]: record.get("parentUuid")
+        for record in parsed
+        if _is_empty_text_assistant(record) and isinstance(record, dict)
+        and record.get("uuid")
+    }
+    if not dropped:
+        return {"repaired": False, "removed": 0, "relinked": 0, "backup": ""}
+
+    def surviving_ancestor(uuid: str | None) -> str | None:
+        seen: set[str] = set()
+        while uuid in dropped and uuid not in seen:
+            seen.add(uuid)
+            uuid = dropped[uuid]
+        return uuid
+
+    kept: list[str] = []
+    relinked = 0
+    for record, line in zip(parsed, raw_lines):
+        if record is None:
+            kept.append(line)
+            continue
+        if _is_empty_text_assistant(record):
+            continue
+        if record.get("parentUuid") in dropped:
+            record["parentUuid"] = surviving_ancestor(record["parentUuid"])
+            relinked += 1
+            kept.append(json.dumps(record))
+        else:
+            kept.append(line)
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = path.with_suffix(f".jsonl.bak-{stamp}")
+    shutil.copy2(path, backup)
+
+    staged = path.with_suffix(".jsonl.repairing")
+    staged.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    staged.replace(path)  # same filesystem, so the swap is atomic
+
+    return {
+        "repaired": True,
+        "removed": len(dropped),
+        "relinked": relinked,
+        "backup": backup.name,
+    }
+
+
+async def repair_if_needed(session_id: str) -> dict[str, Any]:
+    """Make *session_id* replayable on a strict API, if it is not already."""
+    path = transcript_path(session_id)
+    if path is None:
+        return {"repaired": False, "removed": 0, "relinked": 0, "backup": ""}
+    if not await asyncio.to_thread(_needs_repair_sync, path):
+        return {"repaired": False, "removed": 0, "relinked": 0, "backup": ""}
+    return await asyncio.to_thread(_repair_sync, path)
 
 
 def _cwd_sync(path: Path) -> str:

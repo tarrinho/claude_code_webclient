@@ -795,5 +795,140 @@ class AgentTrafficEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(response.status_code, 200)
 
 
+# ── Repairing a transcript for a strict backend ──────────────────────────────
+
+
+def linked(uuid, parent, text, kind="assistant"):
+    return {
+        "type": kind, "uuid": uuid, "parentUuid": parent, "sessionId": "s",
+        "timestamp": "2026-08-29T10:00:00Z",
+        "message": {"role": kind, "content": [{"type": "text", "text": text}]},
+    }
+
+
+class TranscriptRepairTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
+    """A gateway can record assistant messages whose only content is empty.
+
+    It replays them happily; the Anthropic API rejects the whole request with
+    "text content blocks must be non-empty", so such a conversation cannot be
+    moved to Anthropic until they are removed.
+    """
+
+    async def asyncSetUp(self):
+        self.set_up_root()
+
+    async def asyncTearDown(self):
+        self.tear_down_root()
+
+    def written(self, session_id="s"):
+        path = transcripts.transcript_path(session_id)
+        return [json.loads(line) for line in
+                path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    async def test_a_healthy_transcript_is_left_alone(self):
+        write_transcript(self.root, "s", [user("hi"), assistant("there", "s")])
+        result = await transcripts.repair_if_needed("s")
+        self.assertFalse(result["repaired"])
+        self.assertEqual(result["removed"], 0)
+
+    async def test_empty_assistant_records_are_removed(self):
+        write_transcript(self.root, "s", [
+            linked("u1", None, "hello", "user"),
+            linked("u2", "u1", ""),
+            linked("u3", "u2", "the real reply"),
+        ])
+        result = await transcripts.repair_if_needed("s")
+        self.assertTrue(result["repaired"])
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual([r["uuid"] for r in self.written()], ["u1", "u3"])
+
+    async def test_children_are_relinked_across_consecutive_removals(self):
+        """Two empties in a row must not leave the survivor pointing at nothing."""
+        write_transcript(self.root, "s", [
+            linked("u1", None, "hello", "user"),
+            linked("u2", "u1", ""),
+            linked("u3", "u2", ""),
+            linked("u4", "u3", "the real reply"),
+        ])
+        await transcripts.repair_if_needed("s")
+        kept = self.written()
+        self.assertEqual([r["uuid"] for r in kept], ["u1", "u4"])
+        self.assertEqual(kept[-1]["parentUuid"], "u1")
+
+    async def test_no_record_is_left_with_a_missing_parent(self):
+        write_transcript(self.root, "s", [
+            linked("u1", None, "start", "user"),
+            linked("u2", "u1", ""),
+            linked("u3", "u2", "reply"),
+            linked("u4", "u3", ""),
+            linked("u5", "u4", "later"),
+        ])
+        await transcripts.repair_if_needed("s")
+        kept = self.written()
+        uuids = {r["uuid"] for r in kept}
+        dangling = [r["uuid"] for r in kept
+                    if r.get("parentUuid") and r["parentUuid"] not in uuids]
+        self.assertEqual(dangling, [])
+
+    async def test_every_non_empty_message_survives(self):
+        write_transcript(self.root, "s", [
+            linked("u1", None, "keep one", "user"),
+            linked("u2", "u1", ""),
+            linked("u3", "u2", "keep two"),
+            linked("u4", "u3", ""),
+            linked("u5", "u4", "keep three"),
+        ])
+        await transcripts.repair_if_needed("s")
+        texts = [block["text"] for record in self.written()
+                 for block in record["message"]["content"]]
+        self.assertEqual(texts, ["keep one", "keep two", "keep three"])
+
+    async def test_a_backup_is_written_before_the_swap(self):
+        write_transcript(self.root, "s", [
+            linked("u1", None, "hello", "user"), linked("u2", "u1", "")])
+        result = await transcripts.repair_if_needed("s")
+        backups = list(transcripts.transcript_path("s").parent.glob("*.bak-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn("bak-", result["backup"])
+        # The backup must hold the original, empties and all.
+        original = [json.loads(line) for line in
+                    backups[0].read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(original), 2)
+
+    async def test_repairing_twice_changes_nothing(self):
+        write_transcript(self.root, "s", [
+            linked("u1", None, "hello", "user"), linked("u2", "u1", "")])
+        await transcripts.repair_if_needed("s")
+        after_first = transcripts.transcript_path("s").read_text(encoding="utf-8")
+        second = await transcripts.repair_if_needed("s")
+        self.assertFalse(second["repaired"])
+        self.assertEqual(
+            transcripts.transcript_path("s").read_text(encoding="utf-8"), after_first)
+
+    async def test_records_that_are_not_touched_keep_their_exact_bytes(self):
+        """Rewriting untouched lines risks reordering keys or losing fields."""
+        write_transcript(self.root, "s", [
+            linked("u1", None, "hello", "user"), linked("u2", "u1", "")])
+        path = transcripts.transcript_path("s")
+        before = path.read_text(encoding="utf-8").splitlines()[0]
+        await transcripts.repair_if_needed("s")
+        self.assertEqual(path.read_text(encoding="utf-8").splitlines()[0], before)
+
+    async def test_an_unknown_session_is_not_an_error(self):
+        result = await transcripts.repair_if_needed("missing")
+        self.assertFalse(result["repaired"])
+
+    async def test_an_assistant_record_with_other_content_is_kept(self):
+        """Only records whose *sole* content is an empty text block go."""
+        write_transcript(self.root, "s", [{
+            "type": "assistant", "uuid": "u1", "parentUuid": None,
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/a"}}]},
+        }])
+        result = await transcripts.repair_if_needed("s")
+        self.assertFalse(result["repaired"], "a record carrying a tool call must stay")
+
+
 if __name__ == "__main__":
     unittest.main()

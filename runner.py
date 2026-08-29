@@ -154,6 +154,57 @@ async def get_default_model() -> str:
     return await db.setting_get("default_model") or config.MODEL_NAME
 
 
+def normalise_base_url(base_url: str | None) -> str | None:
+    """Return *base_url* as an origin the Claude CLI can append paths to.
+
+    Two shapes get corrected:
+
+    * A bare host ("api.anthropic.com"). Databases written before the base_url
+      validator was fixed hold these, because the validator used to return only
+      the host and the caller persisted that. Scheme-less, the CLI would read
+      it as a relative URL, so assume https.
+    * A trailing "/v1". The CLI appends /v1/messages itself, so a URL copied
+      from an OpenAI-style config would resolve to /v1/v1/messages and 404.
+    """
+    if not base_url:
+        return None
+    base_url = base_url.strip()
+    if not base_url:
+        return None
+    if "://" not in base_url:
+        base_url = f"https://{base_url}"
+    base_url = base_url.rstrip("/").removesuffix("/v1")
+    return base_url or None
+
+
+async def get_backend(chat_id: str) -> dict[str, str]:
+    """Return the provider settings for the active machine of *chat_id*'s owner.
+
+    Empty when no machine is active, which leaves the CLI on its own defaults --
+    the host's `claude` login against the official API.
+    """
+    import db
+
+    if db.db_conn is None:
+        return {}
+    owner = await db.chat_owner(chat_id)
+    if not owner:
+        return {}
+    machine = await db.ai_machine_backend(owner)
+    if not machine or machine.get("provider") != "anthropic":
+        return {}
+    backend: dict[str, str] = {"provider": "anthropic"}
+    base_url = normalise_base_url(machine.get("base_url"))
+    if base_url:
+        backend["base_url"] = base_url
+    # An absent key is meaningful: the CLI then uses the host's own login
+    # rather than failing, so never send an empty string.
+    api_key = (machine.get("api_key") or "").strip()
+    if api_key:
+        backend["api_key"] = api_key
+    return backend
+
+
 def _get_sem() -> asyncio.Semaphore:
     global _sem
     if _sem is None:
@@ -237,21 +288,20 @@ async def _execute_proxy(
         except (asyncio.TimeoutError, ValueError, json.JSONDecodeError):
             _log.warning("proxy handshake ACK unexpected")
 
-        # Build turn payload
-        writer.write(
-            (
-                json.dumps(
-                    {
-                        "type": "turn",
-                        "prompt": prompt,
-                        "session_id": session_id,
-                        "work_dir": work_dir,
-                        "model": model or await get_default_model(),
-                    }
-                )
-                + "\n"
-            ).encode()
-        )
+        # Build turn payload. NOTE: this frame is plaintext JSON over TCP and
+        # may carry an API key, so the proxy must stay bound to loopback (or
+        # WC_PROXY_LISTEN_HOST must front a tunnel) -- see claude_proxy.main().
+        turn_payload = {
+            "type": "turn",
+            "prompt": prompt,
+            "session_id": session_id,
+            "work_dir": work_dir,
+            "model": model or await get_default_model(),
+        }
+        backend = await get_backend(chat_id)
+        if backend:
+            turn_payload["backend"] = backend
+        writer.write((json.dumps(turn_payload) + "\n").encode())
         await writer.drain()
 
         # Read response stream
@@ -352,12 +402,36 @@ def _build_cmd_direct(
     return cmd
 
 
-def _build_env() -> dict[str, str]:
-    """Filter environment — pass model config, strip host vars."""
+def _build_env(backend: dict[str, str] | None = None) -> dict[str, str]:
+    """Filter environment — pass model config, strip host vars.
+
+    With an ``anthropic`` *backend* the CLI is pointed at the official API the
+    way Claude Code configures itself: ANTHROPIC_BASE_URL for the endpoint and
+    ANTHROPIC_API_KEY for auth. The OpenAI-compatible variables are for the
+    local shim and are left out entirely in that case, so a stale OPENAI_BASE_URL
+    cannot pull the turn back to the shim.
+    """
     safe = {"HOME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM"}
     env = {k: v for k, v in os.environ.items() if k in safe}
     env["PYTHONUNBUFFERED"] = "1"
     env["CLAUDE_CODE_SIMPLE"] = "1"
+    # Opt out of experimental beta features, matching the proxy path. Set before
+    # the provider branch so it applies to both, and set explicitly rather than
+    # inherited because the allowlist above drops everything else.
+    env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+    if backend and backend.get("provider") == "anthropic":
+        base_url = normalise_base_url(backend.get("base_url"))
+        if base_url:
+            env["ANTHROPIC_BASE_URL"] = base_url
+        if backend.get("api_key"):
+            env["ANTHROPIC_API_KEY"] = backend["api_key"]
+        else:
+            # No key: the CLI has to read the host's own login, and under
+            # CLAUDE_CODE_SIMPLE it refuses to -- `claude auth status` reports
+            # loggedIn:false, authMethod:none with that set. Leaving it on here
+            # would give the subprocess no credentials at all.
+            env.pop("CLAUDE_CODE_SIMPLE", None)
+        return env
     if config.MODEL_BASE_URL:
         env["OPENAI_BASE_URL"] = config.MODEL_BASE_URL
     if config.MODEL_API_KEY:
@@ -395,7 +469,7 @@ async def _execute_direct(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
-        env=_build_env(),
+        env=_build_env(await get_backend(chat_id)),
     )
 
     chunks: list[str] = []
@@ -620,7 +694,7 @@ async def _do_direct_stream(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
-        env=_build_env(),
+        env=_build_env(await get_backend(chat_id)),
     )
 
     try:

@@ -656,3 +656,23 @@ class ProxyBetaOptOutTests(unittest.TestCase):
         env = claude_proxy._backend_env(None)
         self.assertTrue(env.get("PATH"))
         self.assertEqual(env.get("HOME"), os.environ.get("HOME"))
+
+    def test_direct_mode_matches_the_proxy(self):
+        # runner._build_env allowlists a minimal environment instead of
+        # inheriting, so the variable has to be set explicitly there too --
+        # otherwise WC_PROXY_ENABLED=0 silently keeps betas on.
+        for backend in (
+            None,
+            {"provider": "proxy"},
+            {"provider": "anthropic", "base_url": "https://h", "api_key": "k"},
+            {"provider": "anthropic", "base_url": "https://h"},
+        ):
+            direct = runner._build_env(backend).get(self.VAR)
+            proxy = claude_proxy._backend_env(backend).get(self.VAR)
+            self.assertEqual(direct, "1", repr(backend))
+            self.assertEqual(direct, proxy, repr(backend))
+
+    def test_direct_mode_still_provides_a_usable_environment(self):
+        env = runner._build_env(None)
+        self.assertTrue(env.get("PATH"))
+        self.assertTrue(env.get("HOME"))

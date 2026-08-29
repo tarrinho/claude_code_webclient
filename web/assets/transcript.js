@@ -184,6 +184,55 @@ export function mountTranscriptViewer() {
     if (live.textContent === POLL_LABEL) live.textContent = '';
   }
 
+  // A question used to render as the bare word "AskUserQuestion", which told
+  // the reader nothing. Show the question and every option that was offered.
+  function buildQuestion(block) {
+    const card = el('div', 'tx-question');
+    card.dataset.questionId = block.id || '';
+    (block.questions || []).forEach(entry => {
+      const head = el('div', 'tx-q-head');
+      if (entry.header) head.appendChild(el('span', 'tx-q-tag', entry.header));
+      head.appendChild(el('span', 'tx-q-ask', entry.question || 'Question'));
+      card.appendChild(head);
+      if (entry.multi_select) {
+        card.appendChild(el('div', 'tx-q-note', 'Choose one or more'));
+      }
+      const list = el('ul', 'tx-q-options');
+      (entry.options || []).forEach(option => {
+        const item = el('li', 'tx-q-option');
+        item.appendChild(el('span', 'tx-q-label', option.label));
+        if (option.description) {
+          item.appendChild(el('span', 'tx-q-desc', option.description));
+        }
+        list.appendChild(item);
+      });
+      if (list.childElementCount) card.appendChild(list);
+    });
+    // The pending state is filled in later, once the answer (or its absence)
+    // is known: a question with no answer is still waiting on the terminal.
+    card.appendChild(el('div', 'tx-q-status', 'Waiting for an answer in the terminal'));
+    return card;
+  }
+
+  function buildAnswer(block) {
+    const row = el('div', `tx-answer tx-answer-${block.status || 'resolved'}`);
+    const label = {answered: 'Answered', declined: 'Declined'}[block.status] || 'Resolved';
+    row.appendChild(el('span', 'tx-a-tag', label));
+    row.appendChild(el('span', 'tx-a-text', block.text || ''));
+    // Mark the question it belongs to as no longer waiting.
+    const asked = block.id
+      ? body.querySelector(`.tx-question[data-question-id="${block.id}"]`)
+      : null;
+    const status = asked?.querySelector('.tx-q-status');
+    if (status) {
+      status.textContent = label === 'Answered'
+        ? 'Answered in the terminal'
+        : `${label} in the terminal`;
+      status.classList.add('tx-q-done');
+    }
+    return row;
+  }
+
   function buildTurn(turn) {
     const wrap = el('div', 'tx-turn');
     wrap.dataset.role = turn.role;
@@ -194,7 +243,11 @@ export function mountTranscriptViewer() {
     wrap.appendChild(el('div', 'tx-role', bits.join(' · ')));
 
     (turn.blocks || []).forEach(block => {
-      if (block.kind === 'tool') {
+      if (block.kind === 'question') {
+        wrap.appendChild(buildQuestion(block));
+      } else if (block.kind === 'answer') {
+        wrap.appendChild(buildAnswer(block));
+      } else if (block.kind === 'tool') {
         wrap.appendChild(el('div', 'tx-tool', `🔧 ${block.text}`));
       } else if (block.kind === 'thinking') {
         wrap.appendChild(el('div', 'tx-think', block.text));

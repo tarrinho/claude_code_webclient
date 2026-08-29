@@ -73,8 +73,15 @@ def _tool_summary(block: dict[str, Any]) -> str:
     return name
 
 
-def _blocks_from_content(content: Any) -> list[dict[str, str]]:
-    """Normalise a record's ``message.content`` into display blocks."""
+def _blocks_from_content(
+    content: Any, question_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Normalise a record's ``message.content`` into display blocks.
+
+    *question_ids* accumulates the ids of questions seen so far, so a later
+    record's tool_result can be recognised as an answer to one.
+    """
+    question_ids = question_ids if question_ids is not None else set()
     if isinstance(content, str):
         text = content.strip()
         return [{"kind": "text", "text": text}] if text else []
@@ -95,13 +102,94 @@ def _blocks_from_content(content: Any) -> list[dict[str, str]]:
             if text:
                 blocks.append({"kind": "thinking", "text": text})
         elif kind == "tool_use":
+            if item.get("name") == _QUESTION_TOOL:
+                # A question rendered as the bare string "AskUserQuestion" told
+                # the reader nothing: no question text, no options, no way to
+                # know an answer was wanted. Carry the whole structure instead.
+                question = _question_block(item)
+                if question:
+                    # Register the id so this question's answer, which arrives
+                    # in a later record, can be recognised.
+                    if question["id"]:
+                        question_ids.add(question["id"])
+                    blocks.append(question)
+                    continue
             blocks.append({"kind": "tool", "text": _tool_summary(item)})
+        elif kind == "tool_result" and item.get("tool_use_id") in question_ids:
+            # tool_result is dropped for every other tool -- it is replayed tool
+            # output and dwarfs the conversation. A question's result is the
+            # answer, so it is the one worth keeping.
+            blocks.append(_answer_block(item))
         # tool_result is deliberately dropped: it is tool output replayed into
         # the next user record, and it dwarfs the conversation itself.
     return blocks
 
 
-def _turn_from_record(record: Any) -> dict[str, Any] | None:
+_QUESTION_TOOL = "AskUserQuestion"
+
+
+def _question_block(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a display block carrying a question and every option offered."""
+    payload = item.get("input")
+    if not isinstance(payload, dict):
+        return None
+    questions = []
+    for entry in payload.get("questions") or []:
+        if not isinstance(entry, dict):
+            continue
+        options = [
+            {
+                "label": str(option.get("label") or ""),
+                "description": str(option.get("description") or ""),
+            }
+            for option in entry.get("options") or []
+            if isinstance(option, dict) and option.get("label")
+        ]
+        text = str(entry.get("question") or "").strip()
+        if not text and not options:
+            continue
+        questions.append({
+            "question": text,
+            "header": str(entry.get("header") or ""),
+            "multi_select": bool(entry.get("multiSelect")),
+            "options": options,
+        })
+    if not questions:
+        return None
+    return {
+        "kind": "question",
+        "id": str(item.get("id") or ""),
+        "questions": questions,
+    }
+
+
+def _answer_block(item: dict[str, Any]) -> dict[str, Any]:
+    """Build a display block for how a question was resolved.
+
+    The CLI reports the outcome as prose, either "Your questions have been
+    answered: ..." or a rejection notice, so the status is read from that rather
+    than invented.
+    """
+    content = item.get("content")
+    text = content if isinstance(content, str) else json.dumps(content)
+    collapsed = " ".join(str(text).split())
+    if item.get("is_error") or "was rejected" in collapsed:
+        status = "declined"
+    elif "have been answered" in collapsed:
+        status = "answered"
+    else:
+        status = "resolved"
+    return {
+        "kind": "answer",
+        "id": str(item.get("tool_use_id") or ""),
+        "status": status,
+        "text": collapsed[:600],
+    }
+
+
+def _turn_from_record(
+    record: Any, question_ids: set[str] | None = None
+) -> dict[str, Any] | None:
     """Return a display turn for one JSONL record, or None to skip it."""
     if not isinstance(record, dict):
         return None
@@ -111,7 +199,7 @@ def _turn_from_record(record: Any) -> dict[str, Any] | None:
     if not isinstance(message, dict):
         return None
 
-    blocks = _blocks_from_content(message.get("content"))
+    blocks = _blocks_from_content(message.get("content"), question_ids)
     if not blocks:
         return None
 
@@ -135,6 +223,8 @@ def _turns_with_offsets(raw: bytes) -> list[tuple[int, dict[str, Any]]]:
     """
     pairs: list[tuple[int, dict[str, Any]]] = []
     position = 0
+    # Ids of questions seen so far, so their answers can be paired up.
+    question_ids: set[str] = set()
     for line in raw.split(b"\n"):
         line_start = position
         position += len(line) + 1  # + the newline that was split away
@@ -145,7 +235,7 @@ def _turns_with_offsets(raw: bytes) -> list[tuple[int, dict[str, Any]]]:
             record = json.loads(text.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             continue
-        turn = _turn_from_record(record)
+        turn = _turn_from_record(record, question_ids)
         if turn:
             pairs.append((line_start, turn))
     return pairs

@@ -177,6 +177,12 @@ button{touch-action:manipulation}
 .dialog h2{font-size:17px;margin-bottom:3px}.dialog>p{color:var(--muted);font-size:12px;margin-bottom:14px}
 .dialog label{display:block;color:var(--muted);font-size:12px;margin:11px 0 4px}
 .dialog input,.dialog textarea{width:100%;border:1px solid var(--line);border-radius:6px;padding:9px 10px;color:var(--fg);background:var(--input-bg);outline:none}
+/* .dialog input sets width:100% for text fields, which also caught the
+   checkbox and radio in each model row: the checkbox filled the row with its
+   glyph centred, and the radio and model name were pushed off the right edge.
+   The per-model list rendered as a column of lone checkboxes -- no model
+   names, and the default could be neither seen nor clicked. */
+.dialog input[type="checkbox"],.dialog input[type="radio"]{width:auto;padding:0;margin:0;flex:0 0 auto}
 .dialog textarea{min-height:72px;resize:vertical}.dialog input:focus,.dialog textarea:focus{border-color:var(--accent)}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 #settingsStatus{min-height:20px;margin-top:8px;font-size:12px}
@@ -225,6 +231,23 @@ button{touch-action:manipulation}
 .app-setting-row{margin-bottom:12px}
 .setting-hint{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-top:3px;display:block}
 .settings-footer{border-top:1px solid var(--line);padding-top:12px;margin-top:16px}
+
+/* Transcript questions: the options a terminal session offered */
+.tx-question{margin:8px 0;padding:10px 12px;border:1px solid var(--accent);border-left-width:3px;border-radius:8px;background:var(--panel2)}
+.tx-q-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.tx-q-tag{flex:none;font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);background:rgba(88,166,255,.14);padding:2px 6px;border-radius:8px}
+.tx-q-ask{font-size:13px;font-weight:600}
+.tx-q-note{margin-top:4px;font-size:11px;color:var(--muted)}
+.tx-q-options{list-style:none;display:grid;grid-template-columns:minmax(0,1fr);gap:4px;margin:8px 0 0;min-width:0}
+.tx-q-option{display:grid;grid-template-columns:minmax(0,1fr);gap:1px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--input-bg);min-width:0}
+.tx-q-label{font-size:12px;font-weight:600}
+.tx-q-desc{font-size:11px;color:var(--muted)}
+.tx-q-status{margin-top:8px;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--warn)}
+.tx-q-status.tx-q-done{color:var(--muted)}
+.tx-answer{display:flex;align-items:baseline;gap:8px;margin:6px 0;padding:6px 10px;border-radius:6px;background:var(--input-bg);min-width:0}
+.tx-a-tag{flex:none;font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;color:var(--ok)}
+.tx-answer-declined .tx-a-tag{color:var(--bad)}
+.tx-a-text{min-width:0;font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
 
 /* Usage panel */
 .usage-toolbar select{flex:1;min-width:0;max-width:200px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--input-bg);color:var(--fg);font-size:12px}

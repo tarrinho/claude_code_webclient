@@ -626,3 +626,33 @@ class ProxyLimitTests(unittest.TestCase):
             self.assertEqual(first._value, claude_proxy._MAX_CONCURRENT)
         asyncio.run(_check())
         claude_proxy._slots = None
+
+
+class ProxyBetaOptOutTests(unittest.TestCase):
+    """Experimental betas are disabled for every spawned turn."""
+
+    VAR = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"
+
+    def test_set_for_every_backend_shape(self):
+        # Must be applied before the provider branch, so a proxy machine gets
+        # it too -- not only Anthropic ones.
+        for backend in (
+            None,
+            {},
+            {"provider": "proxy"},
+            {"provider": "anthropic", "base_url": "https://h", "api_key": "k"},
+            {"provider": "anthropic", "base_url": "https://h"},
+        ):
+            env = claude_proxy._backend_env(backend)
+            self.assertEqual(env.get(self.VAR), "1", repr(backend))
+
+    def test_overrides_an_inherited_value(self):
+        with patch.dict(os.environ, {self.VAR: "0"}):
+            self.assertEqual(
+                claude_proxy._backend_env({"provider": "proxy"}).get(self.VAR), "1"
+            )
+
+    def test_does_not_disturb_the_inherited_environment(self):
+        env = claude_proxy._backend_env(None)
+        self.assertTrue(env.get("PATH"))
+        self.assertEqual(env.get("HOME"), os.environ.get("HOME"))

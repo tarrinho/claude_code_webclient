@@ -154,6 +154,43 @@ def _fallback_dir() -> str:
     )  # nosec B108: configurable private fallback
 
 
+def _backend_env(backend: object) -> dict[str, str]:
+    """Return the child environment, applying an ``anthropic`` backend if given.
+
+    Starts from this process's environment so the child keeps PATH, HOME and
+    the host's Claude credentials -- passing a bare dict would leave `claude`
+    unable to start. The API key is applied as an environment variable and
+    never as an argument: /proc/<pid>/cmdline is world-readable.
+    """
+    env = dict(os.environ)
+    # Opt out of experimental beta features for every spawned turn. Set before
+    # the provider branch below so it applies to proxy machines too, not only
+    # Anthropic ones.
+    env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+    if not isinstance(backend, dict) or backend.get("provider") != "anthropic":
+        return env
+    base_url = backend.get("base_url")
+    if isinstance(base_url, str) and base_url.strip():
+        env["ANTHROPIC_BASE_URL"] = base_url.strip()
+    api_key = backend.get("api_key")
+    if isinstance(api_key, str) and api_key.strip():
+        env["ANTHROPIC_API_KEY"] = api_key.strip()
+    else:
+        # No key supplied: drop any inherited one so the CLI falls through to
+        # the host's own login instead of a stale key from the proxy's shell.
+        env.pop("ANTHROPIC_API_KEY", None)
+        # CLAUDE_CODE_SIMPLE makes the CLI ignore OAuth and the keychain, so an
+        # inherited one would leave the host login unreadable and the turn
+        # unauthenticated.
+        env.pop("CLAUDE_CODE_SIMPLE", None)
+    log.info(
+        "backend=anthropic base_url=%s api_key=%s",
+        env.get("ANTHROPIC_BASE_URL", "<default>"),
+        "set" if "ANTHROPIC_API_KEY" in env else "host login",
+    )
+    return env
+
+
 def _safe_cwd(work_dir: str | None) -> str | None:
     """Return a cwd for the subprocess, confined to the allowed root.
 
@@ -346,6 +383,7 @@ async def _handle_client(
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE,
             cwd=_cwd,
+            env=_backend_env(turn.get("backend")),
             # Claude's stream-json frames routinely exceed the default 64 KiB
             # StreamReader limit (a single large tool result is enough). Hitting
             # it raises LimitOverrunError mid-turn and truncates the response.

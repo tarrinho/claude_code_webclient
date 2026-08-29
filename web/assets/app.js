@@ -255,10 +255,15 @@ function _renderUsage() {
     if (row.errors) {
       name.appendChild(_cell(`${row.errors} failed`, 'usage-errors'));
     }
+    // The dash carries its own explanation, preferring Claude Code's own
+    // verdict on the cost basis over anything we infer from the base URL.
     const cost = row.cost_usd === null || row.cost_usd === undefined
       ? _cell('—', 'usage-num usage-muted',
               row.cost_note || 'Not available for this backend.')
-      : _cell(`$${Number(row.cost_usd).toFixed(2)}`, 'usage-num');
+      : _cell(`$${Number(row.cost_usd).toFixed(2)}`, 'usage-num',
+              row.cost_basis_unknown
+                ? 'Claude Code reported the cost basis as unknown.'
+                : undefined);
     line.append(
       name,
       _cell(String(row.requests), 'usage-num'),

@@ -139,6 +139,10 @@ async def init() -> None:
             cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
             cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             cost_usd              REAL,
+            -- The CLI's own view of whether cost_usd means anything
+            -- ('unknown' for third-party models). Explains a suppressed
+            -- cost; never decides it.
+            cost_basis            TEXT,
             duration_ms           INTEGER,
             is_error              INTEGER NOT NULL DEFAULT 0,
             created_at            TEXT NOT NULL
@@ -179,6 +183,15 @@ async def _ensure_chat_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
         )
+    # usage_events gained cost_basis after first release.
+    try:
+        ue_cursor = await db_conn.execute("PRAGMA table_info(usage_events)")
+        ue_columns = {row["name"] for row in await ue_cursor.fetchall()}
+    except Exception:  # noqa: BLE001 -- PRAGMA can fail on new tables
+        ue_columns = set()
+    if ue_columns and "cost_basis" not in ue_columns:
+        await db_conn.execute("ALTER TABLE usage_events ADD COLUMN cost_basis TEXT")
+
     if ma_columns and "provider" not in ma_columns:
         # Existing rows are all claude_proxy hosts -- the default matches them.
         await db_conn.execute(
@@ -972,6 +985,7 @@ async def usage_record(
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
     cost_usd: float | None = None,
+    cost_basis: str | None = None,
     duration_ms: int | None = None,
     is_error: bool = False,
 ) -> int | None:
@@ -986,9 +1000,9 @@ async def usage_record(
         cur = await db_conn.execute(
             "INSERT INTO usage_events "
             "(chat_id, owner_id, model, provider, input_tokens, output_tokens, "
-            " cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, "
-            " is_error, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " cache_read_tokens, cache_creation_tokens, cost_usd, cost_basis, "
+            " duration_ms, is_error, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id,
                 owner_id,
@@ -999,6 +1013,7 @@ async def usage_record(
                 int(cache_read_tokens or 0),
                 int(cache_creation_tokens or 0),
                 cost_usd,
+                cost_basis,
                 duration_ms,
                 1 if is_error else 0,
                 _now(),
@@ -1023,7 +1038,9 @@ async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, A
         "SUM(cache_read_tokens) AS cache_read_tokens, "
         "SUM(cache_creation_tokens) AS cache_creation_tokens, "
         "SUM(COALESCE(cost_usd, 0)) AS cost_usd, "
-        "SUM(is_error) AS errors, MAX(created_at) AS last_used "
+        "SUM(is_error) AS errors, MAX(created_at) AS last_used, "
+        "MAX(CASE WHEN cost_basis = 'unknown' THEN 1 ELSE 0 END) "
+        "AS cost_basis_unknown "
         f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
         "GROUP BY model, provider ORDER BY requests DESC, model ASC",
         params,
@@ -1060,7 +1077,8 @@ async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     """
     cur = await db_conn.execute(
         "SELECT u.created_at, u.chat_id, u.model, u.provider, u.input_tokens, "
-        "u.output_tokens, u.cost_usd, u.duration_ms, u.is_error, c.title AS chat_title "
+        "u.output_tokens, u.cost_usd, u.cost_basis, u.duration_ms, u.is_error, "
+        "c.title AS chat_title "
         "FROM usage_events u LEFT JOIN chats c ON c.id = u.chat_id "
         "WHERE u.owner_id = ? ORDER BY u.id DESC LIMIT ?",
         # `limit or 50` would read 0 as "use the default", disagreeing with the

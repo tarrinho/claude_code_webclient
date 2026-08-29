@@ -94,6 +94,7 @@ def usage_frame(obj: dict) -> dict | None:
         for name, stats in model_usage.items():
             if not isinstance(name, str) or not isinstance(stats, dict):
                 continue
+            basis = stats.get("costBasis")
             models[name] = {
                 "input_tokens": _int_or_zero(stats.get("inputTokens")),
                 "output_tokens": _int_or_zero(stats.get("outputTokens")),
@@ -101,6 +102,10 @@ def usage_frame(obj: dict) -> dict | None:
                 "cache_creation_tokens": _int_or_zero(
                     stats.get("cacheCreationInputTokens")
                 ),
+                # The CLI's own assessment of whether its cost figure means
+                # anything. Recorded to explain a suppressed cost, never to
+                # decide it -- see _usage_provider in app.py.
+                "cost_basis": basis if isinstance(basis, str) else None,
             }
     if not models:
         usage = obj.get("usage")

@@ -615,8 +615,16 @@ async def handle_chat_export(request: Request, chat_id: str):
     )
 
 
-def _usage_provider(machine: dict | None) -> str:
-    """Classify a machine for usage accounting. See _record_turn_usage."""
+def backend_kind(machine: dict | None) -> str:
+    """Classify a backend as ``anthropic``, ``anthropic-compatible`` or ``proxy``.
+
+    The stored ``provider`` column only says which wire protocol a machine
+    speaks, so a self-hosted gateway reads ``anthropic`` there too. This is the
+    finer distinction that actually matters: whether requests reach the official
+    API. Single source of truth for both usage accounting (where it decides
+    whether the CLI's cost figure is trustworthy) and the machine API, so the
+    two surfaces cannot drift apart.
+    """
     if not machine or machine.get("provider") != "anthropic":
         return "proxy"
     base_url = (machine.get("base_url") or "").strip()
@@ -654,7 +662,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
         machine = await db.ai_machine_active(owner)
     except Exception:  # noqa: BLE001 -- accounting must not break a live turn
         machine = None
-    provider = _usage_provider(machine)
+    provider = backend_kind(machine)
     cost = frame.get("cost_usd")
     for index, (model, stats) in enumerate(models.items()):
         if not isinstance(stats, dict):
@@ -669,6 +677,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             cache_read_tokens=stats.get("cache_read_tokens", 0),
             cache_creation_tokens=stats.get("cache_creation_tokens", 0),
             cost_usd=cost if index == 0 else None,
+            cost_basis=stats.get("cost_basis"),
             duration_ms=frame.get("duration_ms"),
             is_error=bool(frame.get("is_error")),
         )
@@ -1387,7 +1396,13 @@ async def handle_usage_get(request: Request):
     for row in totals:
         if row.get("provider") != "anthropic":
             row["cost_usd"] = None
-            row["cost_note"] = "Priced with Anthropic rates; not meaningful for this backend."
+            # Prefer the CLI's own assessment when it gave one: that is a
+            # statement from the tool, not an inference from our base_url.
+            row["cost_note"] = (
+                "Claude Code reported the cost basis as unknown for this model."
+                if row.get("cost_basis_unknown")
+                else "Priced with Anthropic rates; not meaningful for this backend."
+            )
     recent = await db.usage_recent(owner, limit)
     for row in recent:
         if row.get("provider") != "anthropic":
@@ -1646,7 +1661,11 @@ async def handle_machines_list(request: Request):
     return JSONResponse(
         {
             "machines": [
-                {k: v for k, v in m.items() if k != "api_key"} for m in machines
+                # backend_kind is derived, not stored: clients should not have to
+                # reimplement the provider/base_url rule to label a backend.
+                {**{k: v for k, v in m.items() if k != "api_key"},
+                 "backend_kind": backend_kind(m)}
+                for m in machines
             ],
         }
     )
@@ -1659,6 +1678,7 @@ async def handle_machine_get(request: Request, machine_id: str):
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
     m = {k: v for k, v in machine.items() if k != "api_key"}
+    m["backend_kind"] = backend_kind(machine)
     # ai_machine_get does not select api_key, so this reads the flag the query
     # derives instead; deriving it from the absent column was always false.
     m["has_api_key"] = bool(machine.get("has_api_key"))

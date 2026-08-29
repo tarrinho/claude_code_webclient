@@ -2,10 +2,11 @@
 import json
 import tempfile
 import unittest
-from fastapi import HTTPException
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from fastapi import HTTPException
 
 import app
 import auth
@@ -357,37 +358,34 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await db.setting_get("ai_machine_host"), "10.0.0.5")
         self.assertEqual(await db.setting_get("session_ttl"), "3600")
 
+    # These four use assertRaises rather than try/except. With the assertion
+    # inside an except block, a handler that stopped rejecting bad input would
+    # raise nothing and the test would pass vacuously -- the opposite of what
+    # a validation test is for.
+
     async def test_settings_patch_rejects_non_string_host(self):
-        handler = app.handle_settings_patch
         req = _FakeRequest(json_data={"ai_machine_host": 12345})
-        try:
-            await handler(req)
-        except Exception as exc:
-            self.assertEqual(exc.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_rejects_malformed_host(self):
-        handler = app.handle_settings_patch
         req = _FakeRequest(json_data={"ai_machine_host": "http://evil.com"})
-        try:
-            await handler(req)
-        except Exception as exc:
-            self.assertEqual(exc.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_rejects_port_in_host(self):
-        handler = app.handle_settings_patch
         req = _FakeRequest(json_data={"ai_machine_host": "10.0.0.1:8080"})
-        try:
-            await handler(req)
-        except Exception as exc:
-            self.assertEqual(exc.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_rejects_invalid_ttl(self):
-        handler = app.handle_settings_patch
         req = _FakeRequest(json_data={"session_ttl": 0})
-        try:
-            await handler(req)
-        except Exception as exc:
-            self.assertEqual(exc.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 # ── App: hostname/IP validation ───────────────────────────────────────────────

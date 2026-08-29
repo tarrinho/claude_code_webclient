@@ -55,6 +55,75 @@ _TOOL_SUMMARY_KEYS: Final[tuple[str, ...]] = (
 
 _TOOL_SUMMARY_MAX: Final[int] = 120
 
+# The headline is a label; these carry what the tool was actually asked to do
+# and what came back. Both are capped because a transcript holds whole file
+# reads and thousand-line command outputs -- the point is to show the substance
+# of a call, not to replay the session's entire I/O into the browser.
+_TOOL_DETAIL_MAX: Final[int] = 2000
+_TOOL_RESULT_MAX: Final[int] = 2000
+
+# Rendered in the detail line, in this order. "description" is deliberately
+# absent: it is the headline already, and repeating it below said nothing.
+_TOOL_DETAIL_KEYS: Final[tuple[str, ...]] = (
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "url",
+    "query",
+    "prompt",
+    "old_string",
+    "new_string",
+    "content",
+)
+
+
+def _clip(text: str, limit: int) -> tuple[str, bool]:
+    """Return *text* cut to *limit*, and whether anything was removed."""
+    if len(text) <= limit:
+        return text, False
+    return text[:limit].rstrip(), True
+
+
+def _tool_detail(block: dict[str, Any]) -> tuple[str, bool]:
+    """The tool's actual input, newlines intact, as ``(text, truncated)``.
+
+    Newlines are kept rather than collapsed: a multi-line shell script or patch
+    is unreadable as one run-on line, and this is the field a reader opens
+    precisely when the one-line headline was not enough.
+    """
+    payload = block.get("input")
+    if not isinstance(payload, dict):
+        return ("", False) if payload is None else _clip(str(payload), _TOOL_DETAIL_MAX)
+    found: list[tuple[str, str]] = []
+    for key in _TOOL_DETAIL_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            found.append((key, value.strip()))
+    if not found:
+        return "", False
+    # One field needs no label -- a bare command reads as a command. Several do,
+    # or an Edit's two strings would run together with nothing saying which is
+    # the old text and which is the new.
+    if len(found) == 1:
+        return _clip(found[0][1], _TOOL_DETAIL_MAX)
+    return _clip("\n".join(f"{key}: {value}" for key, value in found), _TOOL_DETAIL_MAX)
+
+
+def _result_text(content: Any) -> str:
+    """Flatten a tool_result's content, which is a string or a block list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                pieces.append(str(item.get("text") or ""))
+            elif isinstance(item, str):
+                pieces.append(item)
+        return "\n".join(pieces)
+    return "" if content is None else json.dumps(content)
+
 
 def _tool_summary(block: dict[str, Any]) -> str:
     """One line describing a tool call, e.g. ``Bash(git status)``."""
@@ -114,14 +183,35 @@ def _blocks_from_content(
                         question_ids.add(question["id"])
                     blocks.append(question)
                     continue
-            blocks.append({"kind": "tool", "text": _tool_summary(item)})
+            detail, clipped = _tool_detail(item)
+            block: dict[str, Any] = {"kind": "tool", "text": _tool_summary(item)}
+            if detail:
+                # Carried alongside the headline rather than replacing it: the
+                # summary stays scannable and the detail is there when the
+                # summary ("Bash(Stage 15 docs + version sweep)") says nothing
+                # about what actually ran.
+                block["detail"] = detail
+                block["detail_truncated"] = clipped
+            if item.get("id"):
+                block["id"] = str(item["id"])
+            blocks.append(block)
         elif kind == "tool_result" and item.get("tool_use_id") in question_ids:
-            # tool_result is dropped for every other tool -- it is replayed tool
-            # output and dwarfs the conversation. A question's result is the
-            # answer, so it is the one worth keeping.
+            # A question's result is its answer, and renders as one.
             blocks.append(_answer_block(item))
-        # tool_result is deliberately dropped: it is tool output replayed into
-        # the next user record, and it dwarfs the conversation itself.
+        elif kind == "tool_result":
+            # Every other tool result: capped and folded away by the client, so
+            # a reader can open the output of a specific call without the page
+            # carrying every byte the session ever read.
+            text, clipped = _clip(_result_text(item.get("content")).strip(),
+                                  _TOOL_RESULT_MAX)
+            if text:
+                blocks.append({
+                    "kind": "result",
+                    "id": str(item.get("tool_use_id") or ""),
+                    "text": text,
+                    "truncated": clipped,
+                    "error": bool(item.get("is_error")),
+                })
     return blocks
 
 
@@ -204,7 +294,7 @@ def _turn_from_record(
         return None
 
     role = message.get("role") or record.get("type")
-    return {
+    turn = {
         "role": "assistant" if role == "assistant" else "user",
         "timestamp": str(record.get("timestamp") or ""),
         "model": str(message.get("model") or "") if role == "assistant" else "",
@@ -212,6 +302,12 @@ def _turn_from_record(
         # Subagent traffic is interleaved into the same file; let the UI mark it.
         "sidechain": bool(record.get("isSidechain")),
     }
+    # Tool output is replayed to the model inside a user record, so without this
+    # flag every command result would render as though the operator had typed
+    # it. The client uses it to attach the output to the call above instead.
+    if all(b.get("kind") == "result" for b in blocks):
+        turn["tool_output"] = True
+    return turn
 
 
 def _turns_with_offsets(raw: bytes) -> list[tuple[int, dict[str, Any]]]:

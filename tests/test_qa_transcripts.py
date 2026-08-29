@@ -127,11 +127,27 @@ class RecordParsingTests(unittest.TestCase):
                       "content": [{"type": "text", "text": "x"}]}}
             self.assertIsNone(transcripts._turn_from_record(record), kind)
 
-    def test_tool_result_blocks_are_dropped(self):
-        """Tool output is replayed into the next user record; it is not speech."""
+    def test_tool_result_becomes_a_flagged_output_turn(self):
+        """Tool output is kept, but never presented as something the user said.
+
+        It used to be dropped outright, which made a run of checks unreadable
+        in the viewer: the stages produce nothing but output, so the page
+        showed a list of command names and no results.
+        """
         record = {"type": "user", "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "huge output"}]}}
-        self.assertIsNone(transcripts._turn_from_record(record))
+        turn = transcripts._turn_from_record(record)
+        self.assertTrue(turn["tool_output"],
+                        "replayed output must not be credited to the operator")
+        self.assertEqual(turn["blocks"], [{
+            "kind": "result", "id": "t1", "text": "huge output",
+            "truncated": False, "error": False,
+        }])
+
+    def test_a_typed_message_is_not_flagged_as_tool_output(self):
+        """The flag has to distinguish, or it says nothing."""
+        turn = transcripts._turn_from_record(user("I typed this"))
+        self.assertFalse(turn.get("tool_output"))
 
     def test_empty_thinking_is_dropped_but_real_thinking_is_kept(self):
         """Stored thinking blocks are often signature-only with no text."""
@@ -154,6 +170,113 @@ class RecordParsingTests(unittest.TestCase):
     def test_sidechain_is_flagged(self):
         turn = transcripts._turn_from_record(assistant("sub", isSidechain=True))
         self.assertTrue(turn["sidechain"])
+
+
+class ToolDetailTests(unittest.TestCase):
+    """The one-line summary is a label; the detail is what actually ran.
+
+    "Bash(Stage 15 docs + version sweep)" is a description written for a human
+    and says nothing about the command. The viewer showed only that, so a
+    reader could not tell what a call did or what it returned.
+    """
+
+    def test_the_command_is_carried_not_just_its_description(self):
+        block = {"name": "Bash", "input": {
+            "description": "Stage 15 docs + version sweep",
+            "command": "grep -n FastAPI README.md"}}
+        self.assertEqual(transcripts._tool_summary(block),
+                         "Bash(Stage 15 docs + version sweep)")
+        detail, truncated = transcripts._tool_detail(block)
+        self.assertEqual(detail, "grep -n FastAPI README.md")
+        self.assertFalse(truncated)
+
+    def test_newlines_survive(self):
+        """A shell script collapsed onto one line is unreadable."""
+        script = "cd /tmp\nls -la\necho done"
+        detail, _ = transcripts._tool_detail({"name": "Bash", "input": {"command": script}})
+        self.assertEqual(detail, script)
+
+    def test_a_single_field_is_not_labelled(self):
+        detail, _ = transcripts._tool_detail({"name": "Bash", "input": {"command": "ls"}})
+        self.assertEqual(detail, "ls", "one field needs no key prefix")
+
+    def test_several_fields_are_labelled(self):
+        """An Edit's two strings would otherwise run together unidentified."""
+        detail, _ = transcripts._tool_detail({"name": "Edit", "input": {
+            "file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}})
+        self.assertIn("old_string: a", detail)
+        self.assertIn("new_string: b", detail)
+
+    def test_long_input_is_capped_and_says_so(self):
+        detail, truncated = transcripts._tool_detail(
+            {"name": "Bash", "input": {"command": "x" * 9000}})
+        self.assertTrue(truncated)
+        self.assertLessEqual(len(detail), transcripts._TOOL_DETAIL_MAX)
+
+    def test_no_recognised_field_yields_no_detail(self):
+        detail, truncated = transcripts._tool_detail({"name": "Task", "input": {"other": 1}})
+        self.assertEqual(detail, "")
+        self.assertFalse(truncated)
+
+    def test_non_dict_input_does_not_raise(self):
+        for payload in ("a string", ["a"], 7, None):
+            transcripts._tool_detail({"name": "Weird", "input": payload})
+
+    def test_the_rendered_block_actually_carries_the_detail(self):
+        """The tests above call _tool_detail directly, which proves nothing
+        about what reaches the client. Removing the field from the block left
+        every one of them green, so assert the wiring itself."""
+        block = transcripts._blocks_from_content([{
+            "type": "tool_use", "id": "t1", "name": "Bash",
+            "input": {"description": "Stage 15", "command": "grep -n x README.md"},
+        }])[0]
+        self.assertEqual(block["detail"], "grep -n x README.md",
+                         "the client renders block['detail']; without it the "
+                         "viewer shows only the description again")
+        self.assertFalse(block["detail_truncated"])
+
+    def test_a_block_with_no_detail_omits_the_field(self):
+        """An absent field is how the client knows there is nothing to fold."""
+        block = transcripts._blocks_from_content(
+            [{"type": "tool_use", "id": "t1", "name": "Task", "input": {"other": 1}}])[0]
+        self.assertNotIn("detail", block)
+
+
+class ToolResultTests(unittest.TestCase):
+    """Output is shown, capped, and marked when it failed."""
+
+    def _result(self, content, **extra):
+        item = {"type": "tool_result", "tool_use_id": "t1", "content": content}
+        item.update(extra)
+        blocks = transcripts._blocks_from_content([item])
+        return blocks[0] if blocks else None
+
+    def test_string_content_is_kept(self):
+        self.assertEqual(self._result("done")["text"], "done")
+
+    def test_block_list_content_is_flattened(self):
+        block = self._result([{"type": "text", "text": "one"},
+                              {"type": "text", "text": "two"}])
+        self.assertEqual(block["text"], "one\ntwo")
+
+    def test_an_error_is_flagged(self):
+        self.assertTrue(self._result("boom", is_error=True)["error"])
+
+    def test_long_output_is_capped_and_says_so(self):
+        block = self._result("y" * 9000)
+        self.assertTrue(block["truncated"])
+        self.assertLessEqual(len(block["text"]), transcripts._TOOL_RESULT_MAX)
+
+    def test_empty_output_produces_no_block(self):
+        self.assertIsNone(self._result("   "))
+
+    def test_the_call_and_its_result_share_an_id(self):
+        """The client attaches output to its call, so the ids must line up."""
+        call = transcripts._blocks_from_content(
+            [{"type": "tool_use", "id": "abc", "name": "Bash",
+              "input": {"command": "ls"}}])[0]
+        self.assertEqual(call["id"], "abc")
+        self.assertEqual(self._result("out")["id"], "t1")
 
 
 class ToolSummaryTests(unittest.TestCase):

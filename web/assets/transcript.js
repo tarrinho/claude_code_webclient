@@ -41,6 +41,28 @@ const STYLES = `
 .tx-text:last-child { margin-bottom: 0; }
 .tx-tool { font-family: ui-monospace, monospace; font-size: .82rem; opacity: .8;
   padding: .15rem 0; overflow-wrap: anywhere; }
+/* A tool call with its input folded underneath. The marker is the only
+   affordance saying there is more to see, so it stays visible. */
+details.tx-tool { opacity: 1; }
+.tx-tool-head { cursor: pointer; opacity: .8; list-style: revert; }
+.tx-tool-head::marker { color: var(--accent, #2b6cb0); }
+/* Smaller than the conversation on purpose: this is reference detail, and it
+   must not compete with what was actually said. */
+.tx-tool-detail, .tx-result-body {
+  font-family: ui-monospace, monospace; font-size: .72rem; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: .3rem 0 .4rem;
+  padding: .4rem .55rem; border-radius: 5px; max-height: 22rem; overflow: auto;
+  background: var(--code-bg, rgba(127, 127, 127, .1));
+  border-left: 2px solid var(--line, #d7dde5); }
+.tx-result { margin: .1rem 0 .35rem; }
+.tx-result-head { cursor: pointer; font-family: ui-monospace, monospace;
+  font-size: .72rem; opacity: .6; list-style: revert; }
+.tx-result-head::marker { color: var(--accent, #2b6cb0); }
+.tx-result-error > .tx-result-head { color: #c0392b; opacity: .85; }
+.tx-result-error .tx-result-body { border-left-color: #c0392b; }
+.tx-clip { display: block; opacity: .6; font-style: italic; }
+/* Replayed output, not something the operator typed. */
+.tx-turn[data-tool-output="true"] { border-left-color: #b0b6bd; opacity: .9; }
 .tx-think { font-style: italic; opacity: .65; white-space: pre-wrap;
   overflow-wrap: anywhere; border-left: 2px dotted currentColor; padding-left: .5rem; }
 .tx-note { opacity: .7; font-size: .85rem; padding: .5rem 0; }
@@ -233,10 +255,56 @@ export function mountTranscriptViewer() {
     return row;
   }
 
+  // A tool call renders as its one-line headline, with the input it actually
+  // ran folded underneath. The headline alone was often uninformative --
+  // "Bash(Stage 15 docs + version sweep)" is a label written for a human and
+  // says nothing about the command -- but putting the full input inline would
+  // bury the conversation in shell scripts.
+  function buildTool(block) {
+    const head = `🔧 ${block.text}`;
+    if (!block.detail) return el('div', 'tx-tool', head);
+    const box = document.createElement('details');
+    box.className = 'tx-tool tx-tool-open';
+    const summary = document.createElement('summary');
+    summary.className = 'tx-tool-head';
+    summary.textContent = head;
+    box.appendChild(summary);
+    // textContent, never innerHTML: this is attacker-influenced text in the
+    // sense that it is whatever was typed or generated, and it routinely
+    // contains angle brackets.
+    const pre = el('pre', 'tx-tool-detail', block.detail);
+    if (block.detail_truncated) pre.appendChild(el('span', 'tx-clip', '\n… truncated'));
+    box.appendChild(pre);
+    return box;
+  }
+
+  // Tool output, folded away. Shown at all because a run of checks is mostly
+  // its output -- the pipeline stages in this project produce nothing else.
+  function buildResult(block) {
+    const box = document.createElement('details');
+    box.className = block.error ? 'tx-result tx-result-error' : 'tx-result';
+    const summary = document.createElement('summary');
+    summary.className = 'tx-result-head';
+    const lines = block.text.split('\n').length;
+    summary.textContent = block.error
+      ? `⚠ output · ${lines} line${lines === 1 ? '' : 's'}`
+      : `output · ${lines} line${lines === 1 ? '' : 's'}`;
+    box.appendChild(summary);
+    const pre = el('pre', 'tx-result-body', block.text);
+    if (block.truncated) pre.appendChild(el('span', 'tx-clip', '\n… truncated'));
+    box.appendChild(pre);
+    return box;
+  }
+
   function buildTurn(turn) {
     const wrap = el('div', 'tx-turn');
     wrap.dataset.role = turn.role;
-    const who = turn.role === 'assistant' ? 'assistant' : 'you';
+    // Tool output arrives inside a user record, so labelling it by role alone
+    // would credit the operator with output they never typed.
+    if (turn.tool_output) wrap.dataset.toolOutput = 'true';
+    const who = turn.tool_output
+      ? 'tool output'
+      : (turn.role === 'assistant' ? 'assistant' : 'you');
     const bits = [who];
     if (turn.model) bits.push(turn.model);
     if (turn.sidechain) bits.push('subagent');
@@ -248,7 +316,9 @@ export function mountTranscriptViewer() {
       } else if (block.kind === 'answer') {
         wrap.appendChild(buildAnswer(block));
       } else if (block.kind === 'tool') {
-        wrap.appendChild(el('div', 'tx-tool', `🔧 ${block.text}`));
+        wrap.appendChild(buildTool(block));
+      } else if (block.kind === 'result') {
+        wrap.appendChild(buildResult(block));
       } else if (block.kind === 'thinking') {
         wrap.appendChild(el('div', 'tx-think', block.text));
       } else {

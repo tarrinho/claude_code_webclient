@@ -69,13 +69,34 @@ class UnitQA(unittest.TestCase):
             self.assertIsNone(auth.session_get(sid))
 
     def test_build_cmd_uses_argument_list_and_resume(self):
+        """Session flags must parse as options; the prompt must not.
+
+        ``-p``/``--print`` is a boolean and the prompt is positional, so the
+        prompt goes last behind the ``--`` sentinel while the session flags
+        stay in front of it. The previous version of this test asserted the
+        opposite order, which is how the resume bug survived: claude treated
+        ``--resume <id>`` as prompt data and silently started a new session
+        on every turn, so conversations never carried any history.
+        """
         with patch.object(runner.uuid, "uuid4", return_value="new-session"):
             fresh = runner._build_cmd_direct("$(touch /tmp/pwned)", None)
         resumed = runner._build_cmd_direct("hello", "existing-session")
-        self.assertIn("$(touch /tmp/pwned)", fresh)
+
         self.assertNotIn("shell=True", repr(fresh))
-        self.assertEqual(fresh[-2:], ["--session-id", "new-session"])
-        self.assertEqual(resumed[-2:], ["--resume", "existing-session"])
+        # The prompt is the final operand, protected by the sentinel.
+        self.assertEqual(fresh[-2:], ["--", "$(touch /tmp/pwned)"])
+        self.assertEqual(resumed[-2:], ["--", "hello"])
+        # Session flags are real options: before the sentinel, adjacent pair.
+        sentinel = resumed.index("--")
+        self.assertEqual(
+            resumed[sentinel - 2 : sentinel], ["--resume", "existing-session"]
+        )
+        sentinel_fresh = fresh.index("--")
+        self.assertEqual(
+            fresh[sentinel_fresh - 2 : sentinel_fresh],
+            ["--session-id", "new-session"],
+        )
+        self.assertNotIn("--resume", fresh)
 
     def test_build_env_strips_unapproved_host_variables(self):
         with patch.dict(os.environ, {"HOME": "/tmp/home", "SECRET_HOST_VALUE": "hidden"}, clear=True):
@@ -215,8 +236,19 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_sessions_resume(request, "../../unknown")
+            await app.handle_sessions_resume(request, "unknown-session-id")
         self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_resume_handler_rejects_traversal_session_id(self):
+        # A traversal-shaped id is rejected on its shape (400) before any
+        # lookup: session_id[:8] is interpolated into the work_dir path, and
+        # 'a/../../' resolves above PROJECTS_ROOT.
+        request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
+        for bad in ("../../unknown", "a/../../", "x/../../../../", "has space"):
+            with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])), \
+                 self.assertRaises(HTTPException) as ctx:
+                await app.handle_sessions_resume(request, bad)
+            self.assertEqual(ctx.exception.status_code, 400, bad)
 
     async def test_resume_handler_reuses_existing_linked_chat(self):
         await db.chat_create("existing", "Existing", None, "/tmp/existing", "alice")
@@ -419,7 +451,12 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
              patch.object(app.runner, "run_turn", AsyncMock(side_effect=runner.TurnError("proxy down", fatal=False))):
             response = await app.handle_submit_message(request, "chat")
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(json.loads(response.body), {"error": "proxy down", "fatal": False})
+        # The raw exception text must not reach the client -- this path now
+        # masks it the same way the SSE branch always did. It previously
+        # returned str(e) verbatim, which this test asserted.
+        body = json.loads(response.body)
+        self.assertEqual(body, {"error": app._SSE_INTERNAL, "fatal": False})
+        self.assertNotIn("proxy down", response.body.decode())
 
     async def test_submit_rejects_missing_chat_before_runner(self):
         request = SimpleNamespace(

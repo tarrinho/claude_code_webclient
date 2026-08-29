@@ -202,7 +202,6 @@ async def handle_client(
     claude_cmd = [
         claude_path,
         "-p",
-        prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -211,12 +210,16 @@ async def handle_client(
     claude_model = requested_model or os.environ.get("WC_CLAUDE_MODEL")
     if claude_model:
         claude_cmd.extend(["--model", claude_model])
-    # Sentinel: everything after ``--`` is treated as data by claude-code.
-    claude_cmd.append("--")
+    # Session flags are real options, so they must come *before* the ``--``
+    # sentinel. Placing them after it made claude treat them as prompt data
+    # and silently start a fresh session, so every turn lost its history.
     if session_id:
         claude_cmd.extend(["--resume", session_id])
     else:
         claude_cmd.extend(["--session-id", str(uuid.uuid4())])
+    # ``-p``/``--print`` is a boolean flag and the prompt is positional, so the
+    # sentinel is what keeps a prompt starting with "-" from parsing as options.
+    claude_cmd.extend(["--", prompt])
 
     try:
         import os as _os

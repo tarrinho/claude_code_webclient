@@ -19,14 +19,27 @@ export function filterSearchResults(results, query) {
   );
 }
 
+// Returns a DocumentFragment, never an HTML string: the snippet is message
+// content (both the user's prompt and the model's reply), so interpolating it
+// into innerHTML made any message containing markup a stored XSS. The wc_csrf
+// cookie is readable by JS by design, so script execution here would hand over
+// the whole API.
 function highlightSnippet(snippet, query) {
-  if (!snippet || !query) return snippet;
-  const idx = snippet.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return snippet;
-  const before = snippet.slice(0, idx);
-  const match = snippet.slice(idx, idx + query.length);
-  const after = snippet.slice(idx + query.length);
-  return `${before}<mark>${match}</mark>${after}`;
+  const fragment = document.createDocumentFragment();
+  if (!snippet) return fragment;
+
+  const idx = query ? snippet.toLowerCase().indexOf(query.toLowerCase()) : -1;
+  if (idx === -1) {
+    fragment.appendChild(document.createTextNode(snippet));
+    return fragment;
+  }
+
+  const mark = document.createElement('mark');
+  mark.textContent = snippet.slice(idx, idx + query.length);
+  fragment.appendChild(document.createTextNode(snippet.slice(0, idx)));
+  fragment.appendChild(mark);
+  fragment.appendChild(document.createTextNode(snippet.slice(idx + query.length)));
+  return fragment;
 }
 
 export function groupChats(chats) {
@@ -113,7 +126,7 @@ export function createChatListController(dependencies) {
       if (chat.snippet) {
         const snippetEl = document.createElement('div');
         snippetEl.className = 'chat-snippet';
-        snippetEl.innerHTML = highlightSnippet(chat.snippet, query || messageQuery);
+        snippetEl.appendChild(highlightSnippet(chat.snippet, query || messageQuery));
         meta.appendChild(snippetEl);
       }
 

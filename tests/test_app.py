@@ -179,7 +179,7 @@ class ExportTests(unittest.IsolatedAsyncioTestCase):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
             await app.handle_chat_export(
-                SimpleNamespace(state=SimpleNamespace(session={"user": "admin"})),
+                SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": "admin"})),
                 "nonexistent",
             )
         self.assertEqual(ctx.exception.status_code, 404)
@@ -235,7 +235,7 @@ class ChatTitleDescriptionTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(chat_id, "Old", None, str(work_dir), "admin")
 
         request = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={"title": "x" * 300}),
         )
         response = await app.handle_chat_patch(request, chat_id)
@@ -267,7 +267,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         from fastapi import HTTPException
 
         request = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
         )
         with self.assertRaises(HTTPException) as ctx:
             await app.handle_chat_delete(request, "nonexistent")
@@ -281,7 +281,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         work_dir.mkdir(parents=True)
         await db.chat_create(chat_id, "Ok", None, str(work_dir), "admin")
         request = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
         )
         response = await app.handle_chat_delete(request, chat_id)
         self.assertEqual(response.status_code, 200)
@@ -298,7 +298,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         work_dir.mkdir(parents=True)
         await db.chat_create(chat_id, "Strict", None, str(work_dir), "admin")
         request = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={"pinned": "yes"}),
         )
         from fastapi import HTTPException
@@ -313,14 +313,14 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(chat_id, "Valid", None, str(work_dir), "admin")
         from fastapi import HTTPException
         blank = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={"title": "   "}),
         )
         with self.assertRaises(HTTPException) as ctx:
             await app.handle_chat_patch(blank, chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
         capped = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={"description": "d" * 600}),
         )
         await app.handle_chat_patch(capped, chat_id)
@@ -335,7 +335,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         await db.messages_append(chat_id, "user", "hi")
         await db.messages_append(chat_id, "assistant", "hello!")
         request = SimpleNamespace(
-            state=SimpleNamespace(session={"user": "admin"}),
+            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
         )
         response = await app.handle_chat_export(request, chat_id)
         self.assertEqual(response.status_code, 200)
@@ -475,7 +475,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     def _make_request(self, **extra):
-        return SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}), **extra)
+        return SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": "admin"}), **extra)
 
     async def test_machine_list_empty(self):
         resp = await app.handle_machines_list(self._make_request())
@@ -607,7 +607,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     def _make_request(self, **extra):
-        return SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}), **extra)
+        return SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": "admin"}), **extra)
 
     async def test_settings_get_includes_defaults(self):
         resp = await app.handle_settings_get(self._make_request())

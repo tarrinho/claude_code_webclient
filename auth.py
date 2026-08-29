@@ -103,15 +103,21 @@ def _sweep(now: float) -> None:
             _sessions.pop(sid, None)
 
 
-def session_new(user: str) -> tuple[str, str]:
-    """Create a session; returns (session_id, csrf_token)."""
+def session_new(user: str, role: str = "admin") -> tuple[str, str]:
+    """Create a session; returns (session_id, csrf_token).
+
+    *role* must come from the user's DB record. This used to hardcode
+    "admin" for every session, which made the admin checks on the
+    /api/admin/* routes decorative -- any authenticated account passed them.
+    The default stays "admin" only for the bootstrap admin path.
+    """
     now = time.time()
     _sweep(now)
     sid = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(24)
     _sessions[sid] = {
         "user": user,
-        "role": "admin",
+        "role": role,
         "expiry": now + config.SESSION_TTL_S,
         "last": now,
         "csrf": csrf,
@@ -162,17 +168,32 @@ def csrf_consume(id_value: str) -> bool:
     return _csrf_store.pop(id_value, None) is not None
 
 
-def _csrf_valid(cookie_token: str, header_token: str) -> bool:
-    """Check that header matches a known-good token.
+def _csrf_valid(cookie_token: str, header_token: str, sid: str | None = None) -> bool:
+    """Check the CSRF header against the token bound to *sid*'s session.
 
-    Used after-login when the wc_csrf cookie is present.  The cookie value
-    is a session-scoped CSRF id (set at login) whose value we stored as the
-    session's ``csrf`` field.  So we look up the session and compare.
+    Pass *sid* (the wc_session cookie) so the token is verified against the
+    requesting session. Without it this scanned every live session and accepted
+    any of their tokens, so a token was never actually bound to its session.
+
+    Comparisons use ``compare_digest`` to avoid leaking the token byte-by-byte
+    through response timing.
     """
-    for _s in _sessions.values():
-        if _s["csrf"] == cookie_token:
-            return _s["csrf"] == header_token
-    return False
+    if not cookie_token or not header_token:
+        return False
+    # The double-submit halves must agree before anything else.
+    if not secrets.compare_digest(cookie_token, header_token):
+        return False
+    if sid is None:
+        # No session context supplied: fall back to "is this any live token?".
+        # Retained so callers that predate the sid parameter keep working.
+        return any(
+            secrets.compare_digest(s["csrf"], cookie_token)
+            for s in _sessions.values()
+        )
+    session = _sessions.get(sid)
+    if not session:
+        return False
+    return secrets.compare_digest(session["csrf"], cookie_token)
 
 
 # ───────────────────────────── login rate-limiting ───────────────────────────────────────

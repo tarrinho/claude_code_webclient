@@ -329,13 +329,14 @@ def _build_cmd_direct(
 ) -> list[str]:
     """Build the argument list for the Claude Code subprocess.
 
-    User data is placed *after* ``--`` so that a prompt starting with ``--``
-    or ``-`` is never mistaken for a CLI flag.
+    ``-p``/``--print`` is a boolean flag and the prompt is a positional
+    argument, so the prompt -- and only the prompt -- goes after the ``--``
+    sentinel, where a leading dash cannot be mistaken for a CLI flag.
+    Session flags stay before the sentinel so they are parsed as options.
     """
     cmd = [
         "claude",
         "-p",
-        prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -343,12 +344,11 @@ def _build_cmd_direct(
     ]
     if model:
         cmd.extend(["--model", model])
-    # Sentinel: everything after ``--`` is treated as data by claude-code.
-    cmd.append("--")
     if session_id:
         cmd.extend(["--resume", session_id])
     else:
         cmd.extend(["--session-id", str(uuid.uuid4())])
+    cmd.extend(["--", prompt])
     return cmd
 
 

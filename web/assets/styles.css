@@ -74,8 +74,6 @@ button{touch-action:manipulation}
 .model-label{font:10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--accent);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
 .conversation-model-wrap{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);white-space:nowrap}
 .conversation-model{max-width:180px;border:1px solid var(--line);border-radius:5px;padding:3px 5px;background:var(--input-bg);color:var(--fg);font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
-.skill-card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--input-bg)}
-.skills-list{display:grid;gap:8px}.skill-name{font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px}.skill-card p{font-size:11px;color:var(--muted);margin-top:4px}.skill-badge{font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);background:var(--panel2);padding:2px 7px;border-radius:10px}.skill-badge.skill-active{color:var(--ok);background:rgba(63,185,80,.12)}
 @keyframes pulse{50%{opacity:.3}}
 .messages-wrap{position:relative;flex:1;min-height:0;display:flex}
 .messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth}
@@ -116,9 +114,12 @@ button{touch-action:manipulation}
 .toast-region{position:fixed;right:16px;bottom:90px;z-index:300;display:grid;gap:8px;width:min(360px,calc(100vw - 32px))}
 .toast{padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:7px;background:var(--panel);box-shadow:0 8px 28px rgba(0,0,0,.25)}
 .toast.error{border-left-color:var(--bad)}
-.dialog-backdrop{position:fixed;inset:0;z-index:400;display:none;place-items:center;padding:18px;background:rgba(0,0,0,.62)}
+.dialog-backdrop{position:fixed;inset:0;z-index:400;display:none;place-items:center;padding:18px;background:rgba(0,0,0,.62);overflow-y:auto}
 .dialog-backdrop.open{display:grid}
-.dialog{width:min(430px,100%);border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+/* Cap the dialog to the viewport and let the body scroll, so a long panel can
+   never push the footer buttons off-screen. */
+.dialog{width:min(430px,100%);max-height:calc(100dvh - 36px);display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.dialog>h2,.dialog>p,.dialog-actions,.settings-tabs,.settings-footer{flex:none}
 .dialog h2{font-size:17px;margin-bottom:3px}.dialog>p{color:var(--muted);font-size:12px;margin-bottom:14px}
 .dialog label{display:block;color:var(--muted);font-size:12px;margin:11px 0 4px}
 .dialog input,.dialog textarea{width:100%;border:1px solid var(--line);border-radius:6px;padding:9px 10px;color:var(--fg);background:var(--input-bg);outline:none}
@@ -129,12 +130,14 @@ button{touch-action:manipulation}
 .btn-secondary,.btn-primary{min-height:38px;border-radius:6px;padding:7px 13px;cursor:pointer}.btn-secondary{border:1px solid var(--line);background:transparent;color:var(--fg)}.btn-primary{border:1px solid var(--accent);background:var(--accent);color:#fff}.btn-danger{border-color:var(--bad);background:var(--bad)}
 .btn-add-machine{margin-top:12px;min-height:36px;font-size:13px;width:100%}
 .dialog.settings-dialog{width:min(560px,100%)}
-.settings-tabs{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:16px}
+#chatFields{flex:1 1 auto;min-height:0;overflow-y:auto}
+.settings-tabs{display:flex;gap:0;flex-wrap:nowrap;overflow-x:auto;border-bottom:1px solid var(--line);margin-bottom:16px}
 .settings-tab{border:0;background:none;color:var(--muted);padding:8px 14px;font-size:13px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;min-height:auto}
 .settings-tab:hover{color:var(--fg)}
 .settings-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
-.settings-body{min-height:120px}
+.settings-body{flex:1 1 auto;min-width:0;min-height:120px;overflow-y:auto;overscroll-behavior:contain}
 .settings-panel{padding:4px 0 8px}
+.settings-panel:focus-visible{outline:none}
 .settings-panel>p{color:var(--muted);font-size:12px;margin-bottom:12px}
 .machine-list{display:grid;gap:8px;margin-bottom:12px}
 .machine-card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--input-bg)}
@@ -154,8 +157,42 @@ button{touch-action:manipulation}
 .app-setting-row{margin-bottom:12px}
 .setting-hint{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-top:3px;display:block}
 .settings-footer{border-top:1px solid var(--line);padding-top:12px;margin-top:16px}
+
+/* Skills panel */
+/* Sticky so the filter stays reachable while scrolling a long list. */
+.skills-toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:2px 0 8px;background:var(--panel)}
+.skills-toolbar input{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:var(--input-bg);color:var(--fg);font-size:12px;outline:none}
+.skills-toolbar input:focus{border-color:var(--accent)}
+.skills-count{flex:none;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);white-space:nowrap}
+.skills-session{font-size:11px;color:var(--muted);margin-bottom:10px}
+/* minmax(0,1fr) everywhere: an `auto` grid track sizes to min-content, which for
+   the nowrap summary line would widen the panel and add a horizontal scrollbar. */
+.skills-list{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+.skills-notice{padding:20px 12px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted);font-size:12px}
+.skill-skeleton{height:36px;border-radius:8px;background:var(--panel2);opacity:.55;animation:pulse 1.4s infinite}
+.skill-group{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-width:0}
+.skill-group-head{display:flex;align-items:center;gap:7px;width:100%;min-height:32px;border:0;border-radius:6px;background:none;color:var(--fg);padding:4px 4px;font-size:12px;font-weight:650;text-align:left;cursor:pointer}
+.skill-group-head:hover{background:var(--panel2)}
+.skill-group-caret{flex:none;display:inline-block;font-size:9px;color:var(--muted);transition:transform .15s ease}
+.skill-group-head[aria-expanded="true"] .skill-group-caret{transform:rotate(90deg)}
+.skill-group-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skill-group-count{flex:none;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);background:var(--panel2);padding:2px 7px;border-radius:10px}
+.skill-group-items{list-style:none;display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-width:0}
+.skill-card{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--input-bg)}
+.skill-card-active{border-left:3px solid var(--ok)}
+.skill-summary-row{display:flex;align-items:center;gap:8px;padding:8px 11px;border-radius:8px;cursor:pointer;list-style:none}
+.skill-summary-row::-webkit-details-marker{display:none}
+.skill-summary-row:hover{background:var(--panel2)}
+.skill-summary-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.skill-name{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:12.5px}
+.skill-summary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;color:var(--muted)}
+.skill-card details[open] .skill-summary{display:none}
+.skill-badge{flex:none;font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;text-transform:uppercase;color:var(--ok);background:rgba(63,185,80,.12);padding:2px 6px;border-radius:9px}
+.skill-description{padding:8px 11px 10px;border-top:1px solid var(--line);font-size:12px;line-height:1.55;color:var(--muted)}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 @media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}.chat-actions,.message-tools{opacity:1}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
+/* Reclaim chrome on small screens so the scrolling panel gets usable height. */
+@media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}

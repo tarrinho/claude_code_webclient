@@ -17,11 +17,22 @@ class FrontendStructureTests(unittest.TestCase):
         cls.conversation = (ASSETS / "conversation.js").read_text()
 
     def test_html_uses_external_assets(self):
-        self.assertIn('type="module" src="/assets/app.js"', self.html)
+        # Trailing quote omitted so a cache-busting ?v=N query stays valid.
+        self.assertIn('type="module" src="/assets/app.js', self.html)
         self.assertIn('rel="stylesheet" href="/assets/styles.css"', self.html)
         self.assertNotIn("<style>", self.html)
         self.assertNotIn("async function sendMessage", self.html)
         self.assertNotIn("<script>\n", self.html)
+
+    def test_machine_form_script_matches_markup(self):
+        """app.js must not read machine inputs that index.html no longer defines.
+
+        Sending fields the form does not collect makes the server reject the
+        whole PATCH body, which is what broke machine editing in 0.3.1.
+        """
+        for element_id in ("machinePort", "machineBaseUrl", "machineDescription"):
+            self.assertNotIn(element_id, self.html)
+            self.assertNotIn(element_id, self.app)
 
     def test_api_exports_contract(self):
         self.assertIn("export class ApiError", self.api)

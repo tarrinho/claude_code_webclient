@@ -10,6 +10,7 @@ import re
 import sqlite3
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -19,6 +20,9 @@ import config
 
 db_conn: aiosqlite.Connection | None = None
 _messages_batch_lock: asyncio.Lock | None = None
+
+# How long index maintenance waits for the SQLite writer lock before giving up.
+_FTS_BUSY_TIMEOUT_MS: Final[int] = 5000
 
 
 async def init() -> None:
@@ -60,7 +64,9 @@ async def init() -> None:
             host          TEXT NOT NULL,
             port          INTEGER NOT NULL DEFAULT 9000,
             api_key       TEXT,
-            model         TEXT NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+            -- Keep in step with config.MODEL_NAME. A retired model id here
+            -- makes every turn fail on a fresh database.
+            model         TEXT NOT NULL DEFAULT 'claude-sonnet-5',
             base_url      TEXT,
             description   TEXT,
             active        INTEGER NOT NULL DEFAULT 0,
@@ -224,7 +230,12 @@ async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
     vals = list(fields.values()) + [_now(), chat_id, owner_id]
     cur = await db_conn.execute(sql, vals)
     await db_conn.commit()
-    return cur.rowcount > 0
+    updated = cur.rowcount > 0
+    # Each indexed row carries the chat title, so a rename makes every entry
+    # for this chat stale. Rebuild them.
+    if updated and "title" in fields:
+        await _fts_rebuild(chat_id)
+    return updated
 
 
 async def chat_archive(chat_id: str, owner_id: str, archived: int = 1) -> bool:
@@ -239,6 +250,12 @@ async def chat_delete(chat_id: str, owner_id: str) -> bool:
     )
     if await cur.fetchone() is None:
         return False
+    # Capture the message ids first: once the rows are gone, an id lookup via
+    # the messages table matches nothing and the index entries are orphaned.
+    cur = await db_conn.execute(
+        "SELECT id FROM messages WHERE chat_id = ?", (chat_id,)
+    )
+    msg_ids = [row["id"] for row in await cur.fetchall()]
     try:
         await db_conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         await db_conn.execute(
@@ -246,10 +263,10 @@ async def chat_delete(chat_id: str, owner_id: str) -> bool:
             (chat_id, owner_id),
         )
         await db_conn.commit()
-        _refresh_fts_sync(chat_id)
     except Exception:
         await db_conn.rollback()
         raise
+    await _fts_forget_ids(msg_ids)
     return True
 
 
@@ -308,7 +325,9 @@ async def chat_fork(
                 (new_chat_id, role, content, now2),
             )
         await db_conn.commit()
-        _refresh_fts_sync(new_chat_id)
+        # A fork is a bulk copy into a brand-new chat, so a per-chat rebuild
+        # indexes exactly the rows just inserted.
+        await _fts_rebuild(new_chat_id)
 
     return await chat_get(new_chat_id, owner_id)
 
@@ -350,11 +369,11 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
         cur = await db_conn.execute(
-            "SELECT id FROM messages_fts "  # nosec B608: MATCH is SQL keyword
+            "SELECT rowid FROM messages_fts "  # nosec B608: MATCH is SQL keyword
             "WHERE content MATCH ?",
             (query,),
         )
-        match_ids = [row["id"] for row in await cur.fetchall()]
+        match_ids = [row["rowid"] for row in await cur.fetchall()]
     except Exception:  # noqa: BLE001 -- FTS5 may not exist on fresh DBs
         match_ids = []
 
@@ -364,7 +383,10 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
     # Fetch full chat details for matching rows, deduplicate by chat_id.
     _placeholders = ",".join("?" for _ in match_ids)
     cur = await db_conn.execute(
-        f"SELECT {_CHAT_COLUMNS}, m.id AS msg_id, m.content AS msg_snippet "  # nosec B608: static SQL
+        f"SELECT c.id AS chat_id, c.title, c.description, c.session_id, "
+        f"c.work_dir, c.owner_id, c.created_at, c.updated_at, "
+        f"c.archived, c.pinned, c.pinned_at, c.deleted_at, c.model, "
+        f"c.ai_machine_id, m.id AS msg_id, m.content AS msg_snippet "  # nosec B608: static SQL
         "FROM chats c "
         f"JOIN messages m ON m.chat_id = c.id AND m.id IN ({_placeholders}) "
         "WHERE c.owner_id = ? AND c.deleted_at IS NULL "
@@ -373,11 +395,12 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
     )
     seen: set[str] = set()
     for row in await cur.fetchall():
-        chat_id = row["id"]
+        chat_id = row["chat_id"]
         if chat_id in seen:
             continue
         seen.add(chat_id)
         d = dict(row)
+        d["id"] = d.pop("chat_id")  # keep key name consistent with other endpoints
         d["snippet"] = d.pop("msg_snippet", "") or ""
         rows.append(d)
 
@@ -398,18 +421,101 @@ async def messages_get(chat_id: str) -> list[dict[str, Any]]:
 
 # ── FTS5 index maintenance ──────────────────────────────────────────────────────────
 
-def _refresh_fts_sync(chat_id: str | None = None) -> None:
-    """Rebuild the FTS5 index for the given chat (or all chats).
+def _fts_connect() -> sqlite3.Connection:
+    """Open the dedicated synchronous connection used for index maintenance.
 
-    Uses a separate synchronous sqlite3 connection to avoid aiosqlite
-    transaction conflicts.  Called after messages are inserted /
-    deleted.
+    A separate connection avoids aiosqlite transaction conflicts. busy_timeout
+    makes it wait for the writer lock instead of failing with "database is
+    locked" the moment a turn is writing concurrently.
     """
-    try:
-        sync = sqlite3.connect(str(Path(config.DB_PATH)), check_same_thread=False)
-        sync.execute("PRAGMA journal_mode=WAL")
-        sync.execute("PRAGMA foreign_keys=ON")
+    sync = sqlite3.connect(str(Path(config.DB_PATH)), check_same_thread=False)
+    sync.execute("PRAGMA journal_mode=WAL")
+    sync.execute("PRAGMA foreign_keys=ON")
+    sync.execute(f"PRAGMA busy_timeout={_FTS_BUSY_TIMEOUT_MS}")
+    return sync
 
+
+def _fts_index_ids_sync(msg_ids: Sequence[int]) -> None:
+    """Index exactly *msg_ids*, replacing any existing entries for them.
+
+    Cost is proportional to len(msg_ids), not to the size of the conversation.
+    Each message is indexed with its chat title prefixed so that title-based
+    searches also surface through the index.
+    """
+    ids = [i for i in msg_ids if i is not None]
+    if not ids:
+        return
+    sync = None
+    try:
+        sync = _fts_connect()
+        marks = ",".join("?" for _ in ids)
+        sync.execute(
+            f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
+            ids,
+        )
+        rows = sync.execute(
+            "SELECT m.id, m.content, c.title FROM messages m "
+            "JOIN chats c ON c.id = m.chat_id "
+            f"WHERE m.id IN ({marks})",  # nosec B608: generated placeholders
+            ids,
+        ).fetchall()
+        for msg_id, content, title in rows:
+            if content:
+                text = f"{title} {content}" if title else content
+                sync.execute(
+                    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+                    (msg_id, text),
+                )
+        sync.commit()
+    except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
+        pass
+    finally:
+        if sync is not None:
+            try:
+                sync.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
+
+
+def _fts_forget_ids_sync(msg_ids: Sequence[int]) -> None:
+    """Drop *msg_ids* from the index.
+
+    Callers must capture the ids **before** deleting the message rows: a purge
+    that resolves ids via the messages table after the fact matches nothing and
+    leaves the entries orphaned.
+    """
+    ids = [i for i in msg_ids if i is not None]
+    if not ids:
+        return
+    sync = None
+    try:
+        sync = _fts_connect()
+        marks = ",".join("?" for _ in ids)
+        sync.execute(
+            f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
+            ids,
+        )
+        sync.commit()
+    except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
+        pass
+    finally:
+        if sync is not None:
+            try:
+                sync.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
+
+
+def _refresh_fts_sync(chat_id: str | None = None) -> None:
+    """Full rebuild of the FTS5 index for one chat, or for every chat.
+
+    Used for backfill and after a chat title changes (the title is baked into
+    each indexed row). Prefer :func:`_fts_index_ids_sync` on the write path --
+    this walks every message of the chat.
+    """
+    sync = None
+    try:
+        sync = _fts_connect()
         if chat_id:
             # Delete stale entries for this chat.
             sync.execute(
@@ -420,27 +526,46 @@ def _refresh_fts_sync(chat_id: str | None = None) -> None:
         else:
             sync.execute("DELETE FROM messages_fts")
 
-        # Re-insert all message content.
+        # Re-insert all message content, prefixed with chat title.
         rows = sync.execute(
-            "SELECT id, content FROM messages"
-            + (" WHERE chat_id = ?" if chat_id else "")
-            + (" ORDER BY id ASC" if chat_id else ""),
+            "SELECT m.id, m.content, c.title FROM messages m "
+            "JOIN chats c ON c.id = m.chat_id"
+            + (" AND m.chat_id = ?" if chat_id else "")
+            + (" ORDER BY m.id ASC" if chat_id else ""),
             (chat_id,) if chat_id else (),
-        )
-        for row in rows:
-            content = row[1]
+        ).fetchall()
+        for msg_id, content, title in rows:
             if content:
+                # Prefix with title so title searches also work.
+                text = f"{title} {content}" if title else content
                 sync.execute(
                     "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
-                    (row[0], content),
+                    (msg_id, text),
                 )
         sync.commit()
-        sync.close()
     except Exception:  # noqa: BLE001 -- FTS5 may not exist, silent fail
-        try:
-            sync.close()
-        except Exception:  # noqa: BLE001,S110
-            pass
+        pass
+    finally:
+        if sync is not None:
+            try:
+                sync.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
+
+
+# ── Async wrappers: keep the blocking sqlite3 work off the event loop ──────────
+
+
+async def _fts_index_ids(msg_ids: Sequence[int]) -> None:
+    await asyncio.to_thread(_fts_index_ids_sync, list(msg_ids))
+
+
+async def _fts_forget_ids(msg_ids: Sequence[int]) -> None:
+    await asyncio.to_thread(_fts_forget_ids_sync, list(msg_ids))
+
+
+async def _fts_rebuild(chat_id: str | None = None) -> None:
+    await asyncio.to_thread(_refresh_fts_sync, chat_id)
 
 
 async def messages_append(chat_id: str, role: str, content: str) -> int:
@@ -450,7 +575,7 @@ async def messages_append(chat_id: str, role: str, content: str) -> int:
     )
     await db_conn.commit()
     last_id = cur.lastrowid
-    _refresh_fts_sync(chat_id)
+    await _fts_index_ids([last_id])
     return last_id
 
 
@@ -476,7 +601,7 @@ async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]
         except Exception:
             await db_conn.rollback()
             raise
-        _refresh_fts_sync(chat_id)
+        await _fts_index_ids(ids)
         return ids
 
 
@@ -690,22 +815,30 @@ def slug_pattern(slug: str) -> str | None:
 # ── Database backup / restore ────────────────────────────────────────────────────────
 
 
-async def db_backup() -> bytes:
-    """Return a gzip-compressed SQLite backup of the entire database."""
-    backup_path = f"{config.DB_PATH}.backup.{int(time.time())}"
+def _db_backup_sync(backup_path: str) -> bytes:
+    """Copy the database and return it gzip-compressed. Blocking; call off-loop."""
+    import gzip as _gzip
+
+    sync_conn = sqlite3.connect(backup_path)
+    db_conn_sync = sqlite3.connect(str(config.DB_PATH))
     try:
-        # Use sqlite3 synchronous module to create a backup.
-        sync_conn = sqlite3.connect(str(backup_path))
-        db_conn_sync = sqlite3.connect(str(config.DB_PATH))
         db_conn_sync.backup(sync_conn)
+    finally:
         db_conn_sync.close()
         sync_conn.close()
+    return _gzip.compress(Path(backup_path).read_bytes())
 
-        # Read the backup file and gzip it.
-        backup_data = Path(backup_path).read_bytes()
-        import gzip as _gzip
 
-        return _gzip.compress(backup_data)
+async def db_backup() -> bytes:
+    """Return a gzip-compressed SQLite backup of the entire database.
+
+    sqlite3.backup(), the file read and the gzip pass are all blocking and
+    scale with database size, so they run in a worker thread. On the event
+    loop they would stall every other request, including live SSE streams.
+    """
+    backup_path = f"{config.DB_PATH}.backup.{int(time.time())}"
+    try:
+        return await asyncio.to_thread(_db_backup_sync, backup_path)
     finally:
         try:
             Path(backup_path).unlink()
@@ -835,7 +968,8 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
 
         model = data.get("model", "")
         if not model and session_id:
-            model = _lookup_session_model(session_id) or ""
+            # Transcript reads are blocking file I/O; keep them off the loop.
+            model = await asyncio.to_thread(_lookup_session_model, session_id) or ""
 
         sessions.append(
             {
@@ -870,58 +1004,97 @@ def _format_timestamp(ts: float | str | None) -> str:
 
 _CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"
 
+# Session ids are UUID-like. Restrict the charset before interpolating one into
+# a glob pattern so it cannot traverse out of the projects directory.
+_SESSION_ID_SAFE_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+# Bytes read from the end of a transcript on the fast path.
+_TRANSCRIPT_TAIL_BYTES: Final[int] = 1 << 20
+
 # In-process cache keyed by session_id; refreshed each read_claude_sessions call
 _model_cache: dict[str, str] = {}
 
 
-def _extract_model_from_transcript(session_id: str) -> str | None:
-    """Return the last non-synthetic model from Claude transcript JSONL files.
+def _session_transcript_paths(session_id: str) -> list[Path]:
+    """Return the transcript files belonging to *session_id*.
 
-    Scans every *.jsonl under ~/.claude/projects/*.jsonl looking for assistant
-    messages that carry a ``model`` field matching *session_id*.  The last
-    non-``<synthetic>`` model found is returned.
+    Claude stores each transcript as
+    ``~/.claude/projects/<project-dir>/<session_id>.jsonl`` -- one level below
+    the projects root, which is why a top-level ``*.jsonl`` glob matched
+    nothing. Targeting the filename also avoids reading unrelated transcripts.
+    """
+    if not _SESSION_ID_SAFE_RE.fullmatch(session_id):
+        return []
+    try:
+        if not _CLAUDE_PROJECTS_DIR.is_dir():
+            return []
+        return sorted(_CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))
+    except (PermissionError, OSError):
+        return []
+
+
+def _model_from_lines(lines: Sequence[str], session_id: str) -> str | None:
+    """Scan *lines* newest-first and return the first usable model."""
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record: dict = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # Assistant message line carries the model in message.model
+        if record.get("type") != "assistant":
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") != "assistant":
+            continue
+        if record.get("sessionId") != session_id:
+            continue
+        model = message.get("model")
+        if model and model != "<synthetic>":
+            return model
+    return None
+
+
+def _extract_model_from_transcript(session_id: str) -> str | None:
+    """Return the last non-synthetic model recorded for *session_id*.
+
+    Reads only that session's transcript, and only its tail on the fast path --
+    the newest assistant message is at the end, and transcripts reach tens of
+    megabytes. Falls back to a full scan when the tail holds no assistant
+    message.
 
     Returns None when no matching transcript line is found.
     """
-    project_dir = _CLAUDE_PROJECTS_DIR
-    if not project_dir.is_dir():
-        return None
-
-    try:
-        jsonl_files = list(project_dir.glob("*.jsonl"))
-    except (PermissionError, OSError):
-        return None
-
-    last_model: str | None = None
-
-    for fpath in jsonl_files:
+    for fpath in _session_transcript_paths(session_id):
         try:
-            content = fpath.read_text(encoding="utf-8", errors="replace")
+            size = fpath.stat().st_size
+            with fpath.open("rb") as fh:
+                if size > _TRANSCRIPT_TAIL_BYTES:
+                    fh.seek(size - _TRANSCRIPT_TAIL_BYTES)
+                    chunk = fh.read()
+                    # Drop the leading partial line left by the seek.
+                    newline = chunk.find(b"\n")
+                    chunk = chunk[newline + 1 :] if newline >= 0 else b""
+                else:
+                    chunk = fh.read()
+            model = _model_from_lines(
+                chunk.decode("utf-8", errors="replace").splitlines(), session_id
+            )
+            if model:
+                return model
+            if size > _TRANSCRIPT_TAIL_BYTES:
+                # Tail held no assistant message; pay for the whole file once.
+                text = fpath.read_text(encoding="utf-8", errors="replace")
+                model = _model_from_lines(text.splitlines(), session_id)
+                if model:
+                    return model
         except OSError:
             continue
-        for line in content.strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record: dict = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            # Assistant message line carries the model in message.model
-            if record.get("type") != "assistant":
-                continue
-            message = record.get("message")
-            if not isinstance(message, dict):
-                continue
-            if message.get("role") != "assistant":
-                continue
-            if record.get("sessionId") != session_id:
-                continue
-            model = message.get("model")
-            if model and model != "<synthetic>":
-                last_model = model
-
-    return last_model
+    return None
 
 
 def _lookup_session_model(session_id: str) -> str | None:

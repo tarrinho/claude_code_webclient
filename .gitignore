@@ -15,7 +15,10 @@ venv/
 .coverage
 htmlcov/
 
-# Runtime data
+# Runtime data — the whole directory: it holds the SQLite database plus
+# session_secret.txt / proxy_token.txt, which the *.db globs below do not cover.
+/data/
+
 *.db
 *.db-shm
 *.db-wal

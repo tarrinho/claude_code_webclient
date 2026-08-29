@@ -25,6 +25,11 @@ let _currentTab = 'machines';
 let _modelOptions = [];
 let _searchMode = 'title'; // 'title' | 'message'
 let _searchDebounce = null;
+let _skillsData = null;          // last successful /api/skills payload
+let _skillsFetchedFor = null;    // chat id the payload was fetched for
+let _skillFilter = '';
+let _skillDebounce = null;
+const _collapsedSkillGroups = new Set();
 
 function showToast(message, type = '') {
   const toast = document.createElement('div');
@@ -155,6 +160,7 @@ function _switchTab(tab) {
     const active = t.dataset.tab === tab;
     t.classList.toggle('active', active);
     t.setAttribute('aria-selected', String(active));
+    t.tabIndex = active ? 0 : -1;
   });
   const map = { machines: 'panelMachines', models: 'panelModels', skills: 'panelSkills', app: 'panelApp' };
   const activeId = map[tab] || 'panelMachines';
@@ -173,46 +179,185 @@ function setStatus(text, type) {
   if (type === 'success') setTimeout(() => { el.textContent = ''; el.className = ''; }, 2000);
 }
 
-// ── Machines ──────────────────────────────────────────────────────────────────────
+// ── Skills ────────────────────────────────────────────────────────────────────────
 
-async function loadSkills() {
+function _skillsNotice(text) {
+  const notice = document.createElement('div');
+  notice.className = 'skills-notice';
+  notice.textContent = text;
+  return notice;
+}
+
+/** Placeholder rows so the panel does not flash empty while fetching. */
+function _renderSkillSkeleton() {
   const list = byId('skillsList');
   if (!list) return;
-  list.replaceChildren();
-  try {
-    const chatId = state.currentChat?.id ? `?chat_id=${encodeURIComponent(state.currentChat.id)}` : '';
-    const response = await apiFetch(`/api/skills${chatId}`);
-    if (!response.ok) throw new Error('Could not load skills');
-    const skills = (await response.json()).skills || [];
-    if (!skills.length) {
-      const empty = document.createElement('div');
-      empty.className = 'sidebar-empty';
-      empty.textContent = 'No installed skills found.';
-      list.appendChild(empty);
-      return;
-    }
-    skills.forEach(skill => {
-      const card = document.createElement('div');
-      card.className = 'skill-card';
-      const title = document.createElement('div');
-      title.className = 'skill-name';
-      title.textContent = skill.name;
-      const status = document.createElement('span');
-      status.className = skill.active ? 'skill-badge skill-active' : 'skill-badge';
-      status.textContent = skill.active ? 'Active this session' : 'Installed';
-      title.appendChild(status);
-      const description = document.createElement('p');
-      description.textContent = skill.description || 'No description provided.';
-      card.append(title, description);
-      list.appendChild(card);
+  const rows = Array.from({length: 5}, () => {
+    const row = document.createElement('div');
+    row.className = 'skill-skeleton';
+    return row;
+  });
+  list.replaceChildren(...rows);
+  byId('skillsCount').textContent = 'Loading…';
+}
+
+function _skillMatches(skill, needle) {
+  if (!needle) return true;
+  return skill.name.toLowerCase().includes(needle)
+    || (skill.description || '').toLowerCase().includes(needle);
+}
+
+/** One collapsed/expandable card. Long descriptions stay behind a disclosure. */
+function _buildSkillCard(skill, isPlugin) {
+  const item = document.createElement('li');
+  item.className = skill.active ? 'skill-card skill-card-active' : 'skill-card';
+
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.className = 'skill-summary-row';
+
+  const heading = document.createElement('span');
+  heading.className = 'skill-name';
+  // The group header already names the plugin, so drop the redundant prefix.
+  heading.textContent = isPlugin ? skill.name.split(':').slice(1).join(':') : skill.name;
+  summary.appendChild(heading);
+
+  if (skill.active) {
+    const badge = document.createElement('span');
+    badge.className = 'skill-badge skill-active';
+    badge.textContent = 'Active';
+    summary.appendChild(badge);
+  }
+
+  const line = document.createElement('span');
+  line.className = 'skill-summary';
+  line.textContent = skill.summary || 'No description provided.';
+  summary.appendChild(line);
+
+  const full = document.createElement('p');
+  full.className = 'skill-description';
+  full.textContent = skill.description || 'No description provided.';
+
+  details.append(summary, full);
+  item.appendChild(details);
+  return item;
+}
+
+function _renderSkills() {
+  const list = byId('skillsList');
+  if (!list || !_skillsData) return;
+  const needle = _skillFilter.trim().toLowerCase();
+  const all = _skillsData.skills || [];
+  const sources = _skillsData.sources || [];
+  const shown = all.filter(skill => _skillMatches(skill, needle));
+
+  // Count line: absolute totals when browsing, match count when filtering.
+  const count = byId('skillsCount');
+  if (needle) {
+    count.textContent = `${shown.length} of ${all.length} skills`;
+  } else {
+    const active = _skillsData.active_count || 0;
+    count.textContent = active
+      ? `${all.length} skills · ${active} active`
+      : `${all.length} skills`;
+  }
+
+  // Which conversation the "Active" badges refer to.
+  const session = byId('skillsSession');
+  if (_skillsData.session_id) {
+    const title = state.currentChat?.title;
+    session.textContent = title
+      ? `Activity shown for “${title}”.`
+      : 'Activity shown for the current conversation.';
+    session.hidden = false;
+  } else {
+    session.textContent = 'Open a conversation to see which skills it has used.';
+    session.hidden = false;
+  }
+
+  if (!all.length) {
+    list.replaceChildren(_skillsNotice('No skills found. Add one under ~/.claude/skills.'));
+    return;
+  }
+  if (!shown.length) {
+    list.replaceChildren(_skillsNotice(`No skills match “${_skillFilter.trim()}”.`));
+    return;
+  }
+
+  const groups = sources.map(source => {
+    const items = shown.filter(skill => skill.source === source.id);
+    if (!items.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'skill-group';
+
+    // Filtering always expands, so matches are never hidden behind a collapse.
+    const collapsed = !needle && _collapsedSkillGroups.has(source.id);
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'skill-group-head';
+    head.setAttribute('aria-expanded', String(!collapsed));
+    head.addEventListener('click', () => {
+      if (_collapsedSkillGroups.has(source.id)) _collapsedSkillGroups.delete(source.id);
+      else _collapsedSkillGroups.add(source.id);
+      _renderSkills();
     });
+
+    const caret = document.createElement('span');
+    caret.className = 'skill-group-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.textContent = '▸';
+    const label = document.createElement('span');
+    label.className = 'skill-group-label';
+    label.textContent = source.label;
+    const tally = document.createElement('span');
+    tally.className = 'skill-group-count';
+    tally.textContent = needle ? `${items.length} of ${source.count}` : String(source.count);
+    head.append(caret, label, tally);
+    section.appendChild(head);
+
+    if (!collapsed) {
+      const items_el = document.createElement('ul');
+      items_el.className = 'skill-group-items';
+      const isPlugin = source.id.startsWith('plugin:');
+      // Active skills first, so session activity is visible without scrolling.
+      const ordered = [...items].sort((a, b) => Number(b.active) - Number(a.active));
+      ordered.forEach(skill => items_el.appendChild(_buildSkillCard(skill, isPlugin)));
+      section.appendChild(items_el);
+    }
+    return section;
+  }).filter(Boolean);
+
+  list.replaceChildren(...groups);
+}
+
+async function loadSkills(force = false) {
+  const list = byId('skillsList');
+  if (!list) return;
+  const chatId = state.currentChat?.id || '';
+  // Reuse the payload unless the conversation changed -- activity is per session.
+  if (!force && _skillsData && _skillsFetchedFor === chatId) {
+    _renderSkills();
+    return;
+  }
+  _renderSkillSkeleton();
+  try {
+    const query = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : '';
+    const response = await apiFetch(`/api/skills${query}`);
+    if (!response.ok) throw new Error('Could not load skills');
+    _skillsData = await response.json();
+    _skillsFetchedFor = chatId;
+    _renderSkills();
   } catch (error) {
-    const message = document.createElement('div');
-    message.className = 'sidebar-empty';
-    message.textContent = error.message;
-    list.appendChild(message);
+    _skillsData = null;
+    _skillsFetchedFor = null;
+    byId('skillsCount').textContent = '';
+    byId('skillsSession').hidden = true;
+    list.replaceChildren(_skillsNotice(error.message));
   }
 }
+
+// ── Machines ──────────────────────────────────────────────────────────────────────
 
 async function loadMachines() {
   try {
@@ -257,7 +402,7 @@ function _renderMachineList() {
 
     const meta = document.createElement('div');
     meta.className = 'machine-meta';
-    meta.textContent = `${m.host}:${m.port} · ${m.model}`;
+    meta.textContent = `${m.host}${m.model ? ' · ' + m.model : ''}`;
     top.appendChild(meta);
 
     card.appendChild(top);
@@ -352,12 +497,9 @@ function _editMachine(id) {
   byId('machineFormTitle').textContent = 'Edit machine';
   byId('machineName').value = m.name;
   byId('machineHost').value = m.host;
-  byId('machinePort').value = m.port;
   byId('machineModel').value = m.model;
-  byId('machineBaseUrl').value = m.base_url || '';
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Leave blank to keep current';
-  byId('machineDescription').value = m.description || '';
   byId('machineForm').hidden = false;
   byId('addMachineBtn').hidden = true;
   byId('machineName').focus();
@@ -366,10 +508,7 @@ function _editMachine(id) {
 async function _saveMachine() {
   const name = byId('machineName').value.trim();
   const host = byId('machineHost').value.trim();
-  const port = parseInt(byId('machinePort').value) || 9000;
-  const model = byId('machineModel').value.trim() || 'claude-sonnet-4-20250514';
-  const base_url = byId('machineBaseUrl').value.trim() || null;
-  const description = byId('machineDescription').value.trim() || null;
+  const model = (byId('machineModel').value || '').trim() || 'claude-sonnet-5';
   const api_key = byId('machineApiKey').value.trim() || null;
 
   if (!name) { byId('machineName').focus(); return; }
@@ -379,21 +518,41 @@ async function _saveMachine() {
   save.disabled = true;
   try {
     let resp;
+    // Only send fields the form actually collects — the server rejects the
+    // whole request if the body carries any field outside its allowlist.
+    const body = { name, host, model };
+    if (api_key !== null) body.api_key = api_key;
     if (_machineEditing) {
-      const body = { name, host, port, model, base_url, description };
-      if (api_key !== null) body.api_key = api_key;
       resp = await apiFetch(`/api/machines/${encodeURIComponent(_machineEditing)}`, {
         method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
       });
     } else {
       resp = await apiFetch('/api/machines', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name, host, port, model, base_url, description }),
+        body: JSON.stringify(body),
       });
     }
     if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not save machine');
+      const ct = resp.headers.get('content-type') || '';
+      let detail = '';
+      if (ct.includes('application/json')) {
+        try {
+          const data = await resp.json();
+          // The API reports failures as {"error": ...}; detail/message are
+          // fallbacks for FastAPI's own validation responses.
+          detail = data.error || data.detail || data.message || '';
+        } catch { /* ignore */ }
+      }
+      if (!detail) {
+        try {
+          detail = await resp.text();
+        } catch {
+          detail = '';
+        }
+      }
+      throw new Error(detail
+        ? `Could not save machine: ${detail}`
+        : `Could not save machine (${resp.status} ${resp.statusText})`);
     }
     _machineEditing = null;
     byId('machineForm').hidden = true;
@@ -413,12 +572,9 @@ function _showAddMachine() {
   byId('machineFormTitle').textContent = 'Add machine';
   byId('machineName').value = '';
   byId('machineHost').value = '';
-  byId('machinePort').value = '9000';
   byId('machineModel').value = '';
-  byId('machineBaseUrl').value = '';
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Optional';
-  byId('machineDescription').value = '';
   byId('machineForm').hidden = false;
   byId('addMachineBtn').hidden = true;
   byId('machineName').focus();
@@ -455,7 +611,7 @@ async function saveSettings(event) {
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not save settings');
+      throw new Error(data.error || data.detail || 'Could not save settings');
     }
     setStatus('Settings saved', 'success');
   } catch (error) {
@@ -736,6 +892,7 @@ async function loadInitialData() {
       populateModelPicker();
       listController.render(state.chats, null);
     }
+    await loadMachines();
     const lastId = storageGet('wc_last_chat');
     const last = findChat(lastId);
     if (last && !last.archived) await selectChat(last.id);
@@ -770,8 +927,30 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);
-  document.querySelectorAll('.settings-tab').forEach(tab => {
+  const settingsTabs = Array.from(document.querySelectorAll('.settings-tab'));
+  settingsTabs.forEach((tab, index) => {
     tab.addEventListener('click', () => _switchTab(tab.dataset.tab));
+    // WAI-ARIA roving tabindex: arrows move between tabs, Home/End jump to ends.
+    tab.addEventListener('keydown', event => {
+      const offsets = {ArrowRight: 1, ArrowLeft: -1};
+      let next = null;
+      if (event.key in offsets) {
+        next = (index + offsets[event.key] + settingsTabs.length) % settingsTabs.length;
+      } else if (event.key === 'Home') {
+        next = 0;
+      } else if (event.key === 'End') {
+        next = settingsTabs.length - 1;
+      }
+      if (next === null) return;
+      event.preventDefault();
+      _switchTab(settingsTabs[next].dataset.tab);
+      settingsTabs[next].focus();
+    });
+  });
+  byId('skillSearch')?.addEventListener('input', event => {
+    _skillFilter = event.target.value;
+    clearTimeout(_skillDebounce);
+    _skillDebounce = setTimeout(_renderSkills, 120);
   });
   byId('dialogCancel').addEventListener('click', closeDialog);
   byId('chatForm').addEventListener('submit', saveChatDialog);

@@ -2,7 +2,7 @@
 
 A self-hosted web interface for a local Claude Code CLI. It provides mobile-friendly conversations, SSE token streaming, SQLite persistence, resumable CLI sessions, multi-machine AI routing, and skills inventory.
 
-**Version:** 0.3.0
+**Version:** 0.5.0
 **License:** Proprietary
 
 ---
@@ -628,7 +628,7 @@ CREATE TABLE ai_machines (
     host          TEXT NOT NULL,
     port          INTEGER NOT NULL DEFAULT 9000,
     api_key       TEXT,                    -- stored plaintext (user-managed)
-    model         TEXT NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+    model         TEXT NOT NULL DEFAULT 'claude-sonnet-5',
     base_url      TEXT,                    -- e.g. http://host:11434/v1
     description   TEXT,
     active        INTEGER NOT NULL DEFAULT 0,

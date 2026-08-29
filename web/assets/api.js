@@ -14,8 +14,17 @@ function redirectToLogin() {
   window.location.replace('/login');
 }
 
+function getCsrfToken() {
+  var m = document.cookie.match(/(?:^|;\s*)wc_csrf=([^;]*)/);
+  return m ? m[1] : '';
+}
+
 export async function apiFetch(url, options = {}) {
-  const response = await fetch(url, {...options, credentials: 'same-origin'});
+  var csrf = getCsrfToken();
+  if (csrf) {
+    options.headers = { ...options.headers, 'X-CSRF-Token': csrf };
+  }
+  const response = await fetch(url, { ...options, credentials: 'same-origin' });
   if (response.status === 401) {
     redirectToLogin();
     throw new ApiError('Session expired', 401);

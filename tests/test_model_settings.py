@@ -17,9 +17,9 @@ import runner
 class _FakeRequest:
     """Minimal request replacement for app-layer handlers."""
 
-    def __init__(self, json_data=None, user="admin", client_host="127.0.0.1"):
+    def __init__(self, json_data=None, user="admin", client_host="127.0.0.1", role="admin"):
         self._json = json_data or {}
-        self.state = SimpleNamespace(session={"user": user})
+        self.state = SimpleNamespace(session={"user": user, "role": role})
         self.url = SimpleNamespace(path="/test")
         self.client = SimpleNamespace(host=client_host)
         self.headers = {}
@@ -32,10 +32,10 @@ class _FakeRequest:
 # ── Config / version ───────────────────────────────────────────────────────────
 
 class VersionTests(unittest.TestCase):
-    """VERSION constant must contain 0.3.0."""
+    """VERSION constant must contain 0.5.0."""
 
-    def test_version_contains_030(self):
-        self.assertIn("0.3.0", config.VERSION)
+    def test_version_contains_050(self):
+        self.assertIn("0.5.0", config.VERSION)
 
 
 # ── DB: model column migration ─────────────────────────────────────────────────
@@ -125,6 +125,25 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
 
 # ── DB: model extraction from transcript ───────────────────────────────────────
 
+def _write_transcript(session_id: str, records: list[dict], name: str | None = None) -> Path:
+    """Write a transcript the way Claude really stores it, and return the root.
+
+    The real layout is ``<projects>/<project-dir>/<session_id>.jsonl`` -- one
+    level below the projects root, named for the session. Earlier versions of
+    these tests wrote ``<projects>/test.jsonl``, which only ever matched the
+    old top-level glob; the assertions expecting None passed vacuously because
+    no layout produced a hit.
+    """
+    root = Path(tempfile.mkdtemp())
+    project = root / "-home-kali-projects-demo"
+    project.mkdir(parents=True)
+    path = project / f"{name or session_id}.jsonl"
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    return root
+
+
 class ModelExtractionTests(unittest.TestCase):
     """Transcript-backed model extraction works with real JSONL structure."""
 
@@ -133,64 +152,105 @@ class ModelExtractionTests(unittest.TestCase):
             self.assertIsNone(db._extract_model_from_transcript("any-session-id"))
 
     def test_synthetic_model_is_ignored(self):
-        project_dir = Path(tempfile.mkdtemp())
-        jsonl_path = project_dir / "test.jsonl"
-        jsonl_path.write_text(
-            json.dumps({"type": "assistant", "sessionId": "sess-1",
-                        "message": {"role": "assistant", "model": "<synthetic>"}})
-            + "\n"
-        )
-        with patch.object(db, "_CLAUDE_PROJECTS_DIR", project_dir):
+        root = _write_transcript("sess-1", [
+            {"type": "assistant", "sessionId": "sess-1",
+             "message": {"role": "assistant", "model": "<synthetic>"}},
+        ])
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertIsNone(db._extract_model_from_transcript("sess-1"))
 
     def test_real_model_is_returned(self):
-        project_dir = Path(tempfile.mkdtemp())
-        jsonl_path = project_dir / "test.jsonl"
-        jsonl_path.write_text(
-            json.dumps({"type": "assistant", "sessionId": "sess-2",
-                        "message": {"role": "assistant", "model": "claude-opus-5"}})
-            + "\n"
-        )
-        with patch.object(db, "_CLAUDE_PROJECTS_DIR", project_dir):
-            model = db._extract_model_from_transcript("sess-2")
-            self.assertEqual(model, "claude-opus-5")
+        root = _write_transcript("sess-2", [
+            {"type": "assistant", "sessionId": "sess-2",
+             "message": {"role": "assistant", "model": "claude-opus-5"}},
+        ])
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
+            self.assertEqual(
+                db._extract_model_from_transcript("sess-2"), "claude-opus-5"
+            )
 
     def test_last_model_wins(self):
-        project_dir = Path(tempfile.mkdtemp())
-        jsonl_path = project_dir / "test.jsonl"
-        jsonl_path.write_text(
-            json.dumps({"type": "assistant", "sessionId": "sess-3",
-                        "message": {"role": "assistant", "model": "claude-sonnet-4-20250514"}})
-            + "\n"
-            + json.dumps({"type": "assistant", "sessionId": "sess-3",
-                          "message": {"role": "assistant", "model": "claude-haiku-4-20250514"}})
-            + "\n"
-        )
-        with patch.object(db, "_CLAUDE_PROJECTS_DIR", project_dir):
-            model = db._extract_model_from_transcript("sess-3")
-            self.assertEqual(model, "claude-haiku-4-20250514")
+        root = _write_transcript("sess-3", [
+            {"type": "assistant", "sessionId": "sess-3",
+             "message": {"role": "assistant", "model": "claude-sonnet-4-20250514"}},
+            {"type": "assistant", "sessionId": "sess-3",
+             "message": {"role": "assistant", "model": "claude-haiku-4-20250514"}},
+        ])
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
+            self.assertEqual(
+                db._extract_model_from_transcript("sess-3"),
+                "claude-haiku-4-20250514",
+            )
 
     def test_wrong_session_id_ignored(self):
-        project_dir = Path(tempfile.mkdtemp())
-        jsonl_path = project_dir / "test.jsonl"
-        jsonl_path.write_text(
-            json.dumps({"type": "assistant", "sessionId": "sess-99",
-                        "message": {"role": "assistant", "model": "claude-opus-5"}})
-            + "\n"
-        )
-        with patch.object(db, "_CLAUDE_PROJECTS_DIR", project_dir):
+        # Transcript is named for the session we look up, but its records carry
+        # a different sessionId -- so the per-line check is what must reject it.
+        root = _write_transcript("sess-different", [
+            {"type": "assistant", "sessionId": "sess-99",
+             "message": {"role": "assistant", "model": "claude-opus-5"}},
+        ])
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertIsNone(db._extract_model_from_transcript("sess-different"))
 
+    def test_no_file_for_session_returns_none(self):
+        root = _write_transcript("sess-other", [
+            {"type": "assistant", "sessionId": "sess-other",
+             "message": {"role": "assistant", "model": "claude-opus-5"}},
+        ])
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
+            self.assertIsNone(db._extract_model_from_transcript("sess-absent"))
+
     def test_non_assistant_type_ignored(self):
-        project_dir = Path(tempfile.mkdtemp())
-        jsonl_path = project_dir / "test.jsonl"
-        jsonl_path.write_text(
-            json.dumps({"type": "user", "sessionId": "sess-4",
-                        "message": {"role": "user", "content": "hello"}})
-            + "\n"
-        )
-        with patch.object(db, "_CLAUDE_PROJECTS_DIR", project_dir):
+        root = _write_transcript("sess-4", [
+            {"type": "user", "sessionId": "sess-4",
+             "message": {"role": "user", "content": "hello"}},
+        ])
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertIsNone(db._extract_model_from_transcript("sess-4"))
+
+    def test_tail_scan_finds_model_in_large_transcript(self):
+        # Exceed the tail window so the fast path is exercised, with the newest
+        # model last -- that is the one that must win.
+        filler = [
+            {"type": "user", "sessionId": "sess-5",
+             "message": {"role": "user", "content": "x" * 2000}}
+            for _ in range(700)
+        ]
+        root = _write_transcript("sess-5", filler + [
+            {"type": "assistant", "sessionId": "sess-5",
+             "message": {"role": "assistant", "model": "claude-opus-5"}},
+        ])
+        size = (root / "-home-kali-projects-demo" / "sess-5.jsonl").stat().st_size
+        self.assertGreater(size, db._TRANSCRIPT_TAIL_BYTES)
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
+            self.assertEqual(
+                db._extract_model_from_transcript("sess-5"), "claude-opus-5"
+            )
+
+    def test_full_scan_fallback_when_tail_has_no_model(self):
+        # Model sits at the very start, well outside the tail window, so only
+        # the full-scan fallback can find it.
+        head = [
+            {"type": "assistant", "sessionId": "sess-6",
+             "message": {"role": "assistant", "model": "claude-haiku-4-20250514"}},
+        ]
+        filler = [
+            {"type": "user", "sessionId": "sess-6",
+             "message": {"role": "user", "content": "y" * 2000}}
+            for _ in range(700)
+        ]
+        root = _write_transcript("sess-6", head + filler)
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
+            self.assertEqual(
+                db._extract_model_from_transcript("sess-6"),
+                "claude-haiku-4-20250514",
+            )
+
+    def test_session_id_cannot_traverse_out_of_projects_dir(self):
+        root = Path(tempfile.mkdtemp())
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
+            for bad in ("../../etc/passwd", "..", "a/b", "", "./x"):
+                self.assertEqual(db._session_transcript_paths(bad), [], bad)
 
 
 # ── DB: _lookup_session_model ─────────────────────────────────────────────────
@@ -205,14 +265,12 @@ class SessionModelLookupTests(unittest.TestCase):
             self.assertEqual(result, "claude-opus-5")
 
     def test_transcript_lookup_fallback(self):
-        project_dir = Path(tempfile.mkdtemp())
-        jsonl_path = project_dir / "test.jsonl"
-        jsonl_path.write_text(
-            json.dumps({"type": "assistant", "sessionId": "fallback-sess",
-                        "message": {"role": "assistant", "model": "claude-sonnet-4-20250514"}})
-            + "\n"
-        )
-        with patch.object(db, "_CLAUDE_PROJECTS_DIR", project_dir):
+        root = _write_transcript("fallback-sess", [
+            {"type": "assistant", "sessionId": "fallback-sess",
+             "message": {"role": "assistant", "model": "claude-sonnet-4-20250514"}},
+        ])
+        db._model_cache.pop("fallback-sess", None)
+        with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             result = db._lookup_session_model("fallback-sess")
             self.assertEqual(result, "claude-sonnet-4-20250514")
 
@@ -244,7 +302,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(resp.body.decode())
         self.assertIn("ai_machine_host", body)
         self.assertIn("version", body)
-        self.assertEqual(body["version"], "0.3.0")
+        self.assertEqual(body["version"], "0.5.0")
 
     async def test_settings_patch_updates_host(self):
         handler = app.handle_settings_patch
@@ -445,6 +503,91 @@ class ChatModelFieldTest(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(chat_id, "Empty Model", None, work_dir, "admin")
         chat = await db.chat_get(chat_id, "admin")
         self.assertIsNone(chat.get("model"))
+
+
+# ── App: machine PATCH contract ────────────────────────────────────────────────
+
+class MachinePatchTests(unittest.IsolatedAsyncioTestCase):
+    """PATCH /api/machines/{id} -- the body shape the settings form sends.
+
+    handle_machine_patch rejects the entire request when the body carries any
+    field outside _MACHINE_ALLOWED_FIELDS, so the client and the allowlist have
+    to agree exactly. They drifted apart in 0.3.1 and every edit returned 400.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        await auth.bootstrap_admin()
+        await db.ai_machine_create(
+            "m1", "Workstation", "10.0.0.5", 9000, None,
+            "claude-sonnet-5", None, None, "admin",
+        )
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_patch_form_body_updates_model(self):
+        """The exact body _saveMachine sends is accepted and persists."""
+        req = _FakeRequest(json_data={
+            "name": "Workstation",
+            "host": "10.0.0.5",
+            "model": "claude-opus-5",
+        })
+        resp = await app.handle_machine_patch(req, "m1")
+        self.assertEqual(resp.status_code, 200)
+        machine = await db.ai_machine_get("m1", "admin")
+        self.assertEqual(machine["model"], "claude-opus-5")
+
+    async def test_patch_model_only(self):
+        req = _FakeRequest(json_data={"model": "claude-haiku-4-5-20251001"})
+        resp = await app.handle_machine_patch(req, "m1")
+        self.assertEqual(resp.status_code, 200)
+        machine = await db.ai_machine_get("m1", "admin")
+        self.assertEqual(machine["model"], "claude-haiku-4-5-20251001")
+
+    async def test_patch_with_api_key_accepted(self):
+        req = _FakeRequest(json_data={
+            "name": "Workstation",
+            "host": "10.0.0.5",
+            "model": "claude-sonnet-5",
+            "api_key": "sk-test-value",
+        })
+        resp = await app.handle_machine_patch(req, "m1")
+        self.assertEqual(resp.status_code, 200)
+
+    async def test_patch_rejects_field_outside_allowlist(self):
+        """A field the allowlist does not cover still fails loudly.
+
+        Deliberately picks columns that exist in the table but must never be
+        settable over the API, so this stays a test of the rejection rule
+        rather than of which optional fields the allowlist happens to hold.
+        """
+        for field, value in (("owner_id", "someone-else"), ("active", 1)):
+            with self.subTest(field=field):
+                req = _FakeRequest(json_data={"model": "claude-opus-5", field: value})
+                with self.assertRaises(HTTPException) as ctx:
+                    await app.handle_machine_patch(req, "m1")
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_patch_rejects_invalid_model_characters(self):
+        req = _FakeRequest(json_data={"model": "bad model!"})
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_machine_patch(req, "m1")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_patch_unknown_machine_404(self):
+        req = _FakeRequest(json_data={"model": "claude-opus-5"})
+        with self.assertRaises(HTTPException) as ctx:
+            await app.handle_machine_patch(req, "does-not-exist")
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 if __name__ == "__main__":

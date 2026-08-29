@@ -9,9 +9,7 @@ import asyncio
 import datetime
 import json
 import logging
-import os
 import re
-import secrets
 import socket
 import uuid
 from contextlib import asynccontextmanager
@@ -36,11 +34,24 @@ import auth
 import config
 import db
 import runner
+import transcripts
 
 _log = logging.getLogger("wc.app")
 
 _WEB_DIR: Final[Path] = Path(__file__).parent / "web"
 _assets_dir: Final[Path] = _WEB_DIR / "assets"
+
+# Skill discovery roots. Plain module attributes (not Final) so tests can patch
+# them and never touch the real ~/.claude tree.
+_USER_SKILLS_ROOT: Path = Path.home() / ".claude" / "skills"
+_PLUGINS_ROOT: Path = Path.home() / ".claude" / "plugins"
+
+# Directory names accepted as skill / plugin identifiers.
+_SKILL_DIR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
+# Upper bound on skills returned, so a pathological tree cannot blow up the response.
+_SKILL_LIMIT: Final[int] = 500
+# Longest one-line summary shown on a collapsed skill card.
+_SKILL_SUMMARY_MAX: Final[int] = 120
 
 # Hostname regex: labels, full IPv4, or bracketed IPv6.
 _HOST_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -52,7 +63,7 @@ _HOST_PATTERN: Final[re.Pattern[str]] = re.compile(
 _BLOCKED_NETS: Final[list[IPv4Network | IPv6Network]] = [
     ip_network("0.0.0.0/8"),
     ip_network("10.0.0.0/8"),
-    ip_network("100.64.0.0/10"),  # CG-NAT
+    ip_network("100.64.0.0/10"),  # CG-NAT (includes the Tailscale range)
     ip_network("127.0.0.0/8"),  # Loopback
     ip_network("169.254.0.0/16"),  # Link-local
     ip_network("172.16.0.0/12"),
@@ -71,6 +82,40 @@ _BLOCKED_NETS: Final[list[IPv4Network | IPv6Network]] = [
 ]
 
 
+def _parse_allow_nets() -> list[IPv4Network | IPv6Network]:
+    """Ranges that stay reachable despite _BLOCKED_NETS.
+
+    An AI machine is normally *meant* to live on the operator's own network:
+    a tailnet peer (100.64.0.0/10), a LAN box (RFC1918), or the local proxy on
+    loopback. Blanket-blocking those rejects the product's intended topology,
+    and the endpoints that accept a host are admin-gated or authenticated, so
+    the operator is not the threat here.
+
+    What stays blocked is what an operator would never legitimately target:
+    169.254.0.0/16 (link-local, including the cloud metadata endpoint),
+    0.0.0.0/8, the TEST-NET and benchmark ranges, multicast, reserved space
+    and IPv6 ULA / link-local. Tighten with WC_SSRF_ALLOW_NETS, which replaces
+    this list wholesale.
+    """
+    raw = config._str(
+        "WC_SSRF_ALLOW_NETS",
+        "100.64.0.0/10,127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    )
+    nets: list[IPv4Network | IPv6Network] = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ip_network(item))
+        except ValueError:
+            _log.warning("ignoring invalid WC_SSRF_ALLOW_NETS entry: %s", item)
+    return nets
+
+
+_ALLOWED_NETS: Final[list[IPv4Network | IPv6Network]] = _parse_allow_nets()
+
+
 # ── Auth middleware ────────────────────────────────────────────────────────────────
 
 
@@ -83,6 +128,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         )
         if not public_route and request.state.session is None:
             if request.url.path.startswith("/api/"):
+                _ip = "?"
+                if hasattr(request, "client") and request.client:
+                    _ip = getattr(request.client, "host", "?") or "?"
+                _log.warning(
+                    "session_expired_or_invalid: path=%s ip=%s "
+                    "(session may have expired or been revoked) — "
+                    "log in again at /login",
+                    request.url.path, _ip,
+                )
                 return JSONResponse(
                     status_code=401,
                     content={"error": "Session expired", "redirect": "/login"},
@@ -94,26 +148,81 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # ── Helpers ────────────────────────────────────────────────────────────────────────
 
 
+def _trusted_proxies() -> list[IPv4Network | IPv6Network]:
+    """Parse WC_TRUSTED_PROXIES into networks. Empty (the default) means none."""
+    raw = config._str("WC_TRUSTED_PROXIES", "") or ""
+    nets: list[IPv4Network | IPv6Network] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ip_network(part, strict=False))
+        except ValueError:
+            _log.warning("ignoring invalid WC_TRUSTED_PROXIES entry %r", part)
+    return nets
+
+
+def _client_ip(request: Request) -> str:
+    """Return the client address to attribute a request to.
+
+    Uses the forwarded header **only** when the immediate peer is a configured
+    trusted proxy. Reading it unconditionally would be worse than ignoring it:
+    with the app exposed directly -- which is how it runs today, uvicorn holding
+    :443 itself -- any client could rotate X-Real-IP and walk straight through
+    the login rate limit.
+    """
+    peer = getattr(getattr(request, "client", None), "host", None) or "unknown"
+    trusted = _trusted_proxies()
+    if not trusted or peer == "unknown":
+        return peer
+    try:
+        peer_addr = ip_address(peer)
+    except ValueError:
+        return peer
+    if not any(peer_addr in net for net in trusted):
+        return peer
+    headers = getattr(request, "headers", None) or {}
+    for header in ("x-real-ip", "x-forwarded-for"):
+        value = headers.get(header) or ""
+        # X-Forwarded-For is a chain; the left-most entry is the origin client.
+        candidate = value.split(",")[0].strip()
+        if not candidate:
+            continue
+        try:
+            ip_address(candidate)
+        except ValueError:
+            continue
+        return candidate
+    return peer
+
+
 def _is_private_ip(host: str) -> bool:
-    """Return True if *host* resolves to a blocked private address."""
+    """Return True if *host* is a blocked address and not explicitly allowed."""
     if host.startswith("[") and host.endswith("]"):
         host = host[1:-1]  # strip IPv6 brackets for parsing
     try:
         addr = ip_address(host)
-        for net in _BLOCKED_NETS:
-            if addr in net:
-                return True
-        return False
     except ValueError:
         return False
+    if any(addr in net for net in _ALLOWED_NETS):
+        return False
+    return any(addr in net for net in _BLOCKED_NETS)
 
 
-def _validate_host(host: str) -> None:
-    """Validate that *host* is a non-empty string that looks like a hostname or IP."""
+def _validate_host(host: str) -> str:
+    """Validate *host* and confirm it does not resolve to a blocked address.
+
+    Returns the resolved IP. Every call site persists a user-supplied host
+    under a comment claiming SSRF protection, but this only pattern-matched
+    the string and never resolved anything, so nothing was ever blocked. It
+    now applies the blocklist at the point the value enters the system.
+    """
     if not host or not isinstance(host, str) or not _HOST_PATTERN.match(host):
         raise HTTPException(
             status_code=400, detail="Enter a valid hostname or IP address"
         )
+    return _resolve_host(host)
 
 
 def _resolve_host(host: str) -> str:
@@ -164,10 +273,14 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         ):
             cookie_token = request.cookies.get("wc_csrf", "")
             header_token = request.headers.get("x-csrf-token", "")
+            # Pass the session id so the token is checked against *this*
+            # session rather than any live one.
             if (
                 not cookie_token
                 or not header_token
-                or not auth._csrf_valid(cookie_token, header_token)
+                or not auth._csrf_valid(
+                    cookie_token, header_token, request.cookies.get("wc_session")
+                )
             ):
                 return JSONResponse(
                     status_code=403,
@@ -187,15 +300,17 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             response.headers["X-Frame-Options"] = "DENY"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["Cache-Control"] = "no-store, no-cache"
-            # CSP – nonce is generated per-request and stored on request.state.
-            nonce = getattr(request.state, "csp_nonce", "")
-            if nonce:
-                response.headers["Content-Security-Policy"] = (
-                    f"default-src 'self'; script-src 'nonce-{nonce}'; "
-                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                    "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
-                    "form-action 'self'"
-                )
+            # CSP – emitted unconditionally. This used to be gated on a
+            # per-request nonce that nothing ever set, so in practice no CSP
+            # shipped at all. Both templates load only external scripts
+            # (index.html, login.html) and carry no inline handlers, so
+            # script-src 'self' covers them without any nonce plumbing.
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
+                "form-action 'self'"
+            )
             # HSTS – enforce HTTPS for one year, subdomains included.
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains; preload"
@@ -241,7 +356,9 @@ async def handle_login(request: Request):
             status_code=400, content={"error": "Username and password required"}
         )
 
-    ip = request.client.host if request.client else "unknown"
+    # Attribute the attempt to the origin client, so the rate limit is per
+    # client rather than per proxy when one is actually in front of us.
+    ip = _client_ip(request)
     if auth.login_attempt_flood(ip):
         return JSONResponse(
             status_code=429, content={"error": "Too many attempts. Try again later."}
@@ -259,14 +376,14 @@ async def handle_login(request: Request):
             )
         return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
 
-    sid, csrf = auth.session_new(user["name"])
+    sid, csrf = auth.session_new(user["name"], user.get("role") or "user")
     auth.login_record_success(ip)
     resp = JSONResponse({"ok": True})
     set_session_cookie(resp, sid)
     resp.set_cookie(
         "wc_csrf",
         csrf,
-        httponly=True,
+        httponly=False,
         secure=not config.COOKIE_ALLOW_INSECURE,
         samesite="strict",
         max_age=config.SESSION_TTL_S,
@@ -329,7 +446,15 @@ async def handle_chat_create(request: Request):
         counter += 1
         work_dir = f"{base}-{counter}"
 
-    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(work_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _log.error(
+            "could_not_create_conversation: failed to create work_dir=%s "
+            "(check permissions, disk space, and PROJECTS_ROOT=%s): %s",
+            work_dir, config.PROJECTS_ROOT, exc,
+        )
+        raise HTTPException(status_code=500, detail="Could not create conversation directory — check server logs for details")
     chat_id = uuid.uuid4().hex
     now = await db.chat_create(
         chat_id, title, data.get("description"), work_dir, session["user"]
@@ -345,6 +470,10 @@ async def handle_chat_get(request: Request, chat_id: str):
     session = request.state.session
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
+        _log.warning(
+            "chat_not_found: user=%s chat_id=%s (chat may have been deleted)",
+            session["user"], chat_id,
+        )
         raise HTTPException(status_code=404, detail="Chat not found")
 
     messages = await db.messages_get(chat_id)
@@ -425,6 +554,10 @@ async def handle_chat_delete(request: Request, chat_id: str):
     session = request.state.session
     deleted = await db.chat_delete(chat_id, session["user"])
     if not deleted:
+        _log.warning(
+            "chat_delete: user=%s chat_id=%s (not found or no permission)",
+            session["user"], chat_id,
+        )
         raise HTTPException(status_code=404, detail="Chat not found")
     _log.info("chat_deleted chat_id=%s", chat_id)
     return JSONResponse({"ok": True})
@@ -464,6 +597,10 @@ async def handle_chat_export(request: Request, chat_id: str):
     session = request.state.session
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
+        _log.warning(
+            "chat_export_not_found: user=%s chat_id=%s (deleted or no access)",
+            session["user"], chat_id,
+        )
         raise HTTPException(status_code=404, detail="Chat not found")
     messages = await db.messages_get(chat_id)
     body = render_chat_markdown(chat, messages)
@@ -486,11 +623,17 @@ async def handle_submit_message(request: Request, chat_id: str):
     session = request.state.session
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
+        _log.warning(
+            "submit_message: chat not found user=%s chat_id=%s "
+            "(may have been deleted) — cannot send prompt",
+            session["user"], chat_id,
+        )
         raise HTTPException(status_code=404, detail="Chat not found")
 
     data = await request.json()
     prompt = (data.get("content") or "").strip()
     if not prompt:
+        _log.warning("submit_message: empty prompt from user=%s chat_id=%s", session["user"], chat_id)
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     if len(prompt) > config.PROMPT_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Prompt is too long")
@@ -513,8 +656,17 @@ async def handle_submit_message(request: Request, chat_id: str):
             model,
         )
     except runner.TurnError as e:
+        # Label the failure for what it is -- this previously reused
+        # "could_not_create_conversation", the workspace-creation label, so log
+        # searches (and a test asserting that string) matched the wrong event.
+        _log.error(
+            "turn_failed: chat_id=%s prompt_chars=%d work_dir=%s error=%s",
+            chat_id, len(prompt), chat["work_dir"], e,
+        )
+        # Mask the detail, matching the SSE path -- the streaming branch already
+        # refuses to hand raw exception text to the client.
         return JSONResponse(
-            status_code=500, content={"error": str(e), "fatal": e.fatal}
+            status_code=500, content={"error": _SSE_INTERNAL, "fatal": e.fatal}
         )
 
     full_response = "".join(chunks) if chunks else ""
@@ -544,11 +696,21 @@ async def stream_handler(request: Request, chat_id: str):
 
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
+        _log.error(
+            "stream_handler: chat not found user=%s chat_id=%s "
+            "(may have been deleted, broken session reference) — "
+            "reload the page or create a new conversation",
+            session["user"], chat_id,
+        )
         raise HTTPException(status_code=404, detail="Chat not found")
 
     data = await request.json()
     prompt = (data.get("content") or "").strip()
     if not prompt:
+        _log.warning(
+            "stream_handler: empty prompt from user=%s chat_id=%s",
+            session["user"], chat_id,
+        )
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     if len(prompt) > config.PROMPT_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Prompt is too long")
@@ -648,15 +810,7 @@ async def handle_index(request: Request):
 
 async def handle_login_page(request: Request):
     try:
-        # Generate a CSP nonce and store it on request.state so the
-        # security middleware can read it when building the response.
-        # Also inject it into the HTML so the client-side script tag
-        # can reference it.
-        nonce = secrets.token_urlsafe(16)
-        request.state.csp_nonce = nonce
-        content = (_WEB_DIR / "login.html").read_text()
-        content = content.replace("__CSP_NONCE__", nonce)
-        return HTMLResponse(content)
+        return HTMLResponse((_WEB_DIR / "login.html").read_text())
     except FileNotFoundError:
         return HTMLResponse("<h1>Login template missing</h1>", status_code=500)
 
@@ -738,7 +892,23 @@ app.add_middleware(SecurityMiddleware)
 
 @app.exception_handler(HTTPException)
 async def handle_http_exception(request: Request, exc: HTTPException):
-    if "text/html" in request.headers.get("accept", ""):
+    # Log before branching on Accept: the HTML branch used to return first,
+    # which meant every browser-triggered error went unrecorded. Every field is
+    # read defensively -- if this handler raises, the client loses the original
+    # error and gets an opaque 500 instead.
+    try:
+        session = getattr(getattr(request, "state", None), "session", None)
+        _log.error(
+            "HTTP %s path=%s detail=%s ip=%s user=%s",
+            exc.status_code,
+            getattr(getattr(request, "url", None), "path", "?"),
+            exc.detail,
+            getattr(getattr(request, "client", None), "host", "?") or "?",
+            session.get("user", "anonymous") if isinstance(session, dict) else "anonymous",
+        )
+    except Exception:  # noqa: BLE001 -- logging must never mask the real error
+        pass
+    if "text/html" in (getattr(request, "headers", None) or {}).get("accept", ""):
         return HTMLResponse(
             f"<h1>Error {exc.status_code}</h1><p>{html_escape(str(exc.detail))}</p>",
             status_code=exc.status_code,
@@ -820,6 +990,162 @@ async def _api_db_restore(request: Request):
     return await handle_db_restore(request)
 
 
+def _skill_description(text: str) -> str:
+    """Pull the description out of a SKILL.md.
+
+    Prefers the YAML frontmatter key, following wrapped continuation lines so a
+    folded description is not truncated at the first newline. Falls back to a
+    bare ``description:`` line anywhere near the top of the file.
+    """
+    lines = text.splitlines()
+    body = lines
+    # Restrict to the frontmatter block when one is present.
+    if lines and lines[0].strip() == "---":
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                body = lines[1:index]
+                break
+    parts: list[str] = []
+    for index, line in enumerate(body[:80]):
+        if not line.lower().startswith("description:"):
+            continue
+        first = line.split(":", 1)[1].strip()
+        # A folded / literal block scalar ("description: >-") carries no value on
+        # the key line; the marker itself must not leak into the description.
+        if not re.fullmatch(r"[>|][+-]?\d*", first):
+            parts.append(first)
+        # Consume indented / unkeyed continuation lines of a wrapped value.
+        for follow in body[index + 1 :]:
+            if not follow.strip():
+                break
+            if re.match(r"^[A-Za-z0-9_-]+\s*:", follow):
+                break
+            parts.append(follow.strip())
+        break
+    value = " ".join(part for part in parts if part).strip()
+    # YAML scalars are often quoted; the quotes are not part of the value.
+    for quote in ('"', "'"):
+        if len(value) > 1 and value.startswith(quote) and value.endswith(quote):
+            value = value[1:-1].strip()
+            break
+    return value[:500]
+
+
+def _skill_summary(description: str) -> str:
+    """Condense a description to a single short line for the collapsed card."""
+    text = " ".join(description.split())
+    # Descriptions are model-facing prose and often carry Markdown emphasis;
+    # strip the markers so the summary reads as plain text. Underscores are only
+    # treated as emphasis at word boundaries, to keep snake_case identifiers.
+    text = text.replace("`", "")
+    text = re.sub(r"\*{1,2}(\S(?:.*?\S)?)\*{1,2}", r"\1", text)
+    text = re.sub(
+        r"(?<![A-Za-z0-9_])_{1,2}(\S(?:.*?\S)?)_{1,2}(?![A-Za-z0-9_])", r"\1", text
+    ).strip()
+    if not text:
+        return ""
+    # Prefer a sentence boundary if one falls inside the budget.
+    match = re.search(rf"^(.{{20,{_SKILL_SUMMARY_MAX}}}?[.!?])(?:\s|$)", text)
+    if match:
+        return match.group(1)
+    if len(text) <= _SKILL_SUMMARY_MAX:
+        return text
+    clipped = text[:_SKILL_SUMMARY_MAX].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{clipped}…"
+
+
+def _read_skill(directory: Path, name: str, source: str, source_label: str) -> dict | None:
+    """Build one skill entry from a skill directory, or None if unreadable."""
+    try:
+        text = (directory / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    description = _skill_description(text)
+    return {
+        "name": name,
+        "description": description,
+        "summary": _skill_summary(description),
+        "source": source,
+        "source_label": source_label,
+        "installed": True,
+    }
+
+
+def _iter_skill_dirs(root: Path):
+    """Yield validated skill subdirectories of ``root``, sorted by name."""
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except (OSError, PermissionError):
+        return
+    for entry in entries:
+        if not entry.is_dir() or not _SKILL_DIR_PATTERN.fullmatch(entry.name):
+            continue
+        yield entry
+
+
+def _discover_user_skills() -> list[dict]:
+    """Skills the user authored under ~/.claude/skills."""
+    found = []
+    for entry in _iter_skill_dirs(_USER_SKILLS_ROOT):
+        skill = _read_skill(entry, entry.name, "user", "Your skills")
+        if skill:
+            found.append(skill)
+    return found
+
+
+def _discover_plugin_skills() -> list[dict]:
+    """Skills provided by installed plugins.
+
+    ``installed_plugins.json`` is the source of truth for what is actually
+    installed -- walking the plugin cache directly would also surface
+    marketplace checkouts and stale versions the user never installed.
+    """
+    manifest_path = _PLUGINS_ROOT / "installed_plugins.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(manifest, dict):
+        return []
+    plugins = manifest.get("plugins")
+    if not isinstance(plugins, dict):
+        return []
+
+    try:
+        plugins_root = _PLUGINS_ROOT.resolve()
+    except OSError:
+        return []
+
+    found: list[dict] = []
+    seen: set[str] = set()
+    for key, installs in sorted(plugins.items()):
+        plugin = str(key).split("@", 1)[0]
+        if not _SKILL_DIR_PATTERN.fullmatch(plugin) or not isinstance(installs, list):
+            continue
+        for install in installs:
+            if not isinstance(install, dict):
+                continue
+            raw_path = install.get("installPath")
+            if not isinstance(raw_path, str) or not raw_path:
+                continue
+            try:
+                skills_root = (Path(raw_path) / "skills").resolve()
+            except OSError:
+                continue
+            # Only read inside the plugins tree, whatever the manifest claims.
+            if plugins_root not in skills_root.parents or not skills_root.is_dir():
+                continue
+            for entry in _iter_skill_dirs(skills_root):
+                name = f"{plugin}:{entry.name}"
+                if name in seen:
+                    continue
+                skill = _read_skill(entry, name, f"plugin:{plugin}", plugin)
+                if skill:
+                    seen.add(name)
+                    found.append(skill)
+    return found
+
+
 async def handle_skills_get(request: Request):
     """GET /api/skills -- list installed skills and session activity."""
     session = request.state.session
@@ -829,37 +1155,42 @@ async def handle_skills_get(request: Request):
         if chat_id:
             chat = await db.chat_get(chat_id, session["user"])
             session_id = chat.get("session_id") if chat else None
-    skills_root = Path.home() / ".claude" / "skills"
+
+    skills = (_discover_user_skills() + _discover_plugin_skills())[:_SKILL_LIMIT]
+
+    # A session records skills by bare name; match those against both the bare
+    # name and the namespaced plugin name.
     active = set(runner.active_skills(session_id))
-    skills = []
-    try:
-        entries = sorted(skills_root.iterdir(), key=lambda p: p.name.lower())
-    except (OSError, PermissionError):
-        entries = []
-    for entry in entries:
-        if not entry.is_dir() or not re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", entry.name
-        ):
-            continue
-        path = entry / "SKILL.md"
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        description = ""
-        for line in text.splitlines()[:40]:
-            if line.lower().startswith("description:"):
-                description = line.split(":", 1)[1].strip()[:500]
-                break
-        skills.append(
-            {
-                "name": entry.name,
-                "description": description,
-                "installed": True,
-                "active": entry.name in active,
+    for skill in skills:
+        bare = skill["name"].split(":", 1)[-1]
+        skill["active"] = skill["name"] in active or bare in active
+
+    # Group order follows the list: user skills first, then plugins A-Z.
+    sources: list[dict] = []
+    by_source: dict[str, dict] = {}
+    for skill in skills:
+        group = by_source.get(skill["source"])
+        if group is None:
+            group = {
+                "id": skill["source"],
+                "label": skill["source_label"],
+                "count": 0,
+                "active_count": 0,
             }
-        )
-    return JSONResponse({"skills": skills, "session_id": session_id or ""})
+            by_source[skill["source"]] = group
+            sources.append(group)
+        group["count"] += 1
+        group["active_count"] += 1 if skill["active"] else 0
+
+    return JSONResponse(
+        {
+            "skills": skills,
+            "sources": sources,
+            "total": len(skills),
+            "active_count": sum(1 for skill in skills if skill["active"]),
+            "session_id": session_id or "",
+        }
+    )
 
 
 async def handle_chat_search(request: Request):
@@ -957,7 +1288,13 @@ async def handle_db_restore(request: Request):
 
 
 async def handle_settings_get(request: Request):
-    """GET /api/settings -- return non-secret runtime and app settings."""
+    """GET /api/settings -- return non-secret runtime and app settings.
+
+    Deliberately readable by any authenticated user, unlike the PATCH
+    counterpart, which is admin-only: the frontend reads it on every page load
+    to render the version and the settings form. Every value below must
+    therefore stay non-sensitive -- never add a secret, key, or token here.
+    """
     host = await runner.get_proxy_host()
     try:
         session_ttl = int(await db.setting_get("session_ttl") or config.SESSION_TTL_S)
@@ -989,8 +1326,16 @@ async def handle_settings_get(request: Request):
 
 
 async def handle_settings_patch(request: Request):
-    """PATCH /api/settings -- update runtime or app settings."""
+    """PATCH /api/settings -- update runtime or app settings.
+
+    Admin-only: this endpoint writes the session secret, the proxy token, the
+    model API key and projects_root. projects_root is the sandbox boundary
+    that runner.py validates every work_dir against, so write access here is
+    equivalent to choosing where Claude may run.
+    """
     session = request.state.session
+    if session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     data = await request.json()
     if "ai_machine_host" in data:
         host = data.get("ai_machine_host")
@@ -1027,8 +1372,7 @@ async def handle_settings_patch(request: Request):
                 value = value.strip()
                 if not value:
                     raise HTTPException(status_code=400, detail=error)
-                # Normalize path
-                value = os.path.normpath(value)
+                value = _validate_projects_root(value)
             elif key == "model_base_url" and value is not None:
                 value = value.strip()
                 if not value:
@@ -1072,20 +1416,21 @@ _MACHINE_ALLOWED_FIELDS = {
     "base_url",
     "description",
 }
+# Fields that must be a string (or null) when present in a machine PATCH.
+_MACHINE_TEXT_FIELDS = ("name", "host", "api_key", "model", "base_url", "description")
 _MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
 # Tightened: removed '/' to prevent downstream misinterpretation.
-_MODEL_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
 _HOST_PATTERN_LOCAL = _HOST_PATTERN
 
 # Allowed URL schemes for base_url validation.
 _ALLOWED_URL_SCHEMES = {"http", "https"}
 
 
-def _validate_base_url(base_url: str) -> str:
-    """Validate and return the host part of *base_url*.
+def _base_url_host(base_url: str) -> str:
+    """Return the host portion of *base_url*, for host-level checks.
 
-    Returns the resolved hostname/IP for SSRF checks.
-    Raises HTTPException on invalid input.
+    Raises HTTPException if the URL is not a well-formed http/https URL.
     """
     # Must have a scheme.
     if "://" not in base_url:
@@ -1105,6 +1450,46 @@ def _validate_base_url(base_url: str) -> str:
     if not _HOST_PATTERN_LOCAL.fullmatch(host_part):
         raise HTTPException(status_code=400, detail="Enter a valid base URL")
     return host_part
+
+
+def _validate_base_url(base_url: str) -> str:
+    """Validate *base_url* and return it unchanged (minus surrounding space).
+
+    This is a validator, not a transformer: the caller persists the value it
+    passes in, so returning only the host would silently discard the scheme,
+    port and path. Use :func:`_base_url_host` when the host alone is wanted.
+    """
+    base_url = base_url.strip()
+    if len(base_url) > 500:
+        raise HTTPException(status_code=400, detail="Base URL is too long")
+    _base_url_host(base_url)  # raises on a malformed or non-http(s) URL
+    return base_url
+
+
+def _validate_projects_root(value: str) -> str:
+    """Confirm a candidate projects_root is a safe workspace parent.
+
+    runner.py validates every work_dir against this path, so an unconstrained
+    value relocates the sandbox -- pointing it at "/" would let a conversation
+    workspace be created anywhere and run Claude there with
+    --dangerously-skip-permissions. Constrain it to a real directory under the
+    server account's home, or set WC_PROJECTS_ROOT_BASE to widen that.
+    """
+    base = Path(config._str("WC_PROJECTS_ROOT_BASE", str(Path.home())) or "/").resolve()
+    try:
+        candidate = Path(value).expanduser().resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Projects root path is invalid")
+    if not candidate.is_absolute() or not candidate.is_relative_to(base):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Projects root must be an absolute path under {base}",
+        )
+    if not candidate.is_dir():
+        raise HTTPException(
+            status_code=400, detail="Projects root must be an existing directory"
+        )
+    return str(candidate)
 
 
 async def handle_machines_list(request: Request):
@@ -1154,7 +1539,7 @@ async def handle_machine_create(request: Request):
         )
     # SSRF: block internal IPs on creation.
     _validate_host(host)
-    model = (data.get("model") or "claude-sonnet-4-20250514").strip()
+    model = (data.get("model") or config.MODEL_NAME).strip()
     if not _MODEL_RE.fullmatch(model):
         raise HTTPException(
             status_code=400, detail="Model name contains invalid characters"
@@ -1192,6 +1577,11 @@ async def handle_machine_patch(request: Request, machine_id: str):
     data = await request.json()
     if not data or not set(data).issubset(_MACHINE_ALLOWED_FIELDS):
         raise HTTPException(status_code=400, detail="No valid fields to update")
+    # Reject non-string text fields up front: the validators below call .strip()
+    # and regex methods that would otherwise raise and surface as a 500.
+    for field in _MACHINE_TEXT_FIELDS:
+        if field in data and data[field] is not None and not isinstance(data[field], str):
+            raise HTTPException(status_code=400, detail=f"{field} must be text or null")
     # Validate port
     if "port" in data and data["port"] is not None:
         try:
@@ -1338,16 +1728,20 @@ _HEX_SESSION_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_-]{1,256}$
 
 
 def _sanitize_session_id(session_id: str) -> str:
-    """Return a session_id after stripping path-traversal sequences.
+    """Validate a session_id, rejecting anything usable for path traversal.
 
-    We do not reject the ID on sight — the work_dir is always rooted below
-    PROJECTS_ROOT (``Path.mkdir(parents=True)`` only creates inside it) and
-    the chat_id is a UUID, so there is no path-traversal risk even if the
-    session_id string contained ``..``.  The previous regex was too
-    restrictive; we now accept any non-empty string while still rejecting
-    empty/null session IDs.
+    An earlier version accepted any non-empty string, on the stated grounds
+    that ``Path.mkdir(parents=True)`` can only create inside PROJECTS_ROOT.
+    That is not true: ``handle_sessions_resume`` interpolates ``session_id[:8]``
+    into a directory name, so an id of ``a/../../`` yields a work_dir that
+    resolves *above* the root. A payload of only ``..`` does cancel out against
+    the date suffix, which is likely why the invariant looked safe.
+
+    Real ids are UUIDs, so the charset below is not restrictive in practice,
+    and it matches the guard already enforced by
+    ``db.write_claude_session_file``.
     """
-    if not session_id:
+    if not session_id or not _HEX_SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID")
     return session_id
 
@@ -1361,7 +1755,13 @@ async def handle_sessions_resume(request: Request, session_id: str):
         (item for item in available if item.get("sessionId") == session_id), None
     )
     if source is None:
-        raise HTTPException(status_code=404, detail="CLI session not found")
+        _log.error(
+            "cli_session_not_found: user=%s session_id=%s "
+            "(CLI session may have been closed or never started) — "
+            "ensure claude-code is running and a session exists at %s",
+            session["user"], session_id, config.PROJECTS_ROOT,
+        )
+        raise HTTPException(status_code=404, detail="CLI session not found — check that claude-code is running")
 
     existing = next(
         (
@@ -1419,6 +1819,92 @@ async def _api_settings_get(request: Request):
 @app.patch("/api/settings")
 async def _api_settings_patch(request: Request):
     return await handle_settings_patch(request)
+
+
+async def handle_transcripts_list(request: Request):
+    """GET /api/transcripts -- recent CLI conversations, newest first."""
+    try:
+        limit = int(request.query_params.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    return JSONResponse({"transcripts": await transcripts.list_recent(limit)})
+
+
+async def handle_transcript_get(request: Request, session_id: str):
+    """GET /api/transcripts/{id} -- one conversation's history.
+
+    ``offset`` resumes from a byte position; omit it for the most recent page.
+    """
+    try:
+        offset = max(0, int(request.query_params.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    page = await transcripts.read_turns(session_id, offset)
+    if not page["found"]:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    return JSONResponse(page)
+
+
+async def handle_transcript_stream(request: Request, session_id: str):
+    """GET /api/transcripts/{id}/stream -- follow a running session over SSE."""
+    try:
+        offset = max(0, int(request.query_params.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    if transcripts.transcript_path(session_id) is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    async def event_generator():
+        cursor = offset
+        idle = 0.0
+        yield f"data: {json.dumps({'type': 'start', 'offset': cursor})}\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                page = await transcripts.read_turns(session_id, cursor)
+                if not page["found"]:
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Transcript went away'})}\n\n"
+                    return
+                cursor = page["offset"]
+                for turn in page["turns"]:
+                    yield f"data: {json.dumps({'type': 'turn', 'turn': turn, 'offset': cursor})}\n\n"
+                idle = 0.0 if page["turns"] else idle + transcripts.TAIL_POLL_S
+                if idle >= 15.0:
+                    # Comment frame: keeps proxies from dropping an idle stream.
+                    yield ": keep-alive\n\n"
+                    idle = 0.0
+                await asyncio.sleep(transcripts.TAIL_POLL_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- convert tail failures to SSE errors
+            _log.exception("transcript stream failed session_id=%s", session_id)
+            yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/transcripts")
+async def _api_transcripts_list(request: Request):
+    return await handle_transcripts_list(request)
+
+
+@app.get("/api/transcripts/{session_id}")
+async def _api_transcript_get(request: Request, session_id: str):
+    return await handle_transcript_get(request, session_id)
+
+
+@app.get("/api/transcripts/{session_id}/stream")
+async def _api_transcript_stream(request: Request, session_id: str):
+    return await handle_transcript_stream(request, session_id)
 
 
 @app.get("/api/sessions")

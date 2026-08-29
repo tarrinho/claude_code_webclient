@@ -59,8 +59,10 @@ LOGIN_RATE_MAX = _int("WC_LOGIN_RATE_MAX", 10)  # max attempts per window
 LOGIN_RATE_WIN = _int("WC_LOGIN_RATE_WIN", 300)  # window in seconds (5 min)
 LOGIN_BACKOFF = _int("WC_LOGIN_BACKOFF", 30)  # base backoff seconds on lockout
 
-# Allow plain-HTTP cookies (for Tailscale without TLS). DO NOT enable on public interfaces.
-COOKIE_ALLOW_INSECURE = _bool("WC_COOKIE_ALLOW_INSECURE", True)
+# Allow plain-HTTP cookies (for Tailscale without TLS). DO NOT enable on public
+# interfaces. Defaults to False so a deployment that forgets to set it still
+# marks the session cookie Secure; opt in explicitly for plain-HTTP setups.
+COOKIE_ALLOW_INSECURE = _bool("WC_COOKIE_ALLOW_INSECURE", False)
 
 # --- Claude Code proxy (host-side) ----------------------------------------
 # When PROXY_ENABLED=True the runner connects to the host-side proxy instead
@@ -77,14 +79,14 @@ PROXY_TOKEN = _str("WC_PROXY_TOKEN")
 # These are used only when PROXY_ENABLED=False (not recommended for container).
 MODEL_BASE_URL = _str("WC_MODEL_BASE_URL", "http://127.0.0.1:11434/v1")
 MODEL_API_KEY = _str("WC_MODEL_API_KEY", "")
-MODEL_NAME = _str("WC_MODEL_NAME", "claude-sonnet-4-20250514")
+MODEL_NAME = _str("WC_MODEL_NAME", "claude-sonnet-5")
 
 MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn
 PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000)  # cap on user prompt length
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.3.0"
+VERSION = "WebConsole_0.5.0"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.3.0</span>
+    <span class="ver" id="ver">0.5.0</span>
     <button class="btn-icon" id="editChatBtn" aria-label="Edit conversation" title="Edit conversation" hidden>✎</button>
     <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
@@ -70,15 +70,15 @@
 <div class="dialog-backdrop" id="settingsDialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
   <div class="dialog settings-dialog" id="settingsForm">
     <h2 id="settingsTitle">Settings</h2>
-    <div class="settings-tabs" role="tablist">
-      <button class="settings-tab active" role="tab" aria-selected="true" data-tab="machines" aria-controls="panelMachines">Machines</button>
-      <button class="settings-tab" role="tab" aria-selected="false" data-tab="models" aria-controls="panelModels">Models</button>
-      <button class="settings-tab" role="tab" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
-      <button class="settings-tab" role="tab" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
+    <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+      <button class="settings-tab active" id="tabMachines" role="tab" tabindex="0" aria-selected="true" data-tab="machines" aria-controls="panelMachines">Machines</button>
+      <button class="settings-tab" id="tabModels" role="tab" tabindex="-1" aria-selected="false" data-tab="models" aria-controls="panelModels">Models</button>
+      <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
+      <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
     </div>
     <div class="settings-body">
       <!-- Machines tab -->
-      <div class="settings-panel" id="panelMachines">
+      <div class="settings-panel" id="panelMachines" role="tabpanel" aria-labelledby="tabMachines" tabindex="0">
         <p>Manage AI machine connections. Each machine is a separate backend you can route chats to.</p>
         <div class="machine-list" id="machineList"></div>
         <button class="btn-secondary btn-add-machine" id="addMachineBtn">＋ Add machine</button>
@@ -88,16 +88,10 @@
           <input id="machineName" maxlength="100" placeholder="e.g. Production, Staging, GCP">
           <label for="machineHost">Host</label>
           <input id="machineHost" maxlength="253" placeholder="e.g. 10.0.0.1 or hostname">
-          <label for="machinePort">Port</label>
-          <input id="machinePort" type="number" min="1" max="65535" value="9000">
           <label for="machineModel">Default model</label>
-          <input id="machineModel" maxlength="100" placeholder="claude-sonnet-4-20250514">
-          <label for="machineBaseUrl">Base URL <span aria-hidden="true">· optional</span></label>
-          <input id="machineBaseUrl" placeholder="https://api.example.com/v1">
+          <input id="machineModel" maxlength="100" placeholder="claude-sonnet-5">
           <label for="machineApiKey">API Key <span aria-hidden="true">· optional</span></label>
           <input id="machineApiKey" type="password" autocomplete="off">
-          <label for="machineDescription">Description <span aria-hidden="true">· optional</span></label>
-          <textarea id="machineDescription" maxlength="500"></textarea>
           <div class="machine-form-actions">
             <button class="btn-secondary" id="cancelMachine">Cancel</button>
             <button class="btn-primary" id="saveMachine">Save</button>
@@ -105,30 +99,36 @@
         </div>
       </div>
       <!-- Models tab -->
-      <div class="settings-panel" id="panelModels" hidden>
+      <div class="settings-panel" id="panelModels" role="tabpanel" aria-labelledby="tabModels" tabindex="0" hidden>
         <p>Configure default models and known model presets.</p>
         <div class="model-row">
           <label for="defaultModel">Default model</label>
-          <input id="defaultModel" list="modelSuggestions" maxlength="100" placeholder="claude-sonnet-4-20250514">
+          <input id="defaultModel" list="modelSuggestions" maxlength="100" placeholder="claude-sonnet-5">
           <datalist id="modelSuggestions">
-            <option value="claude-sonnet-4-20250514">
-            <option value="claude-opus-4-20250514">
-            <option value="claude-haiku-4-20250514">
-            <option value="claude-3.5-sonnet-20241022">
+            <option value="claude-sonnet-5">
+            <option value="claude-opus-5">
+            <option value="claude-fable-5">
+            <option value="claude-haiku-4-5-20251001">
           </datalist>
         </div>
         <div class="model-row">
           <label for="fallbackModel">Fallback model</label>
-          <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-20250514">
+          <input id="fallbackModel" list="modelSuggestions" maxlength="100" placeholder="claude-haiku-4-5-20251001">
         </div>
       </div>
       <!-- Skills tab -->
-      <div class="settings-panel" id="panelSkills" hidden>
-        <p>Installed skills and skills observed in the current Claude session.</p>
+      <div class="settings-panel" id="panelSkills" role="tabpanel" aria-labelledby="tabSkills" tabindex="0" hidden>
+        <p>Skills available to Claude on this machine. Read-only &mdash; add or edit skills on disk under <code>~/.claude/skills</code>.</p>
+        <div class="skills-toolbar">
+          <label for="skillSearch" hidden>Filter skills</label>
+          <input id="skillSearch" type="search" placeholder="Filter skills by name or description…" autocomplete="off" spellcheck="false">
+          <span class="skills-count" id="skillsCount" role="status" aria-live="polite"></span>
+        </div>
+        <p class="skills-session" id="skillsSession"></p>
         <div class="skills-list" id="skillsList"></div>
       </div>
       <!-- App tab -->
-      <div class="settings-panel" id="panelApp" hidden>
+      <div class="settings-panel" id="panelApp" role="tabpanel" aria-labelledby="tabApp" tabindex="0" hidden>
         <p>Application-wide settings.</p>
         <div class="app-setting-row">
           <label for="sessionTtl">Session TTL (seconds)</label>
@@ -156,6 +156,7 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js"></script>
+<script type="module" src="/assets/app.js?v=2"></script>
+<script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

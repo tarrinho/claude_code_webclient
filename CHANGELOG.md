@@ -7,9 +7,11 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The
 version string lives in `config.VERSION` as `WebConsole_<semver>`.
 
 This file is reconstructed from the git history and is authoritative from 0.1.0
-onward. Two version numbers were skipped and never shipped: **0.4.0** and
-**0.7.1**. They are recorded here so a gap in the sequence does not read as a
-lost release.
+onward. Two version numbers — **0.4.0** and **0.7.1** — never reached a commit
+on `main`, but both existed as real work and both shipped, folded into the next
+release. They have sections below rather than being written off as gaps, because
+"skipped" would have been wrong: the work is in the product, it just never wore
+its own number.
 
 Entries describe what changed for someone using or operating the console. Where
 a fix is worth understanding rather than merely noting, the cause is stated —
@@ -21,6 +23,25 @@ churn.
 ## [Unreleased]
 
 ### Fixed
+
+- **A fresh clone could not start.** `0.7.2` shipped the session-durability work
+  with `auth.py` left out of the commit: the tests went in, the `app.py` call
+  site went in, the implementation did not. `HEAD` therefore called
+  `auth.load_sessions()` against an `auth.py` with no such function, so a clone
+  raised `AttributeError` at startup and the 17 tests in
+  `test_qa_session_durability.py` failed against a file that could not provide
+  what they imported.
+
+  It survived a full pipeline run and a push because `auth.py` was correct **on
+  disk** the whole time — every test passed against a working tree that `HEAD`
+  did not describe, and the repository had not been pushed since 0.3.0. The gap
+  only ever existed for someone cloning it.
+
+  Found while investigating why 0.4.0 was missing from this file.
+
+- **Corrects this file's own first draft**, which stated that 0.4.0 and 0.7.1
+  "were skipped and never shipped". Both existed as real work and both shipped
+  inside the following release; they now have sections of their own.
 
 - **The application log recorded nothing.** Every `_log.info` in the project had
   been discarded since the first commit. The server runs as
@@ -136,9 +157,23 @@ churn.
 
 ---
 
-## [0.7.0] — 2026-08-29
+## [0.7.1] — 2026-08-29 *(never committed; shipped inside 0.7.2)*
 
-Version 0.7.1 was skipped.
+Same story as 0.4.0: stashed against the 0.7.0 tree on 29 August at 16:43, never
+committed under its own number, and folded into 0.7.2. About 90% of its lines
+are in the current tree.
+
+### Added
+
+- Supervisor coverage and browser tests for the conversation list, the question
+  flow and usage logging — 969 lines across nine test files.
+- The `auth.py` half of durable sessions. **This is the one piece that did not
+  make it**, and it was not the stash's fault: see the correction under
+  [Unreleased].
+
+---
+
+## [0.7.0] — 2026-08-29
 
 ### Added
 
@@ -293,8 +328,6 @@ Version 0.7.1 was skipped.
 
 ## [0.5.0] — 2026-08-29
 
-Version 0.4.0 was skipped.
-
 ### Fixed
 
 - **Every AI machine edit returned 400.** The settings form still sent `port`,
@@ -337,6 +370,25 @@ Version 0.4.0 was skipped.
 - SSRF blocking for machine hosts; `COOKIE_ALLOW_INSECURE` defaults to `False`.
 - `starlette` pinned explicitly rather than inherited through FastAPI, since
   `app.py` imports it directly.
+
+---
+
+## [0.4.0] — 2026-08-28 *(never committed; shipped inside 0.5.0)*
+
+This version existed on disk for a day and never got a commit of its own. The
+work was stashed on 28 August at 22:25 against the 0.3.0 tree, and when the next
+release was cut the version went straight from 0.3.0 to 0.5.0. The stash still
+exists as an unreferenced object; roughly 90% of its distinctive lines are in the
+current tree, and the remainder is markup and tests that were rewritten later —
+so this is a missing label, not missing work.
+
+### Added
+
+- **Skill discovery, and a Skills panel in Settings.** `_discover_user_skills`
+  and `_discover_plugin_skills` walk the skill directories, `_read_skill` parses
+  each one, and `_skill_description` / `_skill_summary` reduce it to a line worth
+  showing. Surfaced as a fourth Settings tab beside Machines, Models and App,
+  with a filter box and a live count.
 
 ---
 
@@ -402,10 +454,12 @@ Version 0.4.0 was skipped.
 [Unreleased]: https://github.com/tarrinho/claude_code_webclient/compare/e137272...HEAD
 [0.8.0]: https://github.com/tarrinho/claude_code_webclient/compare/3bd80aa...e137272
 [0.7.2]: https://github.com/tarrinho/claude_code_webclient/compare/e42a3f8...3bd80aa
+[0.7.1]: https://github.com/tarrinho/claude_code_webclient/commit/ab2fb6d  (unreferenced stash object; `git show ab2fb6d`)
 [0.7.0]: https://github.com/tarrinho/claude_code_webclient/compare/149aa79...e42a3f8
 [0.6.1]: https://github.com/tarrinho/claude_code_webclient/compare/3137ca2...149aa79
 [0.6.0]: https://github.com/tarrinho/claude_code_webclient/compare/42a4df7...3137ca2
 [0.5.1]: https://github.com/tarrinho/claude_code_webclient/compare/71de7dc...42a4df7
+[0.4.0]: https://github.com/tarrinho/claude_code_webclient/commit/e15f9ae  (unreferenced stash object; `git show e15f9ae`)
 [0.5.0]: https://github.com/tarrinho/claude_code_webclient/compare/058cc2c...71de7dc
 [0.3.0]: https://github.com/tarrinho/claude_code_webclient/compare/ed21559...058cc2c
 [0.2.0]: https://github.com/tarrinho/claude_code_webclient/compare/aa40bc2...ed21559

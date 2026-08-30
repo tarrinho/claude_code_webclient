@@ -1801,6 +1801,8 @@ function showWelcome() {
   byId('topbarTitle').textContent = 'WebConsole';
   byId('workspaceName').textContent = '';
   byId('workspaceStrip').style.display = 'none';
+  const lastBar = byId('lastCommandBar');
+  if (lastBar) lastBar.hidden = true;
   byId('editChatBtn').hidden = true;
   byId('syncBtn').hidden = true;
   byId('composerArea').style.display = 'none';
@@ -2744,6 +2746,9 @@ document.addEventListener('DOMContentLoaded', () => {
       composerStatus: byId('composerStatus'),
       queueBar: byId('queueBar'), queueList: byId('queueList'),
       queueTag: byId('queueTag'), queueNote: byId('queueNote'),
+      lastCommandBar: byId('lastCommandBar'),
+      lastCommandText: byId('lastCommandText'),
+      lastCommandWhen: byId('lastCommandWhen'),
     },
     apiFetch, storageGet, storageSet, storageRemove, showToast,
     onChatLoaded: updateCurrentUi,

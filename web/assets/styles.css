@@ -160,7 +160,16 @@ button{touch-action:manipulation}
 #menuBtn{display:inline-flex;align-items:center;justify-content:center}
 .workspace-strip{min-height:34px;padding:6px 16px;display:none;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 .workspace-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.workspace-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The last request, directly under the strip and visually part of it: the strip
+   loses its own bottom border while this is showing, so the two read as one bar
+   rather than two stacked ones. minmax(0,1fr) plus the ellipsis is what keeps a
+   long prompt from widening the pane on a phone. */
+.workspace-strip:has(+ .workspace-lastcmd:not([hidden])){border-bottom:none}
+.workspace-lastcmd{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:8px;padding:0 16px 6px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
+.workspace-lastcmd[hidden]{display:none}
+.lastcmd-glyph{color:var(--accent);font-size:12px;line-height:1}
+.lastcmd-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--fg)}
+.lastcmd-when{white-space:nowrap;font-size:10.5px}
 /* The auto margin lives on the group so the edit/refresh pair rides right
    with the status, instead of being stranded beside the model selects. */
 .strip-right{margin-left:auto;display:inline-flex;align-items:center;gap:6px}

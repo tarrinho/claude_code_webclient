@@ -293,6 +293,48 @@ export function createConversationController(dependencies) {
     scrollToBottom();
   }
 
+  // ── The last request, kept in the strip ─────────────────────────────────────
+  // Answers "what did I ask here?" without scrolling, which matters most on a
+  // phone where the conversation shows two or three messages at a time.
+
+  let lastCommand = null;   // {text, at} or null
+
+  function setLastCommand(text, at) {
+    const clean = (text || '').trim();
+    lastCommand = clean ? {text: clean, at: at || null} : null;
+    renderLastCommand();
+  }
+
+  function renderLastCommand() {
+    const bar = elements.lastCommandBar;
+    if (!bar) return;
+    if (!lastCommand) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    // textContent, never innerHTML: this is the user's own prompt coming back
+    // from the database and must not be interpreted as markup.
+    elements.lastCommandText.textContent = lastCommand.text;
+    // The full text on hover, since the line is a single ellipsised row.
+    elements.lastCommandText.title = lastCommand.text;
+    elements.lastCommandWhen.textContent =
+      lastCommand.at ? formatTime(lastCommand.at) : '';
+  }
+
+  function lastCommandFrom(messages) {
+    // Walk back rather than filter: the newest user message is wanted and the
+    // list can be long.
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index] && messages[index].role === 'user') return messages[index];
+    }
+    return null;
+  }
+
+  // "2m ago" would otherwise sit there saying 2m for an hour. Only rewrites the
+  // timestamp, and only while something is shown.
+  setInterval(() => { if (lastCommand) renderLastCommand(); }, 30000);
+
   function persistDraft() {
     if (state.currentChat?.id) storageSet(draftKey(state.currentChat.id), elements.composerInput.value);
   }
@@ -316,6 +358,8 @@ export function createConversationController(dependencies) {
     const data = await response.json();
     state.currentChat = data.chat;
     viewingChatId = data.chat.id;
+    const opened = lastCommandFrom(data.messages || []);
+    setLastCommand(opened && opened.content, opened && opened.created_at);
     renderMessages(data.messages || []);
     restoreDraft(chat.id);
     setStreamState('ready');
@@ -519,6 +563,8 @@ export function createConversationController(dependencies) {
     if (!response.ok) return;
     const data = await response.json();
     state.currentChat = data.chat;
+    const latest = lastCommandFrom(data.messages || []);
+    setLastCommand(latest && latest.content, latest && latest.created_at);
     renderMessages(data.messages || []);
     onChatLoaded(data.chat);
   }
@@ -534,7 +580,9 @@ export function createConversationController(dependencies) {
     elements.retryButton.style.display = 'none';
     const empty = elements.messages.querySelector('.empty-state');
     if (empty) empty.remove();
-    elements.messages.appendChild(createMessage('user', content, new Date().toISOString()));
+    const sentAt = new Date().toISOString();
+    elements.messages.appendChild(createMessage('user', content, sentAt));
+    setLastCommand(content, sentAt);
     scrollToBottom();
     setStreamState('connecting');
     viewingChatId = chatId;

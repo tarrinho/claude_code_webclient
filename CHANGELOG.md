@@ -22,6 +22,40 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **The health check now notices a server that has stopped writing.** Until now
+  it asked `/login` for a 200, which a server with a dead write path answers
+  perfectly — that is how one served for 37 minutes while recording nothing.
+  It now also asks whether `system_samples` is still growing: the only table
+  written unconditionally on a timer, so silence in it cannot be normal.
+
+  The verdict has four states rather than two. Only `stale` restarts;
+  `warming` and `unknown` do nothing, because a server that has just restarted
+  inherits rows from before the restart and a yes/no check would restart it,
+  and then restart it again. The probe opens the database read-only, so it
+  physically cannot cause the fault it looks for, and declines to act at all
+  when the file it is reading is not the one the server has open.
+
+### Fixed
+
+- **The health check was restarting servers that were merely starting up.**
+  Found while proving the recovery cases: a `kill -9` produced two stop/start
+  cycles instead of one, because systemd's own `Restart=always` began a
+  restart and the health check interrupted it three seconds later for the
+  honest reason that nothing was answering yet. Boot takes longer than the
+  check's patience, so any restart could be cut short by the next one.
+
+  It now stands aside while systemd is mid-restart, while the process is
+  younger than 45 seconds, and when the main process has already exited —
+  which is `Restart=always`'s job, not this script's. The first attempt at
+  that guard made things worse by failing *unsafe*: when the process was gone
+  its age was unknowable, and unknowable was treated as "old enough to
+  restart", which is precisely the state during a restart. It now fails safe,
+  on the principle that a restarter acting on missing information is worse
+  than one that waits thirty seconds for better information.
+
+
 ### Fixed
 
 - **Test servers no longer write into the production log.** `logging.conf`

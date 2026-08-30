@@ -674,9 +674,20 @@ class CliTests(unittest.TestCase):
 
     def test_a_young_server_exits_zero_despite_old_rows(self):
         """The restart-loop case, through the CLI: stale rows plus a fresh pid
-        must not be a fault."""
+        must not be a fault.
+
+        Spawns a process rather than using os.getpid(). The pytest process is
+        seconds old when this file runs alone and minutes old in a full suite,
+        so the original passed by itself and failed in the suite -- a test
+        whose verdict depended on how it was invoked rather than on the code.
+        """
+        import subprocess
+
+        child = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.terminate)
         code, text = self._run(
-            ["2020-01-01T00:00:00Z"], argv=["--pid", str(os.getpid())]
+            ["2020-01-01T00:00:00Z"], argv=["--pid", str(child.pid)]
         )
         self.assertEqual(code, 0, text)
         self.assertIn("warming", text)

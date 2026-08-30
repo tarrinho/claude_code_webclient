@@ -93,6 +93,27 @@ button{touch-action:manipulation}
 /* Dot on the row whose conversation is mid-turn, so leaving it stays visible. */
 .chat-running{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:middle;animation:chat-pulse 1.4s ease-in-out infinite}
 @keyframes chat-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* Prompts waiting behind the running turn. Held ones are warned, because they
+   need a decision rather than just patience. */
+.queue-bar{border-top:1px solid var(--line);padding:8px 12px;background:var(--panel)}
+.queue-bar[data-held="yes"]{background:var(--panel2,var(--panel));border-top-color:var(--warn,var(--accent))}
+.queue-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.queue-tag{font:600 10px system-ui,-apple-system,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);flex:0 0 auto}
+.queue-bar[data-held="yes"] .queue-tag{color:var(--warn,var(--accent))}
+.queue-note{font-size:.75rem;color:var(--muted);min-width:0}
+.queue-list{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.queue-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;font-size:.82rem}
+.queue-pos{font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);flex:0 0 auto}
+/* minmax(0,1fr) above plus this is what keeps a long prompt from widening the
+   pane instead of ellipsising -- the same trap fixed in the Skills panel. */
+.queue-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.queue-actions{display:flex;gap:4px;flex:0 0 auto}
+.queue-btn{font-size:.72rem;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);cursor:pointer;min-height:26px}
+.queue-btn:hover{border-color:var(--accent)}
+.queue-btn-drop:hover{border-color:var(--danger,#c0504d);color:var(--danger,#c0504d)}
+/* A conversation whose linked terminal is working. Same size as the running dot
+   so rows do not shift, but outlined: there is nothing here to attach to. */
+.chat-terminal-busy{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--muted);box-sizing:border-box;vertical-align:middle}
 /* Replied while you were elsewhere: same footprint as the running dot so the
    row does not shift when a turn finishes, but hollow and still. */
 .chat-unread{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--accent);box-sizing:border-box;vertical-align:middle}

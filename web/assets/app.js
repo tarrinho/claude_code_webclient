@@ -2121,6 +2121,8 @@ document.addEventListener('DOMContentLoaded', () => {
       sendButton: byId('sendBtn'), retryButton: byId('retryBtn'),
       jumpButton: byId('jumpToLatest'), runState: byId('runState'),
       composerStatus: byId('composerStatus'),
+      queueBar: byId('queueBar'), queueList: byId('queueList'),
+      queueTag: byId('queueTag'), queueNote: byId('queueNote'),
     },
     apiFetch, storageGet, storageSet, storageRemove, showToast,
     onChatLoaded: updateCurrentUi,

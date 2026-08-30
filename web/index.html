@@ -67,6 +67,15 @@
     <section class="messages" id="messagesArea" aria-label="Conversation">
       <div class="empty-state"><div class="icon">⌁</div><strong>Start from a workspace</strong><p>Create or choose a conversation to begin.</p><button class="btn-primary new-chat-btn">New conversation</button></div>
     </section>
+    <!-- Prompts waiting behind the running turn. Sits above the composer
+         because it is about what you already sent, not what you are typing. -->
+    <section class="queue-bar" id="queueBar" aria-live="polite" hidden>
+      <div class="queue-head">
+        <span class="queue-tag" id="queueTag"></span>
+        <span class="queue-note" id="queueNote"></span>
+      </div>
+      <ul class="queue-list" id="queueList" aria-label="Queued prompts"></ul>
+    </section>
     <button type="button" class="jump-latest" id="jumpToLatest" hidden>Jump to latest ↓</button>
   </section>
   <section class="composer" id="composerArea" aria-label="Message composer">

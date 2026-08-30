@@ -22,6 +22,130 @@ churn.
 
 ## [Unreleased]
 
+---
+
+## [0.9.0] — 2026-08-30
+
+### Fixed
+
+- **Messages sent in the web UI were duplicated when the conversation was linked
+  to a live Claude Code terminal.** The `/stream` handler stored the user prompt
+  in the `messages` table, then the background sync poll (every 5 s) read the
+  same turn from the CLI transcript and inserted it again via a plain `INSERT`.
+  The same duplication happened on the non-streaming `/api/chats/{id}/messages`
+  endpoint. Two changes close the race: the sync endpoint now compares the last
+  stored row against the first row from the transcript and skips the import
+  when they match (a tail-equality check on fixed-order data is sufficient to
+  know the entire block is already present), and both terminal-routed paths
+  now call `_skip_transcript_to_end` immediately after storing the prompt so
+  the offset advances past it before any poll can fire. (`db.messages_last()`
+  helper added for the tail lookup.)
+
+### Added
+
+- **Conversation `updated_at` is bumped when a sync imports new messages.**
+  Previously a sync that only moved a read offset would not touch the
+  timestamp, so a conversation whose terminal was busy was never reprieved of
+  its "working" status in the sidebar.
+
+- **Terminal "busy" dot in the sidebar.** A turn now outlives the request that
+  started it, so `running` on the server side is insufficient — conversations
+  linked to live terminals need their own indicator. The sidebar now shows a
+  busy dot for sessions whose Claude Code process reports `"busy"` in
+  `~/.claude/sessions/<pid>.json`, read from the status field the supervisor
+  already trusts.
+
+- **Explicit Stop endpoint** (`POST /api/chats/{id}/stop`). When a turn
+  outlives its viewer, implicit stop-by-aborting-the-reader no longer works.
+  A stopped turn keeps its partial answer, because the tokens are already billed.
+
+- **Waiting for a concurrency slot is reported.** With `WC_MAX_CONCURRENT` turns
+  already running, the next one used to look identical to a slow model: running,
+  with nothing arriving. The server now yields a `waiting_for_slot` status event
+  describing how many slots are occupied.
+
+- **Usage series endpoint** (`GET /api/usage/series`) for the Usage tab charts.
+  Bucketed over time (day, week, month) with a configurable window (1–3650 days).
+  Kept separate from the flat `/api/usage` table so the common read does not pay
+  for the rare one.
+
+- **Supervisor module** (`supervisor.py`): read/write the agent session
+  registry, stream live session updates, list and manage blocking questions,
+  and message agents back. Agents that have asked a question and are waiting are
+  surfaced so a stalled agent is visible instead of silently idle.
+
+### Changed
+
+- Version string bumped to `0.9.0`.
+
+---
+
+## [0.8.2] — 2026-08-30
+
+`0.8.1` never reached a commit. It existed only as a version string in a working
+tree and carried no release of its own, so — following the convention this file
+already uses for 0.4.0 and 0.7.1 — its number is recorded as skipped rather than
+silently reused. Everything previously under *Unreleased* ships here.
+
+### Added
+
+- **A request keeps running when you switch conversation.** Sending a prompt used
+  to lock you into that conversation: the UI refused the switch with "Stop the
+  current response before switching conversations". The refusal was protecting
+  the turn, not the interface — the browser's stream reader *owned* the turn, so
+  closing it terminated the Claude process, and because nothing was persisted
+  until the turn finished, the answer was thrown away. The usage row had already
+  been written, since tokens are recorded as they arrive. **Leaving mid-turn
+  billed you and returned nothing.**
+
+  A turn is now a background task on the server with a numbered event buffer
+  (`turns.py`). Clients attach and detach through
+  `GET /api/chats/{id}/live?since=<seq>`. Switching conversation, reloading,
+  closing the tab and a phone locking are all just a viewer leaving; the turn
+  runs to completion, stores its answer, and replays what you missed when you
+  come back.
+
+- **Prompts sent during a turn are queued** rather than refused, in a persisted
+  `turn_queue` table so a queued prompt survives a reload. The queue drains one
+  prompt per clean finish. On failure the rest are **held** rather than fired
+  into a conversation that has just broken, and a panel above the composer lists
+  them with *Send* and *Discard*.
+
+- **The sidebar shows what is busy**, read from the server rather than from the
+  page: several conversations can be mid-turn at once, so the single running
+  indicator became a set. A conversation whose linked terminal is working gets
+  its own outlined dot — that state previously showed nothing at all. A reply
+  that lands while you are elsewhere leaves an unread mark.
+
+- **Stop is now explicit** (`POST /api/chats/{id}/stop`). It had been implicit —
+  abort the reader and the turn died with it — and once a turn outlives its
+  viewer that is the only way to tell "I am leaving" from "stop working". A
+  stopped turn keeps its partial answer, because the tokens are already billed.
+
+- **Waiting for a concurrency slot is reported.** With `WC_MAX_CONCURRENT` turns
+  already running, the next one used to look identical to a slow model: running,
+  with nothing arriving.
+
+- `tests/test_qa_background_turns.py` — 26 tests, mutation-checked, including the
+  billing regression: a client that disconnects mid-turn must still leave the
+  answer stored and exactly one usage row.
+- `tests/smoke_background_turns.py` — 22 checks in a real browser, since the
+  thing asked for is a UI behaviour and the unit tests cannot demonstrate it.
+
+### Fixed
+
+- **Switching conversation announced "Response stopped"** for a turn that was
+  still running. A detach and a stop are the same abort from the client's point
+  of view; only the intent differs. Found by the browser smoke test.
+- A tool result is rendered rather than dropped since `1cfc978`, which left
+  `test_results_for_other_tools_are_still_dropped` failing on `main`. Rewritten
+  to the contract that still matters: an unrelated tool result must not pair
+  with a pending question and resolve it.
+- `wc.turns` was logging without a `logging.conf` block, so its records — the
+  queue drain, timeouts, crashes in turns nobody is watching — fell through to
+  root.
+
+
 ### Fixed
 
 - **A fresh clone could not start.** `0.7.2` shipped the session-durability work

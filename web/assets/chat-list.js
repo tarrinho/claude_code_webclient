@@ -238,6 +238,15 @@ export function createChatListController(dependencies) {
         dot.setAttribute('aria-label', 'Response in progress');
         dot.title = 'Response in progress';
         title.prepend(dot);
+      } else if (chat.terminal_busy) {
+        // Work is happening in a terminal linked to this conversation. Worth a
+        // dot -- it was showing nothing at all -- but a different one, because
+        // there is no stream here to open.
+        const dot = document.createElement('span');
+        dot.className = 'chat-terminal-busy';
+        dot.setAttribute('aria-label', 'Working in its terminal');
+        dot.title = 'Working in the terminal session running this conversation';
+        title.prepend(dot);
       } else if (unreadIds.has(chat.id)) {
         const mark = document.createElement('span');
         mark.className = 'chat-unread';

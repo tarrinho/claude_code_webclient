@@ -2,7 +2,7 @@
 
 A self-hosted web interface for a local Claude Code CLI. It provides mobile-friendly conversations, SSE token streaming, SQLite persistence, resumable CLI sessions, multi-machine AI routing, and skills inventory.
 
-**Version:** 0.7.0
+**Version:** 0.8.2
 **License:** Proprietary
 
 ---
@@ -33,6 +33,38 @@ WebConsole bridges a web browser and the Claude Code CLI. A single authenticated
 | Mode | How it works | When to use |
 |------|--------------|-------------|
 | **Direct** | FastAPI spawns `claude` as a subprocess, reads stream-json NDJSON from stdout | Web app and Claude Code on the same machine |
+### Turn ownership (`turns.py`)
+
+A turn belongs to the server, not to the browser that started it. It runs as an
+`asyncio.Task` holding a numbered event buffer; clients attach to that buffer
+through `GET /api/chats/{id}/live?since=<seq>` and detach freely. Switching
+conversation, reloading, closing the tab and a phone suspending are all the same
+event — a follower leaving — and none of them shorten the turn or lose its answer.
+
+Before this, the browser's `fetch` reader *was* the turn's owner: closing it
+closed the SSE response, `claude_proxy` saw the disconnect and terminated the
+CLI, and because nothing was persisted until the `done` event arrived the answer
+was discarded — while the usage row had already been written, since tokens are
+recorded as they arrive. Leaving mid-turn therefore billed the user and returned
+nothing, which is why the UI refused to let you change conversation at all.
+
+Two ordering rules hold the design together:
+
+- **`finish` runs before the terminal state is published.** A follower exits the
+  moment the turn stops being `running`, and the client reloads on `done`; the
+  other order races the write against the reload.
+- **The buffer is never trimmed mid-turn**, only reaped whole after
+  `_RETAIN_S`. Eviction would create gaps a reattaching client could not detect.
+
+`turns.py` imports `db` but never `app`: `app` injects `produce` (the runner
+stream) and `finish` (persistence), and sets `turns.launcher` so the queue can
+drain without a circular import.
+
+A prompt sent while a turn is running is queued in the `turn_queue` table —
+persisted, because the point of the feature is that the user can walk away.
+The queue drains one prompt per clean finish and is **held** on failure rather
+than fed into a conversation that has just broken.
+
 | **Proxy** | FastAPI connects to a host-side TCP proxy (`claude_proxy.py`) which spawns Claude | FastAPI runs in a container; Claude lives on the host |
 
 The proxy mode is the default and recommended path. The proxy handles Claude's stream-json output, normalizes it into a simple event protocol, and relays events back over TCP.
@@ -212,7 +244,12 @@ The single entry point. Registers all routes, middleware, and endpoint handlers.
 | `/api/chats/{id}` | DELETE | `handle_chat_delete` | Hard delete chat + messages |
 | `/api/chats/{id}/export` | GET | `handle_chat_export` | Download Markdown transcript |
 | `/api/chats/{id}/messages` | POST | `handle_submit_message` | Blocking turn (wait for full response) |
-| `/api/chats/{id}/stream` | POST | `stream_handler` | SSE token stream |
+| `/api/chats/{id}/stream` | POST | `stream_handler` | Start a turn, then follow it over SSE |
+| `/api/chats/{id}/live` | GET | `handle_chat_live` | Attach to a turn already running (`?since=<seq>`) |
+| `/api/chats/{id}/stop` | POST | `handle_turn_stop` | Cancel the running turn and hold its queue |
+| `/api/chats/{id}/queue` | GET | `handle_queue_list` | Prompts waiting behind the running turn |
+| `/api/chats/{id}/queue/{qid}` | DELETE | `handle_queue_delete` | Discard a queued prompt |
+| `/api/chats/{id}/queue/{qid}/release` | POST | `handle_queue_release` | Send a held prompt anyway |
 | `/api/skills` | GET | `handle_skills_get` | List installed skills + active set |
 | `/api/settings` | GET | `handle_settings_get` | Runtime config (non-secret) |
 | `/api/settings` | PATCH | `handle_settings_patch` | Update runtime config + secrets |

@@ -140,6 +140,10 @@ export function createConversationController(dependencies) {
   // has moved on must not be drawn into the conversation now on screen.
   let liveSource = null;
   let viewingChatId = null;
+  // True while an abort is a detach rather than a stop. Without it, switching
+  // conversation reported "Response stopped" for a turn that was still running
+  // -- the abort looks identical from the catch block.
+  let detaching = false;
 
   function draftKey(chatId) { return `wc_draft_${chatId}`; }
 
@@ -284,17 +288,132 @@ export function createConversationController(dependencies) {
       // were elsewhere is replayed before the live tail -- the stored messages
       // do not include it yet, because nothing is persisted until the turn ends.
       attach(data.chat.id, 0);
-    } else if (data.chat.queued) {
-      setStreamState('ready');
-      showToast(`${data.chat.queued} prompt${data.chat.queued > 1 ? 's' : ''} waiting in this conversation`);
     }
+    // Always, not only when the count is non-zero: opening a conversation has
+    // to clear a panel left over from the previous one.
+    refreshQueue(data.chat.id);
     elements.composerInput.focus();
     return true;
+  }
+
+  // ── Queued prompts ──────────────────────────────────────────────────────────
+  // A prompt sent while a turn was running waits on the server. Held prompts are
+  // the ones whose predecessor failed: they are deliberately not sent on, so
+  // they need somewhere to be seen and acted on rather than only counted.
+
+  async function refreshQueue(chatId) {
+    if (!elements.queueBar) return;
+    if (!chatId) return hideQueue();
+    let payload;
+    try {
+      const response = await apiFetch(`/api/chats/${encodeURIComponent(chatId)}/queue`);
+      if (!response.ok) return hideQueue();
+      payload = await response.json();
+    } catch { return hideQueue(); }
+    if (state.currentChat?.id !== chatId) return;
+    renderQueue(chatId, payload);
+  }
+
+  function hideQueue() {
+    if (!elements.queueBar) return;
+    elements.queueBar.hidden = true;
+    if (elements.queueList) elements.queueList.textContent = '';
+  }
+
+  function renderQueue(chatId, payload) {
+    const rows = payload.queue || [];
+    if (!rows.length) return hideQueue();
+    const held = rows.filter(row => row.state === 'held').length;
+    elements.queueBar.hidden = false;
+    elements.queueBar.dataset.held = held ? 'yes' : 'no';
+    elements.queueTag.textContent = held
+      ? `${held} held`
+      : `${rows.length} of ${payload.max} queued`;
+    elements.queueNote.textContent = held
+      ? 'The turn in front of these failed, so they were not sent. Send or discard each one.'
+      : 'These send automatically, one at a time, as the current response finishes.';
+
+    elements.queueList.textContent = '';
+    rows.forEach((row, index) => {
+      const item = document.createElement('li');
+      item.className = 'queue-item';
+      if (row.state === 'held') item.classList.add('queue-item-held');
+      item.dataset.queueId = String(row.id);
+
+      const text = document.createElement('span');
+      text.className = 'queue-text';
+      // textContent, never innerHTML: this is the user's own prompt coming back
+      // from the database and must not be interpreted as markup.
+      text.textContent = row.prompt;
+      text.title = row.prompt;
+
+      const position = document.createElement('span');
+      position.className = 'queue-pos';
+      position.textContent = row.state === 'held' ? 'held' : `#${index + 1}`;
+
+      const actions = document.createElement('span');
+      actions.className = 'queue-actions';
+      if (row.state === 'held') {
+        const send = document.createElement('button');
+        send.type = 'button';
+        send.className = 'queue-btn';
+        send.textContent = 'Send';
+        send.addEventListener('click', () => releaseQueued(chatId, row.id));
+        actions.appendChild(send);
+      }
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'queue-btn queue-btn-drop';
+      drop.textContent = 'Discard';
+      drop.setAttribute('aria-label', `Discard queued prompt ${index + 1}`);
+      drop.addEventListener('click', () => discardQueued(chatId, row.id));
+      actions.appendChild(drop);
+
+      item.append(position, text, actions);
+      elements.queueList.appendChild(item);
+    });
+  }
+
+  async function discardQueued(chatId, queueId) {
+    try {
+      const response = await apiFetch(
+        `/api/chats/${encodeURIComponent(chatId)}/queue/${queueId}`,
+        {method: 'DELETE'},
+      );
+      if (!response.ok) throw new Error('Could not discard it');
+      showToast('Discarded');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    await refreshQueue(chatId);
+    await refreshChats();
+  }
+
+  async function releaseQueued(chatId, queueId) {
+    try {
+      const response = await apiFetch(
+        `/api/chats/${encodeURIComponent(chatId)}/queue/${queueId}/release`,
+        {method: 'POST'},
+      );
+      if (!response.ok) throw new Error('Could not send it');
+      const data = await response.json();
+      if (data.started) {
+        showToast('Sending now');
+        attach(chatId, 0);
+      } else {
+        showToast('Queued — it will send when the current response finishes');
+      }
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    await refreshQueue(chatId);
+    await refreshChats();
   }
 
   function detach() {
     // Closes the viewer, never the turn. The abort is why this is safe: the
     // request it cancels is a follower, and the server does not care.
+    detaching = true;
     if (liveSource) { liveSource.close(); liveSource = null; }
     if (abortController) { abortController.abort(); abortController = null; }
   }
@@ -332,10 +451,13 @@ export function createConversationController(dependencies) {
         source.close(); liveSource = null;
         refreshCurrent();
         setStreamState('ready');
+      } else if (payload.type === 'status' && payload.status === 'waiting_for_slot') {
+        setStreamState('thinking', payload.error || 'Waiting for a free slot…');
       } else if (payload.type === 'error') {
         source.close(); liveSource = null;
         setStreamState('failed');
         showToast(payload.error || 'The turn failed', 'error');
+        refreshQueue(chatId);
         refreshChats();
       } else if (payload.type === 'done') {
         source.close(); liveSource = null;
@@ -343,6 +465,7 @@ export function createConversationController(dependencies) {
         // Reload from the server rather than keeping what was streamed: the
         // turn has persisted the canonical text by the time `done` arrives.
         refreshCurrent();
+        refreshQueue(chatId);
         refreshChats();
       }
     };
@@ -378,6 +501,7 @@ export function createConversationController(dependencies) {
     scrollToBottom();
     setStreamState('connecting');
     viewingChatId = chatId;
+    detaching = false;
     abortController = new AbortController();
 
     let assistantRow = null;
@@ -423,6 +547,10 @@ export function createConversationController(dependencies) {
             // turn on the server rather than being refused.
             showToast(`Queued — position ${event.position}. It will send when the current response finishes.`);
             setStreamState('ready');
+            elements.composerInput.value = '';
+            storageRemove(draftKey(chatId));
+            autoResize();
+            await refreshQueue(chatId);
             await refreshChats();
             return;
           }
@@ -443,6 +571,9 @@ export function createConversationController(dependencies) {
               setStreamState('responding');
               followNewContent(shouldFollow);
             }
+          } else if (event.type === 'status' && event.status === 'waiting_for_slot') {
+            // Otherwise this is indistinguishable from a slow model.
+            setStreamState('thinking', event.error || 'Waiting for a free slot…');
           } else if (event.type === 'status' && event.status === 'api_retry') {
             const delay = event.retry_delay_ms ? Math.ceil(event.retry_delay_ms / 1000) : null;
             const detail = `Retry ${event.attempt || '?'}/${event.max_retries || '?'}${delay ? ` in ${delay}s` : ''}…`;
@@ -459,6 +590,11 @@ export function createConversationController(dependencies) {
       succeeded = true;
     } catch (error) {
       if (error.name === 'AbortError') {
+        if (detaching) {
+          // The user changed conversation. The turn is the server's and is
+          // still running, so say nothing and claim nothing.
+          return;
+        }
         if (!fullText) {
           elements.composerInput.value = content;
           storageSet(draftKey(chatId), content);
@@ -478,6 +614,7 @@ export function createConversationController(dependencies) {
     } finally {
       abortController = null;
       if (assistantRow && !fullText) assistantRow.remove();
+      await refreshQueue(chatId);
       await refreshChats();
       if (succeeded) {
         lastAttempt = null;
@@ -495,6 +632,7 @@ export function createConversationController(dependencies) {
     // on spending tokens in the background.
     const chatId = state.currentChat?.id;
     detach();
+    detaching = false;   // this one really is a stop
     setStreamState('stopped');
     if (!chatId) return;
     try {
@@ -502,6 +640,7 @@ export function createConversationController(dependencies) {
     } catch {
       showToast('Could not confirm the stop — the turn may still be running', 'error');
     }
+    await refreshQueue(chatId);
     await refreshChats();
   }
 

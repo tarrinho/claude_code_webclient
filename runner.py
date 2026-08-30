@@ -319,6 +319,17 @@ async def get_backend(chat_id: str) -> dict[str, str]:
     return backend
 
 
+def slots_busy() -> bool:
+    """Whether every concurrent-turn slot is taken.
+
+    A turn that has to wait for a slot looks identical to a slow one from the
+    browser -- running, with nothing arriving. Background turns make that far
+    easier to hit, because several conversations can be mid-turn at once, so the
+    wait is now worth saying out loud instead of leaving the user to guess.
+    """
+    return _sem is not None and _sem.locked()
+
+
 def _get_sem() -> asyncio.Semaphore:
     global _sem
     if _sem is None:

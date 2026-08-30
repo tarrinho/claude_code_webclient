@@ -510,6 +510,11 @@ async def handle_chats_list(request: Request):
                     "ai_machine_id": c.get("ai_machine_id"),
                     "running": c["id"] in running,
                     "queued": queued.get(c["id"], 0),
+                    # Work happening in a terminal this conversation is linked
+                    # to. Draws the same dot; offers nothing to attach to.
+                    "terminal_busy": bool(
+                        c.get("session_id") and c["session_id"] in busy_sessions
+                    ),
                 }
                 for c in chats
             ],
@@ -1116,6 +1121,15 @@ async def _start_turn(
     chat_id = chat["id"]
 
     async def produce():
+        if runner.slots_busy():
+            # Otherwise waiting for a slot is indistinguishable from a slow
+            # model: the conversation shows as running with nothing arriving.
+            yield {
+                "type": "status",
+                "status": "waiting_for_slot",
+                "error": f"Waiting for a free slot — {config.MAX_CONCURRENT} "
+                         f"turns are already running.",
+            }
         # Inside the task, not before it: a transcript repair on a large
         # conversation would otherwise delay the HTTP response.
         await _prepare_transcript_for_backend(chat)

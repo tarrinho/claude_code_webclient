@@ -925,6 +925,9 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             cost_basis=stats.get("cost_basis"),
             duration_ms=frame.get("duration_ms"),
             is_error=bool(frame.get("is_error")),
+            # Stated, not inferred. Every web turn runs against a session-linked
+            # conversation, so "has a session id" never distinguished the two.
+            origin="web",
         )
     _log.info(
         "usage_recorded chat_id=%s provider=%s models=%s",
@@ -2100,6 +2103,17 @@ async def handle_usage_get(request: Request):
     except (TypeError, ValueError):
         limit = 50
 
+    by_origin = await db.usage_by_origin(owner, days)
+    for row in by_origin:
+        if row.get("unsplit_requests"):
+            # Said in the response rather than left for the reader to infer from
+            # a suspiciously large number, matching how cost is already
+            # suppressed with a note for backends where it is not meaningful.
+            row["unsplit_note"] = (
+                "Excluded from the token total: this model reported no cache "
+                "breakdown, so each turn counts the whole conversation again "
+                "rather than new tokens."
+            )
     totals = await db.usage_totals(owner, days)
     for row in totals:
         if row.get("provider") != "anthropic":
@@ -2121,6 +2135,11 @@ async def handle_usage_get(request: Request):
             "days": days if days is not None else 0,
             "retention_days": config.USAGE_RETENTION_DAYS,
             "overall": await db.usage_overall(owner, days),
+            # Where the turns came from, and which session spent it. Without
+            # these the page reported one figure dominated by adopted agent
+            # sessions and presented it as the operator's own usage.
+            "by_origin": by_origin,
+            "by_session": await db.usage_by_session(owner, days),
             "totals": totals,
             "recent": recent,
         }

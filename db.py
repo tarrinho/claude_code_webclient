@@ -217,6 +217,7 @@ async def init() -> None:
         CREATE INDEX IF NOT EXISTS idx_queue_chat ON turn_queue(chat_id, id);
     """)
     await _ensure_chat_columns()
+    await _ensure_usage_columns()
     await db_conn.commit()
     # Bounded growth without a scheduler: one indexed DELETE per startup.
     await usage_prune(config.USAGE_RETENTION_DAYS)
@@ -1281,6 +1282,7 @@ async def usage_record(
     cost_basis: str | None = None,
     duration_ms: int | None = None,
     is_error: bool = False,
+    origin: str = "web",
 ) -> int | None:
     """Record one model's usage for a completed turn.
 
@@ -1301,11 +1303,11 @@ async def usage_record(
             "INSERT INTO usage_events "
             "(chat_id, owner_id, model, provider, input_tokens, output_tokens, "
             " cache_read_tokens, cache_creation_tokens, cost_usd, cost_basis, "
-            " duration_ms, is_error, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " duration_ms, is_error, created_at, origin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id,
-                    owner_id,
+                owner_id,
                 model,
                 provider or "proxy",
                 int(input_tokens or 0),
@@ -1317,6 +1319,7 @@ async def usage_record(
                 duration_ms,
                 1 if is_error else 0,
                 _now(),
+                origin or "web",
             ),
         )
         await db_conn.commit()
@@ -1391,8 +1394,10 @@ async def usage_import(
                     "INSERT INTO usage_events "
                     "(chat_id, session_id, owner_id, model, provider, input_tokens, "
                     " output_tokens, cache_read_tokens, cache_creation_tokens, "
-                    " cost_usd, cost_basis, duration_ms, is_error, created_at) "
-                    "VALUES ('', ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?)",
+                    " cost_usd, cost_basis, duration_ms, is_error, created_at, "
+                    " origin, context_unsplit) "
+                    "VALUES ('', ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
+                    " 'terminal', ?)",
                     (
                         session_id,
                         owner_id,
@@ -1404,6 +1409,7 @@ async def usage_import(
                         row.get("cost_usd"),
                         "transcript" if row.get("cost_usd") is not None else "unknown",
                         row.get("timestamp") or _now(),
+                        1 if row.get("context_unsplit") else 0,
                     ),
                 )
             await db_conn.execute(
@@ -1417,6 +1423,120 @@ async def usage_import(
             await db_conn.rollback()
             raise
     return written
+
+
+async def _ensure_usage_columns() -> None:
+    """Additive usage schema migrations, and a one-time origin backfill.
+
+    ``origin`` replaces inferring where a turn came from. The old rule was
+    "session_id is set, therefore a terminal" -- true today, but a guess about
+    the shape of a row rather than a statement of fact, and every web turn runs
+    against a session-linked conversation, so nothing but the absence of a
+    column was keeping the two apart.
+
+    ``context_unsplit`` marks a row whose model reported no cache breakdown, so
+    its ``input_tokens`` is the whole conversation re-read rather than new
+    spend.
+    """
+    cursor = await db_conn.execute("PRAGMA table_info(usage_events)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    migrations = {
+        "origin": "ALTER TABLE usage_events ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
+        "context_unsplit":
+            "ALTER TABLE usage_events ADD COLUMN context_unsplit "
+            "INTEGER NOT NULL DEFAULT 0",
+    }
+    added = False
+    for column, statement in migrations.items():
+        if column not in columns:
+            await db_conn.execute(statement)
+            added = True
+    if added:
+        await db_conn.commit()
+    # Backfill only rows that predate the column, using the rule that produced
+    # them. Bounded by origin = '' so it runs once and never re-labels a row
+    # that was written with an explicit origin.
+    await db_conn.execute(
+        "UPDATE usage_events SET origin = "
+        "CASE WHEN session_id IS NOT NULL AND TRIM(session_id) <> '' "
+        "     THEN 'terminal' ELSE 'web' END "
+        "WHERE origin = ''"
+    )
+    # Same for the cache split: a historic row with no cache line at all and a
+    # large input is context that was never broken out.
+    await db_conn.execute(
+        "UPDATE usage_events SET context_unsplit = 1 "
+        "WHERE context_unsplit = 0 AND origin = 'terminal' "
+        "  AND cache_read_tokens = 0 AND cache_creation_tokens = 0 "
+        "  AND input_tokens > 8000"
+    )
+    await db_conn.commit()
+
+
+async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
+    """Totals split by where the turn came from: this website, or a terminal.
+
+    The distinction people actually want, and the one the page was getting
+    wrong. Terminal turns are dominated by agent sessions the console adopted
+    -- 175 million tokens for one of them on this machine against 271 thousand
+    typed into the website the same day -- so presenting a single figure, or
+    labelling the agents' work as the operator's, describes nobody's day.
+    """
+    where = "WHERE owner_id = ?"
+    params: list[Any] = [owner_id]
+    if days:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db_conn.execute(
+        "SELECT COALESCE(NULLIF(origin, ''), 'web') AS origin, "
+        "COUNT(*) AS requests, "
+        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+        "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
+        # Reported separately rather than folded in: these rows count the whole
+        # conversation on every turn, so adding them to the others produces a
+        # number that means nothing.
+        "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
+        "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens, "
+        "SUM(CASE WHEN context_unsplit = 1 THEN 1 ELSE 0 END) AS unsplit_requests "
+        f"FROM usage_events {where} GROUP BY origin ORDER BY origin",  # nosec B608
+        params,
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def usage_by_session(
+    owner_id: str, days: int | None = 30, limit: int = 15
+) -> list[dict[str, Any]]:
+    """Terminal usage per session, named by the conversation it belongs to.
+
+    This is what makes a surprising total explainable. One bar labelled
+    "terminal" hides which session spent it; named rows show at a glance that
+    the consumption belongs to an agent session rather than to anything the
+    operator typed.
+    """
+    where = "WHERE u.owner_id = ? AND u.origin = 'terminal'"
+    params: list[Any] = [owner_id]
+    if days:
+        where += " AND u.created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db_conn.execute(
+        "SELECT u.session_id, "
+        "(SELECT c.title FROM chats c WHERE c.session_id = u.session_id "
+        " AND c.deleted_at IS NULL LIMIT 1) AS title, "
+        "COUNT(*) AS requests, "
+        "COALESCE(SUM(u.input_tokens), 0) AS input_tokens, "
+        "COALESCE(SUM(u.output_tokens), 0) AS output_tokens, "
+        "COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens, "
+        "MAX(u.context_unsplit) AS context_unsplit, "
+        "MAX(u.created_at) AS last_seen "
+        f"FROM usage_events u {where} "  # nosec B608
+        "GROUP BY u.session_id "
+        "ORDER BY SUM(u.input_tokens + u.output_tokens) DESC LIMIT ?",
+        [*params, max(1, min(int(limit), 100))],
+    )
+    return [dict(row) for row in await cur.fetchall()]
 
 
 async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:

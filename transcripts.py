@@ -742,12 +742,23 @@ def _usage_from_record(record: Any) -> dict[str, Any] | None:
     }
     if not any(tokens.values()):
         return None
+    # Whether this model reported a cache breakdown at all. When it does not,
+    # `input_tokens` is the entire conversation re-read on every turn rather
+    # than new spend -- a gateway session here averaged 106,769 input tokens a
+    # turn with no cache line, so summing it reported a billion tokens for work
+    # that mostly re-sent the same context. Detected by key presence rather than
+    # by a size threshold, because the transcript states it outright.
+    context_unsplit = not (
+        "cache_read_input_tokens" in usage
+        or "cache_creation_input_tokens" in usage
+    )
 
     cost = record.get("costUSD")
     if not isinstance(cost, (int, float)):
         cost = None
     return {
         "model": model,
+        "context_unsplit": context_unsplit,
         **tokens,
         # Carried through only when the transcript states one. A third-party
         # gateway reports no trustworthy cost, and inventing one would make the

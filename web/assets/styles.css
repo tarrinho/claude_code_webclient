@@ -112,6 +112,15 @@ button{touch-action:manipulation}
 .queue-btn:hover{border-color:var(--accent)}
 .queue-btn-drop:hover{border-color:var(--danger,#c0504d);color:var(--danger,#c0504d)}
 /* A conversation whose linked terminal is working. Same size as the running dot
+/* Usage origin + per-session breakdown. Two columns so long conversation
+   titles ellipsise rather than pushing the figure off the panel. */
+.usage-origin{margin:10px 0 14px}
+.usage-origin h4{margin:0 0 6px;font:600 11px system-ui,-apple-system,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.usage-origin-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--line)}
+.usage-origin-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:.85rem}
+.usage-origin-figure{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--fg);text-align:right;white-space:nowrap}
+.usage-origin-note{margin:4px 0 8px;font-size:.72rem;color:var(--muted);line-height:1.4}
+.usage-unsplit-flag{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font:9.5px system-ui,-apple-system,sans-serif;text-transform:uppercase;letter-spacing:.06em;background:var(--panel2,rgba(127,127,127,.18));color:var(--muted)}
    so rows do not shift, but outlined: there is nothing here to attach to. */
 .chat-terminal-busy{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--muted);box-sizing:border-box;vertical-align:middle}
 /* Replied while you were elsewhere: same footprint as the running dot so the

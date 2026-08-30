@@ -221,6 +221,93 @@ function _renderUsage() {
     : 'No requests yet';
 
   if (!totals.length) {
+function _buildOriginBreakdown(data) {
+  const rows = data.by_origin || [];
+  if (!rows.length) return null;
+  const section = document.createElement('section');
+  section.className = 'usage-origin';
+  const heading = document.createElement('h4');
+  heading.textContent = 'Where these turns came from';
+  section.appendChild(heading);
+
+  const LABELS = {
+    web: 'This website',
+    terminal: 'Terminal sessions (including agents)',
+  };
+  rows.forEach(row => {
+    const total = (row.input_tokens || 0) + (row.output_tokens || 0);
+    const unsplit = row.unsplit_tokens || 0;
+    // The comparable number is what is left once re-counted context is removed.
+    const comparable = Math.max(0, total - unsplit);
+
+    const item = document.createElement('div');
+    item.className = 'usage-origin-row';
+    const name = document.createElement('span');
+    name.className = 'usage-origin-name';
+    name.textContent = LABELS[row.origin] || row.origin;
+    const figure = document.createElement('span');
+    figure.className = 'usage-origin-figure';
+    figure.textContent = `${row.requests} req · ${_abbrev(comparable)} tokens`;
+    figure.title = `${comparable.toLocaleString()} tokens`;
+    item.append(name, figure);
+    section.appendChild(item);
+
+    if (unsplit) {
+      const note = document.createElement('p');
+      note.className = 'usage-origin-note';
+      note.textContent =
+        `Plus ${_abbrev(unsplit)} tokens not counted above. ` +
+        (row.unsplit_note || '');
+      note.title = `${unsplit.toLocaleString()} tokens excluded`;
+      section.appendChild(note);
+    }
+  });
+  return section;
+}
+
+function _buildSessionBreakdown(data) {
+  const rows = data.by_session || [];
+  if (!rows.length) return null;
+  const section = document.createElement('section');
+  section.className = 'usage-origin';
+  const heading = document.createElement('h4');
+  heading.textContent = 'Terminal usage by session';
+  section.appendChild(heading);
+  const note = document.createElement('p');
+  note.className = 'usage-origin-note';
+  note.textContent =
+    'Named so a surprising total is explainable. An agent session working on ' +
+    'your behalf can spend orders of magnitude more than anything typed by hand.';
+  section.appendChild(note);
+
+  rows.forEach(row => {
+    const item = document.createElement('div');
+    item.className = 'usage-origin-row';
+    const name = document.createElement('span');
+    name.className = 'usage-origin-name';
+    // textContent: a conversation title is user-supplied.
+    name.textContent = row.title || `session ${String(row.session_id).slice(0, 8)}`;
+    name.title = row.session_id || '';
+    const figure = document.createElement('span');
+    figure.className = 'usage-origin-figure';
+    const total = (row.input_tokens || 0) + (row.output_tokens || 0);
+    figure.textContent = `${row.requests} req · ${_abbrev(total)}`;
+    figure.title = `${total.toLocaleString()} tokens`;
+    if (row.context_unsplit) {
+      const flag = document.createElement('span');
+      flag.className = 'usage-unsplit-flag';
+      flag.textContent = 'context not split';
+      flag.title =
+        'This model reports no cache breakdown, so each turn counts the whole ' +
+        'conversation again rather than new tokens.';
+      figure.appendChild(flag);
+    }
+    item.append(name, figure);
+    section.appendChild(item);
+  });
+  return section;
+}
+
     // An empty range is not the same as zero usage; say which it is.
     const notice = document.createElement('div');
     notice.className = 'skills-notice';
@@ -243,6 +330,13 @@ function _renderUsage() {
     _cell('Cost', 'usage-num'),
   );
   table.appendChild(head);
+
+  // Where the turns came from, and which session spent it. Without this the
+  // page reported one figure dominated by adopted agent sessions and presented
+  // it as the operator's own usage: a day spent working from a phone showed
+  // hundreds of millions of "terminal" tokens that belonged to the agents.
+  const originBlock = _buildOriginBreakdown(_usageData);
+  const sessionBlock = _buildSessionBreakdown(_usageData);
 
   totals.forEach(row => {
     const line = document.createElement('div');
@@ -321,6 +415,11 @@ async function loadUsage(force = false) {
   }
   const rows = Array.from({length: 4}, () => {
     const row = document.createElement('div');
+  // Ahead of the per-model table: "who spent this" is the question a
+  // surprising total raises first, and the model breakdown cannot answer it.
+  if (originBlock) frag.insertBefore(originBlock, frag.firstChild);
+  if (sessionBlock) frag.appendChild(sessionBlock);
+
     row.className = 'skill-skeleton';
     return row;
   });

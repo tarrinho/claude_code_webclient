@@ -793,6 +793,246 @@
     });
     el.goalDismissBtn?.addEventListener("click", dismissGoalBanner);
     el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
+  // ── Members ──────────────────────────────────────────────────────────
+  // The conversations and agents a supervisor watches. Deliberately separate
+  // from the task tree: a task is work the supervisor invented and runs
+  // headless, a member is work that already existed and belongs to someone.
+  //
+  // Nothing here dispatches on its own. A member can be prompted, but only by
+  // a person clicking -- driving a live agent types into its terminal, and the
+  // threat model's F-02 is narrowed rather than closed, so the human deciding
+  // to press send is the check that mechanism still has.
+
+  function membersEmpty(message) {
+    const p = document.createElement("p");
+    p.className = "members-empty";
+    p.textContent = message;
+    return p;
+  }
+
+  async function loadMembers(supervisorId) {
+    const panel = document.getElementById("membersPanel");
+    if (!panel || !supervisorId) return;
+    let members = [];
+    try {
+      const r = await apiFetch(
+        `/api/supervisors/${encodeURIComponent(supervisorId)}/members`);
+      if (!r.ok) throw new Error("Could not load members");
+      members = (await r.json()).members || [];
+    } catch (err) {
+      // The panel keeps whatever it last showed rather than going blank: one
+      // failed poll is not evidence that the membership changed.
+      if (!panel.children.length) panel.replaceChildren(membersEmpty(err.message));
+      return;
+    }
+    panel.replaceChildren();
+    if (!members.length) {
+      panel.appendChild(membersEmpty("No members yet. Use + to add one."));
+      return;
+    }
+    members.forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "member-row";
+      const name = document.createElement("span");
+      name.className = "member-title";
+      name.textContent = m.title || "Untitled";
+      const badge = document.createElement("span");
+      // The reason is more useful than the status when there is one: "failed"
+      // says what to do, "waiting" only says that something is true.
+      badge.className = `member-status member-${m.reason || m.status || "idle"}`;
+      badge.textContent = m.reason || m.status || "idle";
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "panel-btn";
+      drop.textContent = "\u00d7";
+      drop.title = `Stop watching ${m.title || "this conversation"}`;
+      drop.setAttribute("aria-label", `Stop watching ${m.title || "this conversation"}`);
+      drop.addEventListener("click", () => removeMember(supervisorId, m.id));
+      row.append(name, badge, drop);
+      if (m.preview) row.title = m.preview;
+      panel.appendChild(row);
+    });
+  }
+
+  async function removeMember(supervisorId, chatId) {
+    try {
+      const r = await apiFetch(
+        `/api/supervisors/${encodeURIComponent(supervisorId)}/members/` +
+          encodeURIComponent(chatId),
+        { method: "DELETE" });
+      if (!r.ok) throw new Error("Could not remove that member");
+      // Removing membership never deletes the conversation, so say that
+      // plainly -- an ambiguous message here invites a nervous double-check.
+      showToast("Removed from this supervisor. The conversation is untouched.");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+    loadMembers(supervisorId);
+  }
+
+  function closeMembersPicker() {
+    document.getElementById("membersPickerDialog")?.remove();
+  }
+
+  async function openMembersPicker(supervisorId) {
+    closeMembersPicker();
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop open";
+    backdrop.id = "membersPickerDialog";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    backdrop.setAttribute("aria-label", "Add members to this supervisor");
+    const panel = document.createElement("div");
+    panel.className = "dialog";
+    const heading = document.createElement("h2");
+    heading.textContent = "Add members";
+    const help = document.createElement("p");
+    help.textContent = "Loading\u2026";
+    panel.append(heading, help);
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) closeMembersPicker();
+    });
+
+    let agents = [];
+    let chats = [];
+    let existing = new Set();
+    try {
+      const [sessionsRes, chatsRes, membersRes] = await Promise.all([
+        apiFetch("/api/sessions"),
+        apiFetch("/api/chats"),
+        apiFetch(`/api/supervisors/${encodeURIComponent(supervisorId)}/members`),
+      ]);
+      if (!sessionsRes.ok || !chatsRes.ok) throw new Error("Could not load the list");
+      // A live agent that already has a conversation is offered as that
+      // conversation, not twice: /api/sessions filters linked sessions out and
+      // marks web chats with webchat, so the two groups cannot overlap.
+      agents = ((await sessionsRes.json()).sessions || [])
+        .filter((s) => s.sessionId && !s.webchat);
+      chats = (await chatsRes.json()).chats || [];
+      if (membersRes.ok) {
+        existing = new Set(((await membersRes.json()).members || []).map((m) => m.id));
+      }
+    } catch (err) {
+      help.textContent = err.message;
+      return;
+    }
+
+    if (!agents.length && !chats.length) {
+      help.textContent = "Nothing to add yet \u2014 no agents or conversations.";
+      return;
+    }
+    help.textContent = "Pick the agents and conversations this supervisor should watch.";
+
+    const filter = document.createElement("input");
+    filter.type = "search";
+    filter.placeholder = "Filter by name\u2026";
+    filter.setAttribute("aria-label", "Filter members");
+    panel.appendChild(filter);
+
+    const list = document.createElement("div");
+    list.className = "members-picker-list";
+
+    const addGroup = (title, items, kind) => {
+      if (!items.length) return;
+      const label = document.createElement("h3");
+      label.textContent = title;
+      list.appendChild(label);
+      items.forEach((item) => {
+        const refId = kind === "session" ? item.sessionId : item.id;
+        const name = (kind === "session" ? item.name : item.title) || refId;
+        const row = document.createElement("label");
+        row.className = "members-picker-row";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.dataset.kind = kind;
+        box.dataset.refId = refId;
+        // An existing member is shown ticked and disabled: the dialog states
+        // the current membership rather than offering a click that does
+        // nothing and reads as broken.
+        if (existing.has(refId)) {
+          box.checked = true;
+          box.disabled = true;
+        }
+        const text = document.createElement("span");
+        text.textContent = existing.has(refId) ? `${name} (already a member)` : name;
+        row.dataset.search = name.toLowerCase();
+        row.append(box, text);
+        list.appendChild(row);
+      });
+    };
+    addGroup("Live agents", agents, "session");
+    addGroup("Conversations", chats, "chat");
+    panel.appendChild(list);
+
+    filter.addEventListener("input", () => {
+      const needle = filter.value.trim().toLowerCase();
+      list.querySelectorAll(".members-picker-row").forEach((row) => {
+        row.hidden = Boolean(needle) && !row.dataset.search.includes(needle);
+      });
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "dialog-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", closeMembersPicker);
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.dataset.action = "confirm-members";
+    confirm.textContent = "Add";
+    confirm.addEventListener("click", () => submitMembers(supervisorId, list));
+    actions.append(cancel, confirm);
+    panel.appendChild(actions);
+    filter.focus();
+  }
+
+  async function submitMembers(supervisorId, list) {
+    const chosen = [...list.querySelectorAll("input[type=checkbox]")]
+      .filter((b) => b.checked && !b.disabled)
+      .map((b) => ({ kind: b.dataset.kind, ref_id: b.dataset.refId }));
+    if (!chosen.length) {
+      // An empty POST is a 400 the user did nothing to deserve.
+      closeMembersPicker();
+      return;
+    }
+    try {
+      const r = await apiFetch(
+        `/api/supervisors/${encodeURIComponent(supervisorId)}/members`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ members: chosen }),
+        });
+      // apiFetch resolves for 4xx as well as 2xx, so without this a rejection
+      // would report success and add nothing.
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || data.detail || "Could not add those members");
+      }
+      const result = await r.json();
+      const added = (result.added || []).length;
+      const already = (result.already_members || []).length;
+      const failed = (result.failed || []).length;
+      if (failed) {
+        // Both halves, always. Nine added and one refused must not look like
+        // ten added, and must not look like a total failure either.
+        showToast(`Added ${added}, ${failed} could not be added`, "error");
+      } else if (added) {
+        showToast(`Added ${added} member${added === 1 ? "" : "s"}`);
+      } else {
+        showToast(`Already ${already === 1 ? "a member" : "members"}`);
+      }
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+    closeMembersPicker();
+    loadMembers(supervisorId);
+  }
+  // ── Members end ──────────────────────────────────────────────────────
+
 
     // Panel resize
     initResizeHandles();
@@ -808,6 +1048,12 @@
       }
     }, 30000);
   }
+    document
+      .getElementById("addMembersBtn")
+      ?.addEventListener("click", () => {
+        if (activeSupervisorId) openMembersPicker(activeSupervisorId);
+        else showToast("Pick a supervisor first", "error");
+      });
 
   // Start when DOM is ready
   if (document.readyState === "loading") {

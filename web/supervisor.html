@@ -652,6 +652,15 @@
             </div>
             <div id="supervisor-list"></div>
             <div id="task-tree"></div>
+            <!-- Members: the conversations and agents this supervisor watches.
+                 Below the task tree because tasks are what a supervisor does
+                 and members are what it is pointed at; the two are deliberately
+                 not coupled. -->
+            <div class="panel-header">
+                <h2>Members</h2>
+                <button class="panel-btn" id="addMembersBtn" title="Add members">+</button>
+            </div>
+            <div id="membersPanel"></div>
             <div class="resize-handle" data-resize="left"></div>
         </div>
 

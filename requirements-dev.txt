@@ -1,5 +1,5 @@
 # Development, CI, and security tooling — not required at runtime.
-httpx>=0.28,<1
+httpx>=0.28.1,<1
 bandit>=1.7,<2
 safety>=3.0,<4
 pip-audit>=2.7,<3

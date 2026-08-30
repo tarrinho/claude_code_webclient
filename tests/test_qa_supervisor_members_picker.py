@@ -45,7 +45,7 @@ SECTION_START = "// ── Members ─"
 SECTION_END = "// ── Members end ─"
 
 
-def run_page(html: str, budget_ms: int = 8000) -> str:
+def run_page(html: str, budget_ms: int = 20000) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         page = Path(tmp) / "probe.html"
         page.write_text(html, encoding="utf-8")
@@ -149,7 +149,26 @@ class PickerTests(unittest.TestCase):
           const refreshedBefore = refreshed;
           const submit = dialog ? dialog.querySelector('[data-action=confirm-members]') : null;
           if (submit) submit.click();
-          await new Promise(r => setTimeout(r, 60));
+          // Wait for the click's promise chain to settle rather than sleeping a
+          // fixed 60ms. Under a full-suite run several browser tests compete for
+          // CPU, and the fixed wait expired before the POST resolved -- the test
+          // passed alone and failed in the suite, which reads as tree churn and
+          // is not. Deadline generous, exit as soon as it has landed.
+          // Poll for completion rather than sleeping a fixed 60ms. Under a
+          // full-suite run several browser tests compete for CPU and the fixed
+          // wait expired before the promise chain finished -- the test passed
+          // alone and failed in the suite, which reads as tree churn and is not.
+          //
+          // The signal is the dialog closing, which submitMembers does last.
+          // `posted` is the wrong signal: the stub sets it synchronously, so
+          // polling on it exits before the response is even read.
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+          const gone = () => !document.getElementById('membersPickerDialog');
+          for (let i = 0; i < 200 && !gone(); i++) await sleep(25);
+          // Then let the panel refresh that follows the close actually land.
+          for (let i = 0; i < 80 && posted !== null && refreshed === refreshedBefore; i++) {{
+            await sleep(25);
+          }}
           const help = dialog ? dialog.querySelector('p') : null;
           document.title = JSON.stringify({{
             offered: boxes.length,

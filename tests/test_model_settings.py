@@ -33,10 +33,21 @@ class _FakeRequest:
 # ── Config / version ───────────────────────────────────────────────────────────
 
 class VersionTests(unittest.TestCase):
-    """VERSION constant must contain 0.8.0."""
+    """The version string's shape, and that the API reports the same one.
 
-    def test_version_contains_071(self):
-        self.assertIn("0.8.0", config.VERSION)
+    These used to hardcode the release number, which meant every bump broke two
+    tests and -- with several sessions working at once -- made the assertion a
+    place to disagree about the number rather than a check on the code. Two
+    sessions setting different numbers in config.py had this file asserting a
+    third. Derived from config.VERSION instead: the invariant worth testing is
+    that the constant is well-formed and that /api/settings does not report
+    something else.
+    """
+
+    def test_the_version_string_is_well_formed(self):
+        self.assertTrue(config.VERSION.startswith("WebConsole_"), config.VERSION)
+        semver = config.VERSION.removeprefix("WebConsole_")
+        self.assertRegex(semver, r"^\d+\.\d+\.\d+")
 
 
 # ── DB: model column migration ─────────────────────────────────────────────────
@@ -303,7 +314,11 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(resp.body.decode())
         self.assertIn("ai_machine_host", body)
         self.assertIn("version", body)
-        self.assertEqual(body["version"], "0.8.0")
+        # Derived, not hardcoded: the endpoint must agree with the constant,
+        # whatever the constant currently says.
+        self.assertEqual(
+            body["version"], config.VERSION.removeprefix("WebConsole_")
+        )
 
     async def test_settings_patch_updates_host(self):
         handler = app.handle_settings_patch

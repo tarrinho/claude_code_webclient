@@ -244,6 +244,11 @@ def _backend_env(backend: object) -> dict[str, str]:
     # Anthropic ones.
     env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
     if not isinstance(backend, dict) or backend.get("provider") != "anthropic":
+        # Do not leak Anthropic env vars to non-anthropic backends: when the
+        # CLI talks to a proxy, `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`
+        # from the host shell must not reach the child process.
+        env.pop("ANTHROPIC_BASE_URL", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
         return env
     base_url = backend.get("base_url")
     if isinstance(base_url, str) and base_url.strip():

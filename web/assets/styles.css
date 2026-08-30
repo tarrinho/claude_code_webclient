@@ -4,12 +4,26 @@
   --ok:#3fb950; --bad:#f85149; --warn:#d29922; --input-bg:#0d1117;
   --user-bg:#1f6feb; --user-fg:#fff; --assistant-bg:#1c2230;
   --sidebar-w:280px;
+  /* Categorical chart palette, dark steps (this is the default theme).
+     Validated against this surface (#161b22) with the all-pairs rule:
+     worst CVD deltaE 9.4, worst normal-vision deltaE 20.9, all >= 3:1 contrast.
+     Assigned in fixed order and never cycled -- a ninth series folds into
+     "Other" rather than inventing a hue. */
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500;
+  --series-5:#d55181; --series-6:#008300; --series-7:#9085e9; --series-8:#e66767;
 }
 html[data-theme="light"] {
   --bg:#f6f8fa; --panel:#fff; --panel2:#eaeef2; --line:#d0d7de;
   --fg:#1f2328; --muted:#59636e; --accent:#0969da; --accent2:#0550ae;
   --ok:#1a7f37; --bad:#cf222e; --warn:#9a6700; --input-bg:#f6f8fa;
   --user-bg:#0969da; --assistant-bg:#f0f1f2;
+  /* Light steps of the same eight hues -- selected for this surface, not an
+     automatic flip of the dark values. Validated against #fff all-pairs:
+     worst CVD deltaE 9.2, worst normal-vision deltaE 24.0. Slot 3 (aqua) sits at
+     2.82:1, below the 3:1 line, so every chart ships direct labels, an
+     always-on legend and a table -- the relief rule, not a dismissable warn. */
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#eda100;
+  --series-5:#e87ba4; --series-6:#008300; --series-7:#4a3aa7; --series-8:#e34948;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -35,11 +49,13 @@ button{touch-action:manipulation}
 .sidebar-search input:focus{border-color:var(--accent)}
 .chat-list{flex:1;overflow-y:auto;padding:2px 8px 16px}
 .chat-section-label{padding:12px 10px 5px;color:var(--muted);font:700 10px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}
+.chat-section-label:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 .chat-item{display:flex;align-items:center;gap:5px;padding:5px 6px;border-radius:7px;margin-bottom:2px}
 .chat-item:hover,.chat-item:focus-within{background:var(--panel2)}
 .chat-item.active{background:var(--panel2);box-shadow:inset 2px 0 var(--accent)}
 .chat-open{flex:1;min-width:0;border:0;background:none;color:inherit;text-align:left;cursor:pointer;padding:4px}
 .chat-title{font-size:13px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-title.stale{color:var(--muted);font-weight:450}
 .chat-meta{font-size:11px;color:var(--muted)}
 .chat-actions{display:flex;opacity:.6}
 .chat-item:hover .chat-actions,.chat-item:focus-within .chat-actions{opacity:1}
@@ -72,6 +88,11 @@ button{touch-action:manipulation}
 .supervisor-label{display:flex;align-items:center;gap:6px;color:var(--warn)}
 .supervisor-badge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--warn);color:#0d1117;font:700 11px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center}
 .supervisor-item{box-shadow:inset 2px 0 var(--warn)}
+.supervisor-open{margin-left:auto;min-width:26px;min-height:26px;font-size:13px;line-height:1}
+.supervisor-open:hover,.supervisor-open:focus-visible{color:var(--accent);background:var(--line)}
+/* With the link present the clear control no longer needs to push itself
+   right -- the two sit together at the end of the heading. */
+.supervisor-open + .supervisor-clear{margin-left:0}
 .supervisor-clear{margin-left:auto;min-width:26px;min-height:26px;font-size:13px;line-height:1}
 .supervisor-clear:hover,.supervisor-clear:focus-visible{color:var(--fg);background:var(--line)}
 .supervisor-dot{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--warn);vertical-align:middle}
@@ -93,6 +114,15 @@ button{touch-action:manipulation}
 /* Dot on the row whose conversation is mid-turn, so leaving it stays visible. */
 .chat-running{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:middle;animation:chat-pulse 1.4s ease-in-out infinite}
 @keyframes chat-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* Usage origin + per-session breakdown. Two columns so long conversation
+   titles ellipsise rather than pushing the figure off the panel. */
+.usage-origin{margin:10px 0 14px}
+.usage-origin h4{margin:0 0 6px;font:600 11px system-ui,-apple-system,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.usage-origin-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--line)}
+.usage-origin-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:.85rem}
+.usage-origin-figure{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--fg);text-align:right;white-space:nowrap}
+.usage-origin-note{margin:4px 0 8px;font-size:.72rem;color:var(--muted);line-height:1.4}
+.usage-unsplit-flag{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font:9.5px system-ui,-apple-system,sans-serif;text-transform:uppercase;letter-spacing:.06em;background:var(--panel2,rgba(127,127,127,.18));color:var(--muted)}
 /* Prompts waiting behind the running turn. Held ones are warned, because they
    need a decision rather than just patience. */
 .queue-bar{border-top:1px solid var(--line);padding:8px 12px;background:var(--panel)}
@@ -112,15 +142,6 @@ button{touch-action:manipulation}
 .queue-btn:hover{border-color:var(--accent)}
 .queue-btn-drop:hover{border-color:var(--danger,#c0504d);color:var(--danger,#c0504d)}
 /* A conversation whose linked terminal is working. Same size as the running dot
-/* Usage origin + per-session breakdown. Two columns so long conversation
-   titles ellipsise rather than pushing the figure off the panel. */
-.usage-origin{margin:10px 0 14px}
-.usage-origin h4{margin:0 0 6px;font:600 11px system-ui,-apple-system,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.usage-origin-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--line)}
-.usage-origin-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:.85rem}
-.usage-origin-figure{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--fg);text-align:right;white-space:nowrap}
-.usage-origin-note{margin:4px 0 8px;font-size:.72rem;color:var(--muted);line-height:1.4}
-.usage-unsplit-flag{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font:9.5px system-ui,-apple-system,sans-serif;text-transform:uppercase;letter-spacing:.06em;background:var(--panel2,rgba(127,127,127,.18));color:var(--muted)}
    so rows do not shift, but outlined: there is nothing here to attach to. */
 .chat-terminal-busy{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--muted);box-sizing:border-box;vertical-align:middle}
 /* Replied while you were elsewhere: same footprint as the running dot so the
@@ -132,7 +153,7 @@ button{touch-action:manipulation}
 @media (prefers-reduced-motion:reduce){.chat-running{animation:none}.chat-group>summary::before{transition:none}}
 
 /* Main */
-.main{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+.main{height:100dvh;display:flex;flex-direction:column;overflow:hidden;position:relative}
 .topbar{min-height:52px;padding:8px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--panel)}
 .topbar h1{font-size:15px;font-weight:650;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ver{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
@@ -250,7 +271,7 @@ button{touch-action:manipulation}
 #settingsStatus.toast{margin-bottom:10px}
 .btn-secondary,.btn-primary{min-height:38px;border-radius:6px;padding:7px 13px;cursor:pointer}.btn-secondary{border:1px solid var(--line);background:transparent;color:var(--fg)}.btn-primary{border:1px solid var(--accent);background:var(--accent);color:#fff}.btn-danger{border-color:var(--bad);background:var(--bad)}
 .btn-add-machine{margin-top:12px;min-height:36px;font-size:13px;width:100%}
-.dialog.settings-dialog{width:min(560px,100%)}
+.dialog.settings-dialog{width:min(1037px,100%)}
 #chatFields{flex:1 1 auto;min-height:0;overflow-y:auto}
 .settings-tabs{display:flex;gap:0;flex-wrap:nowrap;overflow-x:auto;border-bottom:1px solid var(--line);margin-bottom:16px}
 .settings-tab{border:0;background:none;color:var(--muted);padding:8px 14px;font-size:13px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;min-height:auto}
@@ -289,6 +310,31 @@ button{touch-action:manipulation}
 .machine-models{margin:8px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
 .machine-models .models-body{max-height:220px}
 .machine-models input[type=checkbox],.machine-models input[type=radio]{accent-color:var(--accent);cursor:pointer}
+/* The map. A fixed From column, a gutter the wires are painted into, and the
+   backends. The gutter is a plain grid column so the SVG can be sized from its
+   measured box rather than guessed at. */
+.backend-map{display:grid;grid-template-columns:118px 34px minmax(0,1fr);align-items:start;margin-bottom:12px}
+.map-col{font:600 9.5px system-ui,-apple-system,sans-serif;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted);padding-bottom:9px;border-bottom:1px solid var(--line);margin-bottom:11px}
+.map-src{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center}
+.map-src b{font:600 12px system-ui,-apple-system,sans-serif;display:block}
+.map-src span{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
+.map-total{display:block;margin-top:6px;padding-top:6px;border-top:1px solid var(--line);color:var(--fg)!important}
+.map-wires{position:relative;align-self:stretch;min-height:60px}
+.map-wires svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+/* Traffic per model. The bar answers "where have turns actually gone", which
+   is the only way to notice a default nobody uses. */
+.model-bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;min-width:40px}
+.model-bar i{display:block;height:100%;border-radius:3px;background:#2f5d8a}
+.model-item-default .model-bar i{background:var(--ok)}
+.model-turns{font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);text-align:right}
+.model-turns-zero{color:#4a525c}
+/* Below the dialog's comfortable width the From column costs more than it
+   explains, so the map collapses to the backends alone. */
+@media(max-width:620px){
+  .backend-map{grid-template-columns:minmax(0,1fr)}
+  .map-from,.map-wires{display:none}
+}
 /* The rail runs down a live backend and terminates in a node on its default
    row, so "this backend, this model" reads as one path rather than two facts
    the reader has to join up. Standby backends get the gutter but no rail. */
@@ -297,7 +343,7 @@ button{touch-action:manipulation}
 .machine-active .models-rail::before{content:"";position:absolute;left:5px;top:0;bottom:0;width:2px;
   background:linear-gradient(var(--ok),rgba(63,185,80,.12))}
 .models-grid{min-width:0}
-.models-head,.model-item{display:grid;grid-template-columns:56px 52px minmax(0,1fr);gap:0 10px;align-items:center}
+.models-head,.model-item{display:grid;grid-template-columns:60px 58px minmax(0,1fr) 72px 48px;gap:0 10px;align-items:center}
 .models-head{font:600 9.5px system-ui,-apple-system,sans-serif;letter-spacing:.12em;
   text-transform:uppercase;color:var(--muted);padding:7px 0;border-bottom:1px solid var(--line)}
 .models-head span{text-align:center}
@@ -414,3 +460,77 @@ button{touch-action:manipulation}
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(max-width:480px){.usage-row{grid-template-columns:minmax(0,1fr) 2.6rem 3.6rem 3.6rem}.usage-row>:nth-child(5){display:none}.usage-turn{grid-template-columns:minmax(0,1fr) 5.5rem auto}.usage-turn>.usage-when,.usage-turn>.usage-turn-model{display:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+/* ── Statistics ──────────────────────────────────────────────────────────────
+   Inline SVG rather than a chart library: the CSP here is script-src 'self',
+   and SVG inherits the theme variables above where a <canvas> would not. */
+.stats-body{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
+.stat-figure{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.stat-caption{font-size:12px;font-weight:600;color:var(--fg)}
+.stat-plot{position:relative}
+.stat-svg{display:block;width:100%;height:auto;overflow:visible}
+/* Recessive: the grid orients, it does not compete with the data. */
+.stat-grid{stroke:var(--line);stroke-width:1;opacity:.55}
+.stat-axis{fill:var(--muted);font-size:9px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.stat-axis-y{text-anchor:end}
+.stat-axis-x{text-anchor:middle}
+.stat-line{stroke-width:2;fill:none;stroke-linejoin:round;stroke-linecap:round}
+.stat-dot{stroke:var(--panel);stroke-width:2}
+.stat-crosshair{stroke:var(--muted);stroke-dasharray:3 3;pointer-events:none}
+.stat-tip{position:absolute;top:6px;z-index:5;min-width:150px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);box-shadow:0 6px 20px rgba(0,0,0,.32);font-size:11px;pointer-events:none}
+.stat-tip[hidden]{display:none}
+.stat-tip-head{font-weight:600;margin-bottom:4px;color:var(--fg)}
+.stat-tip-row{display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:6px;align-items:center;padding:1px 0}
+/* Values wear text tokens, never the series colour -- the swatch carries identity. */
+.stat-tip-name{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stat-tip-value{color:var(--fg);font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.stat-swatch{width:10px;height:10px;border-radius:2px;display:inline-block;flex:none}
+.stat-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11px;color:var(--muted)}
+.stat-legend-item{display:inline-flex;align-items:center;gap:5px}
+.stat-table-wrap{border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.stat-table-wrap>summary{cursor:pointer;padding:9px 12px;font-size:12px;color:var(--muted)}
+.stat-table-wrap>summary:hover{color:var(--fg)}
+.stat-table{width:100%;border-collapse:collapse;font-size:11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.stat-table th,.stat-table td{padding:5px 10px;text-align:right;border-top:1px solid var(--line);white-space:nowrap}
+.stat-table thead th,.stat-table tbody th{text-align:left;color:var(--muted);font-weight:600}
+.stat-table td{color:var(--fg)}
+.stat-empty{padding:24px 12px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted);font-size:12px}
+/* The table scrolls rather than the dialog stretching sideways. */
+@media(max-width:600px){.stat-table-wrap{overflow-x:auto}}
+
+/* Server statistics. The live cards sit above the charts because "is it
+   struggling right now" is the question this tab is opened to answer; the
+   history is what you read once the answer is yes. auto-fit rather than a
+   fixed column count, so the grid collapses to one column on a phone without
+   a second breakpoint. */
+.srv-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:8px}
+.srv-card{display:grid;gap:5px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);min-width:0}
+.srv-card-label{font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.srv-card-value{font-size:19px;font-weight:600;color:var(--fg);line-height:1.1}
+.srv-card-detail{font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+.srv-meter{height:4px;border-radius:3px;background:var(--input-bg);overflow:hidden}
+/* Width alone carries the reading; colour only escalates. A bar that relied on
+   hue to say "full" would say nothing at all to a colour-blind reader. */
+.srv-meter-fill{display:block;height:100%;border-radius:3px;background:var(--ok)}
+.srv-meter-warn{background:var(--warn)}
+.srv-meter-bad{background:var(--bad)}
+.srv-host,.srv-note{margin:0;font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);overflow-wrap:anywhere}
+
+/* Supervisor, embedded in the conversation area. It is a whole page of its own,
+   so it is framed rather than ported -- and framing keeps the sidebar, which is
+   the point: you can see which agents are waiting while you work in it. */
+.supervisor-pane{display:flex;flex-direction:column;background:var(--bg)}
+#supervisorPane.open{
+  position:absolute;
+  inset:0;
+  z-index:10;
+  /* When open, all other .main children are hidden via the hidden attribute
+     so the supervisor fills the entire right-side panel. */
+}
+.supervisor-pane[hidden]{display:none}
+.supervisor-pane-bar{display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.supervisor-pane-title{flex:1;font:600 12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+#supervisorFrame{flex:1;width:100%;border:0;background:var(--bg)}
+
+/* A failing agent reads as a failure, not as a question waiting on you. */
+.supervisor-item.failed{box-shadow:inset 2px 0 var(--bad)}
+.supervisor-item.failed .supervisor-dot{background:var(--bad)}

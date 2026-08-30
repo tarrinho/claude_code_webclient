@@ -27,8 +27,9 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.8.0</span>
-    <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
+    <span class="ver" id="ver">0.9.0</span>
+    <button class="btn-icon" id="supervisorBtn" aria-label="Open supervisor" title="Supervisor">📡</button>
+<button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
     <button class="btn-logout" id="logoutBtn">Log out</button>
@@ -63,7 +64,7 @@
     <div class="question-options" id="questionOptions" role="group" aria-label="Answers"></div>
     <p class="question-note" id="questionNote"></p>
   </section>
-  <section class="messages-wrap">
+  <section class="messages-wrap" id="messagesWrap">
     <section class="messages" id="messagesArea" aria-label="Conversation">
       <div class="empty-state"><div class="icon">⌁</div><strong>Start from a workspace</strong><p>Create or choose a conversation to begin.</p><button class="btn-primary new-chat-btn">New conversation</button></div>
     </section>
@@ -85,6 +86,16 @@
     </div>
     <div class="composer-meta"><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span><span><button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
   </section>
+  <!-- The supervisor is its own page. Embedded rather than navigated to, so the
+       conversation list stays put and you can leave again without a reload. -->
+  <section class="supervisor-pane" id="supervisorPane" hidden aria-label="Supervisor">
+    <div class="supervisor-pane-bar">
+      <span class="supervisor-pane-title" id="supervisorPaneTitle">Supervisor</span>
+      <button type="button" class="btn-icon" id="supervisorPaneClose"
+              aria-label="Close supervisor" title="Back to the conversation">&times;</button>
+    </div>
+    <iframe id="supervisorFrame" title="Supervisor" src="about:blank"></iframe>
+  </section>
 </main>
 <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
 <div class="dialog-backdrop" id="chatDialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
@@ -103,6 +114,8 @@
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
       <button class="settings-tab active" id="tabBackends" role="tab" tabindex="0" aria-selected="true" data-tab="backends" aria-controls="panelBackends">Backends</button>
       <button class="settings-tab" id="tabUsage" role="tab" tabindex="-1" aria-selected="false" data-tab="usage" aria-controls="panelUsage">Usage</button>
+      <button class="settings-tab" id="tabStats" role="tab" tabindex="-1" aria-selected="false" data-tab="stats" aria-controls="panelStats">Statistics</button>
+      <button class="settings-tab" id="tabServer" role="tab" tabindex="-1" aria-selected="false" data-tab="server" aria-controls="panelServer">Server</button>
       <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
     </div>
@@ -170,6 +183,53 @@
         </div>
         <div class="usage-body" id="usageBody"></div>
       </div>
+      <!-- Statistics tab: the same rows as Usage, over time rather than summed.
+           Terminal and website are separate series on purpose -- they differ by
+           three orders of magnitude, so stacked they would hide the website
+           entirely. -->
+      <div class="settings-panel" id="panelStats" role="tabpanel" aria-labelledby="tabStats" tabindex="0" hidden>
+        <p>Tokens over time, from every turn Claude Code recorded &mdash; in this website and in the terminal.</p>
+        <div class="skills-toolbar usage-toolbar">
+          <label for="statsRange" hidden>Time range</label>
+          <select id="statsRange" aria-label="Time range">
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+          <label for="statsBucket" hidden>Group by</label>
+          <select id="statsBucket" aria-label="Group by">
+            <option value="halfhour">By 30 minutes</option>
+            <option value="hour">By hour</option>
+            <option value="day" selected>By day</option>
+            <option value="month">By month</option>
+          </select>
+          <span class="skills-count" id="statsCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="stats-body" id="statsBody"></div>
+      </div>
+      <!-- Server tab: the health of the machine, not the cost of the model.
+           Live reading first, history second -- the question this page is
+           opened to answer is almost always "is it struggling right now?". -->
+      <div class="settings-panel" id="panelServer" role="tabpanel" aria-labelledby="tabServer" tabindex="0" hidden>
+        <p>Processor, memory and disk on the machine this console runs on, plus what WebConsole itself is using.</p>
+        <div class="skills-toolbar usage-toolbar">
+          <label for="serverRange" hidden>Time range</label>
+          <select id="serverRange" aria-label="Time range">
+            <option value="1" selected>Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <label for="serverBucket" hidden>Group by</label>
+          <select id="serverBucket" aria-label="Group by">
+            <option value="halfhour" selected>By 30 minutes</option>
+            <option value="hour">By hour</option>
+            <option value="day">By day</option>
+          </select>
+          <span class="skills-count" id="serverCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="stats-body" id="serverBody"></div>
+      </div>
       <!-- Skills tab -->
       <div class="settings-panel" id="panelSkills" role="tabpanel" aria-labelledby="tabSkills" tabindex="0" hidden>
         <p>Skills available to Claude on this machine. Read-only &mdash; add or edit skills on disk under <code>~/.claude/skills</code>.</p>
@@ -210,7 +270,7 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/app.js?v=18"></script>
+<script type="module" src="/assets/app.js?v=23"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

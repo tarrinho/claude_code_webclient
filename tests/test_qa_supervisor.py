@@ -607,6 +607,104 @@ class AttentionTests(unittest.TestCase):
                 self.assertIsNone(app._attention(text))
 
 
+class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
+    """Busy is asked, not inferred.
+
+    Before turns.py owned the lifecycle, "mid-turn" was read off the last
+    message being the user's own. That is wrong in both directions once turns
+    run in the background: a queued prompt looks in-flight, and a running turn
+    whose user message has not landed yet looks like nothing. A conversation
+    that is merely busy must never summon anyone.
+    """
+
+    async def asyncSetUp(self):
+        await _setup(self)
+        self._live = patch.object(app.turns, "running_ids", return_value=set())
+        self._live.start()
+
+    async def asyncTearDown(self):
+        self._live.stop()
+        await _teardown(self)
+
+    async def _get(self):
+        return json.loads((await app.handle_supervisor(_request())).body)
+
+    async def test_a_live_turn_is_working_even_with_an_unread_question(self):
+        """The agent asked something and is now working again -- do not
+        interrupt for a question it has already moved past."""
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
+        self.assertEqual((await self._get())["counts"]["waiting"], 1)
+        self._live.stop()
+        try:
+            with patch.object(app.turns, "running_ids", return_value={"c1"}):
+                data = await self._get()
+        finally:
+            self._live.start()
+        self.assertEqual(data["counts"]["waiting"], 0)
+        self.assertEqual(data["counts"]["working"], 1)
+
+    async def test_a_queued_prompt_counts_as_busy(self):
+        """The user has already said what they want; they are waiting on us."""
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
+        with patch.object(db, "queue_counts", AsyncMock(return_value={"c1": 2})):
+            data = await self._get()
+        self.assertEqual(data["counts"]["working"], 1)
+        self.assertEqual(data["counts"]["waiting"], 0)
+
+    async def test_a_just_answered_conversation_is_not_re_flagged(self):
+        """Answering makes the user's reply newest for a moment before the turn
+        starts. Treating "no live turn + newest is the user" as waiting would
+        put the highlight back the instant the question was answered."""
+        await _chat_with(
+            "c1",
+            ("assistant", "2026-08-29T10:00:00Z", "Shall I continue?"),
+            ("user", "2026-08-29T10:05:00Z", "yes, go ahead"),
+        )
+        data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 0)
+        self.assertEqual(data["counts"]["working"], 1)
+
+    async def test_a_running_turn_whose_user_message_has_not_landed_is_working(self):
+        await _chat_with("c1", ("user", "2026-08-29T10:00:00Z", "do the thing"))
+        self._live.stop()
+        try:
+            with patch.object(app.turns, "running_ids", return_value={"c1"}):
+                data = await self._get()
+        finally:
+            self._live.start()
+        self.assertEqual(data["counts"]["working"], 1)
+        self.assertEqual(data["counts"]["waiting"], 0)
+
+    async def test_a_cancelled_turn_is_neither_working_nor_waiting(self):
+        """The user stopped it, so it is not something to be called back to.
+
+        A cancel that persisted nothing leaves the user's own prompt newest,
+        which the ambiguous branch reports as working -- and it would stay that
+        way indefinitely rather than only until the buffer is reaped.
+        """
+        await _chat_with("c1", ("user", "2026-08-29T10:00:00Z", "do the thing"))
+        self.assertEqual((await self._get())["counts"]["working"], 1)
+        stopped = SimpleNamespace(state="cancelled")
+        with patch.object(app.turns, "get", return_value=stopped):
+            data = await self._get()
+        self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
+
+    async def test_a_finished_turn_in_the_buffer_does_not_suppress_the_chat(self):
+        """Only `cancelled` is excluded -- a done turn still has an answer
+        worth surfacing."""
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
+        finished = SimpleNamespace(state="done")
+        with patch.object(app.turns, "get", return_value=finished):
+            data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 1)
+
+    async def test_an_unreadable_queue_does_not_break_the_view(self):
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
+        with patch.object(db, "queue_counts", AsyncMock(side_effect=OSError("nope"))):
+            data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 1)
+
+
 class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
     """An agent that merely finished talking must not summon anyone."""
 
@@ -739,6 +837,144 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
         marks = await db.read_marks_get("admin")
         self.assertFalse(marks[("chat", "c1")]["dismissed_at"])
+
+
+class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
+    """A busy session retrying a dead endpoint is not doing work.
+
+    The busy fast path returns before any transcript read, which is what makes
+    a five-second poll affordable -- and it means a run going nowhere looked
+    exactly like one making progress. The failure is read from the model field
+    the CLI writes on a failed turn, not from the wording, so an agent
+    discussing an API error is not mistaken for one suffering it.
+    """
+
+    async def asyncSetUp(self):
+        await _setup(self)
+        self._cli_patch.stop()
+        app._failure_cache.clear()
+
+    async def asyncTearDown(self):
+        app._failure_cache.clear()
+        self._cli_patch.start()
+        await _teardown(self)
+
+    def _cli(self, **over):
+        base = {"id": SESSION_ID, "sessionId": SESSION_ID, "name": "cweb5",
+                "kind": "interactive", "entrypoint": "", "live": True,
+                "status": "busy", "status_updated_at": ""}
+        base.update(over)
+        return base
+
+    async def _get(self, failure):
+        listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
+                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(app.transcripts, "last_error", AsyncMock(return_value=failure)):
+            return json.loads((await app.handle_supervisor(_request())).body)
+
+    async def test_a_busy_session_with_no_failure_is_still_working(self):
+        data = await self._get(None)
+        self.assertEqual(data["counts"]["working"], 1)
+        self.assertEqual(data["counts"]["waiting"], 0)
+
+    async def test_a_busy_session_that_is_failing_is_surfaced(self):
+        data = await self._get("API Error: 500 Cannot connect to host vllm:8000")
+        self.assertEqual(data["counts"]["waiting"], 1)
+        entry = data["waiting"][0]
+        self.assertEqual(entry["reason"], "failed")
+        self.assertIn("Cannot connect", entry["preview"])
+
+    async def test_a_failure_is_not_retired_by_reading_it(self):
+        """A failing endpoint does not fix itself by being looked at."""
+        await db.read_mark_set("admin", "session", SESSION_ID, "2036-01-01T00:00:00Z")
+        app._failure_cache.clear()
+        data = await self._get("API Error: 500")
+        self.assertEqual(data["counts"]["waiting"], 1)
+
+    async def test_an_explicit_dismissal_does_silence_it(self):
+        await db.read_mark_set(
+            "admin", "session", SESSION_ID, "2036-01-01T00:00:00Z", dismiss=True
+        )
+        app._failure_cache.clear()
+        data = await self._get("API Error: 500")
+        self.assertEqual(data["counts"]["waiting"], 0)
+
+    async def test_the_transcript_is_not_re_read_while_the_file_is_still(self):
+        """The busy path exists to be cheap; an unmoved file cannot have gained
+        a new failure."""
+        listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
+        reader = AsyncMock(return_value=None)
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
+                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(app.transcripts, "last_error", reader):
+            await app.handle_supervisor(_request())
+            await app.handle_supervisor(_request())
+            await app.handle_supervisor(_request())
+        self.assertEqual(reader.await_count, 1, "the tail was re-read on every poll")
+
+    async def test_a_moved_file_is_re_read(self):
+        reader = AsyncMock(return_value=None)
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
+                patch.object(app.transcripts, "last_error", reader):
+            for stamp in (1_800_000_000, 1_800_000_600):
+                with patch.object(app.transcripts, "list_recent", AsyncMock(
+                        return_value=[{"session_id": SESSION_ID, "updated_at": stamp,
+                                       "title": "t"}])):
+                    await app.handle_supervisor(_request())
+        self.assertEqual(reader.await_count, 2)
+
+    async def test_an_unreadable_transcript_does_not_break_the_view(self):
+        listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
+                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(app.transcripts, "last_error",
+                             AsyncMock(side_effect=OSError("gone"))):
+            data = json.loads((await app.handle_supervisor(_request())).body)
+        self.assertEqual(data["counts"]["working"], 1)
+
+
+class FramingPolicyTests(unittest.TestCase):
+    """The console frames its own supervisor page, and nothing else may frame it.
+
+    frame-ancestors 'none' blocked the embed outright. Relaxing it to 'self'
+    keeps the protection that matters -- clickjacking is a foreign page framing
+    ours, and an attacker's page cannot be same-origin with this one.
+    """
+
+    def _headers(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        captured = {}
+
+        class _Resp:
+            headers = captured
+
+        async def _handler(_request):
+            return _Resp()
+
+        middleware = app.SecurityMiddleware(app=None)
+        asyncio.run(middleware.dispatch(SimpleNamespace(url=SimpleNamespace(path="/")), _handler))
+        return captured
+
+    def test_same_origin_framing_is_permitted(self):
+        headers = self._headers()
+        self.assertIn("frame-ancestors 'self'", headers["Content-Security-Policy"])
+        self.assertEqual(headers["X-Frame-Options"], "SAMEORIGIN")
+
+    def test_foreign_framing_is_still_refused(self):
+        """The threat the header exists for is unchanged."""
+        csp = self._headers()["Content-Security-Policy"]
+        self.assertNotIn("frame-ancestors *", csp)
+        self.assertNotIn("frame-ancestors 'none'", csp)
+        self.assertNotIn("ALLOWALL", self._headers()["X-Frame-Options"])
+
+    def test_the_rest_of_the_policy_is_untouched(self):
+        csp = self._headers()["Content-Security-Policy"]
+        for directive in ("default-src 'self'", "script-src 'self'",
+                          "connect-src 'self'", "base-uri 'self'", "form-action 'self'"):
+            self.assertIn(directive, csp)
 
 
 class OneLineTests(unittest.TestCase):

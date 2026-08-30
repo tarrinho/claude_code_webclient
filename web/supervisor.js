@@ -103,6 +103,13 @@
     progressBarFill: $("#overall-progress-fill"),
     newSupervisorBtn: $("#new-supervisor-btn"),
     topbarInfo: $("#topbar-info"),
+    goalBanner: $("#goal-banner"),
+    goalText: $("#goal-text"),
+    completionBanner: $("#completion-banner"),
+    completionStats: $("#completion-stats"),
+    completionSummary: $("#completion-summary"),
+    goalDismissBtn: $(".goal-banner-dismiss"),
+    completionCloseBtn: $(".completion-close"),
   };
 
   // ── Supervisor list ──────────────────────────────────────────────────
@@ -229,6 +236,58 @@
   function addChatMessage(role, content, metadata) {
     chatMessages.push({ role, content, created_at: new Date().toISOString(), metadata });
     renderChatMessages();
+  }
+
+  // ── Goal banner ──────────────────────────────────────────────────────
+  let _currentGoal = null;
+
+  function showGoalBanner(promptText) {
+    _currentGoal = promptText;
+    el.goalText.textContent = promptText;
+    el.goalBanner.hidden = false;
+    // Scroll goal banner into view
+    el.goalBanner.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function dismissGoalBanner() {
+    _currentGoal = null;
+    el.goalBanner.hidden = true;
+  }
+
+  // ── Completion banner ────────────────────────────────────────────────
+  let _completionData = null;
+
+  function showCompletionBanner(eng) {
+    // Gather results from all tasks
+    const allTasks = tasks;
+    const total = allTasks.length;
+    const doneCount = allTasks.filter(t => t.status === "done").length;
+    const failCount = allTasks.filter(t => t.status === "failed").length;
+    const skipCount = allTasks.filter(t => t.status === "blocked").length;
+    const pendingCount = total - doneCount - failCount - skipCount;
+
+    el.completionStats.textContent =
+      `Completed ${doneCount}/${total} tasks` +
+      (failCount ? `, ${failCount} failed` : "") +
+      (skipCount ? `, ${skipCount} skipped` : "") +
+      (pendingCount ? `, ${pendingCount} pending` : "");
+
+    // Build a short summary of successful task results
+    const results = allTasks
+      .filter(t => t.status === "done" && t.result)
+      .map(t => `Task ${t.id} (${t.title}): ${t.result.substring(0, 200)}`)
+      .join("\n\n");
+
+    el.completionSummary.textContent = results || "(No result text available)";
+    el.completionBanner.hidden = false;
+
+    // Also add a chat message so the completion shows up in the scrollback too
+    addChatMessage("system", `✅ Supervisor completed: ${doneCount}/${total} tasks done.`);
+  }
+
+  function dismissCompletionBanner() {
+    _completionData = null;
+    el.completionBanner.hidden = true;
   }
 
   // ── Task tree ────────────────────────────────────────────────────────
@@ -373,6 +432,15 @@
       case "done":
         addLogEntry("system", "Supervisor finished: " + data.status);
         addChatMessage("system", "Supervisor completed with status: " + data.status);
+        // Show the completion banner with task results summary
+        if (data.status === "done") {
+          // Reload fresh task data to build accurate completion summary
+          loadTasks().then(() => {
+            // Get the engine from the global if available
+            const eng = window._supervisorEngine;
+            showCompletionBanner(eng);
+          });
+        }
         break;
       case "start":
         addLogEntry("system", "Stream started");
@@ -442,6 +510,7 @@
     el.sendBtn.disabled = true;
 
     addChatMessage("user", text);
+    showGoalBanner(text);
 
     try {
       const data = await apiFetch("/api/supervisors/" + activeSupervisorId + "/send", {
@@ -536,7 +605,28 @@
       // Maximize / restore single panel
       if (document.body.classList.contains("max-" + maxTarget)) {
         document.body.classList.remove("max-" + maxTarget);
+        // When exiting maximize mode, restore any panels that were
+        // minimized while maximized — they are CSS-hidden by the
+        // max-xxx rules until restorePanel strips that styling.
+        Object.keys(lastMinimized).forEach((p) => {
+          if (lastMinimized[p] && p !== maxTarget) {
+            restorePanel(p);
+            lastMinimized[p] = false;
+          }
+        });
+        // Restore button icons for panels we just restored
+        $$(".panel-btn[data-panel]").forEach((b) => {
+          if (b.dataset.panel && !lastMinimized[b.dataset.panel]) {
+            b.classList.remove("minimized");
+          }
+        });
       } else {
+        // Entering maximize mode. If the target panel is minimized,
+        // restore it first so the maximize transition feels responsive.
+        if (lastMinimized[maxTarget]) {
+          restorePanel(maxTarget);
+          lastMinimized[maxTarget] = false;
+        }
         document.body.classList.add("max-" + maxTarget);
       }
     }
@@ -582,26 +672,6 @@
       el.style.maxWidth = "600px";
     }
     delete el.dataset.minimizeSaved;
-  }
-
-  function restorePanel(panel) {
-    const el = {
-      left: $("#panel-left"),
-      center: $("#panel-center"),
-      right: $("#panel-right"),
-      bottom: $("#panel-bottom"),
-    }[panel];
-    if (!el || !el._savedSize) return;
-    const size = el._savedSize;
-    if (panel === "bottom") {
-      el.style.height = size + "px";
-      el.style.minHeight = PANEL_MIN_HEIGHTS.bottom + "px";
-      el.style.maxHeight = "600px";
-    } else {
-      el.style.width = size + "px";
-      el.style.minWidth = PANEL_MIN_WIDTHS[panel] + "px";
-      el.style.maxWidth = "600px";
-    }
   }
 
   function onResizeMove(e) {
@@ -703,6 +773,8 @@
         sendPrompt();
       }
     });
+    el.goalDismissBtn?.addEventListener("click", dismissGoalBanner);
+    el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
 
     // Panel resize
     initResizeHandles();

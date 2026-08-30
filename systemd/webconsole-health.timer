@@ -1,0 +1,11 @@
+[Unit]
+Description=Check WebConsole is answering, every 30s
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+# Without this a laptop that slept for an hour fires every missed run at once.
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

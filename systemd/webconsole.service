@@ -1,0 +1,27 @@
+[Unit]
+Description=WebConsole web application
+# Wants, not Requires: if the proxy is down the site should still come up and
+# say so, rather than vanishing and leaving nothing to read the error in.
+Wants=webconsole-proxy.service
+After=webconsole-proxy.service network-online.target
+PartOf=webconsole.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/projects/claude-code-webconsole
+# launch.sh resolves the tailnet address, the certificate and the proxy token.
+# WC_EXEC makes it exec uvicorn instead of backgrounding it, so systemd
+# supervises the server rather than a shell that has already exited.
+Environment=WC_EXEC=1
+ExecStart=/usr/bin/env bash launch.sh proxy
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+# Application records go to logs/webconsole.log via logging.conf's rotating
+# handler; this captures uvicorn's own access lines, which only reach stdout.
+StandardOutput=append:%h/projects/claude-code-webconsole/logs/uvicorn.out.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

@@ -362,6 +362,7 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
              patch.object(app.db, "messages_batch", AsyncMock()) as batch, \
              patch.object(app.db, "chat_set_session", AsyncMock()) as set_session, \
+             patch.object(app.db, "bump_chat_updated_at", AsyncMock()), \
              patch.object(app.runner, "run_turn", AsyncMock(return_value=(["answer"], "sid"))):
             response = await app.handle_submit_message(request, "chat")
         self.assertEqual(response.status_code, 200)

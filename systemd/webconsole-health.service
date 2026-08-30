@@ -1,0 +1,7 @@
+[Unit]
+Description=WebConsole health check (restarts the server if it stops answering)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/claude-code-webconsole
+ExecStart=/usr/bin/env bash bin/wc-health.sh

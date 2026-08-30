@@ -471,6 +471,26 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("wc:open-transcript", self.chat_list)
         self.assertIn("dispatchEvent", self.chat_list)
 
+    def test_the_supervisor_section_links_to_the_supervisor(self):
+        """The section names the supervisor, so it should reach it.
+
+        The only route in was a 📡 in the topbar, which does not say what it
+        opens and sits nowhere near the agents it is about.
+        """
+        self.assertIn("open-supervisor", self.chat_list)
+        self.assertIn("onOpenSupervisor", self.chat_list)
+        self.assertIn("supervisor.html", self.app)
+
+    def test_the_supervisor_heading_survives_an_empty_queue(self):
+        """The link has to be reachable when nothing is waiting -- that is
+        exactly when you want to go and look at the supervisor."""
+        self.assertIn("nothingToShow", self.chat_list)
+        body = self.chat_list.split("function renderSupervisor")[1].split("function render(")[0]
+        self.assertIn("list.appendChild(heading)", body)
+        # The early return must come after the heading is appended, not before.
+        self.assertLess(body.index("list.appendChild(heading)"),
+                        body.index("if (nothingToShow) return;"))
+
     def test_history_is_populated_through_set_history(self):
         self.assertIn("setHistory", self.chat_list)
 

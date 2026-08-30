@@ -25,6 +25,9 @@ let _currentTab = 'backends';
 let _modelOptions = [];
 // Last GET /api/models payload: what the active machine reports it serves.
 let _servedModels = [];
+// model id -> turns in the current window. The map draws traffic, so it needs
+// the same numbers the Usage tab reports rather than a second source of truth.
+let _turnsByModel = new Map();
 let _modelsSource = null;
 // Last payload from GET /api/settings. Save compares against it so a field
 // cleared to "" is recognised as a change and actually sent.
@@ -158,6 +161,8 @@ function closeSettingsDialog() {
   byId('settingsDialog').classList.remove('open');
   settingsVisible = false;
   _machineEditing = null;
+  // The Server tab polls while it is open; closing the dialog is leaving it.
+  stopServerPolling();
   if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
 }
 
@@ -169,9 +174,13 @@ function _switchTab(tab) {
     t.setAttribute('aria-selected', String(active));
     t.tabIndex = active ? 0 : -1;
   });
-  const map = { backends: 'panelBackends', usage: 'panelUsage', skills: 'panelSkills', app: 'panelApp' };
+  const map = {
+    backends: 'panelBackends', usage: 'panelUsage', stats: 'panelStats',
+    server: 'panelServer', skills: 'panelSkills', app: 'panelApp',
+  };
   const activeId = map[tab] || 'panelBackends';
-  ['panelBackends', 'panelUsage', 'panelSkills', 'panelApp'].forEach(id => {
+  ['panelBackends', 'panelUsage', 'panelStats', 'panelServer', 'panelSkills',
+   'panelApp'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -186,6 +195,19 @@ function _switchTab(tab) {
   // Always refetch: usage is checked right after running turns, so a cached
   // payload from earlier in the session would show stale numbers.
   if (tab === 'usage') loadUsage(true);
+  // Same reasoning as usage: always refetch rather than show numbers from
+  // before the turns the operator just ran.
+  if (tab === 'stats') loadStats(true);
+  // A live host reading is stale the moment it is drawn, so this one is never
+  // served from cache at all -- and it keeps refreshing while it is on screen,
+  // which is the whole point of a "live" reading. Stopped on the way out of the
+  // tab so a closed panel is not polling /proc in the background for ever.
+  if (tab === 'server') {
+    loadServer();
+    startServerPolling();
+  } else {
+    stopServerPolling();
+  }
   if (tab === 'skills') loadSkills();
 }
 
@@ -208,19 +230,6 @@ function _cell(text, className, title) {
   return cell;
 }
 
-function _renderUsage() {
-  const body = byId('usageBody');
-  if (!body || !_usageData) return;
-  const totals = _usageData.totals || [];
-  const recent = _usageData.recent || [];
-  const overall = _usageData.overall || {};
-
-  const count = byId('usageCount');
-  count.textContent = overall.requests
-    ? `${overall.requests} requests · ${_abbrev(overall.input_tokens)} in · ${_abbrev(overall.output_tokens)} out`
-    : 'No requests yet';
-
-  if (!totals.length) {
 function _buildOriginBreakdown(data) {
   const rows = data.by_origin || [];
   if (!rows.length) return null;
@@ -312,6 +321,19 @@ function _buildSessionBreakdown(data) {
   return section;
 }
 
+function _renderUsage() {
+  const body = byId('usageBody');
+  if (!body || !_usageData) return;
+  const totals = _usageData.totals || [];
+  const recent = _usageData.recent || [];
+  const overall = _usageData.overall || {};
+
+  const count = byId('usageCount');
+  count.textContent = overall.requests
+    ? `${overall.requests} requests · ${_abbrev(overall.input_tokens)} in · ${_abbrev(overall.output_tokens)} out`
+    : 'No requests yet';
+
+  if (!totals.length) {
     // An empty range is not the same as zero usage; say which it is.
     const notice = document.createElement('div');
     notice.className = 'skills-notice';
@@ -321,6 +343,13 @@ function _buildSessionBreakdown(data) {
     body.replaceChildren(notice);
     return;
   }
+
+  // Where the turns came from, and which session spent it. Without this the
+  // page reported one figure dominated by adopted agent sessions and presented
+  // it as the operator's own usage: a day spent working from a phone showed
+  // hundreds of millions of "terminal" tokens that belonged to the agents.
+  const originBlock = _buildOriginBreakdown(_usageData);
+  const sessionBlock = _buildSessionBreakdown(_usageData);
 
   const frag = document.createDocumentFragment();
 
@@ -334,13 +363,6 @@ function _buildSessionBreakdown(data) {
     _cell('Cost', 'usage-num'),
   );
   table.appendChild(head);
-
-  // Where the turns came from, and which session spent it. Without this the
-  // page reported one figure dominated by adopted agent sessions and presented
-  // it as the operator's own usage: a day spent working from a phone showed
-  // hundreds of millions of "terminal" tokens that belonged to the agents.
-  const originBlock = _buildOriginBreakdown(_usageData);
-  const sessionBlock = _buildSessionBreakdown(_usageData);
 
   totals.forEach(row => {
     const line = document.createElement('div');
@@ -406,6 +428,11 @@ function _buildSessionBreakdown(data) {
     : 'Kept indefinitely.';
   frag.appendChild(foot);
 
+  // Ahead of the per-model table: "who spent this" is the question a
+  // surprising total raises first, and the model breakdown cannot answer it.
+  if (originBlock) frag.insertBefore(originBlock, frag.firstChild);
+  if (sessionBlock) frag.appendChild(sessionBlock);
+
   body.replaceChildren(frag);
 }
 
@@ -419,11 +446,6 @@ async function loadUsage(force = false) {
   }
   const rows = Array.from({length: 4}, () => {
     const row = document.createElement('div');
-  // Ahead of the per-model table: "who spent this" is the question a
-  // surprising total raises first, and the model breakdown cannot answer it.
-  if (originBlock) frag.insertBefore(originBlock, frag.firstChild);
-  if (sessionBlock) frag.appendChild(sessionBlock);
-
     row.className = 'skill-skeleton';
     return row;
   });
@@ -439,6 +461,140 @@ async function loadUsage(force = false) {
     _usageData = null;
     _usageFetchedFor = null;
     byId('usageCount').textContent = '';
+    const notice = document.createElement('div');
+    notice.className = 'skills-notice';
+    notice.textContent = error.message;
+    body.replaceChildren(notice);
+  }
+}
+
+// ── Statistics ────────────────────────────────────────────────────────────────
+// The same rows the Usage tab sums, kept in time order. Rendered by stats.js,
+// which owns the SVG; this only fetches and reports failure.
+
+let _statsFetchedFor = null;
+
+async function loadStats(force = false) {
+  const body = byId('statsBody');
+  if (!body) return;
+  const range = byId('statsRange')?.value || '30';
+  const bucket = byId('statsBucket')?.value || 'day';
+  const key = `${range}:${bucket}`;
+  if (!force && _statsFetchedFor === key) return;
+
+  body.replaceChildren(...Array.from({length: 2}, () => {
+    const row = document.createElement('div');
+    row.className = 'skill-skeleton';
+    return row;
+  }));
+  const count = byId('statsCount');
+  if (count) count.textContent = 'Loading…';
+  try {
+    const resp = await apiFetch(
+      `/api/usage/series?days=${encodeURIComponent(range)}` +
+      `&bucket=${encodeURIComponent(bucket)}`);
+    if (!resp.ok) throw new Error('Could not load statistics');
+    const payload = await resp.json();
+    // Imported lazily: the charts are a rarely-opened tab, and the module is
+    // dead weight in the initial parse for every other page load.
+    const {renderStats} = await import('./stats.js');
+    renderStats(body, payload);
+    _statsFetchedFor = key;
+    if (count) {
+      const turns = (payload.series || []).reduce((sum, r) => sum + (r.requests || 0), 0);
+      const periods = new Set((payload.series || []).map(r => r.bucket)).size;
+      // The bucket key is a wire value, not a word: pluralising it directly
+      // rendered "28 halfhours".
+      const noun = {halfhour: '30-minute slot', hour: 'hour', day: 'day', month: 'month'}[bucket]
+        || bucket;
+      count.textContent = turns
+        ? `${turns.toLocaleString()} turns across ${periods} ${noun}${periods === 1 ? '' : 's'}`
+        : '';
+    }
+  } catch (error) {
+    _statsFetchedFor = null;
+    if (count) count.textContent = '';
+    const notice = document.createElement('div');
+    notice.className = 'skills-notice';
+    notice.textContent = error.message;
+    body.replaceChildren(notice);
+  }
+}
+
+// ── Server statistics ─────────────────────────────────────────────────────────
+// Host health rather than model spend. Two requests because they answer
+// different questions and fail independently: the live snapshot is read
+// straight off /proc, while the history comes from the sampler's table and is
+// empty until the server has been up for a sampling interval.
+
+// A live reading that never changes is worse than no reading: it looks current
+// and is not. The panel refreshes itself while it is on screen, at half the
+// sampler's interval so a new stored sample shows up promptly without the page
+// asking for data that cannot have changed yet.
+const SERVER_POLL_MS = 30000;
+let _serverTimer = null;
+
+function startServerPolling() {
+  if (_serverTimer) return;   // never stack intervals on repeated tab clicks
+  _serverTimer = setInterval(() => {
+    // A hidden tab is not being read, and /proc is not free.
+    if (document.visibilityState !== 'visible') return;
+    if (byId('panelServer')?.hidden !== false) return;
+    loadServer(true);
+  }, SERVER_POLL_MS);
+}
+
+function stopServerPolling() {
+  if (!_serverTimer) return;
+  clearInterval(_serverTimer);
+  _serverTimer = null;
+}
+
+/**
+ * @param {boolean} quiet A background refresh: leave the current reading on
+ *   screen while the new one is fetched. Skeletons on every tick would make a
+ *   panel that updates itself look like a panel that keeps breaking.
+ */
+async function loadServer(quiet = false) {
+  const body = byId('serverBody');
+  if (!body) return;
+  const range = byId('serverRange')?.value || '1';
+  const bucket = byId('serverBucket')?.value || 'halfhour';
+
+  const count = byId('serverCount');
+  if (!quiet) {
+    body.replaceChildren(...Array.from({length: 2}, () => {
+      const row = document.createElement('div');
+      row.className = 'skill-skeleton';
+      return row;
+    }));
+    if (count) count.textContent = 'Loading…';
+  }
+  try {
+    const [liveResp, histResp] = await Promise.all([
+      apiFetch('/api/system'),
+      apiFetch(`/api/system/series?days=${encodeURIComponent(range)}` +
+               `&bucket=${encodeURIComponent(bucket)}`),
+    ]);
+    if (!liveResp.ok) throw new Error('Could not read host statistics');
+    if (!histResp.ok) throw new Error('Could not load host history');
+    const live = await liveResp.json();
+    const history = await histResp.json();
+    // Lazily imported for the same reason as the statistics module: it is a
+    // rarely-opened tab and pure weight in every other page load.
+    const {renderServer} = await import('./server.js');
+    renderServer(body, {live, history});
+    if (count) {
+      const cpu = Math.round(live.cpu_pct || 0);
+      const mem = Math.round(live.mem_pct || 0);
+      count.textContent = `CPU ${cpu}% · memory ${mem}%`;
+    }
+  } catch (error) {
+    // A background refresh keeps what is on screen. One failed poll is not
+    // worth replacing a good reading with an error, and the next tick will
+    // either recover or the user will reopen the tab and see it properly.
+    if (quiet) return;
+    if (count) count.textContent = '';
     const notice = document.createElement('div');
     notice.className = 'skills-notice';
     notice.textContent = error.message;
@@ -741,7 +897,7 @@ function _buildModelSection(machine) {
   // model and which made it the default.
   const header = document.createElement('div');
   header.className = 'models-head';
-  ['Offered', 'Default', 'Model'].forEach(label => {
+  ['Offered', 'Default', 'Model', 'Turns', ''].forEach(label => {
     const cell = document.createElement('span');
     cell.textContent = label;
     header.appendChild(cell);
@@ -764,6 +920,20 @@ function _buildModelSection(machine) {
     : 'Ticked models are offered when starting a turn; the selected ● is this backend’s default for new chats.';
   section.appendChild(hint);
   return section;
+}
+
+function _bareModel(id) {
+  return id.slice(id.lastIndexOf('/') + 1);
+}
+
+function _turnsFor(modelId) {
+  return _turnsByModel.get(_bareModel(modelId)) || 0;
+}
+
+function _peakTurns() {
+  let peak = 0;
+  for (const n of _turnsByModel.values()) peak = Math.max(peak, n);
+  return peak;
 }
 
 function _buildModelRow(machine, model, entry, offersAll) {
@@ -809,13 +979,63 @@ function _buildModelRow(machine, model, entry, offersAll) {
   }
   row.appendChild(name);
 
-  if (model.display_name && model.display_name !== model.id) {
-    const display = document.createElement('span');
-    display.className = 'model-item-name';
-    display.textContent = model.display_name;
-    row.appendChild(display);
-  }
+  // Traffic. Scaled against the busiest model anywhere, so the bars compare
+  // across backends and not only within one.
+  const turns = _turnsFor(model.id);
+  const peak = _peakTurns();
+  const bar = document.createElement('span');
+  bar.className = 'model-bar';
+  const fill = document.createElement('i');
+  fill.style.width = peak && turns ? `${Math.max(1, (turns / peak) * 100)}%` : '0';
+  bar.appendChild(fill);
+  bar.title = `${turns.toLocaleString()} turns in the last 30 days`;
+  row.appendChild(bar);
+
+  const count = document.createElement('span');
+  count.className = turns ? 'model-turns' : 'model-turns model-turns-zero';
+  count.textContent = turns ? turns.toLocaleString() : 'never';
+  row.appendChild(count);
   return row;
+}
+
+// The wires are drawn rather than declared, because a wire has to end at
+// whichever backend is live and that position is only known once the cards
+// have been laid out. Measured after render and again on resize; if the
+// measurement fails the map still reads, since the LIVE chip carries the same
+// fact in words.
+function _drawMapWires() {
+  const wires = byId('mapWires');
+  const map = byId('backendMap');
+  const src = document.querySelector('.map-src');
+  if (!wires || !map || !src) return;
+  wires.replaceChildren();
+
+  const cards = Array.from(document.querySelectorAll('#machineList .machine-card'));
+  if (!cards.length) return;
+  const base = wires.getBoundingClientRect();
+  if (!base.height) return;   // panel is hidden; nothing to measure against
+  const from = src.getBoundingClientRect();
+  const startY = from.top + from.height / 2 - base.top;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${base.width} ${base.height}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  cards.forEach(card => {
+    const box = card.getBoundingClientRect();
+    const endY = box.top + 22 - base.top;      // the card's header row
+    const live = card.classList.contains('machine-active');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const w = base.width;
+    path.setAttribute('d', `M0 ${startY} C${w * 0.55} ${startY} ${w * 0.45} ${endY} ${w} ${endY}`);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', live ? 'var(--ok)' : 'var(--line)');
+    path.setAttribute('stroke-width', live ? '2.5' : '1.5');
+    // A standby route exists but carries nothing, which is what a dashed line
+    // says and a thin solid one does not.
+    if (!live) path.setAttribute('stroke-dasharray', '3 3');
+    svg.appendChild(path);
+  });
+  wires.appendChild(svg);
 }
 
 function _renderMachineList() {
@@ -914,6 +1134,15 @@ function _renderMachineList() {
     card.appendChild(actions);
     list.appendChild(card);
   });
+
+  const total = byId('mapTotal');
+  if (total) {
+    let sum = 0;
+    for (const n of _turnsByModel.values()) sum += n;
+    total.textContent = sum ? `${sum.toLocaleString()} turns` : 'no turns yet';
+  }
+  // Layout has to settle before the cards can be measured.
+  requestAnimationFrame(_drawMapWires);
 }
 
 async function _activateMachine(id) {
@@ -1312,6 +1541,12 @@ async function setConversationRouting(fields, describe) {
 // turn has no other way to reach the dots: nothing streams to a page that is
 // looking at a different conversation.
 const CHAT_POLL_MS = 6000;
+// Held and guarded like the other pollers. It was a bare setInterval inside the
+// DOMContentLoaded block, which only failed to accumulate because that block
+// happens to run once — a property of where the call sat, not of the code. Any
+// future re-invocation of that setup would have silently doubled the poll with
+// no handle left to stop it.
+let _chatPollTimer = null;
 const QUESTION_POLL_MS = 4000;
 let _questionTimer = null;
 let _questionState = null;
@@ -1436,6 +1671,7 @@ async function selectChat(id) {
   const chat = findChat(id);
   if (!chat || chat.archived) return;
   closeSidebar();
+  closeSupervisorPane();
   try {
     await conversationController.selectChat(chat);
   } catch (error) {
@@ -1472,6 +1708,60 @@ function startTranscriptSync() {
   // be a request every five seconds that can never return a message.
   if (!state.currentChat?.session_id) return;
   _syncTimer = setInterval(() => { syncTranscript(); }, SYNC_INTERVAL_MS);
+}
+
+// How often every OTHER conversation is followed. The five-second sync above
+// only ever covers the conversation on screen, so a chat whose terminal was
+// busy kept its old updated_at and sat in the sidebar looking idle until you
+// opened it -- the list was being refreshed faithfully, the rows behind it
+// were stale. Slower than the open conversation on purpose: this is about a
+// list being honest, not about watching a reply arrive.
+const SYNC_ALL_MS = 30000;
+let _syncAllTimer = null;
+let _syncingAll = false;
+
+function stopBackgroundSync() {
+  if (_syncAllTimer) {
+    clearInterval(_syncAllTimer);
+    _syncAllTimer = null;
+  }
+}
+
+/** Follow every linked conversation, and redraw only if something moved. */
+async function syncAllConversations() {
+  // A slow sweep must not stack up behind itself: on a machine with many
+  // linked conversations one pass can outlast the interval.
+  if (_syncingAll) return 0;
+  _syncingAll = true;
+  try {
+    const response = await apiFetch('/api/chats/sync', {method: 'POST'});
+    // apiFetch resolves for 4xx/5xx, so an unchecked response would make a
+    // failed sweep look like a quiet one.
+    if (!response.ok) return 0;
+    const data = await response.json();
+    const changed = Object.keys(data.changed || {});
+    if (!changed.length) return 0;
+    // The rows moved underneath the list, so re-read it rather than guessing
+    // what the new order is.
+    await refreshChats();
+    // If the conversation on screen was one of them, pull its new turns in
+    // too -- otherwise the sidebar would show activity the page does not.
+    if (state.currentChat && changed.includes(state.currentChat.id)) {
+      await syncTranscript();
+    }
+    return changed.length;
+  } catch {
+    // Offline or a dropped request: the next sweep is thirty seconds away and
+    // nothing here is worth interrupting the user for.
+    return 0;
+  } finally {
+    _syncingAll = false;
+  }
+}
+
+function startBackgroundSync() {
+  stopBackgroundSync();
+  _syncAllTimer = setInterval(() => { syncAllConversations(); }, SYNC_ALL_MS);
 }
 
 async function syncTranscript({announce = false} = {}) {
@@ -1733,12 +2023,39 @@ async function ensurePinnedModels(chat) {
 // each one serves. Only Anthropic-protocol backends publish a list.
 async function loadBackends() {
   await loadMachines();
+  await loadTurnCounts();
   _renderMachineList();
   await Promise.all(
     _machines
       .filter(machine => machine.provider === 'anthropic')
       .map(machine => loadModelsFor(machine.id)),
   );
+}
+
+// Traffic is what makes the map worth reading: without it the panel says where
+// a turn will go but never where turns have gone, which is the comparison that
+// exposes a default nobody actually uses.
+async function loadTurnCounts() {
+  try {
+    const response = await apiFetch('/api/usage?days=30');
+    if (!response.ok) return;
+    const data = await response.json();
+    // Grouped by the bare model name, summing. Two things make that necessary:
+    // the same model appears once per provider, so a Map built straight from
+    // the rows drops all but the last; and a turn run here records the id the
+    // backend serves ("azure_ai/gpt-5.6-sol") while one imported from a
+    // terminal transcript records what the CLI reported ("gpt-5.6-sol").
+    // Keyed on the full id, most of the map read "never" beside models with
+    // thousands of turns.
+    _turnsByModel = new Map();
+    for (const row of data.totals || []) {
+      const key = _bareModel(row.model || '');
+      _turnsByModel.set(key, (_turnsByModel.get(key) || 0) + (Number(row.requests) || 0));
+    }
+  } catch {
+    // Traffic is an enrichment; a backend list without it is still usable.
+    _turnsByModel = new Map();
+  }
 }
 
 async function loadModelsFor(machineId, force = false) {
@@ -1880,6 +2197,160 @@ async function updateModelDisplay(model) {
 // transcripts are skipped by an mtime check before anything is read.
 const SUPERVISOR_POLL_MS = 15000;
 let _supervisorTimer = null;
+
+// ── Supervisor pane ───────────────────────────────────────────────────────────
+// The supervisor is a full page of its own. Framing it in the conversation area
+// rather than navigating to it keeps the sidebar in view -- which is the point,
+// since that is where you see who is waiting -- and leaving does not cost a
+// reload of the whole console.
+// What the conversation area looked like before the pane took over.
+let _paneReturn = {messages: '', composer: ''};
+
+// ── Adding a conversation to a supervisor ────────────────────────────────────
+// Built in JS rather than as markup in index.html. It reuses the same
+// .dialog-backdrop / .dialog classes as the other dialogs so it looks and
+// behaves identically, but four sessions are editing that file at once and a
+// dialog nobody else needs is not worth a conflict in it.
+
+function _closeSupervisorPicker() {
+  document.getElementById('supervisorPickDialog')?.remove();
+  if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
+}
+
+async function _addChatToSupervisor(supervisorId, chatId, title) {
+  try {
+    const response = await apiFetch(
+      `/api/supervisors/${encodeURIComponent(supervisorId)}/members`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        // kind is sent even though every member ends up a chat: the same
+        // endpoint takes 'session' from the supervisor's own picker, and the
+        // server is what decides how to resolve it.
+        body: JSON.stringify({members: [{kind: 'chat', ref_id: chatId}]}),
+      },
+    );
+    // apiFetch resolves for 4xx as well as 2xx, so a rejected add would
+    // otherwise report success and silently do nothing -- which is exactly how
+    // conversation reordering appeared to save and did not.
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || data.detail || 'Could not add to the supervisor');
+    }
+    const result = await response.json();
+    if (result.added?.length) showToast(`Added to ${title}`);
+    else if (result.already_members?.length) showToast(`Already in ${title}`);
+    else showToast(result.failed?.[0]?.error || 'Nothing was added', 'error');
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    _closeSupervisorPicker();
+  }
+}
+
+async function openSupervisorPicker(chatId) {
+  previousFocus = document.activeElement;
+  _closeSupervisorPicker();
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'dialog-backdrop open';
+  backdrop.id = 'supervisorPickDialog';
+  backdrop.setAttribute('role', 'dialog');
+  backdrop.setAttribute('aria-modal', 'true');
+  backdrop.setAttribute('aria-label', 'Add this conversation to a supervisor');
+
+  const panel = document.createElement('div');
+  panel.className = 'dialog';
+  const heading = document.createElement('h2');
+  heading.textContent = 'Add to supervisor';
+  const help = document.createElement('p');
+  help.textContent = 'Loading supervisors…';
+  panel.append(heading, help);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+
+  // Clicking the backdrop closes, matching every other dialog here. The check
+  // keeps a click inside the panel from closing it.
+  backdrop.addEventListener('click', event => {
+    if (event.target === backdrop) _closeSupervisorPicker();
+  });
+
+  let supervisors = [];
+  try {
+    const response = await apiFetch('/api/supervisors');
+    if (!response.ok) throw new Error('Could not load supervisors');
+    supervisors = (await response.json()).supervisors || [];
+  } catch (error) {
+    help.textContent = error.message;
+    return;
+  }
+
+  if (!supervisors.length) {
+    // Says what to do next rather than presenting an empty box, which reads
+    // as a failure when it is simply the first run.
+    help.textContent = 'No supervisors yet. Create one on the supervisor page first.';
+    return;
+  }
+
+  help.textContent = 'Pick the supervisor that should watch this conversation.';
+  const list = document.createElement('div');
+  list.className = 'chat-menu open';
+  list.style.position = 'static';
+  supervisors.forEach(supervisor => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = supervisor.title || 'Untitled supervisor';
+    button.setAttribute('role', 'menuitem');
+    button.addEventListener('click', () => _addChatToSupervisor(
+      supervisor.id, chatId, supervisor.title || 'the supervisor'));
+    list.appendChild(button);
+  });
+  panel.appendChild(list);
+  list.querySelector('button')?.focus();
+}
+
+function openSupervisorPane() {
+  const pane = byId('supervisorPane');
+  const frame = byId('supervisorFrame');
+  if (!pane || !frame) {
+    // No pane in this markup: fall back to the page rather than doing nothing.
+    window.location.href = 'supervisor.html';
+    return;
+  }
+  // Loaded on first open and left loaded afterwards, so reopening is instant
+  // and the supervisor keeps its state.
+  if (frame.getAttribute('src') !== 'supervisor.html') {
+    frame.setAttribute('src', 'supervisor.html');
+  }
+  // Hide all other .main children (via the hidden attribute) so the supervisor
+  // fills the entire right-side panel — full height, not squeezed into the
+  // bottom-right corner below the still-visible topbar / messages / composer.
+  _paneReturn = new Map();
+  const main = pane.parentElement;
+  for (const child of main?.children ?? []) {
+    if (child !== pane && !child.hidden) {
+      child.hidden = true;
+      _paneReturn.set(child.id, true);
+    }
+  }
+  pane.hidden = false;
+  pane.classList.add('open');
+  byId('supervisorPaneClose')?.focus();
+}
+
+function closeSupervisorPane() {
+  const pane = byId('supervisorPane');
+  if (!pane || pane.hidden) return;
+  pane.hidden = true;
+  pane.classList.remove('open');
+  // Restore the .main children that were hidden when the pane opened.
+  for (const child of pane.parentElement?.children ?? []) {
+    if (child !== pane && _paneReturn.has(child.id)) {
+      child.hidden = false;
+      _paneReturn.delete(child.id);
+    }
+  }
+}
 
 // ── Device alerts ─────────────────────────────────────────────────────────────
 // Three levels, because on a phone the page is usually not the thing in front
@@ -2091,6 +2562,9 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
   byId('syncBtn').addEventListener('click', () => syncTranscript({announce: true}));
   byId('settingsBtn').addEventListener('click', openSettingsDialog);
+  byId('supervisorBtn')?.addEventListener('click', openSupervisorPane);
+  byId('supervisorPaneTitle')?.addEventListener('click', openSupervisorPane);
+  byId('supervisorPaneClose')?.addEventListener('click', closeSupervisorPane);
   byId('settingsCancel').addEventListener('click', closeSettingsDialog);
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });
@@ -2127,6 +2601,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     populateModelPicker(chat);
   });
+  // Measured geometry goes stale on resize; redraw rather than leave a wire
+  // pointing at where a card used to be.
+  window.addEventListener('resize', () => {
+    if (settingsVisible && _currentTab === 'backends') _drawMapWires();
+  });
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);
@@ -2152,6 +2631,30 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   byId('usageRange')?.addEventListener('change', () => loadUsage());
+  // Both controls refetch: the server does the bucketing, so the client has no
+  // finer data lying around to re-slice.
+  byId('statsRange')?.addEventListener('change', event => {
+    // Pick the slot width the new range can actually show evolution at. A day
+    // grouped by day is a single point, and 24 hourly points hide the shape of
+    // a busy afternoon; 48 half-hours show it. Only ever adjusted on a range
+    // change, so an explicit choice of grouping is never overridden.
+    const bucketSelect = byId('statsBucket');
+    const suggested = {'1': 'halfhour', '7': 'hour', '30': 'day', 'all': 'month'};
+    const next = suggested[event.target.value];
+    if (bucketSelect && next) bucketSelect.value = next;
+    loadStats(true);
+  });
+  byId('statsBucket')?.addEventListener('change', () => loadStats(true));
+  byId('serverRange')?.addEventListener('change', event => {
+    // Same reasoning as the statistics range above: match the slot width to
+    // the span, or a day of samples collapses into one point.
+    const bucketSelect = byId('serverBucket');
+    const suggested = {'1': 'halfhour', '7': 'hour', '30': 'day'};
+    const next = suggested[event.target.value];
+    if (bucketSelect && next) bucketSelect.value = next;
+    loadServer();
+  });
+  byId('serverBucket')?.addEventListener('change', () => loadServer());
   byId('skillSearch')?.addEventListener('input', event => {
     _skillFilter = event.target.value;
     clearTimeout(_skillDebounce);
@@ -2169,6 +2672,10 @@ document.addEventListener('DOMContentLoaded', () => {
     onAction: handleChatAction,
     onResumeCli: resumeCliSession,
     onClearSupervisor: clearSupervisor,
+    // Same destination as the topbar control, reachable from the section it
+    // belongs to. Opens in the conversation area rather than navigating away.
+    onOpenSupervisor: openSupervisorPane,
+    onAddToSupervisor: openSupervisorPicker,
     // One drag is one write: the server takes the whole ordered section and
     // applies it in a transaction, so a drop cannot half-apply.
     onReorder: async ids => {
@@ -2214,7 +2721,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // only while a turn could not outlive its viewer: with background turns it
   // would clear every other conversation's dot the moment this one settled.
   // A poll keeps the dots honest for turns nobody is watching.
-  setInterval(() => { refreshChats().catch(() => {}); }, CHAT_POLL_MS);
+  if (!_chatPollTimer) {
+    _chatPollTimer = setInterval(() => { refreshChats().catch(() => {}); }, CHAT_POLL_MS);
+  }
+
+  // That poll re-reads the list; this one makes the list worth re-reading, by
+  // following the conversations nobody is looking at. Guarded the same way,
+  // and started once with an immediate first pass so a page opened after a
+  // long absence does not show a stale list for its first half minute.
+  if (!_syncAllTimer) {
+    startBackgroundSync();
+    syncAllConversations();
+  }
 
   conversationController = createConversationController({
     state,
@@ -2237,7 +2755,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', event => {
     trapDialogFocus(event);
     if (event.key === 'Escape') {
-      if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
+      // Checked first because it is the only dialog that can sit over another,
+      // being opened from a row menu rather than the topbar.
+      if (document.getElementById('supervisorPickDialog')) _closeSupervisorPicker();
+      else if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
       else if (byId('chatDialog').classList.contains('open')) closeDialog();
       else closeSidebar();
     }

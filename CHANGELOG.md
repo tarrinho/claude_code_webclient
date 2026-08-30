@@ -22,11 +22,144 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **Server statistics** — a new Settings → Server tab reporting the health of
+  the machine the console runs on: CPU, memory, swap, disk, load average,
+  uptime, and WebConsole's own resident memory, thread and descriptor counts.
+  Live cards answer "is it struggling right now"; charts underneath answer
+  "was it struggling at 04:00". This closes a request made on 29 August that
+  had been half-answered: three sessions built *usage* statistics (tokens,
+  requests, cost) and nobody built host statistics, so the Statistics tab was
+  a second view of model spend rather than of the server. `psutil`,
+  `loadavg`, `virtual_memory` and `disk_usage` appeared nowhere in the tree.
+  - Collector (`sysstats.py`) is pure stdlib — `/proc` plus `os.statvfs` — so
+    no dependency was added to a pinned requirements set. Linux-only, which
+    the deployment already is.
+  - A background sampler stores one row a minute (`WC_SYSTEM_SAMPLE_S`) into
+    `system_samples`, kept 30 days (`WC_SYSTEM_RETENTION_DAYS`) and pruned at
+    startup like usage rows. History has to accumulate while nobody is
+    watching, or the charts only ever cover the moments the tab was open.
+  - Each bucket stores **both the average and the peak** for CPU, memory,
+    disk and process memory. Three idle minutes and one at 100% average to
+    25%: a page showing only the mean reports that the machine was
+    comfortable during the minute it was not.
+  - `GET /api/system` (live snapshot) and `GET /api/system/series`
+    (bucketed history), defaulting to 24 hours in half-hour slots rather than
+    the usage page's 30 days — a machine in trouble is read by the hour.
+  - `lineChart`/`seriesTable` in `stats.js` became exported and gained
+    `formatValue`, `formatTip`, `axisMax` and `summarize`, so both statistics
+    pages share one chart implementation. Percentage axes are pinned to
+    0–100, without which a box idling at 3% CPU draws a line across the top
+    of the chart — a truthful shape and a completely misleading picture.
+
+- **Supervisor orchestration engine** (`supervisor.py` / `SupervisorEngine`): a
+  multi-agent planning and execution layer. A free-text user prompt is parsed
+  into a structured task DAG by `PlanParser` (extracts tasks from
+  `<<PLAN>>`…`>>` markers, resolves self- and cross-refs, assigns per-task
+  model preferences). `TaskGraph` tracks dependencies so only ready tasks run,
+  `ModelRouter` picks the best model per task using a simple ruleset scored by
+  a complexity heuristic, and `SupervisorEngine` drives the schedule loop: plan,
+  execute ready tasks, repeat until done. Background `LiveTurn` tasks buffer
+  each subtask's NDJSON SSE stream so the web UI receives real-time progress.
+  A task-level SSE endpoint (`/api/supervisors/{id}/tasks/{taskId}/stream`)
+  lets clients follow individual subtasks.
+
+- **Supervisor CRUD, task and message tables** in the database. New `supervisor`
+  column on the `chats` table. Tables `supervisor_tasks` (per-supervisor task
+  records with status, dependencies, model, progress),
+  `supervisor_messages` (task-level messages), and `agent_sessions` (agent
+  registry / blocking questions) are all created at startup.
+
+- **Supervisor management endpoints**: POST /api/supervisors (create + start),
+  GET /api/supervisors (list), PATCH /api/supervisors/{id} (rename / update
+  config), DELETE /api/supervisors/{id} (remove). POST
+  /api/supervisors/{id}/send (submit a new prompt). SSE streams at
+  /api/supervisors/{id}/stream (all events) and
+  /api/supervisors/{id}/tasks/{taskId}/stream (single-task).
+
+- **Supervisor mode selector** in the chat form, supervisor dashboard page
+  (`supervisor.html`), and the sidebar supervisor list. A supervisor card shows
+  live progress bars for each subtask.
+
+### Fixed
+
+- **Engine planning flow** now calls `runner.run_turn()` directly instead of a
+  broken callback chain, meaning planning turns go through the same concurrency
+  gate, proxy/subprocess routing, and NDJSON parsing as regular turns.
+
+### Testing
+
+- **Supervisor pipeline stages** in `tests/test_pipeline_audit.py` verify task
+  graph construction, dependency resolution, model assignment rules, progress
+  tracking, PlanParser robustness, and the supervisor engine's start+send+stream
+  endpoints.
+
 ---
 
 ## [0.9.0] — 2026-08-30
 
 ### Fixed
+
+- **Every statistics chart was labelled an hour early, and the day column
+  started at the wrong time.** Timestamps are stored in UTC, which is right,
+  and were then bucketed in UTC, which was not: work done at 21:00 in Lisbon
+  charted at 20:00. The labels were the visible half. The other half was
+  quieter and worse — grouping by day or month split at UTC midnight, so an
+  evening's work after 23:00 local was filed under the following day. Bucketing
+  now groups on the local rendering of the timestamp via SQLite's `localtime`,
+  which resolves the zone per timestamp and so follows daylight saving: Portugal
+  is UTC+1 in summer and UTC+0 in winter, and a fixed offset would have been
+  wrong for half the year. The `created_at >= ?` range filters stay in UTC on
+  purpose — "the last 24 hours" is a span measured back from now, and a span has
+  no timezone. Fixes the usage statistics, the per-model series and the server
+  statistics together, since all three share one bucketing expression. Nothing
+  changed on the client: it prints the bucket key verbatim, and every other
+  timestamp in the UI was already converted in the browser.
+
+- **The Server statistics panel never updated.** `loadServer()` ran once when
+  the tab was opened and never again, so CPU, memory, load and uptime were
+  frozen at whatever they read the moment the panel appeared, and the history
+  charts never picked up samples the server had stored since. A live reading
+  that does not change is worse than none: it looks current. The panel now
+  refreshes every 30 s — half the sampler's interval — while it is on screen,
+  and stops when you leave the tab or close settings, so a closed panel is not
+  polling `/proc` for the rest of the session. Background refreshes are quiet:
+  they keep the current reading on screen instead of flashing skeletons, and a
+  single failed poll leaves the last good reading rather than replacing it with
+  an error. (The sampler itself was fine — it had been recording once a minute
+  throughout.)
+
+- **The test suite reported 865 failures that were not real, and hid the one
+  that was.** Running everything at once failed 865 of 1380 tests while every
+  file passed alone. None of the named tests were at fault: the browser fixture
+  released playwright in `tearDown`, which unittest skips when `setUp` raises,
+  so a single slow login leaked it. Playwright's sync API drives its asyncio
+  loop through greenlets, and a loop that is never stopped stays flagged as the
+  *running* loop for the thread — after which every `IsolatedAsyncioTestCase`
+  in the process dies on "Runner.run() cannot be called from a running event
+  loop". Resources are now released with `addCleanup` and `addClassCleanup`,
+  registered as they are acquired, so a failure can no longer escape with them.
+  The suite is 1405 passed, 0 failed, twice in a row.
+- **The browser tests read the developer's own Claude sessions.** `/api/supervisor`
+  merges the live CLI sessions under `~/.claude`, and the test server inherited
+  the real `HOME` — so its "waiting agents" count reflected whatever other
+  agents on the machine were doing. Since a device alert fires only on a *rise*
+  in that count, an unrelated session answering a question in the same poll
+  window cancelled the rise and the test waited 90 seconds for a notification
+  that had already been netted out. The fixture now gives its server a `HOME`
+  of its own.
+- **A test server could block for ever on its own log.** Its output went to a
+  `subprocess.PIPE` nothing read; past 64 KB uvicorn blocked writing and stopped
+  answering, which surfaced only as `ERR_CONNECTION_REFUSED` naming a port.
+  Output goes to a file now, and a dead server is reported with its exit code
+  and log tail instead of a refused connection.
+
+### Testing
+
+- `tests/test_qa_browser_fixture.py` pins the cleanup contract with a stubbed
+  playwright, so it runs without a browser and fails if anyone moves resource
+  release back into `tearDown`.
 
 - **Messages sent in the web UI were duplicated when the conversation was linked
   to a live Claude Code terminal.** The `/stream` handler stored the user prompt

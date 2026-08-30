@@ -238,12 +238,100 @@ async def init() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_routed_session
             ON routed_requests(session_id, from_offset);
+
+        -- Supervisor orchestration tables (0.9.0).
+        CREATE TABLE IF NOT EXISTS supervisors (
+            id               TEXT PRIMARY KEY,
+            title            TEXT NOT NULL DEFAULT 'New Supervisor',
+            description      TEXT,
+            config           TEXT NOT NULL DEFAULT '{}',  -- JSON: model routing rules, system prompt overrides
+            owner_id         TEXT NOT NULL DEFAULT 'admin',
+            status           TEXT NOT NULL DEFAULT 'idle',  -- idle|planning|running|paused|done|error
+            plan             TEXT,  -- structured plan extracted during planning phase
+            progress_pct     REAL NOT NULL DEFAULT 0.0,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL DEFAULT '',
+            completed_at     TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS supervisor_tasks (
+            id              TEXT PRIMARY KEY,
+            supervisor_id   TEXT NOT NULL REFERENCES supervisors(id),
+            title           TEXT NOT NULL,
+            description     TEXT,
+            status          TEXT NOT NULL DEFAULT 'pending',  -- pending|ready|running|done|failed|blocked
+            model           TEXT,  -- assigned model (model routing result)
+            result          TEXT,  -- final output/result
+            progress_pct    REAL NOT NULL DEFAULT 0.0,
+            parent_task_id  TEXT REFERENCES supervisor_tasks(id),
+            depends_on      TEXT,  -- JSON array of task ids this task depends on
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_sup_tasks_super ON supervisor_tasks(supervisor_id);
+
+        CREATE TABLE IF NOT EXISTS supervisor_messages (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
+            role          TEXT NOT NULL,  -- 'user'|'supervisor'|'agent'|'system'
+            content       TEXT NOT NULL,
+            metadata      TEXT,  -- JSON: task_id, agent_name, etc.
+            created_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sup_msgs_super ON supervisor_messages(supervisor_id, id);
+
+        -- Conversations and agents a supervisor watches. Separate from
+        -- supervisor_tasks on purpose: a task is work the supervisor invented
+        -- and runs headless, a member is work that already existed and belongs
+        -- to someone. Coupling them would have made adding an agent imply
+        -- handing it a task.
+        --
+        -- chat_id, with no "kind" column, because a live CLI agent is adopted
+        -- into a conversation when it is added. That leaves one member type
+        -- rather than two, so prompt, stop, transcript sync and per-conversation
+        -- routing all apply to a supervised agent without a second code path.
+        --
+        -- The composite key is what makes adding an existing member a no-op
+        -- rather than a duplicate row, and the pair is deliberately many-to-many:
+        -- one agent can serve two supervisors at once.
+        CREATE TABLE IF NOT EXISTS supervisor_members (
+            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
+            chat_id       TEXT NOT NULL,
+            added_at      TEXT NOT NULL,
+            PRIMARY KEY (supervisor_id, chat_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sup_members_chat ON supervisor_members(chat_id);
+
+        -- Host resource samples for the Server statistics page. No owner_id:
+        -- these describe the machine, not a user, and there is exactly one
+        -- machine. An autoincrement key rather than the timestamp, because two
+        -- samples can share a second after a clock step and a PRIMARY KEY on
+        -- created_at would make the second one an error.
+        CREATE TABLE IF NOT EXISTS system_samples (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at    TEXT NOT NULL,
+            cpu_pct       REAL NOT NULL DEFAULT 0,
+            mem_pct       REAL NOT NULL DEFAULT 0,
+            mem_used      INTEGER NOT NULL DEFAULT 0,
+            mem_total     INTEGER NOT NULL DEFAULT 0,
+            swap_pct      REAL NOT NULL DEFAULT 0,
+            disk_pct      REAL NOT NULL DEFAULT 0,
+            disk_used     INTEGER NOT NULL DEFAULT 0,
+            disk_total    INTEGER NOT NULL DEFAULT 0,
+            load1         REAL NOT NULL DEFAULT 0,
+            load5         REAL NOT NULL DEFAULT 0,
+            load15        REAL NOT NULL DEFAULT 0,
+            proc_rss      INTEGER NOT NULL DEFAULT 0,
+            proc_cpu_pct  REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_system_samples_at ON system_samples(created_at);
     """)
     await _ensure_chat_columns()
     await _ensure_usage_columns()
     await db_conn.commit()
     # Bounded growth without a scheduler: one indexed DELETE per startup.
     await usage_prune(config.USAGE_RETENTION_DAYS)
+    await system_prune(config.SYSTEM_RETENTION_DAYS)
 
 
 async def _ensure_chat_columns() -> None:
@@ -263,6 +351,7 @@ async def _ensure_chat_columns() -> None:
         "transcript_offset": (
             "ALTER TABLE chats ADD COLUMN transcript_offset INTEGER NOT NULL DEFAULT 0"
         ),
+        "supervisor": "ALTER TABLE chats ADD COLUMN supervisor TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:
@@ -659,6 +748,18 @@ async def messages_get(chat_id: str) -> list[dict[str, Any]]:
         (chat_id,),
     )
     return [dict(r) for r in await cur.fetchall()]
+
+
+async def messages_last(chat_id: str, count: int = 1) -> list[dict[str, Any]]:
+    """Return the last *count* messages for a chat, ordered by insertion."""
+    cur = await db_conn.execute(
+        "SELECT id, role, content, created_at FROM messages "
+        "WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+        (chat_id, count),
+    )
+    rows = [dict(r) for r in await cur.fetchall()]
+    rows.reverse()  # return in insertion order so index 0 is the oldest
+    return rows
 
 
 # ── FTS5 index maintenance ──────────────────────────────────────────────────────────
@@ -1744,6 +1845,158 @@ async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     return [dict(row) for row in await cur.fetchall()]
 
 
+# Buckets the statistics page offers, as (label, prefix length of the ISO
+# timestamp). Bucketing by string prefix rather than a date function is what
+# lets one query serve both timestamp shapes in this table: turns recorded by
+# the site are stored as "...:15Z" and turns read out of a CLI transcript keep
+# their original "...:55.776Z" milliseconds. substr() does not care; strftime()
+# would have to parse, and returns NULL on the millisecond form.
+USAGE_BUCKETS: Final[dict[str, int]] = {
+    # Prefix widths over an ISO timestamp: 2026-08-30T11:04:11Z
+    "halfhour": 16,  # not a prefix -- see _bucket_expr
+    "hour": 13,
+    "day": 10,
+    "month": 7,
+}
+
+
+# Timestamps are stored in UTC, but nobody reads a chart in UTC -- an hour of
+# work done at 21:00 in Lisbon was labelled 20:00, and the "today" column began
+# at 01:00. Bucketing therefore groups on the local rendering of the timestamp.
+#
+# SQLite's 'localtime' resolves the machine's zone per timestamp, so it follows
+# DST rather than baking in one offset: the same expression gives +01:00 for an
+# August row and +00:00 for a January one, which a fixed offset could not do.
+# It returns "2026-08-30 20:23:54"; the space becomes "T" so the keys keep the
+# shape the client and the existing bucket widths already expect.
+#
+# Deliberately not applied to the `created_at >= ?` range filters. "The last 24
+# hours" is a span measured back from now, and a span has no timezone -- only
+# the labels do.
+_LOCAL_TS: Final[str] = "replace(datetime(created_at, 'localtime'), ' ', 'T')"
+
+
+def _bucket_expr(bucket: str) -> tuple[str, list[Any]]:
+    """SQL mapping ``created_at`` to a local-time bucket key, and its params.
+
+    Every other bucket is a prefix of the timestamp, which SQLite can take with
+    a single substr. A half hour is not a prefix -- it needs the minute floored
+    to 00 or 30 -- so it gets its own expression rather than bending the widths
+    to fit. The key stays lexicographically sortable like the others, which is
+    what lets the caller keep ``ORDER BY bucket``.
+
+    The prefix widths are unchanged by the conversion: local and UTC renderings
+    are the same length with the field boundaries in the same places.
+    """
+    if bucket == "halfhour":
+        halfhour = (
+            f"substr({_LOCAL_TS}, 1, 14) || "
+            f"CASE WHEN CAST(substr({_LOCAL_TS}, 15, 2) AS INTEGER) < 30 "
+            "THEN '00' ELSE '30' END"
+        )
+        return (halfhour, [])
+    return (
+        f"substr({_LOCAL_TS}, 1, ?)",
+        [USAGE_BUCKETS.get(bucket, USAGE_BUCKETS["day"])],
+    )
+
+
+async def usage_series(
+    owner_id: str, days: int | None = 30, bucket: str = "day"
+) -> list[dict[str, Any]]:
+    """Token totals per time bucket per provider, oldest first.
+
+    Split by provider rather than summed because the two populations differ by
+    three orders of magnitude on this machine -- 18,200 terminal turns against
+    23 from the website. Stacked into one series the website's traffic is a
+    flat line on the axis, which is worse than not charting it.
+    """
+    expr, expr_params = _bucket_expr(bucket)
+    params: list[Any] = [*expr_params, owner_id]
+    where = "owner_id = ?"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db_conn.execute(
+        # `origin` is carried alongside `provider` rather than replacing it, so
+        # the existing series keep working. provider='cli' had been standing in
+        # for "a terminal", which is true but coarse: it lumps adopted agent
+        # sessions in with anything hand-typed, and those differ by three orders
+        # of magnitude. `unsplit_tokens` is broken out for the same reason cost
+        # is suppressed elsewhere -- rows whose model reported no cache
+        # breakdown re-count the whole conversation every turn, so plotting them
+        # in the same stack as the rest is not a comparison.
+        f"SELECT {expr} AS bucket, provider, "  # nosec B608: expression is ours
+        "COALESCE(NULLIF(origin, ''), 'web') AS origin, "
+        "COUNT(*) AS requests, "
+        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+        "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
+        "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
+        "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens, "
+        "COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS cost_usd, "
+        "COALESCE(SUM(is_error), 0) AS errors "
+        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY bucket, provider, origin ORDER BY bucket ASC",
+        params,
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def usage_model_series(
+    owner_id: str, days: int | None = 30, bucket: str = "day", top: int = 6
+) -> list[dict[str, Any]]:
+    """Token totals per time bucket per model, for the top *top* models.
+
+    Capped because a categorical palette is only defined for a fixed number of
+    slots; the rest is folded into one "Other" series by the caller rather than
+    given an invented colour.
+    """
+    expr, expr_params = _bucket_expr(bucket)
+    params: list[Any] = [owner_id]
+    where = "owner_id = ?"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    ranked = await db_conn.execute(
+        "SELECT model FROM usage_events "
+        f"WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY model ORDER BY SUM(input_tokens + output_tokens) DESC "
+        "LIMIT ?",
+        [*params, max(1, min(int(top), 12))],
+    )
+    keep = [row["model"] for row in await ranked.fetchall()]
+    if not keep:
+        return []
+    cur = await db_conn.execute(
+        f"SELECT {expr} AS bucket, model, "  # nosec B608: expression is ours
+        "COUNT(*) AS requests, "
+        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) AS output_tokens "
+        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY bucket, model ORDER BY bucket ASC",
+        [*expr_params, *params],
+    )
+    kept = set(keep)
+    # Everything outside the top N collapses into one "Other" series. Merged
+    # rather than relabelled: two dropped models in the same bucket produce two
+    # rows, and leaving both as "Other" would draw that bucket twice and make
+    # the fold look like a spike.
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in await cur.fetchall():
+        row = dict(raw)
+        if row["model"] not in kept:
+            row["model"] = "Other"
+        key = (row["bucket"], row["model"])
+        if key in merged:
+            for field in ("requests", "input_tokens", "output_tokens"):
+                merged[key][field] += row[field]
+        else:
+            merged[key] = row
+    return list(merged.values())
+
+
 async def usage_prune(days: int) -> int:
     """Delete rows older than *days*. Returns the number removed."""
     if not days or days <= 0:
@@ -1751,6 +2004,113 @@ async def usage_prune(days: int) -> int:
     try:
         cur = await db_conn.execute(
             "DELETE FROM usage_events WHERE created_at < ?", (_cutoff(days),)
+        )
+        await db_conn.commit()
+        return cur.rowcount or 0
+    except Exception:  # noqa: BLE001 -- pruning must never block startup
+        return 0
+
+
+# ── Host statistics ─────────────────────────────────────────────────────────────────────
+# Samples of the machine WebConsole runs on, written by the background sampler
+# in sysstats.py. Not owner-scoped: there is one host and it belongs to nobody.
+
+# Columns the sampler writes, in the order the INSERT expects them. Named once
+# so the insert, the aggregate and the tests cannot drift apart.
+SYSTEM_FIELDS: Final[tuple[str, ...]] = (
+    "cpu_pct",
+    "mem_pct",
+    "mem_used",
+    "mem_total",
+    "swap_pct",
+    "disk_pct",
+    "disk_used",
+    "disk_total",
+    "load1",
+    "load5",
+    "load15",
+    "proc_rss",
+    "proc_cpu_pct",
+)
+
+
+async def system_sample_insert(values: dict[str, Any]) -> None:
+    """Store one host sample. Missing fields default to 0."""
+    columns = ", ".join(("created_at", *SYSTEM_FIELDS))
+    placeholders = ", ".join("?" * (len(SYSTEM_FIELDS) + 1))
+    await db_conn.execute(
+        f"INSERT INTO system_samples ({columns}) "  # nosec B608: names are literals
+        f"VALUES ({placeholders})",
+        [_now(), *(values.get(field, 0) or 0 for field in SYSTEM_FIELDS)],
+    )
+    await db_conn.commit()
+
+
+async def system_latest() -> dict[str, Any] | None:
+    """The most recent stored sample, or None when nothing has been sampled."""
+    cur = await db_conn.execute(
+        "SELECT * FROM system_samples ORDER BY id DESC LIMIT 1"
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def system_series(
+    days: int | None = 7, bucket: str = "hour"
+) -> list[dict[str, Any]]:
+    """Host samples averaged per time bucket, oldest first.
+
+    Both the average and the peak are returned for the three figures where the
+    difference matters. A box that sat at 4% CPU and spiked to 100% for ninety
+    seconds averages out to nothing at an hour bucket -- the average says the
+    machine was idle, and the peak is the only column that remembers the spike
+    happened at all.
+
+    Bucketing goes through _bucket_expr() rather than USAGE_BUCKETS, because
+    'halfhour' is not a prefix width: its entry in that dict is a sentinel, and
+    reading it as a substr length silently buckets by the minute instead.
+    """
+    expr, expr_params = _bucket_expr(bucket)
+    params: list[Any] = [*expr_params]
+    where = "1=1"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db_conn.execute(
+        f"SELECT {expr} AS bucket, "  # nosec B608: expression is ours
+        "COUNT(*) AS samples, "
+        "ROUND(AVG(cpu_pct), 1) AS cpu_pct, "
+        "ROUND(MAX(cpu_pct), 1) AS cpu_max, "
+        "ROUND(AVG(mem_pct), 1) AS mem_pct, "
+        "ROUND(MAX(mem_pct), 1) AS mem_max, "
+        "ROUND(AVG(swap_pct), 1) AS swap_pct, "
+        "ROUND(AVG(disk_pct), 1) AS disk_pct, "
+        "ROUND(MAX(disk_pct), 1) AS disk_pct_max, "
+        "CAST(AVG(mem_used) AS INTEGER) AS mem_used, "
+        "CAST(MAX(mem_total) AS INTEGER) AS mem_total, "
+        "CAST(AVG(disk_used) AS INTEGER) AS disk_used, "
+        "CAST(MAX(disk_total) AS INTEGER) AS disk_total, "
+        "ROUND(AVG(load1), 2) AS load1, "
+        "ROUND(MAX(load1), 2) AS load1_max, "
+        "ROUND(AVG(load5), 2) AS load5, "
+        "ROUND(AVG(load15), 2) AS load15, "
+        "CAST(AVG(proc_rss) AS INTEGER) AS proc_rss, "
+        "CAST(MAX(proc_rss) AS INTEGER) AS proc_rss_max, "
+        "ROUND(AVG(proc_cpu_pct), 1) AS proc_cpu_pct "
+        f"FROM system_samples WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY bucket ORDER BY bucket ASC",
+        params,
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def system_prune(days: int) -> int:
+    """Delete samples older than *days*. Returns the number removed."""
+    if not days or days <= 0:
+        return 0
+    try:
+        cur = await db_conn.execute(
+            "DELETE FROM system_samples WHERE created_at < ?", (_cutoff(days),)
         )
         await db_conn.commit()
         return cur.rowcount or 0
@@ -1852,7 +2212,338 @@ async def queue_hold_all(chat_id: str) -> int:
     return cur.rowcount or 0
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────────────────
+# ── Supervisor orchestration ────────────────────────────────────────────────────────────
+
+
+async def supervisor_list(owner_id: str) -> list[dict[str, Any]]:
+    """All supervisors for *owner_id*, newest first."""
+    cur = await db_conn.execute(
+        "SELECT id, title, description, config, status, progress_pct, "
+        "created_at, updated_at, completed_at "
+        "FROM supervisors WHERE owner_id = ? ORDER BY id DESC",
+        (owner_id,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def supervisor_get(supervisor_id: str, owner_id: str) -> dict[str, Any] | None:
+    """Fetch one supervisor, owner-scoped."""
+    cur = await db_conn.execute(
+        "SELECT id, title, description, config, status, plan, progress_pct, "
+        "created_at, updated_at, completed_at "
+        "FROM supervisors WHERE id = ? AND owner_id = ?",
+        (supervisor_id, owner_id),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def supervisor_create(
+    supervisor_id: str,
+    title: str,
+    description: str | None,
+    owner_id: str,
+    config: dict[str, Any] | None = None,
+) -> str:
+    """Create a new supervisor and return its created_at timestamp."""
+    now = _now()
+    await db_conn.execute(
+        "INSERT INTO supervisors (id, title, description, config, owner_id, status, "
+        "progress_pct, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, 'idle', 0.0, ?, '')",
+        (
+            supervisor_id,
+            title,
+            description,
+            json.dumps(config or {}),
+            owner_id,
+            now,
+        ),
+    )
+    await db_conn.commit()
+    return now
+
+
+async def supervisor_update(
+    supervisor_id: str,
+    owner_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    plan: str | None = None,
+    progress_pct: float | None = None,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Update supervisor fields; only non-None values are set. Returns rowcount."""
+    pairs: list[tuple[str, Any]] = [
+        ("title", title),
+        ("description", description),
+        ("status", status),
+        ("plan", plan),
+        ("config", json.dumps(config) if config is not None else None),
+    ]
+    if progress_pct is not None:
+        pairs.append(("progress_pct", float(progress_pct)))
+    sets: list[str] = []
+    vals: list[Any] = []
+    for field, value in pairs:
+        if value is not None:
+            sets.append(f"{field} = ?")
+            vals.append(value)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    vals.append(_now())
+    vals.extend([supervisor_id, owner_id])
+    sql = (
+        "UPDATE supervisors SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
+    )
+    cur = await db_conn.execute(sql, vals)
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def supervisor_delete(supervisor_id: str, owner_id: str) -> bool:
+    """Delete a supervisor and all its tasks/messages. Returns rowcount."""
+    try:
+        await db_conn.execute("BEGIN")
+        await db_conn.execute(
+            "DELETE FROM supervisor_tasks WHERE supervisor_id = ?",
+            (supervisor_id,),
+        )
+        await db_conn.execute(
+            "DELETE FROM supervisor_messages WHERE supervisor_id = ?",
+            (supervisor_id,),
+        )
+        cur = await db_conn.execute(
+            "DELETE FROM supervisors WHERE id = ? AND owner_id = ?",
+            (supervisor_id, owner_id),
+        )
+        await db_conn.commit()
+        return cur.rowcount > 0
+    except Exception:
+        await db_conn.rollback()
+        raise
+
+
+async def supervisor_tasks_get(
+    supervisor_id: str, owner_id: str
+) -> list[dict[str, Any]]:
+    """All tasks for a supervisor, ordered by creation."""
+    cur = await db_conn.execute(
+        "SELECT id, supervisor_id, title, description, status, model, result, "
+        "progress_pct, parent_task_id, depends_on, created_at, updated_at "
+        "FROM supervisor_tasks WHERE supervisor_id = ? "
+        "ORDER BY id ASC",
+        (supervisor_id,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def supervisor_task_create(
+    supervisor_id: str,
+    task_id: str,
+    title: str,
+    description: str | None,
+    model: str | None = None,
+    parent_task_id: str | None = None,
+    depends_on: list[str] | None = None,
+) -> str:
+    """Create a task under a supervisor. Returns created_at timestamp."""
+    now = _now()
+    await db_conn.execute(
+        "INSERT INTO supervisor_tasks "
+        "(id, supervisor_id, title, description, status, model, result, "
+        "progress_pct, parent_task_id, depends_on, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'pending', ?, '', 0.0, ?, ?, ?, ?)",
+        (
+            task_id,
+            supervisor_id,
+            title,
+            description,
+            model,
+            parent_task_id,
+            json.dumps(depends_on or []),
+            now,
+            now,
+        ),
+    )
+    await db_conn.commit()
+    return now
+
+
+async def supervisor_task_update(
+    supervisor_id: str,
+    task_id: str,
+    owner_id: str,
+    status: str | None = None,
+    result: str | None = None,
+    progress_pct: float | None = None,
+    model: str | None = None,
+) -> bool:
+    """Update a task's fields. Returns rowcount."""
+    pairs: list[tuple[str, Any]] = [
+        ("status", status),
+        ("result", result),
+        ("model", model),
+    ]
+    sets: list[str] = []
+    vals: list[Any] = []
+    for field, value in pairs:
+        if value is not None:
+            sets.append(f"{field} = ?")
+            vals.append(value)
+    if progress_pct is not None:
+        sets.append("progress_pct = ?")
+        vals.append(float(progress_pct))
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    vals.append(_now())
+    vals.extend([task_id, supervisor_id])
+    sql = (
+        "UPDATE supervisor_tasks SET " + ", ".join(sets)
+        + " WHERE id = ? AND supervisor_id = ?"
+    )
+    cur = await db_conn.execute(sql, vals)
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def supervisor_task_get(
+    supervisor_id: str, task_id: str, owner_id: str
+) -> dict[str, Any] | None:
+    """Fetch one task under a supervisor."""
+    cur = await db_conn.execute(
+        "SELECT id, supervisor_id, title, description, status, model, result, "
+        "progress_pct, parent_task_id, depends_on, created_at, updated_at "
+        "FROM supervisor_tasks WHERE id = ? AND supervisor_id = ?",
+        (task_id, supervisor_id),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def supervisor_messages_append(
+    supervisor_id: str, role: str, content: str, metadata: dict[str, Any] | None = None
+) -> int:
+    """Append a supervisor message. Returns row id."""
+    cur = await db_conn.execute(
+        "INSERT INTO supervisor_messages "
+        "(supervisor_id, role, content, metadata, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            supervisor_id,
+            role,
+            content,
+            json.dumps(metadata) if metadata else None,
+            _now(),
+        ),
+    )
+    await db_conn.commit()
+    return cur.lastrowid
+
+
+async def supervisor_messages_get(
+    supervisor_id: str,
+    owner_id: str,
+    after_id: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Read messages for a supervisor, optionally since a specific id."""
+    if after_id is not None:
+        cur = await db_conn.execute(
+            "SELECT id, role, content, metadata, created_at "
+            "FROM supervisor_messages WHERE supervisor_id = ? "
+            "ORDER BY id ASC LIMIT ?",
+            (supervisor_id, limit),
+        )
+    else:
+        cur = await db_conn.execute(
+            "SELECT id, role, content, metadata, created_at "
+            "FROM supervisor_messages WHERE supervisor_id = ? "
+            "ORDER BY id ASC LIMIT ?",
+            (supervisor_id, limit),
+        )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def supervisor_members_list(supervisor_id: str) -> list[dict[str, Any]]:
+    """The chats a supervisor watches, newest addition last.
+
+    Joined against ``chats`` so a member whose conversation was deleted simply
+    stops appearing. An INNER JOIN rather than a LEFT one: a supervisor listing
+    a conversation that no longer exists is the failure worth preventing, and a
+    row with a null title beside a real status reads as a bug.
+
+    Deliberately returns no status. That comes from the supervisor classifier,
+    which already decides working/waiting/failed for every chat and session; a
+    second definition here would agree with it only by coincidence, and the two
+    would drift the first time either changed.
+    """
+    cur = await db_conn.execute(
+        "SELECT m.supervisor_id, m.chat_id, m.added_at, "
+        "       c.title, c.session_id, c.work_dir "
+        "FROM supervisor_members m "
+        "JOIN chats c ON c.id = m.chat_id AND c.deleted_at IS NULL "
+        "WHERE m.supervisor_id = ? "
+        "ORDER BY m.added_at ASC, m.chat_id ASC",
+        (supervisor_id,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def supervisor_member_add(supervisor_id: str, chat_id: str) -> bool:
+    """Add one chat to a supervisor. True if it was not already a member.
+
+    The caller is responsible for having checked that *chat_id* belongs to the
+    requesting owner: this layer stores what it is given, and an unchecked id
+    here would pull another account's conversation into the members feed along
+    with its title and preview.
+    """
+    cur = await db_conn.execute(
+        "INSERT INTO supervisor_members (supervisor_id, chat_id, added_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(supervisor_id, chat_id) DO NOTHING",
+        (supervisor_id, chat_id, _now()),
+    )
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def supervisor_member_remove(supervisor_id: str, chat_id: str) -> bool:
+    """Drop a member. Never deletes the conversation itself.
+
+    A supervisor is a view over work, not its owner -- removing a member must
+    leave the conversation exactly as it was.
+    """
+    cur = await db_conn.execute(
+        "DELETE FROM supervisor_members WHERE supervisor_id = ? AND chat_id = ?",
+        (supervisor_id, chat_id),
+    )
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def supervisor_progress(supervisor_id: str, owner_id: str) -> float:
+    """Return overall progress percentage for a supervisor's tasks."""
+    # Fetch all tasks for this supervisor, compute weighted average
+    cur = await db_conn.execute(
+        "SELECT COUNT(*) AS total FROM supervisor_tasks WHERE supervisor_id = ?",
+        (supervisor_id,),
+    )
+    row = await cur.fetchone()
+    total = row["total"] if row else 0
+    if total == 0:
+        return 0.0
+
+    cur = await db_conn.execute(
+        "SELECT SUM(progress_pct) AS sum_pct FROM supervisor_tasks "
+        "WHERE supervisor_id = ?",
+        (supervisor_id,),
+    )
+    row = await cur.fetchone()
+    sum_pct = row["sum_pct"] or 0
+    return round(float(sum_pct) / total, 1)
 
 
 def _now() -> str:

@@ -1,0 +1,1103 @@
+<!doctype html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supervisor C — Resizable Panels</title>
+<!--
+  Supervisor orchestration mockup — Option C layout with resizable panels.
+  Created as part of the supervisor feature implementation for WebConsole 0.9.0.
+  This is a design mockup only; the actual implementation lives in app.py, supervisor.py, and web/assets/supervisor-ui.html.
+  Served at: https://kali-2.tail850c40.ts.net/assets/supervisor-mockup.html
+-->
+<style>
+:root {
+  --bg: #0f172a;
+  --card: #1e293b;
+  --border: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #3b82f6;
+  --accent-light: #172554;
+  --green: #22c55e;
+  --amber: #f59e0b;
+  --red: #ef4444;
+  --purple: #8b5cf6;
+  --gray1: #1e293b;
+  --gray2: #2d3a4f;
+  --sidebar-bg: #0c1524;
+  --chat-bg: #162032;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f5f7fb;
+    --card: #ffffff;
+    --border: #dde1ea;
+    --text: #1e2a3a;
+    --muted: #6b7a90;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --gray1: #f0f2f5;
+    --gray2: #e2e6ed;
+    --sidebar-bg: #f8fafc;
+    --chat-bg: #ffffff;
+  }
+}
+:root[data-theme="dark"] { /* already set above */ }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  overflow: hidden;
+  height: 100vh;
+}
+
+h1 {
+  text-align: center;
+  padding: 16px 16px 4px;
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.subtitle {
+  text-align: center;
+  color: var(--muted);
+  padding: 0 16px 12px;
+  font-size: 12px;
+}
+
+.hint {
+  text-align: center;
+  color: var(--muted);
+  padding: 0 16px 12px;
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* ── Size increase buttons ── */
+.size-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--gray2);
+  color: var(--muted);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s, transform 0.1s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.size-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: scale(1.1);
+}
+
+.size-btn:active {
+  transform: scale(0.95);
+}
+
+.panel-header .size-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ── Maximize mode (kept for toggle) ── */
+body.max-center .panel-left,
+body.max-center .panel-right,
+body.max-center .bottom-chat {
+  display: none;
+}
+
+body.max-center .panel-center {
+  flex: 1;
+  min-width: 0;
+}
+
+body.max-left .panel-center,
+body.max-left .panel-right,
+body.max-left .bottom-chat {
+  display: none;
+}
+
+body.max-left .panel-left {
+  width: 100% !important;
+  flex: 1;
+  max-width: 100%;
+}
+
+body.max-right .panel-left,
+body.max-right .bottom-chat {
+  display: none;
+}
+
+body.max-right .panel-center {
+  flex: 1;
+  min-width: 0;
+}
+
+body.max-right .panel-right {
+  width: 400px !important;
+  min-width: 200px !important;
+  position: relative !important;
+  z-index: 20;
+  display: flex !important;
+}
+
+body.max-bottom .panel-left,
+body.max-bottom .panel-center,
+body.max-bottom .panel-right {
+  display: none;
+}
+
+body.max-bottom .bottom-chat {
+  position: relative !important;
+  height: auto !important;
+  flex: 1;
+  border-top: none;
+  display: flex !important;
+}
+
+/* Hide resizers when panels are maximized */
+body.max-center .resizer-h,
+body.max-center .resizer-v,
+body.max-left .resizer-h,
+body.max-left .resizer-v,
+body.max-right .resizer-h,
+body.max-right .resizer-v,
+body.max-bottom .resizer-h,
+body.max-bottom .resizer-v {
+  display: none !important;
+}
+
+/* Transition for panel toggling */
+.panel-left, .panel-center, .panel-right, .bottom-chat {
+  transition: opacity 0.2s;
+}
+
+/* ── Main layout ── */
+.layout {
+  display: flex;
+  height: calc(100vh - 90px);
+  position: relative;
+}
+
+/* Left panel */
+.panel-left {
+  width: 260px;
+  min-width: 180px;
+  max-width: 45vw;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Center panel */
+.panel-center {
+  flex: 1;
+  min-width: 300px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Right panel (agent chat) */
+.panel-right {
+  width: 0px;
+  min-width: 0px;
+  max-width: 50vw;
+  background: var(--chat-bg);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: none;
+}
+
+.panel-right.open {
+  width: 300px;
+  min-width: 200px;
+}
+
+/* ── Resizer handles ── */
+.resizer-h {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  transition: background 0.15s;
+}
+.resizer-h:hover, .resizer-h.active {
+  background: var(--accent);
+}
+
+.resizer-v {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  transition: background 0.15s;
+}
+.resizer-v:hover, .resizer-v.active {
+  background: var(--accent);
+}
+
+.resizer-h.left-resizer {
+  right: -2px;
+}
+
+.resizer-v.bottom-resizer {
+  bottom: 0;
+  top: auto;
+}
+
+/* ── Panel headers ── */
+.panel-header {
+  padding: 6px 10px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  background: var(--card);
+}
+
+.panel-header-left {
+  background: var(--sidebar-bg);
+}
+
+.panel-header-center {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.panel-header-right {
+  background: var(--card);
+}
+
+.panel-header .close-btn {
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.5;
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.panel-header .close-btn:hover {
+  opacity: 1;
+}
+
+/* ── Task tree ── */
+.task-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.tree-root {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.tree-item {
+  padding: 3px 4px 3px 0;
+  position: relative;
+  cursor: default;
+  border-left: 1px dashed var(--border);
+  margin-left: 6px;
+  position: relative;
+}
+
+.tree-item-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.tree-item-header:hover {
+  background: var(--gray2);
+}
+
+.tree-item-header.selected {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tree-item .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tree-item .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-item .progress-text {
+  font-size: 8px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.tree-item .model-chip {
+  font-size: 7px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--gray2);
+  color: var(--muted);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.tree-item .model-chip.anthropic {
+  background: #1e3a5f;
+  color: #60a5fa;
+}
+
+.tree-item .model-chip.free {
+  background: #2e1065;
+  color: #c084fc;
+}
+
+.dep-line {
+  font-size: 8px;
+  color: var(--muted);
+  padding: 1px 0 1px 14px;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dep-line::before {
+  content: "└── ";
+  color: var(--border);
+}
+
+.dep-done {
+  color: var(--green);
+}
+
+/* ── Center: conversation ── */
+.conversation {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.msg {
+  max-width: 85%;
+  font-size: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-ai {
+  background: var(--card);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+  border-bottom-left-radius: 0;
+}
+
+.msg-user {
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  align-self: flex-end;
+  border-bottom-right-radius: 0;
+}
+
+.msg-system {
+  background: #422006;
+  color: #fbbf24;
+  border: 1px solid #854d0e;
+  font-size: 9px;
+  align-self: stretch;
+  text-align: center;
+}
+
+.msg-progress {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 9px;
+  align-self: stretch;
+}
+
+.msg-progress-title {
+  font-weight: 600;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.msg-progress-bar {
+  height: 5px;
+  background: var(--gray2);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 2px 0;
+}
+
+.msg-progress-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.msg-progress-bar-fill.green { background: var(--green); }
+
+/* ── Input areas ── */
+.chat-input {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  flex-shrink: 0;
+}
+
+.chat-input-line {
+  background: var(--gray1);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+}
+
+/* ── Bottom chat ── */
+.bottom-chat {
+  height: 200px;
+  min-height: 80px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.bottom-chat-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+}
+
+/* ── Status bar ── */
+.status-bar {
+  padding: 3px 10px;
+  font-size: 9px;
+  color: var(--muted);
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.status-bar .agg {
+  display: flex;
+  gap: 12px;
+}
+
+.status-bar .agg-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.status-bar .agg-num {
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ── Right panel content ── */
+.right-panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+}
+
+.detail-section {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-section:last-child {
+  border-bottom: none;
+}
+
+.detail-label {
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.detail-value {
+  font-size: 9px;
+  color: var(--text);
+}
+
+.detail-output {
+  background: var(--gray1);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 8px;
+  color: var(--muted);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  max-height: 80px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border);
+}
+
+/* ── Panel header icons ── */
+.header-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--gray2);
+  color: var(--muted);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s, transform 0.1s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.header-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: scale(1.1);
+}
+
+.header-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.panel-header .header-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-header .toggle-right-btn {
+  font-size: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--gray2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  z-index: 5;
+  transition: background 0.12s, color 0.12s;
+}
+
+.panel-header .toggle-right-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+</style>
+</head>
+<body>
+
+<h1>Supervisor — Three-Panel Split (C)</h1>
+<p class="subtitle">Resizable panels with independent scroll zones. Drag dividers to resize.</p>
+<p class="hint">Hover a divider and drag to resize panels. Click panel headers to toggle panels.</p>
+
+<div class="layout">
+
+  <!-- LEFT: Task Tree -->
+  <div class="panel-left" id="panelLeft">
+    <div class="panel-header panel-header-left">
+      <span>📋 Task Tree</span>
+      <div class="size-controls">
+        <button class="size-btn" onclick="resizePanel('left', -20)" title="Shrink panel">−</button>
+        <button class="size-btn" onclick="resizePanel('left', 20)" title="Grow panel">+</button>
+      </div>
+      <div class="header-group">
+        <button class="header-btn" id="maxLeftBtn" onclick="togglePanelMaximize('left')" title="Maximize panel">⛶</button>
+        <span style="font-size:8px;color:var(--muted)">1 active plan</span>
+      </div>
+    </div>
+    <div class="task-tree">
+      <div class="tree-root">Deploy API Changes</div>
+
+      <div class="tree-item">
+        <div class="tree-item-header">
+          <span class="dot" style="background:#22c55e"></span>
+          <span class="label">① Test API Health</span>
+          <span class="progress-text">100%</span>
+          <span class="model-chip free">OLLAMA</span>
+        </div>
+      </div>
+
+      <div class="tree-item">
+        <div class="tree-item-header selected">
+          <span class="dot" style="background:#3b82f6"></span>
+          <span class="label">② Deploy Staging</span>
+          <span class="progress-text">60%</span>
+          <span class="model-chip anthropic">CLAUDE</span>
+        </div>
+        <div class="dep-line">depends: <span style="color:var(--green)">① ✅</span></div>
+      </div>
+
+      <div class="tree-item">
+        <div class="tree-item-header">
+          <span class="dot" style="background:#3b82f6"></span>
+          <span class="label">③ Deploy Production</span>
+          <span class="progress-text">30%</span>
+          <span class="model-chip anthropic">CLAUDE</span>
+        </div>
+        <div class="dep-line">depends: <span style="color:var(--green)">① ✅</span></div>
+      </div>
+
+      <div class="tree-item">
+        <div class="tree-item-header">
+          <span class="dot" style="background:#f59e0b"></span>
+          <span class="label">④ Smoke Tests</span>
+          <span class="progress-text">0%</span>
+          <span class="model-chip free">OLLAMA</span>
+        </div>
+        <div class="dep-line">depends: <span style="color:#3b82f6">② 🔄</span></div>
+        <div class="dep-line">depends: <span style="color:#3b82f6">③ 🔄</span></div>
+      </div>
+    </div>
+
+    <!-- Resizer between left and center -->
+    <div class="resizer-h left-resizer" id="resizerLeft"></div>
+  </div>
+
+  <!-- CENTER: Selected subtask conversation -->
+  <div class="panel-center" id="panelCenter">
+    <div class="panel-header panel-header-center">
+      <span>🔵 Deploy Staging — Running (60%)</span>
+      <div style="display:flex;align-items:center;gap:4px">
+        <div class="size-controls">
+          <button class="size-btn" onclick="resizePanel('center', -20)" title="Shrink panel">−</button>
+          <button class="size-btn" onclick="resizePanel('center', 20)" title="Grow panel">+</button>
+        </div>
+        <span style="font-size:8px;color:var(--accent)">Claude Sonnet • 2 min ago</span>
+        <button class="header-btn" id="maxCenterBtn" onclick="togglePanelMaximize('center')" title="Maximize panel">⛶</button>
+        <button class="toggle-right-btn" id="toggleRightBtn" onclick="toggleRightPanel()">▶ Panel</button>
+      </div>
+    </div>
+    <div class="status-bar">
+      <div class="agg">
+        <div class="agg-item">Subtask: <span class="agg-num">Deploy Staging</span></div>
+        <div class="agg-item">Model: <span class="agg-num">Claude Sonnet</span></div>
+        <div class="agg-item">Progress: <span class="agg-num">60%</span></div>
+      </div>
+      <div class="agg">
+        <div class="agg-item">⏱ 2m 14s</div>
+        <div class="agg-item">📊 3 steps</div>
+      </div>
+    </div>
+    <div class="conversation">
+      <div class="msg msg-system">Subtask from supervisor: "Deploy to staging — run migrations, pull latest, restart services"</div>
+      <div class="msg msg-ai">Starting deployment to staging environment...</div>
+      <div class="msg msg-ai">
+Step 1: Pull latest code... ✓
+Step 2: Run database migrations... ✓
+Step 3: Deploy API services...
+▸ Building containers...
+▸ Pushing to registry...</div>
+      <div class="msg msg-progress">
+        <div class="msg-progress-title">Deployment Steps</div>
+        Pull latest code<br>
+        <div class="msg-progress-bar"><div class="msg-progress-bar-fill green" style="width:100%"></div></div>
+        Run database migrations<br>
+        <div class="msg-progress-bar"><div class="msg-progress-bar-fill green" style="width:100%"></div></div>
+        Deploy API services<br>
+        <div class="msg-progress-bar"><div class="msg-progress-bar-fill" style="width:35%"></div></div>
+        Run integration tests<br>
+        <div class="msg-progress-bar"><div class="msg-progress-bar-fill" style="width:0%"></div></div>
+        Update DNS records<br>
+        <div class="msg-progress-bar"><div class="msg-progress-bar-fill" style="width:0%"></div></div>
+      </div>
+      <div class="msg msg-user">Can you also restart the worker services?</div>
+      <div class="msg msg-ai">Updated the deployment plan. Adding worker services restart after API deploy.<br><br>
+Step 4: Deploy worker services...<br>
+▸ Targeting staging cluster...</div>
+    </div>
+    <div class="chat-input">
+      <div class="chat-input-line">Message this agent... (Ctrl+Enter to send)</div>
+    </div>
+
+    <!-- Resizer between center and bottom -->
+    <div class="resizer-v bottom-resizer" id="resizerBottom"></div>
+  </div>
+
+  <!-- RIGHT: Subtask detail (toggleable) -->
+  <div class="panel-right" id="panelRight">
+    <div class="panel-header panel-header-right">
+      <span>📊 Subtask Detail</span>
+      <div class="size-controls">
+        <button class="size-btn" onclick="resizePanel('right', -20)" title="Shrink panel">−</button>
+        <button class="size-btn" onclick="resizePanel('right', 20)" title="Grow panel">+</button>
+      </div>
+      <div class="header-group">
+        <button class="header-btn" id="maxRightBtn" onclick="togglePanelMaximize('right')" title="Maximize panel">⛶</button>
+        <button class="close-btn" onclick="toggleRightPanel()">✕</button>
+      </div>
+    </div>
+    <div class="right-panel-content">
+      <div class="detail-section">
+        <div class="detail-label">Status</div>
+        <div class="detail-value" style="color:#3b82f6;font-weight:600">🟦 Running — 60%</div>
+        <div class="msg-progress-bar" style="margin-top:3px;height:6px">
+          <div class="msg-progress-bar-fill" style="width:60%"></div>
+        </div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">Model</div>
+        <div class="detail-value"><span class="model-chip anthropic" style="font-size:9px;padding:1px 6px">CLAUDE SONNET</span></div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">Agent Chat History</div>
+        <div style="font-size:9px;color:var(--muted);line-height:1.5">
+          <div style="color:var(--muted)">→ User (supervisor): Deploy to staging...</div>
+          <div>→ Agent: Starting deployment...</div>
+          <div>→ Agent: Step 1 ✓ Step 2 ✓</div>
+          <div>→ User: Also restart workers</div>
+          <div>→ Agent: Updated plan, adding...</div>
+        </div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">Output Snippet</div>
+        <div class="detail-output">Step 3: Deploying API services...
+→ Building containers... 4/7
+→ Pushing to registry... staging
+→ Scaling deployment...
+→ Health check... PENDING</div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">Dependencies</div>
+        <div class="detail-value">
+          <div class="dep-line" style="font-size:9px">① Test API Health <span class="dep-done">✓ done</span></div>
+        </div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">Context Attached</div>
+        <div style="font-size:8px;color:var(--muted)">
+          <div>📎 Test API Health result: "All endpoints healthy (5/5, 0 errors)"</div>
+          <div>📎 Code review: "PR #42: 3 files changed, 142 LOC, 0 failures"</div>
+        </div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">Resources</div>
+        <div style="font-size:9px;color:var(--muted);line-height:1.4">
+          <div>⏱ Started: 2m 14s ago</div>
+          <div>📊 Tokens: 14,230 / 412ms</div>
+          <div>🔄 Turns: 4 / 12 steps</div>
+        </div>
+      </div>
+    </div>
+    <div class="chat-input">
+      <div class="chat-input-line">Ask this agent about its subtask...</div>
+    </div>
+    <!-- Resizer between right and center -->
+    <div class="resizer-h" id="resizerRight" style="left:-2px;right:auto"></div>
+  </div>
+
+</div>
+
+<!-- BOTTOM: Supervisor chat -->
+<div class="bottom-chat" id="bottomChat" style="position:absolute;bottom:0;left:0;right:0;">
+  <div class="panel-header" style="cursor:row-resize" id="bottomChatHeader">
+    <span>🤖 Supervisor Chat</span>
+    <div class="size-controls">
+      <button class="size-btn" onclick="resizePanel('bottom', -20)" title="Shrink panel">−</button>
+      <button class="size-btn" onclick="resizePanel('bottom', 20)" title="Grow panel">+</button>
+    </div>
+    <div class="header-group">
+      <button class="header-btn" id="maxBottomBtn" onclick="togglePanelMaximize('bottom')" title="Maximize panel">⛶</button>
+      <span style="font-size:8px;color:var(--muted)">Agent waiting on your input</span>
+    </div>
+  </div>
+  <div class="bottom-chat-body">
+    <div class="msg msg-user" style="font-size:9px;max-width:75%">Deploy the new API changes across staging and production</div>
+    <div class="msg msg-ai" style="font-size:9px">
+Plan created — 4 subtasks:</div>
+    <div class="msg msg-system" style="font-size:8px">
+  ✅ ① Test API Health (OLLAMA) — 100%<br>
+  🔄 ② Deploy Staging (CLAUDE) — 60%<br>
+  🔄 ③ Deploy Production (CLAUDE) — 30%<br>
+  ⏳ ④ Smoke Tests (OLLAMA) — 0%<br><br>
+  Deploy Staging and Deploy Production are running in parallel. Smoke Tests will start once both complete. Overall: 35%</div>
+    <div class="msg msg-user" style="font-size:9px;max-width:60%">Can you also restart the worker services during deploy?</div>
+    <div class="msg msg-ai" style="font-size:9px">Updated the plan. Added worker services restart as Step 4 in Deploy Staging and Deploy Production. Deploy Staging is already at Step 3, so I've injected the update.</div>
+  </div>
+  <div class="chat-input">
+    <div class="chat-input-line">Message the supervisor... (Ctrl+Enter to send)</div>
+  </div>
+</div>
+
+<script>
+// ── Resizable panels ──
+
+// Left panel resizer (between left and center)
+const resizerLeft = document.getElementById('resizerLeft');
+const panelLeft = document.getElementById('panelLeft');
+let isResizingLeft = false;
+
+resizerLeft.addEventListener('mousedown', (e) => {
+  isResizingLeft = true;
+  resizerLeft.classList.add('active');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
+
+// Right panel resizer (between center and right)
+const resizerRight = document.getElementById('resizerRight');
+const panelRight = document.getElementById('panelRight');
+let isResizingRight = false;
+
+resizerRight.addEventListener('mousedown', (e) => {
+  if (!panelRight.classList.contains('open')) return;
+  isResizingRight = true;
+  resizerRight.classList.add('active');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
+
+// Bottom panel resizer
+const resizerBottom = document.getElementById('resizerBottom');
+const bottomChat = document.getElementById('bottomChat');
+let isResizingBottom = false;
+
+resizerBottom.addEventListener('mousedown', (e) => {
+  isResizingBottom = true;
+  resizerBottom.classList.add('active');
+  document.body.style.cursor = 'row-resize';
+  document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (isResizingLeft) {
+    const newWidth = Math.max(180, Math.min(e.clientX, window.innerWidth * 0.45));
+    panelLeft.style.width = newWidth + 'px';
+  }
+  if (isResizingRight) {
+    const newWidth = Math.max(200, Math.min(window.innerWidth - e.clientX - 180, window.innerWidth * 0.5));
+    panelRight.style.width = newWidth + 'px';
+  }
+  if (isResizingBottom) {
+    const newHeight = Math.max(80, Math.min(window.innerHeight - 90 - e.clientY + 90, window.innerHeight * 0.6));
+    const clamped = Math.max(80, Math.min(newHeight, window.innerHeight - 90 - 80));
+    bottomChat.style.height = clamped + 'px';
+  }
+});
+
+document.addEventListener('mouseup', () => {
+  if (isResizingLeft) {
+    isResizingLeft = false;
+    resizerLeft.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+  if (isResizingRight) {
+    isResizingRight = false;
+    resizerRight.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+  if (isResizingBottom) {
+    isResizingBottom = false;
+    resizerBottom.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+});
+
+// Toggle right panel
+function toggleRightPanel() {
+  const rp = document.getElementById('panelRight');
+  rp.classList.toggle('open');
+  const btn = document.getElementById('toggleRightBtn');
+  btn.textContent = rp.classList.contains('open') ? '◀ Close' : '▶ Panel';
+}
+
+// ── Panel maximize / restore ──
+// Click the ⛶ button to maximize any panel. Click it again to restore.
+
+function togglePanelMaximize(panel) {
+  // Check if this panel is already maximized
+  if (document.body.classList.contains(`max-${panel}`)) {
+    // Restore all panels
+    restoreAllPanels();
+    return;
+  }
+
+  // Remove any existing maximized state
+  ['center', 'left', 'right', 'bottom'].forEach(p => {
+    document.body.classList.remove(`max-${p}`);
+  });
+
+  // Reset all maximize button states
+  document.querySelectorAll('.header-btn').forEach(b => b.classList.remove('active'));
+
+  // Set the new maximized state
+  document.body.classList.add(`max-${panel}`);
+  const btnId = 'max' + panel.charAt(0).toUpperCase() + panel.slice(1) + 'Btn';
+  const btn = document.getElementById(btnId);
+  if (btn) btn.classList.add('active');
+}
+
+function restoreAllPanels() {
+  // Remove all maximized states
+  ['center', 'left', 'right', 'bottom'].forEach(p => {
+    document.body.classList.remove(`max-${p}`);
+  });
+
+  // Reset all maximize button states
+  document.querySelectorAll('.header-btn').forEach(b => b.classList.remove('active'));
+}
+
+// ── Automatic panel resize ──
+// Click + or - to smoothly grow/shrink panels by a fixed amount
+
+const PANEL_WIDTHS = {
+  left: 260,
+  right: 300,
+};
+
+const PANEL_MIN_WIDTHS = {
+  left: 180,
+  center: 300,
+  right: 200,
+};
+
+const PANEL_MIN_HEIGHTS = {
+  bottom: 80,
+};
+
+function resizePanel(panel, delta) {
+  // Check if a panel is maximized — skip resize
+  for (const p of ['center', 'left', 'right', 'bottom']) {
+    if (document.body.classList.contains(`max-${p}`)) return;
+  }
+
+  if (panel === 'left') {
+    let w = PANEL_WIDTHS.left;
+    w = Math.max(PANEL_MIN_WIDTHS.left, Math.min(w + delta, window.innerWidth * 0.45));
+    panelLeft.style.minWidth = w + 'px';
+    panelLeft.style.maxWidth = w + 'px';
+    PANEL_WIDTHS.left = w;
+  }
+  else if (panel === 'center') {
+    // center is flex:1; resizing it means squeezing the side panels
+    resizePanel('left', delta);
+    if (panelRight.classList.contains('open')) {
+      resizePanel('right', -delta);
+    }
+  }
+  else if (panel === 'right') {
+    if (!panelRight.classList.contains('open')) {
+      panelRight.classList.add('open');
+      return;
+    }
+    let w = PANEL_WIDTHS.right;
+    w = Math.max(PANEL_MIN_WIDTHS.right, Math.min(w + delta, window.innerWidth * 0.5));
+    panelRight.style.minWidth = w + 'px';
+    panelRight.style.maxWidth = w + 'px';
+    PANEL_WIDTHS.right = w;
+  }
+  else if (panel === 'bottom') {
+    // bottom chat is absolutely positioned, so offsetHeight may be unreliable.
+    // Track height in our own variable instead.
+    let h = PANEL_HEIGHTS.bottom;
+    h = Math.max(PANEL_MIN_HEIGHTS.bottom, Math.min(h + delta, window.innerHeight * 0.6));
+    bottomChat.style.minHeight = h + 'px';
+    bottomChat.style.maxHeight = h + 'px';
+    bottomChat.style.height = h + 'px';
+    PANEL_HEIGHTS.bottom = h;
+  }
+}
+
+// Track heights since absolute-positioned elements don't reliably report offsetHeight
+const PANEL_HEIGHTS = {
+  bottom: 200,
+};
+</script>
+
+</body>
+</html>

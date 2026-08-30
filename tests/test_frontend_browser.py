@@ -83,13 +83,48 @@ class _BrowserFixture(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Explicit try/except rather than addClassCleanup. The boot loop below
+        # raises and tearDownClass does not run when setUpClass does, so the
+        # server and temp dir would leak -- but addClassCleanup is the wrong
+        # cure here: unittest keeps class cleanups in a list shared by every
+        # TestCase, so entries registered by one class can be drained while
+        # another is still running. That terminated a live server mid-class,
+        # which showed up as SIGTERM (exit -15) in the middle of a passing run.
+        # Releasing them here, on the one path that can leak, keeps the
+        # lifetime owned by this class alone.
+        cls.tmp = None
+        cls.server = None
+        cls.log_handle = None
+        try:
+            cls._start()
+        except BaseException:
+            cls._release()
+            raise
+
+    @classmethod
+    def _start(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         tmp = Path(cls.tmp.name)
         (tmp / "projects").mkdir()
+        # A home of its own. The supervisor does not read only its database: it
+        # merges the live Claude CLI sessions under ~/.claude, so a server
+        # pointed at the real home reports whatever the agents on this machine
+        # happen to be doing. The alert tests assert on a *rise* in the waiting
+        # count, and an unrelated session answering a question in the same poll
+        # window cancels the rise -- which is how a correct notification test
+        # spent 90 seconds waiting for a notification that had already been
+        # netted out. This also keeps the suite from reading the developer's
+        # own transcripts.
+        home = tmp / "home"
+        (home / ".claude" / "sessions").mkdir(parents=True)
+        (home / ".claude" / "projects").mkdir(parents=True)
         cls.port = _free_port()
         cls.password = secrets.token_urlsafe(12)
         env = {
             **os.environ,
+            "HOME": str(home),
+            # Defaults to the home above, which the projects root is not under.
+            "WC_PROJECTS_ROOT_BASE": str(tmp),
             "WC_DB_PATH": str(tmp / "wc.db"),
             "WC_PROJECTS_ROOT": str(tmp / "projects"),
             "WC_SESSION_SECRET": secrets.token_urlsafe(32),
@@ -99,42 +134,91 @@ class _BrowserFixture(unittest.TestCase):
             # The test server is plain HTTP on loopback.
             "WC_COOKIE_ALLOW_INSECURE": "1",
         }
+        # A file, not a PIPE. Nothing here ever reads the server's output, and
+        # an unread pipe holds only 64K -- past that uvicorn blocks forever on
+        # its own access log and stops answering, which surfaces as a browser
+        # test failing on a server that looks alive. A file also survives the
+        # process, so _server_log below can say what happened.
+        cls.log_path = tmp / "server.log"
+        cls.log_handle = cls.log_path.open("wb")
         cls.server = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app:app",
              "--host", "127.0.0.1", "--port", str(cls.port)],
             cwd=ROOT, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdout=cls.log_handle, stderr=subprocess.STDOUT,
         )
         cls.base = f"http://127.0.0.1:{cls.port}"
         deadline = time.time() + BOOT_TIMEOUT_S
         while time.time() < deadline:
             if cls.server.poll() is not None:
-                output = cls.server.stdout.read().decode(errors="replace")
-                raise RuntimeError(f"server exited during boot:\n{output}")
+                raise RuntimeError(f"server exited during boot:\n{cls._server_log()}")
             try:
                 urllib.request.urlopen(f"{cls.base}/login", timeout=1)
                 break
             except (urllib.error.URLError, OSError):
                 time.sleep(0.3)
         else:  # pragma: no cover - boot failure path
-            cls.server.kill()
             raise RuntimeError("server did not start")
 
     @classmethod
-    def tearDownClass(cls):
-        cls.server.terminate()
+    def _server_log(cls, lines: int = 40) -> str:
         try:
-            cls.server.wait(timeout=10)
-        except subprocess.TimeoutExpired:  # pragma: no cover
-            cls.server.kill()
-        cls.tmp.cleanup()
+            if cls.log_handle is not None:
+                cls.log_handle.flush()
+        except (ValueError, OSError):  # already closed by _release
+            pass
+        try:
+            tail = cls.log_path.read_text(errors="replace").splitlines()[-lines:]
+        except OSError as exc:
+            return f"<no server log: {exc}>"
+        return "\n".join(tail) or "<server log empty>"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._release()
+
+    @classmethod
+    def _release(cls):
+        """Give back whatever setUpClass actually got. Idempotent, and safe on
+        a partly-built class: it runs both from tearDownClass and from the
+        failure path in setUpClass, where any of these may still be None."""
+        if cls.server is not None:
+            cls.server.terminate()
+            try:
+                cls.server.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                cls.server.kill()
+            cls.server = None
+        if cls.log_handle is not None:
+            cls.log_handle.close()
+            cls.log_handle = None
+        if cls.tmp is not None:
+            cls.tmp.cleanup()
+            cls.tmp = None
 
     def setUp(self):
+        # addCleanup, not tearDown: unittest skips tearDown when setUp raises,
+        # and _login below raises on any slow boot. A leaked playwright is not
+        # merely untidy -- its greenlet loop stays flagged as the *running*
+        # asyncio loop for this thread, so every IsolatedAsyncioTestCase that
+        # follows dies on "Runner.run() cannot be called from a running event
+        # loop". One login timeout took out 850 unrelated tests that way.
+        # Cleanups run last-registered-first, hence stop() before close().
+        # Say so plainly when the server has died. Otherwise every remaining
+        # test in the class fails with ERR_CONNECTION_REFUSED, which names the
+        # port and nothing else.
+        if self.server.poll() is not None:
+            self.fail(
+                f"the test server exited with code {self.server.returncode}:\n"
+                f"{self._server_log()}"
+            )
         self.errors: list[str] = []
         self._pw = sync_playwright().start()
+        self.addCleanup(self._pw.stop)
         self.browser = self._pw.chromium.launch(
             executable_path=CHROMIUM, args=["--no-sandbox"]
         )
+        self.addCleanup(self.browser.close)
         self.page = self.browser.new_page()
         self.page.on("pageerror", lambda e: self.errors.append(f"pageerror: {e}"))
         self.page.on(
@@ -145,18 +229,17 @@ class _BrowserFixture(unittest.TestCase):
         )
         self._login()
 
-    def tearDown(self):
-        self.browser.close()
-        self._pw.stop()
-
     def _login(self):
         page = self.page
-        page.goto(f"{self.base}/login", wait_until="networkidle")
+        # domcontentloaded, not networkidle: this app polls the supervisor, the
+        # chat list and pending questions, and the supervisor pane holds an SSE
+        # stream open -- so the network is never idle and that wait can only
+        # ever time out. The app-shell wait below is the real readiness signal.
+        page.goto(f"{self.base}/login", wait_until="domcontentloaded")
         page.fill("#username", "admin")
         page.fill("#password", self.password)
         # By id: the theme toggle is also type=submit and comes first in the DOM.
         page.click("#submitBtn")
-        page.wait_for_load_state("networkidle")
         # networkidle resolves before the module renders the toolbar, and the
         # login page has its own template -- a query here would silently run
         # against the wrong document.
@@ -220,7 +303,11 @@ class BackendsPanelBrowserTests(_BrowserFixture):
     def test_tabs_are_the_merged_set(self):
         self._open_backends()
         tabs = [t.inner_text() for t in self.page.query_selector_all(".settings-tab")]
-        self.assertEqual(tabs, ["Backends", "Usage", "Skills", "App"])
+        self.assertEqual(
+            tabs, ["Backends", "Usage", "Statistics", "Server", "Skills", "App"]
+        )
+        # The old standalone Models tab is what got merged into Backends; a
+        # backend and the models it serves are one thing.
         self.assertIsNone(self.page.query_selector("#panelModels"))
 
     def test_seeded_backend_renders_with_its_models(self):
@@ -288,7 +375,7 @@ class BackendsPanelBrowserTests(_BrowserFixture):
         rows[1].query_selector("input[type=checkbox]").click()
         self.page.wait_for_timeout(1500)
 
-        self.page.reload(wait_until="networkidle")
+        self.page.reload(wait_until="domcontentloaded")
         self._open_backends()
         self.assertFalse(self._model_rows()[target])
 
@@ -358,7 +445,7 @@ class SupervisorBrowserTests(_BrowserFixture):
 
     def _load(self):
         self._seed_waiting_chat()
-        self.page.reload(wait_until="networkidle")
+        self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
 
     def test_supervisor_sits_above_the_other_sections(self):
@@ -413,6 +500,74 @@ class SupervisorBrowserTests(_BrowserFixture):
         )
         self.assertEqual(self.errors, [])
 
+    def test_the_heading_offers_a_link_to_the_supervisor(self):
+        """Present, labelled, and pointing at the supervisor page."""
+        self._load()
+        heading = self.page.query_selector(f"{self.DESKTOP} .supervisor-label")
+        self.assertIsNotNone(heading, "the Supervisor section did not render")
+        link = heading.query_selector(".supervisor-open")
+        self.assertIsNotNone(link, "no link to the supervisor in its own section")
+        self.assertEqual(link.get_attribute("aria-label"), "Open the supervisor")
+
+    def test_clearing_leaves_the_link_reachable(self):
+        """Nothing waiting is exactly when you want to go and look."""
+        self._load()
+        clear = self.page.query_selector(f"{self.DESKTOP} .supervisor-clear")
+        if clear:
+            clear.click()
+            self.page.wait_for_timeout(2000)
+        self.assertIsNotNone(
+            self.page.query_selector(f"{self.DESKTOP} .supervisor-open"),
+            "the link vanished once the queue emptied",
+        )
+
+    def _pane(self):
+        return self.page.query_selector("#supervisorPane")
+
+    def test_the_topbar_control_opens_the_pane_not_a_new_page(self):
+        """It used to navigate away, which cost the sidebar and a reload.
+
+        Scoped to the pane deliberately: what loads *inside* the frame is the
+        supervisor's own page, with its own engine and SSE stream. Driving that
+        from here made this suite depend on another subsystem's behaviour and
+        destabilised every test after it.
+        """
+        self._load()
+        before = self.page.url
+        self.page.click("#supervisorBtn")
+        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+        self.assertEqual(self.page.url, before, "it navigated instead of embedding")
+        self.assertFalse(self.page.is_visible("#messagesWrap"),
+                         "the conversation area is still showing behind it")
+        self.assertIn(
+            "supervisor.html",
+            self.page.query_selector("#supervisorFrame").get_attribute("src"),
+        )
+
+    def test_the_sidebar_link_opens_the_same_pane(self):
+        self._load()
+        self.page.click(f"{self.DESKTOP} .supervisor-open")
+        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+
+    def test_the_conversation_list_stays_visible_beside_it(self):
+        """The reason for embedding: you can still see who is waiting."""
+        self._load()
+        self.page.click("#supervisorBtn")
+        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+        self.assertTrue(self.page.is_visible(self.DESKTOP),
+                        "the sidebar went away, which defeats the point")
+
+    def test_closing_returns_to_the_conversation(self):
+        self._load()
+        self.page.click("#supervisorBtn")
+        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+        self.page.click("#supervisorPaneClose")
+        # state="hidden": the default waits for *visible*, so asserting on a
+        # hidden element that way can only ever time out -- the element was
+        # correctly hidden the whole time.
+        self.page.wait_for_selector("#supervisorPane", state="hidden", timeout=10_000)
+        self.assertTrue(self.page.is_visible("#messagesWrap"))
+
     def test_supervisor_rows_are_not_draggable(self):
         """They point at conversations owned by other sections; a drop here
         would ask the reorder handler to reorder a container it does not own."""
@@ -455,7 +610,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
     def test_tab_title_carries_the_count_without_any_permission(self):
         """The one level that always works, on any device, with no prompt."""
         self._seed()
-        self.page.reload(wait_until="networkidle")
+        self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
         self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$")
 
@@ -479,7 +634,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         at it, which is the opposite of what the badge is for.
         """
         chat_id = self._seed()
-        self.page.reload(wait_until="networkidle")
+        self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
         before = self.page.title()
         self.assertRegex(before, r"^\(\d+\) WebConsole$")
@@ -496,7 +651,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
 
     def test_the_count_clears_once_the_question_is_answered(self):
         chat_id = self._seed()
-        self.page.reload(wait_until="networkidle")
+        self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
         self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$")
 
@@ -518,7 +673,21 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         """Granting permission and capturing the constructor, so this asserts a
         notification was really raised rather than that the code looks right."""
         self.browser.contexts[0].grant_permissions(["notifications"])
-        self.page.goto(f"{self.base}/", wait_until="networkidle")
+        # An alert fires on a *rise* in the waiting count, so the first poll has
+        # to have landed before the seed below -- otherwise the seed becomes the
+        # baseline and no rise ever happens. Waiting a fixed beat cannot detect
+        # that: with an empty queue the title reads "WebConsole" both before the
+        # poll and after it. Seeding one question first makes the baseline
+        # visible, so the count in the title is proof the poll ran.
+        # A real question: the classifier counts only those, which is exactly
+        # what test_routine_output_raises_no_alert_at_all pins from the other
+        # side. A statement here would never reach the badge at all.
+        self._seed(text="Shall I start with the first one?")
+        self.page.goto(f"{self.base}/", wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.wait_for_function(
+            "() => /^\\(\\d+\\)/.test(document.title)", timeout=40_000
+        )
         # Record every Notification the page constructs.
         self.page.evaluate("""() => {
             window.__notes = [];
@@ -547,7 +716,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
     def test_no_notification_while_the_page_is_in_front_of_you(self):
         """Being looked at already counts as being told."""
         self.browser.contexts[0].grant_permissions(["notifications"])
-        self.page.goto(f"{self.base}/", wait_until="networkidle")
+        self.page.goto(f"{self.base}/", wait_until="domcontentloaded")
         self.page.evaluate("""() => {
             window.__notes = [];
             window.Notification = function (t, o) { window.__notes.push({t, o}); };
@@ -562,7 +731,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
     def test_routine_output_raises_no_alert_at_all(self):
         """Pedro's rule: only when information is required or important."""
         self.browser.contexts[0].grant_permissions(["notifications"])
-        self.page.goto(f"{self.base}/", wait_until="networkidle")
+        self.page.goto(f"{self.base}/", wait_until="domcontentloaded")
         self.page.evaluate("""() => {
             window.__notes = [];
             window.Notification = function (t, o) { window.__notes.push({t, o}); };
@@ -570,6 +739,13 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         }""")
         self.page.evaluate("() => localStorage.setItem('wc_alerts', 'on')")
         self.page.evaluate("() => Object.defineProperty(document, 'hasFocus', {value: () => false})")
+        # Wait out the first supervisor poll before reading the baseline. Taken
+        # straight after domcontentloaded it is the static title from the HTML,
+        # so the poll landing -- not this test's seed -- moved the count, and
+        # the comparison below failed whenever an earlier test in the class had
+        # left a question waiting.
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.wait_for_timeout(1500)
         before = self.page.title()
         self._seed(text="Done. Suite is green, ruff clean.")
         self.page.wait_for_timeout(20_000)
@@ -578,6 +754,83 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         # title we started with, since questions left unanswered by other tests
         # in this class are legitimately still counted.
         self.assertEqual(self.page.title(), before)
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class ServerPanelBrowserTests(_BrowserFixture):
+    """The Server tab refreshes itself, and stops when you leave it.
+
+    Asserted by counting the requests the page actually makes, because the
+    thing that was wrong was not visible in the markup: the panel rendered
+    correctly and then never changed, so a reading from when the tab was opened
+    sat there looking current. The poll is 30s, so these wait a cycle out.
+    """
+
+    POLL_S = 30
+
+    def setUp(self):
+        super().setUp()
+        self.system_calls: list[str] = []
+        self.page.on(
+            "request",
+            lambda r: self.system_calls.append(r.url)
+            if "/api/system" in r.url
+            else None,
+        )
+
+    def _open_server_tab(self):
+        self.page.click("#settingsBtn")
+        self.page.wait_for_selector("#tabServer", timeout=10_000)
+        self.page.click("#tabServer")
+        self.page.wait_for_selector("#panelServer:not([hidden])", timeout=10_000)
+
+    def test_opening_the_tab_reads_the_host(self):
+        self._open_server_tab()
+        self.page.wait_for_function(
+            "() => document.querySelector('#serverBody .srv-cards')", timeout=15_000
+        )
+        self.assertTrue(self.system_calls, "the panel never asked for host stats")
+
+    def test_the_reading_refreshes_without_being_asked(self):
+        self._open_server_tab()
+        self.page.wait_for_timeout(2000)
+        before = len(self.system_calls)
+        self.assertGreater(before, 0)
+        self.page.wait_for_timeout((self.POLL_S + 8) * 1000)
+        self.assertGreater(
+            len(self.system_calls), before,
+            "the panel made no further request: it is frozen at whatever it "
+            "read when the tab was opened",
+        )
+
+    def test_a_refresh_leaves_the_reading_on_screen(self):
+        """No skeleton flash: a panel that updates must not look like it broke."""
+        self._open_server_tab()
+        self.page.wait_for_function(
+            "() => document.querySelector('#serverBody .srv-cards')", timeout=15_000
+        )
+        self.page.wait_for_timeout((self.POLL_S + 8) * 1000)
+        self.assertIsNotNone(self.page.query_selector("#serverBody .srv-cards"))
+        self.assertIsNone(self.page.query_selector("#serverBody .skill-skeleton"))
+
+    def test_leaving_the_tab_stops_the_polling(self):
+        """Otherwise every settings visit leaves another interval behind."""
+        self._open_server_tab()
+        self.page.wait_for_timeout(2000)
+        self.page.click("#tabBackends")
+        self.page.wait_for_selector("#panelBackends:not([hidden])", timeout=10_000)
+        self.page.wait_for_timeout(1500)
+        settled = len(self.system_calls)
+        self.page.wait_for_timeout((self.POLL_S + 8) * 1000)
+        self.assertEqual(len(self.system_calls), settled,
+                         "the panel kept polling after it was closed")
+
+    def test_the_controls_default_to_a_day_in_half_hours(self):
+        """The 24h view exists to show evolution; by-day would be one bar."""
+        self._open_server_tab()
+        self.assertEqual(self.page.input_value("#serverRange"), "1")
+        self.assertEqual(self.page.input_value("#serverBucket"), "halfhour")
 
 
 if __name__ == "__main__":

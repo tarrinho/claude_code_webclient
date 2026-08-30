@@ -1,0 +1,27 @@
+[Unit]
+Description=WebConsole host proxy (spawns Claude Code for web turns)
+# The app can start without it and will simply fail turns, so this is Wants
+# rather than Requires on the other side -- a broken proxy should not also
+# take the web UI down and hide the error.
+PartOf=webconsole.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/projects/claude-code-webconsole
+# A proxy started by hand keeps the port and systemd's copy cannot bind, so the
+# unit restart-loops while the stale process serves stale code -- which is the
+# failure this supervision exists to prevent. The guard only kills a process
+# that is itself a claude_proxy, never whatever else may hold the port.
+ExecStartPre=/usr/bin/env bash bin/wc-free-proxy-port.sh
+ExecStart=/usr/bin/env bash bin/wc-proxy-run.sh
+Restart=always
+RestartSec=2
+# Five restarts in a minute means it is failing on startup, not crashing under
+# load; backing off stops a boot loop from filling the journal.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+StandardOutput=append:%h/projects/claude-code-webconsole/logs/claude-proxy.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

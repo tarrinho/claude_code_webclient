@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supervisor — WebConsole 0.9.0</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            font-size: 14px;
+            background: #f0f4f8;
+            color: #1a202c;
+            overflow: hidden;
+        }
+        /* ── Top nav bar ───────────────────────────────────────────── */
+        #topbar {
+            height: 44px;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 12px;
+            font-weight: 600;
+            font-size: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            z-index: 100;
+            position: relative;
+        }
+        #topbar a.home-link {
+            color: rgba(255,255,255,0.85);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 400;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+        #topbar a.home-link:hover { background: rgba(255,255,255,0.15); }
+        #topbar .spacer { flex: 1; }
+        #topbar .top-info { font-size: 12px; opacity: 0.8; font-weight: 400; }
+
+        /* ── Layout container ──────────────────────────────────────── */
+        #layout {
+            display: flex;
+            height: calc(100vh - 44px);
+            overflow: hidden;
+        }
+
+        /* ── Left: task tree panel ─────────────────────────────────── */
+        #panel-left {
+            width: 320px;
+            min-width: 200px;
+            max-width: 600px;
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+            border-right: 1px solid #e2e8f0;
+            flex-shrink: 0;
+            position: relative;
+        }
+        .panel-header {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            gap: 6px;
+            border-bottom: 1px solid #e2e8f0;
+            background: #f8fafc;
+            flex-shrink: 0;
+        }
+        .panel-header h2 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            flex: 1;
+        }
+        .panel-btn {
+            width: 26px;
+            height: 26px;
+            border: 1px solid #d2d6dc;
+            border-radius: 4px;
+            background: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            color: #6b7280;
+            transition: all 0.12s;
+            line-height: 1;
+            padding-bottom: 2px;
+        }
+        .panel-btn:hover { background: #edf2f7; color: #374151; border-color: #9ca3af; }
+        .panel-btn.minimized { font-size: 12px; }
+
+        /* ── Resize handle ─────────────────────────────────────────── */
+        .resize-handle {
+            width: 5px;
+            cursor: col-resize;
+            background: transparent;
+            position: absolute;
+            right: -3px;
+            top: 0;
+            bottom: 0;
+            z-index: 10;
+        }
+        .resize-handle:hover, .resize-handle.active {
+            background: rgba(59, 130, 246, 0.3);
+        }
+
+        /* ── Task tree area ────────────────────────────────────────── */
+        #task-tree {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 0;
+        }
+        .task-item {
+            padding: 8px 12px 8px 16px;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            transition: background 0.1s;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .task-item:hover { background: #f8fafc; }
+        .task-item.active { background: #eff6ff; border-left: 3px solid #3b82f6; }
+        .task-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .task-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .task-status-dot.pending { background: #d1d5db; }
+        .task-status-dot.ready { background: #60a5fa; animation: pulse-blue 2s infinite; }
+        .task-status-dot.running { background: #f59e0b; animation: pulse-amber 1.5s infinite; }
+        .task-status-dot.done { background: #34d399; }
+        .task-status-dot.failed { background: #f87171; }
+        .task-status-dot.blocked { background: #a78bfa; }
+        @keyframes pulse-blue { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+        @keyframes pulse-amber { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.3); } }
+        .task-title { font-size: 13px; font-weight: 500; color: #2d3748; flex: 1; }
+        .task-meta {
+            font-size: 11px;
+            color: #9ca3af;
+            padding-left: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .task-progress-bar {
+            height: 3px;
+            background: #e2e8f0;
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 2px;
+        }
+        .task-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #60a5fa);
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+        .task-progress-fill.complete { background: linear-gradient(90deg, #10b981, #34d399); }
+
+        /* ── Center: supervisor chat ───────────────────────────────── */
+        #panel-center {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 300px;
+            background: #fff;
+            position: relative;
+        }
+        #supervisor-chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .chat-message {
+            max-width: 85%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            line-height: 1.5;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .chat-message.user {
+            align-self: flex-end;
+            background: #3b82f6;
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .chat-message.supervisor {
+            align-self: flex-start;
+            background: #f1f5f9;
+            color: #1e293b;
+            border-bottom-left-radius: 4px;
+        }
+        .chat-message.system {
+            align-self: center;
+            background: #fef3c7;
+            color: #92400e;
+            font-size: 12px;
+            border-radius: 8px;
+            padding: 6px 12px;
+            text-align: center;
+        }
+
+        /* ── Goal banner: user's latest prompt as the active goal ─────── */
+        .goal-banner {
+            background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+            border: 1px solid #93c5fd;
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-bottom: 12px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+        .goal-label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #1d4ed8;
+            flex-shrink: 0;
+            padding-top: 1px;
+            letter-spacing: 0.04em;
+        }
+        .goal-text {
+            font-size: 13px;
+            color: #1e3a5f;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+        .goal-banner-dismiss {
+            position: relative;
+            top: 2px;
+            border: none;
+            background: none;
+            color: #60a5fa;
+            font-size: 16px;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .goal-banner-dismiss:hover { color: #2563eb; }
+
+        /* ── Completion banner: task done summary ─────────────────────── */
+        .completion-banner {
+            background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+            border: 1px solid #6ee7b7;
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-bottom: 12px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+        .completion-icon {
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+        .completion-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .completion-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #065f46;
+            margin-bottom: 2px;
+        }
+        .completion-stats {
+            font-size: 12px;
+            color: #047857;
+            margin-bottom: 4px;
+        }
+        .completion-summary {
+            font-size: 12px;
+            color: #065f46;
+            background: rgba(255,255,255,0.6);
+            border-radius: 6px;
+            padding: 6px 8px;
+            max-height: 120px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .completion-close {
+            border: none;
+            background: none;
+            color: #34d399;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .completion-close:hover { color: #059669; }
+
+        .plan-block {
+            background: #0f172a;
+            color: #e2e8f0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            padding: 12px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            line-height: 1.6;
+        }
+        #composer {
+            display: flex;
+            gap: 8px;
+            padding: 12px 16px;
+            border-top: 1px solid #e2e8f0;
+            background: #fafbfc;
+        }
+        #composer textarea {
+            flex: 1;
+            resize: none;
+            border: 1px solid #d2d6dc;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-family: inherit;
+            font-size: 13px;
+            height: 38px;
+            max-height: 120px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        #composer textarea:focus { border-color: #3b82f6; }
+        #send-btn {
+            padding: 8px 16px;
+            background: #3b82f6;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+            height: 38px;
+            white-space: nowrap;
+        }
+        #send-btn:hover { background: #2563eb; }
+        #send-btn:disabled { background: #a0aec0; cursor: not-allowed; }
+
+        /* ── Bottom: supervisor log ────────────────────────────────── */
+        #panel-bottom {
+            height: 200px;
+            min-height: 80px;
+            max-height: 600px;
+            display: flex;
+            flex-direction: column;
+            background: #fafbfc;
+            border-top: 1px solid #e2e8f0;
+            flex-shrink: 0;
+        }
+        #event-log {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .log-entry {
+            padding: 3px 0;
+            border-bottom: 1px solid #f1f5f9;
+            display: flex;
+            gap: 8px;
+        }
+        .log-time { color: #9ca3af; flex-shrink: 0; }
+        .log-type { font-weight: 600; flex-shrink: 0; min-width: 60px; }
+        .log-type.task_start { color: #3b82f6; }
+        .log-type.task_done { color: #10b981; }
+        .log-type.task_error { color: #ef4444; }
+        .log-type.progress { color: #f59e0b; }
+        .log-type.plan { color: #8b5cf6; }
+        .log-msg { color: #4a5568; }
+
+        /* ── Right panel: detail ───────────────────────────────────── */
+        #panel-right {
+            width: 320px;
+            min-width: 200px;
+            max-width: 600px;
+            background: #fff;
+            border-left: 1px solid #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+        #detail-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        #detail-content .detail-section {
+            margin-bottom: 16px;
+        }
+        #detail-content .detail-section h3 {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #9ca3af;
+            margin-bottom: 6px;
+        }
+        #detail-content .detail-value {
+            font-size: 13px;
+            color: #2d3748;
+            line-height: 1.5;
+        }
+        .detail-result {
+            background: #f1f5f9;
+            padding: 10px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        /* ── Progress bar at top ───────────────────────────────────── */
+        #overall-progress {
+            height: 3px;
+            background: #e2e8f0;
+            flex-shrink: 0;
+        }
+        #overall-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #10b981);
+            width: 0%;
+            transition: width 0.4s;
+        }
+
+        /* ── Start screen ──────────────────────────────────────────── */
+        #start-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            padding: 32px;
+            text-align: center;
+            gap: 16px;
+        }
+        #start-screen h1 { font-size: 20px; color: #4a5568; font-weight: 600; }
+        #start-screen p { font-size: 13px; color: #9ca3af; max-width: 400px; }
+        #start-screen textarea {
+            width: 100%;
+            max-width: 500px;
+            border: 1px solid #d2d6dc;
+            border-radius: 10px;
+            padding: 14px;
+            font-family: inherit;
+            font-size: 14px;
+            height: 100px;
+            resize: vertical;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        #start-screen textarea:focus { border-color: #3b82f6; }
+        #start-screen button {
+            padding: 10px 28px;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: box-shadow 0.15s, transform 0.1s;
+        }
+        #start-screen button:hover {
+            box-shadow: 0 4px 12px rgba(59,130,246,0.4);
+            transform: translateY(-1px);
+        }
+
+        /* ── New supervisor button ─────────────────────────────────── */
+        #new-supervisor-btn {
+            padding: 4px 10px;
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+        #new-supervisor-btn:hover { background: rgba(255,255,255,0.25); }
+
+        /* ── Scrollbar styling ─────────────────────────────────────── */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #d2d6dc; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+
+        /* ── Maximize mode ─────────────────────────────────────────── */
+        body.max-left #panel-center,
+        body.max-left #panel-right,
+        body.max-left #panel-bottom { display: none; }
+        body.max-left #panel-left {
+            position: absolute;
+            top: 44px;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            width: 100% !important;
+            max-width: none !important;
+            min-width: 0;
+            z-index: 50;
+        }
+        body.max-right #panel-left,
+        body.max-right #panel-center,
+        body.max-right #panel-bottom { display: none; }
+        body.max-right #panel-right {
+            position: absolute;
+            top: 44px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            width: 100% !important;
+            max-width: none !important;
+            min-width: 0;
+            z-index: 50;
+        }
+        body.max-center #panel-left,
+        body.max-center #panel-right,
+        body.max-center #panel-bottom { display: none; }
+        body.max-center #panel-center {
+            position: absolute;
+            top: 44px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 50;
+        }
+        body.max-bottom #panel-left,
+        body.max-bottom #panel-center,
+        body.max-bottom #panel-right { display: none; }
+        body.max-bottom #panel-bottom {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: calc(100vh - 44px) !important;
+            max-height: none !important;
+            z-index: 50;
+        }
+
+        /* ── Empty state ───────────────────────────────────────────── */
+        .empty-state {
+            padding: 24px;
+            text-align: center;
+            color: #9ca3af;
+            font-size: 13px;
+        }
+
+        /* ── Supervisor list in sidebar ────────────────────────────── */
+        .supervisor-list-item {
+            padding: 10px 12px;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+        .supervisor-list-item:hover { background: #f8fafc; }
+        .supervisor-list-item.active { background: #eff6ff; border-left: 3px solid #3b82f6; }
+        .supervisor-list-item .sl-title { font-size: 13px; font-weight: 500; color: #2d3748; }
+        .supervisor-list-item .sl-status {
+            font-size: 11px; color: #9ca3af; display: flex;
+            align-items: center; gap: 4px; margin-top: 2px;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-badge.idle { background: #f1f5f9; color: #64748b; }
+        .status-badge.planning { background: #dbeafe; color: #2563eb; }
+        .status-badge.running { background: #fef3c7; color: #d97706; }
+        .status-badge.done { background: #d1fae5; color: #059669; }
+        .status-badge.error { background: #fee2e2; color: #dc2626; }
+        .status-badge.paused { background: #ede9fe; color: #7c3aed; }
+        .status-badge.failed { background: #fee2e2; color: #dc2626; }
+        .status-badge.blocked { background: #ddd6fe; color: #6d28d9; }
+
+        /* ── Context switcher ──────────────────────────────────────── */
+        .context-section {
+            padding: 8px 12px;
+            border-bottom: 1px solid #f1f5f9;
+            background: #f8fafc;
+        }
+        .context-section .context-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #9ca3af;
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+        .context-selector {
+            width: 100%;
+            padding: 5px 8px;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            font-size: 12px;
+            background: #fff;
+            color: #4a5568;
+            outline: none;
+        }
+        .context-selector:focus { border-color: #3b82f6; }
+    </style>
+</head>
+<body>
+    <div id="topbar">
+        <a href="/" class="home-link">WebConsole</a>
+        <span>&#8212;</span>
+        <span>Supervisor</span>
+        <button id="new-supervisor-btn">+ New</button>
+        <span class="spacer"></span>
+        <span class="top-info" id="topbar-info">0.9.0</span>
+    </div>
+
+    <div id="layout">
+        <!-- Left: Task Tree -->
+        <div id="panel-left">
+            <div class="panel-header">
+                <button class="panel-btn" data-panel="left" title="Minimize">&#9654;</button>
+                <h2>Task Tree</h2>
+                <button class="panel-btn" data-max="left" title="Maximize">&#9633;</button>
+            </div>
+            <div id="supervisor-list"></div>
+            <div id="task-tree"></div>
+            <div class="resize-handle" data-resize="left"></div>
+        </div>
+
+        <!-- Center: Supervisor Chat -->
+        <div id="panel-center">
+            <div class="panel-header">
+                <button class="panel-btn" data-panel="center" title="Minimize">&#9654;</button>
+                <h2>Supervisor Chat</h2>
+                <button class="panel-btn" data-max="center" title="Maximize">&#9633;</button>
+            </div>
+            <div id="overall-progress"><div id="overall-progress-fill"></div></div>
+            <div id="start-screen">
+                <h1>Supervisor Orchestration</h1>
+                <p>Above, create or select a supervisor. Then send it a task prompt and watch the AI break it down into sub-tasks and execute them.</p>
+            </div>
+            <div id="supervisor-chat" style="display:none;">
+                <!-- Goal banner: highlights the user's prompt as the active goal -->
+                <div id="goal-banner" class="goal-banner" hidden>
+                    <div class="goal-label">🎯 Goal</div>
+                    <div class="goal-text" id="goal-text"></div>
+                    <button class="goal-banner-dismiss" title="Dismiss goal" aria-label="Dismiss goal">&times;</button>
+                </div>
+                <div id="completion-banner" class="completion-banner" hidden>
+                    <div class="completion-icon">✅</div>
+                    <div class="completion-content">
+                        <div class="completion-title">Task Completed</div>
+                        <div class="completion-stats" id="completion-stats"></div>
+                        <div class="completion-summary" id="completion-summary"></div>
+                    </div>
+                    <button class="completion-close" data-action="close-completion" title="Dismiss">&times;</button>
+                </div>
+                <div id="chat-messages"></div>
+            </div>
+            <div id="composer" style="display:none;">
+                <textarea id="prompt-input" placeholder="Send a message to the supervisor..."></textarea>
+                <button id="send-btn">Send</button>
+            </div>
+            <div class="resize-handle" style="width:auto;right:0;" data-resize="center-delta"></div>
+        </div>
+
+        <!-- Bottom: Event Log -->
+        <div id="panel-bottom">
+            <div class="panel-header">
+                <button class="panel-btn" data-panel="bottom" title="Minimize">&#9654;</button>
+                <h2>Event Log</h2>
+                <button class="panel-btn" data-max="bottom" title="Maximize">&#9633;</button>
+            </div>
+            <div id="event-log"></div>
+        </div>
+
+        <!-- Right: Detail Panel -->
+        <div id="panel-right">
+            <div class="panel-header">
+                <button class="panel-btn" data-panel="right" title="Minimize">&#9654;</button>
+                <h2>Task Detail</h2>
+                <button class="panel-btn" data-max="right" title="Maximize">&#9633;</button>
+            </div>
+            <div id="detail-content">
+                <div class="empty-state">Select a task to view details</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="supervisor.js?v=1"></script>
+</body>
+</html>

@@ -158,13 +158,50 @@ export function createConversationController(dependencies) {
     return date.toLocaleDateString();
   }
 
+  // When the turn on screen started, so a completion can say how long it ran.
+  // Null while nothing is running.
+  let turnStartedAt = null;
+
+  /** "Finished · 12s", or just "Finished" if we never saw it start.
+   *
+   * A turn reattached from another device, or picked up by the transcript
+   * sync, has no start time here -- reporting one would be inventing it.
+   */
+  function finishedLabel() {
+    if (!turnStartedAt) return 'Finished';
+    const seconds = Math.round((Date.now() - turnStartedAt) / 1000);
+    if (seconds < 1) return 'Finished';
+    if (seconds < 60) return `Finished · ${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    return `Finished · ${minutes}m ${seconds % 60}s`;
+  }
+
   function setStreamState(next, detail = '') {
+    const previous = state.streamState;
     state.streamState = next;
     const label = detail || STREAM_LABELS[next];
     elements.runState.textContent = label;
     elements.runState.dataset.state = next;
-    elements.composerStatus.textContent = next === 'ready' ? '' : label;
+    // A finished turn used to announce itself by disappearing: the status went
+    // straight to '' and the only evidence the work had ended was the absence
+    // of "Responding…". That reads the same as a turn that never started, and
+    // on a phone the reply itself may be scrolled off. Say it ended, and for
+    // how long it ran -- but only on the way DOWN from an active state, or
+    // merely opening a conversation would claim something had just completed.
+    if (next === 'ready') {
+      elements.composerStatus.textContent =
+        ACTIVE_STATES.has(previous) ? finishedLabel() : '';
+    } else {
+      elements.composerStatus.textContent = label;
+    }
     const active = ACTIVE_STATES.has(next);
+    // Stamped only on the transition INTO activity, so a turn that moves
+    // connecting -> thinking -> responding is timed from when it actually
+    // began rather than from its last internal step. There is deliberately no
+    // reset on the way out: entering an active state always re-stamps this, so
+    // a clearing line would be code no test could ever justify -- mutation
+    // testing removed one and nothing failed.
+    if (active && !ACTIVE_STATES.has(previous)) turnStartedAt = Date.now();
     elements.sendButton.classList.toggle('stop', active);
     elements.sendButton.textContent = active ? '■' : '➜';
     elements.sendButton.setAttribute('aria-label', active ? 'Stop response' : 'Send message');

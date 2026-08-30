@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from html import escape as html_escape
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from pathlib import Path
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +41,8 @@ import config
 import db
 import prompts
 import runner
+import supervisor
+import sysstats
 import transcripts
 import turns
 
@@ -380,7 +382,12 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         response = await handler(request)
         if hasattr(response, "headers"):
             response.headers["X-Content-Type-Options"] = "nosniff"
-            response.headers["X-Frame-Options"] = "DENY"
+            # SAMEORIGIN, not DENY: the console frames its own supervisor page
+            # so it can sit beside the conversation list. The clickjacking
+            # threat this header exists for is a *foreign* site framing us,
+            # which SAMEORIGIN still refuses -- an attacker's page cannot be
+            # same-origin with this one.
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["Cache-Control"] = "no-store, no-cache"
             # CSP – emitted unconditionally. This used to be gated on a
@@ -391,7 +398,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self'; "
                 "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
+                "connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; "
                 "form-action 'self'"
             )
             # HSTS – enforce HTTPS for one year, subdomains included.
@@ -486,10 +493,92 @@ async def handle_logout(request: Request):
     return resp
 
 
+def _transcript_mtimes_sync(session_ids: list[str]) -> dict[str, str]:
+    """Last-write time of each session's transcript, as an ISO timestamp.
+
+    Blocking: locating a transcript globs the projects directory, so callers
+    run it off the event loop.
+    """
+    out: dict[str, str] = {}
+    for session_id in session_ids:
+        try:
+            path = transcripts.transcript_path(session_id)
+            if path is None:
+                continue
+            stamp = datetime.datetime.fromtimestamp(
+                path.stat().st_mtime, tz=datetime.UTC
+            )
+        except (OSError, ValueError):
+            continue
+        out[session_id] = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return out
+
+
+async def _live_updated_at(chats: list[dict]) -> dict[str, str]:
+    """chat_id -> the later of its stored time and its transcript's.
+
+    A conversation linked to a terminal session only had its ``updated_at``
+    advanced when the web UI touched it -- a turn sent here, or the sync that
+    runs while it is the open chat. Work done in the terminal moved the
+    transcript and nothing else, so the sidebar aged a conversation that was in
+    active use, and went on ageing it for as long as the browser was looking
+    elsewhere.
+
+    Read rather than written: the listing reflects the transcript without a
+    write per poll, and without disturbing ``position``, which is the user's
+    own ordering.
+    """
+    linked = [c for c in chats if c.get("session_id")]
+    if not linked:
+        return {}
+    mtimes = await asyncio.to_thread(
+        _transcript_mtimes_sync, [c["session_id"] for c in linked]
+    )
+    live: dict[str, str] = {}
+    for chat in linked:
+        seen = mtimes.get(chat["session_id"])
+        # Fixed-format UTC, so a lexicographic compare is a chronological one.
+        if seen and seen > (chat.get("updated_at") or ""):
+            live[chat["id"]] = seen
+    return live
+
+
+async def _busy_terminal_sessions() -> set[str]:
+    """Session ids whose interactive terminal reports itself busy.
+
+    A conversation routed to a live terminal has no LiveTurn -- the request was
+    typed into a window and is out of our hands -- so `running` is false for it
+    and the sidebar showed nothing at all while work was plainly happening.
+    Claude Code writes a `status` field into ~/.claude/sessions/<pid>.json, which
+    is the same signal the supervisor already trusts, and "busy" is the only
+    value observed. Reported separately from `running` rather than folded into
+    it, because `running` also means "there is a buffer to attach to" and there
+    is not one here.
+    """
+    try:
+        sessions = await db.read_claude_sessions()
+    except (OSError, ValueError):
+        return set()
+    return {
+        item["sessionId"]
+        for item in sessions
+        if item.get("sessionId")
+        and (item.get("status") or "").strip().lower() == "busy"
+    }
+
+
 async def handle_chats_list(request: Request):
     """GET /api/chats -- list chats scoped to owner."""
     session = request.state.session
     chats = await db.chat_list(session["user"])
+    live_updated = await _live_updated_at(chats)
+    # A turn now outlives the request that started it, so "is this conversation
+    # busy?" is server state rather than something the open tab knows. The
+    # sidebar reads it from here instead of watching its own stream, which only
+    # ever saw the conversation being looked at.
+    running = turns.running_ids(session["user"])
+    queued = await db.queue_counts(session["user"])
+    busy_sessions = await _busy_terminal_sessions()
     return JSONResponse(
         {
             "chats": [
@@ -1082,6 +1171,7 @@ async def handle_submit_message(request: Request, chat_id: str):
             ("assistant", full_response),
         ],
     )
+    await db.bump_chat_updated_at(chat_id)
     if session_id and session_id != chat["session_id"]:
         await db.chat_set_session(chat_id, session_id)
     # This turn was just stored above and the runner also appended it to the
@@ -1531,6 +1621,13 @@ async def handle_login_page(request: Request):
         return HTMLResponse("<h1>Login template missing</h1>", status_code=500)
 
 
+async def handle_supervisor_page(request: Request):
+    try:
+        return HTMLResponse((_WEB_DIR / "supervisor.html").read_text())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>Supervisor template missing</h1>", status_code=500)
+
+
 # ── App ──────────────────────────────────────────────────────────────────────────
 
 
@@ -1595,7 +1692,12 @@ async def lifespan(app: FastAPI):
         _log.info("bootstrapped admin: %s", admin)
     else:
         _log.info("admin user already exists or not configured")
+    # History has to accumulate while nobody is watching, or the Server page
+    # can only ever chart the moments someone had the tab open.
+    sysstats.start(db.system_sample_insert)
     yield
+    # Stopped before db.close(): the sampler writes through the connection.
+    await sysstats.stop()
     # Before db.close(): a turn cancelled here still runs its `finish`, which
     # needs the connection. Leaving them to be torn down with the loop instead
     # abandoned tasks mid-write.
@@ -1732,6 +1834,13 @@ async def _api_chat_queue_delete(request: Request, chat_id: str, queue_id: int):
 @app.post("/api/chats/{chat_id}/queue/{queue_id}/release")
 async def _api_chat_queue_release(request: Request, chat_id: str, queue_id: int):
     return await handle_queue_release(request, chat_id, queue_id)
+
+
+# Registered ahead of /api/chats/{chat_id}/... so the literal wins. FastAPI
+# matches in order, and "sync" would otherwise be a plausible chat_id.
+@app.post("/api/chats/sync")
+async def _api_chats_sync_all(request: Request):
+    return await handle_chats_sync_all(request)
 
 
 @app.post("/api/chats/{chat_id}/sync")
@@ -2171,6 +2280,107 @@ async def handle_usage_get(request: Request):
             "by_session": await db.usage_by_session(owner, days),
             "totals": totals,
             "recent": recent,
+        }
+    )
+
+
+async def handle_usage_series_get(request: Request):
+    """GET /api/usage/series -- usage bucketed over time, for the charts.
+
+    Separate from /api/usage rather than folded into it: that endpoint is read
+    on every visit to the Usage tab and returns a flat table, while this one is
+    read only by the statistics page and scans a far wider window. Keeping them
+    apart means the common request does not pay for the rare one.
+
+    Same ownership rule as /api/usage -- the caller's own rows, readable by any
+    authenticated user because it is their own data and carries no secret.
+    """
+    await _import_cli_usage()
+    owner = request.state.session["user"]
+
+    raw_days = request.query_params.get("days", "30")
+    days: int | None
+    if raw_days in ("all", "0", ""):
+        days = None
+    else:
+        try:
+            days = max(1, min(int(raw_days), 3650))
+        except (TypeError, ValueError):
+            days = 30
+
+    bucket = request.query_params.get("bucket", "day")
+    if bucket not in db.USAGE_BUCKETS:
+        bucket = "day"
+
+    series = await db.usage_series(owner, days, bucket)
+    # Cost is only meaningful for the official API: Claude Code prices every
+    # turn with Anthropic's rates, so a gateway's figure is arithmetic on the
+    # wrong number. Blanked here for the same reason /api/usage blanks it.
+    for row in series:
+        if row.get("provider") != "anthropic":
+            row["cost_usd"] = None
+
+    return JSONResponse(
+        {
+            "days": days if days is not None else 0,
+            "bucket": bucket,
+            "buckets": list(db.USAGE_BUCKETS),
+            "retention_days": config.USAGE_RETENTION_DAYS,
+            "series": series,
+            "models": await db.usage_model_series(owner, days, bucket),
+        }
+    )
+
+
+def _system_range(request: Request) -> tuple[int | None, str]:
+    """Parse and clamp the days/bucket query pair shared by the system routes."""
+    raw_days = request.query_params.get("days", "1")
+    days: int | None
+    if raw_days in ("all", "0", ""):
+        days = None
+    else:
+        try:
+            days = max(1, min(int(raw_days), 3650))
+        except (TypeError, ValueError):
+            days = 1
+    bucket = request.query_params.get("bucket", "halfhour")
+    if bucket not in db.USAGE_BUCKETS:
+        bucket = "halfhour"
+    return days, bucket
+
+
+async def handle_system_get(request: Request):
+    """GET /api/system -- a live snapshot of the host this server runs on.
+
+    Readable by any authenticated user, matching /api/settings: it carries no
+    secret, and an operator checking whether the box is struggling should not
+    need an admin account to do it. Hostname and CPU model are the most
+    identifying values here and both are already implicit in reaching the
+    site at all.
+    """
+    snapshot = await sysstats.sample_async()
+    snapshot["sample_interval_s"] = config.SYSTEM_SAMPLE_S
+    snapshot["retention_days"] = config.SYSTEM_RETENTION_DAYS
+    return JSONResponse(snapshot)
+
+
+async def handle_system_series_get(request: Request):
+    """GET /api/system/series -- stored host samples bucketed over time.
+
+    Defaults to the last 24 hours in half-hour buckets rather than the 30 days
+    the usage page defaults to. These two pages answer different questions: a
+    token bill is read by the month, and a machine in trouble is read by the
+    hour.
+    """
+    days, bucket = _system_range(request)
+    return JSONResponse(
+        {
+            "days": days if days is not None else 0,
+            "bucket": bucket,
+            "buckets": list(db.USAGE_BUCKETS),
+            "sample_interval_s": config.SYSTEM_SAMPLE_S,
+            "retention_days": config.SYSTEM_RETENTION_DAYS,
+            "series": await db.system_series(days, bucket),
         }
     )
 
@@ -2941,12 +3151,15 @@ _ASKS_FOR_INPUT: Final[tuple[str, ...]] = (
     "shall i",
     "should i",
     "your call",
+    "yours to call",
     "say the word",
     "which would you",
     "confirm",
     "please choose",
     "waiting for your",
     "waiting on your",
+    "worth doing",
+    "worth fixing",
 )
 _REPORTS_A_BLOCKER: Final[tuple[str, ...]] = (
     "blocked",
@@ -3022,6 +3235,10 @@ def _attention(text: str) -> str | None:
     tail = lowered.rstrip().rstrip("`*_)\"'")
     if tail.endswith("?"):
         return "asks"
+    # An agent that finishes with a colon or "…:" is inviting the user to
+    # complete the thought (a choice, a confirmation, a value).
+    if tail.endswith((":", "…")):
+        return "asks"
     if any(phrase in lowered for phrase in _ASKS_FOR_INPUT):
         return "asks"
     if any(phrase in lowered for phrase in _REPORTS_A_BLOCKER):
@@ -3035,6 +3252,123 @@ def _one_line(text: str, limit: int = 120) -> str:
     return flat[: limit - 1] + "…" if len(flat) > limit else flat
 
 
+# Last failure seen per session, keyed by the transcript mtime it was read at.
+# A file that has not moved cannot have gained a new failure, so the tail read
+# is skipped -- the busy fast path exists to make a five-second poll affordable
+# and it must stay affordable.
+_failure_cache: dict[str, tuple[str, str | None]] = {}
+
+
+async def _session_failure(session_id: str, file_touched: str) -> str | None:
+    """The newest turn's failure text for *session_id*, or None."""
+    cached = _failure_cache.get(session_id)
+    if cached is not None and cached[0] == file_touched:
+        return cached[1]
+    try:
+        failure = await transcripts.last_error(session_id)
+    except Exception:  # noqa: BLE001 -- the view must render without it
+        _log.exception("last_error failed session=%s", session_id)
+        return None
+    _failure_cache[session_id] = (file_touched, failure)
+    return failure
+
+
+def classify_chat(
+    chat: dict,
+    last: dict,
+    live_ids: set | frozenset,
+    queued: dict,
+    marks: dict,
+    cli_status_map: dict,
+    cli_dismiss_map: dict,
+    cli_status_updated_map: dict,
+) -> dict | None:
+    """Classify one conversation as waiting, working or updated.
+
+    Returns the entry with a "status" key set, or None when the conversation
+    should not be listed at all.
+
+    Extracted so the sidebar and the supervisor members panel share one
+    definition of what "stuck" means. They had to: two implementations would
+    agree only by coincidence, and would drift the first time either was
+    touched -- the same argument that made backend_kind a single function
+    rather than a rule reimplemented client-side.
+
+    A pure function of what it is given, which is what makes it callable for
+    one member as cheaply as for the whole sidebar. handle_supervisor does far
+    more than classify -- it merges CLI sessions, reads marks and applies
+    dismissals -- so calling that handler to learn one member's status would
+    have paid for all of it and turned its response shape into an API nobody
+    intended to depend on.
+    """
+    entry = {
+        "kind": "chat",
+        "id": chat["id"],
+        "title": chat.get("title") or "Untitled",
+        "preview": _one_line(last.get("preview") or ""),
+        "since": last.get("created_at") or "",
+    }
+    # Busy outranks everything, and is asked rather than inferred. A queued
+    # prompt counts as busy too: the user has already said what they want and
+    # is waiting on us, not the other way round.
+    if chat["id"] in live_ids or queued.get(chat["id"]):
+        return {**entry, "status": "working"}
+    # A turn the user stopped is not something to be summoned back to. It is
+    # absent from running_ids, so it never looked busy that way -- but a cancel
+    # that persisted nothing leaves the user's own prompt newest, which the
+    # branch below reports as working, and it would stay that way rather than
+    # clearing when the buffer is reaped.
+    live = turns.get(chat["id"])
+    if live is not None and live.state == "cancelled":
+        return None
+    if last.get("role") != "assistant":
+        # The newest message is the user's own and no turn is registered. That
+        # is ambiguous -- a turn that died, or one that has not started yet --
+        # and the common case is the second: answering a question makes the
+        # user's reply newest for the moment before the turn begins. Calling
+        # that "waiting" would put the highlight back the instant it was
+        # answered, which is the opposite of what was asked for.
+        return {**entry, "status": "working"}
+    # An ask or a blocker outranks everything: it stays listed until it is
+    # actually answered, which for a conversation means the newest message
+    # stops being the agent's. Opening it is not answering it -- clearing on
+    # read let a question be dismissed by glancing at it.
+    mark = marks.get(("chat", chat["id"]), {})
+    stamp = last.get("created_at") or ""
+    preview = last.get("preview") or ""
+    reason = _attention(preview)
+    # Questions rendered as text end with "(answer this in the terminal)", so
+    # _attention() misses the trailing ? and falls through to None.
+    if not reason and _QUESTION_PENDING_NOTE in preview:
+        reason = "asks"
+    if reason:
+        # Only an explicit dismissal silences an unanswered question.
+        if mark.get("dismissed_at") and stamp <= mark["dismissed_at"]:
+            return None
+        return {**entry, "status": "waiting", "reason": reason}
+    # A web conversation linked to a CLI session that is no longer busy is not
+    # "updated" -- the agent itself has stopped and is waiting. Defer to the
+    # session's own status so the user sees the question that triggered it
+    # rather than a truncated preview that _attention() cannot match.
+    session_id = chat.get("session_id", "")
+    cli_status = cli_status_map.get(session_id, "")
+    if cli_status and cli_status != "busy":
+        dismissed = cli_dismiss_map.get(session_id, "")
+        status_updated = cli_status_updated_map.get(session_id, "")
+        if not (dismissed and status_updated and status_updated <= dismissed):
+            return {
+                **entry,
+                "status": "waiting",
+                "reason": "asks",
+                "reason_detail": f"session={cli_status}",
+            }
+    # Routine output is different: seeing it IS the whole point, so a read mark
+    # retires it.
+    if mark.get("read_at") and stamp <= mark["read_at"]:
+        return None
+    return {**entry, "status": "updated"}
+
+
 async def handle_supervisor(request: Request):
     """GET /api/supervisor -- which agents are waiting on the user.
 
@@ -3043,13 +3377,22 @@ async def handle_supervisor(request: Request):
     badge worth having -- "finished at some point" would mark every completed
     conversation forever and the number would be ignored within a day.
 
-    Mid-turn is read off the last message rather than any in-flight registry:
-    a turn that has completed has persisted its assistant reply, so a chat
-    whose newest message is from the user is still working.
+    Mid-turn now comes from the turn registry, which owns the lifecycle, rather
+    than from inferring it off the last message. That inference was the best
+    signal available before turns.py existed and it is wrong in both directions
+    once turns run in the background: a queued prompt looks like an in-flight
+    turn, and a turn whose user message has not landed yet looks like nothing
+    at all. A conversation that is merely busy must never summon anyone.
     """
     session = request.state.session
     owner = session["user"]
     marks = await db.read_marks_get(owner)
+    # Authoritative: a live turn object, and prompts waiting behind one.
+    live_ids = turns.running_ids(owner)
+    try:
+        queued = await db.queue_counts(owner)
+    except Exception:  # noqa: BLE001 -- the view must render without the queue
+        queued = {}
     waiting: list[dict] = []   # asked for something, or reported a blocker
     working: list[dict] = []   # mid-turn
     updated: list[dict] = []   # said something unread, but nothing is needed
@@ -3057,39 +3400,43 @@ async def handle_supervisor(request: Request):
     # ── Web conversations ───────────────────────────────────────────────
     chats = await db.chat_list(owner)
     activity = await db.chat_last_activity(owner)
+    # Build a lookup: session_id → CLI status so the web path can defer to
+    # the session's own status when a chat is linked to a running CLI session.
+    try:
+        cli_sessions_for_web = await db.read_claude_sessions()
+    except Exception:  # noqa: BLE001
+        cli_sessions_for_web = []
+    _cli_status_map: dict[str, str] = {}
+    for _cs in cli_sessions_for_web:
+        _sid = _cs.get("sessionId", "")
+        if _sid:
+            _cli_status_map[_sid] = (_cs.get("status") or "").lower()
+    _cli_dismiss_map: dict[str, str] = {}
+    for _cs in cli_sessions_for_web:
+        _sid = _cs.get("sessionId", "")
+        if _sid:
+            _mark = marks.get(("session", _sid), {})
+            _cli_dismiss_map[_sid] = _mark.get("dismissed_at", "")
+    _cli_status_updated_map: dict[str, str] = {}
+    for _cs in cli_sessions_for_web:
+        _sid = _cs.get("sessionId", "")
+        if _sid:
+            _cli_status_updated_map[_sid] = _cs.get("status_updated_at", "")
     for chat in chats:
         if chat.get("archived"):
             continue
         last = activity.get(chat["id"])
         if not last:
             continue
-        entry = {
-            "kind": "chat",
-            "id": chat["id"],
-            "title": chat.get("title") or "Untitled",
-            "preview": _one_line(last.get("preview") or ""),
-            "since": last.get("created_at") or "",
-        }
-        if last.get("role") != "assistant":
-            working.append({**entry, "status": "working"})
+        entry = classify_chat(
+            chat, last, live_ids, queued, marks,
+            _cli_status_map, _cli_dismiss_map, _cli_status_updated_map,
+        )
+        if entry is None:
             continue
-        # An ask or a blocker outranks everything: it stays listed until it is
-        # actually answered, which for a conversation means the newest message
-        # stops being the agent's. Opening it is not answering it -- clearing
-        # on read let a question be dismissed by glancing at it.
-        mark = marks.get(("chat", chat["id"]), {})
-        stamp = last.get("created_at") or ""
-        reason = _attention(last.get("preview") or "")
-        if reason:
-            # Only an explicit dismissal silences an unanswered question.
-            if not (mark.get("dismissed_at") and stamp <= mark["dismissed_at"]):
-                waiting.append({**entry, "status": "waiting", "reason": reason})
-            continue
-        # Routine output is different: seeing it IS the whole point, so a read
-        # mark retires it.
-        if mark.get("read_at") and stamp <= mark["read_at"]:
-            continue
-        updated.append({**entry, "status": "updated"})
+        {"waiting": waiting, "working": working, "updated": updated}[
+            entry["status"]
+        ].append(entry)
 
     # ── CLI / terminal sessions ─────────────────────────────────────────
     try:
@@ -3098,10 +3445,23 @@ async def handle_supervisor(request: Request):
         cli_sessions = []
     transcripts_by_id = {t["session_id"]: t for t in await transcripts.list_recent(200)}
 
+    # Build a set of session IDs that have a linked web conversation so the
+    # CLI path does not duplicate entries already surfaced in the web path.
+    _web_linked_sessions: set[str] = set()
+    for chat in chats:
+        if chat.get("archived"):
+            continue
+        sid = chat.get("session_id", "")
+        if sid:
+            _web_linked_sessions.add(sid)
+
     for cli in cli_sessions:
         session_id = cli.get("sessionId") or ""
         # A WebConsole shadow record describes a chat that is already listed.
         if not session_id or cli.get("entrypoint") == "webconsole":
+            continue
+        # Skip sessions already surfaced in the web path.
+        if session_id in _web_linked_sessions:
             continue
         meta = transcripts_by_id.get(session_id)
         if not meta:
@@ -3116,11 +3476,34 @@ async def handle_supervisor(request: Request):
         # A busy agent needs no transcript read at all, which is what keeps
         # this cheap enough to poll: it is the common case.
         if status == "busy":
-            working.append({
+            row = {
                 "kind": "session", "id": session_id,
                 "title": cli.get("name") or meta.get("title") or session_id,
                 "preview": "", "since": file_touched, "status": "working",
-            })
+            }
+            # Busy is honest but incomplete: a session retrying a dead endpoint
+            # reports busy the whole time, so a run going nowhere looks exactly
+            # like one doing work. The failure is read from the model field --
+            # the CLI writes "<synthetic>" on a failed turn -- rather than from
+            # the wording, so an agent *discussing* an API error is not mistaken
+            # for one suffering it. Cached against the transcript's mtime: an
+            # unmoved file cannot have gained a new failure, which keeps the
+            # fast path fast on the common case of a session quietly working.
+            failure = await _session_failure(session_id, file_touched)
+            if failure:
+                dismissed = mark.get("dismissed_at") or ""
+                # Retired only by an explicit dismissal, never by being read: a
+                # failing endpoint does not fix itself by being looked at. It
+                # also clears itself once the agent produces real output again,
+                # because last_error only reports a failure that is still the
+                # newest turn.
+                if not (dismissed and file_touched <= dismissed):
+                    waiting.append({
+                        **row, "preview": _one_line(failure),
+                        "status": "waiting", "reason": "failed",
+                    })
+                    continue
+            working.append(row)
             continue
         # Without a status field, fall back to mtime as a negative filter only:
         # an untouched file certainly has nothing new. It must never decide
@@ -3130,8 +3513,8 @@ async def handle_supervisor(request: Request):
         if not status and seen and file_touched <= seen:
             continue
         page = await transcripts.read_turns(session_id)
-        turns = page.get("turns") or []
-        if not turns:
+        page_turns = page.get("turns") or []
+        if not page_turns:
             continue
         entry = {
             "kind": "session",
@@ -3152,8 +3535,8 @@ async def handle_supervisor(request: Request):
                 continue
             # A structured question outranks prose: it is an unambiguous ask,
             # and its answer block is an unambiguous resolution.
-            pending = _pending_question(turns)
-            said = pending or _last_thing_said(turns)
+            pending = _pending_question(page_turns)
+            said = pending or _last_thing_said(page_turns)
             waiting.append({
                 **entry,
                 "since": spoke_at,
@@ -3162,7 +3545,7 @@ async def handle_supervisor(request: Request):
                 "reason": "asks" if pending else (_attention(said) or "idle"),
             })
             continue
-        last_turn = turns[-1]
+        last_turn = page_turns[-1]
         # A trailing tool call means the agent is still running, not that it
         # has stopped with something to say. Checking only role was wrong:
         # every tool turn carries role="assistant" too.
@@ -3185,7 +3568,7 @@ async def handle_supervisor(request: Request):
             for b in last_turn.get("blocks", [])
             if b.get("kind") == "text"
         ).strip()
-        pending = _pending_question(turns)
+        pending = _pending_question(page_turns)
         if pending:
             text = pending
         reason = "asks" if pending else _attention(text)
@@ -3213,6 +3596,176 @@ async def handle_supervisor(request: Request):
             },
         }
     )
+
+
+# Ordered so the panel reads worst-first. A supervisor is opened to find out
+# what needs attention, and a failed agent buried under six healthy ones is the
+# one thing the view must not do.
+_MEMBER_ORDER: Final[dict[str, int]] = {
+    "waiting": 0, "working": 1, "updated": 2, "idle": 3,
+}
+
+
+async def handle_supervisor_members_get(request: Request, supervisor_id: str):
+    """GET /api/supervisors/{id}/members -- member status, worst first.
+
+    Status is not defined here. classify_chat is the one function that decides
+    whether a conversation is waiting, working or updated, and the sidebar uses
+    it too, so a member's state and the same entry in the sidebar cannot
+    disagree. Calling handle_supervisor instead would have worked and been
+    wrong: it merges CLI sessions, reads marks and builds a paginated response,
+    so one member's status would have cost all of that and made its response
+    shape an API this endpoint never meant to depend on.
+
+    A member with nothing to say is reported "idle" rather than dropped.
+    chat_last_activity only carries conversations that have some, so a quiet
+    member would otherwise vanish -- and a supervisor that hides the agents you
+    added to it is worse than one that says nothing.
+    """
+    session = request.state.session
+    owner = session["user"]
+    if not await db.supervisor_get(supervisor_id, owner):
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+
+    rows = await db.supervisor_members_list(supervisor_id)
+    if not rows:
+        return JSONResponse({"members": [], "count": 0})
+
+    marks = await db.read_marks_get(owner)
+    live_ids = turns.running_ids(owner)
+    try:
+        queued = await db.queue_counts(owner)
+    except Exception:  # noqa: BLE001 -- the panel must render without the queue
+        queued = {}
+    activity = await db.chat_last_activity(owner)
+    by_id = {c["id"]: c for c in await db.chat_list(owner)}
+
+    members = []
+    for row in rows:
+        chat = by_id.get(row["chat_id"])
+        last = activity.get(row["chat_id"])
+        entry = None
+        if chat and last:
+            entry = classify_chat(chat, last, live_ids, queued, marks, {}, {}, {})
+        members.append(entry or {
+            "kind": "chat",
+            "id": row["chat_id"],
+            "title": row["title"] or "Untitled",
+            "preview": "",
+            "since": row["added_at"],
+            "status": "idle",
+        })
+    members.sort(key=lambda e: (
+        # A failure outranks every other reason to be waiting: a supervisor is
+        # opened to find what needs attention, and a broken agent buried under
+        # six healthy ones is the one thing this view must not do.
+        0 if e.get("reason") == "failed" else 1,
+        _MEMBER_ORDER.get(e.get("status") or "idle", 9),
+        e.get("since") or "",
+    ))
+    return JSONResponse({"members": members, "count": len(members)})
+
+
+async def handle_supervisor_members_add(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/members -- add conversations or agents.
+
+    Bulk, because the picker adds several at once and a request per item would
+    half-apply: nine agents added and one 404 should leave nine members, not an
+    unknown number.
+
+    A session id is adopted into a conversation on the way in, so every member
+    is a chat and prompt, stop and transcript sync all work without a second
+    code path. Adoption is idempotent -- it returns an existing linked chat
+    rather than creating a second -- so adding the same agent twice is a no-op.
+    """
+    session = request.state.session
+    owner = session["user"]
+    if not await db.supervisor_get(supervisor_id, owner):
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 -- any malformed body is one 400
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    requested = body.get("members")
+    if not isinstance(requested, list) or not requested:
+        raise HTTPException(status_code=400, detail="members must be a non-empty list")
+    if len(requested) > 100:
+        raise HTTPException(status_code=400, detail="Too many members in one request")
+
+    added, skipped, failed = [], [], []
+    for item in requested:
+        if not isinstance(item, dict):
+            failed.append({"ref_id": None, "error": "Each member must be an object"})
+            continue
+        kind = str(item.get("kind") or "chat")
+        ref_id = str(item.get("ref_id") or "").strip()
+        if not ref_id:
+            failed.append({"ref_id": ref_id, "error": "ref_id is required"})
+            continue
+        try:
+            chat_id = await _resolve_member(kind, ref_id, owner, request)
+        except HTTPException as exc:
+            # One bad entry must not lose the rest of the selection.
+            failed.append({"ref_id": ref_id, "error": str(exc.detail)})
+            continue
+        if await db.supervisor_member_add(supervisor_id, chat_id):
+            added.append(chat_id)
+        else:
+            skipped.append(chat_id)
+
+    _log.info(
+        "supervisor_members_added supervisor=%s added=%d already=%d failed=%d",
+        supervisor_id, len(added), len(skipped), len(failed),
+    )
+    return JSONResponse(
+        {"added": added, "already_members": skipped, "failed": failed},
+        status_code=200 if added or skipped else 400,
+    )
+
+
+async def _resolve_member(
+    kind: str, ref_id: str, owner: str, request: Request
+) -> str:
+    """Turn a picker selection into a chat id this owner is allowed to add.
+
+    Owner-scoped on every path. Without it a crafted ref_id would pull another
+    account's conversation into a supervisor the caller owns, exposing its
+    title, preview and status through the members feed -- the same rule
+    chat_routing applies to a pinned machine.
+    """
+    if kind == "chat":
+        if not await db.chat_get(ref_id, owner, include_archived=True):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return ref_id
+    if kind == "session":
+        # Reuses the resume handler so a member is adopted exactly the way the
+        # sidebar adopts one: same discovered-session check, same reuse of an
+        # existing linked chat, same transcript import.
+        adopted = json.loads(bytes((await handle_sessions_resume(request, ref_id)).body))
+        chat_id = adopted.get("id")
+        if not chat_id:
+            raise HTTPException(status_code=404, detail="Agent could not be adopted")
+        return str(chat_id)
+    raise HTTPException(status_code=400, detail="kind must be 'chat' or 'session'")
+
+
+async def handle_supervisor_member_remove(
+    request: Request, supervisor_id: str, chat_id: str
+):
+    """DELETE /api/supervisors/{id}/members/{chat_id} -- stop watching it.
+
+    Membership only. The conversation is left exactly as it was: a supervisor
+    is a view over work, not its owner, and removing a member must never be a
+    way to lose one.
+    """
+    session = request.state.session
+    if not await db.supervisor_get(supervisor_id, session["user"]):
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    removed = await db.supervisor_member_remove(supervisor_id, chat_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Not a member")
+    _log.info("supervisor_member_removed supervisor=%s chat=%s", supervisor_id, chat_id)
+    return JSONResponse({"ok": True, "removed": chat_id})
 
 
 async def handle_supervisor_read(request: Request):
@@ -3652,20 +4205,22 @@ async def handle_chat_question_answer(request: Request):
     return JSONResponse({"ok": True, "index": want, "label": result.get("label")})
 
 
-async def handle_chat_sync(request: Request, chat_id: str):
-    """POST /api/chats/{id}/sync -- pull in turns added outside WebConsole.
+async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
+    """Import turns added to *chat*'s transcript outside WebConsole.
 
-    Polled while a session-linked chat is open, so it must stay cheap: the
-    read starts at the stored byte offset rather than re-parsing a transcript
-    that routinely runs to tens of megabytes.
+    Returns the rows written, newest last, or an empty list when there was
+    nothing new. Split out of handle_chat_sync so the same logic serves both
+    the single open conversation and the sweep over all of them -- two copies
+    of a dedup rule agreeing is a coincidence, not a guarantee.
+
+    Cheap by design: the read starts at the stored byte offset rather than
+    re-parsing a transcript that routinely runs to tens of megabytes, and a
+    transcript with nothing appended costs one stat.
     """
-    session = request.state.session
-    chat = await db.chat_get(chat_id, session["user"])
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
+    chat_id = chat["id"]
     session_id = chat.get("session_id")
     if not session_id:
-        return JSONResponse({"messages": [], "linked": False})
+        return []
 
     offset = int(chat.get("transcript_offset") or 0)
     # A chat imported before transcript_offset existed carries the column
@@ -3674,15 +4229,15 @@ async def handle_chat_sync(request: Request, chat_id: str):
     # record where it actually is.
     if offset == 0 and await db.messages_get(chat_id):
         await _skip_transcript_to_end(chat_id, session_id)
-        return JSONResponse({"messages": [], "linked": True})
+        return []
 
     try:
         payload = await transcripts.read_turns(session_id, offset)
     except OSError as exc:
         _log.warning("transcript_sync_failed chat_id=%s: %s", chat_id, exc)
-        return JSONResponse({"messages": [], "linked": True})
+        return []
     if not payload.get("found"):
-        return JSONResponse({"messages": [], "linked": True})
+        return []
 
     rows = [
         row
@@ -3693,16 +4248,85 @@ async def handle_chat_sync(request: Request, chat_id: str):
     if new_offset != offset:
         await db.chat_set_transcript_offset(chat_id, new_offset)
     if not rows:
-        return JSONResponse({"messages": [], "linked": True})
+        return []
+
+    # Dedup: the /stream handler's finish() callback may have already stored
+    # these turns in the messages table.  Compare the last stored row against
+    # the first row from the transcript; if they match, all rows are already
+    # present (the transcript order is fixed, so equality at the tail means
+    # the whole block is a duplicate).
+    try:
+        tail = await db.messages_last(chat_id, 1)
+    except Exception:  # noqa: BLE001
+        tail = []
+    if tail and tail[0]["role"] == rows[0][0] and tail[0]["content"] == rows[0][1]:
+        _log.info("transcript_sync_deduped chat_id=%s count=%d", chat_id, len(rows))
+        return []
 
     await db.messages_batch(chat_id, rows)
+    await db.bump_chat_updated_at(chat_id)
     _log.info("transcript_synced chat_id=%s turns=%d", chat_id, len(rows))
+    return rows
+
+
+async def handle_chat_sync(request: Request, chat_id: str):
+    """POST /api/chats/{id}/sync -- pull in turns added outside WebConsole.
+
+    Polled while a session-linked chat is open. The work is in
+    _sync_linked_chat; this only resolves and scopes the conversation.
+    """
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if not chat.get("session_id"):
+        return JSONResponse({"messages": [], "linked": False})
+
+    rows = await _sync_linked_chat(chat)
     return JSONResponse(
         {
             "messages": [{"role": role, "content": content} for role, content in rows],
             "linked": True,
         }
     )
+
+
+async def handle_chats_sync_all(request: Request):
+    """POST /api/chats/sync -- follow every linked conversation, not just the open one.
+
+    Without this a conversation only caught up when you opened it: /sync ran
+    for the conversation on screen and nothing else, so a chat whose terminal
+    was busy kept its old updated_at and sat in the sidebar looking idle. The
+    list was refreshed faithfully every few seconds -- it was the underlying
+    rows that were stale, which is a worse failure because the page looks live.
+
+    One request rather than one per conversation. A transcript with nothing
+    appended costs a stat, so the sweep is bounded by how many conversations
+    are linked, not by how much history they hold.
+    """
+    session = request.state.session
+    chats = await db.chat_list(session["user"])
+    changed: dict[str, int] = {}
+    scanned = 0
+    for chat in chats:
+        if not chat.get("session_id"):
+            continue
+        scanned += 1
+        try:
+            rows = await _sync_linked_chat(chat)
+        except Exception as exc:  # noqa: BLE001
+            # One unreadable transcript must not cost the whole sweep; the
+            # single-chat route still reports its own failures loudly.
+            _log.warning("sync_all_failed chat_id=%s: %s", chat["id"], exc)
+            continue
+        if rows:
+            changed[chat["id"]] = len(rows)
+    if changed:
+        _log.info(
+            "sync_all user=%s scanned=%d changed=%d turns=%d",
+            session["user"], scanned, len(changed), sum(changed.values()),
+        )
+    return JSONResponse({"scanned": scanned, "changed": changed})
 
 
 async def handle_session_delete(request: Request, session_id: str):
@@ -3728,6 +4352,364 @@ async def handle_session_delete(request: Request, session_id: str):
     return JSONResponse({"ok": True})
 
 
+# ── Supervisor orchestration ──────────────────────────────────────────────────────
+# Registry of live engine instances, keyed by supervisor_id. Engines are
+# started on first use and cleaned up when their supervisor is deleted.
+_supervisor_engines: dict[str, supervisor.SupervisorEngine] = {}
+
+
+async def handle_supervisor_crud(request: Request):
+    """GET/POST/PATCH/DELETE /api/supervisor — CRUD for supervisors.
+
+    GET  – list supervisors
+    POST – create a new supervisor and return its id
+    PATCH – update an existing supervisor (by id in body)
+    DELETE – delete a supervisor (by id in body)
+    """
+    session = request.state.session
+    owner = session["user"]
+
+    if request.method == "GET":
+        # List all supervisors for the owner
+        list_ = await db.supervisor_list(owner)
+        return JSONResponse({
+            "supervisors": list_,
+            "count": len(list_),
+        })
+
+    if request.method == "POST":
+        # Create a new supervisor
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        title = (body.get("title") or "New Supervisor").strip()[:200]
+        description = (body.get("description") or "").strip()[:500] or None
+        config_data = body.get("config") if body.get("config") else None
+
+        sid = uuid.uuid4().hex
+        await db.supervisor_create(sid, title, description, owner, config_data)
+
+        # Create the engine instance so the scheduler can start
+        eng = supervisor.SupervisorEngine(sid, owner)
+        _supervisor_engines[sid] = eng
+
+        return JSONResponse({
+            "ok": True,
+            "id": sid,
+            "title": title,
+            "status": "idle",
+        })
+
+    if request.method == "PATCH":
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        sid = body.get("id")
+        if not sid:
+            raise HTTPException(status_code=400, detail="id is required")
+
+        existing = await db.supervisor_get(sid, owner)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Supervisor not found")
+
+        updates: dict[str, Any] = {}
+        if "title" in body:
+            val = str(body["title"]).strip()[:200]
+            if val:
+                updates["title"] = val
+        if "description" in body:
+            val = str(body.get("description") or "").strip()[:500] or None
+            updates["description"] = val
+        if "status" in body:
+            val = body.get("status")
+            if isinstance(val, str) and val in ("idle", "planning", "running", "paused", "done", "error"):
+                updates["status"] = val
+        if "config" in body:
+            val = body.get("config")
+            if isinstance(val, dict):
+                updates["config"] = val
+
+        if updates:
+            if "status" in updates:
+                status = updates.pop("status")
+                await db.supervisor_update(sid, owner, **updates, status=status)
+
+                # Engine lifecycle: start/stop scheduler based on status
+                eng = _supervisor_engines.get(sid)
+                if status == "running" and eng and not eng._running:
+                    asyncio.create_task(eng.run_schedule_loop())
+                elif status in ("idle", "done", "error") and eng:
+                    eng.stop()
+            else:
+                await db.supervisor_update(sid, owner, **updates)
+                # Update engine config if changed
+                if "config" in updates:
+                    eng = _supervisor_engines.get(sid)
+                    if eng:
+                        eng.config = updates["config"]
+                        eng.router = supervisor.ModelRouter(updates["config"])
+
+        existing = await db.supervisor_get(sid, owner)
+        return JSONResponse({"ok": True, "supervisor": existing})
+
+    if request.method == "DELETE":
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        sid = body.get("id")
+        if not sid:
+            raise HTTPException(status_code=400, detail="id is required")
+
+        deleted = await db.supervisor_delete(sid, owner)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Supervisor not found")
+
+        # Clean up engine
+        _supervisor_engines.pop(sid, None)
+        return JSONResponse({"ok": True})
+
+
+async def handle_supervisor_send_prompt(request: Request):
+    """POST /api/supervisor/read — send a prompt to a supervisor.
+
+    Body: { "id": "<supervisor_id>", "prompt": "user request text" }
+
+    Returns the supervisor after it starts planning.
+    """
+    session = request.state.session
+    owner = session["user"]
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    sid = body.get("id")
+    user_prompt = (body.get("prompt") or "").strip()
+
+    if not sid:
+        raise HTTPException(status_code=400, detail="id is required")
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    existing = await db.supervisor_get(sid, owner)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+
+    # Get or create engine
+    if sid not in _supervisor_engines:
+        _supervisor_engines[sid] = eng_new = supervisor.SupervisorEngine(
+            sid, owner,
+        )
+    else:
+        eng_new = _supervisor_engines[sid]
+
+    eng = eng_new
+    result = await eng.start_from_user_prompt(user_prompt)
+
+    # Store user message
+    await db.supervisor_messages_append(sid, "user", user_prompt)
+
+    # Set status to planning
+    await db.supervisor_update(sid, owner, status="planning")
+
+    return JSONResponse({
+        "ok": True,
+        "supervisor_id": sid,
+        "status": "planning",
+        "init_prompt": result.get("init_prompt"),
+    })
+
+
+async def handle_supervisor_stream(request: Request, supervisor_id: str):
+    """GET /api/supervisors/{id}/stream — SSE stream of supervisor progress."""
+    session = request.state.session
+    owner = session["user"]
+
+    existing = await db.supervisor_get(supervisor_id, owner)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+
+    async def event_generator():
+        try:
+            yield f"data: {json.dumps({'type': 'start', 'supervisor_id': supervisor_id})}\n\n"
+
+            eng = _supervisor_engines.get(supervisor_id)
+            last_progress = -1.0
+            last_events = []
+
+            while True:
+                if await request.is_disconnected():
+                    return
+
+                # Read current supervisor state from DB
+                current = await db.supervisor_get(supervisor_id, owner)
+                if not current:
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Supervisor deleted'})}\n\n"
+                    return
+
+                progress = float(current.get("progress_pct") or 0)
+
+                # Emit progress update if changed
+                if progress != last_progress:
+                    # Get tasks
+                    tasks = await db.supervisor_tasks_get(supervisor_id, owner)
+                    yield f"data: {json.dumps({
+                        'type': 'progress',
+                        'progress': progress,
+                        'status': current.get('status', ''),
+                        'tasks': tasks,
+                    })}\n\n"
+                    last_progress = progress
+
+                # Get recent events from engine if available
+                if eng:
+                    events = eng.tracker.recent_events(5)
+                    if events != last_events:
+                        yield f"data: {json.dumps({
+                            'type': 'events',
+                            'events': events,
+                        })}\n\n"
+                        last_events = events
+
+                # Check if done
+                status = current.get("status", "")
+                if status in ("done", "error"):
+                    yield f"data: {json.dumps({
+                        'type': 'done',
+                        'status': status,
+                    })}\n\n"
+                    return
+
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            _log.exception("supervisor stream failed id=%s", supervisor_id)
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Stream error'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def handle_supervisor_task_stream(request: Request, supervisor_id: str, task_id: str):
+    """GET /api/supervisors/{id}/tasks/{taskId}/stream — SSE stream for one task."""
+    session = request.state.session
+    owner = session["user"]
+
+    # Verify ownership
+    existing = await db.supervisor_get(supervisor_id, owner)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+
+    # Verify task exists
+    task = await db.supervisor_task_get(supervisor_id, task_id, owner)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    async def event_generator():
+        try:
+            yield f"data: {json.dumps({'type': 'start', 'task_id': task_id})}\n\n"
+
+            # The engine lookup that used to sit here was never read -- this
+            # generator polls the task row rather than the in-memory engine.
+            last_status = task.get("status") or "pending"
+
+            while True:
+                if await request.is_disconnected():
+                    return
+
+                # Read current task state from DB
+                current = await db.supervisor_task_get(supervisor_id, task_id, owner)
+                if not current:
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Task deleted'})}\n\n"
+                    return
+
+                status = current.get("status", "pending")
+                progress = float(current.get("progress_pct") or 0)
+                result = current.get("result")
+
+                # Emit status change
+                if status != last_status:
+                    yield f"data: {json.dumps({
+                        'type': 'status',
+                        'task_id': task_id,
+                        'status': status,
+                        'progress': progress,
+                    })}\n\n"
+                    last_status = status
+
+                # Emit result when available
+                if status == "done" and result and result != current.get("_last_result_sent"):
+                    yield f"data: {json.dumps({
+                        'type': 'result',
+                        'task_id': task_id,
+                        'result': result[:5000],
+                    })}\n\n"
+                    # Mark as sent by patching temporarily
+                    current["_last_result_sent"] = result
+
+                # Check if done/failed — stop stream
+                if status in ("done", "error", "failed"):
+                    yield f"data: {json.dumps({
+                        'type': 'done',
+                        'status': status,
+                    })}\n\n"
+                    return
+
+                await asyncio.sleep(1.0)
+
+                # Re-read current state with fresh reference
+                current = await db.supervisor_task_get(supervisor_id, task_id, owner)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            _log.exception("supervisor task stream failed id=%s", task_id)
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Stream error'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def handle_supervisor_tasks_get(supervisor_id: str, owner_id: str):
+    """GET /api/supervisors/{id}/tasks — list tasks for a supervisor."""
+    tasks = await db.supervisor_tasks_get(supervisor_id, owner_id)
+    return JSONResponse({"tasks": tasks, "count": len(tasks)})
+
+
+async def handle_supervisor_messages_get(request: Request, supervisor_id: str):
+    """GET /api/supervisors/{id}/messages — list messages for a supervisor."""
+    session = request.state.session
+    owner_id = session["user"]
+    try:
+        after_id = int(request.query_params.get("after", "0"))
+    except (TypeError, ValueError):
+        after_id = 0
+    messages = await db.supervisor_messages_get(supervisor_id, owner_id, after_id)
+    return JSONResponse({"messages": messages, "count": len(messages)})
+
+
 # ── Session routes ─────────────────────────────────────────────────────────────────
 
 
@@ -3739,6 +4721,26 @@ async def _api_skills_get(request: Request):
 @app.get("/api/usage")
 async def _api_usage_get(request: Request):
     return await handle_usage_get(request)
+
+
+# Registered before no path parameter shadows it; FastAPI matches in order and
+# /api/usage has no wildcard sibling, but keeping them adjacent means a future
+# /api/usage/{id} cannot silently capture this one.
+@app.get("/api/usage/series")
+async def _api_usage_series_get(request: Request):
+    return await handle_usage_series_get(request)
+
+
+@app.get("/api/system")
+async def _api_system_get(request: Request):
+    return await handle_system_get(request)
+
+
+# Same ordering care as /api/usage/series above: adjacent so a later
+# /api/system/{id} cannot capture this path.
+@app.get("/api/system/series")
+async def _api_system_series_get(request: Request):
+    return await handle_system_series_get(request)
 
 
 @app.get("/api/settings")
@@ -3876,9 +4878,200 @@ async def _api_supervisor(request: Request):
     return await handle_supervisor(request)
 
 
+@app.get("/api/supervisors/{supervisor_id}/members")
+async def _api_supervisor_members_get(request: Request, supervisor_id: str):
+    return await handle_supervisor_members_get(request, supervisor_id)
+
+
+@app.post("/api/supervisors/{supervisor_id}/members")
+async def _api_supervisor_members_add(request: Request, supervisor_id: str):
+    return await handle_supervisor_members_add(request, supervisor_id)
+
+
+@app.delete("/api/supervisors/{supervisor_id}/members/{chat_id}")
+async def _api_supervisor_member_remove(
+    request: Request, supervisor_id: str, chat_id: str
+):
+    return await handle_supervisor_member_remove(request, supervisor_id, chat_id)
+
+
 @app.post("/api/supervisor/read")
 async def _api_supervisor_read(request: Request):
     return await handle_supervisor_read(request)
+
+
+@app.post("/api/supervisors/{supervisor_id}/send")
+async def _api_supervisor_send(request: Request, supervisor_id: str):
+    session = request.state.session
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    user_prompt = (body.get("prompt") or "").strip()
+
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    existing = await db.supervisor_get(supervisor_id, session["user"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+
+    # Get or create engine
+    if supervisor_id not in _supervisor_engines:
+        _supervisor_engines[supervisor_id] = eng_new = supervisor.SupervisorEngine(
+            supervisor_id, session["user"],
+        )
+    else:
+        eng_new = _supervisor_engines[supervisor_id]
+
+    eng = eng_new
+    await eng.start_from_user_prompt(user_prompt)
+
+    # Store user message
+    await db.supervisor_messages_append(supervisor_id, "user", user_prompt)
+
+    # Set status to planning
+    await db.supervisor_update(supervisor_id, session["user"], status="planning")
+
+    return JSONResponse({
+        "ok": True,
+        "supervisor_id": supervisor_id,
+        "status": "planning",
+    })
+
+
+@app.get("/supervisor.html")
+async def _serve_supervisor_page(request: Request):
+    return await handle_supervisor_page(request)
+
+
+@app.get("/supervisor.js")
+async def _serve_supervisor_js(request: Request):
+    # application/javascript, not HTML. Browsers enforce strict MIME checking on
+    # scripts, so served as text/html this file was refused outright and the
+    # supervisor page rendered its markup with none of its behaviour.
+    try:
+        return Response(
+            (_WEB_DIR / "supervisor.js").read_text(),
+            media_type="application/javascript",
+        )
+    except FileNotFoundError:
+        return Response("// supervisor.js missing", status_code=500,
+                        media_type="application/javascript")
+
+
+# Supervisor routes — these match the pattern from the design spec.
+@app.get("/api/supervisors")
+async def _api_supervisors_list(request: Request):
+    session = request.state.session
+    list_ = await db.supervisor_list(session["user"])
+    return JSONResponse({"supervisors": list_, "count": len(list_)})
+
+
+@app.post("/api/supervisors")
+async def _api_supervisors_create(request: Request):
+    session = request.state.session
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    title = (body.get("title") or "New Supervisor").strip()[:200]
+    description = (body.get("description") or "").strip()[:500] or None
+    config_data = body.get("config") if body.get("config") else None
+    sid = uuid.uuid4().hex
+    await db.supervisor_create(sid, title, description, session["user"], config_data)
+    eng = supervisor.SupervisorEngine(sid, session["user"])
+    _supervisor_engines[sid] = eng
+    return JSONResponse({"ok": True, "id": sid, "title": title, "status": "idle"})
+
+
+@app.get("/api/supervisors/{supervisor_id}")
+async def _api_supervisor_get(request: Request, supervisor_id: str):
+    session = request.state.session
+    existing = await db.supervisor_get(supervisor_id, session["user"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    return JSONResponse({"supervisor": existing})
+
+
+@app.patch("/api/supervisors/{supervisor_id}")
+async def _api_supervisor_patch(request: Request, supervisor_id: str):
+    session = request.state.session
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not body:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    existing = await db.supervisor_get(supervisor_id, session["user"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    updates: dict[str, Any] = {}
+    if "title" in body:
+        val = str(body["title"]).strip()[:200]
+        if val:
+            updates["title"] = val
+    if "description" in body:
+        val = str(body.get("description") or "").strip()[:500] or None
+        updates["description"] = val
+    if "status" in body:
+        val = body.get("status")
+        if isinstance(val, str) and val in ("idle", "planning", "running", "paused", "done", "error"):
+            updates["status"] = val
+    if "config" in body:
+        val = body.get("config")
+        if isinstance(val, dict):
+            updates["config"] = val
+    if updates:
+        if "status" in updates:
+            status = updates.pop("status")
+            await db.supervisor_update(supervisor_id, session["user"], **updates, status=status)
+            eng = _supervisor_engines.get(supervisor_id)
+            if status == "running" and eng and not eng._running:
+                asyncio.create_task(eng.run_schedule_loop())
+            elif status in ("idle", "done", "error") and eng:
+                eng.stop()
+        else:
+            await db.supervisor_update(supervisor_id, session["user"], **updates)
+            if "config" in updates:
+                eng = _supervisor_engines.get(supervisor_id)
+                if eng:
+                    eng.config = updates["config"]
+                    eng.router = supervisor.ModelRouter(updates["config"])
+    existing = await db.supervisor_get(supervisor_id, session["user"])
+    return JSONResponse({"ok": True, "supervisor": existing})
+
+
+@app.delete("/api/supervisors/{supervisor_id}")
+async def _api_supervisor_delete(request: Request, supervisor_id: str):
+    session = request.state.session
+    deleted = await db.supervisor_delete(supervisor_id, session["user"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    _supervisor_engines.pop(supervisor_id, None)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/supervisors/{supervisor_id}/stream")
+async def _api_supervisor_stream(request: Request, supervisor_id: str):
+    return await handle_supervisor_stream(request, supervisor_id)
+
+
+@app.get("/api/supervisors/{supervisor_id}/tasks")
+async def _api_supervisor_tasks_get(request: Request, supervisor_id: str):
+    session = request.state.session
+    return await handle_supervisor_tasks_get(supervisor_id, session["user"])
+
+
+@app.get("/api/supervisors/{supervisor_id}/tasks/{task_id}/stream")
+async def _api_supervisor_task_stream(request: Request, supervisor_id: str, task_id: str):
+    return await handle_supervisor_task_stream(request, supervisor_id, task_id)
+
+
+@app.get("/api/supervisors/{supervisor_id}/messages")
+async def _api_supervisor_messages(request: Request, supervisor_id: str):
+    return await handle_supervisor_messages_get(request, supervisor_id)
 
 
 @app.get("/api/models")

@@ -740,7 +740,7 @@ class SecurityMiddlewareTests(unittest.TestCase):
             response.headers.get("x-content-type-options"), "nosniff"
         )
         self.assertEqual(
-            response.headers.get("x-frame-options"), "DENY"
+            response.headers.get("x-frame-options"), "SAMEORIGIN"
         )
         self.assertIn(
             "max-age=31536000",

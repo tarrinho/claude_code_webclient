@@ -15,7 +15,13 @@
 const POLL_LABEL = 'Following';
 
 const STYLES = `
-.tx-launch { position: fixed; right: 1rem; bottom: 1rem; z-index: 40; }
+/* Only used when there is no toolbar to sit in -- see mountLauncher. Floating
+   bottom-right put a transparent 34px button over the send button's own
+   bottom-right corner, so a click that landed a few pixels low opened the
+   transcript list instead of sending. Kept above the composer here so the
+   fallback cannot reintroduce that. */
+.tx-launch-floating { position: fixed; right: 1rem; bottom: 7.5rem; z-index: 40;
+  background: var(--panel, #fff); }
 .tx-panel { position: fixed; inset: 0; z-index: 50; display: none;
   background: var(--bg, #fff); color: var(--fg, #111); flex-direction: column; }
 .tx-panel[data-open="true"] { display: flex; }
@@ -104,6 +110,31 @@ function formatSize(bytes) {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
+/** Put the launcher in the toolbar, or float it clear of the composer.
+ *
+ * It used to be `position: fixed; right: 1rem; bottom: 1rem`, which is where
+ * the composer's send button already is. `.btn-icon` draws no background, so
+ * the result was an invisible 34px target sitting over the send button's
+ * bottom-right corner: a click a few pixels low opened the transcript list
+ * instead of sending the message, with nothing on screen to explain why.
+ *
+ * The toolbar is the honest home for it -- it is a persistent control and it
+ * belongs beside the other persistent controls, where it also reads as a
+ * button rather than as a glyph floating over the conversation. Appending to
+ * an existing element keeps this feature self-mounting, so index.html is still
+ * untouched and the sessions editing it are unaffected.
+ */
+function mountLauncher(launch) {
+  const settings = document.getElementById('settingsBtn');
+  if (settings && settings.parentNode) {
+    settings.parentNode.insertBefore(launch, settings);
+    return;
+  }
+  // No toolbar: fall back to floating, above the composer rather than on it.
+  launch.classList.add('tx-launch-floating');
+  document.body.appendChild(launch);
+}
+
 export function mountTranscriptViewer() {
   if (document.getElementById('txPanel')) return;
 
@@ -111,11 +142,12 @@ export function mountTranscriptViewer() {
   style.textContent = STYLES;
   document.head.appendChild(style);
 
-  const launch = el('button', 'btn-icon tx-launch', '🖵');
+  const launch = el('button', 'btn-icon', '🖵');
   launch.type = 'button';
   launch.id = 'txLaunch';
   launch.title = 'Terminal sessions';
   launch.setAttribute('aria-label', 'Terminal sessions');
+  mountLauncher(launch);
 
   const panel = el('div', 'tx-panel');
   panel.id = 'txPanel';
@@ -151,7 +183,8 @@ export function mountTranscriptViewer() {
   live.setAttribute('aria-live', 'polite');
 
   panel.append(head, body, live);
-  document.body.append(launch, panel);
+  // The launcher was placed by mountLauncher; only the panel is body-level.
+  document.body.append(panel);
 
   let stream = null;
   let cursor = 0;      // forward resume point, for the live tail

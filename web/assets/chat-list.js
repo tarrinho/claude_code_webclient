@@ -1,5 +1,13 @@
 // Search, grouping, rendering, and actions for conversation sidebars.
 
+// Whether a conversation or session is more than one minute stale — its title
+// should render muted so it reads as out of date at a glance.
+function _stale(updatedAt) {
+  if (!updatedAt) return false;
+  const then = new Date(updatedAt).getTime();
+  return (Date.now() - then) > 60_000;
+}
+
 export function filterChats(chats, query) {
   const needle = query.trim().toLowerCase();
   if (!needle) return [...chats];
@@ -91,6 +99,8 @@ export function createChatListController(dependencies) {
     onRemoveCli,
     onReorder,
     onClearSupervisor,
+    onOpenSupervisor,
+    onAddToSupervisor,
   } = dependencies;
 
   let query = '';
@@ -173,7 +183,7 @@ export function createChatListController(dependencies) {
       open.dataset.chatId = chat.id;
 
       const title = document.createElement('div');
-      title.className = 'chat-title';
+      title.className = 'chat-title' + (_stale(chat.updated_at) ? ' stale' : '');
       title.textContent = chat.title;
       title.title = chat.title;
       open.appendChild(title);
@@ -228,8 +238,9 @@ export function createChatListController(dependencies) {
       // an archived conversation was to restore it first -- mutating state just
       // to look at something.
 
+      const stale = _stale(chat.updated_at);
       const title = document.createElement('div');
-      title.className = 'chat-title';
+      title.className = 'chat-title' + (stale ? ' stale' : '');
       title.textContent = chat.title;
       title.title = chat.title;
       if (activeTurnIds.has(chat.id)) {
@@ -265,10 +276,10 @@ export function createChatListController(dependencies) {
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
       const metaParts = [formatTime(chat.updated_at)];
-      if (chat.model) metaParts.push(chat.model);
+      metaParts.push(chat.model || '—');
       if (chat.archived) metaParts.push('archived');
       meta.textContent = metaParts.join(' · ');
-      if (chat.model) meta.title = `Last model: ${chat.model}`;
+      meta.title = `Last model: ${chat.model || '—'}`;
       open.append(title, meta);
 
       const actions = document.createElement('div');
@@ -318,6 +329,11 @@ export function createChatListController(dependencies) {
         makeButton('Fork', 'fork', chat.id, chat.title),
         makeButton('Export', 'export', chat.id, chat.title),
         makeButton('Continue in terminal', 'terminal', chat.id, chat.title),
+        // Placed with the routing actions rather than the ordering ones: it
+        // changes where this conversation is watched from, not where it sits
+        // in the list. The supervisor list is fetched on click rather than
+        // built here, so a sidebar render costs no request.
+        makeButton('Add to supervisor', 'add-to-supervisor', chat.id, chat.title),
         makeButton(
           chat.archived ? 'Restore' : 'Archive',
           chat.archived ? 'restore' : 'archive',
@@ -369,13 +385,13 @@ export function createChatListController(dependencies) {
       const title = document.createElement('div');
       title.className = 'chat-open';
       const name = document.createElement('div');
-      name.className = 'chat-title';
+      name.className = 'chat-title' + (_stale(session.status_updated_at) ? ' stale' : '');
       name.textContent = session.name;
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
       const metaParts = [];
       metaParts.push(session.kind === 'interactive' ? 'Terminal' : 'Web');
-      if (session.model) metaParts.push(session.model);
+      metaParts.push(session.model || '—');
       // A session whose process has exited stays listed: its transcript is
       // still readable and worth resuming. It is marked rather than hidden.
       const ended = session.live === false;
@@ -468,10 +484,12 @@ export function createChatListController(dependencies) {
     // Only `waiting` is a summons -- an agent that asked for something or
     // reported it is stuck. An agent that merely finished speaking is counted
     // quietly below, because badging every reply makes the number worthless.
-    if (!waiting.length && !working.length && !updated.length) return;
+    const nothingToShow = !waiting.length && !working.length && !updated.length;
 
-    const heading = document.createElement('div');
+    const heading = document.createElement('button');
     heading.className = 'chat-section-label supervisor-label';
+    heading.type = 'button';
+    heading.dataset.action = 'open-supervisor';
     heading.appendChild(document.createTextNode('Supervisor'));
     if (waiting.length) {
       const badge = document.createElement('span');
@@ -480,6 +498,15 @@ export function createChatListController(dependencies) {
       badge.title = `${waiting.length} agent${waiting.length === 1 ? '' : 's'} waiting for you`;
       heading.appendChild(badge);
     }
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'chat-action supervisor-open';
+    open.dataset.action = 'open-supervisor';
+    open.textContent = '↗';
+    open.title = 'Open the supervisor';
+    open.setAttribute('aria-label', 'Open the supervisor');
+    heading.appendChild(open);
+
     if (waiting.length || updated.length) {
       const clear = document.createElement('button');
       clear.type = 'button';
@@ -491,13 +518,15 @@ export function createChatListController(dependencies) {
       heading.appendChild(clear);
     }
     list.appendChild(heading);
+    if (nothingToShow) return;
 
     waiting.forEach(entry => {
       const item = document.createElement('div');
       // Deliberately not draggable: these rows are a view onto other sections,
       // and a drop here would ask the reorder handler to place a conversation
       // in a container that does not own the ordering.
-      item.className = 'chat-item supervisor-item';
+      item.className = 'chat-item supervisor-item'
+        + (entry.reason === 'failed' ? ' failed' : '');
 
       const open = document.createElement('button');
       open.type = 'button';
@@ -518,7 +547,10 @@ export function createChatListController(dependencies) {
       meta.className = 'chat-meta';
       meta.textContent = [
         entry.kind === 'session' ? 'terminal' : 'web',
-        entry.reason === 'blocked' ? 'blocked' : 'needs an answer',
+        // A failure is not a question and must not read like one -- "needs an
+        // answer" next to a dead endpoint tells you to go and type something.
+        entry.reason === 'failed' ? 'failed'
+          : entry.reason === 'blocked' ? 'blocked' : 'needs an answer',
         entry.since ? formatTime(entry.since) : '',
       ].filter(Boolean).join(' · ');
 
@@ -660,6 +692,10 @@ export function createChatListController(dependencies) {
     const action = button.dataset.action;
     if (action === 'open') return onSelect(button.dataset.chatId);
     if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
+    if (action === 'open-supervisor') return onOpenSupervisor?.();
+    if (action === 'add-to-supervisor') {
+      return onAddToSupervisor?.(button.dataset.chatId, button);
+    }
     if (action === 'clear-supervisor') return onClearSupervisor?.();
     if (action === 'jump-agent') {
       // A supervisor row is a pointer at something listed elsewhere: a web

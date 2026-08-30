@@ -103,12 +103,22 @@ MODEL_NAME = _str("WC_MODEL_NAME", "claude-sonnet-5")
 # pruning and keeps everything.
 USAGE_RETENTION_DAYS = _int("WC_USAGE_RETENTION_DAYS", 90)
 
+# --- host statistics -------------------------------------------------------
+# Seconds between host samples. 60 gives 30 readings inside the narrowest
+# bucket the statistics pages offer (half an hour), which is enough for an
+# average to mean something while costing ~1440 rows a day.
+SYSTEM_SAMPLE_S = _int("WC_SYSTEM_SAMPLE_S", 60)
+# Kept shorter than usage retention on purpose: these rows arrive on a timer
+# whether or not the console is used, so they are the one table that grows
+# without anybody doing anything.
+SYSTEM_RETENTION_DAYS = _int("WC_SYSTEM_RETENTION_DAYS", 30)
+
 MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn
 PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000)  # cap on user prompt length
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.8.2"
+VERSION = "WebConsole_0.9.0"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

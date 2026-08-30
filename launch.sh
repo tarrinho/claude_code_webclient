@@ -111,6 +111,20 @@ sleep 0.5
 # they die with whatever shell started the server -- which is how a backgrounded
 # launch ended up with no request log at all.
 mkdir -p logs
+
+# WC_EXEC=1 replaces this shell with uvicorn rather than backgrounding it, so a
+# supervisor watches the server itself. Backgrounded, the server dies with
+# whatever shell started it, which is how it has gone down mid-change more than
+# once. systemd captures stdout to the journal, so no redirect here.
+if [ "${WC_EXEC:-0}" = "1" ]; then
+    exec python3 -m uvicorn app:app \
+        --host "${TAILNET_IP}" \
+        --port 443 \
+        --ssl-certfile "$CERT_FILE" \
+        --ssl-keyfile "$KEY_FILE" \
+        --log-level info
+fi
+
 python3 -m uvicorn app:app \
     --host "${TAILNET_IP}" \
     --port 443 \

@@ -1,7 +1,7 @@
 # Development, CI, and security tooling — not required at runtime.
 httpx>=0.28,<1
 bandit>=1.7,<2
-safety>=3.0,<4
+safety>=3.8.1,<4
 pip-audit>=2.7,<3
 ruff>=0.9,<1
 # Coverage: the suite had no line-coverage tool, so gaps were only findable by

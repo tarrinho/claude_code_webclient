@@ -75,14 +75,32 @@
     return r.json();
   }
 
-  function formatTime(iso) {
-    if (!iso) return "";
-    try {
-      const d = new Date(iso + "Z");
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch (_) {
-      return iso;
+  // Every timestamp on this page rendered as "Invalid Date". The zone marker was
+  // appended unconditionally, but db._now() already returns "...T22:54:00Z" and
+  // Date.toISOString() returns "...T22:54:00.000Z" -- so the value became
+  // "...00ZZ", which Date cannot parse. `new Date` does not throw on a value it
+  // cannot read, it returns an Invalid Date, so the try/catch that looked like a
+  // safety net never once fired and toLocaleTimeString printed those two words.
+  //
+  // Mirrors parseTimestamp in web/assets/conversation.js. Duplicated rather than
+  // shared because this page loads a classic script, not a module, and cannot
+  // import it; keep the two in step.
+  function formatTime(value) {
+    if (!value) return "";
+    const raw = String(value);
+    // A space separator instead of "T" is accepted by Chrome and rejected by
+    // Safari, which is what a phone is running.
+    const normalised = raw.replace(" ", "T");
+    const zoned = /Z$|[+-]\d\d:?\d\d$/.test(normalised)
+      ? normalised
+      : `${normalised}Z`;
+    const parsed = new Date(zoned);
+    if (Number.isNaN(parsed.getTime())) {
+      // Show the value rather than the words "Invalid Date", stripped of
+      // anything that could be markup: callers interpolate this into innerHTML.
+      return raw.replace(/[^\w :.+-]/g, "");
     }
+    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
   // ── DOM refs ─────────────────────────────────────────────────────────

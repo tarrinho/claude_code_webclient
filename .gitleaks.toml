@@ -11,4 +11,10 @@ regexes = [
   '''ci-only-proxy-token-at-least-32-characters''',
   '''testing-session-secret-at-least-32-characters''',
   '''testing-proxy-token-at-least-32-characters''',
+  # Deliberately distinctive fixtures, used by tests that assert an API key
+  # never reaches a response body. The value has to be recognisable for the
+  # assertion to mean anything, which is exactly what trips a secret scanner.
+  # Scoped to the SENTINEL-KEY- prefix so only values that announce themselves
+  # as test sentinels are exempt.
+  '''SENTINEL-KEY-[A-Za-z0-9]+''',
 ]

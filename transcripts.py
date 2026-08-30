@@ -810,6 +810,80 @@ async def usage_since(session_id: str, offset: int = 0) -> tuple[list[dict[str, 
         return [], offset
 
 
+# A failed turn is recorded as an assistant record in the model's own voice with
+# model "<synthetic>" -- the CLI reporting an error, not the model speaking. The
+# text is the only place the reason survives, and it always opens this way.
+_SYNTHETIC_MODEL: Final[str] = "<synthetic>"
+_ERROR_PREFIX: Final[str] = "api error"
+# Only the tail is read. This runs against sessions the supervisor has already
+# decided are busy, on every poll, so it must not touch a 22 MB archive.
+_ERROR_TAIL_BYTES: Final[int] = 64 * 1024
+
+
+def _last_error_sync(path: Path) -> str | None:
+    """The newest turn's error text, or None if the newest turn is not an error.
+
+    Newest *turn*, deliberately, not "an error anywhere in the tail": a session
+    that failed and then recovered has a real assistant record after the
+    synthetic one, and reporting the stale failure would leave a healthy agent
+    flagged until someone dismissed it by hand.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > _ERROR_TAIL_BYTES:
+                handle.seek(size - _ERROR_TAIL_BYTES)
+                handle.readline()  # discard the partial line the seek landed in
+            raw = handle.read()
+    except OSError:
+        return None
+
+    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("type") != "assistant":
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        text = ""
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = str(block.get("text") or "")
+                    break
+        elif isinstance(content, str):
+            text = content
+        # The newest assistant record decides, whatever it is.
+        if str(message.get("model") or "") != _SYNTHETIC_MODEL:
+            return None
+        stripped = text.strip()
+        return stripped if stripped.lower().startswith(_ERROR_PREFIX) else None
+    return None
+
+
+async def last_error(session_id: str) -> str | None:
+    """Report a session whose newest turn is a failed one.
+
+    The supervisor short-circuits on Claude Code's own "busy" status and never
+    reads the transcript, which is what keeps polling cheap. But a session
+    retrying a failing endpoint reports busy the whole time -- "Retrying in 11s
+    - attempt 9/10" is busy by every measure the status field has -- so a run
+    that is going nowhere looked exactly like one doing work, and nothing was
+    raised. This is the cheap tail read that tells the two apart.
+    """
+    path = transcript_path(session_id)
+    if path is None:
+        return None
+    return await asyncio.to_thread(_last_error_sync, path)
+
+
 def _cwd_sync(path: Path) -> str:
     """Read the working directory a session ran in, from its own transcript.
 

@@ -1200,5 +1200,98 @@ class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(row["chat_id"], "")
 
 
+class FailedTurnDetectionTests(TranscriptRootMixin, unittest.TestCase):
+    """A session retrying a dead endpoint reports busy and raised no alert.
+
+    Pedro hit this: cweb5 sat on "API Error: 500 ... Retrying in 11s - attempt
+    9/10" and the supervisor showed nothing. Claude Code's status field said
+    busy the whole time -- correctly, it was retrying -- and the supervisor
+    short-circuits on busy without reading the transcript at all, which is what
+    keeps polling cheap. So a run going nowhere looked exactly like one doing
+    work.
+
+    The failure is recorded structurally: an assistant record whose model is
+    "<synthetic>", the CLI speaking in the model's voice. That beats matching
+    prose, which is what the existing _attention() does and why it returned
+    None for this text -- no trailing "?" and none of its nine blocker phrases.
+    """
+
+    def setUp(self):
+        self.set_up_root()
+
+    def tearDown(self):
+        self.tear_down_root()
+
+    @staticmethod
+    def _synthetic(text):
+        return {"type": "assistant", "sessionId": "s1",
+                "message": {"role": "assistant", "model": "<synthetic>",
+                            "content": [{"type": "text", "text": text}]}}
+
+    def _run(self, session_id="s1"):
+        import asyncio
+        return asyncio.run(transcripts.last_error(session_id))
+
+    def test_the_real_error_pedro_saw_is_reported(self):
+        text = ("API Error: 500 litellm.InternalServerError: InternalServerError: "
+                "Hosted_vllmException - Cannot connect to host vllm:8000 "
+                "[Name or service not known]. Received Model "
+                "Group=vllm/Qwen3.6-35B-A3B-NVFP4 - Retrying in 11s - attempt 9/10")
+        write_transcript(self.root, "s1", [user("go"), self._synthetic(text)])
+        self.assertEqual(self._run(), text)
+
+    def test_a_recovered_session_is_not_reported(self):
+        """The whole reason it reads the newest turn rather than scanning.
+
+        A session that failed and then succeeded is healthy. Reporting the old
+        failure would leave it flagged until dismissed by hand, which trains
+        people to dismiss without looking.
+        """
+        write_transcript(self.root, "s1", [
+            user("go"),
+            self._synthetic("API Error: 500 gateway is down"),
+            assistant("Recovered, here is the answer"),
+        ])
+        self.assertIsNone(self._run())
+
+    def test_a_healthy_session_reports_nothing(self):
+        write_transcript(self.root, "s1", [user("go"), assistant("all done")])
+        self.assertIsNone(self._run())
+
+    def test_a_real_model_saying_the_words_api_error_is_not_a_failure(self):
+        """An agent discussing an error has not suffered one.
+
+        This is the false positive a text search would produce, and the reason
+        the model field is the gate rather than the wording.
+        """
+        write_transcript(self.root, "s1", [
+            user("what went wrong?"),
+            assistant("API Error: 500 was what the log showed, so I retried it"),
+        ])
+        self.assertIsNone(self._run())
+
+    def test_synthetic_output_that_is_not_an_error_is_ignored(self):
+        write_transcript(self.root, "s1", [self._synthetic("Session resumed")])
+        self.assertIsNone(self._run())
+
+    def test_an_unknown_session_is_not_an_error(self):
+        self.assertIsNone(self._run("no-such-session"))
+
+    def test_only_the_tail_of_a_large_transcript_is_read(self):
+        """It runs on every poll for every busy session; the archive is 22 MB."""
+        filler = [assistant("x" * 900) for _ in range(400)]
+        write_transcript(self.root, "s1", filler + [self._synthetic("API Error: 503 nope")])
+        path = self.root / "-home-kali-demo" / "s1.jsonl"
+        self.assertGreater(path.stat().st_size, transcripts._ERROR_TAIL_BYTES,
+                           "fixture must exceed the tail window or this proves nothing")
+        self.assertEqual(self._run(), "API Error: 503 nope")
+
+    def test_a_truncated_first_line_does_not_break_the_read(self):
+        """Seeking into the middle of a line is the normal case for a tail read."""
+        filler = [assistant("y" * 977) for _ in range(400)]
+        write_transcript(self.root, "s1", filler + [assistant("fine")])
+        self.assertIsNone(self._run())
+
+
 if __name__ == "__main__":
     unittest.main()

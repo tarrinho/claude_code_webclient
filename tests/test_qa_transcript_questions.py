@@ -133,9 +133,17 @@ class AnswerPairingQA(unittest.TestCase):
         blocks = _blocks([_record("assistant", [_ask("qD")])])
         self.assertFalse([b for b in blocks if b["kind"] == "answer"])
 
-    def test_results_for_other_tools_are_still_dropped(self):
-        # Tool output is replayed into the next record and dwarfs the
-        # conversation; only a question's result earns its place.
+    def test_results_for_other_tools_never_become_answers(self):
+        """Ordinary tool output must not be mistaken for a question's answer.
+
+        This used to assert that other tools' results were dropped entirely.
+        1cfc978 ("Show what a tool call actually ran, and what came back")
+        deliberately started rendering them as `result` blocks, so that premise
+        is gone -- but the part that matters is not: answer blocks are paired
+        with an AskUserQuestion by id, and a Read result arriving in the next
+        record must not pair with anything or the pending-question state would
+        resolve itself on unrelated tool traffic.
+        """
         blocks = _blocks([
             _record("assistant", [{"type": "tool_use", "id": "t9", "name": "Read",
                                    "input": {"file_path": "/a"}}]),
@@ -143,7 +151,10 @@ class AnswerPairingQA(unittest.TestCase):
                               "content": "x" * 5000}]),
         ])
         self.assertFalse([b for b in blocks if b["kind"] == "answer"])
-        self.assertNotIn("xxxx", json.dumps(blocks))
+        # It is shown, but capped: replayed tool output dwarfs the conversation.
+        result = next(b for b in blocks if b["kind"] == "result")
+        self.assertTrue(result["truncated"])
+        self.assertLess(len(result["text"]), 5000)
 
     def test_answer_text_is_capped(self):
         blocks = _blocks([

@@ -22,6 +22,111 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Test servers no longer write into the production log.** `logging.conf`
+  named the log file with an absolute path, so every server the suite spawns
+  inherited it and appended to `logs/webconsole.log`. The production log ended
+  up carrying interleaved lines from processes nobody was watching, including
+  future-stamped ones from tests that fake a clock — so the one artefact you
+  open first during an incident was actively misleading about ordering. It cost
+  real time during the write outage before the foreign entries were recognised
+  for what they were.
+
+  The path now comes from `config.LOG_FILE` (`WC_LOG_FILE`, defaulting to the
+  current location so a deployment is unchanged) and reaches the handler through
+  `fileConfig`'s `defaults`, with the config naming it as `%(logfile)s`. That
+  route was chosen over rewriting the handler afterwards because it needs no
+  second `fileConfig` call — and `fileConfig` closes every existing handler,
+  which is what failed 794 unrelated tests once before. The formatter's own
+  `%(asctime)s` tokens are untouched by the interpolation, since `fileConfig`
+  reads format strings raw; that was verified by checking a written line
+  actually carries a timestamp rather than by assuming.
+
+---
+
+## [0.9.1] — 2026-08-30
+
+### Added
+
+- **The last request stays in view**, on its own line directly under the
+  workspace strip, so "what did I ask here?" is answerable without scrolling.
+  That matters most on a phone, where the conversation shows two or three
+  messages at a time. Set when a conversation is opened, when a turn settles,
+  and the moment a request is sent — the last of those because a routed request
+  and a queued one produce no turn at all, so waiting for one would leave the
+  line permanently stale for exactly the two cases added this week.
+
+### Fixed
+
+- **A request made in the website was counted as a terminal's.** This shipped in
+  `0.9.0` without a changelog entry; recorded here rather than left out, since
+  the number it corrects is one an operator may already have looked at.
+
+  A conversation linked to a live terminal has its web requests *typed into that
+  terminal* rather than run by the server, so the tokens land in that
+  terminal's transcript and were imported as its own work. There is now a third
+  origin, `web-routed` — asked here, ran there — and neither plain label had
+  been true.
+
+  Attribution matches on **what was asked**, not on when. The first version used
+  a byte offset and a time window, and credited a routed request with whatever
+  the agent happened to be doing meanwhile: typing into a busy session queues
+  the input, so work can begin long afterwards. Caught by reading the transcript
+  of the live test that was supposed to prove it worked.
+
+- **Terminal usage was one anonymous figure dominated by agent sessions.** A day
+  spent working from a phone reported hundreds of millions of "terminal" tokens
+  belonging to the agents the console had adopted, filed under the operator's own
+  account. Usage is now broken down by origin and named per session, so a
+  surprising total is explainable rather than mysterious.
+
+- **Context was counted as spend.** A model reporting no cache breakdown puts
+  the whole conversation into `input_tokens` on every turn — one session
+  averaged 106,769 a turn with no cache line, so summing it reported 409 million
+  tokens for work that mostly re-sent the same context. Those rows are flagged
+  at import and reported separately with the reason. Detection is by whether the
+  transcript carries the cache keys, not by a size threshold: a threshold would
+  flag long Anthropic turns and quietly delete real spend.
+
+- **`styles.css` shipped with no cache-busting query**, so a browser kept
+  serving the previous stylesheet and new panels rendered unstyled. The test
+  meant to allow this had permitted it for `app.js` and forbidden it for the
+  stylesheet, which is why only one of the two ever had one.
+
+- **The queue was unreachable.** Three endpoints had no caller, so a prompt held
+  because the turn ahead of it failed could be counted and not acted on. There
+  is now a panel above the composer listing each queued prompt with Send and
+  Discard.
+
+- **A conversation whose terminal is working showed nothing at all**, because
+  `running` comes from the turn registry and a routed request creates no turn.
+  Reported separately as `terminal_busy`.
+
+- **Waiting for a concurrency slot looked identical to a slow model** — running,
+  with nothing arriving.
+
+- **`tests/test_qa_usage.py` read the operator's real `~/.claude`** through the
+  endpoint and imported 18,572 transcript rows into its own temporary database,
+  drowning every assertion about what the test had inserted. Two tests were
+  failing on `main` because of it.
+
+### Testing
+
+- `tests/test_qa_usage_origin.py`, `tests/test_qa_usage_plumbing.py`,
+  `tests/test_qa_last_command.py`, `tests/smoke_last_command.py` — 87 tests
+  covering usage origin and attribution, the transcript plumbing that feeds it,
+  and the new strip line in a real browser at phone width. All mutation-checked,
+  with each mutation confirmed to have modified the file before its result was
+  read: three mutations across this work reported "passed" while never having
+  applied at all.
+
+- Version numbers are no longer hardcoded in tests. Two assertions carried the
+  release number and so broke on every bump; with several sessions working at
+  once that turned the assertion into a place to disagree about the number
+  rather than a check on the code.
+
+
 ### Added
 
 - **Server statistics** — a new Settings → Server tab reporting the health of

@@ -22,6 +22,7 @@ kept them apart.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import tempfile
 import unittest
@@ -299,3 +300,103 @@ class UsageApiQA(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoutedAttributionQA(unittest.IsolatedAsyncioTestCase):
+    """A request made in the website that ran in a terminal.
+
+    The case Pedro hit: a conversation linked to a live terminal has its web
+    requests *typed into that terminal* rather than run by the server, so the
+    tokens land in the terminal's transcript and were imported as the terminal's
+    own work. Confirmed from the log --
+
+        prompt delivered to live terminal chat=283a9a5b... session=8e2e8bd0...
+
+    -- so "asked in the web, counted as terminal" was accurate, and neither
+    plain label describes it. It now gets a third origin of its own.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.db_patch.start()
+        await db.init()
+        await db.chat_create("c1", "cweb5", None, "/tmp/w", "admin")
+        await db.chat_set_session("c1", "sess-live")
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _row(offset, when, inp=1000):
+        return {"model": "claude-opus-5", "input_tokens": inp, "output_tokens": 10,
+                "cache_read_tokens": 5, "cache_creation_tokens": 0,
+                "context_unsplit": False, "offset": offset, "timestamp": when}
+
+    async def test_turns_after_the_mark_are_attributed_to_the_request(self):
+        await db.routed_request_add("sess-live", "c1", "admin", 500)
+        marks = await db.routed_markers("sess-live")
+        asked = marks[0]["created_at"]
+        await db.usage_import("admin", "sess-live", [
+            self._row(400, asked),       # before the mark: the agent's own work
+            self._row(600, asked),       # after: caused by the web request
+        ], 600)
+        rows = {r["origin"]: r for r in await db.usage_by_origin("admin", None)}
+        self.assertEqual(sorted(rows), ["terminal", "web-routed"])
+        self.assertEqual(rows["web-routed"]["requests"], 1)
+        self.assertEqual(rows["terminal"]["requests"], 1)
+
+    async def test_a_routed_row_carries_the_conversation_it_came_from(self):
+        await db.routed_request_add("sess-live", "c1", "admin", 0)
+        marks = await db.routed_markers("sess-live")
+        await db.usage_import("admin", "sess-live", [
+            self._row(10, marks[0]["created_at"])], 10)
+        cur = await db.db_conn.execute(
+            "SELECT chat_id, origin FROM usage_events WHERE origin = 'web-routed'")
+        row = await cur.fetchone()
+        # Without the chat id the row cannot be traced back to the request.
+        self.assertEqual(row["chat_id"], "c1")
+
+    async def test_attribution_expires_so_one_request_does_not_own_the_session(self):
+        """There is no end marker in a transcript -- the terminal carries on.
+
+        So the claim is bounded by time as well as by offset. Work typed
+        directly into that terminal an hour later is the terminal's own.
+        """
+        await db.routed_request_add("sess-live", "c1", "admin", 0)
+        marks = await db.routed_markers("sess-live")
+        asked = datetime.datetime.fromisoformat(
+            marks[0]["created_at"].replace("Z", "+00:00"))
+        late = (asked + datetime.timedelta(seconds=db.ROUTED_WINDOW_S + 60)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await db.usage_import("admin", "sess-live", [self._row(10, late)], 10)
+        rows = await db.usage_by_origin("admin", None)
+        self.assertEqual([r["origin"] for r in rows], ["terminal"])
+
+    async def test_a_session_never_routed_to_is_untouched(self):
+        await db.usage_import("admin", "sess-live", [
+            self._row(10, "2026-08-30T10:00:00Z")], 10)
+        rows = await db.usage_by_origin("admin", None)
+        self.assertEqual([r["origin"] for r in rows], ["terminal"])
+
+    async def test_the_newest_mark_at_or_before_the_offset_wins(self):
+        await db.routed_request_add("sess-live", "c1", "admin", 100)
+        await db.chat_create("c2", "second ask", None, "/tmp/y", "admin")
+        await db.chat_set_session("c2", "sess-live")
+        await db.routed_request_add("sess-live", "c2", "admin", 900)
+        marks = await db.routed_markers("sess-live")
+        when = marks[0]["created_at"]
+        await db.usage_import("admin", "sess-live", [
+            self._row(500, when), self._row(1000, when)], 1000)
+        cur = await db.db_conn.execute(
+            "SELECT chat_id FROM usage_events WHERE origin='web-routed' "
+            "ORDER BY id")
+        got = [r["chat_id"] for r in await cur.fetchall()]
+        self.assertEqual(got, ["c1", "c2"])
+
+    async def test_marking_needs_a_session_and_a_chat(self):
+        self.assertIsNone(await db.routed_request_add("", "c1", "admin", 0))
+        self.assertIsNone(await db.routed_request_add("s", "", "admin", 0))
+        self.assertEqual(await db.routed_markers("s"), [])

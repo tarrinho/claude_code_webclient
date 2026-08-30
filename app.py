@@ -978,6 +978,22 @@ async def _route_to_live_terminal(chat: dict, prompt: str) -> dict | None:
     return outcome
 
 
+async def _mark_routed(chat: dict, owner: str) -> None:
+    """Record that a website request was typed into this chat's terminal.
+
+    Without this the turns that follow are imported as the terminal's own work
+    and the person who asked disappears from the record -- which is exactly what
+    "I asked in the web and it is counted as terminal" describes. The mark is the
+    transcript's length at the moment of typing, so everything appended after it
+    can be attributed back to the request that caused it.
+    """
+    session_id = (chat.get("session_id") or "").strip()
+    if not session_id:
+        return
+    offset = await asyncio.to_thread(transcripts.transcript_size, session_id)
+    await db.routed_request_add(session_id, chat["id"], owner, offset)
+
+
 async def handle_submit_message(request: Request, chat_id: str):
     """POST /api/chats/{id}/messages -- submit a prompt, return the assistant's response."""
     session = request.state.session
@@ -1012,7 +1028,13 @@ async def handle_submit_message(request: Request, chat_id: str):
     # looking. The reply arrives in the web chat through transcript sync.
     routed = await _route_to_live_terminal(chat, prompt)
     if routed:
+        session_id = chat.get("session_id")
+        await _mark_routed(chat, session["user"])
         await db.messages_batch(chat_id, [("user", prompt)])
+        # Same as the streaming path: the turn is also on disk, so advance
+        # the sync offset to avoid a second import on the next poll.
+        if session_id:
+            await _skip_transcript_to_end(chat_id, session_id)
         return JSONResponse({
             "response": "",
             "delivered_to": "terminal",
@@ -1268,7 +1290,14 @@ async def stream_handler(request: Request, chat_id: str):
         # page through the existing transcript sync.
         routed = await _route_to_live_terminal(chat, prompt)
         if routed:
+            session_id = chat.get("session_id")
+            await _mark_routed(chat, session["user"])
             await db.messages_batch(chat_id, [("user", prompt)])
+            # This turn was just stored in messages and is also written to the
+            # CLI transcript, so advance the sync past it or the next poll
+            # would import the same turn again.
+            if session_id:
+                await _skip_transcript_to_end(chat_id, session_id)
             # Sent as `text`, which the client already renders: inventing a
             # new event type would have shown the user nothing at all, since
             # conversation.js ignores types it does not know.

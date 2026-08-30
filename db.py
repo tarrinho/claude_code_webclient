@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import re
@@ -215,6 +216,23 @@ async def init() -> None:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_queue_chat ON turn_queue(chat_id, id);
+
+        -- A request made in the website that was typed into a live terminal
+        -- instead of run here. The work happens in that terminal's process and
+        -- lands in its transcript, so without this the tokens are imported as
+        -- ordinary terminal usage and the person who asked disappears from the
+        -- record. `from_offset` is the transcript's length at the moment of
+        -- typing: everything appended after it belongs to this request.
+        CREATE TABLE IF NOT EXISTS routed_requests (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT NOT NULL,
+            chat_id     TEXT NOT NULL,
+            owner_id    TEXT NOT NULL,
+            from_offset INTEGER NOT NULL,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_routed_session
+            ON routed_requests(session_id, from_offset);
     """)
     await _ensure_chat_columns()
     await _ensure_usage_columns()
@@ -1377,6 +1395,9 @@ async def usage_import(
     # holding SQLite's writer lock for all of them starves every other writer --
     # db.py opens with a 5s busy timeout, so a long hold surfaces as a failed
     # request somewhere else entirely.
+    # Read once, applied per row: a request the operator made in the website but
+    # which ran in this terminal must not be filed as the terminal's own work.
+    markers = await routed_markers(session_id)
     written = 0
     for start in range(0, len(rows), USAGE_IMPORT_BATCH):
         batch = rows[start : start + USAGE_IMPORT_BATCH]
@@ -1390,15 +1411,21 @@ async def usage_import(
         try:
             await db_conn.execute("BEGIN")
             for row in batch:
+                routed = routed_owner_of(
+                    markers,
+                    int(row.get("offset") or 0),
+                    str(row.get("timestamp") or ""),
+                )
                 await db_conn.execute(
                     "INSERT INTO usage_events "
                     "(chat_id, session_id, owner_id, model, provider, input_tokens, "
                     " output_tokens, cache_read_tokens, cache_creation_tokens, "
                     " cost_usd, cost_basis, duration_ms, is_error, created_at, "
                     " origin, context_unsplit) "
-                    "VALUES ('', ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
-                    " 'terminal', ?)",
+                    "VALUES (?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
+                    " ?, ?)",
                     (
+                        routed["chat_id"] if routed else "",
                         session_id,
                         owner_id,
                         row["model"],
@@ -1409,6 +1436,9 @@ async def usage_import(
                         row.get("cost_usd"),
                         "transcript" if row.get("cost_usd") is not None else "unknown",
                         row.get("timestamp") or _now(),
+                        # Requested in the website, executed in a terminal.
+                        # Neither plain label is true, so it gets its own.
+                        "web-routed" if routed else "terminal",
                         1 if row.get("context_unsplit") else 0,
                     ),
                 )
@@ -1471,6 +1501,80 @@ async def _ensure_usage_columns() -> None:
         "  AND input_tokens > 8000"
     )
     await db_conn.commit()
+
+
+# How long a routed request keeps claiming the turns that follow it. There is no
+# end marker in a transcript -- the terminal simply carries on -- so attribution
+# is bounded by time rather than left open, and work typed directly into that
+# terminal an hour later is not credited to a web request.
+ROUTED_WINDOW_S: Final[int] = 1800
+
+
+async def routed_request_add(
+    session_id: str, chat_id: str, owner_id: str, from_offset: int
+) -> int | None:
+    """Mark that a website request was typed into *session_id*'s terminal."""
+    if not session_id or not chat_id:
+        return None
+    try:
+        cur = await db_conn.execute(
+            "INSERT INTO routed_requests "
+            "(session_id, chat_id, owner_id, from_offset, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, chat_id, owner_id, int(from_offset or 0), _now()),
+        )
+        await db_conn.commit()
+        return cur.lastrowid
+    except Exception:  # noqa: BLE001 -- attribution must never break a request
+        _log.warning("routed_request_not_recorded session_id=%s", session_id)
+        return None
+
+
+async def routed_markers(session_id: str) -> list[dict[str, Any]]:
+    """Routed-request marks for a session, newest offset first.
+
+    Read once per import rather than queried per row: a first import is tens of
+    thousands of rows and a lookup each would be the slowest thing in it.
+    """
+    try:
+        cur = await db_conn.execute(
+            "SELECT chat_id, from_offset, created_at FROM routed_requests "
+            "WHERE session_id = ? ORDER BY from_offset DESC",
+            (session_id,),
+        )
+        return [dict(row) for row in await cur.fetchall()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def routed_owner_of(
+    markers: list[dict[str, Any]], offset: int, when: str
+) -> dict[str, Any] | None:
+    """The routed request a transcript row belongs to, if any.
+
+    A row belongs to the newest mark at or before its byte offset, provided the
+    row was written within ``ROUTED_WINDOW_S`` of that request. Both conditions
+    matter: the offset says the work came after the request, and the window
+    stops a single request owning the rest of the session's life.
+    """
+    if not markers or not offset:
+        return None
+    for marker in markers:
+        if offset < marker["from_offset"]:
+            continue
+        try:
+            asked = datetime.datetime.fromisoformat(
+                str(marker["created_at"]).replace("Z", "+00:00")
+            )
+            wrote = datetime.datetime.fromisoformat(
+                str(when).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            return marker
+        if 0 <= (wrote - asked).total_seconds() <= ROUTED_WINDOW_S:
+            return marker
+        return None
+    return None
 
 
 async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:

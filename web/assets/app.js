@@ -232,6 +232,10 @@ function _buildOriginBreakdown(data) {
 
   const LABELS = {
     web: 'This website',
+    // Asked here, executed there. Neither plain label is true, so it gets its
+    // own: this is the case where a request on a conversation with a live
+    // terminal is typed into that terminal instead of run by the server.
+    'web-routed': 'Asked here, ran in its terminal',
     terminal: 'Terminal sessions (including agents)',
   };
   rows.forEach(row => {

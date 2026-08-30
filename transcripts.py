@@ -436,6 +436,23 @@ def transcript_path(session_id: str) -> Path | None:
     return paths[0] if paths else None
 
 
+def transcript_size(session_id: str) -> int:
+    """Current byte length of a session's transcript, or 0 if there is none.
+
+    The mark used to attribute a routed request. A request typed into a live
+    terminal produces turns in that terminal's transcript, and the byte position
+    at the moment of typing is what separates "everything after this belongs to
+    the request" from the agent's own earlier work.
+    """
+    path = transcript_path(session_id)
+    if path is None:
+        return 0
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 async def read_turns(session_id: str, offset: int = 0) -> dict[str, Any]:
     """Read a session's conversation from *offset* to the end.
 

@@ -1080,10 +1080,36 @@ function findChat(id) {
   return state.chats.find(chat => chat.id === id);
 }
 
+// Per-conversation "last time I looked", so a reply that arrived while the user
+// was in another conversation can be marked. Compared against updated_at, which
+// a finished turn already bumps -- no schema change, and it is a per-browser
+// question anyway.
+const seenKey = id => `wc_seen_${id}`;
+
+function markSeen(chatId, updatedAt) {
+  if (chatId && updatedAt) storageSet(seenKey(chatId), updatedAt);
+}
+
+function unreadChatIds(chats) {
+  return chats
+    .filter(chat => {
+      if (chat.id === state.currentChat?.id) return false;
+      const seen = storageGet(seenKey(chat.id));
+      // Never opened is not unread: otherwise every conversation in the sidebar
+      // lights up on a new browser.
+      return seen ? String(chat.updated_at) !== seen : false;
+    })
+    .map(chat => chat.id);
+}
+
 async function refreshChats() {
   const response = await apiFetch('/api/chats');
   if (!response.ok) throw new Error('Could not load conversations');
   state.chats = (await response.json()).chats || [];
+  // Which conversations are busy is server state now -- a turn outlives the tab
+  // that started it, so the open page cannot know on its own.
+  listController.setActiveTurns(state.chats.filter(c => c.running).map(c => c.id));
+  listController.setUnread(unreadChatIds(state.chats));
   listController.render(state.chats, state.currentChat?.id);
 }
 
@@ -1102,6 +1128,8 @@ function updateCurrentUi(chat) {
   byId('syncBtn').hidden = !chat.session_id;
   byId('composerArea').style.display = 'block';
   storageSet('wc_last_chat', chat.id);
+  markSeen(chat.id, chat.updated_at);
+  listController.setUnread(unreadChatIds(state.chats));
   listController.render(state.chats, chat.id);
   updateModelDisplay(chat.model);
   populateBackendPicker(chat);
@@ -1177,6 +1205,10 @@ async function setConversationRouting(fields, describe) {
 // A question asked in the terminal blocks that session until somebody chooses.
 // Showing it here with every option, and delivering the choice, means the user
 // does not have to go and find the terminal to unblock it.
+// How often the sidebar re-reads which conversations are busy. A background
+// turn has no other way to reach the dots: nothing streams to a page that is
+// looking at a different conversation.
+const CHAT_POLL_MS = 6000;
 const QUESTION_POLL_MS = 4000;
 let _questionTimer = null;
 let _questionState = null;
@@ -2074,17 +2106,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // conversation.js owns the turn lifecycle and writes it to #runState. Observing
-  // that attribute keeps the sidebar dot in sync without reaching into its
-  // internals or adding a callback across the module boundary.
-  const runStateEl = byId('runState');
-  if (runStateEl) {
-    const ACTIVE = new Set(['connecting', 'thinking', 'responding', 'retrying']);
-    new MutationObserver(() => {
-      const running = ACTIVE.has(runStateEl.dataset.state);
-      listController.setActiveTurn(running ? (state.currentChat?.id ?? null) : null);
-    }).observe(runStateEl, {attributes: true, attributeFilter: ['data-state']});
-  }
+  // The sidebar dots come from GET /api/chats now, not from #runState. That
+  // attribute describes the conversation on screen, which was the same thing
+  // only while a turn could not outlive its viewer: with background turns it
+  // would clear every other conversation's dot the moment this one settled.
+  // A poll keeps the dots honest for turns nobody is watching.
+  setInterval(() => { refreshChats().catch(() => {}); }, CHAT_POLL_MS);
 
   conversationController = createConversationController({
     state,

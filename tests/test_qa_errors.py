@@ -47,9 +47,15 @@ def _log_buffer():
 
 
 def _install_log_buffer(log):
-    """Attach buffer + handler to the wc.app logger and return the buffer."""
+    """Attach buffer + handler to *log* and return the buffer.
+
+    This took a logger and then ignored it, always attaching to "wc.app".
+    Harmless while every caller passed that, and silently wrong the moment one
+    did not: a test asserting on another logger's output saw an empty buffer and
+    read as "the code never logged".
+    """
     buf, handler = _log_buffer()
-    logger = logging.getLogger("wc.app")
+    logger = log if isinstance(log, logging.Logger) else logging.getLogger("wc.app")
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
     return buf, handler, logger
@@ -511,6 +517,10 @@ class StreamHandlerErrorTests(unittest.IsolatedAsyncioTestCase):
         async def mock_stream_turn(*args, **kwargs):
             async for ev in gen():
                 yield ev
+        turn_log, turn_handler, turn_logger = _install_log_buffer(
+            logging.getLogger("wc.turns")
+        )
+        self.addCleanup(turn_logger.removeHandler, turn_handler)
         with patch.object(runner, "stream_turn", mock_stream_turn):
             request = _make_request(
                 method="POST",
@@ -530,7 +540,12 @@ class StreamHandlerErrorTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(error_event["type"], "error")
             self.assertEqual(error_event["error"], app._SSE_TIMEOUT)
-            self.assertIn("stream_handler timeout", self.buf.getvalue())
+        # Logged by turns.py under "turn_timed_out", not by stream_handler:
+        # the turn runs as a background task now, so the timeout is detected
+        # where the work happens rather than on the request that started it.
+        # Following the label to where the failure actually occurs is the point
+        # of asserting on it -- the same reason `turn_failed` is checked above.
+        self.assertIn("turn_timed_out", turn_log.getvalue())
 
 
 # ── Component: sessions resume not found ─────────────────────────────────────

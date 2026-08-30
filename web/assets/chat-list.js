@@ -102,7 +102,13 @@ export function createChatListController(dependencies) {
   let lastChats = [];
   let lastCurrentId = null;
   let openTrigger = null;
-  let activeTurnId = null;
+  // A set, not an id: several conversations can be mid-turn at once now that a
+  // turn survives the user looking somewhere else.
+  let activeTurnIds = new Set();
+  // Conversations whose reply landed while the user was elsewhere. Kept here
+  // rather than in the database: "have I read this" is per-browser, and
+  // updated_at already tells us when something changed.
+  let unreadIds = new Set();
   let historyEntries = [];
   // {waiting: [...], working: [...]} from GET /api/supervisor.
   let supervisor = {waiting: [], working: []};
@@ -226,12 +232,26 @@ export function createChatListController(dependencies) {
       title.className = 'chat-title';
       title.textContent = chat.title;
       title.title = chat.title;
-      if (chat.id === activeTurnId) {
+      if (activeTurnIds.has(chat.id)) {
         const dot = document.createElement('span');
         dot.className = 'chat-running';
         dot.setAttribute('aria-label', 'Response in progress');
         dot.title = 'Response in progress';
         title.prepend(dot);
+      } else if (unreadIds.has(chat.id)) {
+        const mark = document.createElement('span');
+        mark.className = 'chat-unread';
+        mark.setAttribute('aria-label', 'New reply');
+        mark.title = 'Replied while you were elsewhere';
+        title.prepend(mark);
+      }
+      if (chat.queued) {
+        const queued = document.createElement('span');
+        queued.className = 'chat-queued';
+        queued.textContent = String(chat.queued);
+        queued.setAttribute('aria-label', `${chat.queued} prompts queued`);
+        queued.title = `${chat.queued} prompt${chat.queued > 1 ? 's' : ''} waiting to send`;
+        title.append(queued);
       }
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
@@ -605,9 +625,19 @@ export function createChatListController(dependencies) {
     render();
   }
 
-  function setActiveTurn(chatId) {
-    if (activeTurnId === chatId) return;
-    activeTurnId = chatId;
+  function setActiveTurns(ids) {
+    const next = new Set(ids || []);
+    if (next.size === activeTurnIds.size
+        && [...next].every(id => activeTurnIds.has(id))) return;
+    activeTurnIds = next;
+    render();
+  }
+
+  function setUnread(ids) {
+    const next = new Set(ids || []);
+    if (next.size === unreadIds.size
+        && [...next].every(id => unreadIds.has(id))) return;
+    unreadIds = next;
     render();
   }
 
@@ -676,7 +706,8 @@ export function createChatListController(dependencies) {
     closeMenus,
     setOnMessageSearch,
     setMessageResults,
-    setActiveTurn,
+    setActiveTurns,
+    setUnread,
     setHistory,
     setSupervisor,
   };

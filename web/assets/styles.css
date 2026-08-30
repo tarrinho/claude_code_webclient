@@ -93,6 +93,12 @@ button{touch-action:manipulation}
 /* Dot on the row whose conversation is mid-turn, so leaving it stays visible. */
 .chat-running{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:middle;animation:chat-pulse 1.4s ease-in-out infinite}
 @keyframes chat-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* Replied while you were elsewhere: same footprint as the running dot so the
+   row does not shift when a turn finishes, but hollow and still. */
+.chat-unread{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--accent);box-sizing:border-box;vertical-align:middle}
+/* Count of prompts waiting to send. Trails the title rather than leading it:
+   it is a property of the queue, not an alert. */
+.chat-queued{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:.7rem;line-height:1.35;background:var(--surface-2,rgba(127,127,127,.18));color:var(--text-muted,inherit);vertical-align:middle}
 @media (prefers-reduced-motion:reduce){.chat-running{animation:none}.chat-group>summary::before{transition:none}}
 
 /* Main */

@@ -363,6 +363,10 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        # Live turns are module state in turns.py, so one test's turn would
+        # otherwise still be registered when the next one starts and every
+        # subsequent send would queue behind a corpse.
+        await app.turns.shutdown()
         await db.close()
         self.db_patch.stop()
         self.root_patch.stop()
@@ -434,15 +438,52 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
             [("user", "hello"), ("assistant", "complete")],
         )
 
-    async def test_cancelled_stream_closes_runner_without_persisting(self):
-        runner_closed = asyncio.Event()
+    async def test_closing_the_stream_leaves_the_turn_running(self):
+        """A viewer leaving must not stop the turn. This is the whole feature.
+
+        Closing the response used to cancel the runner and discard the answer
+        -- while the usage row had already been written, because the tokens are
+        spent as they arrive. So switching conversations mid-turn billed the
+        user and returned nothing. The UI's refusal to switch was protecting
+        the turn, not the interface.
+        """
+        release = asyncio.Event()
 
         async def fake_stream(*args, **kwargs):
-            try:
-                yield {"type": "text", "content": "partial"}
-                await asyncio.Event().wait()
-            finally:
-                runner_closed.set()
+            yield {"type": "text", "content": "partial"}
+            await release.wait()
+            yield {"type": "text", "content": " and the rest"}
+            yield {"type": "done"}
+
+        with patch.object(auth, "session_get", return_value={"user": "admin"}), \
+             patch.object(app.runner, "stream_turn", fake_stream):
+            response = await app.stream_handler(self.request, self.chat_id)
+            iterator = response.body_iterator
+            await anext(iterator)          # start frame
+            await anext(iterator)          # first token
+            await iterator.aclose()        # the user switches conversation
+
+            # Still alive with nobody watching.
+            self.assertTrue(app.turns.is_running(self.chat_id))
+            release.set()
+            await app.turns.get(self.chat_id).task
+
+        self.assertEqual(
+            [(m["role"], m["content"])
+             for m in await db.messages_get(self.chat_id)],
+            [("user", "hello"), ("assistant", "partial and the rest")],
+        )
+
+    async def test_a_reattaching_client_is_replayed_what_it_missed(self):
+        # The other half of switching away: coming back has to show the answer
+        # built so far, not an empty conversation.
+        release = asyncio.Event()
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "text", "content": "first"}
+            await release.wait()
+            yield {"type": "text", "content": "second"}
+            yield {"type": "done"}
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
              patch.object(app.runner, "stream_turn", fake_stream):
@@ -452,8 +493,50 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
             await anext(iterator)
             await iterator.aclose()
 
-        await asyncio.wait_for(runner_closed.wait(), timeout=1)
-        self.assertEqual(await db.messages_get(self.chat_id), [])
+            seen = []
+            async def reattach():
+                async for event in app.turns.follow(self.chat_id, 0):
+                    if event.get("type") == "text":
+                        seen.append(event["content"])
+            follower = asyncio.create_task(reattach())
+            await asyncio.sleep(0)
+            release.set()
+            await app.turns.get(self.chat_id).task
+            await asyncio.wait_for(follower, timeout=1)
+
+        # "first" was emitted before the reattach and still arrives.
+        self.assertEqual(seen, ["first", "second"])
+
+    async def test_a_second_prompt_while_running_is_queued(self):
+        release = asyncio.Event()
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "text", "content": "one"}
+            await release.wait()
+            yield {"type": "done"}
+
+        with patch.object(auth, "session_get", return_value={"user": "admin"}), \
+             patch.object(app.runner, "stream_turn", fake_stream):
+            first = await app.stream_handler(self.request, self.chat_id)
+            iterator = first.body_iterator
+            await anext(iterator)
+            await anext(iterator)
+
+            self.request.json = AsyncMock(return_value={"content": "second ask"})
+            second = await app.stream_handler(self.request, self.chat_id)
+            body = "".join([
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in second.body_iterator
+            ])
+            self.assertIn('"type": "queued"', body)
+            self.assertIn('"position": 1', body)
+            self.assertEqual(
+                [row["prompt"] for row in await db.queue_list(self.chat_id, "admin")],
+                ["second ask"],
+            )
+            await iterator.aclose()
+            release.set()
+            await app.turns.get(self.chat_id).task
 
 
 class MachineTests(unittest.IsolatedAsyncioTestCase):

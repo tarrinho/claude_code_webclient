@@ -133,6 +133,13 @@ export function createConversationController(dependencies) {
   let abortController = null;
   let lastAttempt = null;
   let following = true;
+  // The turn lives on the server, so leaving a conversation detaches a viewer
+  // rather than stopping work. `liveSource` is the reattachment stream opened
+  // when a conversation is opened while a turn is already in flight, and
+  // `viewingChatId` guards every render: an event that arrives after the user
+  // has moved on must not be drawn into the conversation now on screen.
+  let liveSource = null;
+  let viewingChatId = null;
 
   function draftKey(chatId) { return `wc_draft_${chatId}`; }
 
@@ -255,10 +262,10 @@ export function createConversationController(dependencies) {
   }
 
   async function selectChat(chat) {
-    if (ACTIVE_STATES.has(state.streamState) && chat.id !== state.currentChat?.id) {
-      showToast('Stop the current response before switching conversations.');
-      return false;
-    }
+    // No guard: switching away used to be refused because it destroyed the
+    // turn -- the reader was the turn's owner. The server owns it now, so
+    // leaving is just detaching, and the turn keeps running either way.
+    detach();
     persistDraft();
     // Image paths in a message resolve against the chat's own workspace, so
     // the renderer needs to know which chat it is drawing before it draws.
@@ -267,12 +274,83 @@ export function createConversationController(dependencies) {
     if (!response.ok) throw new Error('Could not open conversation');
     const data = await response.json();
     state.currentChat = data.chat;
+    viewingChatId = data.chat.id;
     renderMessages(data.messages || []);
     restoreDraft(chat.id);
     setStreamState('ready');
     onChatLoaded(data.chat);
+    if (data.chat.running) {
+      // A turn is in flight here. Attach from 0 so the answer written while we
+      // were elsewhere is replayed before the live tail -- the stored messages
+      // do not include it yet, because nothing is persisted until the turn ends.
+      attach(data.chat.id, 0);
+    } else if (data.chat.queued) {
+      setStreamState('ready');
+      showToast(`${data.chat.queued} prompt${data.chat.queued > 1 ? 's' : ''} waiting in this conversation`);
+    }
     elements.composerInput.focus();
     return true;
+  }
+
+  function detach() {
+    // Closes the viewer, never the turn. The abort is why this is safe: the
+    // request it cancels is a follower, and the server does not care.
+    if (liveSource) { liveSource.close(); liveSource = null; }
+    if (abortController) { abortController.abort(); abortController = null; }
+  }
+
+  function attach(chatId, since) {
+    detach();
+    let bubble = null;
+    let text = '';
+    let seq = since || 0;
+    setStreamState('thinking');
+    const url = `/api/chats/${encodeURIComponent(chatId)}/live?since=${seq}`;
+    const source = new EventSource(url, {withCredentials: true});
+    liveSource = source;
+    source.onmessage = event => {
+      // Guard every render: this stream can outlive the user's attention.
+      if (viewingChatId !== chatId) return;
+      let payload;
+      try { payload = JSON.parse(event.data); } catch { return; }
+      if (payload.seq) seq = payload.seq;
+      if (payload.type === 'text') {
+        const shouldFollow = isNearBottom();
+        if (!bubble) {
+          const row = createMessage('assistant', '', '');
+          bubble = row.querySelector('.msg-bubble');
+          elements.messages.appendChild(row);
+        }
+        text += payload.content || '';
+        renderSafeText(bubble, text);
+        setStreamState('responding');
+        followNewContent(shouldFollow);
+      } else if (payload.type === 'status' && payload.status === 'api_retry') {
+        setStreamState('retrying');
+      } else if (payload.type === 'gone') {
+        // The buffer was reaped: the answer is on disk, not on screen.
+        source.close(); liveSource = null;
+        refreshCurrent();
+        setStreamState('ready');
+      } else if (payload.type === 'error') {
+        source.close(); liveSource = null;
+        setStreamState('failed');
+        showToast(payload.error || 'The turn failed', 'error');
+        refreshChats();
+      } else if (payload.type === 'done') {
+        source.close(); liveSource = null;
+        setStreamState('ready');
+        // Reload from the server rather than keeping what was streamed: the
+        // turn has persisted the canonical text by the time `done` arrives.
+        refreshCurrent();
+        refreshChats();
+      }
+    };
+    source.onerror = () => {
+      source.close();
+      if (liveSource === source) liveSource = null;
+      if (viewingChatId === chatId) setStreamState('ready');
+    };
   }
 
   async function refreshCurrent() {
@@ -299,6 +377,7 @@ export function createConversationController(dependencies) {
     elements.messages.appendChild(createMessage('user', content, new Date().toISOString()));
     scrollToBottom();
     setStreamState('connecting');
+    viewingChatId = chatId;
     abortController = new AbortController();
 
     let assistantRow = null;
@@ -339,6 +418,18 @@ export function createConversationController(dependencies) {
           if (!line) continue;
           let event;
           try { event = JSON.parse(line.slice(6)); } catch { continue; }
+          if (event.type === 'queued') {
+            // A turn was already running here, so the prompt is waiting its
+            // turn on the server rather than being refused.
+            showToast(`Queued — position ${event.position}. It will send when the current response finishes.`);
+            setStreamState('ready');
+            await refreshChats();
+            return;
+          }
+          if (event.type === 'gone') {
+            await refreshCurrent();
+            return;
+          }
           if (event.type === 'text') {
             const shouldFollow = isNearBottom();
             if (!assistantRow) {
@@ -347,9 +438,11 @@ export function createConversationController(dependencies) {
               elements.messages.appendChild(assistantRow);
             }
             fullText += event.content || '';
-            renderSafeText(assistantBubble, fullText);
-            setStreamState('responding');
-            followNewContent(shouldFollow);
+            if (viewingChatId === chatId) {
+              renderSafeText(assistantBubble, fullText);
+              setStreamState('responding');
+              followNewContent(shouldFollow);
+            }
           } else if (event.type === 'status' && event.status === 'api_retry') {
             const delay = event.retry_delay_ms ? Math.ceil(event.retry_delay_ms / 1000) : null;
             const detail = `Retry ${event.attempt || '?'}/${event.max_retries || '?'}${delay ? ` in ${delay}s` : ''}…`;
@@ -396,8 +489,20 @@ export function createConversationController(dependencies) {
     }
   }
 
-  function stop() {
-    if (abortController) abortController.abort();
+  async function stop() {
+    // Aborting the reader only detaches now, so a stop has to be requested.
+    // Without this the button would look like it worked while the turn carried
+    // on spending tokens in the background.
+    const chatId = state.currentChat?.id;
+    detach();
+    setStreamState('stopped');
+    if (!chatId) return;
+    try {
+      await apiFetch(`/api/chats/${encodeURIComponent(chatId)}/stop`, {method: 'POST'});
+    } catch {
+      showToast('Could not confirm the stop — the turn may still be running', 'error');
+    }
+    await refreshChats();
   }
 
   function retry() {
@@ -408,7 +513,8 @@ export function createConversationController(dependencies) {
   }
 
   function destroy() {
-    if (abortController) abortController.abort();
+    // Leaving the page detaches; the turn is the server's and continues.
+    detach();
   }
 
   elements.composerInput.addEventListener('input', () => {

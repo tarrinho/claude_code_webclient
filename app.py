@@ -42,6 +42,7 @@ import db
 import prompts
 import runner
 import transcripts
+import turns
 
 
 # loguru keeps its own sinks, entirely separate from logging.conf, so
@@ -498,7 +499,7 @@ async def handle_chats_list(request: Request):
                     "description": c["description"],
                     "work_dir": c["work_dir"],
                     "created_at": c["created_at"],
-                    "updated_at": c["updated_at"],
+                    "updated_at": live_updated.get(c["id"], c["updated_at"]),
                     "archived": bool(c["archived"]),
                     "pinned": bool(c["pinned"]),
                     "pinned_at": c.get("pinned_at"),
@@ -507,6 +508,8 @@ async def handle_chats_list(request: Request):
                     # The sidebar populates the workspace pickers before the
                     # detail request lands, so the pin has to travel here too.
                     "ai_machine_id": c.get("ai_machine_id"),
+                    "running": c["id"] in running,
+                    "queued": queued.get(c["id"], 0),
                 }
                 for c in chats
             ],
@@ -585,6 +588,14 @@ async def handle_chat_get(request: Request, chat_id: str):
                 },
                 "archived": bool(chat["archived"]),
                 "pinned": bool(chat["pinned"]),
+                # Opening a conversation has to be able to tell whether a turn
+                # is in flight, so the client knows to attach to /live rather
+                # than showing a finished-looking conversation that is still
+                # being written to. `seq` is where to attach from: the buffered
+                # events are replayed only if the client asks for them.
+                "running": turns.is_running(chat_id),
+                "turn_seq": (turns.get(chat_id).seq if turns.get(chat_id) else 0),
+                "queued": len(await db.queue_list(chat_id, session["user"])),
             },
             "messages": [
                 {
@@ -916,9 +927,12 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     )
 
 
-# Safe messages for SSE errors so internal details never leak.
-_SSE_INTERNAL = "An internal error occurred — see server logs."
-_SSE_TIMEOUT = "The turn timed out."
+# Safe messages for SSE errors so internal details never leak. The first two are
+# aliases of turns.py's own constants: a turn now fails inside its task, so the
+# text is chosen there, and duplicating the literals here is how a timeout ends
+# up reported as a generic internal error.
+_SSE_INTERNAL = turns.INTERNAL_MESSAGE
+_SSE_TIMEOUT = turns.TIMEOUT_MESSAGE
 _SSE_UNKNOWN = "Connection lost during streaming."
 
 
@@ -997,6 +1011,16 @@ async def handle_submit_message(request: Request, chat_id: str):
             "session_id": chat.get("session_id"),
         })
 
+    # Deliberately NOT routed through turns.py. This endpoint is synchronous by
+    # contract -- it answers with the whole reply -- and the web UI does not use
+    # it; the browser talks to /stream. So it keeps its own blocking runner call
+    # rather than gaining a background turn it would only ever wait for.
+    #
+    # The consequence, stated because it is a real asymmetry: a turn started
+    # here is invisible to turns.py, so it neither shows in the sidebar nor
+    # queues a concurrent /stream request behind it. That is unchanged from
+    # before background turns existed -- the two endpoints never coordinated --
+    # but it is now the only place where they differ.
     try:
         await _prepare_transcript_for_backend(chat)
         chunks, session_id = await runner.run_turn(
@@ -1079,6 +1103,105 @@ async def _prepare_transcript_for_backend(chat: dict) -> None:
         )
 
 
+async def _start_turn(
+    chat: dict, owner: str, prompt: str, model: str | None
+) -> turns.LiveTurn:
+    """Begin a background turn for *chat* and persist whatever it produces.
+
+    Everything the old inline loop did when ``done`` arrived has to happen in
+    here instead, because by then there may be no client left to do it for. That
+    is the point: a turn that finishes while nobody is watching must still be
+    stored, and one that fails must still leave a trace.
+    """
+    chat_id = chat["id"]
+
+    async def produce():
+        # Inside the task, not before it: a transcript repair on a large
+        # conversation would otherwise delay the HTTP response.
+        await _prepare_transcript_for_backend(chat)
+        async for event in runner.stream_turn(
+            prompt, chat["session_id"], chat["work_dir"], chat_id, model
+        ):
+            yield event
+
+    async def on_event(event: dict) -> None:
+        if event.get("type") == "usage":
+            # Recorded as it arrives: the tokens were spent whether or not the
+            # rest of the turn completes, and whether or not anyone is watching.
+            await _record_turn_usage(chat_id, owner, event)
+
+    async def finish(
+        *,
+        parts: list[str],
+        session_id: str | None,
+        model: str,
+        failed: bool,
+        cancelled: bool = False,
+    ) -> None:
+        if cancelled:
+            # Stopped on purpose. The tokens are already billed and the partial
+            # answer is on the user's screen, so it is stored -- discarding it
+            # left exactly the "paid for it, nothing to show" state this whole
+            # change exists to remove. With no text there is nothing worth
+            # keeping, and the client puts the prompt back in the composer, so
+            # storing it would duplicate the moment they send again.
+            partial = "".join(parts)
+            if partial.strip():
+                await db.messages_batch(
+                    chat_id, [("user", prompt), ("assistant", partial)]
+                )
+                await db.bump_chat_updated_at(chat_id)
+            return
+        if failed:
+            # Nothing is stored for a failed turn, matching the inline loop this
+            # replaced. Storing the prompt looked like an improvement -- a
+            # background failure leaves no trace for a user who walked away --
+            # but Retry re-sends the same prompt, so it lands twice. The
+            # conversation must not gain a phantom message for every failure
+            # the user retried past.
+            return
+        await db.messages_batch(
+            chat_id, [("user", prompt), ("assistant", "".join(parts))]
+        )
+        await db.bump_chat_updated_at(chat_id)
+        if session_id and session_id != chat["session_id"]:
+            await db.chat_set_session(chat_id, session_id)
+        if model and model != chat.get("model"):
+            await db.chat_set_model(chat_id, model)
+        # Same reason as the blocking path: the runner appended this turn to the
+        # CLI transcript too, so move the sync past it rather than letting the
+        # next poll echo it back.
+        linked = session_id or chat.get("session_id")
+        if linked:
+            await _skip_transcript_to_end(chat_id, linked)
+
+    return turns.start(
+        chat_id, owner, prompt, model, produce=produce, finish=finish,
+        on_event=on_event,
+    )
+
+
+async def _launch_queued(
+    chat_id: str, owner: str, prompt: str, model: str | None
+) -> None:
+    """Start a prompt that was waiting behind a turn.
+
+    Registered on ``turns.launcher`` so the queue can drain from inside
+    ``turns.py`` without it importing this module, which would be a cycle.
+    """
+    chat = await db.chat_get(chat_id, owner)
+    if not chat:
+        _log.warning(
+            "queued_prompt_dropped chat_id=%s owner=%s (conversation is gone)",
+            chat_id, owner,
+        )
+        return
+    await _start_turn(chat, owner, prompt, model)
+
+
+turns.launcher = _launch_queued
+
+
 async def stream_handler(request: Request, chat_id: str):
     """POST /api/chats/{id}/stream -- SSE token stream with prompt in body."""
     sid = request.cookies.get("wc_session")
@@ -1146,61 +1269,43 @@ async def stream_handler(request: Request, chat_id: str):
             return
 
         try:
-            full_response_parts: list[str] = []
-            pending_session_id = chat["session_id"]
-            pending_model = chat.get("model") or ""
-            completed = False
-            failed = False
-
-            await _prepare_transcript_for_backend(chat)
-            async for event in runner.stream_turn(
-                prompt,
-                chat["session_id"],
-                chat["work_dir"],
-                chat_id,
-                model,
-            ):
-                event_type = event.get("type")
-                if event_type == "session_id":
-                    pending_session_id = event.get("session_id") or pending_session_id
-                elif event_type == "model":
-                    pending_model = event.get("model") or pending_model
-                elif event_type == "usage":
-                    # Recorded as it arrives: the tokens were spent whether or
-                    # not the rest of the turn completes.
-                    await _record_turn_usage(chat_id, session["user"], event)
-                elif event_type == "text":
-                    full_response_parts.append(event.get("content", ""))
-                elif event_type == "error":
-                    failed = True
-                elif event_type == "done":
-                    if failed:
-                        break
-                    full_response = "".join(full_response_parts)
-                    await db.messages_batch(
-                        chat_id,
-                        [
-                            ("user", prompt),
-                            ("assistant", full_response),
-                        ],
+            # The turn is started as a background task and then followed, so
+            # this response is a viewer rather than the turn's owner. Closing it
+            # -- by switching conversations, reloading, or locking a phone --
+            # no longer shortens the turn or discards its answer.
+            try:
+                await _start_turn(chat, session["user"], prompt, model)
+            except turns.AlreadyRunning:
+                position = await db.queue_add(
+                    chat_id, session["user"], prompt, model
+                )
+                if position:
+                    yield (
+                        "data: "
+                        + json.dumps({"type": "queued", "position": position})
+                        + "\n\n"
                     )
-                    if pending_session_id and pending_session_id != chat["session_id"]:
-                        await db.chat_set_session(chat_id, pending_session_id)
-                    if pending_model and pending_model != chat.get("model"):
-                        await db.chat_set_model(chat_id, pending_model)
-                    # Same reason as the blocking path: the runner appended
-                    # this turn to the transcript too, so move the sync past
-                    # it rather than letting the next poll echo it back.
-                    _linked = pending_session_id or chat.get("session_id")
-                    if _linked:
-                        await _skip_transcript_to_end(chat_id, _linked)
-                    completed = True
+                else:
+                    yield (
+                        "data: "
+                        + json.dumps({
+                            "type": "error",
+                            "error": f"This conversation already has "
+                                     f"{db.QUEUE_MAX} prompts waiting.",
+                        })
+                        + "\n\n"
+                    )
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
 
+            async for event in turns.follow(chat_id):
+                if event.get("type") == "keepalive":
+                    # Comment frame: keeps an intermediary from dropping a
+                    # stream that is legitimately waiting on a slow model.
+                    yield ": keep-alive\n\n"
+                    continue
                 yield f"data: {json.dumps(event)}\n\n"
                 await asyncio.sleep(0)
-
-            if not completed and not failed:
-                yield f"data: {json.dumps({'type': 'error', 'error': 'Stream ended before completion'})}\n\n"
 
         except asyncio.CancelledError:
             raise
@@ -1223,6 +1328,144 @@ async def stream_handler(request: Request, chat_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def handle_chat_live(request: Request, chat_id: str):
+    """GET /api/chats/{id}/live?since=N -- attach to a turn already running.
+
+    This is what makes leaving harmless. A client that switched away, reloaded,
+    or had its tab suspended reconnects here, is replayed everything it missed
+    from *since*, and then follows the tail. ``since`` is the last ``seq`` the
+    client saw, so a reattach costs only the gap rather than the conversation.
+    """
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    try:
+        since = max(0, int(request.query_params.get("since", 0)))
+    except (TypeError, ValueError):
+        since = 0
+
+    turn = turns.get(chat_id)
+    if turn is None or turn.owner != session["user"]:
+        # No live turn, and no error either: "nothing is running" is a normal
+        # answer to this question, and the client uses it to settle its UI.
+        return JSONResponse({"running": False, "state": "idle"})
+
+    async def event_generator():
+        yield (
+            "data: "
+            + json.dumps({
+                "type": "start",
+                "chat_id": chat_id,
+                "since": since,
+                "state": turn.state,
+            })
+            + "\n\n"
+        )
+        try:
+            async for event in turns.follow(chat_id, since):
+                if await request.is_disconnected():
+                    return
+                if event.get("type") == "keepalive":
+                    yield ": keep-alive\n\n"
+                    continue
+                yield f"data: {json.dumps(event)}\n\n"
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- convert follow failures to SSE errors
+            _log.exception("live stream failed chat_id=%s", chat_id)
+            yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def handle_turn_stop(request: Request, chat_id: str):
+    """POST /api/chats/{id}/stop -- cancel the running turn.
+
+    Needed because closing the stream no longer stops anything. Stop used to be
+    implicit -- the browser aborted its reader and the turn died with it -- so
+    once a turn outlives its viewer, an explicit request is the only way to
+    distinguish "I am leaving" from "stop working".
+    """
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    turn = turns.get(chat_id)
+    if turn is not None and turn.owner != session["user"]:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    stopped = await turns.cancel(chat_id)
+    # A stop also abandons what was queued behind it: the user is not asking to
+    # move on to the next prompt, they are asking to stop.
+    held = await db.queue_hold_all(chat_id)
+    if stopped:
+        _log.info(
+            "turn_stopped chat_id=%s user=%s held=%d",
+            chat_id, session["user"], held,
+        )
+    return JSONResponse({"ok": True, "stopped": stopped, "held": held})
+
+
+async def handle_queue_list(request: Request, chat_id: str):
+    """GET /api/chats/{id}/queue -- prompts waiting behind the running turn."""
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return JSONResponse({
+        "queue": await db.queue_list(chat_id, session["user"]),
+        "max": db.QUEUE_MAX,
+        "running": turns.is_running(chat_id),
+    })
+
+
+async def handle_queue_delete(request: Request, chat_id: str, queue_id: int):
+    """DELETE /api/chats/{id}/queue/{queue_id} -- discard a queued prompt."""
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if not await db.queue_delete(queue_id, session["user"]):
+        raise HTTPException(status_code=404, detail="Queued prompt not found")
+    _log.info(
+        "queue_discarded chat_id=%s queue_id=%s user=%s",
+        chat_id, queue_id, session["user"],
+    )
+    return JSONResponse({"ok": True})
+
+
+async def handle_queue_release(request: Request, chat_id: str, queue_id: int):
+    """POST /api/chats/{id}/queue/{queue_id}/release -- send a held prompt now.
+
+    A prompt is held when the turn in front of it failed, so releasing it is the
+    user deciding to go ahead anyway. If nothing is running it starts
+    immediately; otherwise it returns to the queue and drains normally.
+    """
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if not await db.queue_release(queue_id, session["user"]):
+        raise HTTPException(status_code=404, detail="Queued prompt not found")
+    if turns.is_running(chat_id):
+        return JSONResponse({"ok": True, "started": False})
+    row = await db.queue_next(chat_id)
+    if row is None:
+        return JSONResponse({"ok": True, "started": False})
+    await db.queue_delete(row["id"], session["user"])
+    await _start_turn(chat, session["user"], row["prompt"], row["model"])
+    return JSONResponse({"ok": True, "started": True})
 
 
 # ── HTML templates ────────────────────────────────────────────────────────────────
@@ -1307,6 +1550,10 @@ async def lifespan(app: FastAPI):
     else:
         _log.info("admin user already exists or not configured")
     yield
+    # Before db.close(): a turn cancelled here still runs its `finish`, which
+    # needs the connection. Leaving them to be torn down with the loop instead
+    # abandoned tasks mid-write.
+    await turns.shutdown()
     await db.close()
     _log.info("WebConsole shutting down")
 
@@ -1414,6 +1661,31 @@ async def _api_chat_question_get(request: Request, chat_id: str):
 @app.post("/api/chats/{chat_id}/question")
 async def _api_chat_question_answer(request: Request, chat_id: str):
     return await handle_chat_question_answer(request)
+
+
+@app.get("/api/chats/{chat_id}/live")
+async def _api_chat_live(request: Request, chat_id: str):
+    return await handle_chat_live(request, chat_id)
+
+
+@app.post("/api/chats/{chat_id}/stop")
+async def _api_chat_stop(request: Request, chat_id: str):
+    return await handle_turn_stop(request, chat_id)
+
+
+@app.get("/api/chats/{chat_id}/queue")
+async def _api_chat_queue_list(request: Request, chat_id: str):
+    return await handle_queue_list(request, chat_id)
+
+
+@app.delete("/api/chats/{chat_id}/queue/{queue_id}")
+async def _api_chat_queue_delete(request: Request, chat_id: str, queue_id: int):
+    return await handle_queue_delete(request, chat_id, queue_id)
+
+
+@app.post("/api/chats/{chat_id}/queue/{queue_id}/release")
+async def _api_chat_queue_release(request: Request, chat_id: str, queue_id: int):
+    return await handle_queue_release(request, chat_id, queue_id)
 
 
 @app.post("/api/chats/{chat_id}/sync")

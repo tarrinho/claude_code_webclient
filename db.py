@@ -197,6 +197,24 @@ async def init() -> None:
             ON usage_events(owner_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_usage_owner_model
             ON usage_events(owner_id, model);
+
+        -- Prompts sent while that conversation already had a turn running.
+        -- Persisted rather than held in memory because a queued prompt has to
+        -- survive a reload: the point of the feature is that the user can walk
+        -- away after sending.
+        CREATE TABLE IF NOT EXISTS turn_queue (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id    TEXT NOT NULL,
+            owner_id   TEXT NOT NULL,
+            prompt     TEXT NOT NULL,
+            model      TEXT,
+            -- 'pending' is next in line; 'held' means the turn ahead of it
+            -- failed, so it waits for the user to send or discard it rather
+            -- than firing into a conversation that just broke.
+            state      TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_queue_chat ON turn_queue(chat_id, id);
     """)
     await _ensure_chat_columns()
     await db_conn.commit()
@@ -523,6 +541,19 @@ async def chat_set_transcript_offset(chat_id: str, offset: int) -> None:
     await db_conn.execute(
         "UPDATE chats SET transcript_offset = ? WHERE id = ?",
         (int(offset), chat_id),
+    )
+    await db_conn.commit()
+
+
+async def bump_chat_updated_at(chat_id: str) -> None:
+    """Update the conversation's ``updated_at`` timestamp.
+
+    Does not touch ``position``, so user-placed conversations keep their
+    slot while the recency timestamp becomes accurate for the list view.
+    """
+    await db_conn.execute(
+        "UPDATE chats SET updated_at = ? WHERE id = ?",
+        (_now(), chat_id),
     )
     await db_conn.commit()
 
@@ -1464,6 +1495,100 @@ async def usage_prune(days: int) -> int:
         return cur.rowcount or 0
     except Exception:  # noqa: BLE001 -- pruning must never block startup
         return 0
+
+
+# ── Queued prompts ──────────────────────────────────────────────────────────────────────
+# A prompt sent while that conversation already had a turn running. Owner-scoped
+# throughout: a queue entry is as private as the conversation it belongs to.
+
+# Per-conversation cap. A queue only drains when a turn finishes cleanly, so
+# without a ceiling a conversation whose turns keep failing would accumulate
+# prompts indefinitely.
+QUEUE_MAX: Final[int] = 5
+
+
+async def queue_add(
+    chat_id: str, owner_id: str, prompt: str, model: str | None = None
+) -> int:
+    """Append a prompt. Returns its 1-based position, or 0 if the queue is full."""
+    cur = await db_conn.execute(
+        "SELECT COUNT(*) AS n FROM turn_queue WHERE chat_id = ? AND owner_id = ?",
+        (chat_id, owner_id),
+    )
+    row = await cur.fetchone()
+    if (row["n"] if row else 0) >= QUEUE_MAX:
+        return 0
+    await db_conn.execute(
+        "INSERT INTO turn_queue (chat_id, owner_id, prompt, model, state, created_at) "
+        "VALUES (?, ?, ?, ?, 'pending', ?)",
+        (chat_id, owner_id, prompt, model, _now()),
+    )
+    await db_conn.commit()
+    return (row["n"] if row else 0) + 1
+
+
+async def queue_list(chat_id: str, owner_id: str) -> list[dict[str, Any]]:
+    """Every queued prompt for a conversation, oldest first."""
+    cur = await db_conn.execute(
+        "SELECT id, prompt, model, state, created_at FROM turn_queue "
+        "WHERE chat_id = ? AND owner_id = ? ORDER BY id",
+        (chat_id, owner_id),
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def queue_counts(owner_id: str) -> dict[str, int]:
+    """How many prompts each conversation has queued, for the chat list."""
+    cur = await db_conn.execute(
+        "SELECT chat_id, COUNT(*) AS n FROM turn_queue WHERE owner_id = ? "
+        "GROUP BY chat_id",
+        (owner_id,),
+    )
+    return {row["chat_id"]: row["n"] for row in await cur.fetchall()}
+
+
+async def queue_next(chat_id: str) -> dict[str, Any] | None:
+    """The oldest pending prompt for a conversation, or None.
+
+    Deliberately not owner-scoped: the caller is the turn that just finished,
+    which already established ownership, and it holds the owner to pass on.
+    """
+    cur = await db_conn.execute(
+        "SELECT id, prompt, model FROM turn_queue "
+        "WHERE chat_id = ? AND state = 'pending' ORDER BY id LIMIT 1",
+        (chat_id,),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def queue_delete(queue_id: int, owner_id: str) -> bool:
+    """Remove one queued prompt. Returns whether a row was removed."""
+    cur = await db_conn.execute(
+        "DELETE FROM turn_queue WHERE id = ? AND owner_id = ?", (queue_id, owner_id)
+    )
+    await db_conn.commit()
+    return bool(cur.rowcount)
+
+
+async def queue_release(queue_id: int, owner_id: str) -> bool:
+    """Return a held prompt to pending, so the next finish will send it."""
+    cur = await db_conn.execute(
+        "UPDATE turn_queue SET state = 'pending' WHERE id = ? AND owner_id = ?",
+        (queue_id, owner_id),
+    )
+    await db_conn.commit()
+    return bool(cur.rowcount)
+
+
+async def queue_hold_all(chat_id: str) -> int:
+    """Mark a conversation's pending prompts as held. Returns how many."""
+    cur = await db_conn.execute(
+        "UPDATE turn_queue SET state = 'held' WHERE chat_id = ? AND state = 'pending'",
+        (chat_id,),
+    )
+    await db_conn.commit()
+    return cur.rowcount or 0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────────────

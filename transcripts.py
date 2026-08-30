@@ -731,6 +731,44 @@ async def repair_if_needed(session_id: str) -> dict[str, Any]:
 _USAGE_MARKER: Final[bytes] = b'"usage"'
 
 
+# Records that state which prompt the session is working on. `attachment.prompt`
+# is written when the CLI actually begins a prompt, which is what makes this
+# usable where a byte offset is not: input typed into a busy session is queued,
+# so work can start long after it was typed, and everything the agent does in
+# between belongs to whatever it was already doing.
+def _prompt_boundary(record: dict) -> str | None:
+    """The prompt this record says the session is now working on, if it says one."""
+    kind = record.get("type")
+    if kind == "attachment":
+        attachment = record.get("attachment")
+        if isinstance(attachment, dict):
+            text = attachment.get("prompt")
+            if isinstance(text, str) and text.strip():
+                return text
+        return None
+    if kind == "queue-operation":
+        text = record.get("content")
+        return text if isinstance(text, str) and text.strip() else None
+    if kind == "user":
+        message = record.get("message")
+        if not isinstance(message, dict):
+            return None
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            parts = [
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            joined = " ".join(parts).strip()
+            # A user record is also how a tool result comes back; those carry no
+            # text block and must not be read as a new prompt.
+            return joined or None
+    return None
+
+
 def _usage_from_record(record: Any) -> dict[str, Any] | None:
     """Token counts for one assistant record, or None if it carries none."""
     if not isinstance(record, dict) or record.get("type") != "assistant":
@@ -811,6 +849,7 @@ def _usage_since_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], in
         # batches then leaves the cursor exactly at what was stored, which is
         # what keeps a retry from counting the same turns twice.
         cursor = offset
+        current_prompt = ""
         for raw_line in consumed.split(b"\n")[:-1]:
             cursor += len(raw_line) + 1
             line = raw_line.decode("utf-8", errors="replace").strip()
@@ -820,9 +859,15 @@ def _usage_since_sync(path: Path, offset: int) -> tuple[list[dict[str, Any]], in
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            boundary = _prompt_boundary(record)
+            if boundary:
+                current_prompt = boundary
             row = _usage_from_record(record)
             if row:
                 row["offset"] = cursor
+                # What the session was working on when this turn ran. Lets a
+                # routed request claim its own turns and nothing else.
+                row["after_prompt"] = current_prompt
                 rows.append(row)
     return rows, offset + len(consumed)
 

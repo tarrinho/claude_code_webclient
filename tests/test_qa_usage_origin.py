@@ -330,73 +330,114 @@ class RoutedAttributionQA(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     @staticmethod
-    def _row(offset, when, inp=1000):
+    def _row(offset, when, prompt="", inp=1000):
         return {"model": "claude-opus-5", "input_tokens": inp, "output_tokens": 10,
                 "cache_read_tokens": 5, "cache_creation_tokens": 0,
-                "context_unsplit": False, "offset": offset, "timestamp": when}
+                "context_unsplit": False, "offset": offset, "timestamp": when,
+                # What the session was working on when this turn ran.
+                "after_prompt": prompt}
 
-    async def test_turns_after_the_mark_are_attributed_to_the_request(self):
-        await db.routed_request_add("sess-live", "c1", "admin", 500)
+    async def test_a_turn_is_claimed_only_by_the_prompt_that_caused_it(self):
+        """The bug the offset-only version had, caught live.
+
+        Typing into a busy session queues the input, so work can begin long
+        after the mark and everything the agent does meanwhile belongs to
+        whatever it was already doing. The first version credited a routed
+        request with a peer message the agent happened to answer in between --
+        observed on the real machine, not theorised.
+        """
+        await db.routed_request_add("sess-live", "c1", "admin", 0, "please do X")
         marks = await db.routed_markers("sess-live")
-        asked = marks[0]["created_at"]
+        when = marks[0]["created_at"]
         await db.usage_import("admin", "sess-live", [
-            self._row(400, asked),       # before the mark: the agent's own work
-            self._row(600, asked),       # after: caused by the web request
-        ], 600)
+            self._row(100, when, "please do X"),        # caused by the request
+            self._row(200, when, "something else"),     # the agent's own work
+        ], 200)
         rows = {r["origin"]: r for r in await db.usage_by_origin("admin", None)}
-        self.assertEqual(sorted(rows), ["terminal", "web-routed"])
         self.assertEqual(rows["web-routed"]["requests"], 1)
         self.assertEqual(rows["terminal"]["requests"], 1)
 
-    async def test_a_routed_row_carries_the_conversation_it_came_from(self):
-        await db.routed_request_add("sess-live", "c1", "admin", 0)
+    async def test_queued_work_is_still_attributed_however_late_it_runs(self):
+        # The offset cannot express this: the turns arrive after other work.
+        await db.routed_request_add("sess-live", "c1", "admin", 0, "queued ask")
+        marks = await db.routed_markers("sess-live")
+        asked = datetime.datetime.fromisoformat(
+            marks[0]["created_at"].replace("Z", "+00:00"))
+        later = (asked + datetime.timedelta(minutes=45)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await db.usage_import("admin", "sess-live", [
+            self._row(50, marks[0]["created_at"], "other business"),
+            self._row(900, later, "queued ask"),
+        ], 900)
+        rows = {r["origin"]: r for r in await db.usage_by_origin("admin", None)}
+        self.assertEqual(rows["web-routed"]["requests"], 1)
+
+    async def test_whitespace_and_case_do_not_break_the_match(self):
+        # Two records of one prompt: what the console sent, and what the CLI
+        # received. They differ in formatting.
+        await db.routed_request_add("sess-live", "c1", "admin", 0, "Do   The Thing")
         marks = await db.routed_markers("sess-live")
         await db.usage_import("admin", "sess-live", [
-            self._row(10, marks[0]["created_at"])], 10)
+            self._row(10, marks[0]["created_at"], "do the thing")], 10)
+        rows = await db.usage_by_origin("admin", None)
+        self.assertEqual([r["origin"] for r in rows], ["web-routed"])
+
+    async def test_a_routed_row_carries_the_conversation_it_came_from(self):
+        await db.routed_request_add("sess-live", "c1", "admin", 0, "trace me")
+        marks = await db.routed_markers("sess-live")
+        await db.usage_import("admin", "sess-live", [
+            self._row(10, marks[0]["created_at"], "trace me")], 10)
         cur = await db.db_conn.execute(
-            "SELECT chat_id, origin FROM usage_events WHERE origin = 'web-routed'")
+            "SELECT chat_id FROM usage_events WHERE origin = 'web-routed'")
         row = await cur.fetchone()
         # Without the chat id the row cannot be traced back to the request.
         self.assertEqual(row["chat_id"], "c1")
 
-    async def test_attribution_expires_so_one_request_does_not_own_the_session(self):
-        """There is no end marker in a transcript -- the terminal carries on.
+    async def test_a_marker_cannot_claim_turns_that_predate_it(self):
+        await db.routed_request_add("sess-live", "c1", "admin", 500, "same words")
+        marks = await db.routed_markers("sess-live")
+        await db.usage_import("admin", "sess-live", [
+            self._row(400, marks[0]["created_at"], "same words")], 400)
+        rows = await db.usage_by_origin("admin", None)
+        self.assertEqual([r["origin"] for r in rows], ["terminal"])
 
-        So the claim is bounded by time as well as by offset. Work typed
-        directly into that terminal an hour later is the terminal's own.
+    async def test_attribution_expires_as_a_backstop(self):
+        """Bounded even when the prompt matches, for a session that goes quiet.
+
+        The window is no longer the mechanism -- the prompt match is -- but a
+        marker must not be able to claim turns forever.
         """
-        await db.routed_request_add("sess-live", "c1", "admin", 0)
+        await db.routed_request_add("sess-live", "c1", "admin", 0, "old ask")
         marks = await db.routed_markers("sess-live")
         asked = datetime.datetime.fromisoformat(
             marks[0]["created_at"].replace("Z", "+00:00"))
         late = (asked + datetime.timedelta(seconds=db.ROUTED_WINDOW_S + 60)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        await db.usage_import("admin", "sess-live", [self._row(10, late)], 10)
+        await db.usage_import("admin", "sess-live", [
+            self._row(10, late, "old ask")], 10)
         rows = await db.usage_by_origin("admin", None)
         self.assertEqual([r["origin"] for r in rows], ["terminal"])
 
     async def test_a_session_never_routed_to_is_untouched(self):
         await db.usage_import("admin", "sess-live", [
-            self._row(10, "2026-08-30T10:00:00Z")], 10)
+            self._row(10, "2026-08-30T10:00:00Z", "anything")], 10)
         rows = await db.usage_by_origin("admin", None)
         self.assertEqual([r["origin"] for r in rows], ["terminal"])
 
-    async def test_the_newest_mark_at_or_before_the_offset_wins(self):
-        await db.routed_request_add("sess-live", "c1", "admin", 100)
+    async def test_two_requests_are_told_apart_by_what_they_asked(self):
         await db.chat_create("c2", "second ask", None, "/tmp/y", "admin")
         await db.chat_set_session("c2", "sess-live")
-        await db.routed_request_add("sess-live", "c2", "admin", 900)
+        await db.routed_request_add("sess-live", "c1", "admin", 0, "first thing")
+        await db.routed_request_add("sess-live", "c2", "admin", 0, "second thing")
         marks = await db.routed_markers("sess-live")
         when = marks[0]["created_at"]
         await db.usage_import("admin", "sess-live", [
-            self._row(500, when), self._row(1000, when)], 1000)
+            self._row(500, when, "first thing"),
+            self._row(1000, when, "second thing")], 1000)
         cur = await db.db_conn.execute(
-            "SELECT chat_id FROM usage_events WHERE origin='web-routed' "
-            "ORDER BY id")
-        got = [r["chat_id"] for r in await cur.fetchall()]
-        self.assertEqual(got, ["c1", "c2"])
+            "SELECT chat_id FROM usage_events WHERE origin='web-routed' ORDER BY id")
+        self.assertEqual([r["chat_id"] for r in await cur.fetchall()], ["c1", "c2"])
 
     async def test_marking_needs_a_session_and_a_chat(self):
-        self.assertIsNone(await db.routed_request_add("", "c1", "admin", 0))
-        self.assertIsNone(await db.routed_request_add("s", "", "admin", 0))
+        self.assertIsNone(await db.routed_request_add("", "c1", "admin", 0, "x"))
+        self.assertIsNone(await db.routed_request_add("s", "", "admin", 0, "x"))
         self.assertEqual(await db.routed_markers("s"), [])

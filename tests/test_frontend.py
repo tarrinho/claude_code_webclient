@@ -18,9 +18,12 @@ class FrontendStructureTests(unittest.TestCase):
         cls.conversation = (ASSETS / "conversation.js").read_text()
 
     def test_html_uses_external_assets(self):
-        # Trailing quote omitted so a cache-busting ?v=N query stays valid.
+        # Trailing quote omitted so a cache-busting ?v=N query stays valid. The
+        # stylesheet kept its closing quote and so forbade the very thing the
+        # line above allows -- which is why styles.css shipped unversioned and a
+        # phone kept serving the previous one out of cache.
         self.assertIn('type="module" src="/assets/app.js', self.html)
-        self.assertIn('rel="stylesheet" href="/assets/styles.css"', self.html)
+        self.assertIn('rel="stylesheet" href="/assets/styles.css', self.html)
         self.assertNotIn("<style>", self.html)
         self.assertNotIn("async function sendMessage", self.html)
         self.assertNotIn("<script>\n", self.html)

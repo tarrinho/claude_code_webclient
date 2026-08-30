@@ -978,7 +978,7 @@ async def _route_to_live_terminal(chat: dict, prompt: str) -> dict | None:
     return outcome
 
 
-async def _mark_routed(chat: dict, owner: str) -> None:
+async def _mark_routed(chat: dict, owner: str, prompt: str) -> None:
     """Record that a website request was typed into this chat's terminal.
 
     Without this the turns that follow are imported as the terminal's own work
@@ -991,7 +991,7 @@ async def _mark_routed(chat: dict, owner: str) -> None:
     if not session_id:
         return
     offset = await asyncio.to_thread(transcripts.transcript_size, session_id)
-    await db.routed_request_add(session_id, chat["id"], owner, offset)
+    await db.routed_request_add(session_id, chat["id"], owner, offset, prompt)
 
 
 async def handle_submit_message(request: Request, chat_id: str):
@@ -1029,7 +1029,7 @@ async def handle_submit_message(request: Request, chat_id: str):
     routed = await _route_to_live_terminal(chat, prompt)
     if routed:
         session_id = chat.get("session_id")
-        await _mark_routed(chat, session["user"])
+        await _mark_routed(chat, session["user"], prompt)
         await db.messages_batch(chat_id, [("user", prompt)])
         # Same as the streaming path: the turn is also on disk, so advance
         # the sync offset to avoid a second import on the next poll.
@@ -1291,7 +1291,7 @@ async def stream_handler(request: Request, chat_id: str):
         routed = await _route_to_live_terminal(chat, prompt)
         if routed:
             session_id = chat.get("session_id")
-            await _mark_routed(chat, session["user"])
+            await _mark_routed(chat, session["user"], prompt)
             await db.messages_batch(chat_id, [("user", prompt)])
             # This turn was just stored in messages and is also written to the
             # CLI transcript, so advance the sync past it or the next poll

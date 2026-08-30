@@ -229,6 +229,11 @@ async def init() -> None:
             chat_id     TEXT NOT NULL,
             owner_id    TEXT NOT NULL,
             from_offset INTEGER NOT NULL,
+            -- What was asked. Attribution matches on this rather than on the
+            -- byte offset alone: input typed into a busy session is queued, so
+            -- the work can begin long afterwards, and everything the agent did
+            -- in between belongs to whatever it was already doing.
+            prompt      TEXT NOT NULL DEFAULT '',
             created_at  TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_routed_session
@@ -1415,6 +1420,7 @@ async def usage_import(
                     markers,
                     int(row.get("offset") or 0),
                     str(row.get("timestamp") or ""),
+                    str(row.get("after_prompt") or ""),
                 )
                 await db_conn.execute(
                     "INSERT INTO usage_events "
@@ -1470,6 +1476,13 @@ async def _ensure_usage_columns() -> None:
     """
     cursor = await db_conn.execute("PRAGMA table_info(usage_events)")
     columns = {row["name"] for row in await cursor.fetchall()}
+    routed = await db_conn.execute("PRAGMA table_info(routed_requests)")
+    routed_columns = {row["name"] for row in await routed.fetchall()}
+    if routed_columns and "prompt" not in routed_columns:
+        await db_conn.execute(
+            "ALTER TABLE routed_requests ADD COLUMN prompt TEXT NOT NULL DEFAULT ''"
+        )
+        await db_conn.commit()
     migrations = {
         "origin": "ALTER TABLE usage_events ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
         "context_unsplit":
@@ -1507,11 +1520,25 @@ async def _ensure_usage_columns() -> None:
 # end marker in a transcript -- the terminal simply carries on -- so attribution
 # is bounded by time rather than left open, and work typed directly into that
 # terminal an hour later is not credited to a web request.
-ROUTED_WINDOW_S: Final[int] = 1800
+# Backstop only, now that ownership is matched on the prompt itself: a
+# session that never receives another prompt cannot leave a marker
+# claiming turns indefinitely. Generous, because queued input can wait.
+ROUTED_WINDOW_S: Final[int] = 6 * 3600
+
+
+def normalise_prompt(text: str) -> str:
+    """A prompt reduced to something comparable across the two records of it.
+
+    The console holds what it sent; the transcript holds what the CLI received.
+    Whitespace and length differ, so both sides are folded the same way and
+    compared on a bounded prefix.
+    """
+    return " ".join((text or "").split())[:200].casefold()
 
 
 async def routed_request_add(
-    session_id: str, chat_id: str, owner_id: str, from_offset: int
+    session_id: str, chat_id: str, owner_id: str, from_offset: int,
+    prompt: str = "",
 ) -> int | None:
     """Mark that a website request was typed into *session_id*'s terminal."""
     if not session_id or not chat_id:
@@ -1519,9 +1546,10 @@ async def routed_request_add(
     try:
         cur = await db_conn.execute(
             "INSERT INTO routed_requests "
-            "(session_id, chat_id, owner_id, from_offset, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, chat_id, owner_id, int(from_offset or 0), _now()),
+            "(session_id, chat_id, owner_id, from_offset, prompt, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, chat_id, owner_id, int(from_offset or 0),
+             (prompt or "")[:4000], _now()),
         )
         await db_conn.commit()
         return cur.lastrowid
@@ -1538,7 +1566,7 @@ async def routed_markers(session_id: str) -> list[dict[str, Any]]:
     """
     try:
         cur = await db_conn.execute(
-            "SELECT chat_id, from_offset, created_at FROM routed_requests "
+            "SELECT chat_id, from_offset, prompt, created_at FROM routed_requests "
             "WHERE session_id = ? ORDER BY from_offset DESC",
             (session_id,),
         )
@@ -1548,30 +1576,39 @@ async def routed_markers(session_id: str) -> list[dict[str, Any]]:
 
 
 def routed_owner_of(
-    markers: list[dict[str, Any]], offset: int, when: str
+    markers: list[dict[str, Any]], offset: int, when: str, after_prompt: str = ""
 ) -> dict[str, Any] | None:
     """The routed request a transcript row belongs to, if any.
 
-    A row belongs to the newest mark at or before its byte offset, provided the
-    row was written within ``ROUTED_WINDOW_S`` of that request. Both conditions
-    matter: the offset says the work came after the request, and the window
-    stops a single request owning the rest of the session's life.
+    Matched on the prompt the session was working on when the turn ran. That is
+    the only signal that survives queueing: a byte offset says a turn came after
+    the request was typed, which is not the same as being caused by it. Typing
+    into a busy session queues the input, and the first version of this credited
+    a routed request with whatever the agent happened to be doing in the
+    meantime -- observed, not theoretical.
+
+    The offset remains as a sanity check, so a marker cannot claim turns that
+    predate it. The time window is now only a backstop against a session that
+    never receives another prompt.
     """
-    if not markers or not offset:
+    if not markers:
+        return None
+    wanted = normalise_prompt(after_prompt)
+    if not wanted:
         return None
     for marker in markers:
-        if offset < marker["from_offset"]:
+        if offset and offset < marker["from_offset"]:
+            continue
+        if normalise_prompt(marker.get("prompt") or "") != wanted:
             continue
         try:
             asked = datetime.datetime.fromisoformat(
                 str(marker["created_at"]).replace("Z", "+00:00")
             )
-            wrote = datetime.datetime.fromisoformat(
-                str(when).replace("Z", "+00:00")
-            )
+            wrote = datetime.datetime.fromisoformat(str(when).replace("Z", "+00:00"))
         except (TypeError, ValueError):
             return marker
-        if 0 <= (wrote - asked).total_seconds() <= ROUTED_WINDOW_S:
+        if -60 <= (wrote - asked).total_seconds() <= ROUTED_WINDOW_S:
             return marker
         return None
     return None

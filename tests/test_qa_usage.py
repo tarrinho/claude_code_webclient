@@ -381,7 +381,13 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         )
 
     async def _get(self, query=None):
-        return json.loads((await app.handle_usage_get(self._req(query))).body)
+        # The endpoint folds terminal spend in by reading ~/.claude, so without
+        # this the test imports the operator's real transcripts into its own
+        # temporary database -- 18,572 rows on this machine, which drowns every
+        # assertion about what the test itself inserted. It also made a unit
+        # test depend on the machine it ran on, and take 16 seconds.
+        with patch.object(app, "_import_cli_usage", return_value=0):
+            return json.loads((await app.handle_usage_get(self._req(query))).body)
 
     async def test_response_shape(self):
         body = await self._get()

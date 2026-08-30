@@ -4941,6 +4941,13 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
     })
 
 
+# Two paths, one page. "/supervisor.html" is what index.html's iframe and its
+# standalone fallback both ask for, so it cannot move; "/supervisor" is what
+# anyone types or bookmarks, and it 404'd. Served directly rather than
+# redirected, matching how "/" and "/login" already serve their templates.
+# Relative asset resolution is the same from both: with no trailing slash the
+# base is "/", so "supervisor.js" resolves to "/supervisor.js" either way.
+@app.get("/supervisor")
 @app.get("/supervisor.html")
 async def _serve_supervisor_page(request: Request):
     return await handle_supervisor_page(request)

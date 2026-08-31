@@ -43,7 +43,19 @@ class Collector(logging.Handler):
 
 
 class ImportTimeConfigurationTests(unittest.TestCase):
-    """The configuration has to happen on import; nothing runs __main__."""
+    """The configuration has to happen on import; nothing runs __main__.
+
+    These assert against the state of *this* interpreter, so the import that
+    is supposed to cause that state has to happen here. It did not: the file
+    never imported app, and the assertions passed only when some other test
+    module had imported it first. Run this class on its own and it failed --
+    the checks were reporting on a side effect of the rest of the suite rather
+    than on the property they name.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import app  # noqa: F401 -- imported for its logging configuration
 
     def test_the_wc_logger_can_emit_at_info(self):
         """The failure was INFO being below the effective level, so check that."""
@@ -187,6 +199,69 @@ class BrokenConfigTests(unittest.TestCase):
                          f"a broken logging.conf must not stop the app importing:\n"
                          f"{result.stderr[-2000:]}")
         self.assertIn("usable True", result.stdout)
+
+
+class SwallowedErrorsAreExplainedTests(unittest.TestCase):
+    """A handler that catches an exception must say what it caught.
+
+    Both of these branches exist so a bad input cannot take the page down,
+    which is right. But a bare message turns every cause into the same line:
+    a malformed file and a misspelled function name become indistinguishable.
+    That is not theoretical here -- an unqualified call in app.py raised
+    NameError on every request and its handler reported "no questions found",
+    so the feature never worked and nothing ever said so.
+    """
+
+    def test_a_failed_logging_config_reports_why(self):
+        """The one signal that the file log has stopped existing.
+
+        It is also logged through a logging system that has just failed to
+        configure, so if this line is uninformative there is nothing else to
+        consult.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "logging.conf"
+            broken.write_text("this is not an ini file at all", encoding="utf-8")
+            probe = (
+                "import logging, unittest.mock, app; "
+                f"unittest.mock.patch.object(app, '__file__', {str(Path(tmp) / 'app.py')!r}).start(); "
+                "app._configure_logging()"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                cwd=REPO, capture_output=True, text=True, timeout=120, check=False,
+                env={**os.environ, "WC_LOG_FILE": str(Path(tmp) / "wc.log")},
+            )
+        output = result.stdout + result.stderr
+        self.assertIn("logging_config_failed", output)
+        self.assertIn("Traceback (most recent call last)", output,
+                      "the cause was swallowed: this says loading failed but "
+                      "not whether the file was missing, unreadable or malformed")
+
+    def test_a_failed_transcript_read_reports_why(self):
+        """A NameError here must not read the same as an empty transcript."""
+        probe = (
+            "import asyncio, logging, unittest.mock, app;"
+            "logging.basicConfig(level=logging.INFO);"
+            "p = unittest.mock.patch.object("
+            "    app.transcripts, 'last_error',"
+            "    side_effect=NameError(\"name 'wrongly_spelled' is not defined\"));"
+            "p.start();"
+            "asyncio.run(app._session_failure('s1', 'now'))"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                cwd=REPO, capture_output=True, text=True, timeout=120, check=False,
+                env={**os.environ, "WC_LOG_FILE": str(Path(tmp) / "wc.log")},
+            )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0,
+                         f"the view must still render: {result.stderr[-1500:]}")
+        self.assertIn("last_error failed", output)
+        self.assertIn("NameError", output,
+                      "a programming error was logged identically to a "
+                      "transcript that legitimately had nothing to report")
 
 
 if __name__ == "__main__":

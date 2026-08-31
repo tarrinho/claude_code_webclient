@@ -1830,6 +1830,11 @@ async def _api_chat_question_answer(request: Request, chat_id: str):
     return await handle_chat_question_answer(request)
 
 
+@app.delete("/api/chats/{chat_id}/question")
+async def _api_chat_question_dismiss(request: Request, chat_id: str):
+    return await handle_chat_question_dismiss(request)
+
+
 @app.get("/api/chats/{chat_id}/live")
 async def _api_chat_live(request: Request, chat_id: str):
     return await handle_chat_live(request, chat_id)
@@ -3378,7 +3383,16 @@ def classify_chat(
     session_id = chat.get("session_id", "")
     cli_status = cli_status_map.get(session_id, "")
     if cli_status and cli_status != "busy":
-        dismissed = cli_dismiss_map.get(session_id, "")
+        # Both marks, not just the session's. This row is presented as a
+        # conversation, so dismissing it writes ("chat", chat_id) -- and this
+        # branch used to consult only ("session", session_id). The dismissal
+        # was recorded faithfully and then never read, so the row returned on
+        # the next poll and the control looked inert. The later of the two
+        # wins: either identity may silence the row the user actually sees.
+        dismissed = max(
+            cli_dismiss_map.get(session_id, "") or "",
+            mark.get("dismissed_at") or "",
+        )
         status_updated = cli_status_updated_map.get(session_id, "")
         if not (dismissed and status_updated and status_updated <= dismissed):
             return {
@@ -4280,6 +4294,79 @@ async def handle_chat_question_answer(request: Request):
     return JSONResponse({"ok": True, "index": want, "label": result.get("label")})
 
 
+async def handle_chat_question_dismiss(request: Request):
+    """DELETE /api/chats/{id}/question -- close the prompt without answering it.
+
+    Every option in the bar answers the question, and some questions do not
+    deserve an answer: the premise is wrong, the work moved on, or it was
+    already settled in the terminal. Without this the only ways out were to
+    pick something the user does not mean -- which the session then acts on --
+    or to leave the prompt blocking that session indefinitely.
+
+    Escape is what the prompt itself offers, so this delivers the keystroke the
+    user would have pressed at the terminal rather than inventing a channel.
+
+    Failure is returned rather than raised, because a 409 alone cannot say
+    whether a retry is safe: ``delivered`` distinguishes a key the terminal
+    refused (retry) from one that went in and left the prompt open (do not --
+    see :func:`prompts.dismiss`). Raising HTTPException would flatten that to a
+    string and the client would have to parse prose to decide.
+    """
+    session = request.state.session
+    chat_id = request.path_params["chat_id"]
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    session_id = chat.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Chat is not linked to a session")
+
+    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    if not pending:
+        # Nothing to close is the state the caller asked for, so it is a
+        # success. Answering has the opposite default -- a 409 there stops an
+        # answer landing on whatever prompt appeared next -- but there is no
+        # equivalent hazard in declining to answer a question that is gone.
+        return JSONResponse({"ok": True, "already_closed": True})
+
+    target = await asyncio.to_thread(
+        prompts.find_target, session_id, pending.get("needle") or ""
+    )
+    if not target:
+        _log.info(
+            "question_dismiss_unreachable chat_id=%s user=%s",
+            chat_id, session["user"],
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "This session cannot be reached from here — it is not "
+                         "running inside screen or tmux, so the prompt has to be "
+                         "closed at its own terminal.",
+                "delivered": False,
+            },
+        )
+
+    result = await asyncio.to_thread(prompts.dismiss, target)
+    if not result.get("ok"):
+        _log.warning(
+            "question_dismiss_failed chat_id=%s user=%s delivered=%s reason=%s",
+            chat_id, session["user"], result.get("delivered"), result.get("reason"),
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": result.get("reason") or "Could not close the prompt",
+                "delivered": bool(result.get("delivered")),
+            },
+        )
+    _log.info(
+        "question_dismissed chat_id=%s user=%s question_id=%s",
+        chat_id, session["user"], pending.get("id"),
+    )
+    return JSONResponse({"ok": True, "dismissed": True})
+
+
 async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
     """Import turns added to *chat*'s transcript outside WebConsole.
 
@@ -4512,6 +4599,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
 
             eng = _supervisor_engines.get(supervisor_id)
             last_progress = -1.0
+            last_status = ""
             last_events = []
 
             while True:
@@ -4525,18 +4613,35 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                     return
 
                 progress = float(current.get("progress_pct") or 0)
+                status = current.get("status", "")
 
-                # Emit progress update if changed
-                if progress != last_progress:
-                    # Get tasks
-                    tasks = await db.supervisor_tasks_get(supervisor_id, owner)
-                    yield f"data: {json.dumps({
-                        'type': 'progress',
-                        'progress': progress,
-                        'status': current.get('status', ''),
-                        'tasks': tasks,
-                    })}\n\n"
+                # Emit on any change: progress, status, or engine events
+                if progress != last_progress or status != last_status:
+                    # Always send a status-only frame when status changes but
+                    # progress has not — this catches planning→running,
+                    # planning→done, etc. where the client would otherwise
+                    # remain stuck waiting for a progress bump that never
+                    # comes.  When progress also changed we bundle status
+                    # into the progress frame; the duplicate key is harmless
+                    # (the progress frame takes precedence).
+                    if status != last_status and progress == last_progress:
+                        yield f"data: {json.dumps({
+                            'type': 'status',
+                            'status': status,
+                        })}\n\n"
+                    elif progress != last_progress:
+                        # Get tasks only when progress actually changed
+                        tasks_data = await db.supervisor_tasks_get(
+                            supervisor_id, owner,
+                        )
+                        yield f"data: {json.dumps({
+                            'type': 'progress',
+                            'progress': progress,
+                            'status': status,
+                            'tasks': tasks_data,
+                        })}\n\n"
                     last_progress = progress
+                    last_status = status
 
                 # Get recent events from engine if available
                 if eng:
@@ -4557,7 +4662,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                     })}\n\n"
                     return
 
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001

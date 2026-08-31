@@ -628,6 +628,9 @@
       case "progress":
         handleProgress(data);
         break;
+      case "status":
+        handleStatusUpdate(data);
+        break;
       case "events":
         handleSSEEvents(data.events || []);
         break;
@@ -650,6 +653,14 @@
       case "error":
         addLogEntry("error", data.error || "Unknown error");
         break;
+    }
+  }
+
+  function handleStatusUpdate(data) {
+    if (data.status && activeSupervisor) {
+      activeSupervisor.status = data.status;
+      renderSupervisorList();
+      updatePauseResumeBtn(data.status);
     }
   }
 

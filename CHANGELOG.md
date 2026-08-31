@@ -39,6 +39,15 @@ churn.
 
 ### Fixed
 
+- **Every restart slept ten seconds for no reason.** The release-wait beside
+  the port reclaim looped on `! ss -tln "sport = :443" >/dev/null`, testing
+  `ss`'s exit status — which is 0 for any successful query, matched or not. The
+  condition was false on a free port and a busy one alike, so the loop never
+  broke early and never observed the thing it was waiting for. Both exit status
+  and stderr were identical either way, which is why nothing caught it; only
+  the clock could tell. It tests for output now, and a restart is back to about
+  two seconds.
+
 - **The server could not start unless something was already holding its port.**
   The port-reclaim added earlier today resolves the process listening on 443
   through a `ss | grep | head` pipeline, and `launch.sh` runs under

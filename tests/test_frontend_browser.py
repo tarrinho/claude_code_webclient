@@ -123,6 +123,13 @@ class _BrowserFixture(unittest.TestCase):
         env = {
             **os.environ,
             "HOME": str(home),
+            # Its own application log. logging.conf names an absolute path, so
+            # without this every server started here appends to the production
+            # log -- which is how that file came to hold interleaved and
+            # future-stamped lines from tests nobody was watching. Inside tmp,
+            # which already exists: RotatingFileHandler will not create a
+            # missing directory and the server would exit during setUpClass.
+            "WC_LOG_FILE": str(tmp / "app.log"),
             # Defaults to the home above, which the projects root is not under.
             "WC_PROJECTS_ROOT_BASE": str(tmp),
             "WC_DB_PATH": str(tmp / "wc.db"),

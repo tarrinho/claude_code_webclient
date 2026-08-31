@@ -150,6 +150,21 @@ if [ -n "${holder:-}" ] && [ "${holder}" != "$$" ]; then
             ;;
     esac
 fi
+# Wait until the kernel has fully released the port before trying to bind.
+# Without this a cold-start or stale-process leaves the site down in a systemd
+# restart loop (740+ attempts in the last outage).
+#
+# The condition tests for *output*, not exit status. `ss` returns 0 for any
+# successful query whether or not anything matched, so `! ss ... >/dev/null`
+# is false on a free port as well as a busy one: the loop never broke early,
+# never checked anything, and simply slept ten seconds on every single start.
+# A wait that cannot observe what it is waiting for is just a delay.
+for _retry in 1 2 3 4 5 6 7 8 9 10; do
+    if ! ss -tlnH "sport = :${RECLAIM_PORT}" 2>/dev/null | grep -q .; then
+        break
+    fi
+    sleep 1
+done
 # <<< reclaim-block
 
 # ── Launch WebConsole with HTTPS ──────────────────────────────────────

@@ -453,6 +453,60 @@ def transcript_size(session_id: str) -> int:
         return 0
 
 
+def _scan_questions_sync(path: Path) -> list[dict[str, Any]]:
+    """Quick-scan the full transcript for AskUserQuestion blocks.
+
+    This does NOT parse turns (which is expensive) — it only looks for
+    ``tool_use(name=AskUserQuestion)`` blocks and returns a minimal dict
+    for each one so the import path can attach the question text to the
+    message body.  Answered questions are skipped so the import stays
+    idempotent (questions that have a ``tool_result`` will render as
+    "Answered in the terminal" via the normal turn import of the tail).
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+
+    asked: dict[str, dict[str, Any]] = {}
+    answered: set[str] = set()
+
+    for line in raw.split(b"\n"):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            record = json.loads(text.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if (
+                block.get("type") == "tool_use"
+                and block.get("name") == _QUESTION_TOOL
+                and block.get("id")
+            ):
+                built = _question_block(block)
+                if built:
+                    asked[str(block["id"])] = built
+            elif block.get("type") == "tool_result" and block.get("tool_use_id"):
+                answered.add(str(block["tool_use_id"]))
+
+    # Return unanswered questions (the ones the UI is missing)
+    questions: list[dict[str, Any]] = []
+    for qid in reversed(list(asked.keys())):
+        if qid not in answered:
+            questions.append(asked[qid])
+    return questions
+
+
 async def read_turns(session_id: str, offset: int = 0) -> dict[str, Any]:
     """Read a session's conversation from *offset* to the end.
 

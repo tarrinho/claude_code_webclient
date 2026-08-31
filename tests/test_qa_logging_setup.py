@@ -66,7 +66,10 @@ class LoggingConfigTests(unittest.TestCase):
         self.assertIn("RotatingFileHandler", self.parser["handler_file"]["class"])
         # literal_eval, not eval: this is a config value, and parsing it must
         # not be able to execute anything even from a file we own.
-        args = ast.literal_eval(self.parser["handler_file"]["args"])
+        # raw=True: the filename is now the %(logfile)s token, supplied at
+        # configure time from config.LOG_FILE. A plain get() would try to
+        # interpolate it and raise, since nothing defines it in the file.
+        args = ast.literal_eval(self.parser.get("handler_file", "args", raw=True))
         self.assertEqual(len(args), 4)   # (filename, mode, maxBytes, backupCount)
         self.assertGreater(args[2], 0)   # rotates by size
         self.assertGreater(args[3], 0)   # keeps backups

@@ -100,7 +100,16 @@ def _configure_logging() -> None:
         try:
             # disable_existing_loggers would silence uvicorn's own loggers,
             # which are created before this module is imported.
-            logging.config.fileConfig(str(conf), disable_existing_loggers=False)
+            # defaults supplies the handler's filename, which the config names
+            # as %(logfile)s. Done here rather than by rewriting the handler
+            # afterwards because that would need a second fileConfig call, and
+            # fileConfig closes every existing handler -- the failure that took
+            # out 794 tests in registry #30.
+            logging.config.fileConfig(
+                str(conf),
+                defaults={"logfile": config.LOG_FILE},
+                disable_existing_loggers=False,
+            )
             return
         # RuntimeError is what fileConfig raises for a file with no section
         # headers, which is the likeliest way this one gets corrupted.
@@ -108,7 +117,7 @@ def _configure_logging() -> None:
             # A malformed config is worth reporting, but not worth refusing to
             # start over -- fall through to the stream handler below.
             logging.basicConfig(level=logging.INFO)
-            logging.getLogger("wc.app").exception("logging_config_failed path=%s", conf)
+            logging.getLogger("wc.app").warning("logging_config_failed path=%s", conf)
             return
     logging.basicConfig(
         level=logging.INFO,
@@ -3267,7 +3276,7 @@ async def _session_failure(session_id: str, file_touched: str) -> str | None:
     try:
         failure = await transcripts.last_error(session_id)
     except Exception:  # noqa: BLE001 -- the view must render without it
-        _log.exception("last_error failed session=%s", session_id)
+        _log.warning("last_error failed session=%s", session_id)
         return None
     _failure_cache[session_id] = (file_touched, failure)
     return failure
@@ -4084,6 +4093,36 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
         for row in (_turn_to_message(turn) for turn in payload.get("turns") or [])
         if row is not None
     ]
+    # The 512 KB tail read misses unanswered ``AskUserQuestion`` blocks that
+    # live in the older part of a large transcript.  A quick full-file scan
+    # finds them and attaches them as message rows.
+    try:
+        question_blocks = await asyncio.to_thread(
+            # Private, because transcripts.py exposes no public full-file scan.
+            transcripts._scan_questions_sync,
+            transcripts.transcript_path(session_id),
+        )
+    except Exception:  # noqa: BLE001 -- a malformed transcript must not break the page
+        # Logged, not silent. The call above was unqualified until now, so it
+        # raised NameError on every request and this handler turned that into
+        # "no questions found" -- meaning the older unanswered questions the
+        # scan exists to find were the exact thing it never returned. A bare
+        # pass here makes a programming error indistinguishable from a
+        # transcript that legitimately had none, and one log line would have
+        # found it in a single run.
+        _log.warning("question_scan_failed session=%s", session_id, exc_info=True)
+        question_blocks = []
+    extra_rows: list[tuple[str, str]] = []
+    for qb in question_blocks:
+        rendered = _question_to_text(qb)
+        if rendered:
+            extra_rows.append(("assistant", rendered))
+    if extra_rows:
+        rows.extend(extra_rows)
+        _log.info(
+            "transcript_imported_questions chat_id=%s questions=%d",
+            chat_id, len(extra_rows),
+        )
     # Record the read position even when nothing was worth importing, so the
     # sync does not re-examine the same bytes on every poll.
     await db.chat_set_transcript_offset(chat_id, int(payload.get("offset") or 0))
@@ -4244,6 +4283,25 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
         for row in (_turn_to_message(turn) for turn in payload.get("turns") or [])
         if row is not None
     ]
+    # The 512 KB tail read (via offset) can still miss unanswered
+    # ``AskUserQuestion`` blocks.  Do a targeted scan and attach any
+    # unanswered ones, then dedup against what we just stored so the next
+    # poll is a no-op.
+    try:
+        question_blocks = await asyncio.to_thread(
+            transcripts._scan_questions_sync,
+            transcripts.transcript_path(session_id),
+        )
+    except Exception:  # noqa: BLE001
+        question_blocks = []
+    extra_rows: list[tuple[str, str]] = []
+    for qb in question_blocks:
+        rendered = _question_to_text(qb)
+        if rendered:
+            extra_rows.append(("assistant", rendered))
+    if extra_rows:
+        rows.extend(extra_rows)
+
     new_offset = int(payload.get("offset") or offset)
     if new_offset != offset:
         await db.chat_set_transcript_offset(chat_id, new_offset)

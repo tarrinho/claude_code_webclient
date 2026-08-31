@@ -21,6 +21,7 @@ from __future__ import annotations
 import configparser
 import logging
 import logging.config
+import os
 import subprocess
 import sys
 import tempfile
@@ -86,10 +87,15 @@ class ImportTimeConfigurationTests(unittest.TestCase):
             "print(lg.isEnabledFor(logging.INFO), "
             "bool(lg.handlers or logging.getLogger().handlers))"
         )
-        result = subprocess.run(
-            [sys.executable, "-c", probe],
-            cwd=REPO, capture_output=True, text=True, timeout=120, check=False,
-        )
+        # Importing app configures logging, which opens the rotating handler.
+        # Pointed elsewhere so this test does not append to the production log
+        # it is checking the wiring of.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                cwd=REPO, capture_output=True, text=True, timeout=120, check=False,
+                env={**os.environ, "WC_LOG_FILE": str(Path(tmp) / "wc.log")},
+            )
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         self.assertIn("True True", result.stdout,
                       f"import alone left logging unconfigured: {result.stdout!r}")
@@ -114,15 +120,20 @@ class LoggingConfFileTests(unittest.TestCase):
         on the first attempt at this file, none of them for a real reason.
         """
         source = (REPO / "logging.conf").read_text(encoding="utf-8")
-        old = "/home/kali/projects/claude-code-webconsole/logs/webconsole.log"
-        self.assertIn(old, source, "the configured path moved; update this test")
+        # The config no longer hardcodes a path: it names %(logfile)s, and the
+        # filename arrives through fileConfig's `defaults` from config.LOG_FILE.
+        # So this drives the real config file rather than a rewritten copy, and
+        # supplies the path the way the application does.
+        self.assertIn("%(logfile)s", source,
+                      "the handler no longer takes its filename from defaults")
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "wc.log"
-            conf = Path(tmp) / "logging.conf"
-            conf.write_text(source.replace(old, str(target)), encoding="utf-8")
+            conf = REPO / "logging.conf"
             probe = (
                 "import logging, logging.config; "
-                f"logging.config.fileConfig({str(conf)!r}, disable_existing_loggers=False); "
+                f"logging.config.fileConfig({str(conf)!r}, "
+                f"defaults={{'logfile': {str(target)!r}}}, "
+                "disable_existing_loggers=False); "
                 "logging.getLogger('wc.app').info('landed chat_id=%s', 'xyz'); "
                 "logging.shutdown()"
             )

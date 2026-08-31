@@ -50,6 +50,23 @@ if PROJECTS_ROOT is None:
         (pathlib.Path(__file__).parent / "projects").resolve()
     )
 
+# --- logging ---------------------------------------------------------------
+# Where logging.conf's rotating handler writes. Overridable because the config
+# file names an absolute path, so every server the test suite spawns inherited
+# it and appended to the production log -- which then carried interleaved,
+# out-of-order and future-stamped lines from processes nobody was watching.
+# That is not untidiness: the log is the first thing anyone opens during an
+# incident, and it was actively misleading about ordering.
+#
+# The parent is created for both branches, not just the default. A path whose
+# directory does not exist makes RotatingFileHandler fail at construction, and
+# a test server dying that way surfaces as an exit during setUpClass with the
+# real reason buried.
+LOG_FILE = _str("WC_LOG_FILE", None)
+if LOG_FILE is None:
+    LOG_FILE = str(pathlib.Path(__file__).parent / "logs" / "webconsole.log")
+pathlib.Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+
 # --- auth ------------------------------------------------------------------
 SESSION_SECRET = _str("WC_SESSION_SECRET")  # required, secrets.token_urlsafe(32)
 SESSION_TTL_S = _int("WC_SESSION_TTL_S", 7200)  # 2h absolute

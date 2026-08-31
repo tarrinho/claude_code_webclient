@@ -522,29 +522,17 @@ class SupervisorEngine:
 
     @staticmethod
     def _build_plan_prompt(user_prompt: str) -> str:
-        prompt = (
-            f"I need you to act as a Supervisor Agent for this task.\n\n"
-            f"Here is the user request:\n\n"
-            f"{user_prompt}\n\n"
-            f"Break this down into a clear plan with independent tasks "
-            f"that sub-agents can execute.\n\n"
-            "Reply with a plan block in exactly this shape, one task per "
-            "line, and nothing else inside the block:\n\n"
-            "<<PLAN\n"
-            "Task 1: Create the file - Write hello.txt containing one word\n"
-            ">>\n\n"
-            "Rules for the block:\n"
-            "- One task per line, starting with 'Task ' and a number.\n"
-            "- 'Title - description', with a single hyphen separating them.\n"
-            "- Nothing else inside the block: no tables, no bullet points, no "
-            "blank lines.\n"
-            "- Do not copy any square or curly bracket text from these "
-            "instructions into your tasks.\n\n"
-            "This is a literal example, not a template. Given placeholders in "
-            "braces a model reasonably renders a markdown table instead, and "
-            "the parser reads lines, not tables."
+        # SUPERVISOR_SYSTEM_PROMPT is the hard directive — must come first so
+        # the model treats it as the binding constraint, not as background.
+        return (
+            SUPERVISOR_SYSTEM_PROMPT
+            + "\n\n"
+            + (
+                f"Here is the user request:\n\n"
+                f"{user_prompt}\n\n"
+                f"Produce the plan block now. One task per line."
+            )
         )
-        return prompt
 
     async def _run_planner_turn(self, user_prompt: str) -> None:
         """Run the LLM planning turn, then parse the plan and execute tasks."""

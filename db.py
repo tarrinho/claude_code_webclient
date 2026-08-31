@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import json
 import logging
@@ -27,6 +28,10 @@ _messages_batch_lock: asyncio.Lock | None = None
 
 # How long index maintenance waits for the SQLite writer lock before giving up.
 _FTS_BUSY_TIMEOUT_MS: Final[int] = 5000
+# How long any writer waits for the lock before giving up. Longer than the
+# 5s it used to inherit: a wait is a slow request, a timeout is a lost
+# write, and the second is much worse than the first.
+_BUSY_TIMEOUT_MS: Final[int] = 15000
 
 # Every SQLite database file starts with this. Used to reject non-DB uploads.
 _SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
@@ -50,6 +55,13 @@ async def init() -> None:
     db_conn.row_factory = aiosqlite.Row
     await db_conn.execute("PRAGMA journal_mode=WAL")
     await db_conn.execute("PRAGMA foreign_keys=ON")
+    # Set explicitly rather than inherited. This connection was relying on
+    # sqlite3's undocumented 5-second default while the two other writer
+    # connections in the project set 5000ms by hand, so the shared one -- the
+    # one every request goes through -- was the only writer whose patience
+    # nobody had chosen. auth.py's session handle remains a separate writer, so
+    # a wait is still possible even with index maintenance moved onto this one.
+    await db_conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
 
     await db_conn.executescript("""
         CREATE TABLE IF NOT EXISTS chats (
@@ -763,22 +775,41 @@ async def messages_last(chat_id: str, count: int = 1) -> list[dict[str, Any]]:
 
 
 # ── FTS5 index maintenance ──────────────────────────────────────────────────────────
+#
+# All of this runs on the shared connection. It used to open a fresh sqlite3
+# connection per call, inside a worker thread, which made index maintenance a
+# *second writer* against the same file: every message write was followed
+# immediately by an index write from a different connection. WAL permits one
+# writer at a time, so the two raced, and whichever lost waited out its busy
+# timeout and reported "database is locked". With the 30-second sync sweep
+# touching nine conversations, that was the single largest source of those
+# errors -- 492 of 660 in one day's log.
+#
+# The old arrangement failed worse than it looked, because the index write
+# swallowed its exception. A message whose index write lost the race was
+# committed and never indexed: it existed, and search could not find it, for
+# ever, with nothing logged.
 
-def _fts_connect() -> sqlite3.Connection:
-    """Open the dedicated synchronous connection used for index maintenance.
 
-    A separate connection avoids aiosqlite transaction conflicts. busy_timeout
-    makes it wait for the writer lock instead of failing with "database is
-    locked" the moment a turn is writing concurrently.
+async def _fts_guard(coro_fn) -> None:
+    """Run index maintenance, tolerating a SQLite build without FTS5.
+
+    Failure here is not fatal -- search degrades, nothing else does -- but on a
+    shared connection it must still be rolled back. A statement that fails
+    inside an implicit transaction leaves that transaction open, and every
+    later write on the connection then fails too. Swallowing the error without
+    the rollback would convert a missing index entry into exactly the
+    site-wide "database is locked" this change exists to remove.
     """
-    sync = sqlite3.connect(str(Path(config.DB_PATH)), check_same_thread=False)
-    sync.execute("PRAGMA journal_mode=WAL")
-    sync.execute("PRAGMA foreign_keys=ON")
-    sync.execute(f"PRAGMA busy_timeout={_FTS_BUSY_TIMEOUT_MS}")
-    return sync
+    try:
+        await coro_fn()
+        await db_conn.commit()
+    except Exception:  # noqa: BLE001 -- FTS5 is optional; see above
+        with contextlib.suppress(Exception):
+            await db_conn.rollback()
 
 
-def _fts_index_ids_sync(msg_ids: Sequence[int | None]) -> None:
+async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
     """Index exactly *msg_ids*, replacing any existing entries for them.
 
     Cost is proportional to len(msg_ids), not to the size of the conversation.
@@ -788,39 +819,31 @@ def _fts_index_ids_sync(msg_ids: Sequence[int | None]) -> None:
     ids = [i for i in msg_ids if i is not None]
     if not ids:
         return
-    sync = None
-    try:
-        sync = _fts_connect()
-        marks = ",".join("?" for _ in ids)
-        sync.execute(
+    marks = ",".join("?" for _ in ids)
+
+    async def work() -> None:
+        await db_conn.execute(
             f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
             ids,
         )
-        rows = sync.execute(
+        cursor = await db_conn.execute(
             "SELECT m.id, m.content, c.title FROM messages m "
             "JOIN chats c ON c.id = m.chat_id "
             f"WHERE m.id IN ({marks})",  # nosec B608: generated placeholders
             ids,
-        ).fetchall()
-        for msg_id, content, title in rows:
+        )
+        for msg_id, content, title in await cursor.fetchall():
             if content:
                 text = f"{title} {content}" if title else content
-                sync.execute(
+                await db_conn.execute(
                     "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
                     (msg_id, text),
                 )
-        sync.commit()
-    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
-        pass
-    finally:
-        if sync is not None:
-            try:
-                sync.close()
-            except Exception:  # noqa: BLE001,S110
-                pass
+
+    await _fts_guard(work)
 
 
-def _fts_forget_ids_sync(msg_ids: Sequence[int | None]) -> None:
+async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
     """Drop *msg_ids* from the index.
 
     Callers must capture the ids **before** deleting the message rows: a purge
@@ -830,85 +853,51 @@ def _fts_forget_ids_sync(msg_ids: Sequence[int | None]) -> None:
     ids = [i for i in msg_ids if i is not None]
     if not ids:
         return
-    sync = None
-    try:
-        sync = _fts_connect()
-        marks = ",".join("?" for _ in ids)
-        sync.execute(
+    marks = ",".join("?" for _ in ids)
+
+    async def work() -> None:
+        await db_conn.execute(
             f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
             ids,
         )
-        sync.commit()
-    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
-        pass
-    finally:
-        if sync is not None:
-            try:
-                sync.close()
-            except Exception:  # noqa: BLE001,S110
-                pass
+
+    await _fts_guard(work)
 
 
-def _refresh_fts_sync(chat_id: str | None = None) -> None:
-    """Full rebuild of the FTS5 index for one chat, or for every chat.
+async def _fts_rebuild(chat_id: str | None = None) -> None:
+    """Full rebuild of the index for one chat, or for every chat.
 
-    Used for backfill and after a chat title changes (the title is baked into
-    each indexed row). Prefer :func:`_fts_index_ids_sync` on the write path --
+    Used for backfill and after a chat title changes, since the title is baked
+    into each indexed row. Prefer :func:`_fts_index_ids` on the write path --
     this walks every message of the chat.
     """
-    sync = None
-    try:
-        sync = _fts_connect()
+
+    async def work() -> None:
         if chat_id:
-            # Delete stale entries for this chat.
-            sync.execute(
+            await db_conn.execute(
                 "DELETE FROM messages_fts WHERE rowid IN "
                 "(SELECT id FROM messages WHERE chat_id = ?)",
                 (chat_id,),
             )
         else:
-            sync.execute("DELETE FROM messages_fts")
+            await db_conn.execute("DELETE FROM messages_fts")
 
-        # Re-insert all message content, prefixed with chat title.
-        rows = sync.execute(
+        cursor = await db_conn.execute(
             "SELECT m.id, m.content, c.title FROM messages m "
             "JOIN chats c ON c.id = m.chat_id"
             + (" AND m.chat_id = ?" if chat_id else "")
             + (" ORDER BY m.id ASC" if chat_id else ""),
             (chat_id,) if chat_id else (),
-        ).fetchall()
-        for msg_id, content, title in rows:
+        )
+        for msg_id, content, title in await cursor.fetchall():
             if content:
-                # Prefix with title so title searches also work.
                 text = f"{title} {content}" if title else content
-                sync.execute(
+                await db_conn.execute(
                     "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
                     (msg_id, text),
                 )
-        sync.commit()
-    except Exception:  # noqa: BLE001,S110 -- FTS5 may not exist, silent fail
-        pass
-    finally:
-        if sync is not None:
-            try:
-                sync.close()
-            except Exception:  # noqa: BLE001,S110
-                pass
 
-
-# ── Async wrappers: keep the blocking sqlite3 work off the event loop ──────────
-
-
-async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
-    await asyncio.to_thread(_fts_index_ids_sync, list(msg_ids))
-
-
-async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
-    await asyncio.to_thread(_fts_forget_ids_sync, list(msg_ids))
-
-
-async def _fts_rebuild(chat_id: str | None = None) -> None:
-    await asyncio.to_thread(_refresh_fts_sync, chat_id)
+    await _fts_guard(work)
 
 
 async def messages_append(chat_id: str, role: str, content: str) -> int:
@@ -995,6 +984,8 @@ async def setting_set(key: str, value: str) -> None:
 
 async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
     """Return the owner's active machine without exposing its API key."""
+    if db_conn is None:
+        raise sqlite3.Error("database not connected")
     cur = await db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, active "
         "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
@@ -2036,8 +2027,10 @@ SYSTEM_FIELDS: Final[tuple[str, ...]] = (
 
 async def system_sample_insert(values: dict[str, Any]) -> None:
     """Store one host sample. Missing fields default to 0."""
-    columns = ", ".join(("created_at", *SYSTEM_FIELDS))
-    placeholders = ", ".join("?" * (len(SYSTEM_FIELDS) + 1))
+    if db_conn is None:
+        return  # init not complete or connection lost; sampler must outlive a miss.
+    columns: str = ", ".join(("created_at", *SYSTEM_FIELDS))
+    placeholders: str = ", ".join("?" * (len(SYSTEM_FIELDS) + 1))
     await db_conn.execute(
         f"INSERT INTO system_samples ({columns}) "  # nosec B608: names are literals
         f"VALUES ({placeholders})",

@@ -160,18 +160,17 @@ class UnitQA(FtsMixin, unittest.IsolatedAsyncioTestCase):
         await db._fts_rebuild("c1")
         self.assertEqual(await self.fts_count(), 1)
 
-    async def test_connection_sets_a_busy_timeout(self):
-        # Without it, index maintenance fails outright when a turn is writing.
-        def check():
-            conn = db._fts_connect()
-            try:
-                return conn.execute("PRAGMA busy_timeout").fetchone()[0]
-            finally:
-                conn.close()
+    async def test_the_shared_connection_sets_a_busy_timeout(self):
+        """Index maintenance runs on the shared connection now, so this is the
+        timeout that matters.
 
-        self.assertEqual(
-            await asyncio.to_thread(check), db._FTS_BUSY_TIMEOUT_MS
-        )
+        It was the only one of the project's writer connections that never set
+        one, inheriting sqlite3's undocumented 5-second default while the other
+        two chose 5000ms explicitly. A wait is a slow request; a timeout is a
+        lost write.
+        """
+        cursor = await db.db_conn.execute("PRAGMA busy_timeout")
+        self.assertEqual((await cursor.fetchone())[0], db._BUSY_TIMEOUT_MS)
 
     async def test_maintenance_never_raises_without_the_fts_table(self):
         # FTS5 is unavailable on some SQLite builds; maintenance must degrade
@@ -247,22 +246,16 @@ class IntegrationQA(FtsMixin, unittest.IsolatedAsyncioTestCase):
         for i in range(10):
             await db.messages_append("c1", "user", f"row {i}")
 
-        real_connect = db._fts_connect
         inserts = 0
+        original = db.db_conn.execute
 
-        def counting_connect():
+        async def counting(sql, *args, **kwargs):
             nonlocal inserts
-            conn = real_connect()
+            if isinstance(sql, str) and "INSERT INTO messages_fts" in sql:
+                inserts += 1
+            return await original(sql, *args, **kwargs)
 
-            def trace(statement: str) -> None:
-                nonlocal inserts
-                if "INSERT INTO messages_fts" in statement:
-                    inserts += 1
-
-            conn.set_trace_callback(trace)
-            return conn
-
-        with patch.object(db, "_fts_connect", counting_connect):
+        with patch.object(db.db_conn, "execute", counting):
             await db.messages_append("c1", "user", "the eleventh row")
 
         self.assertEqual(
@@ -273,26 +266,90 @@ class IntegrationQA(FtsMixin, unittest.IsolatedAsyncioTestCase):
         for i in range(10):
             await db.messages_append("c1", "user", f"row {i}")
 
-        real_connect = db._fts_connect
         inserts = 0
+        original = db.db_conn.execute
 
-        def counting_connect():
+        async def counting(sql, *args, **kwargs):
             nonlocal inserts
-            conn = real_connect()
+            if isinstance(sql, str) and "INSERT INTO messages_fts" in sql:
+                inserts += 1
+            return await original(sql, *args, **kwargs)
 
-            def trace(statement: str) -> None:
-                nonlocal inserts
-                if "INSERT INTO messages_fts" in statement:
-                    inserts += 1
-
-            conn.set_trace_callback(trace)
-            return conn
-
-        with patch.object(db, "_fts_connect", counting_connect):
+        with patch.object(db.db_conn, "execute", counting):
             await db.messages_batch("c1", [("user", "a"), ("assistant", "b")])
 
         self.assertEqual(
             inserts, 2, f"batching two messages wrote {inserts} index rows; expected 2"
+        )
+
+    async def test_index_maintenance_opens_no_second_connection(self):
+        """The fix, pinned directly.
+
+        Index maintenance used to open a fresh sqlite3 connection per call in a
+        worker thread, which made it a second writer against the same file.
+        WAL allows one writer at a time, so every message write was followed by
+        an index write that raced it, and the loser waited out its busy timeout
+        and reported "database is locked" -- 492 of 660 such errors in one
+        day's production log came from that pair.
+
+        Asserting on the count of connections rather than on the index contents
+        is deliberate: the index ends up correct either way, so nothing about
+        the resulting rows can tell the two arrangements apart. Only counting
+        the connections can.
+        """
+        import sqlite3 as _sqlite3
+
+        opened = []
+        original = _sqlite3.connect
+
+        def counting(*args, **kwargs):
+            opened.append(args[0] if args else kwargs.get("database"))
+            return original(*args, **kwargs)
+
+        with patch.object(_sqlite3, "connect", counting):
+            await db.messages_append("c1", "user", "indexed on the shared handle")
+            await db.messages_batch("c1", [("user", "a"), ("assistant", "b")])
+            await db._fts_rebuild("c1")
+
+        self.assertEqual(
+            opened, [],
+            f"index maintenance opened {len(opened)} extra connection(s): {opened}",
+        )
+
+    async def test_a_failed_index_write_leaves_no_open_transaction(self):
+        """The hazard this change introduces, asserted where it actually bites.
+
+        On a dedicated connection a failed index write was isolated. On the
+        shared one, a sequence that fails *part way* leaves a write
+        transaction open -- and that transaction holds the writer lock, which
+        blocks auth.py's session connection and stops the WAL checkpointing.
+        The damage is cross-connection, so the honest assertion is about the
+        transaction state rather than about whether this connection can still
+        write: it can, inside the transaction it never closed.
+
+        A first version of this test dropped messages_fts and checked that
+        writes still landed. It passed with the rollback removed, because a
+        statement against a missing table fails at prepare time and opens no
+        transaction -- so it exercised nothing. Failing the INSERT after the
+        DELETE has already succeeded is what reaches the branch.
+        """
+        import sqlite3 as _sqlite3
+
+        original = db.db_conn.execute
+
+        async def failing(sql, *args, **kwargs):
+            if isinstance(sql, str) and "INSERT INTO messages_fts" in sql:
+                raise _sqlite3.OperationalError("simulated mid-sequence failure")
+            return await original(sql, *args, **kwargs)
+
+        with patch.object(db.db_conn, "execute", failing):
+            mid = await db.messages_append("c1", "user", "the write that trips it")
+
+        self.assertIsNotNone(mid, "the message write itself must still succeed")
+        self.assertFalse(
+            db.db_conn.in_transaction,
+            "a failed index write left a transaction open, holding the writer "
+            "lock against every other connection",
         )
 
     async def test_delete_purges_the_index(self):

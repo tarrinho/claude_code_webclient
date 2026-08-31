@@ -39,6 +39,41 @@ churn.
 
 ### Fixed
 
+- **`database is locked`, recurring in ordinary use.** The project wrote to one
+  SQLite file from three separate connections: the shared one every request
+  uses, a fresh connection opened *per search-index write inside a worker
+  thread*, and a fresh one per session write. WAL allows a single writer, so
+  the 30-second conversation sync — which writes messages to nine
+  conversations and triggers an index write for each — had two of them racing
+  continuously, and whichever lost waited out its timeout and failed. One
+  day's log held 492 sync failures, 66 session failures and 39 from the
+  statistics sampler.
+
+  Index maintenance now runs on the shared connection, removing that writer
+  altogether, and the shared connection sets its wait explicitly at 15
+  seconds — it was the only one of the three that had never set one, quietly
+  inheriting a five-second default nobody had chosen.
+
+  The part that was worse than the error: the index write swallowed its own
+  exception. A message whose index write lost the race was saved and never
+  indexed, so it existed and search could not find it, permanently, with
+  nothing logged anywhere.
+
+
+- **Starting the server killed every other test server on the machine.**
+  `launch.sh` cleared a previous instance with `pkill -f "uvicorn app:app"`,
+  which matches any uvicorn running this app — including the throwaway servers
+  the test suite spawns on random ports. Since `launch.sh` runs on every
+  `systemctl restart`, one restart swept the whole box, and the tests reported
+  it as their own servers exiting with code -15. Proving the recovery cases
+  meant ten restarts, which turned a green suite into 128 failures that had
+  nothing to do with the code under test — and the evidence pointed at the
+  tests rather than at the supervision that had killed them. The port is now
+  reclaimed the way `bin/wc-free-proxy-port.sh` already did it for the proxy:
+  find the process actually listening, confirm from its command line that it is
+  ours, stop that one, and escalate to SIGKILL only if it ignores SIGTERM. A
+  holder that is not ours is reported and left alone.
+
 - **The health check was restarting servers that were merely starting up.**
   Found while proving the recovery cases: a `kill -9` produced two stop/start
   cycles instead of one, because systemd's own `Restart=always` began a
@@ -54,9 +89,6 @@ churn.
   restart", which is precisely the state during a restart. It now fails safe,
   on the principle that a restarter acting on missing information is worse
   than one that waits thirty seconds for better information.
-
-
-### Fixed
 
 - **Test servers no longer write into the production log.** `logging.conf`
   named the log file with an absolute path, so every server the suite spawns

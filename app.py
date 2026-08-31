@@ -4111,13 +4111,20 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
     ]
     # The 512 KB tail read misses unanswered ``AskUserQuestion`` blocks that
     # live in the older part of a large transcript.  A quick full-file scan
-    # finds them and attaches them as message rows.
+    # finds them and attaches them as message rows.  Filter by IDs we haven't
+    # already rendered so re-importing stays idempotent.
     try:
+        # transcript_path returns None when a session has no transcript on
+        # disk, and _scan_questions_sync is typed for a Path: it guards
+        # read_bytes with OSError, which None.read_bytes() is not. Skipping
+        # here keeps that signature honest rather than teaching the scanner
+        # to accept a value it says it does not take.
+        scan_path = transcripts.transcript_path(session_id)
         question_blocks = await asyncio.to_thread(
             # Private, because transcripts.py exposes no public full-file scan.
             transcripts._scan_questions_sync,
-            transcripts.transcript_path(session_id),
-        )
+            scan_path,
+        ) if scan_path is not None else []
     except Exception:  # noqa: BLE001 -- a malformed transcript must not break the page
         # Logged, not silent. The call above was unqualified until now, so it
         # raised NameError on every request and this handler turned that into
@@ -4128,8 +4135,16 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
         # found it in a single run.
         _log.warning("question_scan_failed session=%s", session_id, exc_info=True)
         question_blocks = []
-    extra_rows: list[tuple[str, str]] = []
+
+    seen_ids: set[str] = await db.chat_get_question_ids(chat_id)
+    filtered_questions: list[dict[str, Any]] = []
     for qb in question_blocks:
+        qid = str(qb.get("id") or "")
+        if (qid and qid not in seen_ids) or (not qid and qb not in filtered_questions):
+            filtered_questions.append(qb)
+
+    extra_rows: list[tuple[str, str]] = []
+    for qb in filtered_questions:
         rendered = _question_to_text(qb)
         if rendered:
             extra_rows.append(("assistant", rendered))
@@ -4139,6 +4154,7 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
             "transcript_imported_questions chat_id=%s questions=%d",
             chat_id, len(extra_rows),
         )
+        await db.chat_set_question_ids(chat_id, [str(q.get("id", "")) for q in filtered_questions])
     # Record the read position even when nothing was worth importing, so the
     # sync does not re-examine the same bytes on every poll.
     await db.chat_set_transcript_offset(chat_id, int(payload.get("offset") or 0))
@@ -4289,8 +4305,26 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
             transcripts._scan_questions_sync,
             transcripts.transcript_path(session_id),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110
         pass
+
+    # Filter questions by IDs we already rendered for this chat.  This is the
+    # real dedup guard: `_scan_questions_sync` returns the same unanswered
+    # questions on every poll, so we must not re-insert them.
+    try:
+        seen_ids: set[str] = await db.chat_get_question_ids(chat_id)
+    except Exception:  # noqa: BLE001
+        seen_ids = set()
+    new_ids: list[str] = []
+    filtered_questions: list[dict[str, Any]] = []
+    for qb in question_blocks:
+        qid = str(qb.get("id") or "")
+        if qid and qid not in seen_ids:
+            new_ids.append(qid)
+            filtered_questions.append(qb)
+        elif not qid and qb not in filtered_questions:
+            # No id — fall back to content dedup against the whole set.
+            filtered_questions.append(qb)
 
     # A chat imported before transcript_offset existed carries the column
     # default of 0 while already holding its history, so reading from the
@@ -4300,10 +4334,16 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
         await _skip_transcript_to_end(chat_id, session_id)
         # Even if the tail read is skipped, attach any unanswered questions.
         rows: list[tuple[str, str]] = []
-        for qb in question_blocks:
+        for qb in filtered_questions:
             rendered = _question_to_text(qb)
             if rendered:
                 rows.append(("assistant", rendered))
+        if rows:
+            _log.info(
+                "transcript_sync_questions chat_id=%s questions=%d",
+                chat_id, len(rows),
+            )
+            await db.chat_set_question_ids(chat_id, new_ids)
         return rows
 
     try:
@@ -4321,7 +4361,7 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
     ]
 
     # Attach any unanswered questions found by the full-file scan.
-    for qb in question_blocks:
+    for qb in filtered_questions:
         rendered = _question_to_text(qb)
         if rendered:
             rows.append(("assistant", rendered))
@@ -4347,6 +4387,12 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
 
     await db.messages_batch(chat_id, rows)
     await db.bump_chat_updated_at(chat_id)
+    if new_ids:
+        await db.chat_set_question_ids(chat_id, new_ids)
+        _log.info(
+            "transcript_sync_questions chat_id=%s questions=%d",
+            chat_id, len(new_ids),
+        )
     _log.info("transcript_synced chat_id=%s turns=%d", chat_id, len(rows))
     return rows
 
@@ -4440,175 +4486,13 @@ async def handle_session_delete(request: Request, session_id: str):
 _supervisor_engines: dict[str, supervisor.SupervisorEngine] = {}
 
 
-async def handle_supervisor_crud(request: Request):
-    """GET/POST/PATCH/DELETE /api/supervisor — CRUD for supervisors.
-
-    GET  – list supervisors
-    POST – create a new supervisor and return its id
-    PATCH – update an existing supervisor (by id in body)
-    DELETE – delete a supervisor (by id in body)
-    """
-    session = request.state.session
-    owner = session["user"]
-
-    if request.method == "GET":
-        # List all supervisors for the owner
-        list_ = await db.supervisor_list(owner)
-        return JSONResponse({
-            "supervisors": list_,
-            "count": len(list_),
-        })
-
-    if request.method == "POST":
-        # Create a new supervisor
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
-        title = (body.get("title") or "New Supervisor").strip()[:200]
-        description = (body.get("description") or "").strip()[:500] or None
-        config_data = body.get("config") if body.get("config") else None
-
-        sid = uuid.uuid4().hex
-        await db.supervisor_create(sid, title, description, owner, config_data)
-
-        # Create the engine instance so the scheduler can start
-        eng = supervisor.SupervisorEngine(sid, owner)
-        _supervisor_engines[sid] = eng
-
-        return JSONResponse({
-            "ok": True,
-            "id": sid,
-            "title": title,
-            "status": "idle",
-        })
-
-    if request.method == "PATCH":
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
-        sid = body.get("id")
-        if not sid:
-            raise HTTPException(status_code=400, detail="id is required")
-
-        existing = await db.supervisor_get(sid, owner)
-        if not existing:
-            raise HTTPException(status_code=404, detail="Supervisor not found")
-
-        updates: dict[str, Any] = {}
-        if "title" in body:
-            val = str(body["title"]).strip()[:200]
-            if val:
-                updates["title"] = val
-        if "description" in body:
-            val = str(body.get("description") or "").strip()[:500] or None
-            updates["description"] = val
-        if "status" in body:
-            val = body.get("status")
-            if isinstance(val, str) and val in ("idle", "planning", "running", "paused", "done", "error"):
-                updates["status"] = val
-        if "config" in body:
-            val = body.get("config")
-            if isinstance(val, dict):
-                updates["config"] = val
-
-        if updates:
-            if "status" in updates:
-                status = updates.pop("status")
-                await db.supervisor_update(sid, owner, **updates, status=status)
-
-                # Engine lifecycle: start/stop scheduler based on status
-                eng = _supervisor_engines.get(sid)
-                if status == "running" and eng and not eng._running:
-                    asyncio.create_task(eng.run_schedule_loop())
-                elif status in ("idle", "done", "error") and eng:
-                    eng.stop()
-            else:
-                await db.supervisor_update(sid, owner, **updates)
-                # Update engine config if changed
-                if "config" in updates:
-                    eng = _supervisor_engines.get(sid)
-                    if eng:
-                        eng.config = updates["config"]
-                        eng.router = supervisor.ModelRouter(updates["config"])
-
-        existing = await db.supervisor_get(sid, owner)
-        return JSONResponse({"ok": True, "supervisor": existing})
-
-    if request.method == "DELETE":
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
-        sid = body.get("id")
-        if not sid:
-            raise HTTPException(status_code=400, detail="id is required")
-
-        deleted = await db.supervisor_delete(sid, owner)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Supervisor not found")
-
-        # Clean up engine
-        _supervisor_engines.pop(sid, None)
-        return JSONResponse({"ok": True})
-
-
-async def handle_supervisor_send_prompt(request: Request):
-    """POST /api/supervisor/read — send a prompt to a supervisor.
-
-    Body: { "id": "<supervisor_id>", "prompt": "user request text" }
-
-    Returns the supervisor after it starts planning.
-    """
-    session = request.state.session
-    owner = session["user"]
-
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    sid = body.get("id")
-    user_prompt = (body.get("prompt") or "").strip()
-
-    if not sid:
-        raise HTTPException(status_code=400, detail="id is required")
-    if not user_prompt:
-        raise HTTPException(status_code=400, detail="prompt is required")
-
-    existing = await db.supervisor_get(sid, owner)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
-
-    # Get or create engine
-    if sid not in _supervisor_engines:
-        _supervisor_engines[sid] = eng_new = supervisor.SupervisorEngine(
-            sid, owner,
-        )
-    else:
-        eng_new = _supervisor_engines[sid]
-
-    eng = eng_new
-    result = await eng.start_from_user_prompt(user_prompt)
-
-    # Store user message
-    await db.supervisor_messages_append(sid, "user", user_prompt)
-
-    # Set status to planning
-    await db.supervisor_update(sid, owner, status="planning")
-
-    return JSONResponse({
-        "ok": True,
-        "supervisor_id": sid,
-        "status": "planning",
-        "init_prompt": result.get("init_prompt"),
-    })
-
-
+# handle_supervisor_crud and handle_supervisor_send_prompt lived here: 169
+# lines implementing supervisor CRUD and prompt-send on /api/supervisor
+# (singular). Neither was decorated and neither was called -- the live
+# routes are /api/supervisors (plural) below, and _api_supervisor_send
+# reimplements the send inline. Removed rather than wired up: two
+# implementations of the same endpoints, one of them unreachable, is a
+# standing invitation to fix the copy that does not run.
 async def handle_supervisor_stream(request: Request, supervisor_id: str):
     """GET /api/supervisors/{id}/stream — SSE stream of supervisor progress."""
     session = request.state.session
@@ -4994,6 +4878,13 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
 
     if not user_prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
+    # The same cap the chat endpoints enforce. This path had none, so a two
+    # megabyte prompt was accepted and forwarded, while the identical text sent
+    # to a conversation was refused at 8000 characters. The limit is not only
+    # about resources: it is enforced before anything reaches the subprocess,
+    # so an unbounded value must not be able to arrive by a second door.
+    if len(user_prompt) > config.PROMPT_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Prompt is too long")
 
     existing = await db.supervisor_get(supervisor_id, session["user"])
     if not existing:
@@ -5058,6 +4949,32 @@ async def _api_supervisors_list(request: Request):
     return JSONResponse({"supervisors": list_, "count": len(list_)})
 
 
+# Serialised size ceiling for a supervisor's config blob.
+#
+# Unlike the prompt cap next door this is not the §2 subprocess boundary --
+# config is stored and read back, never passed to the CLI -- so the concern is
+# unbounded input rather than execution. It still wants a limit: the value is
+# json.dumps'd straight into a TEXT column, so without one a client can store
+# an arbitrarily large document, and an unserialisable one reaches json.dumps
+# inside the DB layer and surfaces as a 500 rather than the 400 it is.
+_SUPERVISOR_CONFIG_MAX: Final[int] = 64 * 1024
+
+
+def _validated_supervisor_config(raw: Any) -> Any:
+    """Return *raw* if it is storable, else raise 400 with the reason."""
+    if raw is None:
+        return None
+    try:
+        encoded = json.dumps(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="config must be JSON-serialisable"
+        ) from None
+    if len(encoded) > _SUPERVISOR_CONFIG_MAX:
+        raise HTTPException(status_code=400, detail="config is too large")
+    return raw
+
+
 @app.post("/api/supervisors")
 async def _api_supervisors_create(request: Request):
     session = request.state.session
@@ -5067,7 +4984,9 @@ async def _api_supervisors_create(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON")
     title = (body.get("title") or "New Supervisor").strip()[:200]
     description = (body.get("description") or "").strip()[:500] or None
-    config_data = body.get("config") if body.get("config") else None
+    config_data = _validated_supervisor_config(
+        body.get("config") if body.get("config") else None
+    )
     sid = uuid.uuid4().hex
     await db.supervisor_create(sid, title, description, session["user"], config_data)
     eng = supervisor.SupervisorEngine(sid, session["user"])
@@ -5111,14 +5030,14 @@ async def _api_supervisor_patch(request: Request, supervisor_id: str):
     if "config" in body:
         val = body.get("config")
         if isinstance(val, dict):
-            updates["config"] = val
+            updates["config"] = _validated_supervisor_config(val)
     if updates:
         if "status" in updates:
             status = updates.pop("status")
             await db.supervisor_update(supervisor_id, session["user"], **updates, status=status)
             eng = _supervisor_engines.get(supervisor_id)
             if status == "running" and eng and not eng._running:
-                asyncio.create_task(eng.run_schedule_loop())
+                eng.spawn(eng.run_schedule_loop())
             elif status in ("idle", "done", "error") and eng:
                 eng.stop()
         else:

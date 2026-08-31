@@ -363,6 +363,9 @@ async def _ensure_chat_columns() -> None:
         "transcript_offset": (
             "ALTER TABLE chats ADD COLUMN transcript_offset INTEGER NOT NULL DEFAULT 0"
         ),
+        "question_ids": (
+            "ALTER TABLE chats ADD COLUMN question_ids TEXT NOT NULL DEFAULT ''"
+        ),
         "supervisor": "ALTER TABLE chats ADD COLUMN supervisor TEXT",
     }
     for name, sql in migrations.items():
@@ -668,6 +671,42 @@ async def chat_set_transcript_offset(chat_id: str, offset: int) -> None:
         (int(offset), chat_id),
     )
     await db_conn.commit()
+
+
+async def chat_set_question_ids(chat_id: str, question_ids: list[str]) -> None:
+    """Persist the set of question IDs already rendered for this chat.
+
+    The list is stored as a JSON-encoded string so it can be read back and
+    compared on the next poll without touching the message table.
+    """
+    await db_conn.execute(
+        "UPDATE chats SET question_ids = ? WHERE id = ?",
+        (json.dumps(question_ids), chat_id),
+    )
+    await db_conn.commit()
+
+
+async def chat_get_question_ids(chat_id: str) -> list[str]:
+    """Return the set of question IDs already rendered for this chat."""
+    cur = await db_conn.execute(
+        "SELECT question_ids FROM chats WHERE id = ?", (chat_id,)
+    )
+    data = await cur.fetchone()
+    # Indexing, not .get(): the row factory is sqlite3.Row, which supports
+    # subscripting and keys() but has no .get() at all -- so the defensive
+    # form raised AttributeError on every call, which is stricter than the
+    # thing it was defending against. The column is named in the SELECT above,
+    # so it is always present.
+    if not data or not data["question_ids"]:
+        return []
+    try:
+        return json.loads(data["question_ids"])
+    except (TypeError, ValueError):
+        # Our own column, so this should not happen -- but one corrupt value
+        # must not break the sync of every conversation, and it must not do so
+        # silently either.
+        _log.warning("chat %s has unreadable question_ids", chat_id)
+        return []
 
 
 async def bump_chat_updated_at(chat_id: str) -> None:

@@ -16,6 +16,14 @@
   let sseStream = null;
   let csrfToken = "";
 
+  // Smart-scroll state for chat and event log: follow along only when the
+  // user is at the bottom (within 20px), otherwise let them read freely.
+  // A floating button invites them back to the latest when they've scrolled up.
+  let chatScrollFollow = true;
+  let logScrollFollow = true;
+  let _chatScrollBtn = null;
+  let _logScrollBtn = null;
+
   // ── Panel sizing state ──────────────────────────────────────────────
   const PANEL_MIN_WIDTHS = { left: 200, center: 300, right: 200 };
   const PANEL_MIN_HEIGHTS = { bottom: 80 };
@@ -417,7 +425,11 @@
         return `<div class="chat-message system">${esc(m.content || "")}</div>`;
       })
       .join("");
-    el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+    if (chatScrollFollow) {
+      el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+    } else {
+      showScrollBtn(_chatScrollBtn);
+    }
   }
 
   function addChatMessage(role, content, metadata) {
@@ -655,6 +667,11 @@
   function handleStatusUpdate(data) {
     if (data.status && activeSupervisor) {
       activeSupervisor.status = data.status;
+      // Sync to the supervisors array — renderSupervisorList() renders from
+      // that array, not from activeSupervisor. Without this the sidebar
+      // badge stays stale for up to 30s (the poll interval).
+      const sup = supervisors.find(s => s.id === activeSupervisorId);
+      if (sup) sup.status = data.status;
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
       updateOverallProgress();
@@ -707,7 +724,11 @@
       <span class="log-msg">${esc(msg)}</span>
     `;
     el.eventLog.appendChild(div);
-    el.eventLog.scrollTop = el.eventLog.scrollHeight;
+    if (logScrollFollow) {
+      el.eventLog.scrollTop = el.eventLog.scrollHeight;
+    } else {
+      showScrollBtn(_logScrollBtn);
+    }
     eventLog.push({ type, msg, time });
   }
 
@@ -1319,6 +1340,63 @@
         loadTasks();
       }
     }, 30000);
+
+    // Smart scroll: follow along only when the user is at the bottom (within
+    // 20px). A floating button invites them back when they've scrolled up.
+    _chatScrollBtn = document.getElementById("chat-scroll-btn");
+    _logScrollBtn = document.getElementById("log-scroll-btn");
+
+    if (_chatScrollBtn) {
+      _chatScrollBtn.addEventListener("click", () => {
+        el.chatMessages.scrollTo({ top: el.chatMessages.scrollHeight, behavior: "smooth" });
+        chatScrollFollow = true;
+        hideScrollBtn(_chatScrollBtn);
+      });
+    }
+    if (_logScrollBtn) {
+      _logScrollBtn.addEventListener("click", () => {
+        el.eventLog.scrollTo({ top: el.eventLog.scrollHeight, behavior: "smooth" });
+        logScrollFollow = true;
+        hideScrollBtn(_logScrollBtn);
+      });
+    }
+
+    if (el.chatMessages) {
+      el.chatMessages.addEventListener("scroll", function () {
+        if (isNearBottom(el.chatMessages)) {
+          chatScrollFollow = true;
+          hideScrollBtn(_chatScrollBtn);
+        } else {
+          chatScrollFollow = false;
+          showScrollBtn(_chatScrollBtn);
+        }
+      });
+    }
+    if (el.eventLog) {
+      el.eventLog.addEventListener("scroll", function () {
+        if (isNearBottom(el.eventLog)) {
+          logScrollFollow = true;
+          hideScrollBtn(_logScrollBtn);
+        } else {
+          logScrollFollow = false;
+          showScrollBtn(_logScrollBtn);
+        }
+      });
+    }
+  }
+
+  // ── Scroll helpers ─────────────────────────────────────────────────
+
+  function isNearBottom(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= 20;
+  }
+
+  function showScrollBtn(btn) {
+    if (btn) btn.classList.add("visible");
+  }
+
+  function hideScrollBtn(btn) {
+    if (btn) btn.classList.remove("visible");
   }
 
   // ── Pause / Resume ──────────────────────────────────────────────────

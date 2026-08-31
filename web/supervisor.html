@@ -800,6 +800,39 @@
             padding-left: 16px;
             margin-top: 1px;
         }
+
+        /* ── Floating scroll-down button ────────────────────────────── */
+        .scroll-down-btn {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #3b82f6;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.15s, transform 0.15s;
+            z-index: 20;
+            line-height: 1;
+            padding-bottom: 2px;
+        }
+        .scroll-down-btn.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .scroll-down-btn:hover {
+            background: #2563eb;
+            transform: scale(1.05);
+        }
     </style>
 </head>
 <body>
@@ -865,6 +898,8 @@
                     <button class="completion-close" data-action="close-completion" title="Dismiss">&times;</button>
                 </div>
                 <div id="chat-messages"></div>
+                <!-- Floating scroll-down button: appears when user scrolls up -->
+                <button id="chat-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
             </div>
             <div id="composer" style="display:none;">
                 <textarea id="prompt-input" placeholder="Send a message to the supervisor..."></textarea>
@@ -881,6 +916,9 @@
                 <button class="panel-btn" data-max="bottom" title="Maximize">&#9633;</button>
             </div>
             <div id="event-log"></div>
+                <!-- Floating scroll-down button: appears when user scrolls up -->
+                <button id="log-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
+            </div>
         </div>
 
         <!-- Right: Detail Panel -->

@@ -1222,10 +1222,13 @@ class QuestionDismissBrowserTests(_BrowserFixture):
     DESKTOP = "#chatListDesktop"
     ASKED = "Which of these is your preferred weekend activity?"
 
-    def _payload(self, answerable=True):
+    def _payload(self, answerable=True, with_id=True):
         base = {
             "pending": True,
-            "id": "toolu_dismiss_test",
+            # Omitted deliberately in one test: the client keys its suppression
+            # on the tool_use id and falls back to the question text, and the
+            # fallback is the only path where two conversations can collide.
+            **({"id": "toolu_dismiss_test"} if with_id else {}),
             "questions": [{
                 "header": "Weekend",
                 "question": self.ASKED,
@@ -1259,7 +1262,8 @@ class QuestionDismissBrowserTests(_BrowserFixture):
         con.close()
         return chat_id
 
-    def _open_with_question(self, answerable=True, delete=(200, {"ok": True})):
+    def _open_with_question(self, answerable=True, delete=(200, {"ok": True}),
+                            with_id=True):
         """Open a conversation whose question endpoint this test controls.
 
         Returns the list of request methods seen, which keeps growing as the
@@ -1278,19 +1282,27 @@ class QuestionDismissBrowserTests(_BrowserFixture):
                               body=json.dumps(body))
                 return
             route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps(self._payload(answerable)))
+                          body=json.dumps(self._payload(answerable, with_id)))
 
         self.page.route("**/api/chats/*/question", handler)
         chat_id = self._seed_chat()
         self.page.reload(wait_until="domcontentloaded")
-        # By data-chat-id, not by position: the server is shared across the
-        # class, so every conversation an earlier test seeded is still listed.
+        self._open_chat(chat_id, timeout=15_000)
+        return calls
+
+    def _open_chat(self, chat_id, timeout=20_000):
+        """Open a conversation and wait for its question bar.
+
+        By data-chat-id, not by position: the server is shared across the
+        class, so every conversation an earlier test seeded is still listed.
+        The generous timeout covers the sidebar's own 6s poll, which is what
+        brings a conversation seeded after page load into the list.
+        """
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
-        self.page.wait_for_selector(row, timeout=15_000)
+        self.page.wait_for_selector(row, timeout=timeout)
         self.page.click(row)
         self.page.wait_for_selector("#questionBar", state="visible",
-                                    timeout=20_000)
-        return calls
+                                    timeout=timeout)
 
     def _wait_for_poll(self, calls, timeout_ms=20_000):
         """Wait for one more GET to arrive, and fail if none does.
@@ -1370,6 +1382,24 @@ class QuestionDismissBrowserTests(_BrowserFixture):
         self.page.wait_for_selector("#questionDismiss:not([disabled])",
                                     timeout=10_000)
         self.assertIn("Could not reach", self.page.inner_text("#questionNote"))
+
+    def test_declining_in_one_conversation_does_not_silence_another(self):
+        """The suppression key is scoped by conversation.
+
+        The fallback path is where that matters. With a tool_use id the key is
+        unique on its own, but a payload without one keys on the question text
+        -- and two agents asked the same thing legitimately ask it in the same
+        words. Unscoped, declining in one conversation would silence the other
+        one before it was ever read, which is indistinguishable from the
+        question never having been asked.
+        """
+        self._open_with_question(with_id=False)
+        second = self._seed_chat()
+        self.page.click("#questionDismiss")
+        self.page.wait_for_selector("#questionBar", state="hidden", timeout=10_000)
+        self._open_chat(second)
+        self.assertTrue(self.page.locator("#questionBar").is_visible())
+        self.assertEqual(self.page.locator(".question-option").count(), 2)
 
     def test_an_unreachable_question_hides_without_sending_anything(self):
         """Nothing can be delivered, so the control says "Hide" and no request

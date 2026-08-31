@@ -455,9 +455,9 @@ async def _execute_proxy(
             "prompt": prompt,
             "session_id": session_id,
             "work_dir": work_dir,
-            "model": model or await get_default_model(chat_id),
+            "model": model or await get_default_model(chat_id, owner),
         }
-        backend = await get_backend(chat_id)
+        backend = await get_backend(chat_id, owner)
         if backend:
             turn_payload["backend"] = backend
         writer.write((json.dumps(turn_payload) + "\n").encode())
@@ -744,7 +744,8 @@ async def _do_proxy_stream(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
-) -> AsyncGenerator[dict, None]:
+
+    owner: str | None = None,) -> AsyncGenerator[dict, None]:
     """Connect to proxy, send turn, yield events from the NDJSON stream."""
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
@@ -795,9 +796,9 @@ async def _do_proxy_stream(
             "prompt": prompt,
             "session_id": session_id,
             "work_dir": work_dir,
-            "model": model or await get_default_model(chat_id),
+            "model": model or await get_default_model(chat_id, owner),
         }
-        backend = await get_backend(chat_id)
+        backend = await get_backend(chat_id, owner)
         if backend:
             turn_payload["backend"] = backend
         writer.write((json.dumps(turn_payload) + "\n").encode())

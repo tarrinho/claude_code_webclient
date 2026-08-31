@@ -649,6 +649,157 @@
             outline: none;
         }
         .context-selector:focus { border-color: #3b82f6; }
+
+        /* ── Member rows (no CSS yet — added here) ────────────────── */
+        .member-row {
+            display: flex;
+            align-items: center;
+            padding: 6px 12px;
+            gap: 4px;
+            border-bottom: 1px solid #f1f5f9;
+            font-size: 12px;
+        }
+        .member-row .member-title {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #2d3748;
+        }
+        .member-status {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            flex-shrink: 0;
+        }
+        .member-status.member-idle { background: #f1f5f9; color: #64748b; }
+        .member-status.member-waiting { background: #fef3c7; color: #d97706; }
+        .member-status.member-working { background: #dbeafe; color: #2563eb; }
+        .member-status.member-updated { background: #e2e8f0; color: #475569; }
+        .member-status.member-failed { background: #fee2e2; color: #dc2626; }
+        .member-status.member-blocked { background: #ddd6fe; color: #6d28d9; }
+        .member-heartbeat {
+            font-size: 10px; color: #9ca3af; margin-left: 4px; white-space: nowrap;
+        }
+        .members-note {
+            padding: 4px 12px;
+            font-size: 11px;
+            color: #3b82f6;
+            background: #eff6ff;
+        }
+        .members-note.members-note-error {
+            color: #dc2626;
+            background: #fee2e2;
+        }
+        .members-empty {
+            padding: 8px 12px;
+            font-size: 11px;
+            color: #9ca3af;
+        }
+
+        /* ── Members picker dialog ──────────────────────────────────── */
+        .dialog-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+        }
+        .dialog-backdrop.open { display: flex; }
+        .dialog {
+            background: #fff;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+        }
+        .dialog h2 {
+            font-size: 16px;
+            color: #1e293b;
+            margin-bottom: 4px;
+        }
+        .dialog p {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-bottom: 12px;
+        }
+        .dialog input[type="search"] {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #d2d6dc;
+            border-radius: 6px;
+            font-size: 13px;
+            outline: none;
+        }
+        .dialog input[type="search"]:focus { border-color: #3b82f6; }
+        .members-picker-list {
+            margin: 8px 0;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .members-picker-list h3 {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #9ca3af;
+            letter-spacing: 0.05em;
+            padding: 4px 0;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .members-picker-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            font-size: 13px;
+            color: #2d3748;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .members-picker-row:hover { background: #f8fafc; }
+        .members-picker-row input[type="checkbox"] { flex-shrink: 0; }
+        .dialog-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            justify-content: flex-end;
+        }
+        .dialog-actions button {
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: 1px solid #d2d6dc;
+            background: #fff;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .dialog-actions button[data-action="confirm-members"] {
+            background: #3b82f6;
+            color: #fff;
+            border-color: #3b82f6;
+        }
+
+        /* ── Pause / Resume button ──────────────────────────────────── */
+        #pauseResumeBtn { color: #ef4444; }
+        #pauseResumeBtn:hover { background: #fee2e2; color: #dc2626; }
+
+        /* ── Member row hover ───────────────────────────────────────── */
+        .member-row:hover { background: #f8fafc; }
+        .member-row:hover .panel-btn { opacity: 1; }
+
+        /* ── Task dependency line ───────────────────────────────────── */
+        .task-deps {
+            font-size: 10px;
+            color: #9ca3af;
+            padding-left: 16px;
+            margin-top: 1px;
+        }
     </style>
 </head>
 <body>
@@ -667,6 +818,7 @@
             <div class="panel-header">
                 <button class="panel-btn" data-panel="left" title="Minimize">&#9654;</button>
                 <h2>Task Tree</h2>
+                <button class="panel-btn" id="sortToggleBtn" title="Sort by: newest" aria-label="Sort by: newest">&#8645;</button>
                 <button class="panel-btn" data-max="left" title="Maximize">&#9633;</button>
             </div>
             <div id="supervisor-list"></div>
@@ -688,6 +840,7 @@
             <div class="panel-header">
                 <button class="panel-btn" data-panel="center" title="Minimize">&#9654;</button>
                 <h2>Supervisor Chat</h2>
+                <button class="panel-btn" id="pauseResumeBtn" title="" aria-label="" hidden>&#9208;</button>
                 <button class="panel-btn" data-max="center" title="Maximize">&#9633;</button>
             </div>
             <div id="overall-progress"><div id="overall-progress-fill"></div></div>

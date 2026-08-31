@@ -135,9 +135,26 @@
     completionSummary: $("#completion-summary"),
     goalDismissBtn: $(".goal-banner-dismiss"),
     completionCloseBtn: $(".completion-close"),
+    pauseResumeBtn: $("#pauseResumeBtn"),
   };
 
   // ── Supervisor list ──────────────────────────────────────────────────
+  // Sort order for the supervisor list. Default "newest first" (by id,
+  // which is a UUID, so it approximates creation time), but a toggle
+  // makes "last active" the order so recently-used supervisors stay visible.
+  let supervisorSortMode = "newest"; // "newest" | "updated"
+  function setSupervisorSort(mode) {
+    supervisorSortMode = mode;
+    try { localStorage.setItem("wc_supervisor_sort", mode); } catch (e) {}
+    renderSupervisorList();
+  }
+  (function loadSavedSort() {
+    try {
+      const v = localStorage.getItem("wc_supervisor_sort");
+      if (v === "updated") supervisorSortMode = v;
+    } catch (e) {}
+  })();
+
   async function loadSupervisors() {
     try {
       const data = await apiFetch("/api/supervisors");
@@ -167,9 +184,27 @@
         '<div class="empty-state">No supervisors yet.<br>Click <b>+ New</b> to create one.</div>';
       return;
     }
-    el.supervisorList.innerHTML = supervisors
+    // Sort the list. Default newest-first (UUID ≈ creation time),
+    // but "updated" sorts by last activity so the most-recently-used
+    // supervisors stay at the top.
+    const sorted = supervisors
+      .map((s) => ({ ...s }))
+      .sort((a, b) => {
+        if (supervisorSortMode === "updated") {
+          return (b.updated_at || b.created_at || "")
+            .localeCompare(a.updated_at || a.created_at || "");
+        }
+        return (b.created_at || "").localeCompare(a.created_at || "");
+      });
+    el.supervisorList.innerHTML = sorted
       .map((s) => {
         const statusClass = s.status || "idle";
+        // Show relative time if updated_at differs from created_at —
+        // a freshly-created supervisor shows only the status badge.
+        let timeLabel = "";
+        if (s.updated_at && s.created_at && s.updated_at !== s.created_at) {
+          timeLabel = `&middot; ${formatTime(s.updated_at)}`;
+        }
         return `<div class="supervisor-list-item ${
           s.id === activeSupervisorId ? "active" : ""
         }" data-id="${s.id}">
@@ -177,6 +212,7 @@
           <div class="sl-status">
             <span class="status-badge ${statusClass}">${statusClass}</span>
             ${s.progress_pct != null ? `<span>${Math.round(s.progress_pct)}%</span>` : ""}
+            ${timeLabel ? `<span style="margin-left:4px">${timeLabel}</span>` : ""}
           </div>
         </div>`;
       })
@@ -320,6 +356,9 @@
     try {
       const data = await apiFetch("/api/supervisors/" + activeSupervisorId);
       activeSupervisor = data.supervisor;
+      // The pause button reflects what the server says, not what the engine
+      // had last time — the engine may have been restarted between page loads.
+      updatePauseResumeBtn(activeSupervisor.status);
     } catch (e) {
       console.error("Failed to load supervisor:", e);
       return;
@@ -460,6 +499,7 @@
             <span class="task-title">${esc(t.title || "Untitled")}</span>
           </div>
           ${t.description ? `<div class="task-meta" style="color:#64748b;font-size:11px;padding-left:16px;margin-top:1px;">${esc(t.description.substring(0, 80))}${t.description.length > 80 ? "..." : ""}</div>` : ""}
+          ${t.depends_on && t.depends_on.length ? `<div class="task-deps">depends on: ${t.depends_on.map(d => esc(d)).join(", ")}</div>` : ""}
           <div class="task-meta">
             <span class="status-badge ${statusClass}">${statusClass}</span>
             ${t.model ? `<span>${esc(t.model)}</span>` : ""}
@@ -633,6 +673,7 @@
     if (data.status && activeSupervisor) {
       activeSupervisor.status = data.status;
       renderSupervisorList();
+      updatePauseResumeBtn(data.status);
     }
   }
 
@@ -1007,6 +1048,21 @@
       // says what to do, "waiting" only says that something is true.
       badge.className = `member-status member-${m.reason || m.status || "idle"}`;
       badge.textContent = m.reason || m.status || "idle";
+      // Heartbeat: a timestamp so the user knows when this member last
+      // produced output. A row that says "working" but hasn't moved in
+      // hours is ambiguous; a row that shows the time tells them whether
+      // the agent is alive or stuck.
+      let heartbeat = null;
+      if (m.last_seen) {
+        try { heartbeat = new Date(m.last_seen); } catch (_) {}
+      }
+      if (heartbeat && !Number.isNaN(heartbeat.getTime())) {
+        const span = document.createElement("span");
+        span.className = "member-heartbeat";
+        span.textContent = formatTime(m.last_seen);
+        span.title = heartbeat.toLocaleString();
+        row.appendChild(span);
+      }
       const drop = document.createElement("button");
       drop.type = "button";
       drop.className = "panel-btn";
@@ -1014,7 +1070,7 @@
       drop.title = `Stop watching ${m.title || "this conversation"}`;
       drop.setAttribute("aria-label", `Stop watching ${m.title || "this conversation"}`);
       drop.addEventListener("click", () => removeMember(supervisorId, m.id));
-      row.append(name, badge, drop);
+      row.append(badge, drop);
       if (m.preview) row.title = m.preview;
       panel.appendChild(row);
     });
@@ -1206,6 +1262,18 @@
         sendPrompt();
       }
     });
+
+    // Auto-grow the composer textarea as the user types. Starts at 38px,
+    // expands up to 200px, collapses back when cleared. A soft clamp so a
+    // long prompt does not swallow the chat while still fitting the text.
+    function autoGrowComposer() {
+      if (!el.promptInput) return;
+      el.promptInput.style.height = "38px";
+      const needed = el.promptInput.scrollHeight;
+      el.promptInput.style.height = Math.min(200, Math.max(38, needed)) + "px";
+    }
+    el.promptInput.addEventListener("input", autoGrowComposer);
+
     el.goalDismissBtn?.addEventListener("click", dismissGoalBanner);
     document
       .getElementById("addMembersBtn")
@@ -1214,6 +1282,17 @@
         else membersNotice("Pick a supervisor first.", true);
       });
     el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
+    el.pauseResumeBtn?.addEventListener("click", togglePauseResume);
+
+    // Sort toggle — cycles between newest-first and last-active.
+    // Clicking the same button toggles; the saved preference survives reloads.
+    const sortEl = el.sortToggleBtn || $("#sortToggleBtn");
+    if (sortEl) {
+      sortEl.addEventListener("click", () => {
+        supervisorSortMode = supervisorSortMode === "updated" ? "newest" : "updated";
+        setSupervisorSort(supervisorSortMode);
+      });
+    }
 
     // Panel resize
     initResizeHandles();
@@ -1232,6 +1311,44 @@
         loadTasks();
       }
     }, 30000);
+  }
+
+  // ── Pause / Resume ──────────────────────────────────────────────────
+  // A supervisor that is planning or running can be put on hold and resumed
+  // later. The button sits in the chat panel header because that is the
+  // place you look at while a supervisor is working; it shows the pause
+  // symbol when paused so you know the opposite action is available.
+  function updatePauseResumeBtn(status) {
+    if (!el.pauseResumeBtn) return;
+    if (status === "paused") {
+      el.pauseResumeBtn.hidden = false;
+      el.pauseResumeBtn.textContent = "▶"; // play
+      el.pauseResumeBtn.title = "Resume";
+      el.pauseResumeBtn.setAttribute("aria-label", "Resume");
+    } else if (status === "planning" || status === "running") {
+      el.pauseResumeBtn.hidden = false;
+      el.pauseResumeBtn.textContent = "⏸"; // pause
+      el.pauseResumeBtn.title = "Pause";
+      el.pauseResumeBtn.setAttribute("aria-label", "Pause");
+    } else {
+      el.pauseResumeBtn.hidden = true;
+    }
+  }
+
+  async function togglePauseResume() {
+    if (!activeSupervisorId) return;
+    if (!el.pauseResumeBtn) return;
+    // Decide which action to take from the current button text.
+    const action = el.pauseResumeBtn.textContent === "⏸" ? "pause" : "resume";
+    try {
+      await apiFetch(`/api/supervisors/${encodeURIComponent(activeSupervisorId)}/${action}`, {
+        method: "POST",
+      });
+      // Refresh the supervisor so status and list update in one call.
+      await showActiveSupervisor();
+    } catch (err) {
+      alert(`Could not ${action}: ${err.message}`);
+    }
   }
 
   // Start when DOM is ready

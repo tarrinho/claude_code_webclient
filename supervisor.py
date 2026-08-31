@@ -434,7 +434,10 @@ class SupervisorEngine:
         self.config: dict[str, Any] = {}
         self.router = ModelRouter()
         self._running = False
+        self._paused = False
+        self._pre_pause_status: str | None = None  # status to restore on resume
         self._planner_chat_id: str | None = None  # synthetic chat for planning turn
+        self._resume_event: asyncio.Event = asyncio.Event()
         # Strong references to background tasks. The event loop keeps only weak
         # ones, so a task nobody holds can be collected mid-run: the work stops
         # with nothing raised and nothing logged. See spawn().
@@ -551,7 +554,7 @@ class SupervisorEngine:
     async def _run_planner_turn(self, user_prompt: str) -> None:
         """Run the LLM planning turn, then parse the plan and execute tasks."""
         try:
-            plan_chat_id = uuid.uuid4().hex
+            plan_chat_id = str(uuid.uuid4())
             self._planner_chat_id = plan_chat_id
             self.tracker.record(ProgressEvent(
                 event_type="plan",
@@ -860,6 +863,7 @@ class SupervisorEngine:
                                 node.model,
                             )
                 await self._persist_progress()
+                await self._wait_if_paused()
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             # Shutdown, not a fault. Leave the status alone and let it go.
@@ -889,6 +893,51 @@ class SupervisorEngine:
     def stop(self) -> None:
         """Stop the scheduler loop."""
         self._running = False
+
+    def pause(self) -> bool:
+        """Pause a running supervisor. Returns False if nothing was paused."""
+        if self._running and not self._paused:
+            self._paused = True
+            self._resume_event.clear()
+            self._pre_pause_status = "running"
+            return True
+        return False
+
+    def set_status_for_pause(self, status: str) -> None:
+        """Remember what status was before the run started (planning vs running).
+
+        The engine always stores "running" at line 693, but the user's view
+        needs to know whether the supervisor was mid-plan or mid-task so the
+        resume button shows the right thing.  The simplest correct approach is
+        to let the caller tell us — the API handler passes the pre-pause DB
+        value here before calling pause(), so the engine remembers it to
+        restore later.
+        """
+        if self._paused:
+            self._pre_pause_status = status
+
+    def resume(self) -> bool:
+        """Resume a paused supervisor. Returns False if nothing was resumed."""
+        if self._paused:
+            self._paused = False
+            self._resume_event.set()
+            return True
+        return False
+
+    async def _wait_if_paused(self) -> None:
+        """Yield until the pause flag is cleared or a short interval elapses.
+
+        Used in the scheduler loop so a paused supervisor does not spin, but
+        also does not block forever: a 2-second poll means the engine loop
+        still reaches the progress-persist line at least once every 2 seconds
+        even while paused, so the UI never looks stale.
+        """
+        if not self._paused:
+            return
+        try:
+            await asyncio.wait_for(self._resume_event.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
 
     def state(self) -> dict[str, Any]:
         """Return full engine state for serialization."""

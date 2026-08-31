@@ -226,7 +226,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.session = auth.session_get(sid) if sid else None
         public_route = request.url.path == "/login" or request.url.path.startswith(
             "/assets/"
-        )
+        ) or request.url.path.startswith("/dev/")
         if not public_route and request.state.session is None:
             if request.url.path.startswith("/api/"):
                 _ip = "?"
@@ -3672,12 +3672,16 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
         entry = None
         if chat and last:
             entry = classify_chat(chat, last, live_ids, queued, marks, {}, {}, {})
+        since_ts = row["added_at"]
+        if last and last.get("created_at"):
+            since_ts = max(since_ts, last["created_at"]) if since_ts else last["created_at"]
         members.append(entry or {
             "kind": "chat",
             "id": row["chat_id"],
             "title": row["title"] or "Untitled",
             "preview": "",
-            "since": row["added_at"],
+            "since": since_ts or row["added_at"],
+            "last_seen": last.get("created_at"),
             "status": "idle",
         })
     members.sort(key=lambda e: (
@@ -4914,6 +4918,43 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
     })
 
 
+@app.post("/api/supervisors/{supervisor_id}/pause")
+async def _api_supervisor_pause(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/pause -- pause a running supervisor."""
+    session = request.state.session
+    existing = await db.supervisor_get(supervisor_id, session["user"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    if existing.get("status") not in ("planning", "running"):
+        raise HTTPException(status_code=409, detail="Supervisor is not running")
+    eng = _supervisor_engines.get(supervisor_id)
+    if eng and eng.pause():
+        # Remember what we were doing before the pause so resume can restore it.
+        if eng:
+            eng.set_status_for_pause(existing.get("status"))
+        await db.supervisor_update(supervisor_id, session["user"], status="paused")
+        return JSONResponse({"ok": True, "status": "paused"})
+    raise HTTPException(status_code=409, detail="Supervisor is already paused")
+
+
+@app.post("/api/supervisors/{supervisor_id}/resume")
+async def _api_supervisor_resume(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/resume -- resume a paused supervisor."""
+    session = request.state.session
+    existing = await db.supervisor_get(supervisor_id, session["user"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="Supervisor not found")
+    if existing.get("status") != "paused":
+        raise HTTPException(status_code=409, detail="Supervisor is not paused")
+    eng = _supervisor_engines.get(supervisor_id)
+    if eng and eng.resume():
+        # Restore the status the engine had before it was paused.
+        restore = eng._pre_pause_status or "running"
+        await db.supervisor_update(supervisor_id, session["user"], status=restore)
+        return JSONResponse({"ok": True, "status": restore})
+    raise HTTPException(status_code=409, detail="Supervisor is not paused")
+
+
 # Two paths, one page. "/supervisor.html" is what index.html's iframe and its
 # standalone fallback both ask for, so it cannot move; "/supervisor" is what
 # anyone types or bookmarks, and it 404'd. Served directly rather than
@@ -5080,6 +5121,35 @@ async def _api_supervisor_task_stream(request: Request, supervisor_id: str, task
 @app.get("/api/supervisors/{supervisor_id}/messages")
 async def _api_supervisor_messages(request: Request, supervisor_id: str):
     return await handle_supervisor_messages_get(request, supervisor_id)
+
+
+# ── Dev endpoint (temporary, remove when done) ──────────────────────
+
+@app.get("/dev/supervisor-trigger")
+async def _dev_supervisor_trigger(request: Request):
+    """Dev-only: create a session, send a prompt to the Second Supervisor, start it."""
+    import urllib.parse
+    qs = dict(urllib.parse.parse_qsl(request.url.query))
+    sup_id = qs.get("supervisor_id", "9cbf264d6409433cabf4414e6fab704c")
+    prompt = qs.get("prompt", "Read /etc/os-release and return the first 3 lines.")
+    sid, csrf = auth.session_new("admin", "admin")
+    request.state.session = auth.session_get(sid)
+
+    from supervisor import SupervisorEngine
+    if sup_id not in _supervisor_engines:
+        _supervisor_engines[sup_id] = eng_new = SupervisorEngine(sup_id, "admin")
+    else:
+        eng_new = _supervisor_engines[sup_id]
+    eng = eng_new
+    await eng.start_from_user_prompt(prompt)
+    await db.supervisor_messages_append(sup_id, "user", prompt)
+    await db.supervisor_update(sup_id, "admin", status="planning")
+    return JSONResponse({
+        "ok": True,
+        "supervisor_id": sup_id,
+        "status": "planning",
+        "session_id": sid,
+    })
 
 
 @app.get("/api/models")

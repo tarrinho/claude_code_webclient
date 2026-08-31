@@ -66,10 +66,38 @@ class SourceWiringTests(unittest.TestCase):
     def setUp(self):
         self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
 
+    @staticmethod
+    def _extract_block(source: str, func_name: str) -> str:
+        """Return the body of *func_name*, from its opening brace to the
+        matching closing brace.  Indent-aware so helper IIFEs and nested
+        closures above the function do not confuse the parser.
+        """
+        start = source.index("function " + func_name)
+        brace_start = source.index("{", start)
+        depth = 1
+        pos = brace_start + 1
+        while depth > 0:
+            ch = source[pos]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            pos += 1
+        return source[brace_start + 1:pos - 1]
+
     def test_the_list_load_restores_the_open_supervisor(self):
-        """Called after renderSupervisorList, or `supervisors` is still empty."""
-        block = self.source.split("renderSupervisorList();", 1)[1][:120]
-        self.assertIn("restoreOpen()", block)
+        """Called after renderSupervisorList, or `supervisors` is still empty.
+
+        Uses brace-depth parsing so top-level IIFEs (like setSupervisorSort's
+        loadSavedSort) do not get mistaken for the function's own closing brace.
+        """
+        block = self._extract_block(self.source, "loadSupervisors")
+        render = block.find("renderSupervisorList();")
+        restore = block.find("restoreOpen()")
+        self.assertNotEqual(render, -1, "loadSupervisors no longer renders")
+        self.assertNotEqual(restore, -1, "loadSupervisors no longer restores")
+        self.assertLess(render, restore,
+                        "restoreOpen runs before the list exists")
 
     def test_selecting_remembers_it(self):
         block = self.source.split("function selectSupervisor(", 1)[1][:300]

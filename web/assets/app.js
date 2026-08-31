@@ -2108,7 +2108,17 @@ async function loadSettings() {
       populateModelPicker();
       return data;
     }
-  } catch {}
+    // A non-2xx is a failure too, and returning {} for it is what makes the
+    // settings panel show defaults that look like the server's answer.
+    console.error('loadSettings: /api/settings returned', response.status);
+  } catch (error) {
+    // rules.md §12: a fetch error either surfaces or is logged, never both
+    // swallowed and defaulted. No toast, because this runs on load and a
+    // banner on every page open would be worse than a console line -- but the
+    // silence itself was the bug: {} is indistinguishable from a server that
+    // genuinely has nothing configured.
+    console.error('loadSettings failed', error);
+  }
   return {};
 }
 
@@ -2717,7 +2727,16 @@ async function loadInitialData() {
 }
 
 async function logout() {
-  try { await fetch('/logout', {method: 'POST', credentials: 'same-origin'}); } catch {}
+  try {
+    await fetch('/logout', {method: 'POST', credentials: 'same-origin'});
+  } catch (error) {
+    // Navigating away regardless is right -- the user asked to leave. Logging
+    // is not optional though: if this call never lands the session is still
+    // live on the server while the UI has said "logged out", and swallowing it
+    // leaves no trace of the one failure that matters here.
+    console.error('logout request failed; the server session may still be live',
+                  error);
+  }
   window.location.assign('/login');
 }
 

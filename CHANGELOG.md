@@ -77,6 +77,24 @@ churn.
 
 ### Fixed
 
+- **A repeating timer in the conversation controller could not be stopped.**
+  `createConversationController` installed a bare 30-second `setInterval` with
+  no handle, so a second call would have added a second timer repainting from
+  the first controller's state. It is called once today, which is a property of
+  where the call sits rather than of the code — the same shape app.js's chat
+  poller had before it was fixed. The handle is now held at module scope and
+  the previous timer cleared before a new one replaces it. Found by running
+  rules.md §4 by hand, so `tests/test_qa_timer_handles.py` now checks the rule
+  on every suite instead.
+
+- **Two fetch failures were swallowed in the browser.** `loadSettings` caught
+  everything and returned `{}`, so a failed or non-2xx `/api/settings` showed
+  the panel default values that were indistinguishable from the server's
+  answer; and `logout` swallowed its request error, which is the one failure
+  worth recording there — the server session stays live while the UI has said
+  "logged out". Both now log, and `logout` still navigates away, because the
+  user asked to leave (rules.md §12).
+
 - **Members sorted by last activity instead of just creation time.** The member
   table now uses the newer of ``added_at`` and the last message ``created_at``
   as the recency key, so a chat that was updated mid-session moves ahead of

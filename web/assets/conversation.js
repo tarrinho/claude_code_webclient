@@ -117,6 +117,15 @@ export function renderSafeText(container, text) {
   });
 }
 
+// Module scope, not controller scope, and deliberately so. The timer below
+// belongs to the page rather than to one controller, so a second call to the
+// factory must replace it instead of adding another -- rules.md §4 names a
+// bare setInterval with no handle as the failure case, and app.js had the same
+// shape at its chat poller: it only failed to accumulate because its enclosing
+// block happened to run once, which is a property of where the call sat rather
+// than of the code.
+let _lastCommandTimer = null;
+
 export function createConversationController(dependencies) {
   const {
     state,
@@ -333,7 +342,14 @@ export function createConversationController(dependencies) {
 
   // "2m ago" would otherwise sit there saying 2m for an hour. Only rewrites the
   // timestamp, and only while something is shown.
-  setInterval(() => { if (lastCommand) renderLastCommand(); }, 30000);
+  //
+  // Cleared before being replaced: the closure below reads *this* controller's
+  // `lastCommand`, so leaving a previous one running would keep repainting from
+  // state nobody reads any more, on top of the accumulation §4 forbids.
+  if (_lastCommandTimer) clearInterval(_lastCommandTimer);
+  _lastCommandTimer = setInterval(
+    () => { if (lastCommand) renderLastCommand(); }, 30000,
+  );
 
   function persistDraft() {
     if (state.currentChat?.id) storageSet(draftKey(state.currentChat.id), elements.composerInput.value);

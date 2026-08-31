@@ -143,12 +143,25 @@
       const data = await apiFetch("/api/supervisors");
       supervisors = data.supervisors || [];
       renderSupervisorList();
+      restoreOpen();
     } catch (e) {
       console.error("Failed to load supervisors:", e);
     }
   }
 
+  // ── Rename ────────────────────────────────────────────────────────────────
+  // A supervisor's name appears only in this list, so the control lives on the
+  // row rather than in a detail header the page does not have.
+  //
+  // renamingId suppresses the refresh below. setInterval calls
+  // loadSupervisors(), which rebuilds this list wholesale, so without it a
+  // half-typed name is wiped by a poll the user cannot see coming -- and the
+  // edit simply vanishes, which reads like the page ignoring them.
+  let renamingId = null;
+
   function renderSupervisorList() {
+    // An edit in progress outranks a refresh; the poll catches up when it ends.
+    if (renamingId) return;
     if (!supervisors.length) {
       el.supervisorList.innerHTML =
         '<div class="empty-state">No supervisors yet.<br>Click <b>+ New</b> to create one.</div>';
@@ -169,9 +182,85 @@
       })
       .join("");
 
-    el.supervisorList.querySelectorAll(".supervisor-list-item").forEach((el) => {
-      el.addEventListener("click", () => selectSupervisor(el.dataset.id));
+    el.supervisorList.querySelectorAll(".supervisor-list-item").forEach((row) => {
+      row.addEventListener("click", () => selectSupervisor(row.dataset.id));
+
+      const titleEl = row.querySelector(".sl-title");
+      if (!titleEl) return;
+      // Built with createElement rather than added to the template string
+      // above: a name the user typed is the last value to interpolate into
+      // markup, and rules.md wants innerHTML writes kept down, not up.
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sl-rename";
+      btn.textContent = "\u270E";
+      btn.setAttribute(
+        "aria-label", `Rename ${titleEl.textContent || "this supervisor"}`);
+      btn.addEventListener("click", (event) => {
+        // The row's own click selects the supervisor. Without this, renaming
+        // one you are not looking at also switches to it.
+        event.stopPropagation();
+        startRename(row.dataset.id, titleEl);
+      });
+      row.appendChild(btn);
     });
+  }
+
+  function startRename(id, titleEl) {
+    if (!titleEl || renamingId) return;
+    renamingId = id;
+    const original = titleEl.textContent;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "sl-rename-input";
+    input.value = original;
+    // The server slices the title to 200 characters. Without this the user
+    // types past the limit and is truncated with no indication, so the rename
+    // reads as having half worked.
+    input.maxLength = 200;
+    input.setAttribute("aria-label", "Supervisor name");
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = async (commit) => {
+      if (settled) return;   // blur fires after Enter; only the first counts
+      settled = true;
+      const next = input.value.trim();
+      renamingId = null;
+      // Redraw from server state either way, so a cancelled or rejected edit
+      // cannot leave a stale input behind.
+      if (!commit || !next || next === original) {
+        await loadSupervisors();
+        return;
+      }
+      try {
+        await apiFetch(`/api/supervisors/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: { title: next },
+        });
+      } catch (err) {
+        // apiFetch here throws on non-2xx rather than returning a Response,
+        // and this page has no showToast -- alert is what createSupervisor and
+        // membersNotice already use for a failure the user has to see.
+        alert(`Could not rename: ${err.message}`);
+      }
+      await loadSupervisors();
+    };
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("click", (event) => event.stopPropagation());
   }
 
   async function createSupervisor() {
@@ -187,8 +276,41 @@
     }
   }
 
+  // Which supervisor was last open, so a reload returns to it. The page had no
+  // notion of this: selectSupervisor was reachable only from a click on a list
+  // row or immediately after creating one, so opening /supervisor.html always
+  // showed the start screen and left an existing conversation invisible --
+  // messages were never even fetched, because showActiveSupervisor is what
+  // fetches them. The main app has done this with wc_last_chat all along.
+  const LAST_OPEN_KEY = "wc_last_supervisor";
+
+  function rememberOpen(id) {
+    try {
+      localStorage.setItem(LAST_OPEN_KEY, id);
+    } catch (e) {
+      // Private mode or a full quota. Losing the memory of which supervisor was
+      // open must not stop it being opened.
+      console.warn("could not remember the open supervisor:", e);
+    }
+  }
+
+  function restoreOpen() {
+    if (activeSupervisorId || !supervisors.length) return;
+    let wanted = null;
+    try {
+      wanted = localStorage.getItem(LAST_OPEN_KEY);
+    } catch (e) {
+      console.warn("could not read the last open supervisor:", e);
+    }
+    // The remembered one if it still exists, otherwise the most recent, because
+    // an empty centre panel next to a populated list reads as a broken page.
+    const found = supervisors.find((s) => s.id === wanted);
+    selectSupervisor((found || supervisors[0]).id);
+  }
+
   function selectSupervisor(id) {
     activeSupervisorId = id;
+    rememberOpen(id);
     renderSupervisorList();
     showActiveSupervisor();
   }
@@ -215,7 +337,12 @@
       chatMessages = msgData.messages || [];
       renderChatMessages();
     } catch (e) {
+      // Said out loud. This used to assign [] and not re-render, so a failed
+      // fetch looked exactly like a supervisor that had never been asked
+      // anything -- and the request the user had just sent was simply absent.
       chatMessages = [];
+      renderChatMessages();
+      addChatMessage("system", "Could not load this conversation: " + e.message);
     }
 
     // Load tasks

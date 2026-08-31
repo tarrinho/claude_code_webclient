@@ -2470,6 +2470,29 @@ function startSupervisorPolling() {
 // meaningful rather than a number that only ever grows.
 // Clearing is deliberate, so it also silences unanswered questions -- which
 // opening one does not.
+/**
+ * Take one agent out of the highlights, leaving the rest alone.
+ *
+ * `dismiss: true` is the same flag the heading's clear-all uses, so this
+ * silences an unanswered question too -- which merely opening the conversation
+ * deliberately does not. That asymmetry is the point of the control: the row
+ * says an agent is waiting, and only the user knows they have dealt with it.
+ */
+async function dismissAgent(kind, id) {
+  if (!kind || !id) return;
+  try {
+    await apiFetch('/api/supervisor/read', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind, id, dismiss: true}),
+    });
+  } catch {
+    notifyResult('Could not remove it from the highlights', 'error');
+    return;
+  }
+  await refreshSupervisor();
+}
+
 async function clearSupervisor() {
   try {
     await apiFetch('/api/supervisor/read', {
@@ -2674,6 +2697,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onAction: handleChatAction,
     onResumeCli: resumeCliSession,
     onClearSupervisor: clearSupervisor,
+    onDismissAgent: dismissAgent,
     // Same destination as the topbar control, reachable from the section it
     // belongs to. Opens in the conversation area rather than navigating away.
     onOpenSupervisor: openSupervisorPane,

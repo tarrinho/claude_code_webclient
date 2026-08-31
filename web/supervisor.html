@@ -585,6 +585,25 @@
         .supervisor-list-item:hover { background: #f8fafc; }
         .supervisor-list-item.active { background: #eff6ff; border-left: 3px solid #3b82f6; }
         .supervisor-list-item .sl-title { font-size: 13px; font-weight: 500; color: #2d3748; }
+        /* Rename lives on the row because the name appears nowhere else. Shown
+           on hover and on keyboard focus -- hover alone would make it
+           unreachable without a pointer, which is half the devices this
+           console is used from. */
+        .supervisor-list-item { position: relative; }
+        .sl-rename {
+            position: absolute; top: 6px; right: 6px;
+            border: 0; background: none; cursor: pointer;
+            font-size: 12px; line-height: 1; padding: 4px 6px;
+            border-radius: 4px; color: #94a3b8; opacity: 0;
+        }
+        .supervisor-list-item:hover .sl-rename,
+        .sl-rename:focus-visible { opacity: 1; }
+        .sl-rename:hover { background: #e2e8f0; color: #2d3748; }
+        .sl-rename-input {
+            width: 100%; font-size: 13px; font-weight: 500; color: #2d3748;
+            border: 1px solid #3b82f6; border-radius: 4px; padding: 2px 4px;
+            background: #fff;
+        }
         .supervisor-list-item .sl-status {
             font-size: 11px; color: #9ca3af; display: flex;
             align-items: center; gap: 4px; margin-top: 2px;
@@ -724,6 +743,6 @@
         </div>
     </div>
 
-    <script src="supervisor.js?v=3"></script>
+    <script src="supervisor.js?v=4"></script>
 </body>
 </html>

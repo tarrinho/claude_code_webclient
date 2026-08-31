@@ -928,5 +928,276 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
         )
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class SupervisorDismissBrowserTests(_BrowserFixture):
+    """Every highlighted agent can be taken out of the highlights on its own.
+
+    The heading's clear-all was the only control: dealing with one agent meant
+    silencing every other, including questions still unanswered. These drive
+    the button rather than reading the markup, because what matters is that the
+    row goes away and the others stay.
+    """
+
+    DESKTOP = "#chatListDesktop"
+
+    def _seed(self, text="Which way do you want it?"):
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"dis{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,created_at,"
+            "updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (chat_id, f"Waiting {chat_id}", stamp, stamp),
+        )
+        con.execute(
+            "INSERT INTO messages (chat_id,role,content,created_at) VALUES (?,?,?,?)",
+            (chat_id, "assistant", text, stamp),
+        )
+        con.commit()
+        con.close()
+        return chat_id
+
+    def _rows(self):
+        return self.page.locator(f"{self.DESKTOP} .supervisor-item")
+
+    def _load_with(self, count):
+        for _ in range(count):
+            self._seed()
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        return self._rows()
+
+    def test_every_highlighted_row_offers_one(self):
+        rows = self._load_with(2)
+        self.assertGreaterEqual(rows.count(), 2)
+        for index in range(rows.count()):
+            with self.subTest(row=index):
+                self.assertEqual(
+                    rows.nth(index).locator(".supervisor-dismiss").count(), 1,
+                    "a highlighted agent with no way to dismiss it on its own",
+                )
+
+    def test_it_is_labelled_for_a_screen_reader(self):
+        """"✕" alone announces as nothing useful."""
+        rows = self._load_with(1)
+        label = rows.nth(0).locator(".supervisor-dismiss").get_attribute("aria-label")
+        self.assertIn("highlights", (label or "").lower())
+
+    def test_clicking_it_removes_that_row(self):
+        rows = self._load_with(2)
+        before = rows.count()
+        self.assertGreaterEqual(before, 2)
+        rows.nth(0).locator(".supervisor-dismiss").click()
+        self.page.wait_for_function(
+            "([sel, n]) => document.querySelectorAll(sel).length < n",
+            arg=[f"{self.DESKTOP} .supervisor-item", before],
+            timeout=15_000,
+        )
+
+    def test_it_leaves_the_other_agents_alone(self):
+        """The whole reason for a per-row control rather than clear-all."""
+        rows = self._load_with(3)
+        before = rows.count()
+        kept = rows.nth(1).locator(".chat-title").inner_text()
+        rows.nth(0).locator(".supervisor-dismiss").click()
+        self.page.wait_for_function(
+            "([sel, n]) => document.querySelectorAll(sel).length < n",
+            arg=[f"{self.DESKTOP} .supervisor-item", before],
+            timeout=15_000,
+        )
+        remaining = self.page.locator(f"{self.DESKTOP} .supervisor-item .chat-title")
+        titles = [remaining.nth(i).inner_text() for i in range(remaining.count())]
+        self.assertIn(kept, titles, "dismissing one silenced the others too")
+
+    def test_it_does_not_open_the_conversation(self):
+        """The button sits inside the row, whose click opens the chat.
+
+        Without stopPropagation the control would open the very conversation
+        you had just asked to stop being shown -- and, since opening does not
+        dismiss, the row would come straight back.
+        """
+        rows = self._load_with(2)
+        rows.nth(0).locator(".supervisor-dismiss").click()
+        self.page.wait_for_timeout(1500)
+        self.assertTrue(
+            self.page.is_visible("#messagesArea .empty-state")
+            or not self.page.is_visible("#composerInput"),
+            "dismissing opened the conversation instead of only removing it",
+        )
+
+    def test_the_dismissal_survives_a_reload(self):
+        """A row that comes back on refresh was never really dismissed."""
+        rows = self._load_with(2)
+        before = rows.count()
+        gone = rows.nth(0).locator(".chat-title").inner_text()
+        rows.nth(0).locator(".supervisor-dismiss").click()
+        self.page.wait_for_function(
+            "([sel, n]) => document.querySelectorAll(sel).length < n",
+            arg=[f"{self.DESKTOP} .supervisor-item", before],
+            timeout=15_000,
+        )
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_timeout(1000)
+        titles = self.page.locator(f"{self.DESKTOP} .supervisor-item .chat-title")
+        self.assertNotIn(
+            gone, [titles.nth(i).inner_text() for i in range(titles.count())],
+            "the dismissed agent reappeared after a reload",
+        )
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class SupervisorRenameBrowserTests(_BrowserFixture):
+    """Renaming a supervisor from the row it appears on.
+
+    Driven in a browser rather than asserted against the source, because the
+    two things most likely to break are invisible in the file: whether the
+    30-second refresh wipes a half-typed name, and whether clicking the
+    rename control also selects a supervisor the user was not looking at.
+    Both read as fine in the source and are decided at runtime.
+    """
+
+    def _make_supervisor(self, title: str) -> str:
+        csrf = next(c["value"] for c in self.page.context.cookies()
+                    if c["name"] == "wc_csrf")
+        return self.page.evaluate("""async ([csrf, title]) => {
+            const r = await fetch('/api/supervisors', {method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+                body: JSON.stringify({title})});
+            return (await r.json()).id;
+        }""", [csrf, title])
+
+    def _titles(self) -> list[str]:
+        return self.page.locator(".supervisor-list-item .sl-title").all_text_contents()
+
+    def _open(self, *titles):
+        for title in titles:
+            self._make_supervisor(title)
+        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+
+    def _begin_rename(self, title: str):
+        """Click the rename control on the row named *title*.
+
+        Addressed by name rather than by index on purpose. The server is shared
+        across the class, so supervisors created by earlier tests are still
+        listed and nth(0) is whichever one happens to sort first -- a first
+        version of this used an index and failed as soon as a sibling test
+        renamed something. A test whose subject depends on execution order is
+        not testing what it says.
+        """
+        # Retried, because this list rebuilds on a 30-second timer as well as
+        # on selection: the button can detach between being resolved and being
+        # clicked, which surfaces as a click that never lands. Passing alone
+        # and failing in the class is what that looks like.
+        last = None
+        for _ in range(4):
+            try:
+                row = self.page.locator(".supervisor-list-item", has_text=title)
+                # force=True: the button is opacity:0 until the row is hovered,
+                # which is a paint state rather than a hit-testing one.
+                row.locator(".sl-rename").click(force=True, timeout=4_000)
+                self.page.wait_for_selector(".sl-rename-input", timeout=4_000)
+                return self.page.locator(".sl-rename-input")
+            except Exception as exc:  # noqa: BLE001 -- retried below
+                last = exc
+                self.page.wait_for_timeout(400)
+        raise AssertionError(f"could not open the rename control for {title!r}: {last}")
+
+    def test_the_control_opens_an_input_holding_the_current_name(self):
+        self._open("Renameable one")
+        field = self._begin_rename("Renameable one")
+        self.assertEqual(field.input_value(), "Renameable one")
+
+    def test_enter_persists_the_new_name(self):
+        self._open("Before rename")
+        field = self._begin_rename("Before rename")
+        field.fill("After rename")
+        field.press("Enter")
+        self.page.wait_for_selector(".sl-rename-input", state="detached", timeout=5_000)
+        self.page.wait_for_function(
+            "() => [...document.querySelectorAll('.sl-title')]"
+            ".some(n => n.textContent === 'After rename')", timeout=10_000)
+        # And it survives a reload, so it was stored rather than only painted.
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.assertIn("After rename", self._titles())
+
+    def test_escape_abandons_the_edit(self):
+        self._open("Keep this name")
+        field = self._begin_rename("Keep this name")
+        field.fill("Discarded")
+        field.press("Escape")
+        self.page.wait_for_selector(".sl-rename-input", state="detached", timeout=5_000)
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        titles = self._titles()
+        self.assertIn("Keep this name", titles)
+        self.assertNotIn("Discarded", titles)
+
+    def test_a_real_refresh_does_not_wipe_a_half_typed_name(self):
+        """The hazard the guard exists for, proven against the real timer.
+
+        loadSupervisors() rebuilds the list wholesale on a 30-second interval,
+        so without suppressing it during an edit the input is replaced
+        mid-typing -- silently, at a moment the user cannot predict.
+
+        Slow on purpose. A first version called
+        `window.loadSupervisors && window.loadSupervisors()`, but that function
+        lives inside the module closure and is not on window, so the `&&`
+        short-circuited and the test asserted that an input survived a refresh
+        that never happened. It passed with the guard deleted. The defensive
+        `&&` is what hid it.
+
+        So the poll is now *observed* rather than assumed: the request counter
+        below is what makes the wait meaningful, and without it this would be
+        thirty seconds of proving nothing.
+        """
+        self._open("Mid-edit supervisor")
+        polls = []
+        self.page.on("request", lambda r: (
+            polls.append(r.url) if r.url.endswith("/api/supervisors")
+            and r.method == "GET" else None))
+
+        field = self._begin_rename("Mid-edit supervisor")
+        field.fill("Half typed")
+        before = len(polls)
+
+        # 30s interval; allow margin for a slow box under a full suite run.
+        deadline = time.monotonic() + 45
+        while len(polls) == before and time.monotonic() < deadline:
+            self.page.wait_for_timeout(500)
+        self.assertGreater(
+            len(polls), before,
+            "no refresh was observed in 45s, so this test proved nothing")
+
+        self.assertEqual(
+            self.page.locator(".sl-rename-input").count(), 1,
+            "the refresh replaced the input the user was typing into")
+        self.assertEqual(field.input_value(), "Half typed")
+
+    def test_renaming_does_not_select_the_row(self):
+        """The row's own click selects. Without stopPropagation, renaming a
+        supervisor you are not looking at also switches you to it."""
+        self._open("First one", "Second one")
+        before = self.page.locator(".supervisor-list-item.active").count()
+        self._begin_rename("First one")
+        self.assertEqual(
+            self.page.locator(".supervisor-list-item.active").count(), before,
+            "opening the rename control changed the selection")
+
+    def test_the_field_caps_at_the_length_the_server_stores(self):
+        """The server slices titles to 200. Without a matching maxlength the
+        user types past it and is truncated with no indication, so the rename
+        reads as having half worked."""
+        self._open("Capped supervisor")
+        field = self._begin_rename("Capped supervisor")
+        self.assertEqual(field.get_attribute("maxlength"), "200")
+
+
 if __name__ == "__main__":
     unittest.main()

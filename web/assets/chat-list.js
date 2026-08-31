@@ -99,6 +99,7 @@ export function createChatListController(dependencies) {
     onRemoveCli,
     onReorder,
     onClearSupervisor,
+    onDismissAgent,
     onOpenSupervisor,
     onAddToSupervisor,
   } = dependencies;
@@ -563,6 +564,22 @@ export function createChatListController(dependencies) {
         open.appendChild(preview);
       }
       item.appendChild(open);
+
+      // Dismiss this one row. The heading's ✕ clears everything at once, which
+      // is the only control there was: silencing one agent you have dealt with
+      // meant silencing the rest, including questions still unanswered.
+      const label = entry.title || entry.id;
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button';
+      dismiss.className = 'chat-action supervisor-dismiss';
+      dismiss.dataset.action = 'dismiss-agent';
+      dismiss.dataset.agentKind = entry.kind;
+      dismiss.dataset.agentId = entry.id;
+      dismiss.textContent = '✕';
+      dismiss.title = `Remove ${label} from the highlights`;
+      dismiss.setAttribute('aria-label', `Remove ${label} from the highlights`);
+      item.appendChild(dismiss);
+
       list.appendChild(item);
     });
 
@@ -697,6 +714,13 @@ export function createChatListController(dependencies) {
       return onAddToSupervisor?.(button.dataset.chatId, button);
     }
     if (action === 'clear-supervisor') return onClearSupervisor?.();
+    if (action === 'dismiss-agent') {
+      // Sits inside the row, whose own click opens the conversation. Without
+      // this the row would open the very chat you asked to stop being shown.
+      event.stopPropagation();
+      const {agentKind, agentId} = button.dataset;
+      return onDismissAgent?.(agentKind, agentId);
+    }
     if (action === 'jump-agent') {
       // A supervisor row is a pointer at something listed elsewhere: a web
       // chat opens, a terminal session resumes into one.

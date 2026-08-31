@@ -697,6 +697,10 @@
     // Update supervisor status if available
     if (data.status && activeSupervisor) {
       activeSupervisor.status = data.status;
+      // Same fix as handleStatusUpdate — renderSupervisorList() renders from
+      // the supervisors array, so we must keep it in sync.
+      const sup = supervisors.find(s => s.id === activeSupervisorId);
+      if (sup) sup.status = data.status;
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
     }

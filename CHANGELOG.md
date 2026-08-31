@@ -20,11 +20,48 @@ churn.
 
 ---
 
-## [Unreleased]
+## [0.9.3] — 2026-08-31
 
 ### Added
 
+- **Supervisor pause / resume.** A supervisor that is planning or running can be
+  put on hold and resumed later. The button sits in the chat panel header; it
+  shows pause while running and play while paused. The engine respects a
+  ``_wait_if_paused`` guard so it stops spinning but still persists progress
+  every two seconds so the UI does not look stale.
+
+- **Recency sort for the supervisor list.** A toggle button (``⇅``) cycles
+  between newest-first and last-active, so recently-used supervisors stay at
+  the top. The choice persists in ``localStorage`` under ``wc_supervisor_sort``.
+
+- **Member heartbeat timestamps.** Each member row now shows when it last
+  produced output, so a row that says "working" is distinguished from one that
+  has been stuck for hours.
+
+- **Task dependency hints.** When a plan task carries a ``depends_on`` list,
+  the task tree shows ``depends on: <task>`` below the title.
+
+- **Auto-grow composer.** The prompt textarea starts at 38 px and expands up to
+  200 px as the user types, so long prompts fit without swallowing the chat.
+
+- **Supervisor list shows last-activity time.** When a supervisor's
+  ``updated_at`` differs from ``created_at`` the list item renders
+  ``· 3 days ago`` alongside the status badge.
+
+- **The auth middleware now skips ``/dev/*`` routes.** They are intentionally
+  public development endpoints.
+
 ### Fixed
+
+- **Members sorted by last activity instead of just creation time.** The member
+  table now uses the newer of ``added_at`` and the last message ``created_at``
+  as the recency key, so a chat that was updated mid-session moves ahead of
+  newly-added but silent ones.
+
+- **The list-loading test no longer breaks on top-level IIFEs.** The restore
+  test used a brittle ``split("renderSupervisorList()")`` approach that could
+  hit a helper's closing brace. It now uses brace-depth parsing so the
+  ``loadSupervisors`` function body is extracted accurately.
 
 ---
 

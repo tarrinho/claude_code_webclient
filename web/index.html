@@ -68,6 +68,9 @@
     <div class="question-head">
       <span class="question-tag" id="questionTag"></span>
       <span class="question-ask" id="questionAsk"></span>
+      <!-- Outside #questionOptions on purpose: that group is labelled
+           "Answers" and declining to answer is not one of them. -->
+      <button class="question-dismiss" id="questionDismiss" type="button"></button>
     </div>
     <div class="question-options" id="questionOptions" role="group" aria-label="Answers"></div>
     <p class="question-note" id="questionNote"></p>

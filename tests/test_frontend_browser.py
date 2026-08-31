@@ -1199,5 +1199,192 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
         self.assertEqual(field.get_attribute("maxlength"), "200")
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class QuestionDismissBrowserTests(_BrowserFixture):
+    """Declining a question instead of answering it.
+
+    The question endpoint is served by the test rather than by the server,
+    because a genuinely pending question needs a live claude blocked inside
+    AskUserQuestion inside a multiplexer and there is no way to make one from
+    a test. What the interception leaves alone is everything this class is
+    about: the real page, the real 4-second poll, a real DELETE leaving the
+    browser, and the state the UI keeps between polls. The payload the server
+    would have produced, and the handler behind the DELETE, are pinned
+    separately in tests/test_qa_question_dismiss.py.
+
+    The poll is why this cannot be asserted against the source. Three of the
+    behaviours here -- the bar staying gone, the Esc lock surviving, the note
+    surviving -- are decided by what the next refresh does, four seconds after
+    the click, and all three read as correct in the file.
+    """
+
+    DESKTOP = "#chatListDesktop"
+    ASKED = "Which of these is your preferred weekend activity?"
+
+    def _payload(self, answerable=True):
+        base = {
+            "pending": True,
+            "id": "toolu_dismiss_test",
+            "questions": [{
+                "header": "Weekend",
+                "question": self.ASKED,
+                "options": [
+                    {"label": "Hiking outdoors", "description": "Fresh air"},
+                    {"label": "Reading a book", "description": "Quiet"},
+                ],
+            }],
+        }
+        if not answerable:
+            return {**base, "answerable": False,
+                    "reason": "This one can only be answered at its terminal."}
+        return {**base, "answerable": True, "selected": 1, "options": [
+            {"index": 1, "label": "Hiking outdoors", "selected": True},
+            {"index": 2, "label": "Reading a book", "selected": False},
+        ]}
+
+    def _seed_chat(self) -> str:
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"qd-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "session_id,created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',"
+            "?,?,?)",
+            (chat_id, f"Question {chat_id}", f"sess-{chat_id}", stamp, stamp),
+        )
+        con.commit()
+        con.close()
+        return chat_id
+
+    def _open_with_question(self, answerable=True, delete=(200, {"ok": True})):
+        """Open a conversation whose question endpoint this test controls.
+
+        Returns the list of request methods seen, which keeps growing as the
+        page polls -- so a test can prove a later refresh happened rather than
+        waiting a few seconds and assuming one did.
+        """
+        import json
+        status, body = delete
+        calls: list[str] = []
+
+        def handler(route):
+            method = route.request.method
+            calls.append(method)
+            if method == "DELETE":
+                route.fulfill(status=status, content_type="application/json",
+                              body=json.dumps(body))
+                return
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(self._payload(answerable)))
+
+        self.page.route("**/api/chats/*/question", handler)
+        chat_id = self._seed_chat()
+        self.page.reload(wait_until="domcontentloaded")
+        # By data-chat-id, not by position: the server is shared across the
+        # class, so every conversation an earlier test seeded is still listed.
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
+        self.page.wait_for_selector(row, timeout=15_000)
+        self.page.click(row)
+        self.page.wait_for_selector("#questionBar", state="visible",
+                                    timeout=20_000)
+        return calls
+
+    def _wait_for_poll(self, calls, timeout_ms=20_000):
+        """Wait for one more GET to arrive, and fail if none does.
+
+        A fixed sleep here would prove nothing: the assertions that follow are
+        all about surviving a refresh, and a refresh that never happened
+        satisfies every one of them.
+        """
+        before = calls.count("GET")
+        waited = 0
+        while waited < timeout_ms:
+            self.page.wait_for_timeout(500)
+            waited += 500
+            if calls.count("GET") > before:
+                return
+        self.fail("no refresh arrived, so nothing was proved about surviving one")
+
+    def test_the_bar_offers_a_way_out_beside_the_answers(self):
+        self._open_with_question()
+        button = self.page.locator("#questionDismiss")
+        self.assertTrue(button.is_visible())
+        self.assertEqual(button.inner_text().strip(), "Don't answer")
+        # Not inside the group labelled "Answers": declining is not one.
+        self.assertEqual(
+            self.page.locator("#questionOptions #questionDismiss").count(), 0)
+        self.assertEqual(self.page.locator(".question-option").count(), 2)
+
+    def test_declining_sends_a_delete_and_hides_the_bar(self):
+        calls = self._open_with_question()
+        self.page.click("#questionDismiss")
+        self.page.wait_for_selector("#questionBar", state="hidden", timeout=10_000)
+        self.assertIn("DELETE", calls)
+
+    def test_the_poll_does_not_bring_a_declined_question_back(self):
+        """The endpoint still reports the question as pending afterwards, which
+        is the real case: cancelling a prompt need not write anything to the
+        transcript, so `pending` can stay true for ever. Without state on the
+        client the bar returns within four seconds of being dismissed.
+        """
+        calls = self._open_with_question()
+        self.page.click("#questionDismiss")
+        self.page.wait_for_selector("#questionBar", state="hidden", timeout=10_000)
+        self._wait_for_poll(calls)
+        self.assertTrue(self.page.locator("#questionBar").is_hidden(),
+                        "the refresh brought back a question the user declined")
+
+    def test_a_delivered_escape_is_not_offered_a_second_time(self):
+        """409 with delivered=true: the key was accepted and the prompt stayed
+        open. Pressing again is not a retry -- the second Esc reaches whatever
+        the session moved on to. The lock has to survive the poll, or it is a
+        lock for four seconds.
+        """
+        calls = self._open_with_question(
+            delete=(409, {"error": "The prompt is still open at the terminal.",
+                          "delivered": True}))
+        self.page.click("#questionDismiss")
+        self.page.wait_for_selector("#questionDismiss[disabled]", timeout=10_000)
+        # The options come back: the prompt is still open, so answering it is
+        # now the only thing that will unblock that session.
+        self.assertEqual(
+            self.page.locator(".question-option:not([disabled])").count(), 2)
+        self._wait_for_poll(calls)
+        self.assertTrue(self.page.locator("#questionDismiss").is_disabled(),
+                        "the refresh handed back a control that must not be pressed")
+        # The refresh rewrites the note, so the explanation has to be rebuilt
+        # from state too -- otherwise a disabled button sits there unexplained.
+        self.assertIn("Esc was delivered", self.page.inner_text("#questionNote"))
+
+    def test_a_refused_escape_can_be_tried_again(self):
+        """409 with delivered=false: nothing reached the terminal, so the
+        button must come back. Treating both failures alike would strand the
+        user on a transient error."""
+        self._open_with_question(
+            delete=(409, {"error": "Could not reach the terminal.",
+                          "delivered": False}))
+        self.page.click("#questionDismiss")
+        self.page.wait_for_selector("#questionDismiss:not([disabled])",
+                                    timeout=10_000)
+        self.assertIn("Could not reach", self.page.inner_text("#questionNote"))
+
+    def test_an_unreachable_question_hides_without_sending_anything(self):
+        """Nothing can be delivered, so the control says "Hide" and no request
+        is made. Labelling it "Don't answer" here would claim the session had
+        been let go when it is still sitting on the prompt."""
+        calls = self._open_with_question(answerable=False)
+        button = self.page.locator("#questionDismiss")
+        self.assertEqual(button.inner_text().strip(), "Hide")
+        button.click()
+        self.page.wait_for_selector("#questionBar", state="hidden", timeout=10_000)
+        self.assertNotIn("DELETE", calls)
+        self._wait_for_poll(calls)
+        self.assertTrue(self.page.locator("#questionBar").is_hidden())
+        self.assertNotIn("DELETE", calls)
+
+
 if __name__ == "__main__":
     unittest.main()

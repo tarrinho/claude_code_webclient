@@ -1552,6 +1552,39 @@ let _questionTimer = null;
 let _questionState = null;
 let _answering = false;
 
+// Questions the user has declined. Without this the bar comes straight back:
+// the poll re-reads the transcript every 4s, and a question that was cancelled
+// rather than answered may still have no tool_result recorded against it, so
+// `pending` stays true. Keyed by the tool_use id, which is unique per question,
+// with the text as a fallback for a payload that somehow has no id -- scoped by
+// chat either way, so a fallback key cannot silence another conversation.
+const _dismissedQuestions = new Set();
+// Questions where the escape was delivered and the prompt stayed open anyway.
+// The control is not offered again for these, because the key was accepted: a
+// second one is not a retry, it reaches whatever the session went on to do.
+// Held in state rather than by leaving the button disabled -- the poll rebuilds
+// this bar every 4s and would quietly hand back a control that must not be
+// pressed, which is a lock that only looks like one.
+const _escapeDelivered = new Set();
+// This page stays open for days. A cap keeps a long session from accumulating
+// keys forever; Sets iterate in insertion order, so the oldest goes first.
+const DISMISSED_MAX = 200;
+
+function _questionKey(data, chatId) {
+  if (!data || !chatId) return '';
+  const first = (data.questions || [])[0] || {};
+  const identity = data.id || first.question || '';
+  return identity ? `${chatId}:${identity}` : '';
+}
+
+function _remember(set, key) {
+  if (!key) return;
+  set.add(key);
+  while (set.size > DISMISSED_MAX) {
+    set.delete(set.values().next().value);
+  }
+}
+
 function _clearQuestion() {
   _questionState = null;
   const bar = byId('questionBar');
@@ -1561,10 +1594,27 @@ function _clearQuestion() {
 function _renderQuestion(data) {
   const bar = byId('questionBar');
   if (!bar) return;
+  // A poll landing mid-answer rebuilt the bar with every control enabled
+  // again, so a terminal slower than the 4s poll could take a second click on
+  // top of the first one still in flight. An interaction in flight owns the bar
+  // until it settles.
+  if (_answering) return;
   if (!data || !data.pending) { _clearQuestion(); return; }
+  const chatId = state.currentChat ? state.currentChat.id : '';
+  const key = _questionKey(data, chatId);
+  if (_dismissedQuestions.has(key)) {
+    _clearQuestion();
+    return;
+  }
   const first = (data.questions || [])[0] || {};
   byId('questionTag').textContent = first.header || 'Question';
   byId('questionAsk').textContent = first.question || 'A question is waiting';
+  // Assigned for both branches below, unlike the answerable-only assignment it
+  // replaces: declining is offered in both, so both need the payload the
+  // dismiss handler keys on.
+  _questionState = data;
+  const blocked = _escapeDelivered.has(key);
+  _renderDismiss(Boolean(data.answerable), blocked);
 
   // Descriptions come from the tool call; the option list comes from the live
   // terminal, which offers more than the call declared (free text, "Chat about
@@ -1602,9 +1652,38 @@ function _renderQuestion(data) {
     button.addEventListener('click', () => _answerQuestion(option));
     box.appendChild(button);
   });
-  note.textContent = 'Choosing sends the answer to the terminal session.';
+  note.textContent = blocked
+    ? 'Esc was delivered and the prompt stayed open — answer it here, or close '
+      + 'it at the terminal.'
+    : 'Choosing sends the answer to the terminal session.';
   bar.hidden = false;
-  _questionState = data;
+}
+
+/** Label the way out for what it can actually do in this state.
+ *
+ * Answerable, it presses Esc at the terminal and the session stops waiting.
+ * Unanswerable, there is no channel to press anything through, so it hides the
+ * bar here and the prompt stays open where it is -- a different act, and saying
+ * "Don't answer" for both would promise the session was unblocked when it is
+ * still sitting there.
+ *
+ * *blocked* is the third state: an escape that was accepted and changed
+ * nothing. The control goes away rather than inviting a press that would land
+ * somewhere else entirely.
+ */
+function _renderDismiss(answerable, blocked) {
+  const button = byId('questionDismiss');
+  if (!button) return;
+  button.disabled = Boolean(blocked);
+  button.textContent = answerable ? "Don't answer" : 'Hide';
+  if (blocked) {
+    button.title = 'Esc was already delivered and the prompt stayed open — '
+      + 'close it at the terminal.';
+  } else {
+    button.title = answerable
+      ? 'Closes the prompt at the terminal without choosing (sends Esc)'
+      : 'Hides this here. The prompt stays open at its own terminal.';
+  }
 }
 
 function _qoText(className, text) {
@@ -1620,6 +1699,10 @@ async function _answerQuestion(option) {
   _answering = true;
   const buttons = [...document.querySelectorAll('.question-option')];
   buttons.forEach(button => { button.disabled = true; });
+  // The way out goes with them: an Esc delivered while an answer is being
+  // navigated would land between the arrow keys and the Enter.
+  const dismiss = byId('questionDismiss');
+  if (dismiss) dismiss.disabled = true;
   const note = byId('questionNote');
   note.classList.remove('qo-error');
   note.textContent = `Answering “${option.label}”…`;
@@ -1643,6 +1726,69 @@ async function _answerQuestion(option) {
     note.textContent = error.message;
     note.classList.add('qo-error');
     buttons.forEach(button => { button.disabled = false; });
+    if (dismiss) dismiss.disabled = false;
+  } finally {
+    _answering = false;
+  }
+}
+
+/** Close the prompt without answering it.
+ *
+ * Two different acts behind one button, because the honest one depends on
+ * whether the terminal can be reached at all -- see _renderDismiss.
+ */
+async function _dismissQuestion() {
+  const chat = state.currentChat;
+  const data = _questionState;
+  if (!chat || !data || _answering) return;
+  const key = _questionKey(data, chat.id);
+  const button = byId('questionDismiss');
+  const note = byId('questionNote');
+
+  if (!data.answerable) {
+    // Nothing to deliver, so nothing is claimed: hide it and say where the
+    // prompt still is.
+    _remember(_dismissedQuestions, key);
+    _clearQuestion();
+    showToast('Hidden here — still open at its terminal');
+    return;
+  }
+
+  _answering = true;
+  const options = [...document.querySelectorAll('.question-option')];
+  button.disabled = true;
+  options.forEach(option => { option.disabled = true; });
+  note.classList.remove('qo-error');
+  note.textContent = 'Closing the prompt without answering…';
+  try {
+    const response = await apiFetch(
+      `/api/chats/${encodeURIComponent(chat.id)}/question`, {method: 'DELETE'});
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      const failure = new Error(payload.error || 'Could not close the prompt');
+      failure.delivered = payload.delivered === true;
+      throw failure;
+    }
+    _remember(_dismissedQuestions, key);
+    showToast('Left unanswered');
+    _clearQuestion();
+    await refreshQuestion();
+  } catch (error) {
+    note.textContent = error.message;
+    note.classList.add('qo-error');
+    // The options come back either way: if the prompt is still open, answering
+    // it is still possible and is now the only thing that will unblock it.
+    options.forEach(option => { option.disabled = false; });
+    // The Esc does not. A key that never arrived is safe to send again; one
+    // that arrived and left the prompt open is not a retry -- it would reach
+    // whatever the session moved on to and interrupt that instead. Recorded
+    // rather than merely left disabled, because the next poll re-renders.
+    if (error.delivered) {
+      _remember(_escapeDelivered, key);
+      note.textContent += ' Nothing further is sent from here — close it at the terminal.';
+    } else {
+      button.disabled = false;
+    }
   } finally {
     _answering = false;
   }
@@ -2586,6 +2732,7 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('logoutBtn').addEventListener('click', logout);
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
   byId('syncBtn').addEventListener('click', () => syncTranscript({announce: true}));
+  byId('questionDismiss')?.addEventListener('click', _dismissQuestion);
   byId('settingsBtn').addEventListener('click', openSettingsDialog);
   byId('supervisorBtn')?.addEventListener('click', openSupervisorPane);
   byId('supervisorPaneTitle')?.addEventListener('click', openSupervisorPane);

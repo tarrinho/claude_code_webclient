@@ -586,3 +586,46 @@ def answer(target: dict[str, Any], want: int, max_moves: int = 12) -> dict[str, 
     time.sleep(0.6)
     return {"ok": True, "index": want, "label": chosen, "moves": moves,
             "after": refresh(target)[-1500:]}
+
+
+def dismiss(target: dict[str, Any], settle_s: float = 0.5) -> dict[str, Any]:
+    """Close a prompt without answering it, by delivering Escape.
+
+    Nothing new is delivered here -- "Esc to cancel" is the prompt's own offer
+    and escape has always been in _KEYS. What is new is checking afterwards,
+    and reporting *delivered* separately from *ok*, because the caller needs
+    those two failures to be told apart:
+
+    * the terminal refused the key, so nothing happened and a retry is safe;
+    * the key went in and the prompt is still on screen, where a second escape
+      is not a retry at all -- it would reach whatever the session moved on to
+      and interrupt that instead.
+
+    A snapshot that cannot be read afterwards is its own third case, and is
+    reported as a failure rather than a success. ``looks_like_a_prompt("")`` is
+    False, so treating an unreadable window as closed would turn "we cannot see
+    the terminal" into "the question is gone" -- the one claim that leaves a
+    session blocked while the UI says it is not.
+    """
+    if not deliver(target, "escape"):
+        return {
+            "ok": False,
+            "delivered": False,
+            "reason": "Could not reach the terminal.",
+        }
+    time.sleep(settle_s)
+    after = refresh(target)
+    if not after:
+        return {
+            "ok": False,
+            "delivered": True,
+            "reason": "Escape was delivered, but the terminal could not be read "
+                      "afterwards, so whether the prompt closed is unknown.",
+        }
+    if looks_like_a_prompt(after):
+        return {
+            "ok": False,
+            "delivered": True,
+            "reason": "The prompt is still open at the terminal.",
+        }
+    return {"ok": True, "delivered": True, "after": after[-1500:]}

@@ -395,6 +395,12 @@ button{touch-action:manipulation}
 .question-option.qo-current{border-color:var(--accent);box-shadow:inset 2px 0 var(--accent)}
 .question-note{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 .question-note.qo-error{color:var(--bad)}
+/* Declining to answer. Deliberately quieter than the options -- it is the way
+   out, not a competing choice -- but not hidden behind a hover either: a bar
+   with no visible exit is the thing this control exists to fix. */
+.question-dismiss{flex:none;margin-left:auto;align-self:center;font-size:11px;color:var(--muted);background:none;border:1px solid var(--line);border-radius:7px;padding:4px 9px;cursor:pointer}
+.question-dismiss:hover:not(:disabled){color:var(--fg);border-color:var(--muted)}
+.question-dismiss:disabled{opacity:.45;cursor:progress}
 @media(max-width:480px){.question-option .qo-desc{display:none}}
 
 /* Transcript questions: the options a terminal session offered */

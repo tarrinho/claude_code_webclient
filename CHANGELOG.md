@@ -51,6 +51,30 @@ churn.
 - **The auth middleware now skips ``/dev/*`` routes.** They are intentionally
   public development endpoints.
 
+- **A question can be declined instead of answered.** Every control in the
+  question bar answered the question, so a question that did not deserve an
+  answer had two ways out and both were bad: pick something the user does not
+  mean, which the session then acts on, or leave the prompt blocking that
+  session until somebody walks to the terminal. A *Don't answer* control now
+  delivers Escape — which is what the prompt itself offers — through
+  ``DELETE /api/chats/{id}/question``.
+
+  Three details are load-bearing rather than polish. An unreadable terminal is
+  reported as unknown, not as closed: ``looks_like_a_prompt("")`` is false, so
+  the obvious implementation claims success exactly when it has gone blind, and
+  the session would sit blocked behind a UI that had stopped mentioning it. The
+  response reports *delivered* separately from *ok*, because only one of the two
+  failures may be retried — a key the terminal refused can be sent again, while
+  one that was accepted and left the prompt open must not be, since the second
+  Escape reaches whatever the session moved on to. And a question the user
+  declined stays gone: cancelling a prompt need not write anything to the
+  transcript, so the endpoint may keep reporting it as pending for ever, and
+  without client state the bar returned four seconds after being dismissed.
+
+  Where the terminal cannot be reached at all the control reads *Hide* and
+  sends nothing, because calling it "Don't answer" there would promise a
+  session had been let go while it is still sitting on the prompt.
+
 ### Fixed
 
 - **Members sorted by last activity instead of just creation time.** The member

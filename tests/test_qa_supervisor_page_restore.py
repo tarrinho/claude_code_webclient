@@ -104,9 +104,11 @@ class SourceWiringTests(unittest.TestCase):
         self.assertIn("rememberOpen(id)", block)
 
     def test_the_message_failure_is_no_longer_silent(self):
-        """`catch { chatMessages = []; }` with no re-render hid the whole thing."""
-        block = self.source.split("Load chat messages", 1)[1][:900]
-        catch = block.split("} catch", 1)[1][:400]
+        """`catch { chatMessages = []; }` with no re-render hid the whole thing.
+        The code now uses Promise.allSettled and re-renders on failure.
+        """
+        block = self.source.split("Promise.allSettled", 1)[1][:900]
+        catch = block.split("} else:", 1)[1][:400]
         self.assertIn("renderChatMessages()", catch,
                       "a failed load must re-render, or the panel keeps stale content")
         self.assertIn("Could not load", catch,

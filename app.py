@@ -492,6 +492,13 @@ async def handle_login(request: Request):
     resp.set_cookie(
         "wc_csrf",
         csrf,
+        # The one cookie that is deliberately not httponly, and §19's rule
+        # ("all cookies httponly=True") reads as broken here without the
+        # reason. This is the double-submit pattern: the page has to read this
+        # value to echo it in X-CSRF-Token, which is exactly what a cross-site
+        # request cannot do. The cookie that actually carries authority --
+        # wc_session, set just above -- is httponly, so a script that reads
+        # this one gains nothing it could not already send.
         httponly=False,
         secure=not config.COOKIE_ALLOW_INSECURE,
         samesite="strict",
@@ -4624,6 +4631,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
             last_progress = -1.0
             last_status = ""
             last_events = []
+            last_message_id = 0
 
             while True:
                 if await request.is_disconnected():
@@ -4665,6 +4673,42 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                         })}\n\n"
                     last_progress = progress
                     last_status = status
+
+                # Check for new messages (the chat reads from this stream)
+                if last_message_id > 0:
+                    cur = await db.db_conn.execute(
+                        "SELECT id, role, content, metadata, created_at "
+                        "FROM supervisor_messages "
+                        "WHERE supervisor_id = ? AND id > ? "
+                        "ORDER BY id ASC LIMIT 10",
+                        (supervisor_id, last_message_id),
+                    )
+                    rows = await cur.fetchall()
+                    if rows:
+                        new_msgs = [dict(r) for r in rows]
+                        last_message_id = new_msgs[-1]["id"]
+                        yield f"data: {json.dumps({
+                            'type': 'messages',
+                            'messages': new_msgs,
+                        })}\n\n"
+                else:
+                    # On first tick, load the initial message batch so the
+                    # chat doesn't stay blank while the supervisor is idle.
+                    cur = await db.db_conn.execute(
+                        "SELECT id, role, content, metadata, created_at "
+                        "FROM supervisor_messages "
+                        "WHERE supervisor_id = ? "
+                        "ORDER BY id ASC LIMIT 10",
+                        (supervisor_id,),
+                    )
+                    rows = await cur.fetchall()
+                    if rows:
+                        new_msgs = [dict(r) for r in rows]
+                        last_message_id = new_msgs[-1]["id"]
+                        yield f"data: {json.dumps({
+                            'type': 'messages',
+                            'messages': new_msgs,
+                        })}\n\n"
 
                 # Get recent events from engine if available
                 if eng:

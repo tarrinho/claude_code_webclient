@@ -609,6 +609,16 @@ class SupervisorEngine:
                 self._running = False
                 return
 
+            # Emit the parsed plan as a supervisor message so the chat shows it.
+            if tasks:
+                task_titles = "\n".join(f"- {t.title}" for t in tasks)
+                plan_text = f"<<PLAN>\nPlan ({len(tasks)} tasks):\n\n{task_titles}\n<<PLAN>"
+                await db.supervisor_messages_append(
+                    self.supervisor_id, "supervisor",
+                    plan_text,
+                    {"kind": "plan"},
+                )
+
             # Create tasks in the graph and DB
             if tasks:
                 # PlanParser numbers tasks from 1 within a plan, so every
@@ -767,6 +777,18 @@ class SupervisorEngine:
                 task_id=task_id,
                 data={"result_len": len(result)},
             ))
+
+            # Write the task result to the messages table so the chat shows it.
+            try:
+                import db  # noqa: PLC0415
+                node_title = node.title or task_id
+                await db.supervisor_messages_append(
+                    self.supervisor_id, "supervisor",
+                    f"Task '{node_title}' completed ({len(result)} chars)\n\n{result[:3000]}",
+                    {"kind": "task_result", "task_id": task_id},
+                )
+            except Exception:  # noqa: BLE001 -- task success must not fail silently
+                _log.exception("could not record task result message for %s", task_id)
 
             # Also update DB task row
             try:

@@ -389,6 +389,7 @@
       renderChatMessages();
     } else {
       chatMessages = [];
+      addChatMessage("system", "Could not load chat messages: " + (msgData.reason || "Unknown error"));
       renderChatMessages();
     }
 
@@ -642,6 +643,9 @@
       case "events":
         handleSSEEvents(data.events || []);
         break;
+      case "messages":
+        handleSSEMessages(data.messages || []);
+        break;
       case "done":
         addLogEntry("system", "Supervisor finished: " + data.status);
         addChatMessage("system", "Supervisor completed with status: " + data.status);
@@ -716,6 +720,27 @@
         addLogEntry("task_error", `Task ${e.task_id}: ${e.data.error || "Unknown error"}`);
       }
     });
+  }
+
+  // Append incoming messages to the chat and render. New messages arrive
+  // from the SSE stream (plan text, task results) so the chat stays live.
+  function handleSSEMessages(msgs) {
+    // Filter out messages we already have (dedup by content).
+    const known = new Set(chatMessages.map(m => m.content));
+    const newMsgs = msgs.filter(m => !known.has(m.content || ""));
+    if (newMsgs.length) {
+      newMsgs.forEach(m => {
+        try {
+          chatMessages.push({
+            role: m.role,
+            content: m.content,
+            created_at: m.created_at || new Date().toISOString(),
+            metadata: m.metadata ? JSON.parse(m.metadata) : undefined,
+          });
+        } catch (_) { /* skip malformed */ }
+      });
+      renderChatMessages();
+    }
   }
 
   function addLogEntry(type, msg) {

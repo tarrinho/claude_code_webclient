@@ -11,7 +11,9 @@
   let activeTaskId = null;
   let chatMessages = [];
   let eventLog = [];
-  let sseController = null;
+  // The live EventSource, held so it can be closed. It used to be an
+  // AbortController, which EventSource ignores -- see connectSSE().
+  let sseStream = null;
   let csrfToken = "";
 
   // ── Panel sizing state ──────────────────────────────────────────────
@@ -68,7 +70,12 @@
       let msg = "API error";
       try {
         const d = await r.json();
-        msg = d.detail || msg;
+        // `error` first: app.py's HTTPException handler returns
+        // {"error": "..."} for every JSON client, so reading only `detail`
+        // meant every failure on this page displayed the words "API error"
+        // and never the reason. That exact mismatch is registry entry #15,
+        // found once before in the machine-edit form and fixed there only.
+        msg = d.error || d.detail || msg;
       } catch (_) {}
       throw new Error(msg);
     }
@@ -405,17 +412,23 @@
 
   // ── SSE stream ───────────────────────────────────────────────────────
   function connectSSE() {
-    if (sseController) {
-      sseController.abort();
+    // close(), not AbortController.abort(). EventSource's init dictionary
+    // accepts only `withCredentials`; a `signal` member is silently ignored,
+    // so the previous teardown never did anything. Verified in Chromium rather
+    // than read off the spec: after abort() the stream is still readyState 1
+    // (OPEN), and only close() reaches 2. Every supervisor switch therefore
+    // left a stream open on both ends, and the stale one kept delivering into
+    // handleSSEEvent for a supervisor the user had already left.
+    if (sseStream) {
+      sseStream.close();
+      sseStream = null;
     }
-    sseController = new AbortController();
 
     const url =
       "/api/supervisors/" + activeSupervisorId + "/stream";
 
-    const evtSource = new EventSource(url, {
-      signal: sseController.signal,
-    });
+    const evtSource = new EventSource(url);
+    sseStream = evtSource;
 
     evtSource.onopen = function () {
       addLogEntry("system", "SSE connected");
@@ -430,10 +443,14 @@
       }
     };
 
-    evtSource.onerror = function (err) {
-      if (sseController.signal.aborted) return;
-      addLogEntry("system", "Stream reconnecting...");
-      evtSource.close();
+    evtSource.onerror = function () {
+      // A stream we replaced is not an error worth reporting.
+      if (sseStream !== evtSource) return;
+      // Deliberately no close() here. EventSource reconnects on its own after
+      // a transient failure, and closing it is precisely what prevents that --
+      // so the old code announced a reconnection and then made it impossible,
+      // leaving the page silently dead until a reload.
+      addLogEntry("system", "Stream interrupted; reconnecting...");
     };
 
     window._supervisorSSE = evtSource;
@@ -632,6 +649,8 @@
             lastMinimized[p] = false;
           }
         });
+        // Show all minimize buttons now that their panels are visible
+        allMinimizeButtons.forEach((b) => (b.style.display = ""));
         // Restore button icons for panels we just restored
         $$(".panel-btn[data-panel]").forEach((b) => {
           if (b.dataset.panel && !lastMinimized[b.dataset.panel]) {
@@ -646,9 +665,23 @@
           lastMinimized[maxTarget] = false;
         }
         document.body.classList.add("max-" + maxTarget);
+        // Hide minimize buttons on panels that are about to be hidden by
+        // CSS (so clicking them doesn't restore → instantly re-hidden).
+        allMinimizeButtons.forEach((b) => {
+          if (b.dataset.panel && b.dataset.panel !== maxTarget) {
+            b.style.display = "none";
+          }
+        });
       }
     }
   }
+
+  // Reference to minimize buttons for hiding/showing during maximize transitions.
+  // Each panel has one minimize button with data-panel set and no data-max.
+  const allMinimizeButtons = (() => {
+    const all = $$(".panel-btn[data-panel]");
+    return Array.from(all).filter((b) => !b.dataset.max);
+  })();
 
   function minimizePanel(panel) {
     const el = {
@@ -777,22 +810,6 @@
     return d.innerHTML;
   }
 
-  // ── Init ─────────────────────────────────────────────────────────────
-  function init() {
-    // Version display
-    if (el.topbarInfo) el.topbarInfo.textContent = "0.9.1";
-
-    // Event listeners
-    el.newSupervisorBtn.addEventListener("click", createSupervisor);
-    el.sendBtn.addEventListener("click", sendPrompt);
-    el.promptInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        sendPrompt();
-      }
-    });
-    el.goalDismissBtn?.addEventListener("click", dismissGoalBanner);
-    el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
   // ── Members ──────────────────────────────────────────────────────────
   // The conversations and agents a supervisor watches. Deliberately separate
   // from the task tree: a task is work the supervisor invented and runs
@@ -802,6 +819,27 @@
   // a person clicking -- driving a live agent types into its terminal, and the
   // threat model's F-02 is narrowed rather than closed, so the human deciding
   // to press send is the check that mechanism still has.
+
+  // This page has no toast. createSupervisor reports failures with alert(), so
+  // errors follow that; the quieter outcomes get an inline line instead, since
+  // an alert for "already a member" would be worse than the information.
+  //
+  // Calling a showToast() that does not exist is what broke this feature on the
+  // real page while the tests passed: the harness supplied one, so the tests
+  // were asserting against a contract the file never had.
+  function membersNotice(message, isError) {
+    if (isError) {
+      alert(message);
+      return;
+    }
+    const panel = document.getElementById("membersPanel");
+    if (!panel) return;
+    const note = document.createElement("p");
+    note.className = "members-note";
+    note.textContent = message;
+    panel.prepend(note);
+    setTimeout(() => note.remove(), 5000);
+  }
 
   function membersEmpty(message) {
     const p = document.createElement("p");
@@ -815,10 +853,11 @@
     if (!panel || !supervisorId) return;
     let members = [];
     try {
-      const r = await apiFetch(
-        `/api/supervisors/${encodeURIComponent(supervisorId)}/members`);
-      if (!r.ok) throw new Error("Could not load members");
-      members = (await r.json()).members || [];
+      // apiFetch here returns the PARSED BODY and throws on a non-2xx. It is
+      // not app.js's apiFetch, which returns a Response and resolves for 4xx.
+      // Checking `.ok` on a parsed body finds undefined and fails every call.
+      members = (await apiFetch(
+        `/api/supervisors/${encodeURIComponent(supervisorId)}/members`)).members || [];
     } catch (err) {
       // The panel keeps whatever it last showed rather than going blank: one
       // failed poll is not evidence that the membership changed.
@@ -856,16 +895,15 @@
 
   async function removeMember(supervisorId, chatId) {
     try {
-      const r = await apiFetch(
+      await apiFetch(
         `/api/supervisors/${encodeURIComponent(supervisorId)}/members/` +
           encodeURIComponent(chatId),
         { method: "DELETE" });
-      if (!r.ok) throw new Error("Could not remove that member");
       // Removing membership never deletes the conversation, so say that
       // plainly -- an ambiguous message here invites a nervous double-check.
-      showToast("Removed from this supervisor. The conversation is untouched.");
+      membersNotice("Removed. The conversation itself is untouched.");
     } catch (err) {
-      showToast(err.message, "error");
+      membersNotice(err.message, true);
     }
     loadMembers(supervisorId);
   }
@@ -899,21 +937,17 @@
     let chats = [];
     let existing = new Set();
     try {
-      const [sessionsRes, chatsRes, membersRes] = await Promise.all([
+      const [sessionsBody, chatsBody, membersBody] = await Promise.all([
         apiFetch("/api/sessions"),
         apiFetch("/api/chats"),
         apiFetch(`/api/supervisors/${encodeURIComponent(supervisorId)}/members`),
       ]);
-      if (!sessionsRes.ok || !chatsRes.ok) throw new Error("Could not load the list");
       // A live agent that already has a conversation is offered as that
       // conversation, not twice: /api/sessions filters linked sessions out and
       // marks web chats with webchat, so the two groups cannot overlap.
-      agents = ((await sessionsRes.json()).sessions || [])
-        .filter((s) => s.sessionId && !s.webchat);
-      chats = (await chatsRes.json()).chats || [];
-      if (membersRes.ok) {
-        existing = new Set(((await membersRes.json()).members || []).map((m) => m.id));
-      }
+      agents = (sessionsBody.sessions || []).filter((s) => s.sessionId && !s.webchat);
+      chats = chatsBody.chats || [];
+      existing = new Set((membersBody.members || []).map((m) => m.id));
     } catch (err) {
       help.textContent = err.message;
       return;
@@ -998,41 +1032,61 @@
       closeMembersPicker();
       return;
     }
+    // Held rather than shown here: loadMembers below replaces the panel's
+    // children, so a note written now would be wiped by its own refresh.
+    let pending;
     try {
-      const r = await apiFetch(
+      const result = await apiFetch(
         `/api/supervisors/${encodeURIComponent(supervisorId)}/members`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ members: chosen }),
         });
-      // apiFetch resolves for 4xx as well as 2xx, so without this a rejection
-      // would report success and add nothing.
-      if (!r.ok) {
-        const data = await r.json().catch(() => ({}));
-        throw new Error(data.error || data.detail || "Could not add those members");
-      }
-      const result = await r.json();
       const added = (result.added || []).length;
       const already = (result.already_members || []).length;
       const failed = (result.failed || []).length;
       if (failed) {
         // Both halves, always. Nine added and one refused must not look like
         // ten added, and must not look like a total failure either.
-        showToast(`Added ${added}, ${failed} could not be added`, "error");
+        pending = { message: `Added ${added}. ${failed} could not be added.`,
+                    isError: true };
       } else if (added) {
-        showToast(`Added ${added} member${added === 1 ? "" : "s"}`);
+        pending = { message: `Added ${added} member${added === 1 ? "" : "s"}.` };
       } else {
-        showToast(`Already ${already === 1 ? "a member" : "members"}`);
+        pending = { message: `Already ${already === 1 ? "a member" : "members"}.` };
       }
     } catch (err) {
-      showToast(err.message, "error");
+      pending = { message: err.message, isError: true };
     }
     closeMembersPicker();
-    loadMembers(supervisorId);
+    await loadMembers(supervisorId);
+    if (pending) membersNotice(pending.message, pending.isError);
   }
   // ── Members end ──────────────────────────────────────────────────────
 
+  // ── Init ─────────────────────────────────────────────────────────────
+  function init() {
+    // Version display
+    if (el.topbarInfo) el.topbarInfo.textContent = "0.9.2";
+
+    // Event listeners
+    el.newSupervisorBtn.addEventListener("click", createSupervisor);
+    el.sendBtn.addEventListener("click", sendPrompt);
+    el.promptInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendPrompt();
+      }
+    });
+    el.goalDismissBtn?.addEventListener("click", dismissGoalBanner);
+    document
+      .getElementById("addMembersBtn")
+      ?.addEventListener("click", () => {
+        if (activeSupervisorId) openMembersPicker(activeSupervisorId);
+        else membersNotice("Pick a supervisor first.", true);
+      });
+    el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
 
     // Panel resize
     initResizeHandles();
@@ -1040,20 +1094,18 @@
     // Load initial supervisor list
     loadSupervisors();
 
-    // Refresh supervisor list every 30s
+    // Refresh every 30s. The list refresh is deliberately outside the guard:
+    // it used to sit inside it, so with nothing selected -- the state the page
+    // opens in -- the list never updated at all, and a supervisor created
+    // anywhere else appeared only after a manual reload. Tasks genuinely need
+    // an active supervisor; the list does not.
     setInterval(() => {
+      loadSupervisors();
       if (activeSupervisorId) {
-        loadSupervisors();
         loadTasks();
       }
     }, 30000);
   }
-    document
-      .getElementById("addMembersBtn")
-      ?.addEventListener("click", () => {
-        if (activeSupervisorId) openMembersPicker(activeSupervisorId);
-        else showToast("Pick a supervisor first", "error");
-      });
 
   // Start when DOM is ready
   if (document.readyState === "loading") {

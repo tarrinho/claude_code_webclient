@@ -24,6 +24,14 @@ churn.
 
 ### Added
 
+### Fixed
+
+---
+
+## [0.9.2] — 2026-08-31
+
+### Added
+
 - **The health check now notices a server that has stopped writing.** Until now
   it asked `/login` for a 200, which a server with a dead write path answers
   perfectly — that is how one served for 37 minutes while recording nothing.
@@ -38,6 +46,14 @@ churn.
   when the file it is reading is not the one the server has open.
 
 ### Fixed
+
+- **Supervisor turns crashed Claude Code with "session ID not UUID".**
+  The supervisor passed synthetic identifiers (`supervisor_xxx`, `subtask_xxx`)
+  to Claude Code's `--resume` flag, which only accepts real UUID session IDs.
+  Added a UUID-format guard in `runner.py` and `claude_proxy.py`: `--resume`
+  is used only when the session_id matches the UUID pattern; synthetic IDs fall
+  through to `--session-id` with a freshly generated UUID so Claude Code can
+  track the session internally.
 
 - **Every restart slept ten seconds for no reason.** The release-wait beside
   the port reclaim looped on `! ss -tln "sport = :443" >/dev/null`, testing

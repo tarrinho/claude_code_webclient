@@ -39,13 +39,29 @@ COMPLEXITY_PATTERNS: dict[str, int] = {
 
 # -- Plan parsing ----------------------------------------------------------
 
-_PLAN_START_RE = re.compile(r"(?i)^\s*<<PLAN\s*$", re.MULTILINE)
+# Tolerates "<<PLAN" alone and "<<PLAN>>" on one line. The system prompt
+# showed the first and the request text asked for the second, so a model
+# following either instruction produced a block this could not find --
+# and an unparsable plan used to be reported as a completed run.
+_PLAN_START_RE = re.compile(r"(?i)^\s*<<PLAN(?:\s*>>)?\s*$", re.MULTILINE)
 _PLAN_END_RE = re.compile(r"(?i)^>>\s*$", re.MULTILINE)
+# "Task 1: Brief title - Description", which is the format the prompt asks for.
+# The number is consumed, not captured: the previous pattern made `(.+?)` stop at
+# the first ":" and so put "1" in the title and the whole remainder in the
+# description, which is what the task list displayed -- rows named "1" and "2".
+# The title/description split is the first " - ", and a line with no dash is all
+# title rather than being dropped.
 _TASK_MARKER_RE = re.compile(
-    r"(?i)^\s*(?:TASK|#\s*\d+\.?\s*)(.+?)(?::|\s*-|\s+)(.+)", re.MULTILINE
+    r"(?i)^\s*(?:task|#)\s*\d+\s*[.:)]?\s+(.+?)(?:\s+-\s+(.*))?$",
+    re.MULTILINE,
 )
 _DEPENDENCY_RE = re.compile(r"\{#([\w#\s,]+?)\}", re.IGNORECASE)
 _MODEL_RE = re.compile(r"\[:(\S+)\]", re.IGNORECASE)
+# Words that only ever appear as placeholders in the planner's own
+# instructions. A model that copies the example emits them verbatim, and
+# they would otherwise be passed to the CLI as a model id.
+_MODEL_PLACEHOLDERS = frozenset({"model", "model-name", "model_id",
+                                 "model-id", "modelname"})
 
 
 @dataclass
@@ -87,7 +103,9 @@ class PlanParser:
         raw: list[tuple[str, str, list[str], str | None]] = []
         for match in _TASK_MARKER_RE.finditer(plan_block):
             title = match.group(1).strip()
-            description = match.group(2).strip()
+            # Optional: a task line with no " - " is all title. Dropping such a
+            # line, or crashing on it, would lose a task the planner meant.
+            description = (match.group(2) or "").strip()
             # {#task1, #task2} → ["task1", "task2"]
             raw_refs: list[str] = []
             for group in _DEPENDENCY_RE.findall(description):
@@ -101,6 +119,11 @@ class PlanParser:
             # if they appear in other contexts).
             raw_refs = list(dict.fromkeys(raw_refs))  # unique, order-preserving
             model_match = _MODEL_RE.search(description)
+            if model_match and model_match.group(1).lower() in _MODEL_PLACEHOLDERS:
+                # Copied out of the instructions rather than chosen. Treated as
+                # absent, which lets the backend's own model be used instead of
+                # a name no gateway serves.
+                model_match = None
             model = model_match.group(1) if model_match else None
             raw.append((title, description, raw_refs, model))
 
@@ -253,7 +276,11 @@ class TaskGraph:
         for tid, task in self.tasks.items():
             if task.status == "ready":
                 continue
-            if task.status in ("done", "failed", "running"):
+            # "blocked" belongs here: it is a terminal state, reached because a
+            # dependency failed. Without it a blocked task with no dependencies
+            # of its own falls through to the `if not deps` branch below and is
+            # flipped back to "ready" and returned as runnable.
+            if task.status in ("done", "failed", "running", "blocked"):
                 continue
             deps = [d for d in task.depends_on if d in self.tasks]
             if not deps:
@@ -290,10 +317,19 @@ class TaskGraph:
         return False
 
     def all_done(self) -> bool:
+        """Whether nothing can make further progress.
+
+        "failed" is a terminal state and has to be counted here. It was not,
+        and the scheduler loops on `not all_done()`: a single failed task made
+        that condition permanently true, so the loop spun at 0.5s for ever with
+        nothing runnable and the supervisor never reached a final state.
+        Finishing unsuccessfully is still finishing -- whether the run failed
+        is what any_failed() answers, and the caller asks it separately.
+        """
         if not self.tasks:
             return True
         return all(
-            t.status in ("done", "blocked") for t in self.tasks.values()
+            t.status in ("done", "blocked", "failed") for t in self.tasks.values()
         )
 
     def any_failed(self) -> bool:
@@ -399,6 +435,77 @@ class SupervisorEngine:
         self.router = ModelRouter()
         self._running = False
         self._planner_chat_id: str | None = None  # synthetic chat for planning turn
+        # Strong references to background tasks. The event loop keeps only weak
+        # ones, so a task nobody holds can be collected mid-run: the work stops
+        # with nothing raised and nothing logged. See spawn().
+        self._tasks: set[asyncio.Task[Any]] = set()
+
+    def spawn(self, coro: Any) -> asyncio.Task[Any]:
+        """Start background work, keep a reference, and report a failure.
+
+        Two problems with a bare ``asyncio.create_task``: the task can be
+        garbage-collected before it finishes, and an exception inside it is
+        reported only when the task object is collected, as asyncio's "Task
+        exception was never retrieved" -- which reaches the asyncio logger
+        rather than anything an operator reads.
+        """
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._report_task_failure)
+        return task
+
+    async def _persist_progress(self) -> None:
+        """Write the graph's overall progress onto the supervisor row.
+
+        Individual task rows carried their own progress, but the supervisor's
+        did not, so a run whose every task was "done" still reported 0% -- and
+        the progress bar is the one thing a supervisor page is watched for.
+        """
+        import db  # noqa: PLC0415 -- circular import at module level
+
+        try:
+            await db.supervisor_update(
+                self.supervisor_id, self.owner_id,
+                progress_pct=self.graph.overall_progress(),
+            )
+        except Exception:  # noqa: BLE001 -- reporting must not stop the run
+            _log.exception("could not persist progress for %s", self.supervisor_id)
+
+    async def _set_status(self, status: str) -> None:
+        """Record the run's overall status where the UI actually reads it.
+
+        This file updated a graph node called "supervisor" in seven places, and
+        no such node is ever created: the only add_task() call inserts parsed
+        plan tasks, whose ids come from _slug(title). Every one of those calls
+        was therefore a no-op returning False, and nothing here ever wrote to
+        the database at all. The persisted status was set to "planning" when
+        the prompt was sent and never moved again -- so a run that finished,
+        or failed, went on reporting that it was still planning.
+
+        The graph update is kept because it is correct if such a node is ever
+        added; the database write is the part the interface can see.
+        """
+        self.graph.update_status("supervisor", status)
+        try:
+            import db  # local import: db imports this module at load time
+            await db.supervisor_update(self.supervisor_id, self.owner_id,
+                                       status=status)
+        except Exception:  # noqa: BLE001 -- a status write must not end the run
+            _log.exception(
+                "supervisor_status_not_persisted supervisor_id=%s status=%s",
+                self.supervisor_id, status,
+            )
+
+    def _report_task_failure(self, task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return          # asked to stop; not a fault
+        exc = task.exception()
+        if exc is not None:
+            _log.error(
+                "supervisor_task_failed supervisor_id=%s",
+                self.supervisor_id, exc_info=exc,
+            )
 
     async def start_from_user_prompt(self, user_prompt: str) -> dict[str, Any]:
         """Launch the supervisor and begin planning.
@@ -408,7 +515,7 @@ class SupervisorEngine:
         transitions from 'planning' to 'running' and begins execution.
         """
         self._running = True
-        asyncio.create_task(self._run_planner_turn(user_prompt))
+        self.spawn(self._run_planner_turn(user_prompt))
         return {
             "supervisor_id": self.supervisor_id,
             "status": "planning",
@@ -422,11 +529,22 @@ class SupervisorEngine:
             f"Here is the user request:\n\n"
             f"{user_prompt}\n\n"
             f"Break this down into a clear plan with independent tasks "
-            f"that sub-agents can execute. Use the <<PLAN>>..>> format "
-            f"with numbered tasks. Include dependencies where needed.\n\n"
-            "For each task, be specific about what the sub-agent should "
-            f"produce. Use {{#taskId}} to reference dependencies and "
-            "[:model_id] for model suggestions."
+            f"that sub-agents can execute.\n\n"
+            "Reply with a plan block in exactly this shape, one task per "
+            "line, and nothing else inside the block:\n\n"
+            "<<PLAN\n"
+            "Task 1: Create the file - Write hello.txt containing one word\n"
+            ">>\n\n"
+            "Rules for the block:\n"
+            "- One task per line, starting with 'Task ' and a number.\n"
+            "- 'Title - description', with a single hyphen separating them.\n"
+            "- Nothing else inside the block: no tables, no bullet points, no "
+            "blank lines.\n"
+            "- Do not copy any square or curly bracket text from these "
+            "instructions into your tasks.\n\n"
+            "This is a literal example, not a template. Given placeholders in "
+            "braces a model reasonably renders a markdown table instead, and "
+            "the parser reads lines, not tables."
         )
         return prompt
 
@@ -446,12 +564,22 @@ class SupervisorEngine:
 
             prompt_text = self._build_plan_prompt(user_prompt)
             work_dir = str(Path(config.PROJECTS_ROOT).resolve())
+            # Explicit, not None. Passing None let the CLI choose its own
+            # default, so a gateway serving one local model was asked for
+            # claude-opus-5 and answered 429 "No deployments available".
+            planner_model = await runner.get_default_model(owner=self.owner_id)
             chunks, _sid = await runner.run_turn(
                 prompt_text,
                 f"supervisor_{plan_chat_id}",
                 work_dir,
                 plan_chat_id,
-                None,
+                planner_model,
+                # The owner, because plan_chat_id is not a conversation. Backend
+                # resolution is keyed on a chats row, so without this the child
+                # got no base URL and no API key and every turn died on
+                # "Not logged in - Please run /login" -- which is why the
+                # supervisor had never once run a task on any backend.
+                self.owner_id,
             )
             result = "".join(chunks) if chunks else ""
 
@@ -460,7 +588,7 @@ class SupervisorEngine:
                     "planner_turn returned empty result for supervisor %s",
                     self.supervisor_id,
                 )
-                self.graph.update_status("supervisor", "error")
+                await self._set_status("error")
                 self._running = False
                 return
 
@@ -471,18 +599,50 @@ class SupervisorEngine:
                 self.supervisor_id, len(tasks),
             )
 
+            import db  # noqa: PLC0415 -- circular import at module level
+
+            # Kept whatever the parser made of it. The reply was previously
+            # discarded, so `plan` stayed null and a parse that understood
+            # nothing left no evidence of what the model had actually said.
+            await db.supervisor_update(
+                self.supervisor_id, self.owner_id, plan=result[:20000])
+
+            if not tasks:
+                # A plan nobody could parse is not a finished run. This fell
+                # through to the scheduler, which found an empty graph, decided
+                # all_done() and reported "done" at 0% -- so a goal that never
+                # ran looked exactly like one that succeeded. A false success is
+                # worse than a failure, because nobody goes looking.
+                await self._set_status("error")
+                await db.supervisor_messages_append(
+                    self.supervisor_id, "system",
+                    "The plan could not be read, so no tasks were created. "
+                    "The planner replied:\n\n" + (result[:1500] or "(nothing)"),
+                    {"kind": "plan_unparsed"},
+                )
+                self._running = False
+                return
+
             # Create tasks in the graph and DB
             if tasks:
-                import db  # avoid circular import at top level
+                # PlanParser numbers tasks from 1 within a plan, so every
+                # supervisor produces a t001. supervisor_tasks.id is a global
+                # PRIMARY KEY, so the second supervisor's write failed with
+                # UNIQUE constraint failed -- caught by a bare warning, so the
+                # task ran and finished while the list stayed empty and progress
+                # sat at 0%. Namespacing here rather than in the parser keeps
+                # {#taskN} references resolvable against the plan's own numbers.
+                def _row_id(plan_id: str) -> str:
+                    return f"{self.supervisor_id[:8]}_{plan_id}"
 
                 for i, parsed_task in enumerate(tasks):
                     node = TaskNode(
-                        id=parsed_task.id,
+                        id=_row_id(parsed_task.id),
                         title=parsed_task.title,
                         description=parsed_task.description,
                         model=parsed_task.model,
                         parent_id=None,
-                        depends_on=parsed_task.depends_on,
+                        depends_on=[_row_id(d) for d in parsed_task.depends_on],
                         created_at=db._now(),
                         updated_at=db._now(),
                     )
@@ -493,16 +653,16 @@ class SupervisorEngine:
                     try:
                         await db.supervisor_task_create(
                             supervisor_id=self.supervisor_id,
-                            task_id=parsed_task.id,
+                            task_id=node.id,
                             title=parsed_task.title,
                             description=parsed_task.description,
                             model=parsed_task.model,
                             parent_task_id=None,
-                            depends_on=parsed_task.depends_on,
+                            depends_on=node.depends_on,
                         )
                         self.tracker.record(ProgressEvent(
                             event_type="plan",
-                            task_id=parsed_task.id,
+                            task_id=node.id,
                             data={
                                 "created": True,
                                 "title": parsed_task.title,
@@ -510,7 +670,10 @@ class SupervisorEngine:
                             },
                         ))
                     except Exception:  # noqa: BLE001
-                        _log.warning(
+                        # Was a bare warning with no reason attached, which is
+                        # why a task list that silently stayed empty while the
+                        # work ran took a live run to notice at all.
+                        _log.exception(
                             "supervisor_task_create failed for %s",
                             parsed_task.id,
                         )
@@ -526,7 +689,7 @@ class SupervisorEngine:
                 ]
 
             # Update supervisor status to running
-            self.graph.update_status("supervisor", "running")
+            await self._set_status("running")
             await asyncio.sleep(0.1)  # let state propagate
 
             # Start the scheduler loop
@@ -537,7 +700,28 @@ class SupervisorEngine:
                 "planner_turn_failed supervisor_id=%s: %s",
                 self.supervisor_id, exc,
             )
-            self.graph.update_status("supervisor", "error")
+            await self._set_status("error")
+            # The reason has to reach the user, not only the log. Until now a
+            # failed run showed the word "error" in the UI and nothing else,
+            # so the one thing needed to act on it -- what actually went wrong
+            # -- was readable only by someone with shell access to the server.
+            # rules.md 3a: every terminal state is named.
+            try:
+                # Imported here, not borrowed from the try block above: db is
+                # imported locally throughout this module because db imports it
+                # at load time, which makes `db` a function-local name. The
+                # try's import never ran when the failure came before it, so
+                # reaching for it here raised UnboundLocalError and swallowed
+                # the very message this block exists to record.
+                import db  # noqa: PLC0415 -- circular import at module level
+
+                await db.supervisor_messages_append(
+                    self.supervisor_id, "system",
+                    f"Run failed: {exc}",
+                    {"kind": "error"},
+                )
+            except Exception:  # noqa: BLE001 -- reporting must not mask the fault
+                _log.exception("could not record the failure for the user")
             self._running = False
 
     async def _execute_task(self, task_id: str, prompt: str, model: str | None) -> str:
@@ -552,6 +736,14 @@ class SupervisorEngine:
         node = graph.get_task(task_id)
         if not node:
             return ""
+
+        # A task carries a model only when the plan text named one with
+        # [:model_id]; most do not, and passing None let the CLI pick its own
+        # default. Against a gateway serving a single local model that came back
+        # as 429 "No deployments available for selected model" -- a routing
+        # failure wearing a capacity failure's clothes.
+        if not model:
+            model = await runner.get_default_model(owner=self.owner_id)
 
         graph.update_status(task_id, "running")
         self.tracker.record(ProgressEvent(
@@ -575,6 +767,8 @@ class SupervisorEngine:
                 work_dir,
                 task_chat_id,
                 model,
+                # Same reason as the planner: subtask_<id> is not a conversation.
+                self.owner_id,
             )
             result = "".join(chunks) if chunks else ""
 
@@ -599,8 +793,8 @@ class SupervisorEngine:
                     result=result,
                     progress_pct=100.0,
                 )
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except Exception:  # noqa: BLE001
+                _log.exception("could not record task %s as done", task_id)
 
             return result
 
@@ -623,8 +817,8 @@ class SupervisorEngine:
                     status="failed",
                     progress_pct=0.0,
                 )
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except Exception:  # noqa: BLE001
+                _log.exception("could not record task %s as failed", task_id)
 
             return ""
 
@@ -643,25 +837,54 @@ class SupervisorEngine:
         return "\n".join(lines) if lines else ""
 
     async def run_schedule_loop(self) -> None:
-        """Main scheduler: check for ready tasks and execute them."""
-        self._running = True
-        while self._running and not self.graph.all_done():
-            ready = self.graph.get_ready_tasks()
-            if ready:
-                for tid in ready:
-                    if not self._running:
-                        break
-                    node = self.graph.get_task(tid)
-                    if node and node.status == "ready":
-                        await self._execute_task(
-                            tid,
-                            f"Complete this task: {node.title}\n\n{node.description}",
-                            node.model,
-                        )
-            await asyncio.sleep(0.5)
+        """Main scheduler: check for ready tasks and execute them.
 
+        Everything is wrapped because this runs as a bare background task that
+        nothing awaits: an exception escaping here is reported only as asyncio's
+        "Task exception was never retrieved", and the supervisor would sit in
+        "running" with nothing running and no error anywhere the user can see.
+        """
+        self._running = True
+        try:
+            while self._running and not self.graph.all_done():
+                ready = self.graph.get_ready_tasks()
+                if ready:
+                    for tid in ready:
+                        if not self._running:
+                            break
+                        node = self.graph.get_task(tid)
+                        if node and node.status == "ready":
+                            await self._execute_task(
+                                tid,
+                                f"Complete this task: {node.title}\n\n{node.description}",
+                                node.model,
+                            )
+                await self._persist_progress()
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            # Shutdown, not a fault. Leave the status alone and let it go.
+            self._running = False
+            raise
+        except Exception:  # noqa: BLE001 -- a background task must not die silently
+            _log.exception(
+                "schedule_loop_failed supervisor_id=%s", self.supervisor_id
+            )
+            self._running = False
+            await self._set_status("error")
+            return
+
+        # A loop that was stopped did not finish. Reporting "done" for a run
+        # the user cancelled, or one whose tasks failed, is the difference
+        # between a result and the appearance of one.
+        stopped_early = not self.graph.all_done()
         self._running = False
-        self.graph.update_status("supervisor", "done")
+        await self._persist_progress()
+        if stopped_early:
+            await self._set_status("idle")
+        elif self.graph.any_failed():
+            await self._set_status("error")
+        else:
+            await self._set_status("done")
 
     def stop(self) -> None:
         """Stop the scheduler loop."""

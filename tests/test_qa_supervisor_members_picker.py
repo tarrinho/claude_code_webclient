@@ -58,15 +58,38 @@ def run_page(html: str, budget_ms: int = 20000) -> str:
     return match.group(1) if match else ""
 
 
+def _lift(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.index(start_marker)
+    end = source.index(end_marker, start)
+    # De-indent from inside the file's IIFE so it runs at top level.
+    return source[start:end].replace("\n  ", "\n")
+
+
 def members_section() -> str:
-    """The picker and panel code, lifted verbatim from supervisor.js."""
+    """The picker, the panel, AND the page's own getCsrf/apiFetch.
+
+    Lifting the real apiFetch is the whole point. The first version of this
+    harness supplied its own, modelled on app.js's -- which returns a Response
+    and resolves for 4xx. supervisor.js's returns the PARSED BODY and throws on
+    a non-2xx. Every `if (!r.ok)` in the picker was therefore checking a
+    property that does not exist, and fired on success.
+
+    The harness also defined showToast(), which this page does not have at all,
+    so every call threw ReferenceError -- including the one in the catch.
+
+    Both bugs shipped green: thirteen passing tests against a contract the file
+    never had. A harness may stub the boundary (fetch), never the code under
+    test's own collaborators.
+    """
     source = SUPERVISOR_JS.read_text(encoding="utf-8")
     if SECTION_START not in source:
         raise unittest.SkipTest("members section not implemented yet")
-    start = source.index(SECTION_START)
-    end = source.index(SECTION_END, start)
-    # De-indent from inside the file's IIFE so it runs at top level.
-    return source[start:end].replace("\n  ", "\n")
+    return (
+        "let csrfToken = '';\n"
+        + _lift(source, "function getCsrf()", "// ── API helpers")
+        + _lift(source, "async function apiFetch(", "// Every timestamp on this page")
+        + _lift(source, SECTION_START, SECTION_END)
+    )
 
 
 AGENTS = [
@@ -108,28 +131,29 @@ class PickerTests(unittest.TestCase):
           <div id="membersPanel"></div>
         <script>
         let lastToast = null, posted = null, refreshed = 0;
-        function showToast(msg, type) {{ lastToast = (type || 'ok') + ':' + msg; }}
+        // alert() is what this page uses to report a failure, so that is what
+        // the test captures. Nothing else is stubbed above the network.
+        window.alert = (msg) => {{ lastToast = 'error:' + msg; }};
         const SUPERVISOR_ID = "sup1";
-        function activeSupervisorIdFor() {{ return SUPERVISOR_ID; }}
-        async function apiFetch(url, opts) {{
-          if (url === '/api/sessions') {{
-            return {{ok: true, json: async () => ({{sessions: {json.dumps(AGENTS)}}})}};
-          }}
-          if (url === '/api/chats') {{
-            return {{ok: true, json: async () => ({{chats: {json.dumps(CHATS)}}})}};
-          }}
-          if (url.endsWith('/members') && (!opts || !opts.method)) {{
+        // Only the boundary is faked. getCsrf and apiFetch are the page's own,
+        // lifted verbatim, so the test exercises the real contract.
+        document.cookie = "wc_csrf=t";
+        const reply = (body, ok) => Promise.resolve({{
+          ok: ok, status: ok ? 200 : 400, json: async () => body,
+        }});
+        window.fetch = async (url, opts) => {{
+          if (url === '/api/sessions') return reply({{sessions: {json.dumps(AGENTS)}}}, true);
+          if (url === '/api/chats') return reply({{chats: {json.dumps(CHATS)}}}, true);
+          if (url.endsWith('/members') && (!opts || !opts.method || opts.method === 'GET')) {{
             refreshed += 1;
-            return {{ok: true, json: async () => ({{members: {json.dumps(list(members))},
-                                                   count: {len(members)}}})}};
+            return reply({{members: {json.dumps(list(members))}, count: {len(members)}}}, true);
           }}
           if (opts && opts.method === 'POST') {{
             posted = {{url, body: JSON.parse(opts.body)}};
-            return {{ok: {str(add_ok).lower()}, status: {200 if add_ok else 400},
-                     json: async () => ({json.dumps(add_response or {"added": ["chat-a"], "already_members": [], "failed": []})})}};
+            return reply({json.dumps(add_response or {"added": ["chat-a"], "already_members": [], "failed": []})}, {str(add_ok).lower()});
           }}
-          return {{ok: true, json: async () => ({{}})}};
-        }}
+          return reply({{}}, true);
+        }};
         {section}
         (async () => {{
           await openMembersPicker(SUPERVISOR_ID);
@@ -176,7 +200,9 @@ class PickerTests(unittest.TestCase):
             shown: visible.length,
             checkedByDefault: boxes.filter(b => b.checked).length,
             posted: posted,
-            toast: lastToast,
+            toast: lastToast || (document.querySelector('.members-note')
+                                 ? 'ok:' + document.querySelector('.members-note').textContent
+                                 : null),
             refreshed: refreshed,
             refreshedAfterAdd: refreshed - refreshedBefore,
             stillOpen: !!document.getElementById('membersPickerDialog'),
@@ -272,12 +298,17 @@ class EmptyStateTests(unittest.TestCase):
         html = f"""
         <body><button id="addMembersBtn"></button><div id="membersPanel"></div>
         <script>
-        function showToast() {{}}
-        async function apiFetch(url) {{
-          if (url === '/api/sessions') return {{ok: true, json: async () => ({{sessions: []}})}};
-          if (url === '/api/chats') return {{ok: true, json: async () => ({{chats: []}})}};
-          return {{ok: true, json: async () => ({{members: [], count: 0}})}};
-        }}
+        // Same rule as the other harness: stub the network, never the page's
+        // own apiFetch. Faking it is what let two contract bugs ship green.
+        window.alert = () => {{}};
+        document.cookie = "wc_csrf=t";
+        window.fetch = async (url) => ({{
+          ok: true, status: 200,
+          json: async () =>
+            url === '/api/sessions' ? {{sessions: []}}
+            : url === '/api/chats' ? {{chats: []}}
+            : {{members: [], count: 0}},
+        }});
         {section}
         (async () => {{
           await openMembersPicker('sup1');

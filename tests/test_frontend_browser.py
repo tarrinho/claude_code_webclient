@@ -840,5 +840,93 @@ class ServerPanelBrowserTests(_BrowserFixture):
         self.assertEqual(self.page.input_value("#serverBucket"), "halfhour")
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class SupervisorStreamBrowserTests(_BrowserFixture):
+    """Switching supervisors must close the stream it leaves behind.
+
+    connectSSE() used to construct `new EventSource(url, {signal})` and tear
+    the previous stream down with `AbortController.abort()`. EventSource's init
+    dictionary accepts only `withCredentials`; a `signal` member is ignored, so
+    the teardown was inert -- every switch left a stream open on both ends and
+    the stale one kept delivering into handleSSEEvent for a supervisor the user
+    had left.
+
+    Nothing about that is visible in the source: the code reads as if it tears
+    down. readyState is the only thing that settles it, which is why this test
+    drives a browser rather than reading the file.
+    """
+
+    def _make_supervisor(self, title: str) -> str:
+        csrf = next(c["value"] for c in self.page.context.cookies()
+                    if c["name"] == "wc_csrf")
+        return self.page.evaluate("""async ([csrf, title]) => {
+            const r = await fetch('/api/supervisors', {method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+                body: JSON.stringify({title})});
+            return (await r.json()).id;
+        }""", [csrf, title])
+
+    def _open_page_with_two(self):
+        self._make_supervisor("First supervisor")
+        self._make_supervisor("Second supervisor")
+        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        rows = self.page.locator(".supervisor-list-item")
+        # A locator, not element handles: the list re-renders on every refresh
+        # and on selection, which detaches any handle taken beforehand.
+        self.assertGreaterEqual(rows.count(), 2, "both supervisors should be listed")
+        return rows
+
+    def test_switching_closes_the_previous_stream(self):
+        """readyState 2 is CLOSED. It stayed at 1 with the AbortController."""
+        rows = self._open_page_with_two()
+        rows.nth(0).click()
+        self.page.wait_for_function(
+            "() => window._supervisorSSE", timeout=10_000
+        )
+        self.page.evaluate("() => { window.__first = window._supervisorSSE; }")
+
+        rows.nth(1).click()
+        self.page.wait_for_function(
+            "() => window._supervisorSSE && window._supervisorSSE !== window.__first",
+            timeout=10_000,
+        )
+        first_state = self.page.evaluate("() => window.__first.readyState")
+        self.assertEqual(
+            first_state, 2,
+            "the stream for the supervisor we left is still open: every switch "
+            "leaks a connection and keeps delivering its events",
+        )
+
+    def test_the_new_stream_is_the_live_one(self):
+        rows = self._open_page_with_two()
+        rows.nth(0).click()
+        self.page.wait_for_function("() => window._supervisorSSE", timeout=10_000)
+        rows.nth(1).click()
+        self.page.wait_for_timeout(1500)
+        self.assertIn(
+            self.page.evaluate("() => window._supervisorSSE.readyState"), (0, 1),
+            "the current supervisor has no live stream",
+        )
+
+    def test_the_list_refreshes_with_nothing_selected(self):
+        """The 30s refresh used to be gated on having a selection.
+
+        That is the state the page opens in, so a supervisor created anywhere
+        else never appeared until a manual reload -- and staleness you cannot
+        see is worse than a list that never claims to be current.
+        """
+        source = (ROOT / "web" / "supervisor.js").read_text(encoding="utf-8")
+        start = source.index("setInterval(")
+        body = source[start:source.index("30000", start)]
+        self.assertIn("loadSupervisors()", body)
+        guard = body.find("if (activeSupervisorId)")
+        self.assertTrue(
+            guard == -1 or body.index("loadSupervisors()") < guard,
+            "loadSupervisors() is inside the has-a-selection guard again",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -238,7 +239,7 @@ async def get_proxy_host() -> str:
     return await db.setting_get("ai_machine_host") or config.PROXY_HOST
 
 
-async def get_default_model(chat_id: str | None = None) -> str:
+async def get_default_model(chat_id: str | None = None, owner: str | None = None) -> str:
     """Return the model a new turn should use.
 
     Resolution order: the conversation's own model, then its backend's default,
@@ -259,6 +260,16 @@ async def get_default_model(chat_id: str | None = None) -> str:
         if (routing.get("model") or "").strip():
             return routing["model"].strip()
         machine = routing.get("machine")
+        if machine and (machine.get("model") or "").strip():
+            return machine["model"].strip()
+    # Same fallback as get_backend, and for the same caller: the supervisor's
+    # ids are not conversations, so the branch above finds nothing and the CLI
+    # was left to pick its own default. A gateway that serves only one local
+    # model then answered 429 "No deployments available for selected model,
+    # Passed model=claude-opus-5" -- a routing failure reported as a capacity
+    # one, which is the hardest kind to read.
+    if owner:
+        machine = await db.ai_machine_backend(owner)
         if machine and (machine.get("model") or "").strip():
             return machine["model"].strip()
     return await db.setting_get("default_model") or config.MODEL_NAME
@@ -287,12 +298,21 @@ def normalise_base_url(base_url: str | None) -> str | None:
     return base_url or None
 
 
-async def get_backend(chat_id: str) -> dict[str, str]:
+async def get_backend(chat_id: str, owner: str | None = None) -> dict[str, str]:
     """Return the provider settings for the machine *chat_id* should run on.
 
     A conversation pinned to a machine uses that one, so two conversations can
     sit on different backends at once; an unpinned conversation follows the
     owner's active machine, as every conversation did before pinning existed.
+
+    *owner* is the fallback for a caller whose chat_id is not a conversation at
+    all. The supervisor engine invents ids -- ``uuid4().hex`` for a planning
+    turn, ``subtask_<id>`` for each task -- so chat_routing found no row, owner
+    came back None, and this returned {}. That left the child with no base URL
+    and no key while CLAUDE_CODE_SIMPLE=1 also blocked the host login, so every
+    supervisor turn died on "Not logged in - Please run /login". The engine
+    could not reach any configured backend at all, which is why the feature had
+    never once run a task.
 
     Empty when no machine applies, which leaves the CLI on its own defaults --
     the host's `claude` login against the official API.
@@ -303,7 +323,12 @@ async def get_backend(chat_id: str) -> dict[str, str]:
         return {}
     routing = await db.chat_routing(chat_id)
     if not routing["owner"]:
-        return {}
+        if not owner:
+            return {}
+        # Not a conversation: fall back to this owner's active machine, which is
+        # what an unpinned conversation would have used anyway.
+        routing = {"owner": owner, "model": None,
+                   "machine": await db.ai_machine_backend(owner), "pinned": False}
     machine = routing["machine"]
     if not machine or machine.get("provider") != "anthropic":
         return {}
@@ -348,6 +373,7 @@ async def _proxy_turn(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Execute one turn over TCP to the host claude_proxy.
 
@@ -356,7 +382,8 @@ async def _proxy_turn(
     """
     sem = _get_sem()
     async with sem:
-        return await _execute_proxy(prompt, session_id, work_dir, chat_id, model)
+        return await _execute_proxy(prompt, session_id, work_dir, chat_id, model,
+                                    owner)
 
 
 async def _execute_proxy(
@@ -365,7 +392,8 @@ async def _execute_proxy(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
-) -> tuple[list[str], str | None]:
+
+    owner: str | None = None,) -> tuple[list[str], str | None]:
     """Core proxy turn: connect → send turn → read NDJSON → disconnect."""
     connect_timeout = config.PROXY_CONNECT_TIMEOUT_S
     turn_timeout = config.PROXY_TURN_TIMEOUT_S
@@ -507,6 +535,13 @@ async def _read_lines(reader: asyncio.StreamReader):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+# What `claude --resume` accepts: a UUID. Case-insensitive, because the
+# lowercase-only version silently discarded an uppercase one.
+_RESUMABLE_SESSION_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
 def _build_cmd_direct(
     prompt: str, session_id: str | None, model: str | None = None
 ) -> list[str]:
@@ -527,9 +562,25 @@ def _build_cmd_direct(
     ]
     if model:
         cmd.extend(["--model", model])
-    if session_id:
+    if session_id and _RESUMABLE_SESSION_RE.fullmatch(session_id):
         cmd.extend(["--resume", session_id])
     else:
+        # A fresh session. Two callers land here legitimately: a new
+        # conversation with no session_id, and the supervisor engine, which
+        # passes a "supervisor_<uuid>" marker precisely because it wants a new
+        # one each time.
+        #
+        # But an id that was supplied and rejected is a different event: it
+        # means a conversation's entire history is being discarded. That used to
+        # happen with no log line at all -- registry #21's symptom arriving
+        # through a different door -- and the pattern was lowercase-only, so an
+        # uppercase UUID was enough to trigger it. Now case-insensitive, and a
+        # rejected id says so.
+        if session_id and not session_id.startswith("supervisor_"):
+            _log.warning(
+                "session_id not resumable, starting a new session and losing "
+                "history: %r", session_id,
+            )
         cmd.extend(["--session-id", str(uuid.uuid4())])
     cmd.extend(["--", prompt])
     return cmd
@@ -591,6 +642,7 @@ async def _execute_direct(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Core subprocess execution with NDJSON parsing (blocking path)."""
     cmd = _build_cmd_direct(prompt, session_id, model)
@@ -602,7 +654,7 @@ async def _execute_direct(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
-        env=_build_env(await get_backend(chat_id)),
+        env=_build_env(await get_backend(chat_id, owner)),
     )
 
     chunks: list[str] = []
@@ -828,6 +880,7 @@ async def _do_direct_stream(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Core subprocess streaming (behind semaphore)."""
     cmd = _build_cmd_direct(prompt, session_id, model)
@@ -839,7 +892,7 @@ async def _do_direct_stream(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
-        env=_build_env(await get_backend(chat_id)),
+        env=_build_env(await get_backend(chat_id, owner)),
     )
 
     try:
@@ -897,6 +950,7 @@ async def run_turn(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Execute one turn and return (text_chunks, session_id)."""
     if len(prompt) > config.PROMPT_MAX_CHARS:
@@ -915,9 +969,10 @@ async def run_turn(
         raise TurnError(f"Work directory does not exist: {work_dir}", fatal=True)
 
     if config.PROXY_ENABLED:
-        return await _proxy_turn(prompt, session_id, str(resolved), chat_id, model)
-    else:
-        return await _execute_direct(prompt, session_id, str(resolved), chat_id, model)
+        return await _proxy_turn(prompt, session_id, str(resolved), chat_id, model,
+                                 owner)
+    return await _execute_direct(prompt, session_id, str(resolved), chat_id, model,
+                                 owner)
 
 
 async def stream_turn(

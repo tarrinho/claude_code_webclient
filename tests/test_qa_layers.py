@@ -80,7 +80,13 @@ class UnitQA(unittest.TestCase):
         """
         with patch.object(runner.uuid, "uuid4", return_value="new-session"):
             fresh = runner._build_cmd_direct("$(touch /tmp/pwned)", None)
-        resumed = runner._build_cmd_direct("hello", "existing-session")
+        # A UUID-shaped id, because --resume only accepts one. The previous
+        # fixture, "existing-session", was not UUID-shaped, so once session-id
+        # validation was added this test was accidentally asserting the ABSENCE
+        # of that validation. Relaxing the assertion to accept --session-id
+        # would have re-locked registry #21, the bug this test exists for.
+        resumed = runner._build_cmd_direct(
+            "hello", "529b3e67-2591-4978-ac44-7a5890cb8c2e")
 
         self.assertNotIn("shell=True", repr(fresh))
         # The prompt is the final operand, protected by the sentinel.
@@ -89,7 +95,8 @@ class UnitQA(unittest.TestCase):
         # Session flags are real options: before the sentinel, adjacent pair.
         sentinel = resumed.index("--")
         self.assertEqual(
-            resumed[sentinel - 2 : sentinel], ["--resume", "existing-session"]
+            resumed[sentinel - 2 : sentinel],
+            ["--resume", "529b3e67-2591-4978-ac44-7a5890cb8c2e"],
         )
         sentinel_fresh = fresh.index("--")
         self.assertEqual(

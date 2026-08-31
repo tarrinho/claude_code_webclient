@@ -24,6 +24,7 @@ import logging
 import os
 import signal
 import sys
+import re
 import uuid
 
 logging.basicConfig(
@@ -420,7 +421,8 @@ async def _handle_client(
     # Session flags are real options, so they must come *before* the ``--``
     # sentinel. Placing them after it made claude treat them as prompt data
     # and silently start a fresh session, so every turn lost its history.
-    if session_id:
+    if session_id and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id):
+        # session_id is a real Claude Code UUID — resume it
         claude_cmd.extend(["--resume", session_id])
     else:
         claude_cmd.extend(["--session-id", str(uuid.uuid4())])

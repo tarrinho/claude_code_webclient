@@ -39,6 +39,16 @@ churn.
 
 ### Fixed
 
+- **The server could not start unless something was already holding its port.**
+  The port-reclaim added earlier today resolves the process listening on 443
+  through a `ss | grep | head` pipeline, and `launch.sh` runs under
+  `set -euo pipefail`. With nothing listening — the normal case on a clean
+  start — `grep` found no match, exited 1, and took the script down silently
+  right after its banner. The reclaim worked only when the problem it exists to
+  fix was present. 43 restart attempts, exit code 1 each time, no traceback in
+  the journal or either log, and the application itself starting perfectly by
+  hand.
+
 - **`database is locked`, recurring in ordinary use.** The project wrote to one
   SQLite file from three separate connections: the shared one every request
   uses, a fresh connection opened *per search-index write inside a worker

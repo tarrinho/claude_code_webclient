@@ -101,9 +101,56 @@ echo "  db       : ${WC_DB_PATH}"
 echo "  cert     : ${CERT_FILE}"
 echo ""
 
-# Kill any previous instance
-pkill -f "uvicorn app:app" 2>/dev/null || true
-sleep 0.5
+# Reclaim the listen port from a previous instance -- by port and cmdline, never
+# by pattern.
+#
+# This was `pkill -f "uvicorn app:app"`, which matches every uvicorn on the box
+# running that app, including the throwaway servers the test suite spawns on
+# random ports. launch.sh runs on every `systemctl restart`, so a single restart
+# swept away every test server any session had running, and the tests reported
+# it as their own servers exiting with code -15. Ten restarts while proving the
+# §17 recovery cases turned a green suite into 128 failures that had nothing to
+# do with the code under test.
+#
+# bin/wc-free-proxy-port.sh already models the right shape for the proxy port,
+# and its comments warn about exactly this: killing whatever happens to match is
+# a rude and occasionally destructive thing for a script to do unasked. The
+# listen port never got the same treatment. Only the process actually holding
+# the port we are about to bind is ours to stop, and only when its command line
+# confirms what it is.
+# `|| true` is load-bearing under `set -euo pipefail`: with nothing listening
+# on the port -- the normal case on a clean start -- grep finds no match and
+# exits 1, pipefail propagates it, and set -e kills this script silently right
+# after the banner. Without it the reclaim only works when the problem it
+# exists to fix is already present, and a cold start can never succeed. That
+# took the site down for 43 restart attempts, each exiting 1 with no traceback
+# anywhere, because the only failing path was the one that always runs.
+#
+# The markers below are not decoration: tests/test_qa_launch_reclaim.py lifts
+# everything between them and executes it against a real listener on a spare
+# port. The first version of that file only read this text, which is how a
+# block that could never succeed passed nine assertions.
+# >>> reclaim-block
+RECLAIM_PORT="${WC_PORT:-443}"
+holder="$(ss -tlnpH "sport = :${RECLAIM_PORT}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)"
+if [ -n "${holder:-}" ] && [ "${holder}" != "$$" ]; then
+    holder_cmd="$(tr '\0' ' ' < "/proc/${holder}/cmdline" 2>/dev/null || true)"
+    case "$holder_cmd" in
+        *"uvicorn app:app"*)
+            echo "reclaiming port ${RECLAIM_PORT} from previous instance pid ${holder}" >&2
+            kill "$holder" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+                kill -0 "$holder" 2>/dev/null || break
+                sleep 0.4
+            done
+            kill -9 "$holder" 2>/dev/null || true
+            ;;
+        *)
+            echo "port ${RECLAIM_PORT} held by pid ${holder} (${holder_cmd:-unknown}); not ours, leaving it" >&2
+            ;;
+    esac
+fi
+# <<< reclaim-block
 
 # ── Launch WebConsole with HTTPS ──────────────────────────────────────
 # Application records go to logs/webconsole.log through logging.conf's rotating

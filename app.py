@@ -3393,7 +3393,12 @@ def classify_chat(
             cli_dismiss_map.get(session_id, "") or "",
             mark.get("dismissed_at") or "",
         )
-        status_updated = cli_status_updated_map.get(session_id, "")
+        # Fall back to the conversation's own last activity when the session
+        # file carries no status timestamp -- which is every non-busy session
+        # on this machine, so the guard below was failing open and relisting
+        # unconditionally. Requiring a timestamp that is usually absent made
+        # the dismissal inert no matter which mark it consulted.
+        status_updated = cli_status_updated_map.get(session_id, "") or stamp
         if not (dismissed and status_updated and status_updated <= dismissed):
             return {
                 **entry,
@@ -3683,8 +3688,19 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
     for row in rows:
         chat = by_id.get(row["chat_id"])
         last = activity.get(row["chat_id"])
+        if chat is None:
+            # The conversation is gone -- deleted, or no longer this owner's.
+            # Omitted rather than rendered: there is nothing to open, and a row
+            # that 404s when clicked is worse than an absent one. The membership
+            # row itself is left alone, because reaping it is a write and a GET
+            # that quietly deletes rows is a surprise nobody asked for.
+            _log.info(
+                "supervisor_member_missing supervisor_id=%s chat_id=%s",
+                supervisor_id, row["chat_id"],
+            )
+            continue
         entry = None
-        if chat and last:
+        if last:
             entry = classify_chat(chat, last, live_ids, queued, marks, {}, {}, {})
         since_ts = row["added_at"]
         if last and last.get("created_at"):
@@ -3695,7 +3711,14 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
             "title": row["title"] or "Untitled",
             "preview": "",
             "since": since_ts or row["added_at"],
-            "last_seen": last.get("created_at"),
+            # None when the member has never been spoken in. chat_last_activity
+            # only carries conversations that have some, so this branch is the
+            # normal case for a freshly added agent -- and it used to call .get()
+            # on that None, which is the one path that reaches this fallback at
+            # all. The panel raised AttributeError and 500d for every supervisor
+            # with a quiet member, while the docstring above described the
+            # behaviour that was intended and never written.
+            "last_seen": last.get("created_at") if last else None,
             "status": "idle",
         })
     members.sort(key=lambda e: (
@@ -5226,35 +5249,6 @@ async def _api_supervisor_task_stream(request: Request, supervisor_id: str, task
 @app.get("/api/supervisors/{supervisor_id}/messages")
 async def _api_supervisor_messages(request: Request, supervisor_id: str):
     return await handle_supervisor_messages_get(request, supervisor_id)
-
-
-# ── Dev endpoint (temporary, remove when done) ──────────────────────
-
-@app.get("/dev/supervisor-trigger")
-async def _dev_supervisor_trigger(request: Request):
-    """Dev-only: create a session, send a prompt to the Second Supervisor, start it."""
-    import urllib.parse
-    qs = dict(urllib.parse.parse_qsl(request.url.query))
-    sup_id = qs.get("supervisor_id", "9cbf264d6409433cabf4414e6fab704c")
-    prompt = qs.get("prompt", "Read /etc/os-release and return the first 3 lines.")
-    sid, csrf = auth.session_new("admin", "admin")
-    request.state.session = auth.session_get(sid)
-
-    from supervisor import SupervisorEngine
-    if sup_id not in _supervisor_engines:
-        _supervisor_engines[sup_id] = eng_new = SupervisorEngine(sup_id, "admin")
-    else:
-        eng_new = _supervisor_engines[sup_id]
-    eng = eng_new
-    await eng.start_from_user_prompt(prompt)
-    await db.supervisor_messages_append(sup_id, "user", prompt)
-    await db.supervisor_update(sup_id, "admin", status="planning")
-    return JSONResponse({
-        "ok": True,
-        "supervisor_id": sup_id,
-        "status": "planning",
-        "session_id": sid,
-    })
 
 
 @app.get("/api/models")

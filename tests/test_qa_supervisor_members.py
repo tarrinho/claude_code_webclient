@@ -368,6 +368,30 @@ class StatusReuseTests(MembersBase):
         self.assertEqual(titles, ["alive"],
                          "a deleted conversation must not break the panel")
 
+    async def test_another_accounts_conversation_is_not_rendered(self):
+        """The handler's skip for a chat it cannot resolve, which nothing
+        reached until now.
+
+        ``supervisor_members_list`` filters on ``deleted_at`` but not on owner,
+        and it selects ``c.title`` from the join -- so a membership row naming
+        another account's conversation yields that account's title. The owner
+        lookup beside it (``chat_list``) does filter by owner, so the chat comes
+        back None, which is the case the handler skips. Constructed at the DB
+        layer on purpose: ``supervisor_member_add``'s own docstring says this
+        layer stores what it is given and that the caller must check ownership,
+        so this is the state that layer warns about rather than an impossible
+        one. The write path does check, which makes the skip defence in depth --
+        and untested defence in depth is how the deleted-chat branch above came
+        to be believed without ever running.
+        """
+        mine = await self._chat(title="mine")
+        theirs = await self._chat(owner="bob", title="bob's private title")
+        for c in (mine, theirs):
+            await db.supervisor_member_add(self.sup, c)
+        titles = [m["title"] for m in await self._members()]
+        self.assertEqual(titles, ["mine"])
+        self.assertNotIn("bob's private title", titles)
+
 
 if __name__ == "__main__":
     unittest.main()

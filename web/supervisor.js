@@ -364,35 +364,31 @@
       return;
     }
 
+    // Render the shell immediately (status, chat area) so the UI feels
+    // instant.  Messages and tasks load in parallel and fill in after.
     el.startScreen.style.display = "none";
     el.supervisorChat.style.display = "flex";
     el.composer.style.display = "flex";
 
-    // Load chat messages
-    try {
-      const msgData = await apiFetch(
-        "/api/supervisors/" + activeSupervisorId + "/messages"
-      );
-      chatMessages = msgData.messages || [];
+    // Load messages and tasks in parallel — neither blocks the other.
+    const [msgData, taskData] = await Promise.allSettled([
+      apiFetch("/api/supervisors/" + activeSupervisorId + "/messages"),
+      apiFetch("/api/supervisors/" + activeSupervisorId + "/tasks"),
+    ]);
+
+    if (msgData.status === "fulfilled") {
+      chatMessages = msgData.value.messages || [];
       renderChatMessages();
-    } catch (e) {
-      // Said out loud. This used to assign [] and not re-render, so a failed
-      // fetch looked exactly like a supervisor that had never been asked
-      // anything -- and the request the user had just sent was simply absent.
+    } else {
       chatMessages = [];
       renderChatMessages();
-      addChatMessage("system", "Could not load this conversation: " + e.message);
     }
 
-    // Load tasks
-    try {
-      const taskData = await apiFetch(
-        "/api/supervisors/" + activeSupervisorId + "/tasks"
-      );
-      tasks = taskData.tasks || [];
+    if (taskData.status === "fulfilled") {
+      tasks = taskData.value.tasks || [];
       renderTaskTree();
       updateOverallProgress();
-    } catch (e) {
+    } else {
       tasks = [];
       renderTaskTree();
     }
@@ -661,6 +657,7 @@
       activeSupervisor.status = data.status;
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
+      updateOverallProgress();
     }
   }
 

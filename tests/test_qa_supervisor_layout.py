@@ -39,6 +39,35 @@ def body_markup() -> str:
     return re.sub(r"<!--.*?-->", "", html[html.index("<body"):], flags=re.DOTALL)
 
 
+def page_css() -> str:
+    """Every rule that styles the page: inlined `<style>` plus any `<link>`ed
+    stylesheet, concatenated.
+
+    Written this way for a move that has not happened yet.
+    `docs/superpowers/specs/2026-09-01-file-structure-design.md` step 5 drops
+    `supervisor.html`'s inlined stylesheet block, so a test that greps this file
+    for a CSS rule would start failing on a change that broke nothing. Reading
+    both places means the assertions survive the extraction and keep asserting
+    the same property.
+    """
+    html = SUPERVISOR_HTML.read_text(encoding="utf-8")
+    css = "\n".join(re.findall(r"<style[^>]*>(.*?)</style>", html, flags=re.DOTALL))
+    for path in linked_stylesheets():
+        css += "\n" + path.read_text(encoding="utf-8")
+    return css
+
+
+def linked_stylesheets() -> list[Path]:
+    """Filesystem paths of the page's `<link rel=stylesheet>` targets."""
+    html = SUPERVISOR_HTML.read_text(encoding="utf-8")
+    found = []
+    for href in re.findall(r'<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"', html):
+        path = (SUPERVISOR_HTML.parent / href.split("?", 1)[0].lstrip("/")).resolve()
+        if path.exists():
+            found.append(path)
+    return found
+
+
 def div_depth_trace() -> tuple[int, dict[str, int]]:
     """Return (final depth, {panel id: depth at which it opens}).
 
@@ -105,8 +134,32 @@ window.addEventListener("load", function () {
     with tempfile.TemporaryDirectory() as tmp:
         page = Path(tmp) / "probe.html"
         page.write_text(html, encoding="utf-8")
+        # Inline the page's linked stylesheets rather than relying on relative
+        # hrefs resolving. The page is copied to a temp directory, so a
+        # `<link href="/assets/styles.css">` would 404 -- silently, exactly as
+        # the relative `supervisor.js` tag does -- and every geometry
+        # assertion below would then measure an unstyled page and fail for a
+        # reason that has nothing to do with the layout.
+        #
+        # There are no linked stylesheets today; the CSS is inlined. This
+        # exists because file-structure step 5 removes that inlined block, and
+        # this probe should survive the move rather than be a reason not to
+        # make it.
+        extra = "".join(
+            f"<style>{p.read_text(encoding='utf-8')}</style>"
+            for p in linked_stylesheets()
+        )
+        if extra:
+            page.write_text(html.replace("</head>", extra + "</head>", 1),
+                            encoding="utf-8")
         result = subprocess.run(
             [CHROMIUM, "--headless", "--disable-gpu", "--no-sandbox",
+             # Chromium writes a ~126 MB profile per launch. Without this it
+             # picks its own /tmp/org.chromium.Chromium.scoped_dir.* and
+             # leaves it behind, so a single run of this file leaked 11 of
+             # them and filled a 1.9 GB tmpfs -- after which every browser
+             # test in the suite fails on a timeout and leaks another.
+             f"--user-data-dir={page.parent}/chrome-profile",
              f"--window-size={width},{height}",
              "--virtual-time-budget=4000", "--dump-dom", f"file://{page}"],
             capture_output=True, text=True, timeout=120, check=False,
@@ -292,19 +345,21 @@ class ResizeHandleWiringTests(unittest.TestCase):
     def test_the_horizontal_variant_is_styled(self):
         """Without this rule the handle keeps width:5px/col-resize and sits on
         the wrong edge with the wrong cursor.
+
+        Reads page_css(), not the HTML, so the assertion follows the rule when
+        the inlined stylesheet block is extracted.
         """
-        html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        self.assertIn(".resize-handle.horizontal", html)
-        self.assertRegex(html, r"\.resize-handle\.horizontal\s*\{[^}]*"
-                               r"cursor:\s*row-resize")
+        css = page_css()
+        self.assertIn(".resize-handle.horizontal", css)
+        self.assertRegex(css, r"\.resize-handle\.horizontal\s*\{[^}]*"
+                              r"cursor:\s*row-resize")
 
     def test_panel_bottom_is_a_containing_block(self):
         """The handle is position:absolute. Without position on #panel-bottom
         it resolves against the initial containing block and lands at the top
         of the page rather than on the bar's top edge.
         """
-        html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        rule = re.search(r"#panel-bottom\s*\{(.*?)\}", html, re.DOTALL)
+        rule = re.search(r"#panel-bottom\s*\{(.*?)\}", page_css(), re.DOTALL)
         self.assertIsNotNone(rule, "#panel-bottom rule not found")
         self.assertRegex(rule.group(1), r"position:\s*relative")
 

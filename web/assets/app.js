@@ -1152,6 +1152,22 @@ async function _activateMachine(id) {
     await loadMachines();
     _activeMachineId = id;
     storageSet('wc_active_machine', id);
+    // The model picker offers what the *active* machine serves, and
+    // _refreshServedModels() derives that from _machines -- so changing which
+    // machine is active invalidates it. Nothing re-derived it here, so
+    // _servedModels kept whatever it held from before activation. On a console
+    // whose machine starts inactive that is [], and populateModelPicker reads an
+    // empty served list as "no backend is active" and falls back to
+    // _modelOptions: a single id, the global default. The picker then offered
+    // one model no matter how many the backend served, and stayed that way
+    // until an unrelated model toggle happened to call the sync from
+    // _saveMachineModels and repair it.
+    //
+    // loadModelsFor first, because the newly active machine's list may never
+    // have been fetched; it returns early when cached, which is why the sync is
+    // called explicitly rather than left to it.
+    await loadModelsFor(id);
+    _refreshServedModels();
     _renderMachineList();
     notifyResult('Machine activated');
   } catch (error) {
@@ -2217,6 +2233,10 @@ async function loadTurnCounts() {
 }
 
 async function loadModelsFor(machineId, force = false) {
+  // The guard covers the fetch, which is the only expensive part. Callers that
+  // need the derived state refreshed on a cache hit -- _activateMachine, where
+  // the models are already loaded but which machine is active has changed --
+  // call _refreshServedModels() themselves.
   if (!force && _modelsByMachine.has(machineId)) return;
   try {
     const response = await apiFetch(`/api/models?machine_id=${encodeURIComponent(machineId)}`);
@@ -2524,6 +2544,11 @@ const BASE_TITLE = 'WebConsole';
 // were already waiting before you arrived. The first result sets the baseline
 // silently, and only a later rise is worth interrupting for.
 let _lastWaitingCount = null;
+// Counted separately from the title's total, because a notification fires on a
+// rise in rows that need a person -- not on a rise in the feed. Sharing one
+// counter would let a completion arriving alongside an ask mask the ask, or a
+// completion on its own be mistaken for one.
+let _lastActionableCount = 0;
 
 function _alertsEnabled() {
   return storageGet('wc_alerts') === 'on'
@@ -2575,21 +2600,41 @@ async function toggleAlerts() {
 }
 
 function _applyDeviceAlert(waiting) {
+  // The tab title counts everything the attention feed holds, completions
+  // included: it is ambient, and reading it costs nothing.
   const count = waiting.length;
   document.title = count ? `(${count}) ${BASE_TITLE}` : BASE_TITLE;
 
-  const first = _lastWaitingCount === null;
-  const rose = !first && count > _lastWaitingCount;
+  // A desktop notification is a different instrument. It interrupts a person
+  // who is not looking at this machine, so it fires only for rows that need
+  // one: an ask, a blocker, a failure. A finished agent is worth *showing* --
+  // Pedro's rule is that an ended action is worth surfacing, and the badge and
+  // the row both do that -- but "surface it" and "interrupt them wherever they
+  // are" are not the same request, and the rule as given said highlight.
+  //
+  // Without this split, "Done. Suite is green" raised an OS notification on an
+  // unfocused machine. That is the case where the promotion does the most work
+  // and earns the least, and it is what this function's own contract already
+  // said: only when information is required or important.
+  const actionable = waiting.filter((entry) => entry.reason !== 'done');
+  const rose = _lastWaitingCount !== null && actionable.length > _lastActionableCount;
   _lastWaitingCount = count;
+  _lastActionableCount = actionable.length;
   if (!rose || !_alertsEnabled()) return;
   // Looking at the page already counts as being told.
   if (document.visibilityState === 'visible' && document.hasFocus()) return;
 
-  const newest = waiting[waiting.length - 1] || {};
+  const newest = actionable[actionable.length - 1] || {};
   const who = newest.title || 'An agent';
+  // "finished" is its own message. The feed now carries completions as well as
+  // asks, and telling someone their finished agent "needs an answer" sends them
+  // off to answer nothing -- the same complaint that made the failed-endpoint
+  // wording wrong.
   const body = newest.reason === 'blocked'
     ? `${who} is blocked`
-    : `${who} needs an answer`;
+    : newest.reason === 'done'
+      ? `${who} has finished`
+      : `${who} needs an answer`;
   try {
     new Notification('WebConsole', {
       body: newest.preview ? `${body} — ${newest.preview}` : body,
@@ -2939,6 +2984,8 @@ document.addEventListener('DOMContentLoaded', () => {
       lastCommandBar: byId('lastCommandBar'),
       lastCommandText: byId('lastCommandText'),
       lastCommandWhen: byId('lastCommandWhen'),
+      lastCommandGlyph: byId('lastCommandGlyph'),
+      lastCommandMenu: byId('lastCommandMenu'),
     },
     apiFetch, storageGet, storageSet, storageRemove, showToast,
     onChatLoaded: updateCurrentUi,

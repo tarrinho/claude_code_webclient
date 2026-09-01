@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=25">
+<link rel="stylesheet" href="/assets/styles.css?v=26">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.9.3</span>
+    <span class="ver" id="ver">0.9.4</span>
     <button class="btn-icon" id="supervisorBtn" aria-label="Open supervisor" title="Supervisor">📡</button>
 <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
@@ -59,9 +59,19 @@
        the strip rather than a second row inside it: the strip is a flex row and
        turning it into a grid would move every control already in it. -->
   <div class="workspace-lastcmd" id="lastCommandBar" hidden>
-    <span class="lastcmd-glyph" aria-hidden="true">&#10551;</span>
-    <span class="lastcmd-text" id="lastCommandText"></span>
+    <span class="lastcmd-glyph" id="lastCommandGlyph" aria-hidden="true">&#10551;</span>
+    <!-- A button, not a span: it opens the recent-request list, so it has to be
+         reachable by keyboard and announce that it controls a popup. The text is
+         still written with textContent, so the prompt cannot become markup. -->
+    <button type="button" class="lastcmd-text" id="lastCommandText"
+            aria-haspopup="listbox" aria-expanded="false"
+            aria-controls="lastCommandMenu"></button>
     <span class="lastcmd-when" id="lastCommandWhen"></span>
+    <!-- Absolutely positioned, so it does not become a fourth grid item and
+         push the strip into a second row. Built by script rather than templated
+         here: every row carries a prompt the user typed. -->
+    <div class="lastcmd-menu" id="lastCommandMenu" role="listbox" tabindex="-1"
+         aria-label="Recent requests in this conversation" hidden></div>
   </div>
   <!-- A prompt the linked terminal session is waiting on, answerable here -->
   <section class="question-bar" id="questionBar" aria-live="polite" hidden>

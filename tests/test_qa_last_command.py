@@ -117,22 +117,57 @@ class UpdatePointsQA(unittest.TestCase):
         start = self.js.index(f"function {name}(")
         return self.js[start:start + 1800]
 
+    # Any of the updaters counts. Naming one function made these assertions
+    # brittle for no gain: the strip grew a request picker, `setLastCommand`
+    # became `setRequestHistory`/`pushRequest`, and three cases failed against
+    # an implementation that was strictly better at the thing they check. What
+    # matters is that the call site updates the strip at all.
+    _UPDATERS = ("setRequestHistory", "pushRequest", "setLastCommand")
+
+    def _assert_updates_strip(self, function_name):
+        body = self._body(function_name)
+        self.assertTrue(
+            any(updater in body for updater in self._UPDATERS),
+            f"{function_name}() no longer updates the last-request strip; "
+            f"expected one of {self._UPDATERS}",
+        )
+
     def test_opening_a_conversation_sets_it_from_what_was_loaded(self):
-        self.assertIn("setLastCommand", self._body("selectChat"))
+        self._assert_updates_strip("selectChat")
 
     def test_a_refresh_after_a_turn_updates_it(self):
-        self.assertIn("setLastCommand", self._body("refreshCurrent"))
+        self._assert_updates_strip("refreshCurrent")
 
     def test_sending_sets_it_immediately(self):
         # Not only on completion: a routed or queued request produces no turn
         # here at all, so waiting for one would leave the line stale.
-        self.assertIn("setLastCommand", self._body("send"))
+        self._assert_updates_strip("send")
 
     def test_the_newest_user_message_is_the_one_chosen(self):
-        body = self._body("lastCommandFrom")
-        self.assertIn("role === 'user'", body)
+        body = self._body("setRequestHistory")
+        self.assertIn("role !== 'user'", body)
         # Walked backwards: the newest is wanted, and the list can be long.
         self.assertIn("index -= 1", body)
+
+    def test_a_refresh_keeps_a_pin_the_user_set(self):
+        """The pin exists to survive turns; that is the whole point of it.
+
+        ``refreshCurrent`` runs after every completed turn, so rebuilding the
+        history without ``keepPin`` would clear the pin in exactly the situation
+        it is for -- keeping an earlier request in view while later ones run.
+        """
+        self.assertIn("keepPin: true", self._body("refreshCurrent"))
+
+    def test_a_pin_is_refound_by_value_not_carried_as_an_index(self):
+        """An index into a list that grew at the front addresses the wrong row.
+
+        Sending prepends, so a pin held as a number would silently slide onto a
+        neighbouring request -- the strip would keep showing *something*, which
+        is why this needs asserting rather than eyeballing.
+        """
+        body = self._body("setRequestHistory")
+        self.assertIn("findIndex", body)
+        self.assertIn("entry.text === wasPinned.text", body)
 
     def test_the_relative_time_is_refreshed(self):
         # Otherwise "2m ago" sits there saying 2m for an hour.

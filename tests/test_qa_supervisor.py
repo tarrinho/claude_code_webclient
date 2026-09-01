@@ -198,12 +198,22 @@ class SupervisorChatTests(unittest.IsolatedAsyncioTestCase):
         await db.db_conn.commit()
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
-    async def test_routine_output_is_still_retired_by_reading(self):
-        """Only questions are sticky; seeing an update is the point of one."""
+    async def test_finished_work_is_still_retired_by_reading(self):
+        """Only questions are sticky; seeing a completion is the point of one.
+
+        The bucket changed -- a finished turn is now surfaced as `waiting` with
+        `reason: "done"` rather than filed quietly as `updated` -- but the
+        retirement rule is the same one, and it is what keeps the count from
+        becoming a permanent mark on every conversation that ever completed.
+        """
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Done, all green."))
-        self.assertEqual((await self._get())["counts"]["updated"], 1)
+        data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 1)
+        self.assertEqual(data["waiting"][0]["reason"], "done")
         await db.read_mark_set("admin", "chat", "c1", "2026-08-29T10:02:00Z")
-        self.assertEqual((await self._get())["counts"]["updated"], 0)
+        after = await self._get()
+        self.assertEqual(after["counts"]["waiting"], 0)
+        self.assertEqual(after["counts"]["updated"], 0)
 
     async def test_new_output_after_reading_waits_again(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
@@ -435,18 +445,31 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["counts"]["waiting"], 1)
         self.assertEqual(data["waiting"][0]["preview"], "Which way do you want it?")
 
-    async def test_a_terminal_agent_that_merely_reported_is_quiet(self):
-        """The literal complaint: four terminals badged for having spoken.
+    async def test_a_terminal_agent_that_finished_is_surfaced_as_done(self):
+        """Reversed on Pedro's instruction: an ended action is worth telling.
 
-        A session that finished a task and said so is an update, not a summons.
+        This asserted the opposite, and its reason was good -- four terminals
+        badged for merely having spoken was a real complaint. The new rule keeps
+        the half that mattered (output arriving is not a summons) and changes the
+        other half: *finishing* is the outcome being waited for, so it is
+        surfaced, labelled `done`, and retired by being read.
+
+        The tension is deliberate and worth naming rather than smoothing over:
+        four agents finishing four tasks now produce four rows where they
+        produced none. If that reads as noise in practice, the rule to revisit is
+        this one and not the labelling.
         """
         data = await self._get(
             [self._cli()],
             [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}],
             self._turns("assistant", "Done. Suite is green, ruff clean."),
         )
-        self.assertEqual(data["counts"]["waiting"], 0)
-        self.assertEqual(data["counts"]["updated"], 1)
+        self.assertEqual(data["counts"]["waiting"], 1)
+        self.assertEqual(data["waiting"][0]["reason"], "done")
+        self.assertFalse(
+            data["waiting"][0].get("question"),
+            "a finished agent must not be presented as having asked something",
+        )
 
     async def test_a_pending_structured_question_waits(self):
         turns = {"turns": [{"role": "assistant", "timestamp": "2026-08-29T10:00:00Z",
@@ -706,7 +729,16 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
-    """An agent that merely finished talking must not summon anyone."""
+    """What summons, and what does not, under Pedro's rule.
+
+    Two things summon: a question that needs a person, and work that has ended.
+    Text merely arriving does not -- which is what the class asserted wholesale
+    before, on the strength of a real complaint about chatty agents badging.
+
+    The distinction now drawn is between *talking* and *finishing*. A reply is
+    still not a summons on its own; a completed piece of work is, because that is
+    the outcome the user was waiting for. Reading it retires it.
+    """
 
     async def asyncSetUp(self):
         await _setup(self)
@@ -717,12 +749,33 @@ class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
     async def _get(self):
         return json.loads((await app.handle_supervisor(_request())).body)
 
-    async def test_a_plain_reply_is_an_update_not_a_wait(self):
+    async def test_a_finished_reply_is_surfaced_as_done(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Done, all green."))
         data = await self._get()
-        self.assertEqual(data["counts"]["waiting"], 0)
-        self.assertEqual(data["counts"]["updated"], 1)
-        self.assertEqual(data["updated"][0]["status"], "updated")
+        self.assertEqual(data["counts"]["waiting"], 1)
+        self.assertEqual(data["waiting"][0]["reason"], "done")
+        self.assertEqual(data["counts"]["updated"], 0)
+
+    async def test_output_from_a_still_busy_terminal_stays_quiet(self):
+        """The half of the old contract that survives, pinned on its own.
+
+        A linked session that is still working has not finished, so its output
+        must not be announced as a completion -- that is the "text is still being
+        sent" case the rule excludes. Without this case the class no longer
+        asserts that anything stays quiet at all.
+        """
+        await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Pushing now."))
+        await db.chat_set_session("c1", SESSION_ID)
+        entry = app.classify_chat(
+            chat={"id": "c1", "title": "c1", "session_id": SESSION_ID},
+            last={"role": "assistant", "created_at": "2026-08-29T10:01:00Z",
+                  "preview": "Pushing now.", "tail": "Pushing now."},
+            live_ids=frozenset(), queued={}, marks={},
+            cli_status_map={SESSION_ID: "busy"},
+            cli_dismiss_map={SESSION_ID: ""},
+            cli_status_updated_map={SESSION_ID: "2026-08-29T10:00:00Z"},
+        )
+        self.assertNotEqual((entry or {}).get("status"), "waiting")
 
     async def test_a_question_still_waits(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
@@ -738,13 +791,42 @@ class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["counts"]["waiting"], 1)
         self.assertEqual(data["waiting"][0]["reason"], "blocked")
 
-    async def test_many_chatty_agents_leave_the_badge_at_zero(self):
-        """The exact complaint: four terminals that had simply spoken."""
+    async def test_four_finished_agents_produce_four_rows(self):
+        """The cost of the new rule, written down rather than discovered later.
+
+        This asserted a badge of zero, from the complaint that four terminals
+        which had "simply spoken" should not summon anyone. Four agents that have
+        *finished* now produce four rows, deliberately: each is a completed piece
+        of work someone was waiting on.
+
+        Kept as an explicit count rather than deleted, so the trade is visible.
+        If the badge becomes noise again this is the case that will say so, and
+        the reading to revisit is "an ended action is worth interrupting for" --
+        the mitigation being that reading retires them, which a question's
+        highlight does not get.
+        """
         for index in range(4):
             await _chat_with(
                 f"c{index}",
                 ("assistant", "2026-08-29T10:01:00Z", f"Finished task {index}."),
             )
+        data = await self._get()
+        self.assertEqual(data["counts"]["waiting"], 4)
+        self.assertEqual(
+            {row["reason"] for row in data["waiting"]}, {"done"},
+            "these are completions, not questions",
+        )
+
+    async def test_reading_them_all_clears_the_badge(self):
+        """The mitigation, pinned next to the cost it offsets."""
+        for index in range(4):
+            await _chat_with(
+                f"c{index}",
+                ("assistant", "2026-08-29T10:01:00Z", f"Finished task {index}."),
+            )
+        for index in range(4):
+            await db.read_mark_set(
+                "admin", "chat", f"c{index}", "2026-08-29T10:02:00Z")
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
 

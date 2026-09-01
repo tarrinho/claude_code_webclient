@@ -186,6 +186,16 @@ def _blocks_from_content(
                         question_ids.add(question["id"])
                     blocks.append(question)
                     continue
+            elif item.get("name") in _APPROVAL_TOOLS:
+                # An approval prompt is a question too, even though the call
+                # declares no text. Registering the id here is what lets the
+                # "approved"/"rejected" result render as an answer rather than
+                # as an unexplained blob of tool output.
+                approval = _approval_block(item)
+                if approval["id"]:
+                    question_ids.add(approval["id"])
+                blocks.append(approval)
+                continue
             detail, clipped = _tool_detail(item)
             block: dict[str, Any] = {"kind": "tool", "text": _tool_summary(item)}
             if detail:
@@ -219,6 +229,53 @@ def _blocks_from_content(
 
 
 _QUESTION_TOOL = "AskUserQuestion"
+
+# Tools that stop and wait for a person to approve something, but declare
+# nothing about the ask: the CLI draws the prompt itself, so the tool call
+# carries an empty ``input``. AskUserQuestion was the only tool treated as a
+# question, so these rendered as a bare tool name -- no ask, no options, and no
+# hint that the session was blocked. They are not rare: across this machine's
+# transcripts there are 60 of them against 47 AskUserQuestion, so more than half
+# of everything waiting on an answer was invisible in the web chat.
+#
+# The header and ask are ours, not the CLI's, because the call carries no text
+# to quote. They describe what approving actually does, since that is the
+# decision being asked for.
+_APPROVAL_TOOLS: Final[dict[str, tuple[str, str]]] = {
+    "EnterPlanMode": (
+        "Plan mode",
+        ("Claude wants to explore and plan before changing anything. "
+         "Approve entering plan mode?"),
+    ),
+    "ExitPlanMode": (
+        "Plan ready",
+        ("Claude has finished planning and wants to start making changes. "
+         "Approve the plan?"),
+    ),
+}
+
+
+def _approval_block(item: dict[str, Any]) -> dict[str, Any]:
+    """Build a question block for an approval prompt that declares no options.
+
+    Options are deliberately left empty rather than guessed. The live prompt is
+    the only place the real choices exist, and the question endpoint already
+    reads them off the terminal with ``prompts.visible_options``; inventing a
+    plausible-looking list here would put labels in front of the user that the
+    terminal never offered, and answering is by index.
+    """
+    header, ask = _APPROVAL_TOOLS[str(item.get("name"))]
+    return {
+        "kind": "question",
+        "id": str(item.get("id") or ""),
+        "questions": [{
+            "question": ask,
+            "header": header,
+            "multi_select": False,
+            "options": [],
+        }],
+        "approval": True,
+    }
 
 
 def _questions_payload(raw: Any, block_id: str) -> tuple[list[Any], bool]:
@@ -355,7 +412,10 @@ def _answer_block(item: dict[str, Any]) -> dict[str, Any]:
     collapsed = " ".join(str(text).split())
     if item.get("is_error") or "was rejected" in collapsed:
         status = "declined"
-    elif "have been answered" in collapsed:
+    elif "have been answered" in collapsed or "has approved" in collapsed:
+        # "User has approved your plan" / "has approved exiting plan mode" is an
+        # approval prompt's yes. Without this it fell to "resolved", which reads
+        # as though nobody decided anything.
         status = "answered"
     else:
         status = "resolved"
@@ -1101,6 +1161,93 @@ async def last_error(session_id: str) -> str | None:
     return await asyncio.to_thread(_last_error_sync, path)
 
 
+# Whether the newest turn finished. Kept beside _last_error_sync because it is
+# the same shape of read and shares its budget: measured on this machine, the
+# newest assistant record with a stop_reason sat within the last 9 lines and
+# 16 KB of transcripts that are 10-18 MB and 6,000-10,000 lines long, so 64 KB
+# is a generous bound rather than a guess.
+#
+# A *tail peek* is not enough, which is why this reads a block rather than the
+# last few records: one live session's last six records were all metadata
+# (`agent-name`, `mode`, `permission-mode`, `atis-latch`) with no assistant
+# record among them.
+_CONCLUSION_TAIL_BYTES: Final[int] = 64 * 1024
+
+# Claude Code's own reason for stopping. "end_turn" means it had nothing further
+# to do; "tool_use" means it stopped to run something and is mid-turn.
+_END_OF_TURN: Final[str] = "end_turn"
+
+
+def _conclusion_sync(path: Path) -> dict[str, Any]:
+    """Whether the newest turn in *path* has concluded.
+
+    Returns ``stop_reason`` (the newest assistant record's, or None if the tail
+    holds none), ``prompt_after`` (a real prompt arrived after it, so a new turn
+    has already started) and ``concluded``.
+
+    The two are both needed. A session that finished a turn and was then given
+    more work still carries ``end_turn`` as its newest stop_reason -- observed
+    live, on a session that flipped from idle to busy between two reads -- so
+    the stop_reason alone reports a working agent as finished.
+    """
+    state: dict[str, Any] = {
+        "stop_reason": None, "prompt_after": False, "concluded": False,
+    }
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > _CONCLUSION_TAIL_BYTES:
+                handle.seek(size - _CONCLUSION_TAIL_BYTES)
+                handle.readline()  # discard the partial line the seek landed in
+            raw = handle.read()
+    except OSError:
+        return state
+
+    # Forward over the tail, so "after" is a genuine ordering rather than an
+    # inference from which one a reverse scan happened to meet first.
+    stop_at, prompt_at = -1, -1
+    for index, line in enumerate(raw.decode("utf-8", errors="replace").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "assistant":
+            message = record.get("message")
+            if isinstance(message, dict) and message.get("stop_reason"):
+                state["stop_reason"] = message["stop_reason"]
+                stop_at = index
+        # _prompt_boundary, not "type == user": a tool result comes back as a
+        # user record, and counting those would make every tool call look like
+        # a fresh prompt and nothing would ever read as concluded.
+        elif _prompt_boundary(record):
+            prompt_at = index
+
+    state["prompt_after"] = prompt_at > stop_at
+    state["concluded"] = (
+        state["stop_reason"] == _END_OF_TURN and not state["prompt_after"]
+    )
+    return state
+
+
+async def turn_concluded(session_id: str) -> dict[str, Any]:
+    """Whether *session_id*'s newest turn has finished.
+
+    Corroborates the session registry's ``status`` field rather than replacing
+    it: ``status`` is what Claude Code says about itself and costs no parsing,
+    while this is derived from what it actually wrote. They agreed on every live
+    session tested, including one that changed state mid-test.
+    """
+    path = transcript_path(session_id)
+    if path is None:
+        return {"stop_reason": None, "prompt_after": False, "concluded": False}
+    return await asyncio.to_thread(_conclusion_sync, path)
+
+
 def _cwd_sync(path: Path) -> str:
     """Read the working directory a session ran in, from its own transcript.
 
@@ -1350,6 +1497,12 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
                     built = _question_block(block)
                     if built:
                         asked[str(block["id"])] = built
+                elif (
+                    block.get("type") == "tool_use"
+                    and block.get("name") in _APPROVAL_TOOLS
+                    and block.get("id")
+                ):
+                    asked[str(block["id"])] = _approval_block(block)
                 elif block.get("type") == "tool_result" and block.get("tool_use_id"):
                     answered.add(str(block["tool_use_id"]))
 
@@ -1357,9 +1510,22 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
         if qid in answered:
             continue
         first = (built.get("questions") or [{}])[0]
+        # An approval prompt gets no needle. The needle confirms that the text
+        # we are about to answer is the text on screen, which only works when
+        # the question came with words of its own; an approval's ask is written
+        # here, so matching on it would never find anything and every approval
+        # would be reported unreachable -- with "not running inside screen or
+        # tmux" as the reason, which would be a lie. find_target still requires
+        # looks_like_a_prompt(), so keystrokes cannot land in a window that is
+        # not asking anything; what is given up is only the check that it is
+        # asking *this*, and pending_question already returns the newest
+        # unanswered prompt.
+        needle = "" if built.get("approval") else str(
+            first.get("question") or "").strip()
         return {
             "id": qid,
             "questions": built.get("questions") or [],
-            "needle": str(first.get("question") or "").strip(),
+            "approval": bool(built.get("approval")),
+            "needle": needle,
         }
     return None

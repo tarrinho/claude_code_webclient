@@ -3469,15 +3469,43 @@ def _attention(text: str) -> str | None:
     tail = lowered.rstrip().rstrip("`*_)\"'")
     if tail.endswith("?"):
         return "asks"
-    # An agent that finishes with a colon or "…:" is inviting the user to
-    # complete the thought (a choice, a confirmation, a value).
-    if tail.endswith((":", "…")):
-        return "asks"
+    # Trailing ":" and "…" used to count as asks, on the reading that an agent
+    # ending that way is inviting the user to complete the thought. They are
+    # dropped: ordinary output ends with a colon constantly ("Here is what I
+    # found:", "Changes:"), so this summoned the user for prose rather than for a
+    # request, which is the false positive that made the badge worth ignoring.
+    #
+    # Nothing is lost by dropping them. A finished turn is now surfaced in its
+    # own right, as `done` -- so a reply ending in a colon still appears, and
+    # appears labelled as finished rather than as a question nobody asked.
     if any(phrase in lowered for phrase in _ASKS_FOR_INPUT):
         return "asks"
     if any(phrase in lowered for phrase in _REPORTS_A_BLOCKER):
         return "blocked"
     return None
+
+
+def _asks_a_question(text: str) -> bool:
+    """Whether *text* actually asks something, rather than merely needing a reply.
+
+    Deliberately narrower than _attention(). That returns "asks" for a trailing
+    colon and for phrases requesting input, which are good reasons to go and
+    look but are not questions; it also returns "asks" from a session's status
+    alone, where nothing has been read at all. The panel's "?" is a claim that
+    there is a question to answer, so it is made only where one is visible.
+
+    The pending note is the strongest evidence available: a structured question
+    is rendered to text ending in it, so its presence means a question block
+    exists and has no answer.
+    """
+    body = (text or "").strip()
+    if not body:
+        return False
+    if _QUESTION_PENDING_NOTE in body:
+        return True
+    # Same tail-trimming as _attention: a question can end in a quote or a
+    # closing bracket and still be a question.
+    return body.rstrip().rstrip("`*_)\"'").endswith("?")
 
 
 def _one_line(text: str, limit: int = 120) -> str:
@@ -3511,6 +3539,55 @@ async def _session_failure(session_id: str, file_touched: str) -> str | None:
         return None
     _failure_cache[session_id] = (file_touched, failure)
     return failure
+
+
+async def _cli_maps(marks: dict) -> tuple[dict, dict, dict]:
+    """The three CLI lookups `classify_chat` needs, keyed by session id.
+
+    Extracted for the same reason `classify_chat` itself was: both the sidebar
+    and the members panel classify conversations, and a classifier given
+    different inputs on each surface reaches different answers however carefully
+    it is written. The members panel passed `{}, {}, {}` and therefore could not
+    see that a linked terminal was still working -- so it promoted running work
+    to "finished" while the sidebar, holding the same rule and better inputs,
+    correctly kept it quiet. Two surfaces, one function, and still a
+    disagreement, because the shared thing was the logic and not the data.
+
+    Returns empty maps when the session registry cannot be read: unknown status
+    is the safe default everywhere it is consulted.
+    """
+    try:
+        sessions = await db.read_claude_sessions()
+    except Exception:  # noqa: BLE001 -- a surface must render without them
+        return {}, {}, {}
+    status: dict[str, str] = {}
+    dismissed: dict[str, str] = {}
+    updated: dict[str, str] = {}
+    for entry in sessions:
+        session_id = entry.get("sessionId", "")
+        if not session_id:
+            continue
+        status[session_id] = (entry.get("status") or "").lower()
+        dismissed[session_id] = marks.get(
+            ("session", session_id), {}).get("dismissed_at", "")
+        updated[session_id] = entry.get("status_updated_at", "")
+    return status, dismissed, updated
+
+
+# Session statuses that do NOT mean "a person is needed".
+#
+# Claude Code writes `status` into ~/.claude/sessions/<pid>.json. Three values
+# are observed on 2.1.252: `busy` (working), `idle` (nothing further to do --
+# the task concluded) and `waiting` (blocked, needs a human). Membership here is
+# the allowlist rather than a check against `waiting`, so that a value nobody has
+# seen before is treated as blocked and reaches a person; the cost of
+# over-reporting is a row to dismiss, and the cost of under-reporting is an
+# agent stuck with nobody told.
+#
+# An absent status means the build is older than the field, which is "unknown"
+# and not "idle" -- and unknown is handled by the `if cli_status` guard, so it
+# never reaches this set.
+_CLI_STATUS_NOT_BLOCKED: Final[frozenset[str]] = frozenset({"busy", "idle"})
 
 
 def classify_chat(
@@ -3576,23 +3653,58 @@ def classify_chat(
     mark = marks.get(("chat", chat["id"]), {})
     stamp = last.get("created_at") or ""
     preview = last.get("preview") or ""
-    reason = _attention(preview)
-    # Questions rendered as text end with "(answer this in the terminal)", so
-    # _attention() misses the trailing ? and falls through to None.
-    if not reason and _QUESTION_PENDING_NOTE in preview:
+    # The end of the message as well as its opening. _attention() decides mostly
+    # on how the text *ends*, and the preview is its first 200 characters, so a
+    # question at the end of anything longer than that was invisible to it: the
+    # row fell through to the `done` promotion and was announced as a completed
+    # piece of work, with no "?" on it, while the agent sat waiting for an
+    # answer. The pending note is the worse case, since it marks a structured
+    # question that is definitely unanswered, and it is appended last.
+    #
+    # I added `tail` for exactly this reason and then used it only on the line
+    # below, leaving the classification that decides whether that line is
+    # reached still reading the wrong end of the message.
+    #
+    # Both, not just the tail: _attention also matches blocker phrases anywhere
+    # in the text, and those often open a message rather than close it.
+    tail = last.get("tail") or preview
+    reason = _attention(tail) or _attention(preview)
+    if not reason and _QUESTION_PENDING_NOTE in (tail + preview):
         reason = "asks"
     if reason:
         # Only an explicit dismissal silences an unanswered question.
         if mark.get("dismissed_at") and stamp <= mark["dismissed_at"]:
             return None
-        return {**entry, "status": "waiting", "reason": reason}
-    # A web conversation linked to a CLI session that is no longer busy is not
-    # "updated" -- the agent itself has stopped and is waiting. Defer to the
-    # session's own status so the user sees the question that triggered it
-    # rather than a truncated preview that _attention() cannot match.
+        return {
+            **entry, "status": "waiting", "reason": reason,
+            # The tail, not the preview: an agent asks at the end, so the
+            # opening 200 characters answer this about the wrong part of the
+            # message. Falls back to the preview for a message short enough
+            # that they are the same text.
+            "question": _asks_a_question(tail),
+        }
+    # A web conversation linked to a CLI session that has stopped and is
+    # *blocked* is not "updated" -- it needs a person. Defer to the session's own
+    # status so the user sees the question that triggered it rather than a
+    # truncated preview that _attention() cannot match.
+    #
+    # This read `cli_status != "busy"`, which put a session that had simply
+    # FINISHED into the waiting feed with reason "asks" -- reporting an agent
+    # that needs nothing as one blocked on a question. Claude Code 2.1.252
+    # writes three values here, not the one the comment in db.read_claude_sessions
+    # used to describe: `busy`, `waiting`, and `idle`. Only `waiting` means a
+    # person is required; `idle` means the task concluded, which belongs in the
+    # routine-output path below where a read mark retires it. Conflating them is
+    # what padded the badge with rows that wanted nothing, and the badge is only
+    # worth having while every row in it is real.
+    #
+    # An unrecognised value is treated as blocked rather than finished: a future
+    # status this code has never seen should over-report to a human, not quietly
+    # retire an agent that may be stuck.
     session_id = chat.get("session_id", "")
     cli_status = cli_status_map.get(session_id, "")
-    if cli_status and cli_status != "busy":
+    blocked_and_dismissed = False
+    if cli_status and cli_status not in _CLI_STATUS_NOT_BLOCKED:
         # Both marks, not just the session's. This row is presented as a
         # conversation, so dismissing it writes ("chat", chat_id) -- and this
         # branch used to consult only ("session", session_id). The dismissal
@@ -3604,10 +3716,15 @@ def classify_chat(
             mark.get("dismissed_at") or "",
         )
         # Fall back to the conversation's own last activity when the session
-        # file carries no status timestamp -- which is every non-busy session
-        # on this machine, so the guard below was failing open and relisting
-        # unconditionally. Requiring a timestamp that is usually absent made
-        # the dismissal inert no matter which mark it consulted.
+        # file carries no status timestamp, so the guard below cannot fail open
+        # and relist unconditionally.
+        #
+        # The note that used to sit here said the timestamp was absent on "every
+        # non-busy session on this machine". That was measured against an older
+        # CLI; on 2.1.252 every live session carries `statusUpdatedAt`,
+        # whatever its status. The fallback stays because a build without the
+        # field is still possible and the failure mode it prevents is silent,
+        # but it is now the rare path rather than the usual one.
         status_updated = cli_status_updated_map.get(session_id, "") or stamp
         if not (dismissed and status_updated and status_updated <= dismissed):
             return {
@@ -3615,12 +3732,64 @@ def classify_chat(
                 "status": "waiting",
                 "reason": "asks",
                 "reason_detail": f"session={cli_status}",
+                # "asks" here comes from the session's status, not from reading
+                # anything, so it is not evidence of a question. Only the
+                # message itself can supply that.
+                "question": _asks_a_question(
+                    last.get("tail") or entry.get("preview") or ""),
             }
-    # Routine output is different: seeing it IS the whole point, so a read mark
-    # retires it.
+        # Dismissed while blocked. Noted rather than returned: the read check
+        # below must still run, because `read_mark_set` writes the same timestamp
+        # to `read_at` and `dismissed_at`, so a dismissal is also a read and a
+        # read retires the row completely. Returning here skipped that and left
+        # the conversation listed quietly when the contract says it leaves.
+        #
+        # But it must not fall all the way through either. That was harmless
+        # while the tail could only file it as `updated`; the "done" promotion
+        # re-raised it, because the row's own message is usually newer than the
+        # dismissal -- so a dismissed question came straight back as a
+        # completion. The user dismissed *this row*.
+        blocked_and_dismissed = True
+    # Seen already: nothing to say at all.
     if mark.get("read_at") and stamp <= mark["read_at"]:
         return None
-    return {**entry, "status": "updated"}
+    # Listed, but never a summons. `updated` stays the quiet bucket it always
+    # was; what changed is only which rows are promoted out of it.
+    quiet = {**entry, "status": "updated"}
+    if blocked_and_dismissed:
+        return quiet
+    # A linked terminal session that is still busy has NOT ended -- its work is
+    # happening in the terminal, where this process cannot see a turn. Its
+    # output is still worth listing, but announcing it as finished would be the
+    # "text is still being sent" case the highlight is meant to exclude.
+    if cli_status == "busy":
+        return quiet
+    # Dismissed: demoted to quiet rather than deleted. The user said "stop
+    # summoning me", not "forget this happened", and the row reappearing after a
+    # dismissal is the complaint that made that control look inert once already.
+    #
+    # Both identities, exactly as the blocked branch above does it. This row is
+    # presented as a conversation, so the dismiss control writes ("chat", id) --
+    # but a dismissal made against the linked session must silence it too, or
+    # the user dismisses the terminal row and the web row summons them back for
+    # the same piece of work.
+    dismissed_either = max(
+        cli_dismiss_map.get(session_id, "") or "",
+        mark.get("dismissed_at") or "",
+    )
+    if dismissed_either and stamp <= dismissed_either:
+        return quiet
+    # The action has ended: the agent spoke last, no turn is registered, the
+    # linked session (if any) is not busy, and it is asking for nothing. That is
+    # the outcome the user is waiting for, so it is promoted to a highlight with
+    # its own reason rather than filed silently.
+    #
+    # Retired by *reading* it, which is what keeps the count meaningful -- the
+    # docstring below warned that "finished at some point" would mark every
+    # completed conversation for ever, and unread-since-it-finished is the
+    # narrower claim. A question is different and still needs answering or
+    # dismissing, because looking at a question does not answer it.
+    return {**entry, "status": "waiting", "reason": "done", "question": False}
 
 
 async def handle_supervisor(request: Request):
@@ -3656,26 +3825,11 @@ async def handle_supervisor(request: Request):
     activity = await db.chat_last_activity(owner)
     # Build a lookup: session_id → CLI status so the web path can defer to
     # the session's own status when a chat is linked to a running CLI session.
-    try:
-        cli_sessions_for_web = await db.read_claude_sessions()
-    except Exception:  # noqa: BLE001
-        cli_sessions_for_web = []
-    _cli_status_map: dict[str, str] = {}
-    for _cs in cli_sessions_for_web:
-        _sid = _cs.get("sessionId", "")
-        if _sid:
-            _cli_status_map[_sid] = (_cs.get("status") or "").lower()
-    _cli_dismiss_map: dict[str, str] = {}
-    for _cs in cli_sessions_for_web:
-        _sid = _cs.get("sessionId", "")
-        if _sid:
-            _mark = marks.get(("session", _sid), {})
-            _cli_dismiss_map[_sid] = _mark.get("dismissed_at", "")
-    _cli_status_updated_map: dict[str, str] = {}
-    for _cs in cli_sessions_for_web:
-        _sid = _cs.get("sessionId", "")
-        if _sid:
-            _cli_status_updated_map[_sid] = _cs.get("status_updated_at", "")
+    (
+        _cli_status_map,
+        _cli_dismiss_map,
+        _cli_status_updated_map,
+    ) = await _cli_maps(marks)
     for chat in chats:
         if chat.get("archived"):
             continue
@@ -3755,16 +3909,23 @@ async def handle_supervisor(request: Request):
                     waiting.append({
                         **row, "preview": _one_line(failure),
                         "status": "waiting", "reason": "failed",
+                        # A failure is not a question, however it is worded.
+                        "question": False,
                     })
                     continue
             working.append(row)
             continue
-        # Without a status field, fall back to mtime as a negative filter only:
-        # an untouched file certainly has nothing new. It must never decide
+        # For a session that is not blocked -- no status field at all, or an
+        # explicit `idle` -- fall back to mtime as a negative filter only: an
+        # untouched file certainly has nothing new. It must never decide
         # "waiting" on its own -- one cross-session message deposits dozens of
         # queue-operation and attachment records into the receiving session, so
         # with several agents talking the mtime is never still.
-        if not status and seen and file_touched <= seen:
+        #
+        # `busy` has already been handled and continued above, so reaching here
+        # with a status in the not-blocked set means `idle`.
+        if (not status or status in _CLI_STATUS_NOT_BLOCKED) and seen \
+                and file_touched <= seen:
             continue
         page = await transcripts.read_turns(session_id)
         page_turns = page.get("turns") or []
@@ -3778,11 +3939,18 @@ async def handle_supervisor(request: Request):
         }
         # Claude Code reports its own state, which beats inferring one from the
         # transcript: a session at a permission prompt and one running a tool
-        # look identical in the file. Any non-busy value means it has stopped
-        # and is waiting on a human -- and it stays listed until it starts
-        # working again, which only happens once someone answers it. A read
-        # mark deliberately does not retire this.
-        if status:
+        # look identical in the file. A *blocked* session stays listed until it
+        # starts working again, which only happens once someone answers it, so a
+        # read mark deliberately does not retire this.
+        #
+        # This read `if status:`, on the stated belief that "any non-busy value
+        # means it has stopped and is waiting on a human". That was true while
+        # `busy` was the only value the CLI wrote. 2.1.252 also writes `idle`,
+        # which means the opposite -- the task concluded and nothing is needed --
+        # so every finished agent was being listed as blocked, with its last
+        # sentence presented as though it were a question. Idle now falls through
+        # to the routine-output path below, where being read retires it.
+        if status and status not in _CLI_STATUS_NOT_BLOCKED:
             spoke_at = cli.get("status_updated_at") or file_touched
             dismissed = mark.get("dismissed_at") or ""
             if dismissed and spoke_at <= dismissed:
@@ -3797,6 +3965,7 @@ async def handle_supervisor(request: Request):
                 "preview": _one_line(said),
                 "status": "waiting",
                 "reason": "asks" if pending else (_attention(said) or "idle"),
+                "question": bool(pending) or _asks_a_question(said),
             })
             continue
         last_turn = page_turns[-1]
@@ -3831,9 +4000,19 @@ async def handle_supervisor(request: Request):
             # Unanswered outranks read, same as for conversations.
             dismissed = mark.get("dismissed_at") or ""
             if not (dismissed and spoke_at <= dismissed):
-                waiting.append({**row, "status": "waiting", "reason": reason})
+                waiting.append({
+                    **row, "status": "waiting", "reason": reason,
+                    "question": bool(pending) or _asks_a_question(text),
+                })
         elif not (seen and spoke_at <= seen):
-            updated.append({**row, "status": "updated"})
+            # The agent finished speaking and is asking nothing. That is the
+            # outcome the user is waiting for, so it is surfaced rather than
+            # filed quietly -- with its own reason, because calling it "needs an
+            # answer" would be a lie. Unread-since-it-spoke, so reading retires
+            # it; a question would instead need answering.
+            waiting.append({
+                **row, "status": "waiting", "reason": "done", "question": False,
+            })
 
     waiting.sort(key=lambda e: e["since"])
     updated.sort(key=lambda e: e["since"])
@@ -3893,6 +4072,12 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
         queued = {}
     activity = await db.chat_last_activity(owner)
     by_id = {c["id"]: c for c in await db.chat_list(owner)}
+    # The same CLI lookups the sidebar classifies with. Passing `{}, {}, {}`
+    # here meant this panel could not tell that a member's linked terminal was
+    # still working, so it announced running work as finished while the sidebar
+    # -- same function, better inputs -- kept it quiet. Sharing the classifier
+    # was not enough; the data has to be shared too.
+    cli_status, cli_dismiss, cli_updated = await _cli_maps(marks)
 
     members = []
     for row in rows:
@@ -3911,7 +4096,10 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
             continue
         entry = None
         if last:
-            entry = classify_chat(chat, last, live_ids, queued, marks, {}, {}, {})
+            entry = classify_chat(
+                chat, last, live_ids, queued, marks,
+                cli_status, cli_dismiss, cli_updated,
+            )
         since_ts = row["added_at"]
         if last and last.get("created_at"):
             since_ts = max(since_ts, last["created_at"]) if since_ts else last["created_at"]

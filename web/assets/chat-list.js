@@ -482,9 +482,15 @@ export function createChatListController(dependencies) {
     const waiting = state.waiting || [];
     const working = state.working || [];
     const updated = state.updated || [];
-    // Only `waiting` is a summons -- an agent that asked for something or
-    // reported it is stuck. An agent that merely finished speaking is counted
-    // quietly below, because badging every reply makes the number worthless.
+    // `waiting` is the attention feed: an agent that asked for something, one
+    // that reported it is stuck, and -- since Pedro's rule change -- one whose
+    // work has ended. Those are the two moments worth interrupting for.
+    //
+    // What is deliberately NOT in it is an agent mid-flow. Output arriving is
+    // not a summons; it used to be treated as one whenever the text happened to
+    // end with a colon, and a badge that fires on prose is a badge that gets
+    // ignored -- which costs the real asks buried among them. `updated` remains
+    // the quiet bucket for output that needs nothing.
     const nothingToShow = !waiting.length && !working.length && !updated.length;
 
     const heading = document.createElement('button');
@@ -496,7 +502,14 @@ export function createChatListController(dependencies) {
       const badge = document.createElement('span');
       badge.className = 'supervisor-badge';
       badge.textContent = String(waiting.length);
-      badge.title = `${waiting.length} agent${waiting.length === 1 ? '' : 's'} waiting for you`;
+      // "needs you" rather than "waiting for you": the feed now also holds
+      // agents that have finished, and those are not waiting on anything.
+      const finished = waiting.filter((e) => e.reason === 'done').length;
+      const blocked = waiting.length - finished;
+      badge.title = [
+        blocked ? `${blocked} need${blocked === 1 ? 's' : ''} an answer` : '',
+        finished ? `${finished} finished` : '',
+      ].filter(Boolean).join(' · ');
       heading.appendChild(badge);
     }
     const open = document.createElement('button');
@@ -542,6 +555,18 @@ export function createChatListController(dependencies) {
       dot.className = 'supervisor-dot';
       dot.setAttribute('aria-label', 'Waiting for you');
       title.append(dot, document.createTextNode(entry.title || entry.id));
+      // A "?" only where there is a question to answer. Every row in this
+      // section is waiting on you, so a mark on all of them would say nothing;
+      // what it distinguishes is the ones that asked something from the ones
+      // that failed, stalled, or simply stopped talking.
+      if (entry.question) {
+        const asks = document.createElement('span');
+        asks.className = 'supervisor-asks';
+        asks.textContent = '?';
+        asks.title = 'This one asked you a question';
+        asks.setAttribute('aria-label', 'Has a question');
+        title.appendChild(asks);
+      }
       title.title = entry.title || entry.id;
 
       const meta = document.createElement('div');
@@ -550,8 +575,12 @@ export function createChatListController(dependencies) {
         entry.kind === 'session' ? 'terminal' : 'web',
         // A failure is not a question and must not read like one -- "needs an
         // answer" next to a dead endpoint tells you to go and type something.
+        // Nor is a finished task: `done` is the outcome the user was waiting
+        // for, and labelling it as a question would send them off to answer
+        // nothing.
         entry.reason === 'failed' ? 'failed'
-          : entry.reason === 'blocked' ? 'blocked' : 'needs an answer',
+          : entry.reason === 'blocked' ? 'blocked'
+            : entry.reason === 'done' ? 'finished' : 'needs an answer',
         entry.since ? formatTime(entry.since) : '',
       ].filter(Boolean).join(' · ');
 

@@ -22,7 +22,55 @@ churn.
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-09-01
+
+> Bumped with `config.VERSION`, so this heading is the build rather than a claim
+> about one — §15a rule 1's ordering, and the thing 0.9.3 had to be repaired for.
+> All six stated versions moved in one commit, verified by
+> `tests/test_qa_version_consistency.py`.
+>
+> `docs/threat-model.md` states 0.9.2 deliberately: it records which build was
+> analysed, and rewriting it would claim an analysis nobody performed.
+>
+> Verified with `.venv/bin/python`, not `python3`. Under the system interpreter
+> playwright's driver is missing and every browser test **skips silently** — a
+> test that fails in 7s reports `1 skipped in 0.14s` — so a `python3` run reports
+> green while blind to the entire browser layer. Three full runs and eleven
+> "settled" polls were spent that way before it was caught. A trustworthy run
+> shows **skipped: 0**; treat any skips as the wrong interpreter.
+
 ### Added
+
+- **The last-request strip is now a picker for the last ten requests.** The line
+  under the workspace toolbar showed what you last asked and nothing else.
+  Clicking it opens a list of the ten most recent requests in that conversation;
+  choosing one pins it in the strip in place of the newest.
+
+  Decisions rather than defaults:
+
+  - **A pin is marked, in words and not only in colour.** The strip is labelled
+    as the last request, so while it is showing an older one it says `pinned ·`
+    and changes its glyph. A bar that quietly showed the wrong thing would be
+    the §3a failure — reporting state that is not true — with no way to tell.
+  - **Sending something new returns to following the newest**, because the user
+    has just made a new last request. A pin survives *completed turns* though:
+    `refreshCurrent()` runs after each one, and clearing the pin there would
+    break it in the only situation it exists for — keeping an earlier request in
+    view while later ones run.
+  - **The pin is re-found by value, never carried as an index.** Sending
+    prepends to the list, so an index would silently slide onto a neighbouring
+    request and the strip would keep showing something plausible and wrong.
+  - **No new endpoint.** The rows come from the messages the conversation has
+    already loaded, so the picker cannot disagree with what the strip shows.
+  - Keyboard-reachable throughout (`aria-haspopup`, arrow keys, Escape,
+    click-outside), since half the devices this console is used from have no
+    usable pointer.
+
+  Covered by `tests/test_qa_last_command_picker.py` — 14 cases in a real browser
+  against a real server, because every property worth asserting here is a
+  behaviour. Mutation-verified: raising the cap, capping the wrong end, making
+  selection inert, and rendering either the rows or the strip through
+  `innerHTML` each fail a case.
 
 - **API tokens, so a script has a supported way in.** `Authorization: Bearer
   <token>` or `X-API-Token: <token>` authenticates any request, carrying the
@@ -83,7 +131,65 @@ churn.
   fact, but it is Claude Code's private protocol with no CLI surface, so it
   would break silently on a CLI update.
 
+### Changed
+
+- **Highlights now fire on two things only: a question that needs a person, and
+  work that has ended.** Output merely arriving is no longer a summons.
+
+  What changed, concretely:
+
+  - `_attention()` no longer treats a trailing `:` or `…` as a request for
+    input. Ordinary output ends with a colon constantly — "Here is what I
+    found:", "Changes:" — so this summoned the user for prose. A badge that
+    fires on prose gets ignored, and the cost of that is the real asks buried
+    among them.
+  - A turn that **ended** is promoted into the attention feed with
+    `reason: "done"`. Finishing is the outcome being waited for, so it is worth
+    telling; it was previously filed silently.
+  - `done` is retired by *reading* it. The narrower claim is "finished since you
+    last looked", which is what stops it becoming a permanent mark on every
+    conversation that ever completed. A question is different — glancing at one
+    does not answer it — so those still need answering or dismissing.
+  - `updated` remains the quiet bucket for output that needs nothing.
+
+  In the UI, `done` reads as "finished" rather than "needs an answer", the badge
+  splits its tooltip into "N need an answer · M finished", and the device
+  notification says "has finished". Labelling a completion as a question would
+  send the user off to answer nothing — the same complaint that made the
+  failed-endpoint wording wrong.
+
+  Four things this exposed, each caught by an existing test rather than by
+  inspection: a chat linked to a **busy** terminal session was announced as
+  finished (precisely the case the rule excludes, since the work is happening
+  where this process cannot see a turn); a dismissed row returned as a
+  completion, because the row's own message is usually newer than the
+  dismissal; a dismissed-while-blocked row stopped being retired by the read
+  that `read_mark_set` writes alongside every dismissal; and two
+  `AttentionTrailingEllipsisTests` cases were passing on the phrase list while
+  their docstring credited the ellipsis for it.
+
+  Four committed tests were inverted to match the new rule, with the
+  instruction named in each docstring — three encoded the previous decision and
+  one was added earlier the same day. Flagged plainly because "adjust the tests
+  until they go green" is how `DevAuthSkipTests` came to defend an auth bypass;
+  the difference here is that the decision-owner changed the requirement.
+
 ### Fixed
+
+- **The members panel no longer announces running work as finished.** It called
+  the shared classifier with three empty CLI maps, so it could not see that a
+  member's linked terminal session was still busy — and the guard that suppresses
+  "finished" in that case cannot fire on data the caller never supplied. The
+  sidebar, holding the same rule and the real maps, correctly kept the row quiet;
+  the two surfaces therefore disagreed about the same conversation.
+
+  `_cli_maps()` is now the single source for those three lookups and both
+  surfaces call it. Extracting the *rule* into `classify_chat` had prevented two
+  rules while doing nothing about two sets of inputs — when a decision is
+  centralised, its arguments become the duplication to watch.
+
+  Found by the members panel's own agreement test, whose fixture guard broke
+  first and looked like ordinary fixture rot.
 
 - **A finished agent is no longer reported as one blocked on a question.** The
   supervisor tested `status != "busy"`, and Claude Code 2.1.252 writes three
@@ -198,6 +304,20 @@ churn.
   surfaced as two skips blaming git — inside a git repository.
   `tests/test_qa_api_tokens.py` asserts the opposite: nothing is exempt, and a
   cookieless caller uses a token.
+
+### Documentation
+
+- **`.env.example` documents the three settings it had drifted behind**, and
+  drops one it had invented. `WC_SYSTEM_SAMPLE_S` and
+  `WC_SYSTEM_RETENTION_DAYS` were simply missing. `WC_LOG_FILE` mattered more:
+  it is the variable registry #42 added so that a non-production server stops
+  appending to the production log, and an operator who cannot see it in
+  `.env.example` has no way to know the redirect exists — the fix was
+  documented in the changelog and then left out of the file operators actually
+  copy. Its comment now says why it exists rather than only what it sets.
+  `WC_CLAUDE_MODEL` went the other way: nothing in the repository reads it, so
+  a commented suggestion to set it was an instruction to configure a variable
+  with no effect.
 
 ## [0.9.3] — 2026-09-01
 

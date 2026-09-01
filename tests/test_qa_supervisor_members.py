@@ -33,6 +33,8 @@ import app
 import config
 import db
 
+SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
 
 def make_request(user="alice", role="admin", body=None):
     request = types.SimpleNamespace(
@@ -283,14 +285,72 @@ class StatusReuseTests(MembersBase):
                          "the two surfaces must not disagree about one chat")
         self.assertEqual(member["reason"], sidebar_reason)
 
-    async def test_routine_output_agrees_with_the_sidebar(self):
+    async def test_finished_work_agrees_with_the_sidebar(self):
+        """Was `test_routine_output_agrees_with_the_sidebar`.
+
+        Its fixture guard asserted the sidebar reported `updated` for
+        "All done.", and that is no longer reachable: under the rule that an
+        ended action is worth surfacing, a bare conversation whose newest message
+        is the agent's is either an ask or `done`. **No message text produces
+        `updated` for a chat with no linked session and no marks** -- the quiet
+        bucket now holds only rows that are quiet for a *reason* (a linked
+        session still busy, or a dismissal), not rows that are quiet by nature.
+
+        So this is not repairable by choosing a different string, which is what
+        it looks like from the failure. Renamed to the branch it now exercises;
+        the property under test -- that the two surfaces never disagree about one
+        chat -- is unchanged, and is the reason the test is worth keeping.
+        """
         chat = await self._chat(title="chatty")
         await db.messages_batch(chat, [("user", "go"), ("assistant", "All done.")])
         await db.supervisor_member_add(self.sup, chat)
 
-        sidebar_status, _ = await self._sidebar_status(chat)
-        self.assertEqual(sidebar_status, "updated", "fixture must be routine output")
-        self.assertEqual((await self._members())[0]["status"], sidebar_status)
+        sidebar_status, sidebar_reason = await self._sidebar_status(chat)
+        self.assertEqual(sidebar_status, "waiting", "fixture must be finished work")
+        self.assertEqual(sidebar_reason, "done", "and finished, not asking")
+        member = (await self._members())[0]
+        self.assertEqual(member["status"], sidebar_status,
+                         "the two surfaces must not disagree about one chat")
+        self.assertEqual(member["reason"], sidebar_reason)
+
+    async def test_a_quiet_chat_agrees_with_the_sidebar(self):
+        """The `updated` branch, reached the only way it still can be.
+
+        Agreement has to hold on the quiet branch too, and that branch is now
+        narrow enough to be worth pinning: a conversation whose linked terminal
+        session is **still busy**. Its output is listed, but announcing it as
+        finished would be wrong -- the work is happening in the terminal, where
+        this process cannot see a turn.
+
+        Two other routes were tried and neither reaches `updated`, recorded so
+        the next reader does not repeat them:
+
+        * A different message string -- there isn't one. No text produces
+          `updated` for a bare chat any more.
+        * A dismissal -- ``read_mark_set(dismiss=True)`` writes the same
+          timestamp to ``read_at``, and the read check runs first and drops the
+          row entirely, which is the documented contract that dismissing is also
+          reading.
+        """
+        chat = await self._chat(title="busy-linked")
+        await db.messages_batch(chat, [("user", "go"), ("assistant", "All done.")])
+        await db.chat_set_session(chat, SESSION_ID)
+        await db.supervisor_member_add(self.sup, chat)
+
+        cli = [{
+            "id": SESSION_ID, "sessionId": SESSION_ID, "name": "cweb5",
+            "kind": "interactive", "entrypoint": "", "live": True,
+            "status": "busy", "status_updated_at": "2026-08-31T19:00:00Z",
+        }]
+        with patch.object(db, "read_claude_sessions", AsyncMock(return_value=cli)):
+            sidebar_status, _ = await self._sidebar_status(chat)
+            members = await self._members()
+
+        self.assertEqual(sidebar_status, "updated", "fixture must be quiet")
+        mine = [m for m in members if m["id"] == chat]
+        self.assertTrue(mine, "the member vanished from the panel")
+        self.assertEqual(mine[0]["status"], sidebar_status,
+                         "the two surfaces must not disagree about one chat")
 
     async def test_a_quiet_member_is_listed_as_idle_not_dropped(self):
         """chat_last_activity only carries conversations that have some.

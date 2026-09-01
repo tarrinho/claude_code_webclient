@@ -306,39 +306,223 @@ export function createConversationController(dependencies) {
   // Answers "what did I ask here?" without scrolling, which matters most on a
   // phone where the conversation shows two or three messages at a time.
 
-  let lastCommand = null;   // {text, at} or null
+  // How many requests the picker offers. Ten is the ask; it is also about as
+  // many two-line rows as fit without the popover needing its own scrollbar on
+  // a phone, which is where this strip earns its space.
+  const REQUEST_HISTORY_MAX = 10;
 
-  function setLastCommand(text, at) {
+  let requestHistory = [];  // [{text, at}], newest first, capped
+  // Which entry the strip shows. null means "follow the newest", which is the
+  // state the bar was built for; a number pins that index.
+  let pinnedRequest = null;
+
+  function shownCommand() {
+    if (pinnedRequest === null) return requestHistory[0] || null;
+    return requestHistory[pinnedRequest] || requestHistory[0] || null;
+  }
+
+  function setRequestHistory(messages, {keepPin = false} = {}) {
+    // What the pin currently points at, captured before the list is rebuilt.
+    // A pin is an *index*, and an index into a list that has just grown at the
+    // front silently addresses a different request -- so it is re-found by
+    // value below rather than carried across.
+    const wasPinned = keepPin && pinnedRequest !== null
+      ? requestHistory[pinnedRequest] || null
+      : null;
+
+    // Walk back rather than filter-then-reverse: the newest are wanted and the
+    // list can be thousands long.
+    const found = [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!message || message.role !== 'user') continue;
+      const text = (message.content || '').trim();
+      if (!text) continue;
+      found.push({text, at: message.created_at || null});
+      if (found.length >= REQUEST_HISTORY_MAX) break;
+    }
+    requestHistory = found;
+
+    // refreshCurrent() runs after every completed turn, so dropping the pin
+    // here would make pinning useless in the only situation it is for: keeping
+    // an earlier request in view while later ones run. Re-found by text and
+    // timestamp; if it has aged out of the ten, following the latest is the
+    // honest fallback.
+    pinnedRequest = null;
+    if (wasPinned) {
+      const at = requestHistory.findIndex(
+        (entry) => entry.text === wasPinned.text && entry.at === wasPinned.at);
+      if (at >= 0) pinnedRequest = at;
+    }
+    renderLastCommand();
+  }
+
+  function pushRequest(text, at) {
     const clean = (text || '').trim();
-    lastCommand = clean ? {text: clean, at: at || null} : null;
+    if (!clean) return;
+    requestHistory.unshift({text: clean, at: at || null});
+    requestHistory = requestHistory.slice(0, REQUEST_HISTORY_MAX);
+    // Sending something new returns the strip to following the newest. The bar
+    // is labelled as the last request; leaving an older one pinned while the
+    // user has just asked something else would make it state the opposite.
+    pinnedRequest = null;
     renderLastCommand();
   }
 
   function renderLastCommand() {
     const bar = elements.lastCommandBar;
     if (!bar) return;
-    if (!lastCommand) {
+    const current = shownCommand();
+    if (!current) {
       bar.hidden = true;
+      closeRequestMenu();
       return;
     }
     bar.hidden = false;
+    const pinned = pinnedRequest !== null && pinnedRequest > 0;
+    bar.dataset.pinned = pinned ? '1' : '0';
     // textContent, never innerHTML: this is the user's own prompt coming back
     // from the database and must not be interpreted as markup.
-    elements.lastCommandText.textContent = lastCommand.text;
+    elements.lastCommandText.textContent = current.text;
     // The full text on hover, since the line is a single ellipsised row.
-    elements.lastCommandText.title = lastCommand.text;
+    elements.lastCommandText.title = pinned
+      ? `${current.text}\n\n(pinned — click to choose another or return to the latest)`
+      : `${current.text}\n\n(click to see recent requests)`;
+    if (elements.lastCommandGlyph) {
+      // The glyph carries the distinction as well as the colour, so it survives
+      // a monochrome display and does not rely on hue alone.
+      elements.lastCommandGlyph.textContent = pinned ? '\u{1F4CC}' : '➷';
+    }
     elements.lastCommandWhen.textContent =
-      lastCommand.at ? formatTime(lastCommand.at) : '';
+      (pinned ? 'pinned · ' : '') + (current.at ? formatTime(current.at) : '');
+    if (!elements.lastCommandMenu?.hidden) renderRequestMenu();
   }
 
-  function lastCommandFrom(messages) {
-    // Walk back rather than filter: the newest user message is wanted and the
-    // list can be long.
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index] && messages[index].role === 'user') return messages[index];
-    }
-    return null;
+  // ── The recent-request picker ───────────────────────────────────────────────
+
+  function closeRequestMenu() {
+    const menu = elements.lastCommandMenu;
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    elements.lastCommandText?.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDocumentClickForMenu, true);
   }
+
+  function onDocumentClickForMenu(event) {
+    // Capture phase, and only closes for a click genuinely outside the strip:
+    // the row buttons live inside it, so their own clicks must reach them.
+    if (elements.lastCommandBar?.contains(event.target)) return;
+    closeRequestMenu();
+  }
+
+  function openRequestMenu() {
+    const menu = elements.lastCommandMenu;
+    if (!menu) return;
+    renderRequestMenu();
+    menu.hidden = false;
+    elements.lastCommandText?.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDocumentClickForMenu, true);
+    (menu.querySelector('[aria-selected="true"]') || menu.querySelector('button'))
+      ?.focus();
+  }
+
+  function toggleRequestMenu() {
+    if (elements.lastCommandMenu?.hidden) openRequestMenu();
+    else closeRequestMenu();
+  }
+
+  function renderRequestMenu() {
+    const menu = elements.lastCommandMenu;
+    if (!menu) return;
+    // replaceChildren + createElement throughout: every row holds a prompt the
+    // user typed, and this file's rule is that such text never reaches markup.
+    menu.replaceChildren();
+
+    if (!requestHistory.length) {
+      const empty = document.createElement('p');
+      empty.className = 'lastcmd-empty';
+      empty.textContent = 'No requests in this conversation yet.';
+      menu.appendChild(empty);
+      return;
+    }
+
+    if (pinnedRequest !== null && pinnedRequest > 0) {
+      menu.appendChild(buildRequestRow({
+        text: 'Follow the latest request',
+        at: null,
+        index: null,
+        latest: true,
+      }));
+    }
+
+    requestHistory.forEach((entry, index) => {
+      menu.appendChild(buildRequestRow({
+        text: entry.text,
+        at: entry.at,
+        index,
+        selected: index === (pinnedRequest === null ? 0 : pinnedRequest),
+      }));
+    });
+  }
+
+  function buildRequestRow({text, at, index, selected, latest}) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'lastcmd-item' + (latest ? ' lastcmd-item-latest' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', selected ? 'true' : 'false');
+    if (index !== null && index !== undefined) row.dataset.index = String(index);
+
+    const label = document.createElement('span');
+    label.className = 'lastcmd-item-text';
+    label.textContent = text;
+    row.appendChild(label);
+
+    const when = document.createElement('span');
+    when.className = 'lastcmd-item-when';
+    when.textContent = at ? formatTime(at) : '';
+    row.appendChild(when);
+
+    // The full prompt on hover, since a row clamps to two lines.
+    if (!latest) row.title = text;
+
+    row.addEventListener('click', () => {
+      pinnedRequest = latest ? null : Number(row.dataset.index);
+      renderLastCommand();
+      closeRequestMenu();
+      elements.lastCommandText?.focus();
+    });
+    return row;
+  }
+
+  function onRequestMenuKeydown(event) {
+    const menu = elements.lastCommandMenu;
+    if (!menu || menu.hidden) return;
+    const rows = [...menu.querySelectorAll('button')];
+    if (!rows.length) return;
+    const at = rows.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeRequestMenu();
+      elements.lastCommandText?.focus();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      rows[at < 0 ? 0 : (at + 1) % rows.length].focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      rows[at <= 0 ? rows.length - 1 : at - 1].focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      rows[0].focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      rows[rows.length - 1].focus();
+    }
+  }
+
+  elements.lastCommandText?.addEventListener('click', toggleRequestMenu);
+  elements.lastCommandBar?.addEventListener('keydown', onRequestMenuKeydown);
+
 
   // "2m ago" would otherwise sit there saying 2m for an hour. Only rewrites the
   // timestamp, and only while something is shown.
@@ -374,8 +558,7 @@ export function createConversationController(dependencies) {
     const data = await response.json();
     state.currentChat = data.chat;
     viewingChatId = data.chat.id;
-    const opened = lastCommandFrom(data.messages || []);
-    setLastCommand(opened && opened.content, opened && opened.created_at);
+    setRequestHistory(data.messages || []);
     renderMessages(data.messages || []);
     restoreDraft(chat.id);
     setStreamState('ready');
@@ -579,8 +762,9 @@ export function createConversationController(dependencies) {
     if (!response.ok) return;
     const data = await response.json();
     state.currentChat = data.chat;
-    const latest = lastCommandFrom(data.messages || []);
-    setLastCommand(latest && latest.content, latest && latest.created_at);
+    // keepPin: this runs after every completed turn, and a pin the user set is
+    // theirs to clear.
+    setRequestHistory(data.messages || [], {keepPin: true});
     renderMessages(data.messages || []);
     onChatLoaded(data.chat);
   }
@@ -598,7 +782,7 @@ export function createConversationController(dependencies) {
     if (empty) empty.remove();
     const sentAt = new Date().toISOString();
     elements.messages.appendChild(createMessage('user', content, sentAt));
-    setLastCommand(content, sentAt);
+    pushRequest(content, sentAt);
     scrollToBottom();
     setStreamState('connecting');
     viewingChatId = chatId;

@@ -101,6 +101,9 @@ button{touch-action:manipulation}
 .supervisor-dismiss{flex:0 0 auto;opacity:.55;font-size:13px;line-height:1}
 .supervisor-dismiss:hover,.supervisor-dismiss:focus-visible{opacity:1;color:var(--fg);background:var(--line)}
 .supervisor-dot{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--warn);vertical-align:middle}
+/* Trails the title rather than leading it: the dot marks the row, this marks
+   what kind of row it is, and reading order should reach the name first. */
+.supervisor-asks{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;background:var(--warn);color:var(--bg);font:700 10px/16px ui-monospace,SFMono-Regular,Consolas,monospace;vertical-align:middle}
 .supervisor-note{padding:2px 10px 8px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 .sidebar-empty{padding:24px 12px;text-align:center;color:var(--muted);font-size:12px}
 /* Collapsed sections: archived chats and CLI sessions stay reachable without
@@ -170,11 +173,31 @@ button{touch-action:manipulation}
    rather than two stacked ones. minmax(0,1fr) plus the ellipsis is what keeps a
    long prompt from widening the pane on a phone. */
 .workspace-strip:has(+ .workspace-lastcmd:not([hidden])){border-bottom:none}
-.workspace-lastcmd{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:8px;padding:0 16px 6px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
+.workspace-lastcmd{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:8px;padding:0 16px 6px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 .workspace-lastcmd[hidden]{display:none}
 .lastcmd-glyph{color:var(--accent);font-size:12px;line-height:1}
-.lastcmd-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--fg)}
+/* A button reset rather than a new look: this reads as the same line it always
+   was, and only behaves like a control on hover and focus. */
+.lastcmd-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--fg);appearance:none;background:none;border:0;padding:0;margin:0;font:inherit;text-align:left;cursor:pointer;border-radius:3px}
+.lastcmd-text:hover{color:var(--accent)}
+.lastcmd-text:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .lastcmd-when{white-space:nowrap;font-size:10.5px}
+/* Pinned: the strip is showing a request the user chose rather than the newest
+   one, so it must not keep claiming to be "the last request". */
+.workspace-lastcmd[data-pinned="1"] .lastcmd-glyph{color:var(--warn)}
+.workspace-lastcmd[data-pinned="1"] .lastcmd-when{color:var(--warn)}
+.lastcmd-menu{position:absolute;z-index:40;top:100%;left:16px;right:16px;max-height:min(60vh,320px);overflow-y:auto;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:4px}
+.lastcmd-menu[hidden]{display:none}
+.lastcmd-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:baseline;width:100%;appearance:none;background:none;border:0;border-radius:5px;padding:6px 8px;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
+.lastcmd-item:hover{background:var(--bg)}
+.lastcmd-item:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+.lastcmd-item[aria-selected="true"]{background:var(--bg);color:var(--accent)}
+/* Two lines, then ellipsis. A one-line row makes every long prompt look alike,
+   which defeats picking one out of ten. */
+.lastcmd-item-text{overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;white-space:normal;word-break:break-word}
+.lastcmd-item-when{white-space:nowrap;font-size:10.5px;color:var(--muted)}
+.lastcmd-item-latest{color:var(--accent)}
+.lastcmd-empty{padding:6px 8px;color:var(--muted)}
 /* The auto margin lives on the group so the edit/refresh pair rides right
    with the status, instead of being stranded beside the model selects. */
 .strip-right{margin-left:auto;display:inline-flex;align-items:center;gap:6px}

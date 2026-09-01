@@ -735,8 +735,25 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         self.page.wait_for_timeout(20_000)
         self.assertEqual(self.page.evaluate("() => window.__notes.length"), 0)
 
-    def test_routine_output_raises_no_alert_at_all(self):
-        """Pedro's rule: only when information is required or important."""
+    def test_routine_output_raises_no_desktop_notification(self):
+        """Pedro's rule: only when information is required or important.
+
+        Split from a single case that also asserted the tab title did not move.
+        The two are different instruments and the rule change separated them:
+
+        * A **desktop notification** interrupts someone who is not looking at
+          this machine, so it fires only for a row that needs a person -- an
+          ask, a blocker, a failure. "Done. Suite is green" raising one on an
+          unfocused laptop is the case where surfacing completions earns least
+          and costs most.
+        * The **tab title** is ambient. Under the new rule an ended action is
+          worth surfacing, and the title is the mildest way to do it, so a
+          completion does move it. That half now has its own case below.
+
+        Found by cweb2 at the browser level after I had put the same tension to
+        Pedro as a list-of-rows question; an OS notification is where it stops
+        being arguable.
+        """
         self.browser.contexts[0].grant_permissions(["notifications"])
         self.page.goto(f"{self.base}/", wait_until="domcontentloaded")
         self.page.evaluate("""() => {
@@ -756,11 +773,33 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         before = self.page.title()
         self._seed(text="Done. Suite is green, ruff clean.")
         self.page.wait_for_timeout(20_000)
-        self.assertEqual(self.page.evaluate("() => window.__notes.length"), 0)
-        # Routine output must not move the count either. Compared against the
-        # title we started with, since questions left unanswered by other tests
-        # in this class are legitimately still counted.
-        self.assertEqual(self.page.title(), before)
+        self.assertEqual(
+            self.page.evaluate("() => window.__notes.length"), 0,
+            "a routine completion interrupted a machine nobody was looking at",
+        )
+        # The title is asserted in its own case below, not here: it now moves,
+        # and asserting both properties in one test is what made a deliberate
+        # product change look like a regression.
+        self.assertNotEqual(before, None)
+
+    def test_routine_output_does_reach_the_tab_title(self):
+        """The other half: an ended action is surfaced, ambiently.
+
+        Guards the notification case above from becoming vacuous. If completions
+        stopped being surfaced at all, that test would still pass -- zero
+        notifications is also what "nothing happened" looks like -- so something
+        has to assert the row arrived.
+        """
+        self.page.goto(f"{self.base}/", wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.wait_for_timeout(1500)
+        before = self.page.title()
+        self._seed(text="Done. Suite is green, ruff clean.")
+        self.page.wait_for_timeout(20_000)
+        self.assertNotEqual(
+            self.page.title(), before,
+            "a finished agent was not surfaced anywhere, so the promotion is inert",
+        )
 
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")

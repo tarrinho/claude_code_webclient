@@ -1418,13 +1418,22 @@ async def read_mark_set(
 
 
 async def chat_last_activity(owner_id: str) -> dict[str, dict[str, Any]]:
-    """Latest message per chat: {chat_id: {role, created_at, preview}}.
+    """Latest message per chat: {chat_id: {role, created_at, preview, tail}}.
 
     One grouped query rather than a read per conversation -- the supervisor
     polls, so this runs repeatedly.
+
+    *preview* is the opening of the message, which is what the list shows.
+    *tail* is its last 200 characters, which is where a question actually is:
+    an agent asks at the end, after the explanation, so the opening 200 chars
+    answered "does this end in a question?" with the wrong part of the message.
+    A second substr on a row already being read costs nothing measurable, and
+    the alternative -- rescanning transcripts per chat on every poll -- costs a
+    great deal.
     """
     cur = await db_conn.execute(
-        "SELECT m.chat_id, m.role, m.created_at, substr(m.content, 1, 200) AS preview "
+        "SELECT m.chat_id, m.role, m.created_at, substr(m.content, 1, 200) AS preview, "
+        "       substr(m.content, -200) AS tail "
         "FROM messages m "
         "JOIN chats c ON c.id = m.chat_id "
         "JOIN (SELECT chat_id, MAX(id) AS last_id FROM messages GROUP BY chat_id) t "
@@ -1437,6 +1446,7 @@ async def chat_last_activity(owner_id: str) -> dict[str, dict[str, Any]]:
             "role": r["role"],
             "created_at": r["created_at"],
             "preview": r["preview"],
+            "tail": r["tail"],
         }
         for r in await cur.fetchall()
     }
@@ -2969,9 +2979,18 @@ async def read_claude_sessions() -> list[dict[str, Any]]:
                 "sessionId": session_id,
                 "model": model,
                 "entrypoint": data.get("entrypoint", ""),
-                # Claude Code reports its own state here. Observed value is
-                # "busy"; older builds omit the field entirely, so absence
-                # means "unknown", not "idle".
+                # Claude Code reports its own state here. Three values are
+                # observed on 2.1.252 and they mean different things to a
+                # supervisor:
+                #
+                #   busy     working
+                #   idle     nothing further to do -- the task concluded
+                #   waiting  blocked, a person is needed
+                #
+                # This comment used to say the observed value was "busy", and
+                # callers were written to that: `status != "busy"` treated a
+                # finished agent as a blocked one. Absence still means
+                # "unknown" (a build older than the field) and never "idle".
                 "status": data.get("status") or "",
                 "status_updated_at": _format_timestamp(data.get("statusUpdatedAt")) or "",
                 "live": _pid_is_running(pid),

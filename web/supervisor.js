@@ -1449,7 +1449,7 @@
   // ── Init ─────────────────────────────────────────────────────────────
   function init() {
     // Version display
-    if (el.topbarInfo) el.topbarInfo.textContent = "0.9.3";
+    if (el.topbarInfo) el.topbarInfo.textContent = "0.9.4";
 
     // Event listeners
     el.newSupervisorBtn.addEventListener("click", createSupervisor);

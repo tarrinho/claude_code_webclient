@@ -79,18 +79,36 @@ async def _chat_with(chat_id, *messages, owner="admin", title="Work"):
 # ── _attention — new detection rules ─────────────────────────────────────────
 
 class AttentionTrailingColonTests(unittest.TestCase):
-    """A message that finishes with ':' is an open invitation for input.
+    """A message that finishes with ':' is NOT a request for input.
 
-    The agent says something like "The next steps are:" or "Two things left open,
-    both yours to call:" and stops — the colon means the user must provide the
-    continuation.
+    This class asserted the opposite, on the reading that "The next steps are:"
+    leaves the user to supply the continuation. Reversed on Pedro's instruction:
+    highlight only when a question genuinely needs a person, or when the action
+    has ended -- never merely because the agent emitted text.
+
+    The reading was not unreasonable, it was just outweighed. Ordinary output
+    ends with a colon constantly ("Here is what I found:", "Changes:"), so this
+    summoned the user for prose, and a badge that fires on prose is a badge that
+    gets ignored -- which costs the real asks buried among them.
+
+    Nothing is hidden by the reversal. A finished turn is now surfaced in its own
+    right with ``reason="done"``, so a reply ending in a colon still appears; it
+    appears labelled as finished instead of as a question nobody asked.
     """
 
-    def test_plain_trailing_colon_asks(self):
-        self.assertEqual(app._attention("The next steps are:"), "asks")
+    def test_plain_trailing_colon_does_not_ask(self):
+        self.assertIsNone(app._attention("The next steps are:"))
 
-    def test_trailing_colon_with_bold_does_not_hide_it(self):
-        self.assertEqual(app._attention("**Two things left open:**"), "asks")
+    def test_trailing_colon_with_bold_does_not_ask(self):
+        self.assertIsNone(app._attention("**Two things left open:**"))
+
+    def test_a_real_question_still_asks(self):
+        """Guards the reversal: dropping the colon must not silence everything.
+
+        Without this the class above passes against an ``_attention`` that has
+        stopped detecting anything at all.
+        """
+        self.assertEqual(app._attention("Which branch should I use?"), "asks")
 
     def test_colon_mid_message_does_not(self):
         """A colon while explaining is not a request for input."""
@@ -112,17 +130,30 @@ class AttentionTrailingColonTests(unittest.TestCase):
 
 
 class AttentionTrailingEllipsisTests(unittest.TestCase):
-    """A message that finishes with '…' is inviting the user to continue.
+    """A trailing '…' does NOT on its own mean the user is being asked.
 
-    This catches the character that Claude Code commonly uses when the agent
-    expects the user to supply the rest.
+    Reversed with the trailing colon above, and for the same reason: an ellipsis
+    is as often narration trailing off as it is an invitation.
+
+    The two cases below still return "asks", and the docstring here used to
+    credit the ellipsis for that. They do not: "What would you like me to do
+    next…" and "Let me know when you are ready…" both contain phrases from
+    ``_ASKS_FOR_INPUT`` ("what would you like", "let me know"), so they passed
+    on the phrase list and would have passed with the ellipsis rule already
+    removed. Kept, because they are genuine asks and worth pinning -- but named
+    for the rule that actually decides them, since a test credited to the wrong
+    mechanism is a test nobody can reason about.
     """
 
-    def test_trailing_ellipsis_asks(self):
+    def test_an_explicit_invitation_asks_whatever_it_ends_with(self):
         self.assertEqual(app._attention("What would you like me to do next…"), "asks")
 
-    def test_trailing_ellipsis_with_markdown(self):
+    def test_a_second_explicit_invitation_also_asks(self):
         self.assertEqual(app._attention("Let me know when you are ready…"), "asks")
+
+    def test_an_ellipsis_alone_does_not_ask(self):
+        """The reversal itself: narration trailing off summons nobody."""
+        self.assertIsNone(app._attention("Still working through the files…"))
 
     def test_ellipsis_mid_message_does_not(self):
         self.assertIsNone(
@@ -184,31 +215,104 @@ class AttentionExpandedPhraseTests(unittest.TestCase):
 
 # ── _QUESTION_PENDING_NOTE — web conversations rendered as text ──────────────
 
+# Filler with no "?" and nothing from _ASKS_FOR_INPUT or _REPORTS_A_BLOCKER, so
+# `_attention` cannot flag it and only the note can. Long enough that the note
+# lands past the 200-character preview window.
+_QUIET_FILLER = (
+    "I reviewed the module and applied the changes we settled on, including "
+    "the helper refactor and the extra tests around it. Everything is "
+    "committed and the suite is green. "
+) * 3
+
+
 class QuestionPendingNoteTests(unittest.TestCase):
-    """When a question block is rendered as text the preview carries the note,
-    so _attention() does not need to re-parse it.
+    """The pending note flags a chat even when it lands past the preview.
+
+    `_QUESTION_PENDING_NOTE` is appended to the END of a rendered question, so on
+    any message longer than ~400 characters it appears in the tail and never in
+    the preview. That is what made this worth testing at all -- and the previous
+    version of this class could not have caught it, for three reasons found by
+    cweb4:
+
+    * Both test bodies **copied** the production branch instead of calling it, so
+      neither touched `classify_chat`. Deleting the note handling from production
+      left both passing.
+    * Both fixtures were "Which backend should I use?", which `_attention` flags
+      via the phrase `should i`. So `if not reason:` was False and the copied
+      note logic never executed even inside the test.
+    * `test_note_not_present` asserted `reason == "asks"` under a docstring
+      saying the message "should not be flagged".
+
+    The class docstring asserted the premise the bug depended on -- "the preview
+    carries the note" -- which is true only for short messages.
+
+    These go through `classify_chat`, with filler chosen so that `_attention`
+    alone cannot flag the preview. Mutation-checked: reverting the production
+    line to `_attention(preview)` alone fails the first two.
     """
 
-    def test_note_triggers_asks(self):
-        """The pending note at the end of the preview must flag the chat."""
-        preview = "Which backend should I use?\n(answer this in the terminal)"
-        # _attention itself won't match because the trailing ? is buried and
-        # _attention strips markdown, so we simulate what handle_supervisor does.
-        from app import _QUESTION_PENDING_NOTE, _attention
-        reason = _attention(preview)
-        if not reason and _QUESTION_PENDING_NOTE in preview:
-            reason = "asks"
-        self.assertEqual(reason, "asks")
+    @staticmethod
+    def _classify(body, *, session=""):
+        """Real classifier, real preview/tail split (db.py: first 200, last 200)."""
+        return app.classify_chat(
+            chat={"id": "c1", "title": "cweb2", "session_id": session},
+            last={"role": "assistant", "created_at": "2026-08-31T19:12:04Z",
+                  "preview": body[:200], "tail": body[-200:]},
+            live_ids=frozenset(), queued={}, marks={},
+            cli_status_map={}, cli_dismiss_map={}, cli_status_updated_map={},
+        )
 
-    def test_note_not_present(self):
-        """A normal message without the note should not be flagged."""
-        preview = "Which backend should I use?"
-        from app import _QUESTION_PENDING_NOTE, _attention
-        reason = _attention(preview)
-        if not reason and _QUESTION_PENDING_NOTE in preview:
-            reason = "asks"
-        # Trailing ? should already be caught by _attention
-        self.assertEqual(reason, "asks")
+    def test_a_note_past_the_preview_still_asks(self):
+        """The defect this class exists for, through the real call site."""
+        body = _QUIET_FILLER + "Pick one " + app._QUESTION_PENDING_NOTE
+        self.assertGreater(len(body), 400, "fixture too short to test the split")
+        self.assertNotIn(
+            app._QUESTION_PENDING_NOTE, body[:200],
+            "the note is inside the preview, so this tests nothing",
+        )
+        self.assertIsNone(
+            app._attention(body[:200]),
+            "_attention flags the preview on its own; only the note may flag it",
+        )
+        entry = self._classify(body)
+        self.assertEqual(entry["reason"], "asks")
+        self.assertTrue(entry["question"])
+
+    def test_a_question_mark_past_the_preview_still_asks(self):
+        """Same window, without the structured note."""
+        body = _QUIET_FILLER + "Which branch do you prefer?"
+        self.assertIsNone(app._attention(body[:200]))
+        entry = self._classify(body)
+        self.assertEqual(entry["reason"], "asks")
+        self.assertTrue(entry["question"])
+
+    def test_a_long_message_with_no_question_is_done(self):
+        """The control that keeps the two above honest.
+
+        Without it, a classifier that returned "asks" for everything long would
+        satisfy them both -- and the whole point of the `done` promotion is that
+        ordinary finished work is not reported as a question.
+        """
+        body = _QUIET_FILLER + "All tests pass."
+        entry = self._classify(body)
+        self.assertEqual(entry["reason"], "done")
+        self.assertFalse(entry["question"])
+
+    def test_a_short_note_is_flagged_too(self):
+        """The case the old fixtures were reaching for: preview == tail."""
+        entry = self._classify("Pick one " + app._QUESTION_PENDING_NOTE)
+        self.assertEqual(entry["reason"], "asks")
+        self.assertTrue(entry["question"])
+
+    def test_a_plain_trailing_question_is_flagged_without_the_note(self):
+        """Replaces `test_note_not_present`, which asserted the opposite of its
+        own docstring. The behaviour it meant to check is that `_attention`
+        catches a trailing "?" unaided -- nothing to do with the note.
+        """
+        body = "Which backend should I use?"
+        self.assertNotIn(app._QUESTION_PENDING_NOTE, body)
+        entry = self._classify(body)
+        self.assertEqual(entry["reason"], "asks")
 
 
 # ── Web ↔ CLI cross-reference ────────────────────────────────────────────────
@@ -572,9 +676,20 @@ class FullSupervisorIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(c1_in), 1, "c1 must appear exactly once")
         self.assertEqual(len(c2_in), 1, "c2 must appear exactly once")
 
-    async def test_reason_detail_present_on_cross_ref_waiting(self):
-        """When a web chat is waiting due to CLI cross-reference, it carries
-        reason='asks' and reason_detail identifying the CLI status."""
+    async def test_an_idle_linked_session_is_reported_as_finished_not_asking(self):
+        """An idle CLI session is surfaced, but as finished rather than asking.
+
+        This asserted ``reason == "asks"`` with a ``reason_detail`` naming the
+        CLI status. The row is still listed -- an ended action is exactly what
+        the user wants told -- but the reason has changed, on Pedro's
+        instruction: highlight when a person is genuinely needed, or when the
+        work has ended, and label each as what it is.
+
+        ``asks`` here was asserted about a session whose status was ``idle``,
+        which meant "finished". Nothing had read the transcript, so the claim
+        that it was asking something came from the status field alone and had no
+        evidence behind it.
+        """
         await _chat_with(
             "c1",
             ("assistant", "2026-08-30T17:00:00Z", "The work is done."),
@@ -587,10 +702,13 @@ class FullSupervisorIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "status_updated_at": "2026-08-30T18:00:00Z",
             }
         ])
+        self.assertEqual(len(data["waiting"]), 1, "a finished agent stopped being surfaced")
         entry = data["waiting"][0]
-        self.assertEqual(entry["reason"], "asks")
-        self.assertIn("reason_detail", entry)
-        self.assertIn("idle", entry["reason_detail"])
+        self.assertEqual(entry["reason"], "done")
+        self.assertFalse(
+            entry.get("question"),
+            "a finished agent must not be presented as having asked something",
+        )
 
 
 if __name__ == "__main__":

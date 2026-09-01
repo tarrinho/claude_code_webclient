@@ -52,11 +52,12 @@ COMPLEXITY_PATTERNS: dict[str, int] = {
 # reads "Bash(...)", never "lsblk(...)".
 _TOOL_CALL_LINE_RE = re.compile(
     r"^(?:"
-    r"Bash|BashOutput|Read|Write|Edit|NotebookEdit|"
+    r"Bash|BashOutput|Read|Write|Edit|MultiEdit|NotebookEdit|Update|"
     r"Glob|Grep|Task|Agent|Skill|SlashCommand|"
     r"WebFetch|WebSearch|TodoWrite|KillShell|ExitPlanMode"
     r")\([^)]*\)\s*$"
 )
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 
 
 def clean_result(text: str) -> str:
@@ -64,8 +65,20 @@ def clean_result(text: str) -> str:
     # Line by line, and only when the line is nothing but the call. A line
     # that carries prose alongside it ("I ran Bash(x) and it failed") is the
     # answer, not machinery, so it stays.
-    lines = text.split("\n")
-    kept = [ln for ln in lines if not _TOOL_CALL_LINE_RE.match(ln.strip())]
+    #
+    # Fenced blocks are left alone. These results routinely contain code, and
+    # a snippet line that happens to read `Read(path)` is part of the answer;
+    # deleting it silently corrupts the sample the user is being shown.
+    kept: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            kept.append(line)
+            continue
+        if not in_fence and _TOOL_CALL_LINE_RE.match(line.strip()):
+            continue
+        kept.append(line)
     cleaned = "\n".join(kept)
     # Collapse more than 2 consecutive newlines into 2.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)

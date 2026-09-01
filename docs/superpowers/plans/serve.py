@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Simple HTTPS server serving the supervisor mockup."""
 import http.server
-import ssl
 import os
+import ssl
 
 os.chdir("/home/kali/projects/claude-code-webconsole/docs/superpowers/plans")
 port = 8443

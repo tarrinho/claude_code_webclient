@@ -22,9 +22,9 @@ import hmac
 import json
 import logging
 import os
+import re
 import signal
 import sys
-import re
 import uuid
 
 logging.basicConfig(

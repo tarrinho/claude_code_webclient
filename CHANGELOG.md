@@ -20,7 +20,20 @@ churn.
 
 ---
 
-## [0.9.3] — 2026-08-31
+## [Unreleased]
+
+> This block was written as `## [0.9.3] — 2026-08-31` before `config.VERSION`
+> was bumped, so the file claimed a release the build had never been. It is
+> `[Unreleased]` until someone bumps the constant, which is the order §15a
+> rule 1 sets out: work accumulates here, and the bump renames the section with
+> that day's date. The work itself is deployed — the heading was the only thing
+> that was wrong.
+>
+> Bumping instead would have been the other valid repair. It was not taken
+> because the version is stated in five files besides `config.py`, two of which
+> have another session's uncommitted work in them right now: a bump that
+> updated three of the five would land exactly the half-applied state the
+> version-consistency tests exist to catch.
 
 ### Added
 

@@ -12,7 +12,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import tempfile
@@ -246,7 +245,7 @@ class CompletionBannerCountingTests(unittest.TestCase):
         return_code = subprocess.run(
             [
                 "python3", "-c",
-                f"""
+                """
 import json, sys
 tasks = json.loads(sys.argv[1])
 total = len(tasks)
@@ -254,18 +253,18 @@ done_count = sum(1 for t in tasks if t.get("status") == "done")
 fail_count = sum(1 for t in tasks if t.get("status") == "failed")
 skip_count = sum(1 for t in tasks if t.get("status") == "blocked")
 pending_count = total - done_count - fail_count - skip_count
-stats = f"Completed {{done_count}}/{{total}} tasks"
+stats = f"Completed {done_count}/{total} tasks"
 if fail_count:
-    stats += f", {{fail_count}} failed"
+    stats += f", {fail_count} failed"
 if skip_count:
-    stats += f", {{skip_count}} skipped"
+    stats += f", {skip_count} skipped"
 if pending_count:
-    stats += f", {{pending_count}} pending"
+    stats += f", {pending_count} pending"
 print(stats)
                 """,
                 json.dumps(tasks_data),
             ],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         )
         return return_code.stdout.strip()
 
@@ -311,19 +310,19 @@ class CompletionBannerSummaryTests(unittest.TestCase):
         return_code = subprocess.run(
             [
                 "python3", "-c",
-                f"""
+                """
 import json, sys
 tasks = json.loads(sys.argv[1])
 results = []
 for t in tasks:
     if t.get("status") == "done" and t.get("result"):
-        results.append(f"Task {{t['id']}} ({{t.get('title', '')}}): {{t['result'][:200]}}")
+        results.append(f"Task {t['id']} ({t.get('title', '')}): {t['result'][:200]}")
 result = "\\n\\n".join(results) or "(No result text available)"
 print(result)
                 """,
                 json.dumps(tasks_data),
             ],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         )
         return return_code.stdout.strip()
 
@@ -368,13 +367,29 @@ class XSSSafetyTests(unittest.TestCase):
         self.assertNotIn("innerHTML", comp_fn,
                          "showCompletionBanner must not use innerHTML")
 
-    def test_completion_uses_esc_for_task_data(self):
-        """Task results inserted into the completion summary should be escaped."""
-        # The JS maps tasks into the summary with escaped content
-        # Check that esc is available and used in the banner code
-        completion_section = self.js.split('function showCompletionBanner(eng)')[1]
-        # The summary builds from task data — verify esc exists
-        self.assertIn("esc(", self.js)
+    def test_completion_puts_task_data_in_textcontent_not_markup(self):
+        """Task titles and results are agent output, so they must not be parsed.
+
+        Renamed from `test_completion_uses_esc_for_task_data`, because that was
+        asserting the wrong thing in two ways. It sliced out the banner function
+        and then asserted `esc(` against the *whole file*, which is true of
+        supervisor.js regardless of what the banner does -- the unused variable
+        ruff flagged was the evidence it had stopped looking where it said it
+        was looking. And once the slice is actually used the requirement is
+        wrong: this function assigns through `textContent` throughout and never
+        builds markup, so there is nothing for an escape helper to do. Demanding
+        `esc(` here would be asking for a call that could only be decorative.
+
+        What keeps it safe is that every sink is a text sink. That is the
+        property asserted, and it is the one that breaks if somebody reaches for
+        a template string later.
+        """
+        body = self.js.split("function showCompletionBanner(")[1].split(
+            "\n  function ")[0]
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML"):
+            self.assertNotIn(sink, body, f"task data must not reach {sink}")
+        self.assertIn("completionSummary.textContent", body)
+        self.assertIn("completionStats.textContent", body)
 
 
 class InitWiringTests(unittest.TestCase):
@@ -395,11 +410,18 @@ class InitWiringTests(unittest.TestCase):
         self.assertIn("dismissCompletionBanner", self.js)
 
     def test_dismiss_buttons_attached_in_init(self):
-        """Both dismiss buttons should be hooked in the init function, not separately."""
-        init_fn = self.js.split("function init()")[1]
-        init_end = init_fn.split("function ")[1] if "function " in init_fn else init_fn
-        self.assertIn("dismissGoalBanner", init_fn)
-        self.assertIn("dismissCompletionBanner", init_fn)
+        """Both dismiss buttons should be hooked in the init function, not separately.
+
+        `init_fn` is everything after `function init()`, i.e. the rest of the
+        file, so asserting against it says only "these names appear somewhere
+        below init" -- which is what the test's own name denies. It sliced the
+        body out and then did not use it, and the slice was also taking the
+        text *after* the next function rather than the body before it.
+        """
+        after_init = self.js.split("function init()")[1]
+        body = after_init.split("\nfunction ")[0]
+        self.assertIn("dismissGoalBanner", body)
+        self.assertIn("dismissCompletionBanner", body)
 
 
 class CompletionBannerTriggerTests(unittest.TestCase):
@@ -420,17 +442,23 @@ class CompletionBannerTriggerTests(unittest.TestCase):
     def test_completion_banner_loads_fresh_task_data(self):
         self.assertIn("loadTasks()", self.js)
 
+    def _send_prompt_body(self) -> str:
+        """The body of sendPrompt, and nothing after it.
+
+        Both tests below computed this and then asserted against the whole
+        remainder of the file instead, so either would have passed with the call
+        moved into any later function.
+        """
+        after = self.js.split("async function sendPrompt()")[1]
+        return after.split("\nasync function ")[0].split("\nfunction ")[0]
+
     def test_send_prompt_shows_goal_banner(self):
         """The goal banner should appear as soon as the user sends a prompt."""
-        send_fn = self.js.split("async function sendPrompt()")[1]
-        send_end = send_fn.split("async function ")[0] if "async function " in send_fn[1:] else send_fn
-        self.assertIn("showGoalBanner", send_fn)
+        self.assertIn("showGoalBanner", self._send_prompt_body())
 
     def test_goal_text_is_user_prompt(self):
         """The goal banner should display the user's prompt text."""
-        send_fn = self.js.split("async function sendPrompt()")[1]
-        send_end = send_fn.split("async function ")[0] if "async function " in send_fn[1:] else send_fn
-        self.assertIn("showGoalBanner(text)", send_fn)
+        self.assertIn("showGoalBanner(text)", self._send_prompt_body())
 
 
 class GoalBannerPlacementTests(unittest.TestCase):

@@ -12,20 +12,20 @@ Covers:
   user types and collapses back when cleared.
 * Supervisor list recency time label — updated_at shown when it differs
   from created_at.
-* /dev/* auth skip — dev endpoints are reachable without auth.
+* /dev/* auth skip — the middleware still exempts the `/dev/` prefix. The two
+  tests that additionally required `/dev/supervisor-trigger` to exist were
+  removed with the endpoint itself; see DevAuthSkipTests for why.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import re
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -541,42 +541,36 @@ class RecencyTimeLabelSourceTests(unittest.TestCase):
 # ── /dev/* auth skip ─────────────────────────────────────────────────────────
 
 class DevAuthSkipTests(unittest.TestCase):
-    """Dev endpoints under /dev/ must skip authentication."""
+    """The `/dev/*` exemption in the auth middleware.
+
+    Two tests are gone from this class, and why is worth recording.
+    ``test_dev_endpoint_exists`` and ``test_dev_endpoint_is_get`` required
+    ``/dev/supervisor-trigger`` to be present in ``git show HEAD:app.py``. That
+    endpoint minted an admin session with no credential and returned its id in
+    the response body; it was removed on the operator's instruction, and
+    ``tests/test_qa_no_auth_bypass.py`` now asserts the opposite of what those
+    two asserted. Two committed suites disagreeing about whether an
+    authentication bypass must exist is worse than either of them alone.
+
+    They also could not fail. Each wrapped its own ``assertIn`` in
+    ``try: ... except Exception: self.skipTest("not in a git repo")``, and
+    ``AssertionError`` is an ``Exception`` -- so when the route did go away, the
+    suite reported two skips blaming git, inside a git repository. See
+    rules.md #54: a failure that manufactures the skip which hides it.
+    """
 
     def test_auth_middleware_skips_dev_routes(self):
-        """The auth middleware must include /dev/ in its public route check."""
-        content = open(app.__file__).read()
+        """The auth middleware still exempts the `/dev/` prefix.
+
+        Kept, and deliberately not inverted. The prefix exemption is a live
+        product decision rather than a defect -- but it means any future route
+        under `/dev/` is unauthenticated by default, which is how the removed
+        endpoint came to be reachable. If that exemption is dropped, this
+        assertion is the one that will say so, and it should then be deleted
+        rather than weakened.
+        """
+        content = Path(app.__file__).read_text(encoding="utf-8")
         self.assertIn('"/dev/"', content)
-
-    def test_dev_endpoint_exists(self):
-        """The /dev/supervisor-trigger endpoint is registered in the
-        committed codebase (HEAD). May be reverted in working tree."""
-        content = open(app.__file__).read()
-        # In the committed version the endpoint exists; in the working tree it
-        # may be reverted during active development. We check the commit that
-        # introduced this feature instead of the current working tree.
-        import subprocess
-        try:
-            committed = subprocess.run(
-                ["git", "show", "HEAD:app.py"], capture_output=True, text=True,
-                cwd=__import__("pathlib").Path(__file__).resolve().parent.parent,
-                check=False,
-            )
-            self.assertIn("/dev/supervisor-trigger", committed.stdout)
-        except Exception:
-            self.skipTest("not in a git repo")
-
-    def test_dev_endpoint_is_get(self):
-        import subprocess
-        try:
-            committed = subprocess.run(
-                ["git", "show", "HEAD:app.py"], capture_output=True, text=True,
-                cwd=__import__("pathlib").Path(__file__).resolve().parent.parent,
-                check=False,
-            )
-            self.assertIn('app.get("/dev/supervisor-trigger")', committed.stdout)
-        except Exception:
-            self.skipTest("not in a git repo")
 
 
 # ── Engine pause/resume in scheduler loop ────────────────────────────────────
@@ -625,7 +619,7 @@ class FeatureCompletenessTests(unittest.TestCase):
     def setUp(self):
         self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
         self.html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        self.app_src = open(app.__file__).read()
+        self.app_src = Path(app.__file__).read_text(encoding="utf-8")
 
     def test_pause_button_in_html(self):
         self.assertIn("pauseResumeBtn", self.html)

@@ -17,10 +17,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-
-from fastapi import HTTPException
 
 import app
 import auth
@@ -195,7 +194,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
         preview = "Which backend should I use?\n(answer this in the terminal)"
         # _attention itself won't match because the trailing ? is buried and
         # _attention strips markdown, so we simulate what handle_supervisor does.
-        from app import _attention, _QUESTION_PENDING_NOTE
+        from app import _QUESTION_PENDING_NOTE, _attention
         reason = _attention(preview)
         if not reason and _QUESTION_PENDING_NOTE in preview:
             reason = "asks"
@@ -204,7 +203,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
     def test_note_not_present(self):
         """A normal message without the note should not be flagged."""
         preview = "Which backend should I use?"
-        from app import _attention, _QUESTION_PENDING_NOTE
+        from app import _QUESTION_PENDING_NOTE, _attention
         reason = _attention(preview)
         if not reason and _QUESTION_PENDING_NOTE in preview:
             reason = "asks"
@@ -505,20 +504,17 @@ class BumpInAllPathsTests(unittest.TestCase):
     """
 
     def test_bump_in_blocking_path(self):
-        source = app.__file__
-        content = open(source).read()
+        content = Path(app.__file__).read_text(encoding="utf-8")
         # The blocking path is handle_submit_message
         self.assertIn("handle_submit_message", content)
 
     def test_bump_in_stream_path(self):
-        source = app.__file__
-        content = open(source).read()
+        content = Path(app.__file__).read_text(encoding="utf-8")
         # The stream path is the SSE handler
         self.assertIn("stream_handler", content)
 
     def test_bump_in_sync_path(self):
-        source = app.__file__
-        content = open(source).read()
+        content = Path(app.__file__).read_text(encoding="utf-8")
         # The sync path is the terminal sync handler (handle_chat_sync).
         self.assertIn("handle_chat_sync", content)
 
@@ -526,8 +522,7 @@ class BumpInAllPathsTests(unittest.TestCase):
         """The source must contain exactly 3 calls to bump_chat_updated_at
         (plus the function definition = 4 occurrences).
         """
-        source = app.__file__
-        content = open(source).read()
+        content = Path(app.__file__).read_text(encoding="utf-8")
         count = content.count("bump_chat_updated_at(")
         self.assertGreaterEqual(count, 3,
                                 f"expected >=3 calls to bump_chat_updated_at, found {count}")

@@ -40,9 +40,11 @@ task reported done, and hello.txt existed with the right contents.
 """
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 import config
@@ -226,10 +228,15 @@ class TaskRowIdentityTests(unittest.IsolatedAsyncioTestCase):
         await db.supervisor_task_create(
             supervisor_id=sups[0]["id"], task_id="t001", title="A",
             description="d", model=None, parent_task_id=None, depends_on=[])
-        with self.assertRaises(Exception):
+        # The specific error, not bare Exception: this asserts the UNIQUE
+        # constraint is what refuses the write. `Exception` also passes when the
+        # call signature drifts and raises TypeError, which is the failure that
+        # would quietly retire the test rather than the collision it names.
+        with self.assertRaises(sqlite3.IntegrityError) as caught:
             await db.supervisor_task_create(
                 supervisor_id=sups[1]["id"], task_id="t001", title="B",
                 description="d", model=None, parent_task_id=None, depends_on=[])
+        self.assertIn("supervisor_tasks.id", str(caught.exception))
 
     async def test_a_namespaced_id_lets_two_supervisors_both_have_task_one(self):
         for name in ("first", "second"):
@@ -247,7 +254,7 @@ class TaskRowIdentityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_engine_namespaces_with_the_supervisor_id(self):
         """Pins the shape, so a future edit cannot go back to a raw t001."""
-        source = open(supervisor.__file__, encoding="utf-8").read()
+        source = Path(supervisor.__file__).read_text(encoding="utf-8")
         self.assertIn("_row_id", source)
         self.assertIn("self.supervisor_id[:8]", source)
         self.assertIn("task_id=node.id", source,
@@ -258,7 +265,7 @@ class ProgressAndReportingTests(unittest.TestCase):
     """A run that ends must say what happened, and how far it got."""
 
     def setUp(self):
-        self.source = open(supervisor.__file__, encoding="utf-8").read()
+        self.source = Path(supervisor.__file__).read_text(encoding="utf-8")
 
     def test_the_supervisors_own_progress_is_persisted(self):
         """Task rows carried progress; the supervisor row never did."""

@@ -165,6 +165,35 @@ async def init() -> None:
             updated_at TEXT NOT NULL
         );
 
+        -- API tokens: the authenticated way for a script to reach this server.
+        -- It exists because the alternative kept being invented ad hoc -- a
+        -- `/dev/*` prefix exempted from the auth middleware, and one endpoint
+        -- under it that minted an admin session and returned the id to anyone
+        -- who asked. A caller that cannot hold a cookie needs a credential of
+        -- its own, not a hole.
+        --
+        -- Only a hash is stored, like `sessions` above and for the same reason:
+        -- this file is copied by /api/admin/export, so a plaintext token here
+        -- would make every backup a set of working keys. sha256 rather than
+        -- argon2 -- the secret is 256 bits of `token_urlsafe`, so there is no
+        -- guessing to slow down, and this is read on every request.
+        --
+        -- `id` is a public prefix, safe to log and to show in a list; the
+        -- secret is shown once, at creation, and is unrecoverable afterwards.
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id           TEXT PRIMARY KEY,
+            name         TEXT NOT NULL,
+            token_hash   TEXT NOT NULL UNIQUE,
+            owner_id     TEXT NOT NULL,
+            role         TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            expires_at   TEXT,           -- NULL = no expiry
+            last_used_at TEXT,
+            revoked_at   TEXT            -- NULL = live
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_tokens_owner
+            ON api_tokens(owner_id, revoked_at);
+
         -- When the user last looked at an agent, so the supervisor can tell
         -- "produced output you have not seen" from "finished a while ago".
         -- Its own table rather than a chats column because it also has to
@@ -1016,6 +1045,92 @@ async def setting_set(key: str, value: str) -> None:
         (key, value, _now()),
     )
     await db_conn.commit()
+
+
+# ── API tokens ─────────────────────────────────────────────────────────────────────────
+#
+# Writes go through the shared connection, like everything else here: a second
+# connection to this file is what caused the site-wide `database is locked`
+# (registry #47), and a credential check that runs on every request is the last
+# place to reintroduce one.
+
+
+async def api_token_create(
+    token_id: str,
+    name: str,
+    token_hash: str,
+    owner_id: str,
+    role: str,
+    expires_at: str | None = None,
+) -> None:
+    """Store a new token. The plaintext is the caller's to show once and drop."""
+    await db_conn.execute(
+        "INSERT INTO api_tokens "
+        "(id, name, token_hash, owner_id, role, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (token_id, name, token_hash, owner_id, role, _now(), expires_at),
+    )
+    await db_conn.commit()
+
+
+async def api_token_by_hash(token_hash: str) -> dict[str, Any] | None:
+    """Look up a live token by hash, or None.
+
+    Revocation and expiry are filtered here rather than by the caller, so a
+    future second caller cannot accidentally accept a dead token. `expires_at`
+    is compared as text, which is sound because `_now()` writes a fixed-width
+    UTC ISO stamp -- the same assumption every other date comparison in this
+    file makes.
+    """
+    cur = await db_conn.execute(
+        "SELECT * FROM api_tokens "
+        "WHERE token_hash = ? AND revoked_at IS NULL "
+        "  AND (expires_at IS NULL OR expires_at > ?)",
+        (token_hash, _now()),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def api_token_touch(token_id: str) -> None:
+    """Record that a token was used. Called at most once a minute per token."""
+    await db_conn.execute(
+        "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (_now(), token_id)
+    )
+    await db_conn.commit()
+
+
+async def api_token_list(owner_id: str, include_revoked: bool = False) -> list[dict[str, Any]]:
+    """Every token this owner has, newest first and **without the hash**.
+
+    The hash is not a secret in the sense the token is, but publishing it turns
+    an authenticated read into an offline target, and no caller needs it.
+    """
+    clause = "" if include_revoked else " AND revoked_at IS NULL"
+    cur = await db_conn.execute(
+        "SELECT id, name, owner_id, role, created_at, expires_at, last_used_at, "
+        "       revoked_at "
+        f"FROM api_tokens WHERE owner_id = ?{clause} "  # nosec B608: clause is static
+        "ORDER BY created_at DESC",
+        (owner_id,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def api_token_revoke(token_id: str, owner_id: str) -> bool:
+    """Revoke one token. True if it was live and belonged to *owner_id*.
+
+    Scoped by owner for the same reason every chat query is: an id is guessable
+    and a token id is meant to be shown in a list, so the id alone must not be
+    authority to kill somebody else's credential.
+    """
+    cur = await db_conn.execute(
+        "UPDATE api_tokens SET revoked_at = ? "
+        "WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+        (_now(), token_id, owner_id),
+    )
+    await db_conn.commit()
+    return cur.rowcount > 0
 
 
 # ── AI Machines ────────────────────────────────────────────────────────────────────────

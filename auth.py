@@ -13,7 +13,7 @@ import re
 import secrets
 import sqlite3
 import time
-from typing import Final
+from typing import Any, Final
 
 import config
 
@@ -377,3 +377,85 @@ async def bootstrap_admin() -> str | None:
 
     await _uc(name, None, hash_password(pw))
     return name
+
+
+# ───────────────────────────── API tokens ────────────────────────────────────────────────
+#
+# A credential for callers that cannot hold a cookie: scripts, cron, another
+# machine on the tailnet. It carries the same identity and role a login would,
+# and is presented in a header rather than a cookie -- which is what makes it
+# safe to exempt from CSRF, since a browser never attaches it on its own.
+#
+# The shape is deliberately boring: a public id used for display and logs, and
+# a high-entropy secret the server keeps only as a hash.
+
+# Public prefix, so a token found in a log or a shell history is recognisable
+# for what it is -- and greppable when it has to be revoked.
+API_TOKEN_PREFIX: Final[str] = "wct_"
+# Bytes of randomness in the secret half. 32 bytes is 256 bits; the point of
+# the number is that guessing is not a threat model, so the hash below does not
+# need to be slow.
+_API_TOKEN_BYTES: Final[int] = 32
+_API_TOKEN_ID_BYTES: Final[int] = 6
+
+
+def hash_api_token(secret: str) -> str:
+    """The at-rest form of a token: sha256 hex of the presented string.
+
+    Not argon2, and the difference matters in both directions. A password is
+    low-entropy and chosen by a human, so it needs a slow hash. This secret is
+    256 random bits, so there is nothing to slow down -- and this runs on every
+    authenticated request, where argon2 would cost ~50ms per call and turn the
+    credential check into the slowest thing in the stack.
+    """
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def new_api_token() -> tuple[str, str, str]:
+    """Mint a token. Returns ``(token_id, secret, token_hash)``.
+
+    The *secret* is the only thing the caller can authenticate with and the only
+    thing not stored: show it once and let it go. Its own id is embedded so the
+    server can name the credential in a log line without holding the secret --
+    and so a caller with the secret can say which token it is using.
+    """
+    token_id = API_TOKEN_PREFIX + secrets.token_hex(_API_TOKEN_ID_BYTES)
+    secret = f"{token_id}.{secrets.token_urlsafe(_API_TOKEN_BYTES)}"
+    return token_id, secret, hash_api_token(secret)
+
+
+def api_token_id_of(secret: str) -> str:
+    """The id embedded in a presented secret, or "" if it is not one of ours.
+
+    Used only for log lines and for rejecting obviously malformed input before a
+    database lookup. It is *not* an authorisation decision: the id is the public
+    half, so anyone can claim any id. The hash comparison is what decides.
+    """
+    if not isinstance(secret, str) or not secret.startswith(API_TOKEN_PREFIX):
+        return ""
+    head, _, tail = secret.partition(".")
+    if not tail or not _VALID_TOKEN_ID.match(head):
+        return ""
+    return head
+
+
+_VALID_TOKEN_ID = re.compile(rf"^{re.escape(API_TOKEN_PREFIX)}[0-9a-f]{{12}}$")
+
+
+def bearer_from_headers(headers: Any) -> str:
+    """Extract a presented token from a request's headers, or "".
+
+    Two spellings are accepted because both are in common use and neither is
+    ambiguous: ``Authorization: Bearer <token>`` and ``X-API-Token: <token>``.
+    A cookie is deliberately not one of them -- the whole reason this credential
+    can skip CSRF is that a browser will never send it unprompted, and reading
+    it from a cookie would quietly destroy that property.
+    """
+    try:
+        authorization = headers.get("authorization") or ""
+        direct = headers.get("x-api-token") or ""
+    except (AttributeError, TypeError):
+        return ""
+    if authorization[:7].lower() == "bearer ":
+        return authorization[7:].strip()
+    return direct.strip()

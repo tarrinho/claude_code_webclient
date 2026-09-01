@@ -7,6 +7,18 @@ This is an analysis, not a policy. `SECURITY.md` states the rules for deploying
 the thing; this document says what an attacker can do to it and how much of that
 is already true on the machine it runs on today.
 
+> **Currency, as of 2026-09-01 · build 0.9.2.** The version above is the one
+> that was analysed and is deliberately left alone: rewriting it would claim an
+> analysis that was never performed. Three attack surfaces have been added since
+> and are **not covered below** — the supervisor orchestration API
+> (`/api/supervisors/*`, which starts model turns from a stored plan), the host
+> statistics endpoints (`/api/system*`, which disclose hostname, CPU model and
+> load), and the supervisor page's SSE stream. One finding has also been closed
+> that this document predates: an unauthenticated `GET /dev/supervisor-trigger`
+> minted an admin session and returned its id in the response body; the route is
+> removed, though the middleware's blanket exemption for `/dev/` paths remains.
+> Re-analysis is owed before this document is quoted as current.
+
 Findings marked **[verified]** were confirmed against the running deployment,
 not inferred from source. Findings marked **[code]** are read off the source and
 depend on a precondition that was not exercised.

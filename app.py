@@ -220,13 +220,76 @@ _ALLOWED_NETS: Final[list[IPv4Network | IPv6Network]] = _parse_allow_nets()
 # ── Auth middleware ────────────────────────────────────────────────────────────────
 
 
+# How often a token's `last_used_at` is written. One write per request would
+# put a row update on the hottest path in the server, which is the pressure that
+# produced the site-wide `database is locked` (registry #47). A minute is fine
+# for the question this column answers -- "is this credential still in use".
+_TOKEN_TOUCH_S: Final[float] = 60.0
+_token_touched: dict[str, float] = {}
+
+
+async def _session_from_api_token(request: Request) -> dict | None:
+    """Authenticate a request by API token, or return None.
+
+    Tried only after cookie authentication has failed, which keeps the ordering
+    unambiguous: a browser session is never silently upgraded or downgraded by a
+    header somebody managed to add.
+    """
+    presented = auth.bearer_from_headers(getattr(request, "headers", None))
+    if not presented:
+        return None
+    ip = "?"
+    if getattr(request, "client", None):
+        ip = getattr(request.client, "host", "?") or "?"
+    claimed = auth.api_token_id_of(presented)
+    if not claimed:
+        # Not shaped like one of ours. Refused without a database round trip, so
+        # a flood of junk Authorization headers cannot become a flood of
+        # queries against the connection every other request shares.
+        _log.warning("api_token_malformed ip=%s path=%s", ip, request.url.path)
+        return None
+    try:
+        row = await db.api_token_by_hash(auth.hash_api_token(presented))
+    except Exception:  # noqa: BLE001 -- a lookup failure must not 500 the request
+        _log.warning("api_token_lookup_failed id=%s ip=%s", claimed, ip,
+                     exc_info=True)
+        return None
+    if row is None:
+        # Unknown, revoked or expired -- deliberately one message for all three.
+        # Telling a caller which of those it is tells an attacker whether an id
+        # was ever real.
+        _log.warning("api_token_rejected id=%s ip=%s path=%s",
+                     claimed, ip, request.url.path)
+        return None
+
+    token_id = row["id"]
+    now = time.time()
+    if now - _token_touched.get(token_id, 0.0) > _TOKEN_TOUCH_S:
+        _token_touched[token_id] = now
+        try:
+            await db.api_token_touch(token_id)
+        except Exception:  # noqa: BLE001 -- bookkeeping must never refuse a valid token
+            _log.warning("api_token_touch_failed id=%s", token_id, exc_info=True)
+    return {
+        "user": row["owner_id"],
+        "role": row["role"],
+        # Read by CsrfMiddleware: a header credential is not attached by a
+        # browser on its own, so it does not need the double-submit guard -- and
+        # a script cannot hold a cookie to double-submit with anyway.
+        "via": "api_token",
+        "token_id": token_id,
+    }
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, handler):
         sid = request.cookies.get("wc_session")
         request.state.session = auth.session_get(sid) if sid else None
+        if request.state.session is None:
+            request.state.session = await _session_from_api_token(request)
         public_route = request.url.path == "/login" or request.url.path.startswith(
             "/assets/"
-        ) or request.url.path.startswith("/dev/")
+        )
         if not public_route and request.state.session is None:
             if request.url.path.startswith("/api/"):
                 _ip = "?"
@@ -352,6 +415,25 @@ def _resolve_host(host: str) -> str:
 # ── CSRF middleware ─────────────────────────────────────────────────────────────────
 
 
+def _authenticated_by_token(request: Request) -> bool:
+    """Whether this request authenticated with an API token rather than a cookie.
+
+    CSRF exists because a browser attaches cookies to cross-site requests
+    automatically. It does not attach an `Authorization` or `X-API-Token` header
+    on its own, and a cross-origin script cannot add one without a CORS
+    preflight this server never approves -- so for a token-authenticated request
+    there is no forgeable ambient credential to guard, and no cookie to
+    double-submit against either.
+
+    Read from the session AuthMiddleware built, not from the headers: the header
+    is a claim, and only the middleware knows whether it was accepted. Checking
+    the header here would let an unauthenticated request skip CSRF by sending a
+    junk token -- which is CSRF-off for anyone who asks.
+    """
+    session = getattr(getattr(request, "state", None), "session", None)
+    return isinstance(session, dict) and session.get("via") == "api_token"
+
+
 class CsrfMiddleware(BaseHTTPMiddleware):
     """Validate the X-CSRF-Token header on mutating requests.
 
@@ -374,6 +456,7 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         if (
             request.method in self._MUTATING
             and request.url.path not in self._EXEMPT_PATHS
+            and not _authenticated_by_token(request)
         ):
             cookie_token = request.cookies.get("wc_csrf", "")
             header_token = request.headers.get("x-csrf-token", "")
@@ -2536,6 +2619,118 @@ async def handle_settings_patch(request: Request):
     return JSONResponse(
         {"ok": True, "ai_machine_host": await db.setting_get("ai_machine_host")}
     )
+
+
+# ── API tokens ─────────────────────────────────────────────────────────────────
+#
+# The authenticated way in for a caller that cannot hold a cookie. This exists
+# because the unauthenticated way kept being invented instead: a `/dev/*` prefix
+# exempted from the auth middleware, with one route under it that minted an
+# admin session for anybody who sent a GET. A script needs a credential, and the
+# absence of one is what turns into a hole.
+
+_TOKEN_NAME_MAX: Final[int] = 100
+# A token with no expiry is a deliberate option -- a cron job should not stop
+# working at 3am because nobody renewed it -- but an unbounded *requested*
+# lifetime is not, so a supplied value is capped at a year.
+_TOKEN_MAX_TTL_DAYS: Final[int] = 365
+
+
+async def handle_tokens_get(request: Request):
+    """GET /api/tokens -- this user's live tokens, without the secrets.
+
+    Scoped to the caller: a token list is a list of credentials, and the fact
+    that another account holds one is not this account's business.
+    """
+    session = request.state.session
+    rows = await db.api_token_list(session["user"])
+    return JSONResponse({"tokens": rows, "count": len(rows)})
+
+
+async def handle_tokens_create(request: Request):
+    """POST /api/tokens -- mint a token for the calling user.
+
+    The secret is returned exactly once, in this response, and is unrecoverable
+    afterwards because only its hash is stored. That is stated in the payload
+    itself rather than only in the docs, since the one-shot nature is the part
+    a caller has to act on immediately.
+
+    Deliberately *not* admin-only. The token carries the caller's own identity
+    and role and grants nothing they do not already have, so requiring admin
+    would only push non-admin users back towards sharing a password. Creation
+    requires a **cookie** session, though: a token that can mint further tokens
+    turns one leaked credential into an unrevocable supply of them.
+    """
+    session = request.state.session
+    if session.get("via") == "api_token":
+        raise HTTPException(
+            status_code=403,
+            detail="Tokens can only be created from a logged-in session, not "
+                   "with another token",
+        )
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    name = str(data.get("name") or "").strip()[:_TOKEN_NAME_MAX] or "unnamed"
+    expires_at = None
+    if data.get("expires_in_days") is not None:
+        try:
+            days = int(data["expires_in_days"])
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="expires_in_days must be a number"
+            ) from None
+        if not 1 <= days <= _TOKEN_MAX_TTL_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"expires_in_days must be 1-{_TOKEN_MAX_TTL_DAYS}",
+            )
+        expiry = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days)
+        expires_at = expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    token_id, secret, token_hash = auth.new_api_token()
+    await db.api_token_create(
+        token_id, name, token_hash, session["user"],
+        session.get("role") or "user", expires_at,
+    )
+    # The id, never the secret. A log line is exactly the sort of place a
+    # credential should not end up, and the id is enough to revoke by.
+    _log.info(
+        "api_token_created id=%s user=%s name=%s expires=%s",
+        token_id, session["user"], name, expires_at or "never",
+    )
+    return JSONResponse({
+        "id": token_id,
+        "name": name,
+        "token": secret,
+        "expires_at": expires_at,
+        "note": "This is the only time the token is shown. Store it now; the "
+                "server keeps only a hash and cannot show it again.",
+        "usage": "Authorization: Bearer <token>  (or X-API-Token: <token>)",
+    })
+
+
+async def handle_tokens_revoke(request: Request):
+    """DELETE /api/tokens/{id} -- revoke one of this user's tokens.
+
+    Allowed with a token as well as a session: being able to retire a
+    credential you suspect is loose should never be the operation that needs the
+    credential you have lost.
+    """
+    session = request.state.session
+    token_id = request.path_params["token_id"]
+    if not await db.api_token_revoke(token_id, session["user"]):
+        # 404 whether it never existed, belongs to somebody else, or was already
+        # revoked -- distinguishing those tells a caller about tokens that are
+        # not theirs.
+        raise HTTPException(status_code=404, detail="Token not found")
+    _token_touched.pop(token_id, None)
+    _log.info("api_token_revoked id=%s user=%s", token_id, session["user"])
+    return JSONResponse({"ok": True, "revoked": token_id})
 
 
 _MACHINE_ALLOWED_FIELDS = {
@@ -4893,6 +5088,21 @@ async def _api_settings_get(request: Request):
 @app.patch("/api/settings")
 async def _api_settings_patch(request: Request):
     return await handle_settings_patch(request)
+
+
+@app.get("/api/tokens")
+async def _api_tokens_get(request: Request):
+    return await handle_tokens_get(request)
+
+
+@app.post("/api/tokens")
+async def _api_tokens_create(request: Request):
+    return await handle_tokens_create(request)
+
+
+@app.delete("/api/tokens/{token_id}")
+async def _api_tokens_revoke(request: Request, token_id: str):
+    return await handle_tokens_revoke(request)
 
 
 async def handle_transcripts_list(request: Request):

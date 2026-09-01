@@ -2770,7 +2770,15 @@ _MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
 # (e.g. "claude-opus-5[1m]"), which the CLI itself tells users to append. The
 # value is passed to the subprocess as a single argv entry, never through a
 # shell, so the brackets carry no meaning downstream.
-_MODEL_RE = re.compile(r"^[A-Za-z0-9_.:/\[\]-]+$")
+#
+# Now `config.MODEL_ID_RE`, shared with supervisor.py, and tightened at the
+# first character. The previous pattern was `^[A-Za-z0-9_.:/\[\]-]+$`, which
+# accepted `-p`, `--model` and `-dangerously-skip-permissions` -- flag-shaped
+# values that reach the child process as the argument to `--model`. No shell is
+# involved, so this is argument injection rather than command injection, and
+# whether the CLI mis-parses such a value is its business; the point is that
+# nothing downstream should have to be trusted to get it right.
+_MODEL_RE = config.MODEL_ID_RE
 _HOST_PATTERN_LOCAL = _HOST_PATTERN
 
 # Allowed URL schemes for base_url validation.
@@ -4869,41 +4877,26 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                     last_progress = progress
                     last_status = status
 
-                # Check for new messages (the chat reads from this stream)
-                if last_message_id > 0:
-                    cur = await db.db_conn.execute(
-                        "SELECT id, role, content, metadata, created_at "
-                        "FROM supervisor_messages "
-                        "WHERE supervisor_id = ? AND id > ? "
-                        "ORDER BY id ASC LIMIT 10",
-                        (supervisor_id, last_message_id),
-                    )
-                    rows = await cur.fetchall()
-                    if rows:
-                        new_msgs = [dict(r) for r in rows]
-                        last_message_id = new_msgs[-1]["id"]
-                        yield f"data: {json.dumps({
-                            'type': 'messages',
-                            'messages': new_msgs,
-                        })}\n\n"
-                else:
-                    # On first tick, load the initial message batch so the
-                    # chat doesn't stay blank while the supervisor is idle.
-                    cur = await db.db_conn.execute(
-                        "SELECT id, role, content, metadata, created_at "
-                        "FROM supervisor_messages "
-                        "WHERE supervisor_id = ? "
-                        "ORDER BY id ASC LIMIT 10",
-                        (supervisor_id,),
-                    )
-                    rows = await cur.fetchall()
-                    if rows:
-                        new_msgs = [dict(r) for r in rows]
-                        last_message_id = new_msgs[-1]["id"]
-                        yield f"data: {json.dumps({
-                            'type': 'messages',
-                            'messages': new_msgs,
-                        })}\n\n"
+                # Check for new messages (the chat reads from this stream).
+                #
+                # Through db.supervisor_messages_get, not inline SQL. There were
+                # two copies here -- one per branch, differing only in the
+                # `id > ?` clause -- and neither filtered by owner, which made
+                # three copies of "read a supervisor's messages" in the
+                # repository, only one of them scoped. That is the shape F-21
+                # came in: this path is safe because of the ownership check
+                # above, and would stop being safe the moment somebody moved
+                # the query or dropped the check. `after_id=0` means "from the
+                # start", so the two branches collapse into one call.
+                new_msgs = await db.supervisor_messages_get(
+                    supervisor_id, owner, after_id=last_message_id, limit=10,
+                )
+                if new_msgs:
+                    last_message_id = new_msgs[-1]["id"]
+                    yield f"data: {json.dumps({
+                        'type': 'messages',
+                        'messages': new_msgs,
+                    })}\n\n"
 
                 # Get recent events from engine if available
                 if eng:

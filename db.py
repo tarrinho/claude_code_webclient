@@ -2476,13 +2476,25 @@ async def supervisor_delete(supervisor_id: str, owner_id: str) -> bool:
 async def supervisor_tasks_get(
     supervisor_id: str, owner_id: str
 ) -> list[dict[str, Any]]:
-    """All tasks for a supervisor, ordered by creation."""
+    """All tasks for one owner's supervisor, ordered by creation.
+
+    ``owner_id`` was accepted and never used, so `GET /api/supervisors/{any
+    id}/tasks` returned any account's task titles, descriptions and results --
+    agent output -- to any authenticated caller. The argument's presence is what
+    made it invisible: the handler passes it, so the call reads as scoped.
+
+    Scoped by join rather than by a check in the handler, because the handler is
+    where it was already missing.
+    """
     cur = await db_conn.execute(
-        "SELECT id, supervisor_id, title, description, status, model, result, "
-        "progress_pct, parent_task_id, depends_on, created_at, updated_at "
-        "FROM supervisor_tasks WHERE supervisor_id = ? "
-        "ORDER BY id ASC",
-        (supervisor_id,),
+        "SELECT t.id, t.supervisor_id, t.title, t.description, t.status, "
+        "       t.model, t.result, t.progress_pct, t.parent_task_id, "
+        "       t.depends_on, t.created_at, t.updated_at "
+        "FROM supervisor_tasks t "
+        "JOIN supervisors s ON s.id = t.supervisor_id AND s.owner_id = ? "
+        "WHERE t.supervisor_id = ? "
+        "ORDER BY t.id ASC",
+        (owner_id, supervisor_id),
     )
     return [dict(r) for r in await cur.fetchall()]
 
@@ -2548,9 +2560,16 @@ async def supervisor_task_update(
     sets.append("updated_at = ?")
     vals.append(_now())
     vals.extend([task_id, supervisor_id])
+    # Scoped by ownership, not only by ids. SQLite has no UPDATE ... JOIN, so
+    # the check is a subselect. This is the only write among the five functions
+    # that took `owner_id` and ignored it, and its callers are all inside the
+    # engine today -- but "not currently reachable from a route" is what the two
+    # cross-tenant reads were until somebody added a route.
+    vals.append(owner_id)
     sql = (
         "UPDATE supervisor_tasks SET " + ", ".join(sets)
-        + " WHERE id = ? AND supervisor_id = ?"
+        + " WHERE id = ? AND supervisor_id = ? AND supervisor_id IN "
+          "(SELECT id FROM supervisors WHERE owner_id = ?)"
     )
     cur = await db_conn.execute(sql, vals)
     await db_conn.commit()
@@ -2560,12 +2579,20 @@ async def supervisor_task_update(
 async def supervisor_task_get(
     supervisor_id: str, task_id: str, owner_id: str
 ) -> dict[str, Any] | None:
-    """Fetch one task under a supervisor."""
+    """Fetch one task under one owner's supervisor.
+
+    ``owner_id`` was accepted and unused here too. Its only caller checks
+    ownership first, so this was latent rather than reachable -- which is
+    exactly the state the two reachable ones were in until a route was added.
+    """
     cur = await db_conn.execute(
-        "SELECT id, supervisor_id, title, description, status, model, result, "
-        "progress_pct, parent_task_id, depends_on, created_at, updated_at "
-        "FROM supervisor_tasks WHERE id = ? AND supervisor_id = ?",
-        (task_id, supervisor_id),
+        "SELECT t.id, t.supervisor_id, t.title, t.description, t.status, "
+        "       t.model, t.result, t.progress_pct, t.parent_task_id, "
+        "       t.depends_on, t.created_at, t.updated_at "
+        "FROM supervisor_tasks t "
+        "JOIN supervisors s ON s.id = t.supervisor_id AND s.owner_id = ? "
+        "WHERE t.id = ? AND t.supervisor_id = ?",
+        (owner_id, task_id, supervisor_id),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
@@ -2597,21 +2624,34 @@ async def supervisor_messages_get(
     after_id: int | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Read messages for a supervisor, optionally since a specific id."""
-    if after_id is not None:
-        cur = await db_conn.execute(
-            "SELECT id, role, content, metadata, created_at "
-            "FROM supervisor_messages WHERE supervisor_id = ? "
-            "ORDER BY id ASC LIMIT ?",
-            (supervisor_id, limit),
-        )
-    else:
-        cur = await db_conn.execute(
-            "SELECT id, role, content, metadata, created_at "
-            "FROM supervisor_messages WHERE supervisor_id = ? "
-            "ORDER BY id ASC LIMIT ?",
-            (supervisor_id, limit),
-        )
+    """Read one owner's supervisor messages, optionally since a specific id.
+
+    Three things were wrong here and they were wrong in a way that read
+    correctly. ``owner_id`` was accepted and never used, so any authenticated
+    account could read any supervisor's conversation by id -- and every caller
+    looked scoped, because the argument was right there in the call. ``after_id``
+    was accepted and never used either, so the SSE poller re-sent the same first
+    hundred messages for ever. And the ``if after_id is not None`` branch existed
+    with **byte-identical** bodies on both sides, which is what made the whole
+    thing look deliberate.
+
+    Owner scoping is done here rather than by the caller on purpose: this is the
+    layer that cannot be forgotten. A handler-level check protects the handlers
+    that have one.
+    """
+    sql = (
+        "SELECT m.id, m.role, m.content, m.metadata, m.created_at "
+        "FROM supervisor_messages m "
+        "JOIN supervisors s ON s.id = m.supervisor_id AND s.owner_id = ? "
+        "WHERE m.supervisor_id = ?"
+    )
+    params: list[Any] = [owner_id, supervisor_id]
+    if after_id:
+        sql += " AND m.id > ?"
+        params.append(after_id)
+    sql += " ORDER BY m.id ASC LIMIT ?"
+    params.append(limit)
+    cur = await db_conn.execute(sql, tuple(params))  # nosec B608: static fragments
     return [dict(r) for r in await cur.fetchall()]
 
 
@@ -2672,25 +2712,26 @@ async def supervisor_member_remove(supervisor_id: str, chat_id: str) -> bool:
 
 
 async def supervisor_progress(supervisor_id: str, owner_id: str) -> float:
-    """Return overall progress percentage for a supervisor's tasks."""
-    # Fetch all tasks for this supervisor, compute weighted average
-    cur = await db_conn.execute(
-        "SELECT COUNT(*) AS total FROM supervisor_tasks WHERE supervisor_id = ?",
-        (supervisor_id,),
-    )
-    row = await cur.fetchone()
-    total = row["total"] if row else 0
-    if total == 0:
-        return 0.0
+    """Mean task progress for one owner's supervisor, 0.0 when it has no tasks.
 
+    Has no callers at the time of writing. Kept and scoped rather than deleted
+    because the name is one somebody will reach for, and an unscoped query
+    sitting under an owner-scoped signature is a trap laid for whoever does.
+    One statement instead of two, so the count and the sum cannot be read from
+    different states of the table.
+    """
     cur = await db_conn.execute(
-        "SELECT SUM(progress_pct) AS sum_pct FROM supervisor_tasks "
-        "WHERE supervisor_id = ?",
-        (supervisor_id,),
+        "SELECT COUNT(*) AS total, SUM(t.progress_pct) AS sum_pct "
+        "FROM supervisor_tasks t "
+        "JOIN supervisors s ON s.id = t.supervisor_id AND s.owner_id = ? "
+        "WHERE t.supervisor_id = ?",
+        (owner_id, supervisor_id),
     )
     row = await cur.fetchone()
-    sum_pct = row["sum_pct"] or 0
-    return round(float(sum_pct) / total, 1)
+    total = (row["total"] if row else 0) or 0
+    if not total:
+        return 0.0
+    return round(float(row["sum_pct"] or 0) / total, 1)
 
 
 def _now() -> str:

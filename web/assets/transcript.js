@@ -275,8 +275,17 @@ export function mountTranscriptViewer() {
     row.appendChild(el('span', 'tx-a-tag', label));
     row.appendChild(el('span', 'tx-a-text', block.text || ''));
     // Mark the question it belongs to as no longer waiting.
+    //
+    // CSS.escape, as chat-list.js already does for the same shape. `block.id`
+    // is a tool_use id read straight out of the transcript JSONL, and the
+    // agents writing those files run with --dangerously-skip-permissions -- so
+    // an id containing a double quote closes the attribute selector early and
+    // querySelector throws SyntaxError, taking the whole transcript render with
+    // it. Not an XSS: this string is a selector, never markup. It is an
+    // availability bug in the one view that would show what the agent did.
     const asked = block.id
-      ? body.querySelector(`.tx-question[data-question-id="${block.id}"]`)
+      ? body.querySelector(
+          `.tx-question[data-question-id="${CSS.escape(block.id)}"]`)
       : null;
     const status = asked?.querySelector('.tx-q-status');
     if (status) {

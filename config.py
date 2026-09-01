@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 
 
 def _str(name: str, default: str | None = None) -> str | None:
@@ -129,6 +130,35 @@ SYSTEM_SAMPLE_S = _int("WC_SYSTEM_SAMPLE_S", 60)
 # whether or not the console is used, so they are the one table that grows
 # without anybody doing anything.
 SYSTEM_RETENTION_DAYS = _int("WC_SYSTEM_RETENTION_DAYS", 30)
+
+# A model id, and the one rule that makes it safe to hand to the CLI. Square
+# brackets are allowed for the documented "[1m]" context-window suffix
+# (`claude-opus-5[1m]`), which the CLI itself tells users to append.
+#
+# The leading character is the security-relevant part. A model id reaches the
+# child process as the *value* of `--model`, and `runner._build_cmd_direct`
+# already protects the prompt from exactly this by putting it after a `--`
+# sentinel "where a leading dash cannot be mistaken for a CLI flag" -- the model
+# has no sentinel, so the check has to live in the value. Without it,
+# `-dangerously-skip-permissions` and `-p` were both accepted model ids, and a
+# plan carrying `[:--mcp-config=/tmp/evil.json]` put an attacker-chosen argv
+# token into the subprocess.
+#
+# Defined here rather than in app.py because supervisor.py needs the same rule
+# for models it reads out of model-authored plan text, and two copies of a
+# security pattern in one repository is the drift this project keeps paying for.
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]*$")
+MODEL_ID_MAX = 120
+
+
+def valid_model_id(value: str | None) -> bool:
+    """Whether *value* is safe to pass as the argument to ``--model``."""
+    if not value or not isinstance(value, str):
+        return False
+    if len(value) > MODEL_ID_MAX:
+        return False
+    return bool(MODEL_ID_RE.match(value))
+
 
 MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn

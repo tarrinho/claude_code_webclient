@@ -17,7 +17,14 @@ is already true on the machine it runs on today.
 > that this document predates: an unauthenticated `GET /dev/supervisor-trigger`
 > minted an admin session and returned its id in the response body; the route is
 > removed, though the middleware's blanket exemption for `/dev/` paths remains.
-> Re-analysis is owed before this document is quoted as current.
+> **Partly discharged, 2026-09-01.** §5a covers all three of those surfaces
+> plus the two added since this note was written (API tokens and the
+> question-dismiss route), as findings F-21 to F-24. Two were real and are
+> fixed: any account could read any supervisor's tasks and messages (F-21,
+> confirmed by exploit), and a plan could put an attacker-chosen argv token into
+> the Claude Code child (F-22). The `/dev/` middleware exemption mentioned above
+> is also gone. What is still owed is a re-read of §6's attack chains against
+> 0.9.3 and the front-end DOM pass §9 defers.
 
 Findings marked **[verified]** were confirmed against the running deployment,
 not inferred from source. Findings marked **[code]** are read off the source and
@@ -567,6 +574,163 @@ discoverable rather than folkloric.
 The SSE handler sanitises its *own* exceptions to fixed strings (`_SSE_INTERNAL`
 et al. — good) but passes these through. stderr from a tool-unrestricted agent
 can contain absolute paths, environment fragments and command output.
+
+---
+
+## 5a. Findings from the 0.9.3 pass — the three surfaces §0 said were uncovered
+
+Date: 2026-09-01 · Version analysed: 0.9.3 (`e6e7a9b`, plus uncommitted work in
+`supervisor.py`, `transcripts.py` and `conversation.js`).
+
+The currency note at the top of this document named three surfaces added after
+0.7.2 and not covered: the supervisor orchestration API, the host statistics
+endpoints, and the supervisor page's SSE stream. Two more have arrived since it
+was written — API tokens and the question-dismiss route. This section covers all
+five. F-21 and F-22 were **fixed in the same pass**; the rest are open.
+
+### F-21 — Any account could read any supervisor's tasks and messages **[verified by exploit] — FIXED**
+
+**Severity: High** (cross-tenant disclosure of agent output) · **Closed**
+
+`db.supervisor_tasks_get(supervisor_id, owner_id)` and
+`db.supervisor_messages_get(supervisor_id, owner_id, ...)` each accepted
+`owner_id` and **never referenced it**. Both SQL statements filtered on
+`supervisor_id` alone, and both are reachable:
+`GET /api/supervisors/{id}/tasks` and `GET /api/supervisors/{id}/messages`.
+
+Proved rather than reasoned: Alice logged in, requested `sup-bob` by id, and
+received HTTP 200 carrying Bob's task title, description and
+`BOB-PRIVATE-MESSAGE`. The sibling routes (`/`, `/members`) call
+`supervisor_get(id, owner)` first and correctly returned 404, which is what made
+the gap look like an absence of risk rather than a hole.
+
+**What made it invisible.** The parameter was present at every call site. A
+handler passing `owner_id` reads as scoped, and a reviewer checking the handler
+sees the argument and stops; only the SQL says otherwise. An AST sweep found
+**five** functions in `db.py` in this state — the two above plus
+`supervisor_task_get`, `supervisor_task_update` (a *write*) and
+`supervisor_progress`. The latter three were latent: their callers check
+ownership first, or they have no callers.
+
+**Fix.** All five now scope in SQL — a join to `supervisors` for the reads, a
+subselect for the update, since SQLite has no `UPDATE ... JOIN`. Done at the
+data layer rather than in the handlers because the handlers are where it was
+already missing. `supervisor_progress` was scoped rather than deleted: an
+unscoped query under an owner-scoped signature is a trap for whoever reaches for
+that name next.
+
+**Also fixed in the same functions.** `after_id` was accepted and ignored, with
+the `if after_id is not None` branch holding two **byte-identical** bodies — so
+the SSE poller re-sent the same first hundred messages for ever, and the dead
+branch was what made it look deliberate.
+
+**Regression test.** `tests/test_qa_supervisor_security.py`. The load-bearing
+case is not the two functions but the invariant: an AST walk asserting that no
+`db.py` function accepts `owner_id` and ignores it, so the next one written that
+way fails without anybody having to notice it. Mutation-verified — restoring the
+unscoped query re-exposes Bob's data and fails two cases.
+
+### F-22 — A plan could choose the child process's argv **[verified] — FIXED**
+
+**Severity: Medium–High**, precondition-gated · **Closed**
+
+A plan task's model comes from `_MODEL_RE = re.compile(r"\[:(\S+)\]")` — *any*
+non-whitespace run — and becomes the argument to `--model` in
+`runner._build_cmd_direct`. A plan line reading
+`Task 1: x - y [:--mcp-config=/tmp/evil.json]` therefore put an attacker-chosen
+argv token into a Claude Code child that already runs with
+`--dangerously-skip-permissions`. Confirmed by parsing such a plan and reading
+the resulting `ParsedTask.model`.
+
+The same hole existed on the ordinary path: `app._MODEL_RE` was
+`^[A-Za-z0-9_.:/\[\]-]+$`, which accepts `-p`, `--model` and
+`-dangerously-skip-permissions`, all settable through `PATCH /api/chats/{id}`.
+
+**Who controls the input.** The plan is written by the model, from the user's
+prompt and whatever it read while planning — so the route in is prompt
+injection, which chain C1 already treats as reachable. This is argument
+injection, not command injection: there is no shell. Whether the CLI mis-parses
+a flag-shaped option value is the CLI's business, and that is the point —
+nothing downstream should have to be trusted to get it right. `_build_cmd_direct`
+already protects the *prompt* from exactly this, putting it after a `--`
+sentinel "where a leading dash cannot be mistaken for a CLI flag"; the model had
+no equivalent.
+
+**Fix.** `config.MODEL_ID_RE` / `config.valid_model_id()` — one definition, used
+by both `app.py` and `supervisor.py` — requires an alphanumeric first character
+and caps the length. A rejected plan model logs and falls back to `None`, which
+is what a plan with no `[:model]` already gets. `claude-opus-5[1m]` still
+validates: the CLI documents that suffix, and a fix that broke it would have
+broken the feature it protects.
+
+### F-23 — Host facts are readable by any authenticated account **[verified]**
+
+**Severity: Low** · **Open**
+
+`GET /api/system` and `/api/system/series` have no role gate, so a non-admin
+session or any API token reads hostname, kernel, architecture, CPU model and
+core count, load, memory and disk usage. Deployment-specific: both accounts on
+this box are admin, so nothing is currently exposed to anybody who was not
+already entitled. Left open rather than fixed because "who may see host
+statistics" is a product decision, not a defect — but a `user`-role account
+exists in the schema and this is the surface that forgets about it.
+
+### F-24 — API tokens are outside the rate limiter, and extend F-02's reach **[code]**
+
+**Severity: Low** · **Open**
+
+Two observations on the credential added in `bc49cfd`, neither a defect in it:
+
+*No rate limit.* `login_attempt_flood` covers `/login` only (F-11). A malformed
+token is refused without a database round trip, but a **well-formed** invalid one
+— correct prefix, twelve hex, a dot — costs one indexed lookup on the shared
+connection per attempt, unauthenticated. Guessing the secret is not the concern
+at 256 bits; unmetered work on the writer's connection is.
+
+*A new sink for F-02.* `DELETE /api/chats/{id}/question` delivers Escape to the
+window `prompts.find_target` resolves, which comes from `~/.claude/sessions/`
+— the untrusted targeting oracle F-02 describes. The route is owner-scoped and
+the keystroke set is fixed, so this widens F-02's *sinks* rather than its
+preconditions: anything that can plant a session file can now also cancel a
+prompt in a window it chose, not merely answer one.
+
+### F-25 — A crafted tool_use id breaks the transcript view **[verified] — FIXED**
+
+**Severity: Low** (availability of one view) · **Closed**
+
+`transcript.js` built a CSS selector by interpolation:
+`` body.querySelector(`.tx-question[data-question-id="${block.id}"]`) ``.
+`block.id` is a tool_use id read straight out of the transcript JSONL, and the
+agents writing those files run with `--dangerously-skip-permissions`, so the
+value is agent-controlled. A `"` in it closes the attribute selector early,
+`querySelector` raises `SyntaxError`, and the whole transcript render dies —
+which is the one view that would show what the agent had been doing.
+
+Not XSS: the string is a selector, never markup. Fixed with `CSS.escape`, which
+`chat-list.js` already used for the same shape. A sweep of every
+`querySelector` template in `web/*.js` and `web/assets/*.js` now finds zero
+interpolations without it.
+
+### Checked and not a finding — the supervisor page's markup
+
+Recorded because a future change could make it one, and because the reasoning is
+what a reader needs rather than the conclusion.
+
+`web/supervisor.js` has twelve `innerHTML` writes, and its `esc()` is
+`div.textContent = s; return div.innerHTML` — which escapes `&`, `<` and `>` but
+**not quotes**. So esc() output is safe in element content and unsafe in an
+attribute. The five attribute interpolations in those templates
+(`data-id`, `data-task-id`, `data-expand`, `data-detail`, `title`) all take
+server-generated values: supervisor ids are `uuid4().hex` from
+`POST /api/supervisors`, task ids are `t%03d` or a supervisor-prefixed row id,
+and the one `title=` is an internal label. Agent- and user-authored strings —
+titles, descriptions, task results — go into element *content* through `esc()`,
+or into `textContent`.
+
+The condition to watch is therefore narrow and worth stating: **putting any
+user- or agent-authored string into an attribute in one of those templates is
+exploitable**, because esc() will not protect it there. §9's deferred front-end
+pass is still owed for `conversation.js` and the message renderers.
 
 ---
 

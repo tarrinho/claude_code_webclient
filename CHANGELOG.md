@@ -58,6 +58,136 @@ churn.
   - No expiry by default, capped at a year when one is requested. A cron job
     should not stop working at 3am because nobody renewed it.
 
+- **A supported way to ask whether a session's task has finished.**
+  `transcripts.turn_concluded(session_id)` reports the newest turn's
+  `stop_reason` and whether a prompt arrived after it:
+
+      concluded  ⟺  stop_reason == "end_turn"  AND  no prompt after it
+
+  Both halves are needed. A session that finished a turn and was then given more
+  work still carries `end_turn` as its newest `stop_reason` — observed live, on a
+  session that flipped from idle to busy between two reads — so the stop reason
+  alone reports a working agent as finished.
+
+  A bounded 64 KB tail read, matching `last_error`'s budget: transcripts here run
+  10–18 MB over 6,000–10,000 lines, and the newest `stop_reason` sat within the
+  last 9 lines and 16 KB of every one measured. Reading only the last few
+  *records* is not enough — one live session's last six were all metadata
+  (`agent-name`, `mode`, `permission-mode`, `atis-latch`) with no assistant
+  record among them.
+
+  It corroborates the session registry's `status` field rather than replacing
+  it. The two agreed on every live session tested. Deliberately **not** built on
+  the `notify_idle` peer feature and the per-session socket at
+  `/run/user/1000/cc-socks/<pid>.sock`: that is the push version of the same
+  fact, but it is Claude Code's private protocol with no CLI surface, so it
+  would break silently on a CLI update.
+
+### Fixed
+
+- **A finished agent is no longer reported as one blocked on a question.** The
+  supervisor tested `status != "busy"`, and Claude Code 2.1.252 writes three
+  values into `~/.claude/sessions/<pid>.json`, not one:
+
+      busy     working
+      idle     nothing further to do — the task concluded
+      waiting  blocked, a person is needed
+
+  So `idle` and `waiting` were treated identically: every agent that *finished*
+  joined the waiting feed with `reason: "asks"`, its closing sentence presented
+  as the question it was supposedly asking — an ask the code had no evidence
+  for, since it came from the status field and not from reading anything. At the
+  moment of the fix, two of the machine's live sessions were non-busy and one of
+  them was merely idle, so half the badge was rows that needed nobody. The badge
+  is worth having only while every row in it is real.
+
+  `idle` now falls through to the routine-output path, where being read retires
+  it; `waiting` still requires an explicit dismissal, because reading a question
+  does not answer it. An **unrecognised** status is treated as blocked rather
+  than finished: over-reporting costs a dismissal, under-reporting leaves an
+  agent stuck with nobody told.
+
+  Fixed in both places that made the comparison — the linked-conversation
+  branch of `classify_chat` and the bare CLI-session path, whose comment stated
+  the belief outright ("Any non-busy value means it has stopped and is waiting
+  on a human").
+
+- **Two comments that had quietly become false.** `db.read_claude_sessions`
+  documented the status field as "Observed value is `busy`" — the value the
+  callers above were written against — and a note in `classify_chat` claimed
+  `statusUpdatedAt` was absent on "every non-busy session on this machine",
+  which is no longer true of any of them. Both were accurate when written; the
+  CLI moved and nothing re-read them. Corrected rather than deleted, since the
+  fallback the second one justifies is still worth keeping for older builds.
+
+### Security
+
+- **Any account could read any supervisor's tasks and messages.**
+  `GET /api/supervisors/{id}/tasks` and `.../messages` returned another
+  account's task titles, descriptions and results — agent output — and its whole
+  message history, to any authenticated caller who knew or guessed a supervisor
+  id. Confirmed by exploit before it was fixed: one user logged in, requested
+  another's supervisor by id, and got HTTP 200 with the contents.
+
+  The cause is worth stating precisely, because the code read correctly.
+  `db.supervisor_tasks_get(supervisor_id, owner_id)` and
+  `db.supervisor_messages_get(...)` both **accepted `owner_id` and never used
+  it**; the SQL filtered on `supervisor_id` alone. Every call site passed the
+  argument, so every call site looked scoped, and a reviewer checking the
+  handler would see it and stop. An AST sweep found five functions in that
+  state — the two reachable ones plus a third read, a *write*, and one with no
+  callers. All five now scope in SQL, at the data layer rather than in the
+  handlers, because the handlers are where it was already missing.
+
+  Two more things fell out of the same functions. `after_id` was accepted and
+  ignored, with the `if after_id is not None` branch holding two
+  byte-identical bodies — so the supervisor's SSE poller re-sent the same first
+  hundred messages for ever, and the dead branch is what made it look
+  deliberate. And the SSE handler had two further inline copies of the messages
+  query, neither owner-filtered, safe only by virtue of the ownership check
+  above them; both now call the scoped function.
+
+  The regression test that matters is not the two functions but the invariant:
+  no `db.py` function may accept `owner_id` and ignore it. See
+  `tests/test_qa_supervisor_security.py` and `docs/threat-model.md` F-21.
+
+- **A plan could choose the argv of the Claude Code child process.** A plan
+  task's model is extracted with `[:(\S+)]` — any non-whitespace run — and
+  becomes the argument to `--model`. A plan reading
+  `[:--mcp-config=/tmp/evil.json]` therefore handed an attacker-chosen argv
+  token to a subprocess that already runs with
+  `--dangerously-skip-permissions`. The route in is prompt injection into
+  whatever the planner was reading, which the threat model already treats as
+  reachable.
+
+  The ordinary path had it too: the model pattern was
+  `^[A-Za-z0-9_.:/\[\]-]+$`, which accepts `-p`, `--model` and
+  `-dangerously-skip-permissions`, all settable through
+  `PATCH /api/chats/{id}`.
+
+  This is argument injection, not command injection — there is no shell — and
+  whether the CLI mis-parses a flag-shaped option value is the CLI's business.
+  That is the point: `runner._build_cmd_direct` already protects the *prompt*
+  from exactly this by putting it after a `--` sentinel "where a leading dash
+  cannot be mistaken for a CLI flag", and the model had no equivalent.
+  `config.valid_model_id()` now requires an alphanumeric first character and
+  caps the length, from one definition shared by `app.py` and `supervisor.py`.
+  A rejected plan model logs and falls back to the backend's choice, which is
+  what a plan with no `[:model]` already gets. `claude-opus-5[1m]` still
+  validates — the CLI documents that suffix, and a fix that broke it would have
+  broken the feature it protects. `docs/threat-model.md` F-22.
+
+- **`docs/threat-model.md` now covers the surfaces it said it did not.** The
+  document analysed 0.7.2 and carried a note naming three uncovered surfaces:
+  the supervisor orchestration API, the host statistics endpoints and the
+  supervisor SSE stream. §5a covers those plus the two added since — API tokens
+  and the question-dismiss route — as F-21 to F-24. F-23 (host facts readable
+  by any authenticated account, no admin gate) and F-24 (tokens outside the
+  login rate limiter; the dismiss route as a new sink for F-02's targeting
+  oracle) are recorded open rather than fixed: the first is a product decision
+  about who may see host statistics, and the second needs a rate-limiting
+  design rather than a patch.
+
 ### Removed
 
 - **`DevAuthSkipTests`.** All three assertions defended the `/dev/*` exemption,

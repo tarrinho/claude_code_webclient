@@ -160,6 +160,21 @@ class PlanParser:
                 # a name no gateway serves.
                 model_match = None
             model = model_match.group(1) if model_match else None
+            # This value comes out of model-authored text and goes on to become
+            # the argument to `--model` in a subprocess, and `_MODEL_RE` above
+            # extracts `[:(\S+)]` -- anything non-whitespace. So a plan reading
+            # `[:--mcp-config=/tmp/evil.json]` handed an attacker-chosen argv
+            # token to the child, and the route to writing such a plan is
+            # prompt injection into whatever the planner was reading. Rejected
+            # rather than sanitised: an id that fails this is not a model, and
+            # dropping it falls back to the backend's own choice, which is the
+            # behaviour a plan without any `[:model]` already gets.
+            if model is not None and not config.valid_model_id(model):
+                _log.warning(
+                    "plan_model_rejected supervisor_task_title=%r model=%r",
+                    title[:60], model[:60],
+                )
+                model = None
             raw.append((title, description, raw_refs, model))
 
         # ── Pass 2: assign IDs (handling duplicates) and build ref→id map ─

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import time
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any, Final
 
 import db
+
+_log = logging.getLogger("wc.transcripts")
 
 # Initial read size for the history view. Transcripts reach tens of megabytes,
 # so the first page comes from the end of the file and reports itself as
@@ -218,13 +221,82 @@ def _blocks_from_content(
 _QUESTION_TOOL = "AskUserQuestion"
 
 
+def _questions_payload(raw: Any, block_id: str) -> tuple[list[Any], bool]:
+    """Normalise a tool call's ``questions`` field to a list.
+
+    Returns ``(entries, damaged)``. *damaged* means the field carried something
+    that should have held questions but could not be read, which the caller
+    surfaces as an unreadable question rather than dropping silently.
+
+    Anthropic sends ``questions`` as a JSON array, but an OpenAI-compatible
+    gateway (LiteLLM, vLLM -- anything whose tool ids look like
+    ``chatcmpl-tool-*``) sends tool arguments as a *string* of JSON. Iterating
+    that string yielded one character at a time, none of which is a dict, so
+    every entry was skipped and the question disappeared from the UI with
+    nothing logged. That is why questions showed in some conversations and not
+    others: it tracked which backend served the turn, not anything about the
+    question.
+    """
+    if isinstance(raw, list):
+        return raw, False
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return [], False
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError as exc:
+            # Seen in the wild: a gateway emitted a string with mismatched
+            # escaping, so no amount of parsing recovers the options.
+            #
+            # "Damaged" is claimed only for a payload that plainly *tried* to be
+            # questions -- it opens like JSON and names the field. A short scrap
+            # ("nope") is not evidence that anything was asked, and promoting it
+            # to a visible question would invent an ask out of noise. Those keep
+            # the old behaviour and fall back to the plain tool line.
+            looks_structured = text.startswith(("[", "{")) and '"question"' in text
+            if looks_structured:
+                _log.warning(
+                    "question_payload_unparseable: id=%s (%s) — a question was "
+                    "asked but its options cannot be read; shown without them",
+                    block_id, exc,
+                )
+            else:
+                _log.warning(
+                    "question_payload_not_json: id=%s (%s) — questions field held "
+                    "text that names no question; rendered as a plain tool call",
+                    block_id, exc,
+                )
+            return [], looks_structured
+        if isinstance(decoded, list):
+            return decoded, False
+        if isinstance(decoded, dict):
+            # A single question sent unwrapped rather than as a one-item list.
+            return [decoded], False
+        # Parsed cleanly but into a scalar, which carries no question either.
+        _log.warning(
+            "question_payload_unexpected_type: id=%s decoded=%s",
+            block_id, type(decoded).__name__,
+        )
+        return [], False
+    if raw is None:
+        return [], False
+    _log.warning(
+        "question_payload_unexpected_type: id=%s raw=%s",
+        block_id, type(raw).__name__,
+    )
+    return [], True
+
+
 def _question_block(item: dict[str, Any]) -> dict[str, Any] | None:
     """Build a display block carrying a question and every option offered."""
     payload = item.get("input")
     if not isinstance(payload, dict):
         return None
+    block_id = str(item.get("id") or "")
+    entries, damaged = _questions_payload(payload.get("questions"), block_id)
     questions = []
-    for entry in payload.get("questions") or []:
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         options = [
@@ -245,6 +317,24 @@ def _question_block(item: dict[str, Any]) -> dict[str, Any] | None:
             "options": options,
         })
     if not questions:
+        # A damaged payload still means the agent stopped and asked something.
+        # Returning None here is what made it vanish from the conversation, so
+        # the reader saw a turn that simply ended -- with no hint that anything
+        # was waiting on them. A placeholder is worse than the real question and
+        # far better than silence.
+        if damaged:
+            return {
+                "kind": "question",
+                "id": block_id,
+                "questions": [{
+                    "question": "A question was asked, but its text and options "
+                                "could not be read from the transcript.",
+                    "header": "Unreadable question",
+                    "multi_select": False,
+                    "options": [],
+                }],
+                "unreadable": True,
+            }
         return None
     return {
         "kind": "question",

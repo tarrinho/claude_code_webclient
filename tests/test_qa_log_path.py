@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,11 +105,11 @@ class ConfWiringTests(unittest.TestCase):
 class EndToEndTests(unittest.TestCase):
     """Configure logging for real, in a subprocess, and read the file back."""
 
-    def _run(self, target: Path) -> subprocess.CompletedProcess:
+    def _run(self, target: Path, marker: str = "xyz") -> subprocess.CompletedProcess:
         probe = (
             "import app, logging; "
             "app._configure_logging(); "
-            "logging.getLogger('wc.app').info('landed chat_id=%s', 'xyz'); "
+            f"logging.getLogger('wc.app').info('landed chat_id=%s', {marker!r}); "
             "logging.shutdown()"
         )
         return subprocess.run(
@@ -126,13 +127,43 @@ class EndToEndTests(unittest.TestCase):
             self.assertIn("landed chat_id=xyz", target.read_text())
 
     def test_nothing_reaches_the_production_log(self):
-        """The whole point, asserted directly rather than inferred."""
-        before = PRODUCTION_LOG.stat().st_size if PRODUCTION_LOG.exists() else 0
+        """The whole point, asserted directly rather than inferred.
+
+        By marker, not by file size. This compared ``PRODUCTION_LOG.stat()``
+        before and after, which measures *every* writer: the live server, the
+        health timer and five other sessions all append to that file, so on the
+        machine this project actually runs on the case failed for traffic that
+        had nothing to do with the probe. It passed only on an idle box —
+        registry #36's shape, where a test's verdict tracks the machine's mood
+        rather than the code.
+
+        A unique marker asserts the property the test is named for: *this*
+        redirected process's records did not land in the production log. It is
+        immune to concurrent writers, and it can still fail — remove the
+        ``WC_LOG_FILE`` plumbing and the marker appears there.
+        """
+        marker = f"probe-{uuid.uuid4().hex}"
+        before = ""
+        if PRODUCTION_LOG.exists():
+            before = PRODUCTION_LOG.read_text(encoding="utf-8", errors="replace")
+        self.assertNotIn(marker, before, "the marker was not unique")
+
         with tempfile.TemporaryDirectory() as tmp:
-            self._run(Path(tmp) / "wc.log")
-        after = PRODUCTION_LOG.stat().st_size if PRODUCTION_LOG.exists() else 0
-        self.assertEqual(after, before,
-                         "a redirected server still appended to the real log")
+            target = Path(tmp) / "wc.log"
+            result = self._run(target, marker=marker)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Prove the probe actually logged, or "absent from production" is
+            # satisfied by a probe that wrote nothing anywhere.
+            self.assertIn(marker, target.read_text(encoding="utf-8"),
+                          "the probe never logged, so this proves nothing")
+
+        after = ""
+        if PRODUCTION_LOG.exists():
+            after = PRODUCTION_LOG.read_text(encoding="utf-8", errors="replace")
+        self.assertNotIn(
+            marker, after,
+            "a redirected server still appended to the real log",
+        )
 
     def test_the_formatter_tokens_survive_interpolation(self):
         """%(asctime)s must not be eaten by the same interpolation pass.

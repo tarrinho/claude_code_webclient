@@ -101,6 +101,140 @@ class QuestionExtractionQA(unittest.TestCase):
         self.assertIn("git status", blocks[0]["text"])
 
 
+class GatewayPayloadShapeQA(unittest.TestCase):
+    """A question must survive whichever wire shape the backend used.
+
+    Anthropic sends ``questions`` as a JSON array. An OpenAI-compatible gateway
+    (LiteLLM, vLLM -- tool ids like ``chatcmpl-tool-*``) sends tool arguments as
+    a *string* of JSON. Iterating that string walked it one character at a time,
+    none of which is a dict, so every entry was skipped and the question vanished
+    with nothing logged. Questions therefore showed in some conversations and not
+    others purely by which backend served the turn.
+    """
+
+    def _ask_with(self, payload, qid="gw1"):
+        return {"type": "tool_use", "id": qid, "name": "AskUserQuestion",
+                "input": {"questions": payload}}
+
+    def test_a_json_string_payload_is_parsed_into_a_question(self):
+        payload = json.dumps([{
+            "question": "Which feature next?", "header": "Next",
+            "multiSelect": False,
+            "options": [{"label": "Highlighting", "description": "Prism.js"},
+                        {"label": "Retry", "description": "Re-submit"}],
+        }])
+        blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
+        self.assertEqual(blocks[0]["kind"], "question")
+        entry = blocks[0]["questions"][0]
+        self.assertEqual(entry["question"], "Which feature next?")
+        self.assertEqual(entry["header"], "Next")
+        self.assertEqual([o["label"] for o in entry["options"]],
+                         ["Highlighting", "Retry"])
+
+    def test_a_single_question_sent_unwrapped_still_renders(self):
+        payload = json.dumps({
+            "question": "Proceed?", "header": "Confirm", "multiSelect": False,
+            "options": [{"label": "Yes", "description": ""}],
+        })
+        blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
+        self.assertEqual(blocks[0]["kind"], "question")
+        self.assertEqual(blocks[0]["questions"][0]["question"], "Proceed?")
+
+    def test_multi_select_survives_the_string_round_trip(self):
+        payload = json.dumps([{
+            "question": "Pick any", "header": "Many", "multiSelect": True,
+            "options": [{"label": "A", "description": ""}],
+        }])
+        blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
+        self.assertTrue(blocks[0]["questions"][0]["multi_select"])
+
+    def test_a_corrupt_but_question_shaped_payload_stays_visible(self):
+        # Observed in a real transcript: a gateway emitted mismatched escaping,
+        # so the options cannot be recovered. Dropping it hid the fact that the
+        # agent had stopped and was waiting on an answer.
+        payload = ('[{"question": "Which one?", "options": [{"label": '
+                   '\\\"Broken\\\", \\\"description\\\": \\\"bad\\\"}]}]')
+        blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
+        self.assertEqual(blocks[0]["kind"], "question")
+        self.assertTrue(blocks[0].get("unreadable"))
+        self.assertIn("could not be read", blocks[0]["questions"][0]["question"])
+
+    def test_a_scrap_that_names_no_question_is_not_promoted(self):
+        # The counterpart guarantee: garbage must not be invented into an ask.
+        for scrap in ("nope", "", "   ", json.dumps("nope"), json.dumps(5)):
+            blocks = _blocks([_record("assistant", [self._ask_with(scrap)])])
+            kinds = [b["kind"] for b in blocks]
+            self.assertNotIn("question", kinds, repr(scrap))
+
+    def test_the_anthropic_list_shape_is_unchanged(self):
+        # Regression guard: the fix must not alter the path that already worked.
+        blocks = _blocks([_record("assistant", [_ask()])])
+        self.assertEqual(blocks[0]["kind"], "question")
+        self.assertEqual(blocks[0]["questions"][0]["question"], "Pick one")
+        self.assertEqual(len(blocks[0]["questions"][0]["options"]), 2)
+        self.assertNotIn("unreadable", blocks[0])
+
+    def test_a_string_payload_is_answerable_and_pairs_by_id(self):
+        # The whole point of surfacing it: the answer must still pair up, or the
+        # question would stay listed as pending forever.
+        payload = json.dumps([{
+            "question": "Pick one", "header": "H", "multiSelect": False,
+            "options": [{"label": "A", "description": ""}],
+        }])
+        blocks = _blocks([
+            _record("assistant", [self._ask_with(payload, qid="gwPair")]),
+            _record("user", [_result("gwPair")]),
+        ])
+        answer = next(b for b in blocks if b["kind"] == "answer")
+        self.assertEqual(answer["id"], "gwPair")
+        self.assertEqual(answer["status"], "answered")
+
+
+class PendingQuestionShapeQA(unittest.TestCase):
+    """pending_question() drives the sidebar badge and the answer controls.
+
+    It shares _question_block with the render path, so a shape that path could
+    not read also left the conversation looking idle while it was in fact
+    blocked -- no badge, no controls, nothing to answer.
+    """
+
+    def _write(self, tmp, records):
+        from pathlib import Path
+        path = Path(tmp) / "t.jsonl"
+        path.write_bytes(b"\n".join(json.dumps(r).encode() for r in records))
+        return path
+
+    def _pending_via_scan(self, records):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, records)
+            return transcripts._scan_questions_sync(path)
+
+    def test_an_unanswered_string_payload_is_reported_pending(self):
+        payload = json.dumps([{
+            "question": "Still waiting?", "header": "H", "multiSelect": False,
+            "options": [{"label": "Yes", "description": ""}],
+        }])
+        ask = {"type": "tool_use", "id": "p1", "name": "AskUserQuestion",
+               "input": {"questions": payload}}
+        found = self._pending_via_scan([_record("assistant", [ask])])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["questions"][0]["question"], "Still waiting?")
+
+    def test_an_answered_string_payload_is_not_reported_pending(self):
+        payload = json.dumps([{
+            "question": "Done?", "header": "H", "multiSelect": False,
+            "options": [{"label": "Yes", "description": ""}],
+        }])
+        ask = {"type": "tool_use", "id": "p2", "name": "AskUserQuestion",
+               "input": {"questions": payload}}
+        found = self._pending_via_scan([
+            _record("assistant", [ask]),
+            _record("user", [_result("p2")]),
+        ])
+        self.assertEqual(found, [])
+
+
 class AnswerPairingQA(unittest.TestCase):
     def test_an_answer_is_kept_and_paired_by_id(self):
         blocks = _blocks([

@@ -22,18 +22,16 @@ churn.
 
 ## [Unreleased]
 
-> This block was written as `## [0.9.3] — 2026-08-31` before `config.VERSION`
-> was bumped, so the file claimed a release the build had never been. It is
-> `[Unreleased]` until someone bumps the constant, which is the order §15a
-> rule 1 sets out: work accumulates here, and the bump renames the section with
-> that day's date. The work itself is deployed — the heading was the only thing
-> that was wrong.
->
-> Bumping instead would have been the other valid repair. It was not taken
-> because the version is stated in five files besides `config.py`, two of which
-> have another session's uncommitted work in them right now: a bump that
-> updated three of the five would land exactly the half-applied state the
-> version-consistency tests exist to catch.
+## [0.9.3] — 2026-09-01
+
+> The bump this section was waiting on. It sat as `[Unreleased]` for a day
+> because the version is stated in five files besides `config.py` and two of
+> them held another session's uncommitted work, so a partial bump would have
+> landed the half-applied state the version-consistency tests exist to catch.
+> All six were moved together this time and `tests/test_qa_version_consistency.py`
+> was run against the result. `docs/threat-model.md` still reads 0.9.2 on
+> purpose: it records which build was security-analysed, and rewriting it would
+> claim an analysis nobody performed.
 
 ### Added
 
@@ -61,8 +59,14 @@ churn.
   ``updated_at`` differs from ``created_at`` the list item renders
   ``· 3 days ago`` alongside the status badge.
 
-- **The auth middleware now skips ``/dev/*`` routes.** They are intentionally
-  public development endpoints.
+- ~~**The auth middleware now skips ``/dev/*`` routes.** They are intentionally
+  public development endpoints.~~ **Withdrawn — this was never a feature.** The
+  exemption was one session's uncommitted debug scaffolding, swept into a commit
+  by a whole-file `git add`, and this entry recorded a later reader's reasonable
+  guess that it had been deliberate. It was not, and the sentence above states
+  the opposite of the truth about an authentication boundary. Struck rather than
+  deleted so the misreading stays visible; see **Security** below for what
+  actually happened and `rules.md` §16 registry #55. `/dev/*` is **not** public.
 
 - **A question can be declined instead of answered.** Every control in the
   question bar answered the question, so a question that did not deserve an
@@ -87,6 +91,33 @@ churn.
   Where the terminal cannot be reached at all the control reads *Hide* and
   sends nothing, because calling it "Don't answer" there would promise a
   session had been let go while it is still sitting on the prompt.
+
+- **Five supervisor UX affordances.** Keyboard shortcuts (`Ctrl`/`Alt`+`Enter`
+  to send, `Ctrl`+`N` for a new supervisor, `Escape` to close a banner, `1`–`4`
+  to focus a panel), expandable task rows that show a task's result inline
+  instead of only in the right panel, an unread badge in the top bar, a pulse on
+  a supervisor's status badge when its status changes, and a goal banner that
+  shrinks to a slim strip once streamed output pushes it above the fold, with an
+  arrow to expand it again.
+
+  Four of the five needed a second pass, and all four first cuts were the kind
+  that read correctly and do not work. The bare `1`–`4` keys had no
+  typing guard, so every digit typed into the composer threw focus at a panel —
+  the composer could not be used for a prompt containing a number, which is
+  worse than having no shortcut. Those keys also called `.focus()` on plain
+  `<div>`s, a silent no-op without `tabindex`, so three of the four did nothing
+  even outside the composer. The restore arrow cleared the shrink flag but not
+  the reason for it, so the next streamed message re-shrank the banner the user
+  had just expanded — about a second on a live supervisor, so the control looked
+  inert. The unread badge counted log events only, missing chat messages, which
+  is the one thing anyone actually misses while scrolled up. And the expand
+  toggle's CSS was scoped under `.task-detail-row` while the button lives in
+  `.task-item`, a *sibling* of that row, so the rule matched nothing and the
+  control rendered as default chrome.
+
+  Recorded in this much detail because every one of those passes a
+  source-substring test: the call is present, the listener is attached, the
+  class is in the stylesheet. See the new browser coverage under *Testing*.
 
 ### Fixed
 
@@ -117,6 +148,119 @@ churn.
   test used a brittle ``split("renderSupervisorList()")`` approach that could
   hit a helper's closing brace. It now uses brace-depth parsing so the
   ``loadSupervisors`` function body is extracted accurately.
+
+- **The proxy resolves the Claude binary without depending on PATH.**
+  `bin/wc-proxy-run.sh` now exports an absolute `WC_CLAUDE_PATH`, resolved from
+  `~/.local/bin`, `/usr/local/bin`, `/usr/bin` and finally `command -v`. A
+  missing binary warns loudly and still starts, rather than aborting or — as
+  before — proceeding silently.
+
+  `systemd --user` supplies a PATH without `~/.local/bin`, and
+  `claude_proxy.py` refuses to spawn when `shutil.which("claude")` returns
+  None, so without this **every turn fails** with "claude binary not found" —
+  which the UI shows only as a failed turn. This is the second time the fix has
+  been made: the first was an `export PATH=` line that existed only in the
+  shared working tree, was never committed, and was reverted by another
+  session's checkout. Nothing broke at the time, because the running proxy kept
+  the environment it had started with — so the regression sat dormant for
+  eighteen hours and detonated on the next restart. Now pinned by
+  `tests/test_qa_proxy_claude_path.py`, which executes the resolution block
+  under systemd's real PATH instead of reading it.
+
+- **`wc.transcripts` is declared in `logging.conf`.** `transcripts.py` logs the
+  repair pass, paging and usage extraction through a logger the config never
+  declared, so its records reached the file only by propagating to root — the
+  arrangement registry #31 removed for `wc.auth` and `wc.db`. Caught by the
+  guard from that same entry, which derives the logger list from source
+  precisely so a new `wc.*` logger cannot be added without being declared.
+
+- **Two tests fixed that could no longer pass, for reasons unrelated to the
+  code they cover.** Both were reporting failure against working behaviour,
+  which is worse than not existing: they train a reader to discount the suite.
+
+  - `test_qa_supervisor_dismiss_endtoend.py::test_a_later_ask_brings_it_back`
+    hardcoded its "later" message as `2026-09-01T09:00:00Z`. The dismissal it
+    must post-date is stamped with the real `_now()`, and the feed suppresses
+    anything with `stamp <= dismissed_at` — so the case passed all morning and
+    then failed permanently once the clock passed 09:00Z, with an assertion
+    message pointing at a "permanent mute" bug that does not exist. It now
+    derives the timestamp from the dismissal it just made.
+  - `test_qa_log_path.py::test_nothing_reaches_the_production_log` compared the
+    production log's **byte size** before and after its probe. That measures
+    every writer — the live server, the health timer, five other sessions — so
+    on the machine this project runs on it failed for traffic unrelated to the
+    probe, and passed only on an idle box (registry #36's shape). It now
+    asserts a unique marker is absent from the production log and present in
+    the redirect target, which is the property the test is named for and is
+    immune to concurrent writers.
+
+- **The supervisor page's 30-second poller can be stopped.** It was a bare
+  `setInterval` — no handle, no teardown — which rules.md §4 names as *the*
+  failure case. It now holds `_refreshTimer`, guards re-entry with
+  `if (!_refreshTimer)`, and clears on `pagehide`. The guard matters beyond the
+  handle: the console loads this page in an iframe it *resets* rather than
+  navigates, so a second `init()` is reachable and would have leaked the
+  previous timer, leaving two polls running with only one of them stoppable.
+
+  Worth recording is why it survived. The sweep that fixed every other bare
+  timer (`3a68c5c`, "hold every repeating timer"), §4's verification command,
+  and `tests/test_qa_timer_handles.py` had all inherited the same glob —
+  `web/assets/*.js` — and `web/supervisor.js` is the one client script that
+  lives directly in `web/`. So three apparently independent confirmations that
+  the rule held were a single blind spot counted three times. All three globs
+  were widened; the test additionally pins its own **scope**, because the scope
+  was the defect and a test that only checked the regex kept passing.
+
+### Testing
+
+- **The supervisor UX affordances are covered in a real browser.**
+  `tests/test_qa_supervisor_ux_shortcuts.py` loads the actual page in headless
+  Chromium and drives it the way a user does — real clicks, real keystrokes,
+  real scrolls, and real stream frames pushed through the `window._supervisorSSE`
+  the page already exports. `supervisor.js` is an IIFE, so nothing inside is
+  reachable by name, which is the point: the tests can only use the handles a
+  user has. One of them asks the browser for the toggle's computed `cursor`,
+  because a CSS rule scoped to the wrong ancestor is invisible to any check that
+  reads the stylesheet as text.
+
+  Each of the five headline bugs was reintroduced into throwaway copies of the
+  two web files to confirm the matching test fails against it. All five did.
+  Tests that pass against the defect they name are the recurring failure in this
+  area — two earlier browser suites seeded fixtures that the broken code handled
+  fine — so having teeth is verified rather than assumed.
+
+  Chromium costs ~25 s to start here and that is fixed overhead, so the file
+  shares one launch across all 28 tests, with each feature area isolated so one
+  failure does not erase the evidence from the others.
+
+### Security
+
+- **The `/dev/` prefix no longer bypasses authentication.** `AuthMiddleware`
+  exempted every path under `/dev/` from the session check, so any route added
+  there in future would have been unauthenticated by default — and this
+  application spawns Claude Code with `--dangerously-skip-permissions`, so an
+  unauthenticated route under that prefix is remote code execution.
+
+  The exemption was **debug scaffolding of mine that nobody meant to ship.** I
+  added it, uncommitted, on 2026-08-31 at 18:11 alongside a throwaway
+  `/dev/supervisor-trigger` endpoint used to reproduce a supervisor failure.
+  Twenty-eight minutes later `1f7c914` — a commit about pause/resume, recency
+  sort and member heartbeat — swept both into itself; `dc85305` then removed the
+  endpoint and left the exemption behind. A later session found the orphaned
+  line in `HEAD`, read it as intentional, and wrote
+  `test_auth_middleware_skips_dev_routes` to defend it as "a live product
+  decision".
+
+  Nothing was exploitable: with no route registered under the prefix, requests
+  returned 404. The defect was latent, and the misattribution is the part worth
+  recording — a whole-file commit did not merely move a line, it manufactured a
+  product decision out of somebody's debris and then acquired a test guarding
+  it. See rules.md §16 registry #55.
+
+  That test's own docstring anticipated this: *"If that exemption is dropped,
+  this assertion is the one that will say so, and it should then be deleted
+  rather than weakened."* It is another session's committed file, so it is
+  flagged rather than edited here.
 
 ---
 

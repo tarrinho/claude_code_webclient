@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Supervisor — WebConsole 0.9.2</title>
+    <title>Supervisor — WebConsole 0.9.3</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; }
@@ -833,6 +833,107 @@
             background: #2563eb;
             transform: scale(1.05);
         }
+
+        /* ── Status pulse animation ─────────────────────────────────── */
+        @keyframes status-flash {
+            0% { box-shadow: 0 0 0 2px rgba(59,130,246,0); }
+            50% { box-shadow: 0 0 0 4px rgba(59,130,246,0.3); }
+            100% { box-shadow: 0 0 0 2px rgba(59,130,246,0); }
+        }
+        .status-badge.flash {
+            animation: status-flash 0.6s ease-out;
+        }
+
+        /* ── Goal banner slim strip (when shrunken) ──────────────────── */
+        .goal-banner.slim {
+            padding: 4px 10px;
+            margin-bottom: 6px;
+        }
+        .goal-banner.slim .goal-label {
+            font-size: 10px;
+            padding-top: 0;
+        }
+        .goal-banner.slim .goal-text {
+            font-size: 12px;
+            max-height: 1.5em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .goal-banner.slim .goal-banner-dismiss {
+            font-size: 12px;
+        }
+        .goal-banner-restore {
+            border: none;
+            background: none;
+            color: #60a5fa;
+            font-size: 12px;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .goal-banner-restore:hover { color: #2563eb; }
+
+        /* ── Expandable task detail row ─────────────────────────────── */
+        .task-detail-row {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.2s ease-out;
+            background: #f8fafc;
+            border-left: 3px solid #3b82f6;
+        }
+        .task-detail-row.expanded {
+            max-height: 300px;
+        }
+        .task-detail-inner {
+            padding: 8px 12px 8px 24px;
+            font-size: 12px;
+            color: #4a5568;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        /* The toggle lives in .task-item, which is a *sibling* of the detail
+           row -- scoping it under .task-detail-row matched nothing and left
+           the button unstyled. */
+        .task-item .expand-toggle {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 10px;
+            padding: 0;
+            flex-shrink: 0;
+            transition: color 0.1s;
+        }
+        .task-item .expand-toggle:hover { color: #3b82f6; }
+        .task-item .expand-toggle:focus-visible {
+            outline: 2px solid #3b82f6;
+            outline-offset: 1px;
+        }
+
+        /* ── Top bar notification badge ─────────────────────────────── */
+        #topbar .notif-badge {
+            display: inline-block;
+            background: #ef4444;
+            color: #fff;
+            border-radius: 8px;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 5px;
+            margin-left: 4px;
+            min-width: 16px;
+            text-align: center;
+            opacity: 0;
+            transform: scale(0.5);
+            transition: opacity 0.15s, transform 0.15s;
+            pointer-events: none;
+        }
+        #topbar .notif-badge.visible {
+            opacity: 1;
+            transform: scale(1);
+        }
     </style>
 </head>
 <body>
@@ -840,9 +941,10 @@
         <a href="/" class="home-link">WebConsole</a>
         <span>&#8212;</span>
         <span>Supervisor</span>
+        <span id="topbar-badge" class="notif-badge" hidden>0</span>
         <button id="new-supervisor-btn">+ New</button>
         <span class="spacer"></span>
-        <span class="top-info" id="topbar-info">0.9.2</span>
+        <span class="top-info" id="topbar-info">0.9.3</span>
     </div>
 
     <div id="layout">
@@ -855,7 +957,11 @@
                 <button class="panel-btn" data-max="left" title="Maximize">&#9633;</button>
             </div>
             <div id="supervisor-list"></div>
-            <div id="task-tree"></div>
+            <!-- tabindex="-1" so the 1-4 shortcuts can focus these panels.
+                 A div is not focusable without it, so .focus() was silently
+                 doing nothing. -1 keeps them out of the tab order while still
+                 letting arrow keys scroll them once focused. -->
+            <div id="task-tree" tabindex="-1"></div>
             <!-- Members: the conversations and agents this supervisor watches.
                  Below the task tree because tasks are what a supervisor does
                  and members are what it is pointed at; the two are deliberately
@@ -887,6 +993,7 @@
                     <div class="goal-label">🎯 Goal</div>
                     <div class="goal-text" id="goal-text"></div>
                     <button class="goal-banner-dismiss" title="Dismiss goal" aria-label="Dismiss goal">&times;</button>
+                    <button class="goal-banner-restore" title="Expand goal" aria-label="Expand goal" hidden>▼</button>
                 </div>
                 <div id="completion-banner" class="completion-banner" hidden>
                     <div class="completion-icon">✅</div>
@@ -897,7 +1004,7 @@
                     </div>
                     <button class="completion-close" data-action="close-completion" title="Dismiss">&times;</button>
                 </div>
-                <div id="chat-messages"></div>
+                <div id="chat-messages" tabindex="-1"></div>
                 <!-- Floating scroll-down button: appears when user scrolls up -->
                 <button id="chat-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
             </div>
@@ -915,7 +1022,7 @@
                 <h2>Event Log</h2>
                 <button class="panel-btn" data-max="bottom" title="Maximize">&#9633;</button>
             </div>
-            <div id="event-log"></div>
+            <div id="event-log" tabindex="-1"></div>
                 <!-- Floating scroll-down button: appears when user scrolls up -->
                 <button id="log-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
             </div>

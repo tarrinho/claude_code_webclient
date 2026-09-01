@@ -16,6 +16,14 @@
   let sseStream = null;
   let csrfToken = "";
 
+  // The 30s refresh poller, held rather than left bare. rules.md §4 names a
+  // bare `setInterval` as the failure case: nothing can stop it, and it doubles
+  // the moment its enclosing setup runs twice. This one was missed by the sweep
+  // that fixed every other timer (`3a68c5c`) because that sweep, §4's grep and
+  // the test enforcing it all looked only at `web/assets/*.js` -- and this is
+  // the one client script that lives directly in `web/`.
+  let _refreshTimer = null;
+
   // Smart-scroll state for chat and event log: follow along only when the
   // user is at the bottom (within 20px), otherwise let them read freely.
   // A floating button invites them back to the latest when they've scrolled up.
@@ -23,6 +31,23 @@
   let logScrollFollow = true;
   let _chatScrollBtn = null;
   let _logScrollBtn = null;
+
+  // Notification badge count: SSE events that arrive while user is scrolled up.
+  let _unreadCount = 0;
+
+  // Goal banner shrink: transitions to slim strip when user scrolls past it.
+  let _goalShrunk = false;
+
+  // Set when the user expands the slim strip back by hand. Without it the very
+  // next streamed message re-shrank the banner they had just expanded, so the
+  // restore arrow looked like it did nothing. Cleared when a new goal is set.
+  let _goalUserRestored = false;
+
+  // Expanded task row: only one detail row open at a time.
+  let _expandedTaskId = null;
+
+  // Track previous supervisor statuses so we can flash badges on change.
+  let _prevStatuses = {};
 
   // ── Panel sizing state ──────────────────────────────────────────────
   const PANEL_MIN_WIDTHS = { left: 200, center: 300, right: 200 };
@@ -142,6 +167,8 @@
     completionStats: $("#completion-stats"),
     completionSummary: $("#completion-summary"),
     goalDismissBtn: $(".goal-banner-dismiss"),
+    topbarBadge: $("#topbar-badge"),
+    goalRestoreBtn: $(".goal-banner-restore"),
     completionCloseBtn: $(".completion-close"),
     pauseResumeBtn: $("#pauseResumeBtn"),
   };
@@ -228,6 +255,18 @@
 
     el.supervisorList.querySelectorAll(".supervisor-list-item").forEach((row) => {
       row.addEventListener("click", () => selectSupervisor(row.dataset.id));
+
+      // Status pulse: flash badge when the supervisor's status changed.
+      const rowId = row.dataset.id;
+      const sup = supervisors.find((s) => s.id === rowId);
+      if (sup && _prevStatuses[rowId] && _prevStatuses[rowId] !== (sup.status || "idle")) {
+        const badge = row.querySelector(".status-badge");
+        if (badge) {
+          badge.classList.add("flash");
+          setTimeout(() => badge.classList.remove("flash"), 700);
+        }
+      }
+      _prevStatuses[rowId] = sup?.status || "idle";
 
       const titleEl = row.querySelector(".sl-title");
       if (!titleEl) return;
@@ -354,6 +393,9 @@
 
   function selectSupervisor(id) {
     activeSupervisorId = id;
+    // The count belongs to the conversation you were reading, not to the one
+    // you just opened.
+    clearBadge();
     rememberOpen(id);
     renderSupervisorList();
     showActiveSupervisor();
@@ -443,6 +485,11 @@
 
   function showGoalBanner(promptText) {
     _currentGoal = promptText;
+    // A new goal starts expanded, whatever the user did to the last one.
+    _goalShrunk = false;
+    _goalUserRestored = false;
+    el.goalBanner.classList.remove("slim");
+    if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = true;
     el.goalText.textContent = promptText;
     el.goalBanner.hidden = false;
     // Scroll goal banner into view
@@ -451,7 +498,57 @@
 
   function dismissGoalBanner() {
     _currentGoal = null;
+    _goalShrunk = false;
+    _goalUserRestored = false;
+    el.goalBanner.classList.remove("slim");
     el.goalBanner.hidden = true;
+    if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = true;
+  }
+
+  function restoreGoalBanner() {
+    _goalShrunk = false;
+    // Sticky: this is the user overruling the auto-shrink, so it has to
+    // outlast the next message.
+    _goalUserRestored = true;
+    el.goalBanner.classList.remove("slim");
+    if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = true;
+  }
+
+  function shrinkGoalBanner() {
+    if (!_currentGoal || _goalShrunk || _goalUserRestored) return;
+    _goalShrunk = true;
+    el.goalBanner.classList.add("slim");
+    if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = false;
+  }
+
+  // ── Notification badge ────────────────────────────────────────────
+
+  function updateNotificationBadge() {
+    const badge = el.topbarBadge;
+    if (!badge) return;
+    if (_unreadCount > 0) {
+      badge.textContent = _unreadCount > 99 ? "99+" : String(_unreadCount);
+      badge.classList.add("visible");
+      badge.hidden = false;
+    } else {
+      badge.classList.remove("visible");
+      badge.hidden = true;
+    }
+  }
+
+  // Count only what the user cannot currently see. While they are parked at
+  // the bottom the content is already in front of them, so a badge would just
+  // be noise they have to clear.
+  function incrementBadge(n) {
+    if (chatScrollFollow) return;
+    _unreadCount += n > 0 ? n : 1;
+    updateNotificationBadge();
+  }
+
+  function clearBadge() {
+    if (_unreadCount === 0) return;
+    _unreadCount = 0;
+    updateNotificationBadge();
   }
 
   // ── Completion banner ────────────────────────────────────────────────
@@ -494,6 +591,7 @@
   function renderTaskTree() {
     if (!tasks.length) {
       el.taskTree.innerHTML = '<div class="empty-state">No tasks yet. Wait for the supervisor to create a plan.</div>';
+      _expandedTaskId = null;
       return;
     }
     el.taskTree.innerHTML = tasks
@@ -502,26 +600,58 @@
         const progress = Math.min(100, Math.round(t.progress_pct || 0));
         const progressClass = progress >= 100 ? "complete" : "";
         const isActive = t.id === activeTaskId;
+        const isExpanded = t.id === _expandedTaskId;
+        const expandClass = isExpanded ? "expanded" : "";
+        const expandIcon = isExpanded ? "▼" : "▶";
+        const expandLabel = isExpanded ? "Collapse" : "Expand";
+        const depsHtml = t.depends_on && t.depends_on.length
+          ? `<div class="task-deps">depends on: ${t.depends_on.map(d => esc(d)).join(", ")}</div>` : "";
+        const descHtml = t.description
+          ? `<div class="task-meta" style="color:#64748b;font-size:11px;padding-left:16px;margin-top:1px;">${esc(t.description.substring(0, 80))}${t.description.length > 80 ? "..." : ""}</div>` : "";
+        const resultHtml = (t.status === "done" && t.result)
+          ? esc(t.result.substring(0, 200)) : "";
+        const modelHtml = t.model ? esc(t.model) : "";
         return `<div class="task-item ${isActive ? "active" : ""}" data-task-id="${t.id}">
           <div class="task-header">
+            <button class="expand-toggle" data-expand="${t.id}" title="${expandLabel}">${expandIcon}</button>
             <span class="task-status-dot ${statusClass}"></span>
             <span class="task-title">${esc(t.title || "Untitled")}</span>
           </div>
-          ${t.description ? `<div class="task-meta" style="color:#64748b;font-size:11px;padding-left:16px;margin-top:1px;">${esc(t.description.substring(0, 80))}${t.description.length > 80 ? "..." : ""}</div>` : ""}
-          ${t.depends_on && t.depends_on.length ? `<div class="task-deps">depends on: ${t.depends_on.map(d => esc(d)).join(", ")}</div>` : ""}
+          ${descHtml}${depsHtml}
           <div class="task-meta">
             <span class="status-badge ${statusClass}">${statusClass}</span>
-            ${t.model ? `<span>${esc(t.model)}</span>` : ""}
+            ${modelHtml ? `<span>${modelHtml}</span>` : ""}
           </div>
           <div class="task-progress-bar">
             <div class="task-progress-fill ${progressClass}" style="width:${progress}%"></div>
+          </div>
+        </div>
+        <div class="task-detail-row ${expandClass}" data-detail="${t.id}">
+          <div class="task-detail-inner">
+            ${resultHtml ? `<div><strong>Result:</strong> ${resultHtml}${t.result && t.result.length > 200 ? "…" : ""}</div>` : ""}
           </div>
         </div>`;
       })
       .join("");
 
     el.taskTree.querySelectorAll(".task-item").forEach((el) => {
-      el.addEventListener("click", () => selectTask(el.dataset.taskId));
+      el.addEventListener("click", (e) => {
+        // Don't open when clicking expand toggle
+        if (e.target.closest(".expand-toggle")) return;
+        selectTask(el.dataset.taskId);
+      });
+    });
+    el.taskTree.querySelectorAll(".expand-toggle").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.expand;
+        if (_expandedTaskId === id) {
+          _expandedTaskId = null;
+        } else {
+          _expandedTaskId = id;
+        }
+        renderTaskTree();
+      });
     });
   }
 
@@ -711,6 +841,7 @@
   }
 
   function handleSSEEvents(events) {
+    if (events.length) incrementBadge(events.length);
     events.forEach((e) => {
       if (e.type === "task_start") {
         addLogEntry("task_start", `Task ${e.task_id}: ${e.data.title || ""}`);
@@ -740,6 +871,15 @@
         } catch (_) { /* skip malformed */ }
       });
       renderChatMessages();
+      // A message the user has scrolled away from is the main thing a badge is
+      // for; counting only log events missed it.
+      incrementBadge(newMsgs.length);
+      // New chat content pushes the goal above the fold, so compact it. Guarded
+      // on chatScrollFollow only: when the user has scrolled up they are not
+      // looking at the banner and moving it under them is disorienting.
+      if (chatScrollFollow) {
+        shrinkGoalBanner();
+      }
     }
   }
 
@@ -1309,7 +1449,7 @@
   // ── Init ─────────────────────────────────────────────────────────────
   function init() {
     // Version display
-    if (el.topbarInfo) el.topbarInfo.textContent = "0.9.2";
+    if (el.topbarInfo) el.topbarInfo.textContent = "0.9.3";
 
     // Event listeners
     el.newSupervisorBtn.addEventListener("click", createSupervisor);
@@ -1333,6 +1473,52 @@
     el.promptInput.addEventListener("input", autoGrowComposer);
 
     el.goalDismissBtn?.addEventListener("click", dismissGoalBanner);
+    el.goalRestoreBtn?.addEventListener("click", restoreGoalBanner);
+
+    // Keyboard shortcuts — global.
+    //
+    // Whether a shortcut may fire while the user is typing is decided per
+    // shortcut, not globally. The unmodified digits are the ones that matter:
+    // without a guard, every "1" typed into the composer threw focus at the
+    // task tree, which made the composer unusable for any prompt containing a
+    // number -- a worse bug than the one the shortcut fixed.
+    const PANEL_KEYS = {
+      "1": () => el.taskTree,
+      "2": () => el.chatMessages,
+      "3": () => el.eventLog,
+      "4": () => el.promptInput,
+    };
+
+    document.addEventListener("keydown", (e) => {
+      // Send. Deliberately allowed while typing: the composer is where you
+      // are when you want it.
+      if ((e.ctrlKey || e.altKey) && e.key === "Enter") {
+        e.preventDefault();
+        sendPrompt();
+        return;
+      }
+      // New supervisor. Both cases, so Shift does not swallow it.
+      if (e.ctrlKey && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        createSupervisor();
+        return;
+      }
+      // Escape closes whichever banner is up. Also allowed while typing --
+      // dismissing a banner should not cost you the composer.
+      if (e.key === "Escape") {
+        if (!el.goalBanner.hidden) dismissGoalBanner();
+        else if (!el.completionBanner.hidden) dismissCompletionBanner();
+        return;
+      }
+      // Panel focus: never while typing, never as part of a chord.
+      if (isTypingTarget(e.target) || e.ctrlKey || e.altKey || e.metaKey) return;
+      const panel = PANEL_KEYS[e.key];
+      if (!panel) return;
+      const node = panel();
+      if (!node) return;
+      e.preventDefault();
+      node.focus();
+    });
     document
       .getElementById("addMembersBtn")
       ?.addEventListener("click", () => {
@@ -1363,12 +1549,30 @@
     // opens in -- the list never updated at all, and a supervisor created
     // anywhere else appeared only after a manual reload. Tasks genuinely need
     // an active supervisor; the list does not.
-    setInterval(() => {
-      loadSupervisors();
-      if (activeSupervisorId) {
-        loadTasks();
+    // Guarded, not merely assigned: `init()` runs on DOMContentLoaded, which
+    // fires once per document today -- but that is a property of where the call
+    // sits rather than of the code, and this page is loaded in an iframe whose
+    // `src` the console resets each time the supervisor pane opens. The guard
+    // makes a second `init()` idempotent instead of doubling the poll rate.
+    if (!_refreshTimer) {
+      _refreshTimer = setInterval(() => {
+        loadSupervisors();
+        if (activeSupervisorId) {
+          loadTasks();
+        }
+      }, 30000);
+    }
+
+    // Stop the poller with the document rather than leaving it to be torn down
+    // implicitly. The iframe is reset rather than navigated, so `pagehide` is
+    // the event that reliably fires for it; a poll that outlives its document
+    // is the thing the handle exists to prevent.
+    window.addEventListener("pagehide", () => {
+      if (_refreshTimer) {
+        clearInterval(_refreshTimer);
+        _refreshTimer = null;
       }
-    }, 30000);
+    });
 
     // Smart scroll: follow along only when the user is at the bottom (within
     // 20px). A floating button invites them back when they've scrolled up.
@@ -1380,6 +1584,9 @@
         el.chatMessages.scrollTo({ top: el.chatMessages.scrollHeight, behavior: "smooth" });
         chatScrollFollow = true;
         hideScrollBtn(_chatScrollBtn);
+        // Explicit, not left to the scroll handler: the smooth scroll may be
+        // interrupted before it ever reports reaching the bottom.
+        clearBadge();
       });
     }
     if (_logScrollBtn) {
@@ -1395,6 +1602,8 @@
         if (isNearBottom(el.chatMessages)) {
           chatScrollFollow = true;
           hideScrollBtn(_chatScrollBtn);
+          // Back at the bottom: they have caught up by definition.
+          clearBadge();
         } else {
           chatScrollFollow = false;
           showScrollBtn(_chatScrollBtn);
@@ -1412,6 +1621,17 @@
         }
       });
     }
+  }
+
+  // ── Keyboard helpers ───────────────────────────────────────────────
+
+  // Whether a keystroke on this element is the user writing text. Bare-key
+  // shortcuts must stand down for these, or they eat the keystroke.
+  function isTypingTarget(node) {
+    if (!node) return false;
+    const tag = (node.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select"
+      || node.isContentEditable === true;
   }
 
   // ── Scroll helpers ─────────────────────────────────────────────────

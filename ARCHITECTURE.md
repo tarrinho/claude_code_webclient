@@ -2,7 +2,7 @@
 
 A self-hosted web interface for a local Claude Code CLI. It provides mobile-friendly conversations, SSE token streaming, SQLite persistence, resumable CLI sessions, multi-machine AI routing, and skills inventory.
 
-**Version:** 0.9.2
+**Version:** 0.9.3
 **License:** Proprietary
 
 ---
@@ -33,6 +33,10 @@ WebConsole bridges a web browser and the Claude Code CLI. A single authenticated
 | Mode | How it works | When to use |
 |------|--------------|-------------|
 | **Direct** | FastAPI spawns `claude` as a subprocess, reads stream-json NDJSON from stdout | Web app and Claude Code on the same machine |
+| **Proxy** | FastAPI connects to a host-side TCP proxy (`claude_proxy.py`) which spawns Claude | FastAPI runs in a container; Claude lives on the host |
+
+The proxy mode is the default and recommended path. The proxy handles Claude's stream-json output, normalizes it into a simple event protocol, and relays events back over TCP.
+
 ### Turn ownership (`turns.py`)
 
 A turn belongs to the server, not to the browser that started it. It runs as an
@@ -65,10 +69,6 @@ persisted, because the point of the feature is that the user can walk away.
 The queue drains one prompt per clean finish and is **held** on failure rather
 than fed into a conversation that has just broken.
 
-| **Proxy** | FastAPI connects to a host-side TCP proxy (`claude_proxy.py`) which spawns Claude | FastAPI runs in a container; Claude lives on the host |
-
-The proxy mode is the default and recommended path. The proxy handles Claude's stream-json output, normalizes it into a simple event protocol, and relays events back over TCP.
-
 ---
 
 ## 2. Architecture Diagrams
@@ -83,7 +83,7 @@ graph TB
     end
 
     subgraph WebConsole["FastAPI WebConsole\nPython 3.13 / uvicorn"]
-        MW["Middleware Stack\nCORS → Security → CSRF → Auth"]
+        MW["Middleware Stack\nSecurity → Auth → CSRF → CORS"]
         Routes["Route Handlers\nAuth · Chats · Sessions\nSettings · Machines · Skills"]
         Runner["Runner Module\nConcurrency Gate\nProxy / Direct"]
         DBAccess["DB Layer\naiosqlite / WAL"]
@@ -128,10 +128,10 @@ flowchart LR
     subgraph A["FastAPI Request Lifecycle"]
         direction TB
         R[Request arrives]
-        MW_C[CORS Middleware\norigin check]
         MW_S[Security Middleware\nCSP · HSTS · headers]
-        MW_C[K CSRF Middleware\ntoken validation]
         MW_A[Auth Middleware\nsession resolution]
+        MW_CK[CSRF Middleware\ntoken validation\nmutating verbs only]
+        MW_CO[CORS Middleware\norigin check]
         Dispatch[FastAPI Router\npath matching]
         Handler[Route Handler\nvalidation + business logic]
         DB[(SQLite)]
@@ -144,7 +144,7 @@ flowchart LR
     end
 
     Browser --> R
-    R --> MW_C --> MW_S --> MW_CK --> MW_A --> Dispatch --> Handler
+    R --> MW_S --> MW_A --> MW_CK --> MW_CO --> Dispatch --> Handler
     Handler --> DB
     Handler --> Runner
 
@@ -185,17 +185,35 @@ stateDiagram-v2
 
 ```mermaid
 graph LR
-    subgraph SQLite["SQLite — webconsole.db (WAL mode)"]
+    subgraph SQLite["SQLite — webconsole.db (WAL mode) · 22 tables"]
+        Users[(users)]
         Chats[(chats)]
         Messages[(messages)]
-        Users[(users)]
+        FTS[(messages_fts\n+ 5 shadow tables)]
+        Marks[(read_marks)]
+        Queue[(turn_queue)]
+        Sups[(supervisors)]
+        Tasks[(supervisor_tasks)]
+        SupMsg[(supervisor_messages)]
+        SupMem[(supervisor_members)]
+        Samples[(system_samples)]
+        Usage[(usage_events\nusage_cursors\nrouted_requests)]
         Settings[(settings)]
         Machines[(ai_machines)]
+        Sess[(sessions)]
     end
 
     Chats -->|FK chat_id| Messages
+    Messages -->|indexed| FTS
     Users -->|owner_id| Chats
     Users -->|owner_id| Machines
+    Users -->|owner_id| Sups
+    Users -->|owner_id, kind, ref_id| Marks
+    Chats -->|queued prompts| Queue
+    Sups -->|FK supervisor_id| Tasks
+    Sups -->|FK supervisor_id| SupMsg
+    Sups -->|FK supervisor_id| SupMem
+    SupMem -.->|names a chat or session| Chats
     Settings -->|runtime config| Chats
 
     Chats -->|work_dir| FS_Dir[Directory\nproject workspace/]
@@ -214,6 +232,147 @@ graph LR
     style FS fill:#FFF3E0,stroke:#D97A2C
 ```
 
+### 2.5 Supervisor Run
+
+How a prompt becomes a task graph and then a result. The engine is
+`supervisor.py`; everything below the dashed line runs in a background task the
+request does not wait for.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Browser
+    participant API as POST /api/supervisors/{id}/send
+    participant E as SupervisorEngine
+    participant P as PlanParser
+    participant G as TaskGraph
+    participant DB as SQLite
+    participant R as runner / CLI
+
+    U->>API: {prompt}
+    API->>API: cap at PROMPT_MAX_CHARS
+    API->>E: start_from_user_prompt()
+    E->>E: spawn(_run_planner_turn)
+    API-->>U: {status: "planning"} — returns immediately
+
+    Note over E,R: background task; the HTTP request is already over
+    E->>R: planner turn (backend's own model)
+    R-->>E: plan text
+    E->>P: parse(<<PLAN … >>)
+    P-->>E: [ParsedTask]
+    alt no tasks parsed
+        E->>DB: _set_status("error") + planner reply
+        Note right of E: an unparsable plan used to report<br/>"done" at 0% — a run that never ran
+    else tasks parsed
+        E->>G: add_task per task
+        E->>DB: _set_status("running")
+        loop until all_done()
+            G-->>E: get_ready_tasks()
+            E->>R: _execute_task(prompt, model)
+            R-->>E: result
+            E->>DB: task status + progress
+        end
+        E->>DB: _set_status(any_failed() ? "error" : "done")
+    end
+```
+
+Three properties this diagram is meant to make obvious, each of which was once
+false:
+
+- **The request returns before any work happens.** Anything the caller needs to
+  know afterwards arrives over `/stream`, not in the response.
+- **`all_done()` counts `failed` as terminal.** When it did not, one failed task
+  left the loop spinning at half-second intervals for ever.
+- **Status is written to the database**, not only to the graph. The engine also
+  updates a graph node named `"supervisor"` that nothing creates, so those calls
+  do nothing; `_set_status()` is what the interface actually reads.
+
+### 2.6 Attention Feed — how a row becomes a highlight
+
+`GET /api/supervisor` answers one question: which agents are blocked on the
+user. `classify_chat()` decides, per conversation, and the order of its branches
+matters — a conversation can reach "waiting" by two different routes, and they
+consult different dismissal marks.
+
+```mermaid
+flowchart TD
+    Start[conversation + newest message] --> Arch{archived<br/>or no activity?}
+    Arch -->|yes| Drop1([not listed])
+    Arch -->|no| Live{live turn<br/>or queued prompt?}
+    Live -->|yes| Working([working])
+    Live -->|no| Role{newest message<br/>from the agent?}
+    Role -->|no, user spoke last| Working
+    Role -->|yes| Attn{does it read as<br/>an ask or a blocker?}
+
+    Attn -->|yes| DisA{chat dismissed<br/>after that message?}
+    DisA -->|yes| Drop2([not listed])
+    DisA -->|no| Wait1([WAITING — reason: asks/blocked])
+
+    Attn -->|no| Sess{linked CLI session<br/>and not busy?}
+    Sess -->|no| Read{read after<br/>that message?}
+    Sess -->|yes| DisB{dismissed after<br/>the session last moved?}
+    DisB -->|yes| Drop3([not listed])
+    DisB -->|no| Wait2([WAITING — reason: asks])
+
+    Read -->|yes| Drop4([not listed])
+    Read -->|no| Upd([updated — quiet count])
+
+    style Wait1 fill:#d29922,stroke:#8a6500,color:#000
+    style Wait2 fill:#d29922,stroke:#8a6500,color:#000
+    style Working fill:#4A90D9,stroke:#2C5F8A,color:#fff
+    style Upd fill:#eaeef2,stroke:#8b949e,color:#000
+```
+
+**The two `WAITING` outcomes are why dismissing a row was once impossible.** A
+row reached by the right-hand route is rendered as a *conversation*, so the
+dismiss control writes a `("chat", id)` mark — but that branch consulted only
+the `("session", id)` mark, and additionally required a session status timestamp
+that no non-busy session on this machine carries. The mark was written
+faithfully and read by nothing. Both branches now take the later of the two
+marks, and fall back to the conversation's own last activity when the session
+carries no timestamp.
+
+Dismissal is deliberately not permanent: `db.read_mark_set(dismiss=True)` writes
+the same instant to `read_at` and `dismissed_at`, so the row leaves the feed
+entirely, and any *later* ask raises it again. Opening a conversation marks it
+read but never dismisses it — a question must not be retired by being glanced at.
+
+### 2.7 Supervision and Recovery
+
+Two long-lived processes, and what restarts each when it stops.
+
+```mermaid
+flowchart LR
+    subgraph systemd["systemd --user (lingering enabled)"]
+        App[webconsole.service<br/>Restart=always]
+        Prox[webconsole-proxy.service<br/>Restart=always]
+        Timer[webconsole-health.timer<br/>every 30s]
+        Health[webconsole-health.service]
+    end
+
+    Timer --> Health
+    Health -->|HTTP 200 on /login?| App
+    Health -->|newest system_samples row<br/>still advancing?| App
+    Health -->|port 9000 listening?| Prox
+
+    App -->|launch.sh| Reclaim[reclaim port 443<br/>by pid + cmdline]
+    Reclaim --> Uvicorn[uvicorn app:app<br/>TLS on the tailnet address]
+    Prox --> ProxyProc[claude_proxy.py]
+
+    style systemd fill:#4A90D9,stroke:#2C5F8A,color:#fff
+    style Reclaim fill:#FFF3E0,stroke:#D97A2C,color:#000
+```
+
+The health check asks two independent questions because the first alone was not
+enough: a server whose write path had failed answered `/login` with 200 for
+thirty-seven minutes while recording nothing. `system_samples` is the only table
+written unconditionally on a timer, so silence in it — while the process is old
+enough to have written one — is the honest signal that writes have stopped.
+
+Port reclaim matches on the listening pid's command line, never on a pattern.
+`pkill -f "uvicorn app:app"` matches every test server on the machine, and since
+`launch.sh` runs on each restart, one restart swept them all.
+
 ---
 
 ## 3. Component Breakdown
@@ -222,11 +381,20 @@ graph LR
 
 The single entry point. Registers all routes, middleware, and endpoint handlers.
 
-**Middleware stack** (applied top-to-bottom = outermost-to-innermost):
-1. **CORSMiddleware** — Origins empty (deny-all), methods/headers wildcard. Locks down cross-origin traffic.
-2. **SecurityMiddleware** — Injects CSP (with per-request nonce), HSTS, X-Frame-Options, X-Content-Type-Options, Cache-Control on every response.
-3. **CsrfMiddleware** — Validates `X-CSRF-Token` header matches `wc_csrf` cookie on all mutating requests. `POST /login` is exempt (session cookie itself is the CSRF guard).
-4. **AuthMiddleware** — Resolves `wc_session` cookie to a session dict via `auth.session_get()`, attaches `request.state.session`. Blocks unauthenticated access to all routes except `/login` and `/assets/`.
+**Middleware stack**, outermost to innermost — which is the *reverse* of the
+`add_middleware()` order in the source, because each call wraps the stack built
+so far. Read the code bottom-up, or read this list:
+
+1. **SecurityMiddleware** — Injects CSP (with per-request nonce), HSTS, X-Frame-Options, X-Content-Type-Options, Cache-Control on every response. Outermost, so it stamps headers on responses produced by everything below, including rejections.
+2. **AuthMiddleware** — Resolves `wc_session` cookie to a session dict via `auth.session_get()`, attaches `request.state.session`. Blocks unauthenticated access to all routes except `/login`, `/assets/` and — currently — any path under `/dev/`.
+3. **CsrfMiddleware** — Validates `X-CSRF-Token` header matches `wc_csrf` cookie on `POST`, `PUT`, `PATCH` and `DELETE`. `POST /login` is exempt (the session cookie itself is the CSRF guard). A `GET` is *not* covered, which is why a state-changing GET is unprotected by construction.
+4. **CORSMiddleware** — Origins empty (deny-all), methods/headers wildcard.
+
+Order matters for reasoning about failures: an unauthenticated request is
+rejected by Auth **before** CSRF is ever consulted, so a missing token is not
+the error such a request receives. This list previously read
+`CORS → Security → CSRF → Auth`, which was the registration order with two
+entries transposed, and inverted the Auth/CSRF relationship.
 
 **Route groups:**
 
@@ -385,9 +553,55 @@ Key settings:
 
 **Security patterns in client JS:**
 - Single `escapeHtml()` function for XSS mitigation — all interpolated values escaped.
-- `AbortController` on SSE streams — navigation aborts lingering requests.
+- SSE streams are torn down with `EventSource.close()`, and the handle is held
+  for that purpose. **Not `AbortController`:** `EventSource`'s init dictionary
+  accepts only `withCredentials`, so a `signal` member is silently ignored and
+  `abort()` does nothing to the stream. This document previously claimed the
+  opposite, and the supervisor page was written to match the claim — every
+  switch leaked a live stream until it was measured in a browser (`readyState`
+  stayed `1` after `abort()`, and reached `2` only after `close()`).
 - No `eval()`, no inline event handlers.
 - CSRF token injected from `wc_csrf` cookie on every mutating request.
+
+### 3.8 `supervisor.py` — Orchestration Engine (955 lines)
+
+Decomposes a prompt into a task graph and runs it. Imported by `app.py`; imports
+`db` lazily inside functions to avoid a cycle.
+
+| Component | Responsibility |
+|-----------|----------------|
+| `PlanParser` | Extracts `ParsedTask`s from a `<<PLAN … >>` block. Tolerates `<<PLAN` and `<<PLAN>>`, because the system prompt and the request text disagreed and a model obeying either produced a block the parser could not find. |
+| `ModelRouter` | Picks a model per task from configurable regex rules, with a complexity score as the fallback signal. |
+| `TaskGraph` | The DAG. `get_ready_tasks()` returns only runnable ids; `all_done()` treats `done`, `blocked` **and `failed`** as terminal, so a failed task ends the run rather than spinning the scheduler; `any_failed()` decides whether that end was a success. |
+| `ProgressTracker` | Recent events and aggregate progress for the SSE stream. |
+| `SupervisorEngine` | Owns the run: `start_from_user_prompt()`, `run_schedule_loop()`, `_execute_task()`. |
+
+**Two lifecycle rules worth knowing before editing it:**
+
+- Background work goes through `SupervisorEngine.spawn()`, never a bare
+  `asyncio.create_task()`. The loop keeps only weak references to tasks, so an
+  unheld task can be collected mid-run; `spawn()` holds a reference, releases it
+  on completion, and logs any exception rather than leaving it as asyncio's
+  "Task exception was never retrieved".
+- Overall status goes through `_set_status()`, which writes to the database.
+  The engine also updates a graph node named `"supervisor"`, but nothing creates
+  such a node — the only `add_task()` call inserts parsed plan tasks — so those
+  updates are no-ops kept for the case where one exists. The database write is
+  the part the interface reads.
+
+### 3.9 `sysstats.py` — Host Sampling (458 lines)
+
+Reads `/proc` for CPU, memory, swap, disk, load and this process's own resident
+size; samples on a timer into `system_samples` so history accumulates while
+nobody is watching. Linux-only by construction, and reports
+`available: false` rather than failing where `/proc` cannot be read.
+
+Also provides the write-health probe used by `bin/wc-health.sh`:
+`newest_sample_at()` opens the database `mode=ro` so the check cannot itself
+write, and `write_health()` returns one of `ok` / `warming` / `stale` /
+`unknown` rather than a boolean — `warming` exists because a just-restarted
+server inherits old rows, and a boolean check would restart it, then restart it
+again.
 
 ---
 
@@ -735,6 +949,62 @@ CREATE TABLE ai_machines (
 | POST | `/api/machines/{id}/test` | Yes | — | `{ok: bool, status: reachable\|unreachable, error?}` |
 | DELETE | `/api/machines/{id}` | Yes | — | `{ok: true}` |
 
+### Supervisor — attention feed
+
+Which agents are blocked on the user. Distinct from the orchestration API below
+despite the near-identical prefix: this is a read-only view over conversations
+and CLI sessions, and owns no state of its own beyond read marks.
+
+| Method | Path | Auth | Body | Response |
+|--------|------|------|------|----------|
+| GET | `/api/supervisor` | Yes | — | `{waiting: [...], working: [...], updated: [...]}` |
+| POST | `/api/supervisor/read` | Yes | `{kind, id, dismiss?}` or `{all: true}` | `{ok: true, read_at}` |
+
+`dismiss: true` writes the same timestamp to `read_at` and `dismissed_at`, which
+silences an unanswered question; reading alone never does. `kind` is `chat` or
+`session` — a row shown as a conversation is dismissed under `chat` even when
+its waiting status is derived from a linked CLI session.
+
+### Supervisor — orchestration
+
+A supervisor decomposes a prompt into a task graph and runs the tasks. State
+lives in `supervisors`, `supervisor_tasks` and `supervisor_messages`; the engine
+is `supervisor.py`.
+
+| Method | Path | Auth | Body | Response |
+|--------|------|------|------|----------|
+| GET | `/api/supervisors` | Yes | — | `{supervisors: [{id, title, description, status, progress_pct, ...}]}` |
+| POST | `/api/supervisors` | Yes | `{title?, description?, config?}` | `{ok: true, id, title, status}` |
+| GET | `/api/supervisors/{id}` | Yes | — | `{supervisor: {...}}` |
+| PATCH | `/api/supervisors/{id}` | Yes | `{title?, description?, status?, config?}` | `{ok: true}` |
+| DELETE | `/api/supervisors/{id}` | Yes | — | `{ok: true}` |
+| POST | `/api/supervisors/{id}/send` | Yes | `{prompt}` | `{ok: true, supervisor_id, status}` |
+| POST | `/api/supervisors/{id}/pause` | Yes | — | `{ok: true}` |
+| POST | `/api/supervisors/{id}/resume` | Yes | — | `{ok: true}` |
+| GET | `/api/supervisors/{id}/messages` | Yes | — | `{messages: [{id, role, content, metadata, created_at}]}` |
+| GET | `/api/supervisors/{id}/tasks` | Yes | — | `{tasks: [{id, title, status, progress_pct, model, depends_on}]}` |
+| GET | `/api/supervisors/{id}/stream` | Yes | — | SSE: progress, status, task and message events |
+| GET | `/api/supervisors/{id}/tasks/{task_id}/stream` | Yes | — | SSE for one task |
+| GET | `/api/supervisors/{id}/members` | Yes | — | `{members: [{kind, id, title, status, last_seen}]}` |
+| POST | `/api/supervisors/{id}/members` | Yes | `{members: [{kind, id}]}` | `{ok: true, added, skipped}` |
+| DELETE | `/api/supervisors/{id}/members/{chat_id}` | Yes | — | `{ok: true}` |
+
+`/send` is capped at `PROMPT_MAX_CHARS`, the same limit the chat endpoints
+enforce — it had none until the cap was added, so a prompt refused by a
+conversation was accepted here.
+
+### Host statistics
+
+| Method | Path | Auth | Body | Response |
+|--------|------|------|------|----------|
+| GET | `/api/system` | Yes | — | Live snapshot: `{cpu_pct, mem_*, disk, swap_*, load, proc, uptime_s, info}` |
+| GET | `/api/system/series?days&bucket` | Yes | — | `{series: [...], bucket, days, sample_interval_s, retention_days}` |
+
+Readable by any authenticated user, matching `/api/settings`: the values carry
+no secret, and an operator checking whether the box is struggling should not
+need an admin account. Buckets are the same set the usage series uses, grouped
+in **local time** — see §5.
+
 ---
 
 ## 7. Security Model
@@ -822,23 +1092,37 @@ These persist across restarts and override config.py defaults:
 
 ```
 claude-code-webconsole/
-├── app.py                  1370  FastAPI app, routes, middleware, handlers
-├── runner.py                737  Claude Code invocation (direct + proxy)
-├── auth.py                   ~250  Auth: passwords, sessions, CSRF, rate-limit
-├── db.py                     747  SQLite: schema, CRUD, migrations, CLI sync
-├── claude_proxy.py           419  Host-side TCP proxy to Claude Code
-├── config.py                 104  Env-driven config with validation
-├── _setup_db.py               22  One-time DB bootstrap script
+├── app.py                  5364  FastAPI app, routes, middleware, handlers
+├── db.py                   3116  SQLite: schema, CRUD, migrations, CLI sync
+├── transcripts.py          1275  Read and parse Claude CLI transcripts
+├── runner.py               1011  Claude Code invocation (direct + proxy)
+├── supervisor.py            955  Orchestration: plan parsing, task graph, scheduler
+├── claude_proxy.py          645  Host-side TCP proxy to Claude Code
+├── prompts.py               631  Detect and answer a CLI permission prompt
+├── sysstats.py              458  Host sampling from /proc + write-health probe
+├── turns.py                 380  Turn lifecycle: a turn outlives its request
+├── auth.py                  379  Auth: passwords, sessions, CSRF, rate-limit
+├── config.py                155  Env-driven config with validation
+├── _setup_db.py              22  One-time DB bootstrap script
+├── logging.conf                  Rotating file handler; path from config.LOG_FILE
+├── launch.sh                     Start with TLS on the tailnet address
 ├── requirements.txt            6  Pinned dependencies
 ├── requirements-dev.txt       ~10  Dev + security tooling
-├── rules.md                  543  Build/release pipeline (20 stages)
+├── rules.md                      Build/release pipeline (gitignored, not shipped)
 ├── SECURITY.md                75  Security policy + deployment requirements
 ├── README.md                 198  User documentation
+├── TODO.md                       Outstanding work
 ├── LICENSE                     1  Proprietary
 ├── .gitignore
 ├── .bandit
 ├── .gitleaks.toml
 ├── .githooks/pre-push        Git pre-push hook (gitleaks)
+├── bin/                      Supervision helpers: health check, proxy run,
+│                             token, port reclaim, install
+├── systemd/                  --user units: app, proxy, health service + timer
+├── docs/
+│   ├── threat-model.md       Dated attacker analysis (see its currency note)
+│   └── superpowers/          Design specs and implementation plans
 ├── docker/Dockerfile          Container image (non-root user)
 ├── .env                       Local secrets (gitignored)
 ├── .env.example               Config template (committed)
@@ -847,21 +1131,23 @@ claude-code-webconsole/
 │   ├── login.html             Login page
 │   └── assets/
 │       ├── app.js             Core: auth, API, chat, SSE, settings, machines
-│       ├── chat-list.js       Sidebar: create, pin, archive, resume
+│       ├── chat-list.js       Sidebar: groups, supervisor highlights, dismiss
 │       ├── conversation.js    Message render: markdown, export, model dropdown
+│       ├── transcript.js      CLI transcript viewer
+│       ├── stats.js           Charts shared by the usage and server pages
+│       ├── server.js          Server statistics rendering
 │       ├── api.js             escapeHtml + fetch wrapper with CSRF
+│       ├── login.js           Login page
 │       ├── styles.css         Full stylesheet (light/dark theme)
 │       └── favicon.svg
+├── web/supervisor.html        Supervisor page markup
+├── web/supervisor.js          Supervisor page: list, tasks, SSE, members, rename
 ├── data/
 │   ├── webconsole.db          SQLite database
 │   ├── webconsole.db-wal      WAL file
 │   └── webconsole.db-shm      SHM file
-├── tests/
-│   ├── test_app.py            Component/API tests
-│   ├── test_db.py             Database CRUD + migration tests
-│   ├── test_frontend.py       Client-side security tests
-│   ├── test_model_settings.py Model settings tests
-│   └── test_qa_layers.py      QA pyramid: unit → integration → system → UAT
+├── tests/                    79 files. Unit, integration, browser (Playwright)
+│                             and QA suites; `test_qa_*` are the QA layer
 ├── test_functional.py         Functional integration tests
 └── projects/                  (created at runtime)
 ```

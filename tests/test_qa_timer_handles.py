@@ -24,7 +24,27 @@ import re
 import unittest
 from pathlib import Path
 
-ASSETS = Path(__file__).resolve().parents[1] / "web" / "assets"
+WEB = Path(__file__).resolve().parents[1] / "web"
+ASSETS = WEB / "assets"
+
+
+def _shipped_js() -> list[Path]:
+    """Every client script the server serves, not only the module directory.
+
+    This scanned ``web/assets/*.js`` alone, and the supervisor page is the one
+    client script that lives directly in ``web/`` -- so the file was outside the
+    glob while the docstring above claimed "every repeating timer in the
+    frontend". It went unnoticed because a scanner that looks in the wrong place
+    reports clean and *looks* clean: the sweep that fixed every other bare timer
+    (``3a68c5c``, "hold every repeating timer") passed this class afterwards
+    while ``web/supervisor.js`` still held one. rules.md §4's own verification
+    command greps the same narrow glob, so running the rule by hand could not
+    have caught it either.
+
+    Sorted and de-duplicated so a failure message is stable and a file cannot be
+    scanned twice if the two globs ever overlap.
+    """
+    return sorted(set(WEB.glob("*.js")) | set(ASSETS.glob("*.js")))
 
 # `x = setInterval(...)`, `_t = setInterval(...)`, `this.t = setInterval(...)`.
 _ASSIGNED = re.compile(r"=\s*setInterval\s*\(")
@@ -57,7 +77,7 @@ class TimerHandleTests(unittest.TestCase):
 
     def test_every_repeating_timer_is_assigned_to_a_handle(self):
         offenders = []
-        for path in sorted(ASSETS.glob("*.js")):
+        for path in _shipped_js():
             for number, code in _code_lines(path):
                 if _CALL.search(code) and not _ASSIGNED.search(code):
                     offenders.append(f"{path.name}:{number}: {code.strip()}")
@@ -79,6 +99,41 @@ class TimerHandleTests(unittest.TestCase):
         assigned = "  _pollTimer = setInterval(tick, 1000);"
         self.assertTrue(_CALL.search(assigned) or True)
         self.assertTrue(_ASSIGNED.search(assigned))
+
+    def test_the_scan_covers_every_shipped_script_not_just_the_module_dir(self):
+        """The glob was the defect, so the glob is what this pins.
+
+        The regex worked the whole time; the scan simply never looked at
+        ``web/supervisor.js``, and a class that passes while missing a file is
+        indistinguishable from one that passes because the tree is clean. Without
+        this assertion the scope can be narrowed back to ``web/assets`` and every
+        other test here still passes -- which is how the gap survived the sweep
+        that was meant to close it.
+        """
+        scanned = {p.name for p in _shipped_js()}
+        expected = {p.name for p in WEB.glob("*.js")} | {
+            p.name for p in ASSETS.glob("*.js")
+        }
+        self.assertEqual(scanned, expected)
+        # Named explicitly: this is the file the narrow glob missed, and a
+        # set-equality check alone would still pass if both sides went empty.
+        self.assertIn("supervisor.js", scanned)
+        self.assertIn("app.js", scanned)
+        self.assertGreaterEqual(len(scanned), 2)
+
+    def test_the_supervisor_poller_is_guarded_as_well_as_held(self):
+        """Assigning the handle is not sufficient for this one.
+
+        ``init()`` runs on DOMContentLoaded, which fires once per document -- but
+        the console loads this page in an iframe it resets rather than navigates,
+        so a second ``init()`` is reachable. Holding the handle without the guard
+        would replace the reference and leak the previous timer, leaving two
+        polls running and only one of them stoppable.
+        """
+        source = (WEB / "supervisor.js").read_text(encoding="utf-8")
+        self.assertIn("_refreshTimer = setInterval", source)
+        self.assertIn("if (!_refreshTimer)", source)
+        self.assertIn("clearInterval(_refreshTimer)", source)
 
     def test_a_timer_that_can_be_replaced_is_also_cleared(self):
         """conversation.js's 30s timer lives in a factory, so a second call must

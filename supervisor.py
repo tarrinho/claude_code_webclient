@@ -37,6 +37,41 @@ COMPLEXITY_PATTERNS: dict[str, int] = {
     "simple|small|quick|minor|fix.*typo": 1,
 }
 
+# -- Result cleaning -------------------------------------------------------
+
+# Claude's text output sometimes includes tool call descriptions such as
+# ``Bash(check the error)`` or ``Read(app.py)`` as part of its prose
+# explanation.  Strip entire lines that look like tool calls so the chat
+# only shows the actual answer.
+#
+# The "(" must follow the tool name immediately.  Allowing anything between
+# the two deleted ordinary prose -- "Read the config file (see below)" and
+# "Identified the bug (line 42)" both opened with a tool name and went on to
+# contain a bracket, so the line they belonged to vanished from the chat.
+# These are the names the CLI prints, not shell command names: a leaked call
+# reads "Bash(...)", never "lsblk(...)".
+_TOOL_CALL_LINE_RE = re.compile(
+    r"^(?:"
+    r"Bash|BashOutput|Read|Write|Edit|NotebookEdit|"
+    r"Glob|Grep|Task|Agent|Skill|SlashCommand|"
+    r"WebFetch|WebSearch|TodoWrite|KillShell|ExitPlanMode"
+    r")\([^)]*\)\s*$"
+)
+
+
+def clean_result(text: str) -> str:
+    """Remove tool-call lines, collapsing blank lines left behind."""
+    # Line by line, and only when the line is nothing but the call. A line
+    # that carries prose alongside it ("I ran Bash(x) and it failed") is the
+    # answer, not machinery, so it stays.
+    lines = text.split("\n")
+    kept = [ln for ln in lines if not _TOOL_CALL_LINE_RE.match(ln.strip())]
+    cleaned = "\n".join(kept)
+    # Collapse more than 2 consecutive newlines into 2.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 # -- Plan parsing ----------------------------------------------------------
 
 # Tolerates "<<PLAN" alone and "<<PLAN>>" on one line. The system prompt
@@ -460,7 +495,7 @@ class SupervisorEngine:
         did not, so a run whose every task was "done" still reported 0% -- and
         the progress bar is the one thing a supervisor page is watched for.
         """
-        import db  # noqa: PLC0415 -- circular import at module level
+        import db
 
         try:
             await db.supervisor_update(
@@ -585,13 +620,14 @@ class SupervisorEngine:
                 self.supervisor_id, len(tasks),
             )
 
-            import db  # noqa: PLC0415 -- circular import at module level
+            import db
 
             # Kept whatever the parser made of it. The reply was previously
             # discarded, so `plan` stayed null and a parse that understood
             # nothing left no evidence of what the model had actually said.
+            cleaned = clean_result(result)
             await db.supervisor_update(
-                self.supervisor_id, self.owner_id, plan=result[:20000])
+                self.supervisor_id, self.owner_id, plan=cleaned[:20000])
 
             if not tasks:
                 # A plan nobody could parse is not a finished run. This fell
@@ -603,7 +639,7 @@ class SupervisorEngine:
                 await db.supervisor_messages_append(
                     self.supervisor_id, "system",
                     "The plan could not be read, so no tasks were created. "
-                    "The planner replied:\n\n" + (result[:1500] or "(nothing)"),
+                    "The planner replied:\n\n" + (cleaned[:1500] or "(nothing)"),
                     {"kind": "plan_unparsed"},
                 )
                 self._running = False
@@ -612,7 +648,16 @@ class SupervisorEngine:
             # Emit the parsed plan as a supervisor message so the chat shows it.
             if tasks:
                 task_titles = "\n".join(f"- {t.title}" for t in tasks)
-                plan_text = f"<<PLAN>\nPlan ({len(tasks)} tasks):\n\n{task_titles}\n<<PLAN>"
+                # `>>`, not `>`: _PLAN_START_RE accepts `<<PLAN` or `<<PLAN>>`
+                # and nothing between, so the single-angle form emitted a block
+                # the project's own parser cannot recognise. Harmless while this
+                # message is only displayed, and exactly the prompt-vs-parser
+                # drift that cost the feature once already -- caught by
+                # test_the_prompt_and_the_parser_agree_on_the_delimiter, which
+                # guards the cause rather than the symptom.
+                plan_text = (
+                    f"<<PLAN>>\nPlan ({len(tasks)} tasks):\n\n{task_titles}\n<<PLAN>>"
+                )
                 await db.supervisor_messages_append(
                     self.supervisor_id, "supervisor",
                     plan_text,
@@ -709,7 +754,7 @@ class SupervisorEngine:
                 # try's import never ran when the failure came before it, so
                 # reaching for it here raised UnboundLocalError and swallowed
                 # the very message this block exists to record.
-                import db  # noqa: PLC0415 -- circular import at module level
+                import db
 
                 await db.supervisor_messages_append(
                     self.supervisor_id, "system",
@@ -780,11 +825,24 @@ class SupervisorEngine:
 
             # Write the task result to the messages table so the chat shows it.
             try:
-                import db  # noqa: PLC0415
+                import db
                 node_title = node.title or task_id
+                clean = clean_result(result)
+                # A task can finish having emitted nothing but tool calls, and
+                # cleaning those away leaves an empty body. Saying so beats a
+                # header over blank space -- and the char count has to describe
+                # what is actually displayed, not the text that was filtered
+                # out, or it reads as a message that failed to load.
+                if clean:
+                    body = f"Task '{node_title}' completed ({len(clean)} chars)\n\n{clean[:3000]}"
+                else:
+                    body = (
+                        f"Task '{node_title}' completed with no text output "
+                        f"-- it only made tool calls."
+                    )
                 await db.supervisor_messages_append(
                     self.supervisor_id, "supervisor",
-                    f"Task '{node_title}' completed ({len(result)} chars)\n\n{result[:3000]}",
+                    body,
                     {"kind": "task_result", "task_id": task_id},
                 )
             except Exception:  # noqa: BLE001 -- task success must not fail silently

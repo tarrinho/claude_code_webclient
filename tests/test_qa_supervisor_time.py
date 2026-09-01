@@ -20,6 +20,7 @@ have caught this.
 from __future__ import annotations
 
 import re
+import threading
 import unittest
 from pathlib import Path
 
@@ -88,41 +89,98 @@ class SupervisorTimeQA(unittest.TestCase):
         # around it is not a safety net. The validity has to be tested.
         self.assertIn("Number.isNaN", self.source)
 
+    def _evaluate(self, *arguments: str) -> list[str]:
+        """Run the real ``formatTime`` in a real engine, once per argument.
+
+        One browser for the whole call, in a **dedicated thread**. The thread is
+        the load-bearing part: playwright's sync API refuses to start when the
+        calling thread already has a running asyncio loop, and under pytest this
+        thread does. Driving it from a worker keeps the sync API — which the rest
+        of this suite uses — instead of splitting this one file onto the async
+        API for an environmental reason.
+
+        It also contains the hazard from registry #35. A playwright that is
+        never stopped leaves its greenlet-driven loop marked as its thread's
+        running loop, which once failed ~850 unrelated async tests; here that
+        loop belongs to a thread that has already exited, so it cannot be
+        inherited by anything. Teardown is in the worker's own ``finally``,
+        innermost first, for the same reason ``addCleanup`` is LIFO.
+        """
+        results: list[str] = []
+        errors: list[BaseException] = []
+
+        def work() -> None:
+            try:
+                pw = sync_playwright().start()
+                try:
+                    browser = pw.chromium.launch(
+                        executable_path=str(CHROMIUM), args=["--no-sandbox"]
+                    )
+                    try:
+                        page = browser.new_page()
+                        for argument in arguments:
+                            results.append(page.evaluate(
+                                f"(arg) => {{ {self.source}\nreturn formatTime(arg); }}",
+                                argument,
+                            ))
+                    finally:
+                        browser.close()
+                finally:
+                    pw.stop()
+            except BaseException as exc:  # noqa: BLE001 -- re-raised on the caller
+                errors.append(exc)
+
+        thread = threading.Thread(target=work, name="formatTime-browser")
+        thread.start()
+        thread.join(timeout=120)
+        if thread.is_alive():
+            self.fail("the browser thread did not finish within 120s")
+        if errors:
+            raise errors[0]
+        return results
+
     def test_every_timestamp_shape_the_api_produces_renders(self):
-        driver = _browser()
-        if driver is None:
-            self.skipTest("chromium/selenium unavailable")
-        try:
-            for value, expectation in CASES:
-                with self.subTest(value=value):
-                    result = driver.execute_script(
-                        f"{self.source}\nreturn formatTime(arguments[0]);",
-                        value,
+        if _page_unavailable():
+            self.skipTest("chromium/playwright unavailable")
+        # One browser for all nine shapes: launching chromium per subtest turned
+        # a 4-second case into a 40-second one for no extra coverage.
+        results = self._evaluate(*[value or "" for value, _ in CASES])
+        for (value, expectation), result in zip(CASES, results, strict=True):
+            with self.subTest(value=value):
+                self.assertNotIn(
+                    "Invalid", result,
+                    f"{value!r} still renders as {result!r}",
+                )
+                if expectation == "empty":
+                    self.assertEqual(result, "")
+                else:
+                    self.assertTrue(result.strip(), f"{value!r} rendered blank")
+                    # A rendered clock time, whatever the locale's shape.
+                    self.assertRegex(result, r"\d")
+                    # And it must be a *converted* time, not the input handed
+                    # back. Mutation testing found this gap: restoring the
+                    # original `new Date(raw + "Z")` bug while keeping the
+                    # `Number.isNaN` fallback makes every valid timestamp fall
+                    # into that fallback and return the raw ISO string — which
+                    # contains digits, so the assertion above passed and only
+                    # the source-text check noticed. Asserting the value was
+                    # transformed is what makes these cases earn their runtime.
+                    self.assertNotEqual(
+                        result, value,
+                        f"{value!r} came back unchanged, so it was not parsed",
                     )
                     self.assertNotIn(
-                        "Invalid", result,
-                        f"{value!r} still renders as {result!r}",
+                        "-", result,
+                        f"{value!r} rendered as a date ({result!r}), not a "
+                        f"clock time — the parse fell through to the fallback",
                     )
-                    if expectation == "empty":
-                        self.assertEqual(result, "")
-                    else:
-                        self.assertTrue(result.strip(), f"{value!r} rendered blank")
-                        # A rendered clock time, whatever the locale's shape.
-                        self.assertRegex(result, r"\d")
-        finally:
-            driver.quit()
 
     def test_an_unreadable_value_shows_itself_not_the_words_invalid_date(self):
-        driver = _browser()
-        if driver is None:
-            self.skipTest("chromium/selenium unavailable")
-        try:
-            result = driver.execute_script(
-                f"{self.source}\nreturn formatTime('not a date at all');")
-            self.assertNotIn("Invalid", result)
-            self.assertIn("not a date", result)
-        finally:
-            driver.quit()
+        if _page_unavailable():
+            self.skipTest("chromium/playwright unavailable")
+        result = self._evaluate("not a date at all")[0]
+        self.assertNotIn("Invalid", result)
+        self.assertIn("not a date", result)
 
     def test_markup_in_an_unreadable_value_is_stripped(self):
         """The fallback is interpolated into innerHTML by both callers.
@@ -130,17 +188,11 @@ class SupervisorTimeQA(unittest.TestCase):
         Returning the raw value would put an API-supplied string into markup
         unescaped, so the fallback keeps only characters a timestamp needs.
         """
-        driver = _browser()
-        if driver is None:
-            self.skipTest("chromium/selenium unavailable")
-        try:
-            result = driver.execute_script(
-                f"{self.source}\n"
-                "return formatTime('<img src=x onerror=alert(1)>');")
-            for forbidden in ("<", ">", "=", "(", ")"):
-                self.assertNotIn(forbidden, result, f"{forbidden!r} survived")
-        finally:
-            driver.quit()
+        if _page_unavailable():
+            self.skipTest("chromium/playwright unavailable")
+        result = self._evaluate("<img src=x onerror=alert(1)>")[0]
+        for forbidden in ("<", ">", "=", "(", ")"):
+            self.assertNotIn(forbidden, result, f"{forbidden!r} survived")
 
 
 class CacheBustingQA(unittest.TestCase):
@@ -157,25 +209,44 @@ class CacheBustingQA(unittest.TestCase):
         self.assertGreaterEqual(int(match.group(1)), 2)
 
 
-def _browser():
-    """A headless Chromium, or None if this machine has no browser."""
+# Playwright, not selenium. These three cases were written against selenium and
+# skipped on every run since, because selenium is not in `.venv` -- while
+# playwright is, and is what every other browser test here uses. Three skips
+# read as "not applicable on this machine", which is indistinguishable from
+# "ran and passed" in an aggregate total: registry #50, in a file I wrote.
+#
+# The repair is the habit, not the box. Installing selenium to suit the code
+# would have changed the machine to accommodate a one-off import, which is the
+# choice #50 explicitly declined.
+CHROMIUM = Path("/usr/bin/chromium")
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:  # pragma: no cover -- absence is a skip, not a failure
+    sync_playwright = None
+
+
+def _page_unavailable() -> bool:
+    """True when this machine cannot run a browser, so the case must skip.
+
+    Checks the driver's own executable rather than merely importing playwright.
+    The Debian playwright package imports fine and then resolves its driver to
+    `/usr/bin/node`, which this box does not have -- so an import-only check
+    reports a browser that cannot start. That exact mismatch is what made #50's
+    diagnosis wrong on the first attempt.
+    """
+    if sync_playwright is None or not CHROMIUM.exists():
+        return True
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-    except ImportError:
-        return None
-    if not Path("/usr/bin/chromium").exists():
-        return None
-    options = Options()
-    options.binary_location = "/usr/bin/chromium"
-    for flag in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage"):
-        options.add_argument(flag)
-    try:
-        return webdriver.Chrome(service=Service("/usr/bin/chromedriver"),
-                                options=options)
-    except Exception:  # noqa: BLE001 -- absence of a browser is a skip
-        return None
+        from playwright._impl._driver import compute_driver_executable
+
+        driver = compute_driver_executable()
+        driver = driver[0] if isinstance(driver, (list, tuple)) else driver
+        return not Path(driver).exists()
+    except Exception:  # noqa: BLE001 -- any resolution failure means skip
+        return True
+
+
 
 
 if __name__ == "__main__":

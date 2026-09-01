@@ -21,6 +21,7 @@ work for any real row.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import tempfile
 import unittest
@@ -31,6 +32,31 @@ import app
 import auth
 import config
 import db
+
+
+async def _dismissed_at(owner: str = "admin") -> str:
+    """The timestamp the dismissal actually recorded, read back from the DB."""
+    marks = await db.read_marks_get(owner)
+    mark = marks.get(("chat", CHAT_ID)) or {}
+    stamp = mark.get("dismissed_at")
+    assert stamp, "no dismissal was recorded, so there is nothing to be later than"
+    return stamp
+
+
+def _after(stamp: str, seconds: int = 1) -> str:
+    """*stamp* plus *seconds*, in the same shape ``db._now()`` produces.
+
+    The feed suppresses `stamp <= dismissed_at`, so "later" has to be strictly
+    later; matching to the second and relying on ordering within it would make
+    the case a coin toss.
+    """
+    moment = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=datetime.timezone.utc
+    )
+    return (moment + datetime.timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
 
 CHAT_ID = "c0ffee00c0ffee00c0ffee00c0ffee00"
 SESSION_ID = "8db15c35-74bc-4670-a617-ad2ff0426ec4"
@@ -177,9 +203,18 @@ class DismissEndToEndTests(unittest.IsolatedAsyncioTestCase):
         """Dismissing silences what was there, not everything after it."""
         await self._dismiss()
         self.assertNotIn(CHAT_ID, self._waiting_ids(await self._feed()))
+        # Derived from the dismissal, never a literal. This read
+        # "2026-09-01T09:00:00Z", which is a *later* ask only while the wall
+        # clock is behind 09:00Z on 2026-09-01: `read_mark_set` stamps the
+        # dismissal with the real `_now()`, and the feed suppresses anything
+        # with `stamp <= dismissed_at`. So the case passed all morning and then
+        # failed permanently at 09:00Z, for a reason nothing in the assertion
+        # message points at. A fixture that expires is worse than a flaky one --
+        # it is green until it is broken for ever.
+        later = _after(await _dismissed_at())
         await db.db_conn.execute(
             "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?,?,?,?)",
-            (CHAT_ID, "assistant", ASK, "2026-09-01T09:00:00Z"),
+            (CHAT_ID, "assistant", ASK, later),
         )
         await db.db_conn.commit()
         self.assertIn(

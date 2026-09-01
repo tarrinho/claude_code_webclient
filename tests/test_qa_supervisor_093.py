@@ -538,39 +538,28 @@ class RecencyTimeLabelSourceTests(unittest.TestCase):
         self.assertIn("!==", self.source)
 
 
-# ── /dev/* auth skip ─────────────────────────────────────────────────────────
-
-class DevAuthSkipTests(unittest.TestCase):
-    """The `/dev/*` exemption in the auth middleware.
-
-    Two tests are gone from this class, and why is worth recording.
-    ``test_dev_endpoint_exists`` and ``test_dev_endpoint_is_get`` required
-    ``/dev/supervisor-trigger`` to be present in ``git show HEAD:app.py``. That
-    endpoint minted an admin session with no credential and returned its id in
-    the response body; it was removed on the operator's instruction, and
-    ``tests/test_qa_no_auth_bypass.py`` now asserts the opposite of what those
-    two asserted. Two committed suites disagreeing about whether an
-    authentication bypass must exist is worse than either of them alone.
-
-    They also could not fail. Each wrapped its own ``assertIn`` in
-    ``try: ... except Exception: self.skipTest("not in a git repo")``, and
-    ``AssertionError`` is an ``Exception`` -- so when the route did go away, the
-    suite reported two skips blaming git, inside a git repository. See
-    rules.md #54: a failure that manufactures the skip which hides it.
-    """
-
-    def test_auth_middleware_skips_dev_routes(self):
-        """The auth middleware still exempts the `/dev/` prefix.
-
-        Kept, and deliberately not inverted. The prefix exemption is a live
-        product decision rather than a defect -- but it means any future route
-        under `/dev/` is unauthenticated by default, which is how the removed
-        endpoint came to be reachable. If that exemption is dropped, this
-        assertion is the one that will say so, and it should then be deleted
-        rather than weakened.
-        """
-        content = Path(app.__file__).read_text(encoding="utf-8")
-        self.assertIn('"/dev/"', content)
+# ── /dev/* auth skip: the whole class is gone, deliberately ──────────────────
+#
+# `DevAuthSkipTests` asserted that the auth middleware exempts every path under
+# `/dev/`, and that `/dev/supervisor-trigger` -- an endpoint that minted an admin
+# session with no credential and returned its id to anybody who sent a GET --
+# was present at HEAD. All three assertions were defending an authentication
+# bypass, and the exemption has now been dropped on the operator's instruction.
+#
+# The reason it read as a decision worth defending is recorded in CHANGELOG.md:
+# the exemption was one session's uncommitted debug scaffolding, swept into a
+# commit about pause/resume by a whole-file `git commit`. A later reader found
+# the orphaned line in HEAD, could not tell debris from intent -- nothing in the
+# tree distinguishes them -- and wrote a test to protect it.
+#
+# Two of the three could not have failed anyway: each wrapped its own `assertIn`
+# in `except Exception: self.skipTest("not in a git repo")`, and AssertionError
+# is an Exception, so the removal they existed to catch surfaced as two skips
+# blaming git, inside a git repository (rules.md #54).
+#
+# What replaces them is `tests/test_qa_api_tokens.py`, which asserts the
+# opposite: no path is exempt from authentication, and a caller that cannot hold
+# a cookie authenticates with an API token instead.
 
 
 # ── Engine pause/resume in scheduler loop ────────────────────────────────────

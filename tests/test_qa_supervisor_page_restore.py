@@ -108,7 +108,7 @@ class SourceWiringTests(unittest.TestCase):
         The code now uses Promise.allSettled and re-renders on failure.
         """
         block = self.source.split("Promise.allSettled", 1)[1][:900]
-        catch = block.split("} else:", 1)[1][:400]
+        catch = block.split("} else {", 1)[1][:400]
         self.assertIn("renderChatMessages()", catch,
                       "a failed load must re-render, or the panel keeps stale content")
         self.assertIn("Could not load", catch,

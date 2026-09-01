@@ -3864,6 +3864,166 @@ def classify_chat(
     return {**entry, "status": "waiting", "reason": "done", "question": False}
 
 
+
+async def _classify_cli_session(cli: dict, meta: dict, mark: dict) -> dict | None:
+    """Classify one terminal session as waiting, working, or not listed at all.
+
+    The counterpart of `classify_chat`, and named to say so. Both halves of the
+    supervisor feed answer the same question -- is a person needed here -- about
+    two kinds of thing, but only one of them was a function. The other was a
+    hundred-and-forty-line loop body inside the handler, and that asymmetry is
+    why the two drifted: every rule the conversation path learned had to be
+    learned again here, separately and late. `if status:` treated a finished
+    agent as a blocked one; a trailing tool call was read as speech because only
+    the role was checked; mtime was briefly trusted as a positive signal when it
+    is only ever a negative one.
+
+    Returns an entry carrying its own "status", so the caller files it in
+    exactly the buckets it uses for a conversation, or None when the session
+    should not be listed.
+
+    Async because deciding can require reading. A blocked or newly-quiet session
+    needs its transcript, and a busy one needs its last-failure check; both are
+    skipped on the common path, which is what keeps this cheap enough to poll
+    every few seconds.
+    """
+    session_id = cli.get("sessionId") or ""
+    # Epoch seconds from the file, ISO from the marks: compare like for like.
+    file_touched = datetime.datetime.fromtimestamp(
+        meta.get("updated_at") or 0, datetime.UTC
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    seen = mark.get("read_at", "")
+    status = (cli.get("status") or "").strip().lower()
+    # A busy agent needs no transcript read at all, which is what keeps
+    # this cheap enough to poll: it is the common case.
+    if status == "busy":
+        row = {
+            "kind": "session", "id": session_id,
+            "title": cli.get("name") or meta.get("title") or session_id,
+            "preview": "", "since": file_touched, "status": "working",
+        }
+        # Busy is honest but incomplete: a session retrying a dead endpoint
+        # reports busy the whole time, so a run going nowhere looks exactly
+        # like one doing work. The failure is read from the model field --
+        # the CLI writes "<synthetic>" on a failed turn -- rather than from
+        # the wording, so an agent *discussing* an API error is not mistaken
+        # for one suffering it. Cached against the transcript's mtime: an
+        # unmoved file cannot have gained a new failure, which keeps the
+        # fast path fast on the common case of a session quietly working.
+        failure = await _session_failure(session_id, file_touched)
+        if failure:
+            dismissed = mark.get("dismissed_at") or ""
+            # Retired only by an explicit dismissal, never by being read: a
+            # failing endpoint does not fix itself by being looked at. It
+            # also clears itself once the agent produces real output again,
+            # because last_error only reports a failure that is still the
+            # newest turn.
+            if not (dismissed and file_touched <= dismissed):
+                return {
+                    **row, "preview": _one_line(failure),
+                    "status": "waiting", "reason": "failed",
+                    # A failure is not a question, however it is worded.
+                    "question": False,
+                }
+        return row
+    # For a session that is not blocked -- no status field at all, or an
+    # explicit `idle` -- fall back to mtime as a negative filter only: an
+    # untouched file certainly has nothing new. It must never decide
+    # "waiting" on its own -- one cross-session message deposits dozens of
+    # queue-operation and attachment records into the receiving session, so
+    # with several agents talking the mtime is never still.
+    #
+    # `busy` has already been handled and return Noned above, so reaching here
+    # with a status in the not-blocked set means `idle`.
+    if (not status or status in _CLI_STATUS_NOT_BLOCKED) and seen \
+            and file_touched <= seen:
+        return None
+    page = await transcripts.read_turns(session_id)
+    page_turns = page.get("turns") or []
+    if not page_turns:
+        return None
+    entry = {
+        "kind": "session",
+        "id": session_id,
+        "title": cli.get("name") or meta.get("title") or session_id,
+        "preview": "",
+    }
+    # Claude Code reports its own state, which beats inferring one from the
+    # transcript: a session at a permission prompt and one running a tool
+    # look identical in the file. A *blocked* session stays listed until it
+    # starts working again, which only happens once someone answers it, so a
+    # read mark deliberately does not retire this.
+    #
+    # This read `if status:`, on the stated belief that "any non-busy value
+    # means it has stopped and is waiting on a human". That was true while
+    # `busy` was the only value the CLI wrote. 2.1.252 also writes `idle`,
+    # which means the opposite -- the task concluded and nothing is needed --
+    # so every finished agent was being listed as blocked, with its last
+    # sentence presented as though it were a question. Idle now falls through
+    # to the routine-output path below, where being read retires it.
+    if status and status not in _CLI_STATUS_NOT_BLOCKED:
+        spoke_at = cli.get("status_updated_at") or file_touched
+        dismissed = mark.get("dismissed_at") or ""
+        if dismissed and spoke_at <= dismissed:
+            return None
+        # A structured question outranks prose: it is an unambiguous ask,
+        # and its answer block is an unambiguous resolution.
+        pending = _pending_question(page_turns)
+        said = pending or _last_thing_said(page_turns)
+        return {
+            **entry,
+            "since": spoke_at,
+            "preview": _one_line(said),
+            "status": "waiting",
+            "reason": "asks" if pending else (_attention(said) or "idle"),
+            "question": bool(pending) or _asks_a_question(said),
+        }
+    last_turn = page_turns[-1]
+    # A trailing tool call means the agent is still running, not that it
+    # has stopped with something to say. Checking only role was wrong:
+    # every tool turn carries role="assistant" too.
+    last_is_speech = last_turn.get("role") == "assistant" and any(
+        b.get("kind") == "text" and (b.get("text") or "").strip()
+        for b in last_turn.get("blocks", [])
+    )
+    if not last_is_speech:
+        return {**entry, "since": file_touched, "status": "working"}
+    # The real signal: when the agent last said something, not when its
+    # file was last written.
+    spoke_at = str(last_turn.get("timestamp") or "") or file_touched
+    if seen and spoke_at <= seen:
+        return None
+    # The last block of the turn, not the first: a turn often opens with a
+    # sentence of narration and ends with the actual question.
+    text = " ".join(
+        (b.get("text") or "").strip()
+        for b in last_turn.get("blocks", [])
+        if b.get("kind") == "text"
+    ).strip()
+    pending = _pending_question(page_turns)
+    if pending:
+        text = pending
+    reason = "asks" if pending else _attention(text)
+    row = {**entry, "since": spoke_at, "preview": _one_line(text)}
+    if reason:
+        # Unanswered outranks read, same as for conversations.
+        dismissed = mark.get("dismissed_at") or ""
+        if not (dismissed and spoke_at <= dismissed):
+            return {
+                **row, "status": "waiting", "reason": reason,
+                "question": bool(pending) or _asks_a_question(text),
+            }
+    elif not (seen and spoke_at <= seen):
+        # The agent finished speaking and is asking nothing. That is the
+        # outcome the user is waiting for, so it is surfaced rather than
+        # filed quietly -- with its own reason, because calling it "needs an
+        # answer" would be a lie. Unread-since-it-spoke, so reading retires
+        # it; a question would instead need answering.
+        return {
+            **row, "status": "waiting", "reason": "done", "question": False,
+        }
+    return None
+
 async def handle_supervisor(request: Request):
     """GET /api/supervisor -- which agents are waiting on the user.
 
@@ -3946,145 +4106,14 @@ async def handle_supervisor(request: Request):
         meta = transcripts_by_id.get(session_id)
         if not meta:
             continue
-        # Epoch seconds from the file, ISO from the marks: compare like for like.
-        file_touched = datetime.datetime.fromtimestamp(
-            meta.get("updated_at") or 0, datetime.UTC
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mark = marks.get(("session", session_id), {})
-        seen = mark.get("read_at", "")
-        status = (cli.get("status") or "").strip().lower()
-        # A busy agent needs no transcript read at all, which is what keeps
-        # this cheap enough to poll: it is the common case.
-        if status == "busy":
-            row = {
-                "kind": "session", "id": session_id,
-                "title": cli.get("name") or meta.get("title") or session_id,
-                "preview": "", "since": file_touched, "status": "working",
-            }
-            # Busy is honest but incomplete: a session retrying a dead endpoint
-            # reports busy the whole time, so a run going nowhere looks exactly
-            # like one doing work. The failure is read from the model field --
-            # the CLI writes "<synthetic>" on a failed turn -- rather than from
-            # the wording, so an agent *discussing* an API error is not mistaken
-            # for one suffering it. Cached against the transcript's mtime: an
-            # unmoved file cannot have gained a new failure, which keeps the
-            # fast path fast on the common case of a session quietly working.
-            failure = await _session_failure(session_id, file_touched)
-            if failure:
-                dismissed = mark.get("dismissed_at") or ""
-                # Retired only by an explicit dismissal, never by being read: a
-                # failing endpoint does not fix itself by being looked at. It
-                # also clears itself once the agent produces real output again,
-                # because last_error only reports a failure that is still the
-                # newest turn.
-                if not (dismissed and file_touched <= dismissed):
-                    waiting.append({
-                        **row, "preview": _one_line(failure),
-                        "status": "waiting", "reason": "failed",
-                        # A failure is not a question, however it is worded.
-                        "question": False,
-                    })
-                    continue
-            working.append(row)
-            continue
-        # For a session that is not blocked -- no status field at all, or an
-        # explicit `idle` -- fall back to mtime as a negative filter only: an
-        # untouched file certainly has nothing new. It must never decide
-        # "waiting" on its own -- one cross-session message deposits dozens of
-        # queue-operation and attachment records into the receiving session, so
-        # with several agents talking the mtime is never still.
-        #
-        # `busy` has already been handled and continued above, so reaching here
-        # with a status in the not-blocked set means `idle`.
-        if (not status or status in _CLI_STATUS_NOT_BLOCKED) and seen \
-                and file_touched <= seen:
-            continue
-        page = await transcripts.read_turns(session_id)
-        page_turns = page.get("turns") or []
-        if not page_turns:
-            continue
-        entry = {
-            "kind": "session",
-            "id": session_id,
-            "title": cli.get("name") or meta.get("title") or session_id,
-            "preview": "",
-        }
-        # Claude Code reports its own state, which beats inferring one from the
-        # transcript: a session at a permission prompt and one running a tool
-        # look identical in the file. A *blocked* session stays listed until it
-        # starts working again, which only happens once someone answers it, so a
-        # read mark deliberately does not retire this.
-        #
-        # This read `if status:`, on the stated belief that "any non-busy value
-        # means it has stopped and is waiting on a human". That was true while
-        # `busy` was the only value the CLI wrote. 2.1.252 also writes `idle`,
-        # which means the opposite -- the task concluded and nothing is needed --
-        # so every finished agent was being listed as blocked, with its last
-        # sentence presented as though it were a question. Idle now falls through
-        # to the routine-output path below, where being read retires it.
-        if status and status not in _CLI_STATUS_NOT_BLOCKED:
-            spoke_at = cli.get("status_updated_at") or file_touched
-            dismissed = mark.get("dismissed_at") or ""
-            if dismissed and spoke_at <= dismissed:
-                continue
-            # A structured question outranks prose: it is an unambiguous ask,
-            # and its answer block is an unambiguous resolution.
-            pending = _pending_question(page_turns)
-            said = pending or _last_thing_said(page_turns)
-            waiting.append({
-                **entry,
-                "since": spoke_at,
-                "preview": _one_line(said),
-                "status": "waiting",
-                "reason": "asks" if pending else (_attention(said) or "idle"),
-                "question": bool(pending) or _asks_a_question(said),
-            })
-            continue
-        last_turn = page_turns[-1]
-        # A trailing tool call means the agent is still running, not that it
-        # has stopped with something to say. Checking only role was wrong:
-        # every tool turn carries role="assistant" too.
-        last_is_speech = last_turn.get("role") == "assistant" and any(
-            b.get("kind") == "text" and (b.get("text") or "").strip()
-            for b in last_turn.get("blocks", [])
+        entry = await _classify_cli_session(
+            cli, meta, marks.get(("session", session_id), {}),
         )
-        if not last_is_speech:
-            working.append({**entry, "since": file_touched, "status": "working"})
+        if entry is None:
             continue
-        # The real signal: when the agent last said something, not when its
-        # file was last written.
-        spoke_at = str(last_turn.get("timestamp") or "") or file_touched
-        if seen and spoke_at <= seen:
-            continue
-        # The last block of the turn, not the first: a turn often opens with a
-        # sentence of narration and ends with the actual question.
-        text = " ".join(
-            (b.get("text") or "").strip()
-            for b in last_turn.get("blocks", [])
-            if b.get("kind") == "text"
-        ).strip()
-        pending = _pending_question(page_turns)
-        if pending:
-            text = pending
-        reason = "asks" if pending else _attention(text)
-        row = {**entry, "since": spoke_at, "preview": _one_line(text)}
-        if reason:
-            # Unanswered outranks read, same as for conversations.
-            dismissed = mark.get("dismissed_at") or ""
-            if not (dismissed and spoke_at <= dismissed):
-                waiting.append({
-                    **row, "status": "waiting", "reason": reason,
-                    "question": bool(pending) or _asks_a_question(text),
-                })
-        elif not (seen and spoke_at <= seen):
-            # The agent finished speaking and is asking nothing. That is the
-            # outcome the user is waiting for, so it is surfaced rather than
-            # filed quietly -- with its own reason, because calling it "needs an
-            # answer" would be a lie. Unread-since-it-spoke, so reading retires
-            # it; a question would instead need answering.
-            waiting.append({
-                **row, "status": "waiting", "reason": "done", "question": False,
-            })
+        {"waiting": waiting, "working": working, "updated": updated}[
+            entry["status"]
+        ].append(entry)
 
     waiting.sort(key=lambda e: e["since"])
     updated.sort(key=lambda e: e["since"])

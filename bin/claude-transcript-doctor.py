@@ -79,20 +79,42 @@ def is_poison(block: object) -> str | None:
     return None
 
 
-def discover() -> dict[str, Path]:
-    """{session name: transcript path} for every named session with one."""
-    found: dict[str, Path] = {}
+def discover() -> dict[str, tuple[Path, str]]:
+    """{label: (transcript path, session id)} for every session with a file.
+
+    Keyed by name where there is one, by session id where there is not. The
+    usage line has always said "by name or id" and only name worked: a session
+    started with `claude -p` is auto-named from its first prompt, so its name is
+    a sentence nobody would type, and asking for it by id matched nothing.
+
+    That failed quietly in the place it matters most. `bin/wc-claude.sh` repairs
+    a transcript before resuming it, passing whatever followed --resume -- which
+    is usually an id. The doctor found nothing, said so, and the session was
+    resumed unrepaired.
+    """
+    found: dict[str, tuple[Path, str]] = {}
     for meta in SESSIONS.glob("*.json"):
         try:
             data = json.loads(meta.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        name, sid = data.get("name"), data.get("sessionId")
-        if not name or not sid:
+        sid = data.get("sessionId")
+        if not sid:
             continue
         for transcript in PROJECTS.glob(f"*/{sid}.jsonl"):
-            found[name] = transcript
+            found[str(data.get("name") or sid)] = (transcript, str(sid))
     return dict(sorted(found.items()))
+
+
+def select(sessions: dict[str, tuple[Path, str]],
+           wanted: list[str]) -> dict[str, tuple[Path, str]]:
+    """Filter by name or session id, so either identifier reaches its file."""
+    if not wanted:
+        return sessions
+    return {
+        label: entry for label, entry in sessions.items()
+        if label in wanted or entry[1] in wanted
+    }
 
 
 def inspect(path: Path) -> dict:
@@ -193,28 +215,39 @@ def main() -> int:
         # parse_args(), so --help would carry it twice.
         description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("names", nargs="*", help="session names to act on")
+    ap.add_argument("names", nargs="*",
+                    help="session names or session ids to act on")
     ap.add_argument("--fix", action="store_true", help="repair, not just report")
     args = ap.parse_args()
 
-    sessions = discover()
-    if args.names:
-        sessions = {n: p for n, p in sessions.items() if n in args.names}
+    every = discover()
+    sessions = select(every, args.names)
     if not sessions:
-        print("no transcripts found")
+        # Distinguish "you asked for something that is not here" from "there is
+        # nothing here at all". The first used to print the second's message,
+        # which reads like a healthy empty machine rather than a failed request
+        # -- and a caller repairing before a resume would carry on regardless.
+        if args.names and every:
+            print(f"no session matched {', '.join(args.names)} "
+                  f"({len(every)} known: name or session id both work)")
+        else:
+            print("no transcripts found")
         return 1
 
     live = running()
     poisoned = 0
-    print(f"  {'session':10} {'records':>8} {'native':>7} {'FOREIGN':>8} "
+    print(f"  {"session":38} {"records":>8} {'native':>7} {'FOREIGN':>8} "
           f"{'emptytext':>10}  {'live':5} verdict")
-    for name, path in sessions.items():
+    for name, (path, sid) in sessions.items():
         info = inspect(path)
         bad = info["foreign"] + info["empty_text"]
         poisoned += bool(bad)
-        print(f"  {name:10} {info['records']:8} {info['native']:7} "
+        # A session is live if either identifier appears on a command line: an
+        # auto-named session is resumed by id, a named one by name.
+        is_live = f"resume {name}" in live or f"resume {sid}" in live
+        print(f"  {name[:38]:38} {info['records']:8} {info['native']:7} "
               f"{info['foreign']:8} {info['empty_text']:10}  "
-              f"{'yes' if f'resume {name}' in live else 'no':5} "
+              f"{'yes' if is_live else 'no':5} "
               f"{'POISONED' if bad else 'clean'}")
         if bad and args.fix:
             result = repair(path, apply=True)
@@ -222,7 +255,7 @@ def main() -> int:
             print(f"      -> {state}: dropped {result['dropped']}, "
                   f"relinked {result['relinked']}, trimmed {result['trimmed']}"
                   + (f", problems {result['detail']}" if result["problems"] else ""))
-            if result["installed"] and f"resume {name}" in live:
+            if result["installed"] and is_live:
                 print("      -> still running: restart it or the repair is "
                       "not what it sends")
 

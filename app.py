@@ -1309,8 +1309,17 @@ async def handle_submit_message(request: Request, chat_id: str):
     if session_id or chat.get("session_id"):
         await _skip_transcript_to_end(chat_id, session_id or chat["session_id"])
     model = runner.take_last_model(chat_id)
-    if model and model != chat.get("model"):
-        await db.chat_set_model(chat_id, model)
+    # Deliberately not written back to the conversation. `chats.model` is the
+    # user's choice, and `runner.get_default_model` reads it before the backend
+    # default and the global setting -- so recording whatever happened to serve
+    # a turn pinned the conversation to a model nobody picked, and it then
+    # ignored the active machine for ever. Three conversations on this machine
+    # are still pinned to `azure_ai/gpt-5.6-luna`, which no configured backend
+    # serves, by exactly this route.
+    #
+    # Nothing is lost by not storing it: the served model is recorded per turn
+    # in `usage_events`, it is returned in the response below, and the UI has
+    # its own label for it that is not the picker.
     await _record_turn_usage(chat_id, session["user"], runner.take_last_usage(chat_id))
     return JSONResponse(
         {"response": full_response, "chunks": len(chunks), "model": model}
@@ -1425,8 +1434,9 @@ async def _start_turn(
         await db.bump_chat_updated_at(chat_id)
         if session_id and session_id != chat["session_id"]:
             await db.chat_set_session(chat_id, session_id)
-        if model and model != chat.get("model"):
-            await db.chat_set_model(chat_id, model)
+        # The served model is not written back here either -- see the blocking
+        # path above. `chats.model` means "the user chose this", and routing
+        # reads it before everything else.
         # Same reason as the blocking path: the runner appended this turn to the
         # CLI transcript too, so move the sync past it rather than letting the
         # next poll echo it back.

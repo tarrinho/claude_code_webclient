@@ -19,40 +19,76 @@ was wired up in a way that read correctly and did not work:
   nothing and the control rendered as bare default chrome.
 
 Every one of those passes a source-substring test. The call is present, the
-listener is attached, the class is in the stylesheet. So these tests do not
-grep the source: they load the real page in headless Chromium, dispatch real
-events, and assert on what the DOM ends up looking like. ``supervisor.js`` is
-an IIFE, so nothing inside is reachable by name -- which is the point. The only
-handles used are the ones a user has: clicks, keystrokes and scrolls, plus the
-stream, reached through the ``window._supervisorSSE`` the page already exports.
+listener is attached, the class is in the stylesheet. So these tests drive the
+real page in a real browser and assert on what the DOM ends up looking like.
+``supervisor.js`` is an IIFE, so nothing inside is reachable by name -- which is
+the point. The only handles used are the ones a user has: clicks, keystrokes and
+scrolls, plus the stream, reached through the ``window._supervisorSSE`` the page
+already exports.
 
-Chromium costs ~25s to start here and that is fixed overhead, not something the
-virtual-time budget affects, so the whole file shares a single launch. Each
-feature area runs inside its own try/catch and reports its own failure, so one
-broken area does not erase the evidence from the others.
+Rewritten onto playwright. The first version drove ``chromium --headless
+--dump-dom`` directly and shared one browser launch across all 28 tests, which
+was wrong twice over. It depended on Chromium choosing to exit -- and once it
+stopped doing so on this page (verified as a harness fault, not a page one: the
+HTML alone exits in 1s, the HTML plus ``supervisor.js`` hangs, and the two files
+were byte-identical to when the suite passed) every test failed on a 180s
+timeout. And because one probe fed all of them, a single hang reported 27
+failures with one cause, which is the opposite of what a test suite is for. A
+page per test costs a second and localises the blame.
+
+No server: ``page.route`` fulfils the document, the script and the API from
+fixtures here, so the suite is hermetic and the task list is whatever a test
+needs rather than whatever a database happens to hold.
 """
 from __future__ import annotations
 
-import base64
-import functools
 import json
-import re
+import os
 import shutil
-import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-WEB = REPO / "web"
-SUPERVISOR_HTML = WEB / "supervisor.html"
-SUPERVISOR_JS = WEB / "supervisor.js"
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:  # pragma: no cover - exercised only without the dev deps
+    sync_playwright = None
 
+
+def _driver_status() -> tuple[bool, str]:
+    """Whether playwright's own node driver can start, and why not if it can't.
+
+    Same check as tests/test_frontend_browser.py, and for the same reason:
+    importing playwright proves nothing, because it shells out to a node binary
+    it ships itself. Guarding on the import alone makes every test here raise
+    FileNotFoundError on a machine without node instead of skipping.
+    """
+    try:
+        from playwright._impl._driver import compute_driver_executable
+    except Exception as exc:  # noqa: BLE001
+        return False, f"playwright not importable: {exc.__class__.__name__}"
+    try:
+        parts = compute_driver_executable()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"driver path unresolvable: {exc.__class__.__name__}"
+    for path in (parts if isinstance(parts, (list, tuple)) else [parts]):
+        if not os.path.exists(path):
+            return False, f"driver missing: {path} (try: playwright install)"
+    return True, "ok"
+
+
+DRIVER_OK, DRIVER_WHY = _driver_status()
+
+ROOT = Path(__file__).resolve().parents[1]
+SUPERVISOR_HTML = ROOT / "web" / "supervisor.html"
+SUPERVISOR_JS = ROOT / "web" / "supervisor.js"
 CHROMIUM = (shutil.which("chromium") or shutil.which("chromium-browser")
             or shutil.which("google-chrome"))
 
-SUPERVISOR_ID = "sup-1111"
+# An origin that does not exist. Every request is intercepted, so nothing is
+# ever sent; a real host here would mean a test could quietly depend on it.
+ORIGIN = "http://supervisor.test"
 
+SUPERVISOR_ID = "sup-1111"
 SUPS = [{"id": SUPERVISOR_ID, "title": "Ship the thing", "status": "running",
          "progress_pct": 40, "created_at": "2026-09-01T09:00:00Z",
          "updated_at": "2026-09-01T09:30:00Z"}]
@@ -63,373 +99,195 @@ TASKS = [
      "progress_pct": 50, "result": None, "model": "opus", "depends_on": ["t1"]},
 ]
 
-# Injected ahead of supervisor.js: the page must not reach the network from
-# file://, and the fake EventSource is what lets a test push a stream frame.
-STUBS = """
-<script>
-(function () {
-  var SUPS = __SUPS__, TASKS = __TASKS__;
-  window.fetch = function (url) {
-    var u = String(url), body = {};
-    if (u.indexOf('/tasks') !== -1) body = { tasks: TASKS };
-    else if (u.indexOf('/messages') !== -1) body = { messages: [] };
-    else if (/\\/api\\/supervisors\\/[^/?]+$/.test(u)) body = { supervisor: SUPS[0] };
-    else if (u.indexOf('/api/supervisors') !== -1) body = { supervisors: SUPS };
-    return Promise.resolve({
-      ok: true, status: 200,
-      json: function () { return Promise.resolve(body); },
-      text: function () { return Promise.resolve(JSON.stringify(body)); }
-    });
-  };
-  function FakeES(url) {
-    this.url = url; this.readyState = 1;
-    this.close = function () { this.readyState = 2; };
-    this.addEventListener = function () {};
-  }
-  window.EventSource = FakeES;
-  window.__errors = [];
-  window.addEventListener('error', function (e) {
-    window.__errors.push(String(e.message));
-  });
-})();
-</script>
+# Replaces EventSource before any page script runs. supervisor.js publishes the
+# stream as window._supervisorSSE, which is how a test pushes a frame.
+STUB_SSE = """
+window.EventSource = function (url) {
+  this.url = url;
+  this.readyState = 1;
+  this.close = function () { this.readyState = 2; };
+  this.addEventListener = function () {};
+};
 """
 
-# The driver: helpers, the five feature areas, and the reporting channel.
-#
-# Areas run in sequence in one page. Order is deliberate -- the task and
-# keyboard areas are independent, the goal area finishes by dismissing its
-# banner, and the badge area needs a chat box it can scroll, so it goes last.
-DRIVER = r"""
-<script>
-function $one(sel) { return document.querySelector(sel); }
 
-function push(frame) {
-  var es = window._supervisorSSE;
-  if (!es) throw new Error('no SSE stream: supervisor was never selected');
-  if (!es.onmessage) throw new Error('SSE stream has no onmessage handler');
-  es.onmessage({ data: JSON.stringify(frame) });
-}
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "chromium not installed")
+class _SupervisorPage(unittest.TestCase):
+    """Browser lifecycle and page fixtures. No tests of its own.
 
-function msgFrame(text) {
-  return { type: 'messages', messages: [
-    { role: 'assistant', content: text, created_at: '2026-09-01T10:00:00Z' }] };
-}
-
-function key(k, opts, target) {
-  var init = { key: k, bubbles: true, cancelable: true };
-  for (var p in (opts || {})) init[p] = opts[p];
-  return (target || document).dispatchEvent(new KeyboardEvent('keydown', init));
-}
-
-function activeId() {
-  var a = document.activeElement;
-  return a ? (a.id || a.tagName.toLowerCase()) : null;
-}
-
-function badgeState() {
-  var b = $one('#topbar-badge');
-  return { hidden: !!b.hidden, visible: b.classList.contains('visible'),
-           text: b.textContent };
-}
-
-function scrollUp() {
-  var c = $one('#chat-messages');
-  // Force a scrollable box, then park away from the bottom so the page's own
-  // isNearBottom() reports false.
-  c.style.height = '40px';
-  c.style.overflowY = 'scroll';
-  c.scrollTop = 0;
-  c.dispatchEvent(new Event('scroll'));
-}
-
-function scrollBottom() {
-  var c = $one('#chat-messages');
-  c.scrollTop = c.scrollHeight;
-  c.dispatchEvent(new Event('scroll'));
-}
-
-function settle() { return new Promise(function (r) { setTimeout(r, 60); }); }
-
-// ── Areas ───────────────────────────────────────────────────────────────
-
-function areaLoad() {
-  return { errors: window.__errors.slice(),
-           badgeInDom: !!$one('#topbar-badge'),
-           restoreInDom: !!$one('.goal-banner-restore'),
-           supervisorSelected: !!$one('.supervisor-list-item.active') };
-}
-
-function areaTasks() {
-  var out = {};
-  var toggle = $one('.expand-toggle[data-expand="t1"]');
-  out.toggleExists = !!toggle;
-  out.detailRows = document.querySelectorAll('.task-detail-row').length;
-  out.expandedBefore = document.querySelectorAll('.task-detail-row.expanded').length;
-  // If the CSS is scoped to the wrong ancestor the rule matches nothing and
-  // this falls back to the button default rather than our pointer.
-  out.toggleCursor = getComputedStyle(toggle).cursor;
-
-  toggle.click();
-  var opened = $one('.task-detail-row[data-detail="t1"]');
-  out.expandedAfterClick = opened.classList.contains('expanded');
-  out.resultShown = opened.textContent.indexOf('found 42 files') !== -1;
-  out.activeAfterToggle = !!$one('.task-item.active');
-
-  $one('.expand-toggle[data-expand="t2"]').click();
-  out.t1StillOpen = $one('.task-detail-row[data-detail="t1"]')
-    .classList.contains('expanded');
-  out.t2Open = $one('.task-detail-row[data-detail="t2"]')
-    .classList.contains('expanded');
-
-  $one('.expand-toggle[data-expand="t2"]').click();
-  out.t2AfterSecondClick = $one('.task-detail-row[data-detail="t2"]')
-    .classList.contains('expanded');
-
-  $one('.task-item[data-task-id="t2"] .task-title').click();
-  out.activeAfterRowClick = !!$one('.task-item.active');
-  return out;
-}
-
-function areaKeys() {
-  var out = {};
-  var composer = $one('#prompt-input');
-
-  composer.focus();
-  composer.value = 'step 1 of 4';
-  key('1', {}, composer);
-  out.afterDigitInComposer = activeId();
-
-  document.body.focus();
-  key('1');
-  out.afterDigitOnBody = activeId();
-  key('2');
-  out.afterTwo = activeId();
-  key('3');
-  out.afterThree = activeId();
-  key('4');
-  out.afterFour = activeId();
-
-  document.body.focus();
-  key('1', { ctrlKey: true });
-  out.afterCtrlDigit = activeId();
-
-  document.body.focus();
-  out.digitDefaultPrevented = !key('1');
-  out.unmappedDigitPrevented = !key('9');
-
-  // Clear the composer so the goal area starts from a known state.
-  composer.value = '';
-  return out;
-}
-
-function areaGoal() {
-  var out = {};
-  var banner = $one('#goal-banner');
-  var composer = $one('#prompt-input');
-  var restore = $one('.goal-banner-restore');
-
-  composer.value = 'Refactor the parser';
-  $one('#send-btn').click();
-  return settle().then(function () {
-    out.shownOnSend = !banner.hidden;
-    out.slimOnSend = banner.classList.contains('slim');
-    out.restoreHiddenOnSend = !!restore.hidden;
-
-    push(msgFrame('working on it'));
-    out.slimAfterMessage = banner.classList.contains('slim');
-    out.restoreShownAfterMessage = !restore.hidden;
-
-    restore.click();
-    out.slimAfterRestore = banner.classList.contains('slim');
-
-    // The point of the sticky flag: this must not undo the click above.
-    push(msgFrame('still working'));
-    out.slimAfterRestoreThenMessage = banner.classList.contains('slim');
-
-    composer.value = 'Now ship it';
-    $one('#send-btn').click();
-    return settle().then(function () {
-      out.slimOnNewGoal = banner.classList.contains('slim');
-      out.textOnNewGoal = $one('#goal-text').textContent;
-
-      key('Escape');
-      out.hiddenAfterEscape = !!banner.hidden;
-      return out;
-    });
-  });
-}
-
-function areaBadge() {
-  var out = {};
-  out.initial = badgeState();
-
-  // Parked at the bottom: the content is already in front of the user.
-  push(msgFrame('one'));
-  out.atBottom = badgeState();
-
-  scrollUp();
-  push(msgFrame('two'));
-  out.afterOneAway = badgeState();
-
-  push(msgFrame('three'));
-  push({ type: 'events', events: [
-    { type: 'task_start', task_id: 't2', data: { title: 'Second task' } }] });
-  out.afterMore = badgeState();
-
-  scrollBottom();
-  out.afterReturn = badgeState();
-  return out;
-}
-
-// ── Runner ──────────────────────────────────────────────────────────────
-
-function b64(s) {
-  var bytes = new TextEncoder().encode(s), bin = '';
-  bytes.forEach(function (x) { bin += String.fromCharCode(x); });
-  return btoa(bin);
-}
-
-function report(v) {
-  var d = document.createElement('div');
-  d.id = '__result';
-  // Pure base64, nothing else: --dump-dom escapes textContent, so any
-  // delimiter with angle brackets comes back mangled and also collides with
-  // this script's own source in the dumped document.
-  d.textContent = b64(JSON.stringify(v));
-  document.body.appendChild(d);
-}
-
-// Run areas in order, each isolated: an area that throws records its own
-// error instead of taking the rest of the report down with it.
-function runAreas(names, results) {
-  if (!names.length) return Promise.resolve(results);
-  var name = names[0];
-  var rest = names.slice(1);
-  var step;
-  try {
-    step = Promise.resolve(window['area' + name]());
-  } catch (err) {
-    step = Promise.reject(err);
-  }
-  return step.then(function (value) {
-    results[name] = value;
-  }, function (err) {
-    results[name] = { __error: String((err && err.message) || err) };
-  }).then(function () {
-    return runAreas(rest, results);
-  });
-}
-
-window.addEventListener('load', function () {
-  setTimeout(function () {
-    var results = {};
-    try {
-      var row = $one('.supervisor-list-item');
-      if (!row) throw new Error('no supervisor row rendered');
-      row.click();
-    } catch (err) {
-      report({ __fatal: String((err && err.message) || err) });
-      return;
-    }
-    settle().then(function () {
-      return runAreas(['Load', 'Tasks', 'Keys', 'Goal', 'Badge'], results);
-    }).then(report, function (err) {
-      report({ __fatal: String((err && err.message) || err) });
-    });
-  }, 250);
-});
-</script>
-"""
-
-CHROME_FLAGS = [
-    "--headless", "--disable-gpu", "--no-sandbox", "--no-first-run",
-    "--no-default-browser-check", "--disable-extensions", "--disable-sync",
-    "--disable-background-networking", "--disable-component-update",
-    "--disable-default-apps", "--disable-dev-shm-usage", "--mute-audio",
-    "--virtual-time-budget=4000", "--dump-dom",
-]
-
-
-@functools.lru_cache(maxsize=1)
-def _probe() -> dict:
-    """Load the real supervisor page headless once and return every area.
-
-    Returns a dict rather than raising, including on failure: lru_cache does
-    not memoise exceptions, so a raising probe would relaunch Chromium for
-    every test method in the file and turn a broken page into a ten-minute
-    hang instead of a fast failure.
+    Kept separate so each feature area can subclass it: subclassing a class
+    that has test methods re-runs every one of them under the new name.
     """
-    html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-    stubs = (STUBS.replace("__SUPS__", json.dumps(SUPS))
-                  .replace("__TASKS__", json.dumps(TASKS)))
-    # The page loads supervisor.js with a cache-busting query that file://
-    # cannot resolve; point at the copy beside the probe instead.
-    marker = '<script src="supervisor.js?v=4"></script>'
-    if marker not in html:
-        return {"__fatal": f"script tag {marker!r} not found in supervisor.html"}
-    html = html.replace(marker, stubs + '<script src="supervisor.js"></script>')
-    html += DRIVER
 
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        shutil.copy(SUPERVISOR_JS, d / "supervisor.js")
-        (d / "probe.html").write_text(html, encoding="utf-8")
-        try:
-            proc = subprocess.run(
-                [CHROMIUM, *CHROME_FLAGS, f"file://{d / 'probe.html'}"],
-                capture_output=True, text=True, timeout=180, check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return {"__fatal": "chromium did not exit within 180s"}
+    def setUp(self):
+        # addCleanup, not tearDown: unittest skips tearDown when setUp raises,
+        # and a leaked playwright is not merely untidy -- its greenlet loop
+        # stays flagged as the running asyncio loop for this thread, so every
+        # IsolatedAsyncioTestCase afterwards dies on "Runner.run() cannot be
+        # called from a running event loop". Cleanups run last-registered-first,
+        # so close() lands before stop().
+        self.errors: list[str] = []
+        self._pw = sync_playwright().start()
+        self.addCleanup(self._pw.stop)
+        self.browser = self._pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-sandbox"]
+        )
+        self.addCleanup(self.browser.close)
+        self.page = self.browser.new_page()
+        self.page.on("pageerror", lambda e: self.errors.append(f"pageerror: {e}"))
+        self.page.on(
+            "console",
+            lambda m: self.errors.append(f"console.{m.type}: {m.text}")
+            if m.type == "error" else None,
+        )
+        self._install_routes()
 
-    dom = proc.stdout or ""
-    # Match the element, not a delimiter: the driver's own source appears in
-    # the dumped document too, so a textual marker matches there first.
-    found = re.search(r'id="__result"[^>]*>([A-Za-z0-9+/=]*)<', dom)
-    if not found:
-        return {"__fatal": "probe never reported; the page likely threw on "
-                           f"load. stderr tail: {proc.stderr[-1500:]}"}
-    try:
-        return json.loads(base64.b64decode(found.group(1)).decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        return {"__fatal": f"unreadable probe payload: {exc}"}
+    def _install_routes(self):
+        html = SUPERVISOR_HTML.read_text(encoding="utf-8")
+        js = SUPERVISOR_JS.read_text(encoding="utf-8")
+
+        def handler(route):
+            url = route.request.url
+            if "supervisor.js" in url:
+                route.fulfill(status=200, body=js,
+                              content_type="application/javascript")
+            elif "/api/" in url:
+                route.fulfill(status=200, body=json.dumps(self._api_body(url)),
+                              content_type="application/json")
+            elif url.rstrip("/").endswith("supervisor.html") or url == ORIGIN + "/":
+                route.fulfill(status=200, body=html, content_type="text/html")
+            else:
+                route.fulfill(status=404, body="")
+
+        self.page.route("**/*", handler)
+        self.page.add_init_script(STUB_SSE)
+
+    @staticmethod
+    def _api_body(url: str) -> dict:
+        if "/tasks" in url:
+            return {"tasks": TASKS}
+        if "/messages" in url:
+            return {"messages": []}
+        if "/api/supervisors/" in url:
+            return {"supervisor": SUPS[0]}
+        if "/api/supervisors" in url:
+            return {"supervisors": SUPS}
+        return {}
+
+    def open_page(self, *, select=True):
+        """Load the supervisor page, optionally selecting the one supervisor.
+
+        Selecting is what starts the stream and renders the task tree, so most
+        areas need it; the load assertions want the state before it.
+        """
+        self.page.goto(f"{ORIGIN}/supervisor.html", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=10_000)
+        if select:
+            self.page.click(".supervisor-list-item .sl-title")
+            # The task tree arriving is the readiness signal: it means
+            # showActiveSupervisor() has resolved and connectSSE() has run.
+            self.page.wait_for_selector(".task-item", timeout=10_000)
+
+    # ── Driving ─────────────────────────────────────────────────────────
+
+    def push(self, frame: dict):
+        """Deliver one SSE frame, the way the live stream would."""
+        self.page.evaluate(
+            """(frame) => {
+                const es = window._supervisorSSE;
+                if (!es) throw new Error('no SSE stream: supervisor not selected');
+                if (!es.onmessage) throw new Error('stream has no onmessage');
+                es.onmessage({ data: JSON.stringify(frame) });
+            }""", frame)
+
+    def push_message(self, text: str):
+        self.push({"type": "messages", "messages": [
+            {"role": "assistant", "content": text,
+             "created_at": "2026-09-01T10:00:00Z"}]})
+
+    def send_prompt(self, text: str):
+        self.page.fill("#prompt-input", text)
+        self.page.click("#send-btn")
+        self.page.wait_for_selector("#goal-banner:not([hidden])", timeout=5_000)
+
+    def scroll_up(self):
+        """Park the chat away from the bottom so isNearBottom() reports false."""
+        self.page.evaluate(
+            """() => {
+                const c = document.querySelector('#chat-messages');
+                c.style.height = '40px';
+                c.style.overflowY = 'scroll';
+                c.scrollTop = 0;
+                c.dispatchEvent(new Event('scroll'));
+            }""")
+
+    def scroll_bottom(self):
+        self.page.evaluate(
+            """() => {
+                const c = document.querySelector('#chat-messages');
+                c.scrollTop = c.scrollHeight;
+                c.dispatchEvent(new Event('scroll'));
+            }""")
+
+    # ── Reading ─────────────────────────────────────────────────────────
+
+    def active_id(self) -> str | None:
+        return self.page.evaluate(
+            "() => { const a = document.activeElement;"
+            " return a ? (a.id || a.tagName.toLowerCase()) : null; }")
+
+    def badge(self) -> dict:
+        return self.page.evaluate(
+            """() => { const b = document.querySelector('#topbar-badge');
+                 return { hidden: !!b.hidden,
+                          visible: b.classList.contains('visible'),
+                          text: b.textContent }; }""")
+
+    def has_class(self, selector: str, name: str) -> bool:
+        return self.page.evaluate(
+            "([s, n]) => { const e = document.querySelector(s);"
+            " if (!e) throw new Error('no element: ' + s);"
+            " return e.classList.contains(n); }", [selector, name])
+
+    def is_hidden(self, selector: str) -> bool:
+        return self.page.evaluate(
+            "(s) => !!document.querySelector(s).hidden", selector)
+
+    def press_bare(self, key: str) -> bool:
+        """Dispatch a bare key at the document; True if the page claimed it.
+
+        Synthetic rather than page.keyboard.press because the assertion is about
+        defaultPrevented, which a real keypress does not report back.
+        """
+        return self.page.evaluate(
+            """(key) => {
+                const event = new KeyboardEvent('keydown',
+                    { key, bubbles: true, cancelable: true });
+                return !document.dispatchEvent(event);
+            }""", key)
 
 
-def _area(name: str) -> dict:
-    """One feature area's results, or a failure naming that area."""
-    probe = _probe()
-    if "__fatal" in probe:
-        raise AssertionError(f"probe did not run: {probe['__fatal']}")
-    if name not in probe:
-        raise AssertionError(f"area {name!r} missing from probe: "
-                             f"{sorted(probe)}")
-    area = probe[name]
-    if isinstance(area, dict) and "__error" in area:
-        raise AssertionError(f"area {name!r} failed in-page: {area['__error']}")
-    return area
-
-
-@unittest.skipUnless(CHROMIUM, "chromium not installed")
-class PageLoadTests(unittest.TestCase):
+class PageLoadTests(_SupervisorPage):
     """Nothing below means anything if the page throws on the way up."""
 
     def test_the_page_loads_without_script_errors(self):
-        self.assertEqual(_area("Load")["errors"], [])
+        self.open_page()
+        self.assertEqual(self.errors, [])
 
     def test_the_new_elements_are_in_the_dom(self):
-        load = _area("Load")
-        self.assertTrue(load["badgeInDom"], "#topbar-badge missing")
-        self.assertTrue(load["restoreInDom"], ".goal-banner-restore missing")
+        self.open_page(select=False)
+        self.assertIsNotNone(self.page.query_selector("#topbar-badge"))
+        self.assertIsNotNone(self.page.query_selector(".goal-banner-restore"))
 
-    def test_a_supervisor_is_selected(self):
-        """Guards every area below: without a selection there is no stream and
-        no task tree, and the feature assertions would be vacuous."""
-        self.assertTrue(_area("Load")["supervisorSelected"])
+    def test_selecting_a_supervisor_starts_the_stream(self):
+        """Guards every area below: without a stream there is nothing to push,
+        and the badge and banner assertions would be vacuous."""
+        self.open_page()
+        self.assertTrue(self.page.evaluate("() => !!window._supervisorSSE"))
 
 
-@unittest.skipUnless(CHROMIUM, "chromium not installed")
-class KeyboardShortcutTests(unittest.TestCase):
+class KeyboardShortcutTests(_SupervisorPage):
     """The panel keys, and the composer they must not break."""
 
     def test_a_digit_typed_into_the_composer_does_not_move_focus(self):
@@ -438,58 +296,78 @@ class KeyboardShortcutTests(unittest.TestCase):
         Without a typing guard the shortcut fires on every keystroke that
         reaches document, so typing "step 1 of 4" threw focus at the task tree
         mid-word and left the composer unusable for any prompt with a number in
-        it -- a worse bug than the missing shortcut.
+        it -- a worse bug than the missing shortcut. Typed with real keystrokes,
+        because that is the thing that was broken.
         """
+        self.open_page()
+        self.page.click("#prompt-input")
+        self.page.keyboard.type("step 1 of 4")
+        self.assertEqual(self.active_id(), "prompt-input",
+                         "a digit typed into the composer stole focus from it")
         self.assertEqual(
-            _area("Keys")["afterDigitInComposer"], "prompt-input",
-            "a bare digit typed into the composer stole focus from it")
+            self.page.input_value("#prompt-input"), "step 1 of 4",
+            "the composer did not receive the digits it was typed")
 
     def test_a_digit_outside_a_text_field_focuses_the_panel(self):
-        """Guards the test above: a guard that let nothing through at all
-        would satisfy it trivially."""
-        self.assertEqual(_area("Keys")["afterDigitOnBody"], "task-tree")
+        """Guards the test above: a guard that let nothing through at all would
+        satisfy it trivially."""
+        self.open_page()
+        self.page.evaluate("() => document.body.focus()")
+        self.page.keyboard.press("1")
+        self.assertEqual(self.active_id(), "task-tree")
 
     def test_each_panel_key_focuses_its_own_panel(self):
         """These are plain divs, and .focus() on a div without tabindex is a
         silent no-op, so three of the four shortcuts did nothing at all."""
-        keys = _area("Keys")
-        for probe_key, expected in (("afterTwo", "chat-messages"),
-                                    ("afterThree", "event-log"),
-                                    ("afterFour", "prompt-input")):
-            with self.subTest(target=expected):
-                self.assertEqual(keys[probe_key], expected)
+        self.open_page()
+        for key, expected in (("2", "chat-messages"),
+                              ("3", "event-log"),
+                              ("4", "prompt-input")):
+            with self.subTest(key=key):
+                self.page.evaluate("() => document.body.focus()")
+                self.page.keyboard.press(key)
+                self.assertEqual(self.active_id(), expected)
 
     def test_a_modified_digit_is_not_a_panel_shortcut(self):
         """Ctrl+1 is the browser's own tab switch, not ours to take."""
-        self.assertNotEqual(_area("Keys")["afterCtrlDigit"], "task-tree")
+        self.open_page()
+        self.page.evaluate("() => document.body.focus()")
+        self.page.keyboard.press("Control+1")
+        self.assertNotEqual(self.active_id(), "task-tree")
 
     def test_the_page_claims_only_the_digits_it_handles(self):
-        keys = _area("Keys")
-        self.assertTrue(keys["digitDefaultPrevented"],
+        self.open_page()
+        self.assertTrue(self.press_bare("1"),
                         "a handled shortcut must preventDefault")
-        self.assertFalse(keys["unmappedDigitPrevented"],
+        self.assertFalse(self.press_bare("9"),
                          "an unmapped key must be left to the browser")
 
 
-@unittest.skipUnless(CHROMIUM, "chromium not installed")
-class GoalBannerSlimStripTests(unittest.TestCase):
+class GoalBannerSlimStripTests(_SupervisorPage):
     """Shrink to a slim strip, and the restore arrow that undoes it."""
 
     def test_sending_a_prompt_shows_the_goal_expanded(self):
-        goal = _area("Goal")
-        self.assertTrue(goal["shownOnSend"], "goal banner did not appear")
-        self.assertFalse(goal["slimOnSend"], "goal banner started slimmed")
-        self.assertTrue(goal["restoreHiddenOnSend"],
+        self.open_page()
+        self.send_prompt("Refactor the parser")
+        self.assertFalse(self.has_class("#goal-banner", "slim"),
+                         "goal banner started slimmed")
+        self.assertTrue(self.is_hidden(".goal-banner-restore"),
                         "restore arrow shows while the banner is expanded")
 
     def test_a_streamed_message_shrinks_it(self):
-        goal = _area("Goal")
-        self.assertTrue(goal["slimAfterMessage"])
-        self.assertTrue(goal["restoreShownAfterMessage"],
-                        "slimmed with no visible way to expand it again")
+        self.open_page()
+        self.send_prompt("Refactor the parser")
+        self.push_message("working on it")
+        self.assertTrue(self.has_class("#goal-banner", "slim"))
+        self.assertFalse(self.is_hidden(".goal-banner-restore"),
+                         "slimmed with no visible way to expand it again")
 
     def test_the_restore_arrow_expands_it(self):
-        self.assertFalse(_area("Goal")["slimAfterRestore"])
+        self.open_page()
+        self.send_prompt("Refactor the parser")
+        self.push_message("working on it")
+        self.page.click(".goal-banner-restore")
+        self.assertFalse(self.has_class("#goal-banner", "slim"))
 
     def test_the_restore_survives_the_next_message(self):
         """The regression proper.
@@ -500,31 +378,45 @@ class GoalBannerSlimStripTests(unittest.TestCase):
         came off, the listener was wired -- and the control still appeared to do
         nothing, because on a live supervisor the next message is a second away.
         """
+        self.open_page()
+        self.send_prompt("Refactor the parser")
+        self.push_message("working on it")
+        self.page.click(".goal-banner-restore")
+        self.push_message("still working")
         self.assertFalse(
-            _area("Goal")["slimAfterRestoreThenMessage"],
+            self.has_class("#goal-banner", "slim"),
             "the message after a manual restore re-shrank the banner")
 
     def test_a_new_goal_starts_expanded(self):
         """Otherwise the sticky restore leaks into the next goal, which the
         user has not seen yet and has expressed no opinion about."""
-        goal = _area("Goal")
-        self.assertFalse(goal["slimOnNewGoal"])
-        self.assertEqual(goal["textOnNewGoal"], "Now ship it")
+        self.open_page()
+        self.send_prompt("Refactor the parser")
+        self.push_message("working on it")
+        self.page.click(".goal-banner-restore")
+        self.send_prompt("Now ship it")
+        self.assertFalse(self.has_class("#goal-banner", "slim"))
+        self.assertEqual(self.page.inner_text("#goal-text"), "Now ship it")
 
     def test_escape_dismisses_the_banner(self):
-        self.assertTrue(_area("Goal")["hiddenAfterEscape"])
+        self.open_page()
+        self.send_prompt("Refactor the parser")
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.is_hidden("#goal-banner"))
 
 
-@unittest.skipUnless(CHROMIUM, "chromium not installed")
-class UnreadBadgeTests(unittest.TestCase):
+class UnreadBadgeTests(_SupervisorPage):
     """The badge counts what is off screen, and nothing else."""
 
     def test_it_starts_empty(self):
-        self.assertTrue(_area("Badge")["initial"]["hidden"])
+        self.open_page()
+        self.assertTrue(self.badge()["hidden"])
 
     def test_nothing_is_counted_while_parked_at_the_bottom(self):
         """A badge for content already in front of the user is just a chore."""
-        self.assertTrue(_area("Badge")["atBottom"]["hidden"],
+        self.open_page()
+        self.push_message("one")
+        self.assertTrue(self.badge()["hidden"],
                         "counted a message the user was looking at")
 
     def test_a_message_missed_while_scrolled_up_is_counted(self):
@@ -534,63 +426,123 @@ class UnreadBadgeTests(unittest.TestCase):
         the badge exists for, and it was the one thing that did not increment
         it.
         """
-        state = _area("Badge")["afterOneAway"]
+        self.open_page()
+        self.scroll_up()
+        self.push_message("two")
+        state = self.badge()
         self.assertFalse(state["hidden"], "a missed message was not counted")
         self.assertTrue(state["visible"], "badge counted but stayed invisible")
         self.assertEqual(state["text"], "1")
 
     def test_further_traffic_accumulates(self):
-        self.assertEqual(_area("Badge")["afterMore"]["text"], "3")
+        self.open_page()
+        self.scroll_up()
+        self.push_message("two")
+        self.push_message("three")
+        self.push({"type": "events", "events": [
+            {"type": "task_start", "task_id": "t2",
+             "data": {"title": "Second task"}}]})
+        self.assertEqual(self.badge()["text"], "3")
 
     def test_returning_to_the_bottom_clears_it(self):
-        state = _area("Badge")["afterReturn"]
+        self.open_page()
+        self.scroll_up()
+        self.push_message("two")
+        self.assertEqual(self.badge()["text"], "1", "fixture must count first")
+        self.scroll_bottom()
+        state = self.badge()
         self.assertTrue(state["hidden"], "badge survived catching up")
         self.assertFalse(state["visible"])
 
 
-@unittest.skipUnless(CHROMIUM, "chromium not installed")
-class ExpandableTaskRowTests(unittest.TestCase):
+class ExpandableTaskRowTests(_SupervisorPage):
     """The per-task expand toggle."""
 
     def test_every_task_gets_a_toggle_and_a_detail_row(self):
-        tasks = _area("Tasks")
-        self.assertTrue(tasks["toggleExists"])
-        self.assertEqual(tasks["detailRows"], len(TASKS))
+        self.open_page()
+        self.assertIsNotNone(
+            self.page.query_selector('.expand-toggle[data-expand="t1"]'))
+        self.assertEqual(
+            len(self.page.query_selector_all(".task-detail-row")), len(TASKS))
 
     def test_rows_start_collapsed(self):
-        self.assertEqual(_area("Tasks")["expandedBefore"], 0)
+        self.open_page()
+        self.assertEqual(
+            len(self.page.query_selector_all(".task-detail-row.expanded")), 0)
 
     def test_the_toggle_is_styled(self):
         """The rule was scoped under .task-detail-row, but the button sits in
         .task-item -- a *sibling* of that row, not an ancestor -- so it matched
         nothing and the control rendered as bare default chrome. Reading the
         stylesheet cannot catch that; asking the browser can."""
-        self.assertEqual(_area("Tasks")["toggleCursor"], "pointer",
+        self.open_page()
+        cursor = self.page.eval_on_selector(
+            '.expand-toggle[data-expand="t1"]',
+            "el => getComputedStyle(el).cursor")
+        self.assertEqual(cursor, "pointer",
                          "the .expand-toggle rule is not matching the button")
 
     def test_clicking_the_toggle_opens_that_row(self):
-        tasks = _area("Tasks")
-        self.assertTrue(tasks["expandedAfterClick"])
-        self.assertTrue(tasks["resultShown"], "detail row has no task result")
+        self.open_page()
+        self.page.click('.expand-toggle[data-expand="t1"]')
+        self.assertTrue(self.has_class('.task-detail-row[data-detail="t1"]',
+                                       "expanded"))
+        self.assertIn("found 42 files",
+                      self.page.inner_text('.task-detail-row[data-detail="t1"]'))
 
     def test_opening_a_row_does_not_select_the_task(self):
-        """The toggle sits inside the row's own click target, so without
-        stopPropagation expanding a task also navigated to it."""
-        self.assertFalse(_area("Tasks")["activeAfterToggle"],
-                         "expanding a row also selected it")
+        """Expanding is not navigating: the detail panel must stay untouched.
+
+        A behaviour lock, and deliberately labelled as one. The toggle sits
+        inside the row's own click target, so it carries `stopPropagation()` and
+        the row carries an `e.target.closest('.expand-toggle')` guard -- but
+        mutation testing showed **neither is load-bearing**, and nor are both
+        together: removing them does not fail this test. The reason is a third,
+        accidental defence. The toggle handler calls `renderTaskTree()`, which
+        replaces `#task-tree`'s innerHTML and destroys the row's listener before
+        the click can bubble to it, so `selectTask` is unreachable on this path
+        whatever the guards say.
+
+        So this asserts the user-visible property rather than any one mechanism,
+        which is the honest scope: if a future refactor stops re-rendering
+        synchronously, the guards become load-bearing and this is what notices.
+        Both observables are checked, because `.task-item.active` alone is set
+        only by a re-render and would pass vacuously if selection ever became
+        detail-only.
+        """
+        self.open_page()
+        detail_before = self.page.inner_text("#detail-content")
+        self.page.click('.expand-toggle[data-expand="t1"]')
+        self.assertIsNone(self.page.query_selector(".task-item.active"),
+                          "expanding a row also selected it")
+        self.assertEqual(
+            self.page.inner_text("#detail-content"), detail_before,
+            "expanding a row populated the task detail panel")
 
     def test_only_one_row_is_open_at_a_time(self):
-        tasks = _area("Tasks")
-        self.assertTrue(tasks["t2Open"])
-        self.assertFalse(tasks["t1StillOpen"])
+        self.open_page()
+        self.page.click('.expand-toggle[data-expand="t1"]')
+        self.page.click('.expand-toggle[data-expand="t2"]')
+        self.assertTrue(self.has_class('.task-detail-row[data-detail="t2"]',
+                                       "expanded"))
+        self.assertFalse(self.has_class('.task-detail-row[data-detail="t1"]',
+                                        "expanded"))
 
     def test_clicking_the_toggle_again_closes_the_row(self):
-        self.assertFalse(_area("Tasks")["t2AfterSecondClick"])
+        self.open_page()
+        self.page.click('.expand-toggle[data-expand="t2"]')
+        self.assertTrue(self.has_class('.task-detail-row[data-detail="t2"]',
+                                       "expanded"), "fixture must open it")
+        self.page.click('.expand-toggle[data-expand="t2"]')
+        self.assertFalse(self.has_class('.task-detail-row[data-detail="t2"]',
+                                        "expanded"))
 
     def test_the_row_body_still_selects_the_task(self):
         """The guard against over-correcting: suppressing the row click
         entirely would pass every test above."""
-        self.assertTrue(_area("Tasks")["activeAfterRowClick"])
+        self.open_page()
+        self.page.click('.task-item[data-task-id="t2"] .task-title')
+        self.assertIsNotNone(self.page.query_selector(".task-item.active"))
 
 
 class PanelFocusabilityTests(unittest.TestCase):

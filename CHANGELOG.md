@@ -22,6 +22,53 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`test_functional.py` passed nowhere and was failing in two releases.**
+  `AppPersistenceTests::test_blocking_handler_persists_session` mocks four `db`
+  calls and never runs `db.init()`, but `handle_submit_message` also calls
+  `db.bump_chat_updated_at`, which was not in the patch list — so it reached the
+  real connection, which is `None`. A test defect, not a product one: the
+  production path initialises the database. Fixed by mocking the fifth call.
+
+  It shipped in **both 0.9.4 and 0.9.5**, verified against clean
+  `git archive` extracts of each, and it predates them — `a58e137` fails
+  identically. Nobody's verification caught it because every one of them was
+  scoped to `tests/` while this file lives at the repository root:
+  `pytest --collect-only -q` reports 2177 tests, `pytest tests/` reports 2163.
+  Fourteen tests were invisible to every reading taken all day.
+
+### Testing
+
+- **`bin/run-suite-chunked.sh` derives its file list from pytest.** It globbed
+  `ls tests/test_*.py`, so the one test file at the repository root was never
+  collected and no chunked run could fail on it — the blind spot above, in the
+  tool written to prevent that class of blind spot. The list now comes from
+  `pytest --collect-only`, so the runner and pytest cannot disagree, plus two
+  refusals: abort if collection is empty, and abort if the chunk plan count
+  differs from the collected count.
+
+- **The supervisor UX suite moved onto playwright.**
+  `tests/test_qa_supervisor_ux_shortcuts.py` drove `chromium --headless
+  --dump-dom` directly and shared one browser launch across all 28 tests. Both
+  were wrong. It depended on Chromium choosing to exit, and when it stopped
+  doing so on this page every test failed on a 180s timeout — with one probe
+  feeding all of them, a single hang reported 27 failures with one cause.
+  Confirmed a harness fault rather than a page one: the HTML alone exits in 1s,
+  the HTML plus `supervisor.js` hangs, and both files were byte-identical to
+  when the suite passed. It now uses the same guarded playwright fixture as the
+  rest of the browser suite, with a page per test, and needs no server —
+  `page.route` fulfils the document, the script and the API. 28 passed in ~43s.
+
+  Re-verified by mutation after the rewrite, since a rebuilt harness that
+  passes proves nothing: five of the six defects it names still fail it. The
+  sixth does not, and the test now says so — *expanding a row must not select
+  the task* is protected three times over, and the load-bearing one is
+  accidental. The toggle's `renderTaskTree()` replaces `#task-tree`'s innerHTML
+  and destroys the row's listener before the click can bubble, so removing both
+  explicit guards changes nothing. Relabelled as a behaviour lock rather than
+  left implying it guards `stopPropagation`.
+
 ## [0.9.5] — 2026-09-01
 
 > A single-fix patch on 0.9.4, cut because the defect below is an *inverted*

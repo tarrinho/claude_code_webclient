@@ -33,11 +33,41 @@ PY=.venv/bin/python
 OUT="${WC_SUITE_OUT:-/tmp/wc-suite-$$}"
 mkdir -p "$OUT"
 
+# The file list comes from PYTEST'S OWN COLLECTION, never from a glob here.
+#
+# It used to be `ls tests/test_*.py`, which silently omitted the one test file
+# that does not live under tests/ -- `test_functional.py`, at the repository
+# root. Every chunked run therefore reported 0 failed while a real failure sat
+# in it, and 0.9.4 was verified and released against that number. A bare `ls`
+# cannot notice a file it was never pointed at, so the runner was wrong in the
+# reassuring direction: registry #50 again, in the tool built to prevent it,
+# for the second time (the aggregator was the first).
+#
+# Asking pytest what it would run makes the two lists incapable of diverging.
+# If a file is added anywhere pytest collects it, it lands in a chunk without
+# anyone remembering to update this script.
+ALL_FILES=$("$PY" -m pytest --collect-only -q 2>/dev/null \
+  | grep -oE '^[^:]+\.py' | sort -u)
+
+if [ -z "$ALL_FILES" ]; then
+  echo "FATAL: pytest collected no files. Refusing to report a green run."
+  exit 1
+fi
+
 # Browser files run alone; everything else goes in groups of six.
-BROWSER_FILES=$(grep -ln 'playwright\|sync_playwright' tests/test_*.py 2>/dev/null | sort)
-ALL_FILES=$(ls tests/test_*.py | sort)
+BROWSER_FILES=$(grep -ln 'playwright\|sync_playwright' $ALL_FILES 2>/dev/null | sort)
 PLAIN_FILES=$(comm -23 <(echo "$ALL_FILES") <(echo "$BROWSER_FILES"))
 
+# Cross-check the chunk plan against collection, so a file cannot be dropped
+# between here and the loops below without the run refusing to start.
+planned=$(( $(echo "$PLAIN_FILES" | grep -c .) + $(echo "$BROWSER_FILES" | grep -c .) ))
+collected=$(echo "$ALL_FILES" | grep -c .)
+if [ "$planned" -ne "$collected" ]; then
+  echo "FATAL: $collected files collected but $planned planned -- refusing to run."
+  exit 1
+fi
+
+echo "collected     : $collected files (from pytest, not a glob)"
 echo "browser files : $(echo "$BROWSER_FILES" | grep -c . )"
 echo "plain files   : $(echo "$PLAIN_FILES" | grep -c . )"
 echo "results dir   : $OUT"

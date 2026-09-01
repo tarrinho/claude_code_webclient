@@ -842,13 +842,68 @@ def _is_empty_text_assistant(record: Any) -> bool:
     )
 
 
+def _is_foreign_thinking(block: Any) -> bool:
+    """True for a thinking block produced by a different provider.
+
+    A thinking block carries a provider-specific ``signature``. Anthropic
+    validates its own and rejects one it did not sign, with
+    ``400 ... each thinking block must contain non-whitespace thinking`` -- and
+    the rejection is of the whole request, so every later turn in that
+    conversation fails too, permanently and invisibly.
+
+    The discriminator is the signature, never the type: a *signed* thinking
+    block is the provider's own and replays correctly, so removing those would
+    throw away real reasoning for nothing. Blocks written by a gateway usually
+    have no ``signature`` key at all rather than an empty one.
+    """
+    return (
+        isinstance(block, dict)
+        and block.get("type") == "thinking"
+        and not str(block.get("signature") or "").strip()
+    )
+
+
+def _is_refused_block(block: Any) -> bool:
+    """True for a content block a strict API will not accept on replay."""
+    if not isinstance(block, dict):
+        return False
+    if _is_foreign_thinking(block):
+        return True
+    return (
+        block.get("type") == "text"
+        and not str(block.get("text") or "").strip()
+    )
+
+
 def _needs_repair_sync(path: Path) -> bool:
     """Cheap pre-check so a healthy transcript is never fully parsed."""
     try:
         raw = path.read_bytes()
     except OSError:
         return False
-    return any(marker in raw for marker in _EMPTY_TEXT_MARKERS)
+    if any(marker in raw for marker in _EMPTY_TEXT_MARKERS):
+        return True
+    # Foreign thinking cannot be found with a byte marker, because the signature
+    # is normally absent rather than empty -- there is no distinctive string to
+    # look for. Parsing is only reached when the file contains thinking at all,
+    # so a transcript without any still costs one scan.
+    #
+    # This was the half the pre-check missed. `_prepare_transcript_for_backend`
+    # ran, repaired the empty text blocks, reported success, and left the
+    # thinking blocks that actually broke five sessions on 2026-09-01.
+    if b'"thinking"' not in raw:
+        return False
+    for line in raw.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        content = (record.get("message") or {}).get("content")
+        if isinstance(content, list) and any(_is_foreign_thinking(b) for b in content):
+            return True
+    return False
 
 
 def _repair_sync(path: Path) -> dict[str, Any]:
@@ -872,14 +927,36 @@ def _repair_sync(path: Path) -> dict[str, Any]:
         except json.JSONDecodeError:
             parsed.append(None)  # keep unreadable lines exactly as they are
 
+    def _all_content_refused(record: Any) -> bool:
+        """True when nothing in the record would survive a strict replay."""
+        if not isinstance(record, dict):
+            return False
+        content = (record.get("message") or {}).get("content")
+        return (
+            isinstance(content, list)
+            and bool(content)
+            and all(_is_refused_block(block) for block in content)
+        )
+
     dropped: dict[str, str | None] = {
         record["uuid"]: record.get("parentUuid")
         for record in parsed
-        if _is_empty_text_assistant(record) and isinstance(record, dict)
-        and record.get("uuid")
+        if isinstance(record, dict) and record.get("uuid")
+        and (_is_empty_text_assistant(record) or _all_content_refused(record))
     }
-    if not dropped:
-        return {"repaired": False, "removed": 0, "relinked": 0, "backup": ""}
+    # A record is usually [thinking, text]: dropping it whole to remove the
+    # thinking would throw away the answer. So blocks are trimmed in place, and
+    # only a record left with nothing is dropped.
+    trimmable = {
+        id(record) for record in parsed
+        if isinstance(record, dict) and record.get("uuid") not in dropped
+        and isinstance((record.get("message") or {}).get("content"), list)
+        and any(_is_refused_block(b)
+                for b in (record.get("message") or {}).get("content"))
+    }
+    if not dropped and not trimmable:
+        return {"repaired": False, "removed": 0, "relinked": 0, "backup": "",
+                "trimmed": 0}
 
     def surviving_ancestor(uuid: str | None) -> str | None:
         seen: set[str] = set()
@@ -890,18 +967,27 @@ def _repair_sync(path: Path) -> dict[str, Any]:
 
     kept: list[str] = []
     relinked = 0
+    trimmed = 0
     for record, line in zip(parsed, raw_lines):
         if record is None:
             kept.append(line)
             continue
-        if _is_empty_text_assistant(record):
+        if _is_empty_text_assistant(record) or _all_content_refused(record):
             continue
+        changed = False
+        if id(record) in trimmable:
+            content = record["message"]["content"]
+            clean = [b for b in content if not _is_refused_block(b)]
+            trimmed += len(content) - len(clean)
+            record["message"]["content"] = clean
+            changed = True
         if record.get("parentUuid") in dropped:
             record["parentUuid"] = surviving_ancestor(record["parentUuid"])
             relinked += 1
-            kept.append(json.dumps(record))
-        else:
-            kept.append(line)
+            changed = True
+        # Unchanged lines are written back byte for byte; only a record this
+        # pass actually modified is re-serialised.
+        kept.append(json.dumps(record) if changed else line)
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = path.with_suffix(f".jsonl.bak-{stamp}")
@@ -915,6 +1001,7 @@ def _repair_sync(path: Path) -> dict[str, Any]:
         "repaired": True,
         "removed": len(dropped),
         "relinked": relinked,
+        "trimmed": trimmed,
         "backup": backup.name,
     }
 

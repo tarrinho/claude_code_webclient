@@ -38,3 +38,8 @@ trivy-results.sarif
 .idea/
 .DS_Store
 Thumbs.db
+
+# Throwaway diagnostics kept out of commits. scratch_qdiag.py answered "why do
+# some chats show questions and others not"; its findings are now pinned by
+# tests/test_qa_approval_questions.py and tests/test_qa_question_marker.py.
+scratch_*.py

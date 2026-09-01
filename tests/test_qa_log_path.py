@@ -180,6 +180,40 @@ class EndToEndTests(unittest.TestCase):
             self.assertIn("wc.app", first)
 
 
+class InProcessRedirectionTests(unittest.TestCase):
+    """The other half of the leak, which the subprocess fix never covered.
+
+    Four modules drive the app with an in-process TestClient. That imports
+    ``app`` inside the pytest process and configures logging there, so it never
+    saw the ``WC_LOG_FILE`` the browser fixture passes to its subprocess, and
+    kept appending to the production log -- ``ip=testclient``, ``user=alice``,
+    a stored-XSS probe -- for as long as the fix was believed complete.
+
+    Asserted in-process on purpose. Every other case here shells out, which is
+    exactly why they all passed while this route leaked: a subprocess with a
+    controlled environment cannot observe what the test process itself does.
+    """
+
+    def test_this_process_does_not_log_to_production(self):
+        import config
+        self.assertNotEqual(
+            config.LOG_FILE, str(PRODUCTION_LOG),
+            "tests/conftest.py is missing or ran too late; in-process tests are "
+            "appending to the production log",
+        )
+
+    def test_the_conftest_sets_it_before_config_is_imported(self):
+        """A fixture cannot do this -- config binds LOG_FILE at import."""
+        conftest = (ROOT / "tests" / "conftest.py")
+        self.assertTrue(conftest.is_file(), "the redirect hook is gone")
+        self.assertIn("WC_LOG_FILE", conftest.read_text(encoding="utf-8"))
+
+    def test_an_explicit_setting_still_wins(self):
+        """CI or a harness may point the log somewhere it collects from."""
+        source = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+        self.assertIn('if not os.environ.get("WC_LOG_FILE")', source)
+
+
 class FixtureRedirectionTests(unittest.TestCase):
     """The suite's own servers are the processes that were polluting the log."""
 

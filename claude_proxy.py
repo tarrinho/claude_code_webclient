@@ -251,9 +251,31 @@ def _backend_env(backend: object) -> dict[str, str]:
         env.pop("ANTHROPIC_BASE_URL", None)
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
         return env
+    # ANTHROPIC_AUTH_TOKEN is never something a machine record supplies -- it
+    # holds `api_key` -- and the CLI prefers the token over ANTHROPIC_API_KEY.
+    # So an inherited one silently outranks the key set below, and the turn goes
+    # out with the credentials of whatever the proxy's shell was pointed at.
+    # Dropped unconditionally, before the branch, so it cannot survive either
+    # path.
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
     base_url = backend.get("base_url")
     if isinstance(base_url, str) and base_url.strip():
         env["ANTHROPIC_BASE_URL"] = base_url.strip()
+    else:
+        # No base_url means "the official API". This branch used to leave the
+        # variable alone, and since the child starts from a copy of this
+        # process's environment, an ANTHROPIC_BASE_URL inherited from the shell
+        # that launched the proxy survived -- so switching a machine off a
+        # gateway and back to Anthropic kept sending turns to the gateway, with
+        # nothing in the UI to say so. The documented workaround was to
+        # `unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN` by hand before
+        # starting the proxy, which is a fix that has to be remembered every
+        # time and is invisible when forgotten.
+        #
+        # The direct runner never had this: runner._build_env builds from an
+        # allowlist, so nothing is inherited. Only this path copies the
+        # environment wholesale, and only this path needed the workaround.
+        env.pop("ANTHROPIC_BASE_URL", None)
     api_key = backend.get("api_key")
     if isinstance(api_key, str) and api_key.strip():
         env["ANTHROPIC_API_KEY"] = api_key.strip()

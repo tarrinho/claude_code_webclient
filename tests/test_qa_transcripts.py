@@ -1042,15 +1042,33 @@ class TranscriptRepairTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCas
         self.assertFalse(result["repaired"])
 
     async def test_an_assistant_record_with_other_content_is_kept(self):
-        """Only records whose *sole* content is an empty text block go."""
+        """A record carrying a tool call survives; the empty block inside it does not.
+
+        This asserted ``repaired is False`` -- that the record was left entirely
+        alone. That encoded the old limitation rather than the contract: the API
+        refuses *any* empty text block ("text content blocks must be non-empty"),
+        not only a record made of one, so leaving the block in place left the
+        conversation just as unreplayable as before.
+
+        The property the test is named for is the one that matters and is
+        unchanged: a record carrying real content is never dropped. It is now
+        asserted directly, on the record, instead of through ``repaired``.
+        """
         write_transcript(self.root, "s", [{
             "type": "assistant", "uuid": "u1", "parentUuid": None,
             "message": {"role": "assistant", "content": [
                 {"type": "text", "text": ""},
                 {"type": "tool_use", "name": "Read", "input": {"file_path": "/a"}}]},
         }])
-        result = await transcripts.repair_if_needed("s")
-        self.assertFalse(result["repaired"], "a record carrying a tool call must stay")
+        await transcripts.repair_if_needed("s")
+
+        path = transcripts.transcript_path("s")
+        records = [json.loads(line) for line
+                   in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(records), 1, "a record carrying a tool call must stay")
+        content = records[0]["message"]["content"]
+        self.assertEqual([b["type"] for b in content], ["tool_use"],
+                         "the empty text block is what the API refuses")
 
 
 # ── Usage from terminal sessions ─────────────────────────────────────────────

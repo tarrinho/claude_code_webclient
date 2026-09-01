@@ -104,6 +104,10 @@ button{touch-action:manipulation}
 /* Trails the title rather than leading it: the dot marks the row, this marks
    what kind of row it is, and reading order should reach the name first. */
 .supervisor-asks{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;background:var(--warn);color:var(--bg);font:700 10px/16px ui-monospace,SFMono-Regular,Consolas,monospace;vertical-align:middle}
+/* Same warning colour as the panel's "?" so the two read as one signal, but
+   spelled out: in the conversation there is room for words, and the row it
+   marks is the one still owed an answer. */
+.msg-asks{display:inline-block;align-self:flex-start;margin-top:4px;padding:1px 7px;border-radius:8px;background:var(--warn);color:var(--bg);font:700 10px/16px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.02em}
 .supervisor-note{padding:2px 10px 8px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 .sidebar-empty{padding:24px 12px;text-align:center;color:var(--muted);font-size:12px}
 /* Collapsed sections: archived chats and CLI sessions stay reachable without

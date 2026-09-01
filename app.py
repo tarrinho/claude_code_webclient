@@ -800,11 +800,32 @@ async def handle_chat_get(request: Request, chat_id: str):
                 "turn_seq": (turns.get(chat_id).seq if turns.get(chat_id) else 0),
                 "queued": len(await db.queue_list(chat_id, session["user"])),
             },
+            # `question` marks the rows that asked the user something, so the
+            # conversation can show which ones are still owed an answer.
+            #
+            # It is on the message rather than the conversation because the
+            # conversation-level signals cannot hold it. The question bar reads
+            # the CLI transcript for an AskUserQuestion block, so a question
+            # merely *written* in prose is invisible to it; and classify_chat
+            # judges a conversation by its newest message, so an agent that asks
+            # and then keeps working buries its own question and the highlight
+            # goes out. A mark per message cannot be buried by later output.
+            #
+            # Decided here rather than in the browser on purpose: the same
+            # judgement already backs the supervisor panel's "?", and a second
+            # copy of it in JavaScript would drift from this one.
+            #
+            # Assistant rows only. A user message ending in "?" is the user
+            # asking Claude, which needs nothing from the user.
             "messages": [
                 {
                     "role": m["role"],
                     "content": m["content"],
                     "created_at": m["created_at"],
+                    "question": (
+                        m["role"] == "assistant"
+                        and _asks_a_question(m["content"] or "")
+                    ),
                 }
                 for m in messages
             ],

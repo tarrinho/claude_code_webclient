@@ -241,7 +241,15 @@ export function createConversationController(dependencies) {
     else elements.jumpButton.hidden = false;
   }
 
-  function createMessage(role, content, time) {
+  // `asks` marks a message that put a question to the user. The server decides
+  // it and sends the answer; this must not re-derive it, or the conversation and
+  // the supervisor panel will eventually disagree about the same message.
+  //
+  // Streamed rows are built empty and filled as tokens arrive, so they carry
+  // false until the turn ends and refreshCurrent() reloads from the server. The
+  // mark is for finding a question later, which is exactly the case where the
+  // reload has already happened.
+  function createMessage(role, content, time, asks = false) {
     const row = document.createElement('article');
     row.className = `message ${role}`;
     const avatar = document.createElement('div');
@@ -254,6 +262,17 @@ export function createConversationController(dependencies) {
     bubble.className = 'msg-bubble';
     renderSafeText(bubble, content || '');
     body.appendChild(bubble);
+    if (asks) {
+      // Built with createElement and textContent, like every other label here:
+      // this sits beside agent output and must never be a markup sink.
+      const marker = document.createElement('span');
+      marker.className = 'msg-asks';
+      marker.textContent = 'Asked you a question';
+      // A badge told apart only by colour is invisible to a screen reader and
+      // to about one man in twelve, so it carries its own words.
+      marker.setAttribute('aria-label', 'This message asked you a question');
+      body.appendChild(marker);
+    }
     if (time) {
       const stamp = document.createElement('div');
       stamp.className = 'msg-time';
@@ -296,7 +315,8 @@ export function createConversationController(dependencies) {
       elements.messages.appendChild(empty);
     } else {
       messages.forEach(message => elements.messages.appendChild(
-        createMessage(message.role, message.content, message.created_at)
+        createMessage(message.role, message.content, message.created_at,
+                      message.question)
       ));
     }
     scrollToBottom();

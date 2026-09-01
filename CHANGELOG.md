@@ -22,6 +22,40 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **A question asked in prose is marked as one in the conversation.** Messages
+  that put a question to the user now carry a *Asked you a question* badge in the
+  conversation view, so scrolling back finds them.
+
+  This closes a gap that had both existing signals missing the case that
+  actually happens. The question bar reads the CLI transcript for an
+  `AskUserQuestion` block with no `tool_result`, which is exact but blind to an
+  agent that simply *writes* "Which do you want?" — no tool block exists. And
+  the sidebar highlight does read text, but `classify_chat` judges a
+  conversation by its **newest** message, so an agent that asks and then carries
+  on working buries its own question and the highlight goes out.
+
+  Found from the live tree rather than reasoned about: the `cweb4` conversation
+  asked three times in prose (13:48, 16:00, 19:00), was never answered, produced
+  another ninety minutes of routine output, and by then nothing in the console
+  said anything was outstanding. The questions were found by reading the
+  terminal. Against that conversation's 2817 stored messages the new mark
+  identifies 36, of which 35 are genuine — 16 ending in "?" and 19 ending in the
+  rendered pending-question note.
+
+  Two decisions worth stating. The judgement is `app._asks_a_question`,
+  server-side, and the client is told the answer rather than deciding it: that
+  helper already backs the supervisor panel's "?", and a second copy of the
+  heuristic in JavaScript would drift. And only assistant messages are marked —
+  a user message ending in "?" is the user asking Claude, which needs nothing
+  from the user.
+
+  Known limitation, inherited rather than introduced: `_asks_a_question` tests
+  for the pending-question note with a substring match, so a message that
+  *discusses* that note is marked as asking. One of the 36 above is this case.
+  It affects the existing panel "?" identically and is not changed here.
+
 ## [0.10.0] — 2026-09-01
 
 > A minor bump rather than a patch, because two of the changes below alter what

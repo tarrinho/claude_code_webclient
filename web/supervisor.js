@@ -398,6 +398,13 @@
     clearBadge();
     rememberOpen(id);
     renderSupervisorList();
+    // Same for the event log. addLogEntry only ever appends to the DOM, so
+    // without this the previous supervisor's events stayed on screen and
+    // interleaved with the new one's, undivided -- two runs presented as one.
+    // Immediately before showActiveSupervisor, which reconnects SSE and
+    // starts filling it again.
+    if (el.eventLog) el.eventLog.innerHTML = "";
+    eventLog.length = 0;
     showActiveSupervisor();
   }
 
@@ -1133,6 +1140,11 @@
 
   function onResizeEnd() {
     resizing = null;
+    // Symmetric with the mousedown handler: these are on document now, so
+    // they outlive the gesture unless removed here. Leaving them attached
+    // would stack a new pair on every drag.
+    document.removeEventListener("mousemove", onResizeMove);
+    document.removeEventListener("mouseup", onResizeEnd);
     $$(".resize-handle").forEach((h) => h.classList.remove("active"));
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
@@ -1149,8 +1161,12 @@
         e.stopPropagation();
         const type = newHandle.dataset.resize;
         resizing = type;
-        newHandle.addEventListener("mousemove", onResizeMove);
-        newHandle.addEventListener("mouseup", onResizeEnd);
+        // On document, not on the handle. The handle is 5px wide, so a drag
+        // faster than the pointer can stay inside it left the strip and the
+        // move events stopped arriving -- the drag died mid-gesture with no
+        // sign of why. Released in onResizeEnd.
+        document.addEventListener("mousemove", onResizeMove);
+        document.addEventListener("mouseup", onResizeEnd);
         newHandle.classList.add("active");
         document.body.style.cursor = type === "bottom"
           ? "row-resize"

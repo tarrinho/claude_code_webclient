@@ -253,7 +253,7 @@ Expected: the summary reports failures and **`skipped: 0`**. A skip here means c
 ```bash
 git add tests/test_qa_supervisor_layout.py
 git diff --cached --stat   # must list ONLY tests/test_qa_supervisor_layout.py
-git commit -- tests/test_qa_supervisor_layout.py -m "test: assert supervisor panels are reachable (currently failing)"
+git commit -m "test: assert supervisor panels are reachable (currently failing)" -- tests/test_qa_supervisor_layout.py
 ```
 
 ---
@@ -335,12 +335,12 @@ Expected: `6 passed, 5 subtests passed`. This is the guard against half-revertin
 ```bash
 git add web/supervisor.html
 git diff --cached --stat   # must list ONLY web/supervisor.html
-git commit -- web/supervisor.html -m "fix: stray </div> ejected the Task Detail panel from #layout
+git commit -m "fix: stray </div> ejected the Task Detail panel from #layout
 
 #panel-right was a sibling of <body>, rendering at y=813 in an 813px
 viewport under body{overflow:hidden}, so it could never be scrolled to.
 renderTaskDetail() has been writing correct HTML into an element no user
-could see."
+could see." -- web/supervisor.html
 ```
 
 ---
@@ -456,11 +456,17 @@ Replace with:
         }
         #layout {
             display: flex;
-            /* flex:1 with min-height:0, not a height calc: #panel-bottom is a
-               sibling now, so the row takes what is left. min-height:0 is
-               load-bearing -- a flex child with overflow:hidden will not
-               shrink below its content without it, and the Event Log would be
-               pushed off-screen again by a different route. */
+            /* flex:1 rather than a height calc: #panel-bottom is a sibling
+               now, so the row takes whatever is left of #shell.
+
+               min-height:0 is the usual companion to flex:1 -- a flex item
+               will not shrink below its content height without it. It is kept
+               as a guard, but it is NOT load-bearing here. Measured both ways
+               at 1440x900, empty and with 200 overflowing rows in #task-tree
+               and #event-log: #panel-bottom stays at 0,613 1440x200 either
+               way, because #shell has a fixed height, #panel-bottom is
+               flex-shrink:0, and this row already clips with overflow:hidden.
+               It would start to matter if any of those three changed. */
             flex: 1;
             min-height: 0;
             overflow: hidden;
@@ -530,11 +536,11 @@ Expected: 3 PASS.
 ```bash
 git add web/supervisor.html tests/test_qa_supervisor_layout.py
 git diff --cached --stat   # ONLY those two files
-git commit -- web/supervisor.html tests/test_qa_supervisor_layout.py -m "fix: Event Log becomes the full-width bottom bar its CSS assumed
+git commit -m "fix: Event Log becomes the full-width bottom bar its CSS assumed
 
 Wraps #layout and #panel-bottom in a #shell flex column. #panel-bottom was
 a child of the horizontal row, so height:200px yielded 168x200 at x=1272
-despite border-top and a max-bottom rule using left:0/right:0."
+despite border-top and a max-bottom rule using left:0/right:0." -- web/supervisor.html tests/test_qa_supervisor_layout.py
 ```
 
 ---
@@ -620,11 +626,11 @@ Expected: all PASS. A 5px absolutely-positioned strip must not change any panel'
 ```bash
 git add web/supervisor.html
 git diff --cached --stat   # ONLY web/supervisor.html
-git commit -- web/supervisor.html -m "feat: wire the Event Log's resize handle
+git commit -m "feat: wire the Event Log's resize handle
 
 onResizeMove's `bottom` branch and reinitResizeHandles' row-resize cursor
 were already implemented; no element carried data-resize=\"bottom\", so the
-path was unreachable."
+path was unreachable." -- web/supervisor.html
 ```
 
 ---
@@ -712,10 +718,10 @@ Expected: all PASS, `skipped: 0`.
 ```bash
 git add web/supervisor.js
 git diff --cached --stat   # ONLY web/supervisor.js
-git commit -- web/supervisor.js -m "fix: resize drags no longer die when the pointer leaves the handle
+git commit -m "fix: resize drags no longer die when the pointer leaves the handle
 
 mousemove/mouseup were bound to the 5px handle, so a fast drag stopped
-mid-gesture. Moved to document and released in onResizeEnd."
+mid-gesture. Moved to document and released in onResizeEnd." -- web/supervisor.js
 ```
 
 ---
@@ -838,10 +844,10 @@ Expected: `test_it_is_cleared_before_the_panel_repopulates` FAILS. Confirm the f
 ```bash
 git add web/supervisor.js tests/test_qa_supervisor_layout.py
 git diff --cached --stat   # ONLY those two
-git commit -- web/supervisor.js tests/test_qa_supervisor_layout.py -m "fix: clear the event log when switching supervisors
+git commit -m "fix: clear the event log when switching supervisors
 
 addLogEntry only appends, and selectSupervisor never cleared, so two runs'
-events interleaved with no divider."
+events interleaved with no divider." -- web/supervisor.js tests/test_qa_supervisor_layout.py
 ```
 
 ---
@@ -941,11 +947,15 @@ Four mutations, one at a time. For each: apply it, **confirm with `git diff` tha
 | # | Mutation | Command | Must fail |
 |---|---|---|---|
 | 1 | Re-add the stray `</div>` before `<!-- Right: Detail Panel -->` | `python -m pytest tests/test_qa_supervisor_layout.py -q` | `test_the_body_divs_balance`, `test_panel_right_is_a_child_of_layout`, `test_panel_right_reports_layout_as_its_parent` |
-| 2 | Delete `min-height: 0;` from `#layout` | `python -m pytest tests/test_qa_supervisor_layout.py::PanelGeometryTests -q` | a `test_every_panel_is_inside_the_viewport*` subTest |
+| 2 | Delete `min-height: 0;` from `#layout` | `python -m pytest tests/test_qa_supervisor_layout.py::PanelGeometryTests -q` | **nothing — and that is the correct result.** See below. |
 | 3 | Add `position: relative;` to `#shell` | `python -m pytest tests/test_qa_supervisor_layout.py::MaximizeTests -q` | at least one of `test_max_left/center/right` |
 | 4 | Move `#panel-bottom` back inside `#layout` | `python -m pytest tests/test_qa_supervisor_layout.py -q` | `test_panel_bottom_is_not_inside_the_layout_row` |
 
-If mutation 2 or 3 does **not** fail, the corresponding assertion is not doing its job — strengthen it before proceeding. Mutation 3 is the important one: it is the failure mode that leaves the page looking correct at rest.
+Mutation 3 is the important one: it is the failure mode that leaves the page looking correct at rest. If it does not fail, the maximize assertions are not doing their job — strengthen them before proceeding.
+
+**Mutation 2 is expected to detect nothing, and that is a finding rather than a gap.** This plan and its spec both originally asserted that `min-height: 0` on `#layout` was load-bearing. Running the mutation disproved it: removed, nothing changes. Confirmed at 1440x900 with empty panels and again with 200 overflowing rows injected into `#task-tree` and `#event-log` — `#panel-bottom` reports `0,613 1440x200` in all four combinations, because `#shell` has a fixed height, `#panel-bottom` is `flex-shrink:0`, and `#layout` already clips with `overflow:hidden`. The declaration stays as a guard against those three changing; no test asserts it, and none should be written to pretend otherwise. Both documents have been corrected.
+
+**Mutation 1 needs care to apply at all.** The obvious string match for re-inserting the stray `</div>` no longer exists once `#panel-bottom` has moved, so a naive attempt silently fails to mutate and then reports a false pass. The nesting guard does not need a synthetic mutation regardless: it was genuinely failing against the real defect before Task 2, which is stronger evidence than any injected one.
 
 After all four, confirm the tree is restored: `git diff -- web/supervisor.html` should show only this task's script-version bump.
 
@@ -984,11 +994,11 @@ Note on (2): `renderTaskDetail()` has never been exercised by a human, because i
 ```bash
 git add web/supervisor.html tests/test_qa_supervisor_layout.py
 git diff --cached --stat   # ONLY those two
-git commit -- web/supervisor.html tests/test_qa_supervisor_layout.py -m "test: assert maximize survives the #shell wrapper; cache-bust supervisor.js
+git commit -m "test: assert maximize survives the #shell wrapper; cache-bust supervisor.js
 
 The body.max-* rules position against the viewport, so #shell acquiring a
 containing block would break all four maximize buttons while the page still
-looked correct at rest."
+looked correct at rest." -- web/supervisor.html tests/test_qa_supervisor_layout.py
 ```
 
 ---

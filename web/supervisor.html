@@ -57,11 +57,18 @@
         }
         #layout {
             display: flex;
-            /* flex:1 with min-height:0, not a height calc: #panel-bottom is a
-               sibling now, so the row takes what is left. min-height:0 is
-               load-bearing -- a flex child with overflow:hidden will not
-               shrink below its content without it, and the Event Log would be
-               pushed off-screen again by a different route. */
+            /* flex:1 rather than a height calc: #panel-bottom is a sibling now,
+               so the row takes whatever is left of #shell.
+
+               min-height:0 is the usual companion to flex:1 -- a flex item
+               will not shrink below its content height without it. It is kept
+               as a guard, but it is NOT currently load-bearing here, and an
+               earlier version of this comment wrongly said it was. Measured
+               both ways at 1440x900, empty and with 200 overflowing rows in
+               #task-tree and #event-log: #panel-bottom stays at 0,613 1440x200
+               either way, because #shell has a fixed height, #panel-bottom is
+               flex-shrink:0, and this row already clips with overflow:hidden.
+               It would start to matter if any of those three changed. */
             flex: 1;
             min-height: 0;
             overflow: hidden;
@@ -125,6 +132,20 @@
             top: 0;
             bottom: 0;
             z-index: 10;
+        }
+        /* The bottom bar's handle runs along its top edge, so width/height and
+           the offset axis swap. onResizeMove already implements the "bottom"
+           branch and reinitResizeHandles already picks a row-resize cursor for
+           it; only this rule and the element itself were missing, so the whole
+           path was unreachable. */
+        .resize-handle.horizontal {
+            width: auto;
+            height: 5px;
+            left: 0;
+            right: 0;
+            top: -3px;
+            bottom: auto;
+            cursor: row-resize;
         }
         .resize-handle:hover, .resize-handle.active {
             background: rgba(59, 130, 246, 0.3);
@@ -388,6 +409,12 @@
             background: #fafbfc;
             border-top: 1px solid #e2e8f0;
             flex-shrink: 0;
+            /* So the resize handle below, which is position:absolute, resolves
+               against this bar. Without it the nearest positioned ancestor is
+               the initial containing block and the handle lands at the top of
+               the page. Safe: body.max-bottom overrides position to absolute,
+               and nothing else positions against #panel-bottom. */
+            position: relative;
         }
         #event-log {
             flex: 1;
@@ -1060,9 +1087,10 @@
             <div id="event-log" tabindex="-1"></div>
                 <!-- Floating scroll-down button: appears when user scrolls up -->
                 <button id="log-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
+            <div class="resize-handle horizontal" data-resize="bottom"></div>
             </div>
     </div>
 
-    <script src="supervisor.js?v=4"></script>
+    <script src="supervisor.js?v=5"></script>
 </body>
 </html>

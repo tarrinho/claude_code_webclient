@@ -125,9 +125,18 @@ Two constraints are load-bearing and easy to violate later:
   `position:absolute; top:44px` resolved against the viewport; giving `#shell` a
   position silently breaks every maximize button while leaving the page looking
   correct at rest.
-- **`min-height:0` on `#layout` is required.** A flex child with
-  `overflow:hidden` will not shrink below its content without it, and the log
-  would be pushed off-screen again — the same defect by a different route.
+- **`min-height:0` on `#layout` is a guard, not a requirement.** This document
+  first claimed it was load-bearing — that a flex child with `overflow:hidden`
+  would not shrink without it, pushing the log off-screen again. **That was
+  wrong**, and mutation-testing the implementation caught it: removing the
+  declaration changes nothing measurable. Verified at 1440x900 both with empty
+  panels and with 200 overflowing rows injected into `#task-tree` and
+  `#event-log` — `#panel-bottom` stays at `0,613 1440x200` in all four
+  combinations, because `#shell` has a fixed height, `#panel-bottom` is
+  `flex-shrink:0`, and `#layout` already clips with `overflow:hidden`. It is
+  kept because it is the standard companion to `flex:1` and would begin to
+  matter if any of those three changed, but no test asserts it and none should
+  pretend to.
 
 `#panel-bottom` keeps `height:200px`, `min-height:80px`, `flex-shrink:0` and
 `border-top` unchanged; in a column flex parent these now mean what they say.

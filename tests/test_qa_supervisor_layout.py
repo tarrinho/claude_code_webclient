@@ -36,7 +36,7 @@ def body_markup() -> str:
     would otherwise be counted by the balance check below.
     """
     html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-    return re.sub(r"<!--.*?-->", "", html[html.index("<body"):], flags=re.S)
+    return re.sub(r"<!--.*?-->", "", html[html.index("<body"):], flags=re.DOTALL)
 
 
 def div_depth_trace() -> tuple[int, dict[str, int]]:
@@ -111,7 +111,7 @@ window.addEventListener("load", function () {
              "--virtual-time-budget=4000", "--dump-dom", f"file://{page}"],
             capture_output=True, text=True, timeout=120, check=False,
         )
-    match = re.search(r"<title>(.*?)</title>", result.stdout, re.S)
+    match = re.search(r"<title>(.*?)</title>", result.stdout, re.DOTALL)
     if not match:
         raise AssertionError("probe produced no title; chromium output: "
                              + result.stdout[:400])
@@ -195,6 +195,165 @@ class PanelGeometryTests(unittest.TestCase):
                                      f"{selector} extends past the viewport")
                 self.assertLessEqual(x + w, vw + 1,
                                      f"{selector} extends past the right edge")
+
+
+class EventLogResetTests(unittest.TestCase):
+    """One supervisor's events must not appear under another's name.
+
+    Source-level, because the behaviour is a single ordering property:
+    selectSupervisor must clear the log before showActiveSupervisor repopulates
+    it. Driving it in a browser would need the whole API surface stubbed to
+    assert one statement's presence and position.
+    """
+
+    def setUp(self):
+        self.source = (REPO / "web" / "supervisor.js").read_text(
+            encoding="utf-8")
+
+    def _select_supervisor_body(self) -> str:
+        start = self.source.index("function selectSupervisor(")
+        brace = self.source.index("{", start)
+        depth, pos = 1, brace + 1
+        while depth:
+            if self.source[pos] == "{":
+                depth += 1
+            elif self.source[pos] == "}":
+                depth -= 1
+            pos += 1
+        return self.source[brace + 1:pos - 1]
+
+    def test_the_log_is_cleared_on_switch(self):
+        body = self._select_supervisor_body()
+        self.assertIn("eventLog.length = 0", body,
+                      "the eventLog array must be truncated on switch")
+        self.assertRegex(
+            body, r'el\.eventLog\.innerHTML\s*=\s*""',
+            "the #event-log element must be emptied on switch")
+
+    def test_it_is_cleared_before_the_panel_repopulates(self):
+        """Clearing after showActiveSupervisor would erase the new log."""
+        body = self._select_supervisor_body()
+        self.assertLess(
+            body.index("eventLog.length = 0"),
+            body.index("showActiveSupervisor()"),
+            "the log must be cleared before the new supervisor is shown",
+        )
+
+
+class ResizeDragTests(unittest.TestCase):
+    """A drag must survive the pointer leaving the 5px handle.
+
+    The listeners were bound to the handle itself, so any drag quicker than the
+    pointer could stay inside it stopped mid-gesture with no sign of why. This
+    mattered little while only the side handles existed and became a
+    first-use failure once the Event Log's handle was wired.
+    """
+
+    def setUp(self):
+        self.source = (REPO / "web" / "supervisor.js").read_text(
+            encoding="utf-8")
+
+    def test_the_drag_listeners_are_on_document(self):
+        self.assertIn('document.addEventListener("mousemove", onResizeMove)',
+                      self.source)
+        self.assertIn('document.addEventListener("mouseup", onResizeEnd)',
+                      self.source)
+
+    def test_they_are_not_bound_to_the_handle(self):
+        self.assertNotIn('newHandle.addEventListener("mousemove"', self.source)
+        self.assertNotIn('newHandle.addEventListener("mouseup"', self.source)
+
+    def test_they_are_released_when_the_drag_ends(self):
+        """Document-level listeners outlive the gesture unless removed, so
+        without this every drag would stack another pair.
+        """
+        start = self.source.index("function onResizeEnd()")
+        body = self.source[start:start + 600]
+        self.assertIn(
+            'document.removeEventListener("mousemove", onResizeMove)', body)
+        self.assertIn(
+            'document.removeEventListener("mouseup", onResizeEnd)', body)
+
+
+class ResizeHandleWiringTests(unittest.TestCase):
+    """The Event Log's handle must exist, since its JS already did.
+
+    onResizeMove has a complete `resizing === "bottom"` branch computing
+    height from window.innerHeight - e.clientY, and reinitResizeHandles
+    already selects a row-resize cursor for it. No element carried
+    data-resize="bottom", so the whole path was dead code.
+    """
+
+    def test_the_bottom_handle_exists(self):
+        html = SUPERVISOR_HTML.read_text(encoding="utf-8")
+        self.assertIn('data-resize="bottom"', html)
+        self.assertIn("resize-handle horizontal", html)
+
+    def test_the_horizontal_variant_is_styled(self):
+        """Without this rule the handle keeps width:5px/col-resize and sits on
+        the wrong edge with the wrong cursor.
+        """
+        html = SUPERVISOR_HTML.read_text(encoding="utf-8")
+        self.assertIn(".resize-handle.horizontal", html)
+        self.assertRegex(html, r"\.resize-handle\.horizontal\s*\{[^}]*"
+                               r"cursor:\s*row-resize")
+
+    def test_panel_bottom_is_a_containing_block(self):
+        """The handle is position:absolute. Without position on #panel-bottom
+        it resolves against the initial containing block and lands at the top
+        of the page rather than on the bar's top edge.
+        """
+        html = SUPERVISOR_HTML.read_text(encoding="utf-8")
+        rule = re.search(r"#panel-bottom\s*\{(.*?)\}", html, re.DOTALL)
+        self.assertIsNotNone(rule, "#panel-bottom rule not found")
+        self.assertRegex(rule.group(1), r"position:\s*relative")
+
+
+@unittest.skipUnless(CHROMIUM, "chromium not installed")
+class MaximizeTests(unittest.TestCase):
+    """Each body.max-* class must fill the area below the topbar.
+
+    These rules use `position:absolute; top:44px`, resolved against the
+    viewport. Giving #shell a position, transform, filter or contain would
+    re-root them silently: the page looks right at rest and every maximize
+    button lands in the wrong place. This is the assertion that catches it,
+    and it is the reason #shell carries a comment forbidding those properties.
+    """
+
+    TOPBAR_H = 44
+
+    def _assert_fills_below_topbar(self, panel: str, body_class: str):
+        geo = probe_geometry(body_class=body_class)
+        vw, vh = (int(v) for v in geo["viewport"].split(","))
+        x, y, w, h = box(geo, panel)
+        self.assertEqual(y, self.TOPBAR_H,
+                         f"{panel} under {body_class} does not start at the "
+                         f"topbar's lower edge")
+        self.assertEqual(x, 0, f"{panel} under {body_class} is inset")
+        self.assertEqual(w, vw, f"{panel} under {body_class} is not full width")
+        self.assertEqual(h, vh - self.TOPBAR_H,
+                         f"{panel} under {body_class} does not fill the height")
+
+    def test_max_left(self):
+        self._assert_fills_below_topbar("#panel-left", "max-left")
+
+    def test_max_center(self):
+        self._assert_fills_below_topbar("#panel-center", "max-center")
+
+    def test_max_right(self):
+        self._assert_fills_below_topbar("#panel-right", "max-right")
+
+    def test_max_bottom(self):
+        """Checked without asserting y: its rule anchors with bottom:0 and a
+        height calc rather than a top offset.
+        """
+        geo = probe_geometry(body_class="max-bottom")
+        vw, vh = (int(v) for v in geo["viewport"].split(","))
+        x, _y, w, h = box(geo, "#panel-bottom")
+        self.assertEqual(x, 0)
+        self.assertEqual(w, vw)
+        self.assertEqual(h, vh - self.TOPBAR_H,
+                         "max-bottom sets height:calc(100vh - 44px)")
 
 
 if __name__ == "__main__":

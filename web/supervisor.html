@@ -43,9 +43,27 @@
         #topbar .top-info { font-size: 12px; opacity: 0.8; font-weight: 400; }
 
         /* ── Layout container ──────────────────────────────────────── */
+        /* #shell owns the page's vertical split: the panel row, then the
+           Event Log beneath it. It must NOT be given position, transform,
+           filter or contain -- every body.max-* rule below positions with
+           `position:absolute; top:44px` resolved against the viewport, and
+           making #shell a containing block breaks all four maximize buttons
+           while leaving the page looking correct at rest. */
+        #shell {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 44px);
+            overflow: hidden;
+        }
         #layout {
             display: flex;
-            height: calc(100vh - 44px);
+            /* flex:1 with min-height:0, not a height calc: #panel-bottom is a
+               sibling now, so the row takes what is left. min-height:0 is
+               load-bearing -- a flex child with overflow:hidden will not
+               shrink below its content without it, and the Event Log would be
+               pushed off-screen again by a different route. */
+            flex: 1;
+            min-height: 0;
             overflow: hidden;
         }
 
@@ -947,6 +965,7 @@
         <span class="top-info" id="topbar-info">0.9.5</span>
     </div>
 
+    <div id="shell">
     <div id="layout">
         <!-- Left: Task Tree -->
         <div id="panel-left">
@@ -1015,19 +1034,6 @@
             <div class="resize-handle" style="width:auto;right:0;" data-resize="center-delta"></div>
         </div>
 
-        <!-- Bottom: Event Log -->
-        <div id="panel-bottom">
-            <div class="panel-header">
-                <button class="panel-btn" data-panel="bottom" title="Minimize">&#9654;</button>
-                <h2>Event Log</h2>
-                <button class="panel-btn" data-max="bottom" title="Maximize">&#9633;</button>
-            </div>
-            <div id="event-log" tabindex="-1"></div>
-                <!-- Floating scroll-down button: appears when user scrolls up -->
-                <button id="log-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
-            </div>
-        </div>
-
         <!-- Right: Detail Panel -->
         <div id="panel-right">
             <div class="panel-header">
@@ -1039,6 +1045,22 @@
                 <div class="empty-state">Select a task to view details</div>
             </div>
         </div>
+        </div>
+
+        <!-- Bottom: Event Log. Outside #layout deliberately -- it is styled as
+             a full-width bar (border-top, and body.max-bottom positions it
+             with left:0/right:0), but as a child of the horizontal row its
+             height:200px produced a 168x200 sliver at x=1272. -->
+        <div id="panel-bottom">
+            <div class="panel-header">
+                <button class="panel-btn" data-panel="bottom" title="Minimize">&#9654;</button>
+                <h2>Event Log</h2>
+                <button class="panel-btn" data-max="bottom" title="Maximize">&#9633;</button>
+            </div>
+            <div id="event-log" tabindex="-1"></div>
+                <!-- Floating scroll-down button: appears when user scrolls up -->
+                <button id="log-scroll-btn" class="scroll-down-btn" title="Scroll to bottom" aria-label="Scroll to bottom" type="button">&#8595;</button>
+            </div>
     </div>
 
     <script src="supervisor.js?v=4"></script>

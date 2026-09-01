@@ -225,6 +225,108 @@ _QUIET_FILLER = (
 ) * 3
 
 
+class IncidentalPhraseTests(unittest.TestCase):
+    """A phrase list matched inside words, and said the opposite of the truth.
+
+    `_ASKS_FOR_INPUT` and `_REPORTS_A_BLOCKER` were tested with
+    `phrase in text`, so `"should i"` matched `"should include"` and
+    `"blocked"` matched `"unblocked"`. Every case below was live in 0.9.4.
+
+    It was reported as a regression in the change that made the classifier read
+    the *end* of a message as well as its opening, and it is not one: the window
+    only widened the exposure. `_attention(preview)` had the same fault for any
+    message whose opening happened to contain "should include", so a fix aimed
+    at the windows would have left the cause in place -- which is why the
+    proposed reversion was rejected. Anchoring on word boundaries removes it for
+    both windows, and no true positive is lost.
+    """
+
+    # A neutral pad, asserted neutral below rather than assumed: a pad that
+    # happens to contain one of the phrases invalidates every case built on it.
+    _PAD = (
+        "I reviewed the module and applied the changes we settled on, then ran "
+        "the suite and the linter over the result. Everything is committed. "
+    ) * 3
+
+    def test_the_pad_is_neutral(self):
+        """Guards every case in this class."""
+        self.assertIsNone(app._attention(self._PAD))
+
+    def test_should_include_is_not_an_ask(self):
+        """The reported case: 'should i' inside 'should include'."""
+        text = self._PAD + "I documented whether I should include the rebuild."
+        self.assertIsNone(app._attention(text))
+
+    def test_confirmed_is_not_a_request_to_confirm(self):
+        self.assertIsNone(app._attention(self._PAD + "I confirmed the tests pass."))
+
+    def test_unblocked_is_not_a_blocker(self):
+        """The sharpest: the opposite claim, read as the claim."""
+        self.assertIsNone(app._attention(self._PAD + "The task is unblocked now."))
+
+    def test_a_finished_report_whose_tail_holds_a_phrase_is_done(self):
+        """The end-to-end form, which is how this reached a release.
+
+        A long finished report classified as `reason: "asks"` with no question
+        on it -- the exact over-reporting the done/asks split exists to remove,
+        reappearing at the other end of the message. Asserted through
+        `classify_chat`, because `_attention` alone would not have caught the
+        consequence.
+        """
+        body = self._PAD + "I noted whether I should include it. The work is complete."
+        self.assertGreater(len(body), 400)
+        entry = app.classify_chat(
+            chat={"id": "c1", "title": "t", "session_id": ""},
+            last={"role": "assistant", "created_at": "2026-08-31T19:12:04Z",
+                  "preview": body[:200], "tail": body[-200:]},
+            live_ids=frozenset(), queued={}, marks={},
+            cli_status_map={}, cli_dismiss_map={}, cli_status_updated_map={},
+        )
+        self.assertEqual(entry["reason"], "done")
+        self.assertFalse(entry["question"])
+
+    def test_real_asks_and_blockers_still_match(self):
+        """The other half. Anchoring must not silence the lists it anchors.
+
+        Without this the class passes against an `_attention` that has stopped
+        matching phrases altogether, which is the failure mode anchoring could
+        plausibly introduce.
+        """
+        for text, expected in (
+            ("Should I proceed", "asks"),
+            ("Please confirm before I continue", "asks"),
+            ("Let me know which you prefer.", "asks"),
+            ("Your call.", "asks"),
+            ("I cannot proceed without the token.", "blocked"),
+            ("Note: blocked here.", "blocked"),
+            ("Permission denied on that path.", "blocked"),
+            ("This needs your approval.", "blocked"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(app._attention(text), expected)
+
+    def test_a_blocker_only_in_the_tail_is_still_found(self):
+        """Why the reversion was refused, pinned so it is not tried again.
+
+        Keeping `_attention(preview)` and adding an anchored question test to the
+        tail loses blockers that appear only at the end -- and by the rule in
+        `_CLI_STATUS_NOT_BLOCKED`, under-reporting a stuck agent is the more
+        expensive direction.
+        """
+        body = self._PAD + "Note: blocked here."
+        self.assertIsNone(app._attention(body[:200]),
+                          "the pad must not carry the signal on its own")
+        self.assertEqual(app._attention(body[-200:]), "blocked")
+
+    def test_every_phrase_is_anchored_at_both_ends(self):
+        """The property, rather than a sample of its consequences."""
+        for phrase in (*app._ASKS_FOR_INPUT, *app._REPORTS_A_BLOCKER):
+            with self.subTest(phrase=phrase):
+                # Glued to a letter on either side, it must not match.
+                self.assertIsNone(app._attention(f"x{phrase}"))
+                self.assertIsNone(app._attention(f"{phrase}x"))
+
+
 class QuestionPendingNoteTests(unittest.TestCase):
     """The pending note flags a chat even when it lands past the preview.
 

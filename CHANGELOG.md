@@ -22,6 +22,43 @@ churn.
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-09-01
+
+> A single-fix patch on 0.9.4, cut because the defect below is an *inverted*
+> claim rather than a missing one: the console told the operator an agent was
+> blocked when it had reported the opposite. That is worth a release of its own
+> rather than waiting to be bundled.
+
+### Fixed
+
+- **Attention phrases are matched on word boundaries.** `_ASKS_FOR_INPUT` and
+  `_REPORTS_A_BLOCKER` were tested with `phrase in text`, which matches inside
+  words. **Live in 0.9.4** — verified against `4c59a50`, which carries
+  `VERSION = WebConsole_0.9.4` and both unanchored call sites. Five cases:
+
+      "whether I should include the rebuild"  -> asks     ('should i')
+      "Everything should include the index."  -> asks
+      "Nothing should interfere."             -> asks
+      "I confirmed the tests pass."           -> asks     ('confirm')
+      "The task is unblocked now."            -> blocked  ('blocked')
+
+  The last is the sharpest: a report that something is *un*blocked was read as a
+  report that it is blocked — an inverted claim rather than a spurious one.
+
+  Reported as a regression in the 0.9.4 change that made the classifier read a
+  message's end as well as its opening. It was not: that change only widened how
+  often it fired, and `_attention(preview)` had the identical fault for any
+  message whose opening contained "should include". Two proposed fixes aimed at
+  the *windows* — one of them giving each phrase list its own window — and
+  neither would have fixed any of the five, because all five fire in the
+  preview. Both windows are kept and the matcher is anchored instead, so no
+  blocker coverage is traded away.
+
+  Covered by `IncidentalPhraseTests`, including a property case that glues every
+  phrase in both lists to a letter on each side, so a sixth incidental match
+  cannot appear without a test naming it. Restoring the shipped behaviour fails
+  28 cases.
+
 ## [0.9.4] — 2026-09-01
 
 > Bumped with `config.VERSION`, so this heading is the build rather than a claim

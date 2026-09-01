@@ -3408,6 +3408,40 @@ _REPORTS_A_BLOCKER: Final[tuple[str, ...]] = (
 )
 
 
+def _phrase_matcher(phrases: tuple[str, ...]) -> re.Pattern[str]:
+    r"""One anchored pattern for *phrases*, matched on word boundaries.
+
+    These were tested with `phrase in text`, which matches inside words -- and
+    the consequences were not theoretical. Every one of these was live:
+
+        "whether I should include the index rebuild"  -> asks    ('should i')
+        "Everything should include the index."        -> asks    ('should i')
+        "Nothing should interfere."                   -> asks    ('should i')
+        "I confirmed the tests pass."                 -> asks    ('confirm')
+        "The task is unblocked now."                  -> blocked ('blocked')
+
+    The last is the sharpest: a report that something is **un**blocked was read
+    as a report that it is blocked, which is the opposite claim.
+
+    This surfaced when the classifier began reading the end of a message as well
+    as its opening, and was reported as a regression in that change. It was not
+    -- the window only widened the exposure. `_attention(preview)` had the same
+    fault for any message whose first 200 characters happened to contain
+    "should include", and a fix aimed at the windows would have left that in
+    place. Anchoring removes the cause, so both windows are safe to read.
+
+    `\b` on each side of the whole phrase, not per word: "can't proceed" and
+    "i was denied" contain spaces and an apostrophe, and anchoring the phrase as
+    a unit keeps them matching as written.
+    """
+    return re.compile(
+        "|".join(rf"\b{re.escape(phrase)}\b" for phrase in phrases))
+
+
+_ASKS_PATTERN: Final[re.Pattern[str]] = _phrase_matcher(_ASKS_FOR_INPUT)
+_BLOCKER_PATTERN: Final[re.Pattern[str]] = _phrase_matcher(_REPORTS_A_BLOCKER)
+
+
 def _pending_question(turns: list[dict]) -> str | None:
     """An AskUserQuestion still awaiting a reply, or None.
 
@@ -3478,9 +3512,12 @@ def _attention(text: str) -> str | None:
     # Nothing is lost by dropping them. A finished turn is now surfaced in its
     # own right, as `done` -- so a reply ending in a colon still appears, and
     # appears labelled as finished rather than as a question nobody asked.
-    if any(phrase in lowered for phrase in _ASKS_FOR_INPUT):
+    # Anchored: `phrase in lowered` matched inside words, so "should include"
+    # read as "should i" and a finished report was announced as a question.
+    # See _phrase_matcher.
+    if _ASKS_PATTERN.search(lowered):
         return "asks"
-    if any(phrase in lowered for phrase in _REPORTS_A_BLOCKER):
+    if _BLOCKER_PATTERN.search(lowered):
         return "blocked"
     return None
 

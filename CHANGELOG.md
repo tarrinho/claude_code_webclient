@@ -22,6 +22,69 @@ churn.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-01
+
+> A minor bump rather than a patch, because two of the changes below alter what
+> the software refuses rather than what it does: no path is exempt from
+> authentication any more, and a supervisor's tasks and messages are scoped to
+> their owner where they previously were not. Anything deployed from an earlier
+> 0.9.x is serving a cross-tenant read.
+
+### Changed
+
+- **`classify_chat` and the terminal-session classifier are now symmetrical.**
+  Both halves of the supervisor feed answer the same question — is a person
+  needed here — but only one of them was a function. The other was a
+  hundred-and-forty-line loop body inside `handle_supervisor`, and that
+  asymmetry is why the two drifted: every rule the conversation path learned had
+  to be learned again for sessions, separately and late. `if status:` reported a
+  *finished* agent as a blocked one; a trailing tool call was read as speech
+  because only the role was checked; mtime was briefly trusted as a positive
+  signal when it is only ever a negative one.
+
+  `_classify_cli_session` is now the counterpart, returning an entry that
+  carries its own status so the handler files it exactly as it files a
+  conversation. `handle_supervisor` went from 237 lines to 106 and reads as what
+  it is: gather, classify, bucket, sort, return.
+
+  `classify_chat` itself was split along its seams rather than by line count.
+  The two-identity dismissal rule had been written out **twice**, sixty lines
+  apart, each copy with its own paragraph explaining the same thing — and that
+  pair had already drifted once, which is why the dismiss control looked inert.
+  It is one function now. The ordered precedence chain stays in one place,
+  because the order *is* the semantics.
+
+### Fixed
+
+- **`test_functional.py` lived at the repository root**, which cost two
+  different things. The chunked suite runner globbed `tests/test_*.py`, so the
+  file was never in a chunk and never in a total — a real failure sat inside it
+  while run after run reported 0 failed, and 0.9.4 was released against that
+  number. It also sat outside `tests/conftest.py`, whose whole job is to
+  redirect `WC_LOG_FILE` before config is imported, so running it appended to
+  the production log: measured at 2008 bytes from the root and 0 from `tests/`.
+  That is registry #42 for the third time, having been fixed twice before for
+  two other routes.
+
+### Testing
+
+- **Three invariants added, each written before the change it guards.**
+  `tests/test_qa_test_layout.py` asks pytest's own collector whether any test
+  file lives outside `tests/`. `tests/test_qa_classifier_inputs.py` asserts that
+  both surfaces take their CLI lookups from the shared `_cli_maps` helper and
+  that they agree when a session is actually in play — the existing agreement
+  test used web chats only, so the maps were empty on both sides and passing
+  `{}` was indistinguishable from passing the real thing. And
+  `test_qa_timer_handles.py`'s scan became recursive.
+
+  That last one is the clearest argument for the order. Its globs were
+  `web/*.js` and `web/assets/*.js`, neither recursive — so the planned move of
+  `web/supervisor.js` into `web/assets/supervisor/` would have silently dropped
+  it from the scan. Nothing would have failed. That glob had been widened in the
+  first place *because* this file was the one outside it, holding a bare
+  `setInterval` that survived the sweep meant to remove every one.
+
+
 ### Fixed
 
 - **`test_functional.py` passed nowhere and was failing in two releases.**

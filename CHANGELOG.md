@@ -22,6 +22,53 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **API tokens, so a script has a supported way in.** `Authorization: Bearer
+  <token>` or `X-API-Token: <token>` authenticates any request, carrying the
+  token owner's identity and role. `bin/wc-token.py` mints, lists and revokes
+  them from the shell — needed because the HTTP routes require a login, which is
+  exactly what an operator setting a machine up does not have.
+
+  This is the other half of removing the `/dev/*` exemption below. The exemption
+  survived as long as it did because there was no supported way for a caller
+  without a browser to authenticate, so an unsupported one kept being invented;
+  removing the hole without providing the door would have invited the next one.
+
+  Details that are decisions rather than defaults:
+
+  - Only a sha256 hash is stored. A database backup is therefore not a set of
+    working keys, and a lost token is replaced rather than recovered. sha256 and
+    not argon2 because the secret is 256 random bits — there is nothing to slow
+    down — and this runs on every authenticated request.
+  - **Token requests skip CSRF; cookie requests do not.** A browser never
+    attaches an `Authorization` header on its own, so there is no ambient
+    credential to forge. The exemption keys on what the auth middleware
+    *accepted*, not on whether a token header is present — keying on the header
+    would let any unauthenticated request switch CSRF off by sending an invented
+    token, which is the same shape of convenience-becomes-bypass as the `/dev/`
+    prefix. Cookie authentication also wins when both are presented, so a token
+    leaked into page JavaScript cannot disable CSRF for that session.
+  - A token cannot create another token, so one leaked credential cannot become
+    an unrevocable supply. It can revoke itself, because needing a browser to
+    retire a credential you think is loose is the wrong way round.
+  - `last_used_at` is written at most once a minute per token rather than on
+    every request: a row update on the hottest path in the server is the write
+    pressure that produced the site-wide `database is locked` once already.
+  - No expiry by default, capped at a year when one is requested. A cron job
+    should not stop working at 3am because nobody renewed it.
+
+### Removed
+
+- **`DevAuthSkipTests`.** All three assertions defended the `/dev/*` exemption,
+  including two that required an endpoint minting credential-free admin sessions
+  to be present at HEAD. Two of the three could not fail: each wrapped its own
+  assertion in `except Exception: self.skipTest("not in a git repo")`, and
+  `AssertionError` is an `Exception`, so the removal they existed to catch
+  surfaced as two skips blaming git — inside a git repository.
+  `tests/test_qa_api_tokens.py` asserts the opposite: nothing is exempt, and a
+  cookieless caller uses a token.
+
 ## [0.9.3] — 2026-09-01
 
 > The bump this section was waiting on. It sat as `[Unreleased]` for a day

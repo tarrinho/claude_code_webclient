@@ -149,8 +149,66 @@ its database records but deliberately leaves its workspace on disk.
 - The host proxy binds to loopback by default and authenticates its handshake.
 - Claude Code runs with `--dangerously-skip-permissions`; this is an intentional,
   high-impact trust decision, not a sandbox.
+- **Every path requires authentication** except `POST/GET /login` and
+  `/assets/*`. There is no exempt prefix: a `/dev/*` exemption existed briefly
+  and is gone, because a route added under an exempt prefix is unauthenticated
+  by default, and on a server that spawns Claude Code with
+  `--dangerously-skip-permissions` that is remote code execution.
 
 Read [SECURITY.md](SECURITY.md) before deployment.
+
+## API tokens
+
+Scripts, cron jobs and other machines authenticate with a token instead of a
+cookie. This exists so that "a caller that cannot log in through a browser" has
+a supported answer — the absence of one is what produced an unauthenticated
+debug endpoint that minted admin sessions on request.
+
+Mint one from the shell. The server does not need to be stopped, but doing it
+while stopped avoids a second process writing to the live database at all:
+
+```bash
+bin/wc-token.py create --user pedro --name "nightly backup" --days 90
+bin/wc-token.py list   --user pedro
+bin/wc-token.py revoke --user pedro --id wct_xxxxxxxxxxxx
+```
+
+`create` writes the secret to `~/.local/share/webconsole/api-token` with mode
+0600 and prints only the id. It does not print the token: stdout ends up in
+scrollback, in `script` logs and in CI output, and a credential that has been
+printed has been disclosed to all of them. Pass `--stdout` when you are
+deliberately piping it somewhere.
+
+Then use it as a bearer credential:
+
+```bash
+TOKEN="$(cat ~/.local/share/webconsole/api-token)"
+curl -sk -H "Authorization: Bearer $TOKEN" https://<host>/api/chats
+curl -sk -H "X-API-Token: $TOKEN"          https://<host>/api/system
+# Mutating requests need no CSRF header -- there is no cookie to forge against:
+curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"title":"from a script"}' https://<host>/api/chats
+```
+
+`GET /api/tokens`, `POST /api/tokens` and `DELETE /api/tokens/{id}` manage them
+over HTTP as well. Notes worth knowing before you rely on them:
+
+- **The secret is shown once.** Only a sha256 hash is stored, so a database
+  backup is not a set of working keys and a lost token is replaced, not
+  recovered.
+- **A token carries its owner's identity and role**, and grants nothing that
+  owner does not already have. A `user`-role token is refused by admin routes.
+- **A token cannot create another token** — `POST /api/tokens` requires a
+  logged-in session — so one leaked credential cannot become a supply of them.
+  It *can* revoke itself, because needing a browser to retire a credential you
+  think is loose is the wrong way round.
+- **Tokens skip CSRF, sessions do not.** A browser never attaches an
+  `Authorization` header on its own, so there is no ambient credential to
+  forge; the exemption keys on what the auth middleware accepted, not on the
+  presence of a header, so an invented token cannot switch the check off.
+- `--days` sets an expiry (max 365). The default is no expiry, deliberately: a
+  cron job should not stop working at 3am because nobody renewed it.
 
 ## Tests and security checks
 

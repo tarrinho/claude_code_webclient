@@ -43,8 +43,20 @@ def _shipped_js() -> list[Path]:
 
     Sorted and de-duplicated so a failure message is stable and a file cannot be
     scanned twice if the two globs ever overlap.
+
+    **Recursive, and that is the point.** The two flat globs it replaces would
+    have recreated the exact hole they were written to close: a client script in
+    any *subdirectory* of ``web/`` — ``web/assets/supervisor/list.js``, say —
+    matches neither ``web/*.js`` nor ``web/assets/*.js``, so it would silently
+    stop being scanned. Nothing fails when a scanner looks in the wrong place;
+    it reports clean. That is how a bare ``setInterval`` survived the sweep in
+    ``3a68c5c`` that was supposed to remove every one of them.
+
+    Caught before it could bite, while planning the 0.10.0 split of
+    ``web/supervisor.js`` into ``web/assets/supervisor/``. ``rglob`` finds the
+    same nine files today, so this changes nothing now and everything later.
     """
-    return sorted(set(WEB.glob("*.js")) | set(ASSETS.glob("*.js")))
+    return sorted(WEB.rglob("*.js"))
 
 # `x = setInterval(...)`, `_t = setInterval(...)`, `this.t = setInterval(...)`.
 _ASSIGNED = re.compile(r"=\s*setInterval\s*\(")
@@ -110,15 +122,23 @@ class TimerHandleTests(unittest.TestCase):
         other test here still passes -- which is how the gap survived the sweep
         that was meant to close it.
         """
-        scanned = {p.name for p in _shipped_js()}
-        expected = {p.name for p in WEB.glob("*.js")} | {
-            p.name for p in ASSETS.glob("*.js")
+        scanned = {p.relative_to(WEB).as_posix() for p in _shipped_js()}
+        flat = {p.relative_to(WEB).as_posix() for p in WEB.glob("*.js")} | {
+            p.relative_to(WEB).as_posix() for p in ASSETS.glob("*.js")
         }
-        self.assertEqual(scanned, expected)
+        # A superset, not an equality. The two flat globs are what this scan
+        # used to be, and pinning equality would make the scan *fail* the first
+        # time a script lands in a subdirectory -- which is precisely the case
+        # the recursive version exists to cover, and precisely the change
+        # 0.10.0 makes to web/supervisor.js.
+        self.assertTrue(
+            flat <= scanned,
+            f"the scan no longer covers what the flat globs did: {flat - scanned}",
+        )
         # Named explicitly: this is the file the narrow glob missed, and a
         # set-equality check alone would still pass if both sides went empty.
         self.assertIn("supervisor.js", scanned)
-        self.assertIn("app.js", scanned)
+        self.assertIn("assets/app.js", scanned)
         self.assertGreaterEqual(len(scanned), 2)
 
     def test_the_supervisor_poller_is_guarded_as_well_as_held(self):
@@ -143,6 +163,29 @@ class TimerHandleTests(unittest.TestCase):
         source = (ASSETS / "conversation.js").read_text(encoding="utf-8")
         self.assertIn("clearInterval(_lastCommandTimer)", source)
         self.assertIn("_lastCommandTimer = setInterval", source)
+
+
+    def test_a_script_in_a_subdirectory_is_scanned(self):
+        """The trap this scanner is one edit away from falling into.
+
+        `web/supervisor.js` is about to become `web/assets/supervisor/*.js`, and
+        a flat glob would stop seeing it without failing -- the same silent
+        blindness that let a bare timer survive the sweep meant to remove every
+        one. Asserted with a real temporary file rather than by reading the
+        glob's source, because the property is "would this be scanned", not
+        "does the code say rglob".
+        """
+        sub = WEB / "assets" / "_scan_probe_tmp"
+        sub.mkdir(parents=True, exist_ok=True)
+        probe = sub / "probe.js"
+        probe.write_text("// probe\n", encoding="utf-8")
+        try:
+            self.assertIn(probe, _shipped_js(),
+                          "a client script in a subdirectory of web/ must be "
+                          "scanned; a flat glob would skip it in silence")
+        finally:
+            probe.unlink(missing_ok=True)
+            sub.rmdir()
 
 
 if __name__ == "__main__":

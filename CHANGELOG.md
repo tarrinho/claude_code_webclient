@@ -22,6 +22,36 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Opening a conversation on a phone no longer raises the on-screen keyboard.**
+  Changing chat focused the composer, and on a touch device focusing a text input
+  opens the keyboard — so the first thing you saw after choosing what to read was
+  the thing covering it, without having asked to type. The keyboard now appears
+  only when the composer is tapped.
+
+  Two sites called `elements.composerInput.focus()` unconditionally: `loadChat`
+  after every open, and the `finally` of the streaming send after every completed
+  turn. The second was reported by nobody but is the same rule and fired far more
+  often — after every reply.
+
+  Conditional rather than removed: on a pointer device the focus is a real
+  convenience and being able to type straight away is the point. The condition is
+  `(hover: hover) and (pointer: fine)`, **not** touch capability — a laptop with
+  a touchscreen reports touch support and still wants the focus, so a
+  `'ontouchstart' in window` test would take the behaviour away from a machine
+  that benefits from it. Read per call, so attaching or removing a tablet
+  keyboard needs no reload.
+
+  Covered by `tests/test_qa_mobile_no_autofocus.py` (7 cases) under real device
+  emulation, since the change *is* a media query and reading the source proves
+  nothing about whether a phone is spared. Two conversations are seeded because
+  the report was about *changing* chat, which one conversation cannot exercise.
+  Mutation-verified: restoring the unconditional focus fails exactly the two
+  mobile cases. The suite also asserts the emulated phone really reports a coarse
+  pointer, that tapping the composer *does* focus it, and that a desktop still
+  focuses on open — without those three, deleting the focus outright would pass.
+
 ### Added
 
 - **A question asked in prose is marked as one in the conversation.** Messages

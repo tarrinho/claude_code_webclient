@@ -11,6 +11,32 @@ const STREAM_LABELS = {
 };
 const ACTIVE_STATES = new Set(['connecting', 'thinking', 'retrying', 'responding']);
 
+// Focusing a text input opens the on-screen keyboard on a touch device, and on a
+// phone that keyboard covers most of the conversation. So opening a chat must
+// not do it: the keyboard belongs to the moment the user taps the composer,
+// which is the only moment they have said they want to type. On a pointer device
+// the focus costs nothing and being able to type straight away is the point, so
+// the behaviour is kept there rather than removed for everyone.
+//
+// Matched on `(hover: hover) and (pointer: fine)` rather than on touch
+// capability. A laptop with a touchscreen reports touch support and still wants
+// the focus; a phone reports `pointer: coarse` and `hover: none`. Touch support
+// is a property of the hardware, and what matters here is how the user is
+// actually driving it.
+//
+// Read per call, not captured once: a tablet with a keyboard attached or removed
+// changes the answer, and there is no reason to make that need a reload.
+const POINTER_KEYBOARD =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(hover: hover) and (pointer: fine)')
+    : null;
+
+function prefersAutoFocus() {
+  // No matchMedia means a non-browser context (a test harness stub); keep the
+  // old behaviour there rather than silently changing what tests observe.
+  return POINTER_KEYBOARD ? POINTER_KEYBOARD.matches : true;
+}
+
 export function parseTimestamp(iso) {
   if (!iso) return null;
   const value = /Z$|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`;
@@ -216,6 +242,12 @@ export function createConversationController(dependencies) {
     elements.sendButton.setAttribute('aria-label', active ? 'Stop response' : 'Send message');
     elements.composerInput.disabled = active;
     elements.retryButton.style.display = ['failed', 'stopped'].includes(next) && lastAttempt ? 'inline' : 'none';
+  }
+
+  // Focus the composer only where a physical keyboard is being used. See
+  // prefersAutoFocus for why this is not simply removed.
+  function focusComposer() {
+    if (prefersAutoFocus()) elements.composerInput.focus();
   }
 
   function autoResize() {
@@ -592,7 +624,8 @@ export function createConversationController(dependencies) {
     // Always, not only when the count is non-zero: opening a conversation has
     // to clear a panel left over from the previous one.
     refreshQueue(data.chat.id);
-    elements.composerInput.focus();
+    // Opening a conversation is navigation, not an intent to type.
+    focusComposer();
     return true;
   }
 
@@ -927,7 +960,9 @@ export function createConversationController(dependencies) {
         setStreamState('ready');
         await refreshCurrent();
       }
-      elements.composerInput.focus();
+      // Same rule as opening a chat: a turn finishing is not the user asking to
+      // type. On a phone this fired after every single reply.
+      focusComposer();
     }
   }
 

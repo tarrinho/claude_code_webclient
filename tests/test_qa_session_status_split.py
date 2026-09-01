@@ -19,6 +19,7 @@ re-read it. So these cases pin the distinction rather than the wording.
 """
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
 
@@ -42,6 +43,33 @@ def classify(cli_status, marks=None, last_role="assistant"):
         cli_dismiss_map={SESSION_ID: ""},
         cli_status_updated_map={SESSION_ID: SPOKE_AT},
     )
+
+
+def _code_only(source: str) -> str:
+    """*source* with comments and docstrings removed, so only code is scanned.
+
+    Stripping `#` comments was not enough. The note recording why this rule
+    changed lives in a **docstring** -- `_session_needs_a_person` explains that
+    the check used to compare against "busy" alone -- and a line-based strip
+    does not reach inside a triple-quoted string. So the scan found the old
+    expression inside its own postmortem for a second time, in a second form,
+    after the first had already been fixed.
+
+    `ast.unparse` drops comments for free; the docstrings have to be popped
+    explicitly. The alternative, forbidding the explanation from naming the bug
+    it explains, trades the reason for the guard and is the wrong way round.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef,
+                                 ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body.pop(0)
+    return ast.unparse(tree)
 
 
 class StatusMeaningTests(unittest.TestCase):
@@ -144,11 +172,7 @@ class AllowlistShapeTests(unittest.TestCase):
         is to look only at code. `tests/test_qa_timer_handles.py` strips
         comments for exactly this.
         """
-        source = Path(app.__file__).read_text(encoding="utf-8")
-        code = "\n".join(
-            line.split("#", 1)[0] for line in source.splitlines()
-            if not line.strip().startswith("#")
-        )
+        code = _code_only(Path(app.__file__).read_text(encoding="utf-8"))
         self.assertNotIn('cli_status != "busy"', code)
         self.assertIn("_CLI_STATUS_NOT_BLOCKED", code)
 

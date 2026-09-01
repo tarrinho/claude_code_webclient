@@ -3627,6 +3627,74 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict]:
 _CLI_STATUS_NOT_BLOCKED: Final[frozenset[str]] = frozenset({"busy", "idle"})
 
 
+def _dismissed_at(mark: dict, cli_dismiss_map: dict, session_id: str) -> str:
+    """When this row was last silenced, under *either* of its two identities.
+
+    A conversation linked to a terminal session can be dismissed as a
+    conversation -- the control writes ``("chat", id)`` -- or as a session, and
+    silencing one must silence the other. Otherwise the user dismisses the
+    terminal row and the web row summons them back for the same piece of work.
+    The later timestamp wins.
+
+    Extracted because this rule was written out twice, sixty lines apart, once
+    in the blocked-session branch and once in the dismissal check below, each
+    with its own paragraph explaining the same thing. Two copies of one rule is
+    how the pair drifts: the blocked branch consulted only the session mark for
+    a while, so a dismissal was recorded faithfully and then never read, and the
+    control looked inert.
+
+    Returns "" when neither identity has been dismissed, which sorts before
+    every real timestamp and so never silences anything by accident.
+    """
+    return max(
+        cli_dismiss_map.get(session_id, "") or "",
+        mark.get("dismissed_at") or "",
+    )
+
+
+def _attention_reason(last: dict) -> str | None:
+    """Why this message needs a person, or None.
+
+    Reads the **end** of the message as well as its opening. ``_attention``
+    decides mostly on how text ends, and ``preview`` is only the first 200
+    characters, so a question at the end of anything longer was invisible to it:
+    the row fell through to the "done" promotion and was announced as completed
+    work, with no "?" on it, while the agent sat waiting for an answer.
+
+    Both, not just the tail, because ``_attention`` also matches blocker phrases
+    anywhere in the text and those often open a message rather than close it.
+
+    The pending note is checked last and is the stronger signal: it marks a
+    structured question that is definitely unanswered, and it is appended to the
+    end of the rendered text.
+    """
+    preview = last.get("preview") or ""
+    tail = last.get("tail") or preview
+    reason = _attention(tail) or _attention(preview)
+    if not reason and _QUESTION_PENDING_NOTE in (tail + preview):
+        reason = "asks"
+    return reason
+
+
+def _session_needs_a_person(cli_status: str) -> bool:
+    """Whether a linked CLI session's own status means someone is required.
+
+    This read ``cli_status != "busy"``, which put a session that had simply
+    FINISHED into the waiting feed with reason "asks" -- reporting an agent that
+    needs nothing as one blocked on a question. Claude Code 2.1.252 writes three
+    values, not the one the old comment described: ``busy``, ``waiting`` and
+    ``idle``. Only ``waiting`` means a person is required; ``idle`` means the
+    task concluded, which belongs in the routine-output path where a read mark
+    retires it. Conflating them padded the badge with rows that wanted nothing,
+    and the badge is only worth having while every row in it is real.
+
+    An unrecognised value counts as blocked rather than finished: a status this
+    code has never seen should over-report to a human, not quietly retire an
+    agent that may be stuck.
+    """
+    return bool(cli_status) and cli_status not in _CLI_STATUS_NOT_BLOCKED
+
+
 def classify_chat(
     chat: dict,
     last: dict,
@@ -3690,24 +3758,8 @@ def classify_chat(
     mark = marks.get(("chat", chat["id"]), {})
     stamp = last.get("created_at") or ""
     preview = last.get("preview") or ""
-    # The end of the message as well as its opening. _attention() decides mostly
-    # on how the text *ends*, and the preview is its first 200 characters, so a
-    # question at the end of anything longer than that was invisible to it: the
-    # row fell through to the `done` promotion and was announced as a completed
-    # piece of work, with no "?" on it, while the agent sat waiting for an
-    # answer. The pending note is the worse case, since it marks a structured
-    # question that is definitely unanswered, and it is appended last.
-    #
-    # I added `tail` for exactly this reason and then used it only on the line
-    # below, leaving the classification that decides whether that line is
-    # reached still reading the wrong end of the message.
-    #
-    # Both, not just the tail: _attention also matches blocker phrases anywhere
-    # in the text, and those often open a message rather than close it.
     tail = last.get("tail") or preview
-    reason = _attention(tail) or _attention(preview)
-    if not reason and _QUESTION_PENDING_NOTE in (tail + preview):
-        reason = "asks"
+    reason = _attention_reason(last)
     if reason:
         # Only an explicit dismissal silences an unanswered question.
         if mark.get("dismissed_at") and stamp <= mark["dismissed_at"]:
@@ -3741,17 +3793,8 @@ def classify_chat(
     session_id = chat.get("session_id", "")
     cli_status = cli_status_map.get(session_id, "")
     blocked_and_dismissed = False
-    if cli_status and cli_status not in _CLI_STATUS_NOT_BLOCKED:
-        # Both marks, not just the session's. This row is presented as a
-        # conversation, so dismissing it writes ("chat", chat_id) -- and this
-        # branch used to consult only ("session", session_id). The dismissal
-        # was recorded faithfully and then never read, so the row returned on
-        # the next poll and the control looked inert. The later of the two
-        # wins: either identity may silence the row the user actually sees.
-        dismissed = max(
-            cli_dismiss_map.get(session_id, "") or "",
-            mark.get("dismissed_at") or "",
-        )
+    if _session_needs_a_person(cli_status):
+        dismissed = _dismissed_at(mark, cli_dismiss_map, session_id)
         # Fall back to the conversation's own last activity when the session
         # file carries no status timestamp, so the guard below cannot fail open
         # and relist unconditionally.
@@ -3805,15 +3848,7 @@ def classify_chat(
     # summoning me", not "forget this happened", and the row reappearing after a
     # dismissal is the complaint that made that control look inert once already.
     #
-    # Both identities, exactly as the blocked branch above does it. This row is
-    # presented as a conversation, so the dismiss control writes ("chat", id) --
-    # but a dismissal made against the linked session must silence it too, or
-    # the user dismisses the terminal row and the web row summons them back for
-    # the same piece of work.
-    dismissed_either = max(
-        cli_dismiss_map.get(session_id, "") or "",
-        mark.get("dismissed_at") or "",
-    )
+    dismissed_either = _dismissed_at(mark, cli_dismiss_map, session_id)
     if dismissed_either and stamp <= dismissed_either:
         return quiet
     # The action has ended: the agent spoke last, no turn is registered, the

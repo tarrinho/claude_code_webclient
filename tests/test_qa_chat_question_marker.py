@@ -34,7 +34,6 @@ Two decisions worth stating because the alternatives look reasonable:
 from __future__ import annotations
 
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -179,13 +178,11 @@ class SingleSourceOfTruthTests(unittest.TestCase):
         A conversation that disagreed with the sidebar about the same message
         would be worse than either mark alone.
         """
-        body = app.handle_chat_get.__code__.co_consts
         source = (ROOT / "app.py").read_text(encoding="utf-8")
         served = source.split("async def handle_chat_get")[1].split(
             "\nasync def ")[0]
         self.assertIn("_asks_a_question", served,
                       "handle_chat_get must ask the shared helper")
-        del body
 
     def test_the_client_does_not_re_derive_it(self):
         """A regex in JavaScript is a second heuristic that will drift."""

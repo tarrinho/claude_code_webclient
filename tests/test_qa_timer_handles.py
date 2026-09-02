@@ -135,9 +135,23 @@ class TimerHandleTests(unittest.TestCase):
             flat <= scanned,
             f"the scan no longer covers what the flat globs did: {flat - scanned}",
         )
-        # Named explicitly: this is the file the narrow glob missed, and a
-        # set-equality check alone would still pass if both sides went empty.
-        self.assertIn("supervisor.js", scanned)
+        # Named, but by subject rather than by path. This was
+        # `assertIn("supervisor.js", scanned)`, an exact string match against a
+        # relative path -- which the 0.10.0 split breaks, because the same code
+        # becomes `assets/supervisor/main.js` and friends. A test that fails on
+        # the move it was written to survive would be read as the move's fault
+        # and edited out of the way, taking the property with it.
+        #
+        # Matching on the subject keeps the property in both layouts: if the
+        # scan is narrowed back to `web/assets/*.js` this set goes empty today
+        # (the file sits in `web/`) *and* after the move (the modules sit in a
+        # subdirectory). That is the whole assertion.
+        supervisor_scripts = {p for p in scanned if "supervisor" in p}
+        self.assertTrue(
+            supervisor_scripts,
+            "no supervisor client script is scanned; this is the code the "
+            "narrow glob missed, wherever it now lives",
+        )
         self.assertIn("assets/app.js", scanned)
         self.assertGreaterEqual(len(scanned), 2)
 
@@ -149,8 +163,21 @@ class TimerHandleTests(unittest.TestCase):
         so a second ``init()`` is reachable. Holding the handle without the guard
         would replace the reference and leak the previous timer, leaving two
         polls running and only one of them stoppable.
+
+        Read from every supervisor script joined together, not from
+        ``web/supervisor.js`` by name. Two reasons, and the second is the one
+        that matters. The name disappears in the 0.10.0 split, so a direct read
+        would raise ``FileNotFoundError`` on the move. And the three markers
+        need not land in the same new module -- the handle may end up in a state
+        module while the guard stays with ``init()`` -- so requiring them in one
+        file would force the split's shape to suit this test. What §4 actually
+        requires is that the guard exist somewhere in the code that owns the
+        timer, which is what joining asserts.
         """
-        source = (WEB / "supervisor.js").read_text(encoding="utf-8")
+        sources = [p for p in _shipped_js() if "supervisor" in p.name
+                   or "supervisor" in p.parent.name]
+        self.assertTrue(sources, "no supervisor client script found to check")
+        source = "\n".join(p.read_text(encoding="utf-8") for p in sources)
         self.assertIn("_refreshTimer = setInterval", source)
         self.assertIn("if (!_refreshTimer)", source)
         self.assertIn("clearInterval(_refreshTimer)", source)

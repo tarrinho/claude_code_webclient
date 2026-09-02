@@ -2,7 +2,7 @@
 """Run the benchmark. Every number it prints names what produced it.
 
     bin/wc-bench.py --models azure_ai/gpt-5.6-luna --repeats 3
-    bin/wc-bench.py --models vllm/Qwen3.6-35B-A3B-NVFP4 --transports http,cli
+    bin/wc-bench.py --models vllm/Qwen3.6-35B-A3B-NVFP4 --repeats 5
     bin/wc-bench.py --models m1,m2 --tasks coding-bug-fix,coding-algo
     bin/wc-bench.py --list
 
@@ -39,9 +39,12 @@ from bench import transports
 #: The four Anthropic models were missing from the comparison entirely, on the
 #: grounds that "Anthropic models are NOT accessible through this gateway" --
 #: true, and not the same statement as unreachable. They answer over the CLI
-#: path against the host's own `claude` login, verified 2026-09-02. Leaving them
-#: out meant the most expensive tier in the stack had no measured quality to
+#: against the host's own `claude` login, verified 2026-09-02. Leaving them out
+#: meant the most expensive tier in the stack had no measured quality to
 #: justify its price, which is the comparison anyone actually needs.
+#:
+#: The gateway families reach the CLI too, via the active machine
+#: bin/wc-claude.sh resolves -- so one transport covers all ten.
 DEFAULT_MODELS = [
     # self-hosted, free
     "vllm/Qwen3.6-35B-A3B-NVFP4",
@@ -58,12 +61,12 @@ DEFAULT_MODELS = [
     "claude-haiku-4-5",
 ]
 
-#: Transports tried when `--transports` is not given.
-#:
-#: Both, not just http. With http alone the four Anthropic models are skipped
-#: on every run and the table quietly reverts to six -- the original omission,
-#: reintroduced as a default.
-DEFAULT_TRANSPORTS = "http,cli"
+#: The only transport. Raw HTTP against the gateway was removed on 2026-09-02:
+#: CLAUDE.md §0 is explicit that the console never talks to a model API, so the
+#: CLI is production and HTTP measured a path no user reaches. Kept as a
+#: parameter rather than hardcoded because the skip-with-a-reason machinery is
+#: worth keeping for whatever transport comes next.
+DEFAULT_TRANSPORTS = "cli"
 
 
 def run_one(task, model: str, transport: str, key: str) -> dict:
@@ -180,8 +183,9 @@ def main() -> int:
                              "floor-add is a control every model must pass; a "
                              "failure there means a broken invocation")
     parser.add_argument("--transports", default=DEFAULT_TRANSPORTS,
-                        help=f"comma-separated (default: {DEFAULT_TRANSPORTS}). "
-                             "Anthropic models are reachable over cli only")
+                        help=f"comma-separated (default: {DEFAULT_TRANSPORTS}); "
+                             "cli is the only one, and the only one the console "
+                             "uses")
     parser.add_argument("--repeats", type=int, default=3,
                         help="runs per task (default: 3); 1 makes Consistency "
                              "unmeasurable, which is how the old score carried "
@@ -215,7 +219,10 @@ def main() -> int:
         # which nearly destroyed the only copy of the six-model baseline.
         raise SystemExit(f"bench: {out_path} exists; refusing to overwrite it")
 
-    key = transports.gateway_key() if "http" in paths else ""
+    # No credential of any kind. The HTTP transport was removed on 2026-09-02
+    # and took the harness's only API key handling with it -- the CLI holds its
+    # own auth, resolved by bin/wc-claude.sh or the host login.
+    key = ""
     runs: list[dict] = []
     total = len(models) * len(paths) * len(selected) * args.repeats
     done = 0
@@ -307,7 +314,6 @@ def _write(path: Path, runs: list[dict], models, paths, repeats,
             "models": models, "transports": paths, "repeats": repeats,
             "max_tokens": transports.MAX_TOKENS,
             "timeout_s": transports.TIMEOUT_S,
-            "gateway": transports.GATEWAY_URL,
         },
         # Kept in the artefact, not just printed. A reader of the JSON has to
         # be able to tell "this model was not measured on this path" from

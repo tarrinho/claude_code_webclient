@@ -428,8 +428,32 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             transports.send("smoke-signal", "m", [{"role": "user", "content": "x"}], "k")
 
-    def test_both_transports_are_registered(self):
-        self.assertEqual(set(transports.TRANSPORTS), {"http", "cli"})
+    def test_cli_is_the_only_transport(self):
+        """Raw HTTP against the gateway was removed on 2026-09-02.
+
+        CLAUDE.md §0: the console never talks to a model API, it spawns the
+        CLI. So HTTP measured a path no user reaches, at the cost of doubling
+        every sweep. It earned its keep first -- the 25.8x Qwen gap and the
+        gateway's Azure streaming crash were both found with it -- and those
+        findings live in the document with their raw runs committed.
+        """
+        self.assertEqual(set(transports.TRANSPORTS), {"cli"})
+
+    def test_the_harness_handles_no_credential_at_all(self):
+        """Removing HTTP took the only API key handling with it.
+
+        There is no gateway_key(), nothing reads api_key out of the database,
+        and no request this module builds carries a secret -- the CLI holds its
+        own auth. A benchmark that cannot leak a key beats one that is careful
+        with it, and this is cheap to keep true.
+        """
+        self.assertFalse(hasattr(transports, "gateway_key"))
+        self.assertFalse(hasattr(transports, "GATEWAY_URL"))
+        source = (ROOT / "bench" / "transports.py").read_text(encoding="utf-8")
+        code = "\n".join(line.split("#")[0] for line in source.splitlines())
+        for forbidden in ("api_key", "ANTHROPIC_API_KEY", "sqlite3"):
+            self.assertNotIn(forbidden, code,
+                             f"{forbidden} is back in the transport layer")
 
     def test_the_cli_ttft_comes_from_the_result_frame_not_the_stream(self):
         """Both halves of this were learned the hard way.
@@ -481,11 +505,21 @@ class TransportTests(unittest.TestCase):
         self.assertIn("wc-claude.sh", binary)
         self.assertIsNone(env, "the wrapper needs the inherited environment")
 
-    def test_anthropic_models_are_not_offered_the_gateway(self):
-        self.assertFalse(transports.reachable("claude-opus-5", "http"))
+    def test_the_skip_with_a_reason_machinery_survives_the_removal(self):
+        """The routing map is empty now, and that is the point of this test.
+
+        It existed to stop Anthropic models being sent at the gateway over
+        HTTP. With one transport there is nothing to route -- but the property
+        it protected is not about HTTP: an unreachable backend must be skipped
+        with a stated reason and never written into the results as a failure.
+        That machinery is still wired and still called per pair, so it is here
+        when a second transport arrives.
+        """
+        self.assertEqual(transports.MODEL_TRANSPORTS, ())
         self.assertTrue(transports.reachable("claude-opus-5", "cli"))
-        self.assertIn("use --transports cli",
-                      transports.why_unreachable("claude-opus-5", "http"))
+        self.assertTrue(transports.reachable("anything/at-all", "cli"))
+        self.assertIn("not reachable",
+                      transports.why_unreachable("x", "some-future-transport"))
 
     def test_an_unknown_model_is_tried_rather_than_skipped(self):
         """A new backend must not be silently dropped from the table."""

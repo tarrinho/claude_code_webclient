@@ -1,39 +1,49 @@
-"""Two paths to the same model, both streaming, both reporting TTFT.
+"""One path to the model: the Claude Code CLI, which is what the console uses.
 
-The reason this module exists as a choice rather than a constant: the water-jug
-task cannot be completed in 600s over the HTTP gateway and is answered
-correctly in 23.0s by the CLI. Same model, same prompt, at least 26x apart. A
-model cannot be 26x slower because the caller used a different socket, so
-transport is a variable — and until it is recorded on every result, no speed
-figure from this harness means anything.
+`CLAUDE.md` §0 is explicit -- the console never talks to a model API, it spawns
+the `claude` CLI and varies its parameters. So the CLI is production and there
+is nothing else to measure.
 
-Both transports stream. Two reasons:
+**A raw-HTTP transport used to live here and was removed on 2026-09-02.** It
+earned its keep first: it is how the 25.8x Qwen3.6 gap was found, and how the
+gateway's Azure streaming crash was found. Both are recorded in
+`Backend_Models_20260902.comparison.md`, and the runs behind them are committed
+as `bench_qwen_transport_20260902.json` and `bench_azure_20260902.json`. What it
+could not earn was a place in every future run: it doubled the cost of a sweep
+to measure a path no user reaches.
 
-* **Time to first token is a different measurement from total time**, and the
-  old harness reported only the second. A model at 290s total but 2s to first
-  token is usable interactively; one at 30s total and 30s to first token is not.
-  The comparison document ranked "Interactive?" without ever measuring the
-  quantity that decides it.
-* Streaming is also the leading hypothesis for the 26x gap — if an unstreamed
-  gateway buffers the whole reasoning output before returning a byte, then
-  asking for a stream is the experiment.
+Removing it also took the harness's only API key handling with it. There is no
+`gateway_key()` any more, no reading a secret out of the database, and no
+credential in any request this module builds -- `bin/wc-claude.sh` resolves the
+backend and the CLI holds its own auth. A benchmark that cannot leak a key is
+worth more than one that is careful with it.
 
-Every result carries `stop_reason` and `cap_headroom` so a run that hit its
-token ceiling can never be scored as a wrong answer, which is the mistake that
-produced a 55.4%.
+What is measured, and why each field exists:
+
+* `ttft_s` comes from the result frame's `ttft_ms`, not from timing the first
+  `assistant` frame. stream-json emits whole message blocks, so timing the
+  stream measures the finished answer -- that gave ttft=57.05 against
+  total=57.44 once. The CLI measures it properly itself.
+* `reported_cost_usd` with `cost_basis` -- authoritative only when the basis is
+  `list`. For a gateway backend the CLI has no rate card and prices it at
+  Anthropic rates, which is why every non-Anthropic `cost_usd` in the console's
+  `usage_events` is fictional.
+* `stop_reason` and `cap_headroom`, so a truncated run is never scoreable as a
+  wrong answer. That conflation produced a 55.4% and a withdrawn verdict.
+* `files_written` -- the CLI is an agent with file tools, so "return valid
+  Python code only" can be answered by writing the code to disk. Two runs
+  scored 0 before this was captured.
 """
+
 from __future__ import annotations
 
 import fnmatch
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,11 +55,6 @@ ROOT = Path(__file__).resolve().parent.parent
 #: property of the harness and belongs where it can be changed without an edit.
 MAX_TOKENS = int(os.environ.get("WC_BENCH_MAX_TOKENS", "16384"))
 TIMEOUT_S = int(os.environ.get("WC_BENCH_TIMEOUT_S", "1000"))
-
-GATEWAY_URL = os.environ.get(
-    "WC_BENCH_BASE_URL", "https://llm.ai-machine.cfappsecurity.com/v1/messages"
-)
-
 
 @dataclass
 class Turn:
@@ -68,8 +73,9 @@ class Turn:
     thinking_chars: int = 0
     error: str | None = None
     detail: list[str] = field(default_factory=list)
-    #: Files the agent wrote instead of answering inline. Empty on the
-    #: http path, which has no tools.
+    #: Files the agent wrote instead of answering inline. The CLI is an agent
+    #: with file tools, so "return valid Python code only" can be satisfied by
+    #: writing the code to disk and describing it.
     files_written: list[str] = field(default_factory=list)
     #: Cached input. `input_tokens` alone badly understates what a turn cost:
     #: the CLI caches its system prompt and tool definitions, so opus-5
@@ -104,199 +110,6 @@ class Turn:
     @property
     def hit_cap(self) -> bool:
         return self.stop_reason == "max_tokens" or self.cap_headroom == 0.0
-
-
-# --- gateway key -------------------------------------------------------------
-
-
-def gateway_key() -> str:
-    """The gateway key, from the environment or the active machine.
-
-    Never stored in this file or written to output. Same resolution order as
-    the rest of the tooling, and the database is opened read-only: opening it
-    read-write from a second process is what took the production write path
-    down for 37 minutes (registry #41).
-    """
-    for var in ("WC_BENCH_API_KEY", "ANTHROPIC_API_KEY"):
-        if os.environ.get(var):
-            return os.environ[var]
-    db = ROOT / "data" / "webconsole.db"
-    if db.exists():
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            row = con.execute(
-                "SELECT api_key FROM ai_machines WHERE active = 1 "
-                "AND api_key IS NOT NULL AND api_key != '' LIMIT 1").fetchone()
-        finally:
-            con.close()
-        if row and row[0]:
-            return row[0]
-    raise SystemExit(
-        "bench: no gateway key. Set WC_BENCH_API_KEY, or activate a machine "
-        "that has one in the WebConsole database.")
-
-
-# --- HTTP transport ----------------------------------------------------------
-
-
-def _http_once(model: str, messages: list[dict], key: str) -> Turn:
-    """Stream if we can, fall back to a single response if streaming breaks.
-
-    Streaming is preferred because it is the only way to measure
-    time-to-first-token, which the comparison document ranked "Interactive?"
-    on without ever measuring. But it is not available for every backend: the
-    gateway's Azure passthrough crashes when streaming, so insisting on it
-    would score five working models at zero.
-    """
-    turn = _http_stream(model, messages, key)
-    if turn.error and not turn.text:
-        fallback = _http_blocking(model, messages, key)
-        fallback.detail.insert(0, f"streaming failed ({turn.error}); "
-                                  "re-ran unstreamed, so no ttft for this run")
-        return fallback
-    return turn
-
-
-def _http_blocking(model: str, messages: list[dict], key: str) -> Turn:
-    """One unstreamed request. No TTFT is available, and none is invented."""
-    payload = json.dumps({
-        "model": model,
-        "max_tokens": MAX_TOKENS,
-        "messages": messages,
-    }).encode()
-    req = urllib.request.Request(GATEWAY_URL, data=payload, method="POST")
-    req.add_header("x-api-key", key)
-    req.add_header("anthropic-version", "2023-06-01")
-    req.add_header("content-type", "application/json")
-
-    turn = Turn(text="", transport="http", model_requested=model)
-    started = time.monotonic()
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-            data = json.loads(resp.read())
-    except Exception as exc:  # noqa: BLE001 -- a transport fault is a datum
-        turn.error = f"{type(exc).__name__}: {exc}"
-        turn.total_s = round(time.monotonic() - started, 2)
-        return turn
-
-    turn.total_s = round(time.monotonic() - started, 2)
-    if isinstance(data, dict) and data.get("error"):
-        err = data["error"]
-        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-        turn.error = f"gateway error: {msg.splitlines()[0][:200]}"
-        return turn
-
-    text_parts, thinking = [], 0
-    for block in data.get("content") or []:
-        if block.get("type") == "text":
-            text_parts.append(block.get("text") or "")
-        elif block.get("type") == "thinking":
-            thinking += len(block.get("thinking") or "")
-    usage = data.get("usage") or {}
-    turn.text = "".join(text_parts).strip()
-    turn.had_text_block = bool(turn.text)
-    turn.thinking_chars = thinking
-    turn.input_tokens = usage.get("input_tokens", 0)
-    turn.output_tokens = usage.get("output_tokens", 0)
-    turn.cache_read_tokens = usage.get("cache_read_input_tokens", 0)
-    turn.cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
-    turn.stop_reason = data.get("stop_reason")
-    turn.model_served = data.get("model")
-    return turn
-
-
-def _http_stream(model: str, messages: list[dict], key: str) -> Turn:
-    payload = json.dumps({
-        "model": model,
-        "max_tokens": MAX_TOKENS,
-        "stream": True,
-        "messages": messages,
-    }).encode()
-    req = urllib.request.Request(GATEWAY_URL, data=payload, method="POST")
-    req.add_header("x-api-key", key)
-    req.add_header("anthropic-version", "2023-06-01")
-    req.add_header("content-type", "application/json")
-    req.add_header("accept", "text/event-stream")
-
-    turn = Turn(text="", transport="http", model_requested=model)
-    started = time.monotonic()
-    text_parts: list[str] = []
-    thinking_chars = 0
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-            for raw in resp:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                blob = line[5:].strip()
-                if not blob or blob == "[DONE]":
-                    continue
-                try:
-                    event = json.loads(blob)
-                except json.JSONDecodeError:
-                    continue
-                # An error delivered *inside* the stream. This has to be
-                # checked before `type`, because the frame has no `type` at
-                # all -- it is `{"error": {"message": ...}}` -- so a parser
-                # that switches on `type` drops it and reports silence.
-                #
-                # That is not hypothetical. The gateway crashes when asked to
-                # stream an Azure model:
-                #
-                #   {"error": {"message": "list index out of range\n\n
-                #    Traceback ... litellm/proxy/..."}}
-                #
-                # Every one of 16 Azure runs came back with out=0, stop=None
-                # and an empty response, and would have been published as the
-                # models scoring zero. A server-side traceback is the one thing
-                # that must never be attributed to a model.
-                if "error" in event and "type" not in event:
-                    err = event["error"]
-                    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                    turn.error = f"gateway error in stream: {msg.splitlines()[0][:200]}"
-                    turn.detail.append("the gateway returned an error mid-stream, "
-                                       "not the model")
-                    break
-                kind = event.get("type")
-                if kind == "message_start":
-                    message = event.get("message") or {}
-                    turn.model_served = message.get("model")
-                    turn.input_tokens = (message.get("usage") or {}).get(
-                        "input_tokens", 0)
-                elif kind == "content_block_delta":
-                    delta = event.get("delta") or {}
-                    if delta.get("type") == "thinking_delta":
-                        thinking_chars += len(delta.get("thinking") or "")
-                    else:
-                        chunk = delta.get("text") or ""
-                        if chunk and turn.ttft_s is None:
-                            # First *answer* token, not the first thinking
-                            # token: what a person waits for is the answer
-                            # starting, and a model can think for minutes
-                            # before it does.
-                            turn.ttft_s = round(time.monotonic() - started, 2)
-                        text_parts.append(chunk)
-                elif kind == "message_delta":
-                    turn.stop_reason = (event.get("delta") or {}).get("stop_reason")
-                    turn.output_tokens = (event.get("usage") or {}).get(
-                        "output_tokens", turn.output_tokens)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        turn.error = f"{type(exc).__name__}: {exc}"
-    except Exception as exc:  # noqa: BLE001 -- a transport fault is a datum
-        turn.error = f"{type(exc).__name__}: {exc}"
-
-    turn.total_s = round(time.monotonic() - started, 2)
-    turn.text = "".join(text_parts).strip()
-    turn.had_text_block = bool(turn.text)
-    turn.thinking_chars = thinking_chars
-    if not turn.text and thinking_chars and not turn.error:
-        # Never a placeholder. The old harness wrote the literal string
-        # "[thinking]" here, which made a truncated run indistinguishable from
-        # an empty one and is the single defect that cost a model its ranking.
-        turn.detail.append(
-            f"no answer text; {thinking_chars} chars of thinking only "
-            f"(stop_reason={turn.stop_reason})")
-    return turn
 
 
 # --- CLI transport -----------------------------------------------------------
@@ -519,31 +332,15 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
     return turn
 
 
-TRANSPORTS = {"http": _http_once, "cli": _cli_once}
+TRANSPORTS = {"cli": _cli_once}
 
-#: Which paths can actually reach which model family.
-#:
-#: This exists because the comparison document said "Anthropic models are NOT
-#: accessible through this gateway" and then omitted them from every table --
-#: reading a gateway's model list as the set of models that exist. They are
-#: reachable, just not over `http`: `bin/wc-claude.sh` runs the CLI against the
-#: host's own `claude` login, and all four answered on 2026-09-02 (opus-5 6.0s,
-#: sonnet-5 4.4s, fable-5 6.6s, haiku-4-5 4.3s, the last served as
-#: claude-haiku-4-5-20251001).
-#:
-#: Declared per family rather than left to the caller, because "which socket
-#: can see this model" is a fact about the deployment. A runner that guessed
-#: would record an unreachable path as a model failure, which is the whole
-#: class of mistake this harness exists to stop.
-MODEL_TRANSPORTS: tuple[tuple[str, frozenset[str]], ...] = (
-    # Anthropic models: no gateway route, so CLI only.
-    ("claude-*", frozenset({"cli"})),
-    # Gateway-served families. The CLI reaches these too, via the active
-    # machine wc-claude.sh resolves -- which is what makes the 26x
-    # http-versus-cli comparison possible at all.
-    ("azure_ai/*", frozenset({"http", "cli"})),
-    ("vllm/*", frozenset({"http", "cli"})),
-)
+#: Kept as a hook, empty. It existed to stop Anthropic models being sent at
+#: the gateway over HTTP, and with one transport there is nothing to route --
+#: but `reachable()` is still called per (model, transport) pair by the runner,
+#: and an unreachable backend on some future transport should be skipped with a
+#: reason rather than scored as a failure. That property is what the map was
+#: for; the routing was incidental.
+MODEL_TRANSPORTS: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def reachable(model: str, transport: str) -> bool:
@@ -561,9 +358,6 @@ def reachable(model: str, transport: str) -> bool:
 
 def why_unreachable(model: str, transport: str) -> str:
     """The reason, for a skip line that a reader can act on."""
-    if transport == "http" and fnmatch.fnmatch(model, "claude-*"):
-        return (f"{model} is not served by the gateway; use --transports cli, "
-                "which reaches it through the host's claude login")
     return f"{model} is not reachable over {transport} on this deployment"
 
 

@@ -1,0 +1,82 @@
+{
+  "results": {
+    "vllm/Qwen3.6-35B-A3B-NVFP4": {
+      "coding-bug-fix": {
+        "response": "```python\ndef last_n_unique(lst: list, n: int) -> list:\n    \"\"\"\n    Return the last n unique elements from the input list, preserving their original order.\n\n    Args:\n        lst: The input list of elements.\n        n: The number of unique elements to return.\n\n    Returns:\n        A list containing the last n unique elements in their original order.\n    \"\"\"\n    seen = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n    return seen[::-1][-n:]\n```",
+        "metrics": {
+          "elapsed_s": 290.77,
+          "input_tokens": 114,
+          "output_tokens": 6097,
+          "error": null,
+          "stop_reason": "end_turn",
+          "had_text_block": true,
+          "actual_model": "vllm/Qwen3.6-35B-A3B-NVFP4"
+        },
+        "task_type": "coding"
+      },
+      "coding-algo": {
+        "response": "```python\nclass LRUCache:\n    class _Node:\n        def __init__(self, key=0, value=0):\n            self.key = key\n            self.value = value\n            self.prev = None\n            self.next = None\n\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = {}\n        \n        self.head = self._Node()\n        self.tail = self._Node()\n        self.head.next = self.tail\n        self.tail.prev = self.head\n\n    def _add_to_head(self, node):\n        self.head.next.prev = node\n        node.next = self.head.next\n        self.head.next = node\n        node.prev = self.head\n\n    def _remove_node(self, node):\n        node.prev.next = node.next\n        node.next.prev = node.prev\n\n    def _move_to_head(self, node):\n        self._remove_node(node)\n        self._add_to_head(node)\n\n    def _pop_tail(self):\n        node = self.tail.prev\n        self._remove_node(node)\n        return node\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        node = self.cache[key]\n        self._move_to_head(node)\n        return node.value\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            node = self.cache[key]\n            node.value = value\n            self._move_to_head(node)\n        else:\n            if len(self.cache) == self.capacity:\n                lru_node = self._pop_tail()\n                del self.cache[lru_node.key]\n            new_node = self._Node(key, value)\n            self._add_to_head(new_node)\n            self.cache[key] = new_node\n\n    def __repr__(self):\n        res = []\n        curr = self.head.next\n        while curr != self.tail:\n            res.append(f\"({curr.key}, {curr.value})\")\n            curr = curr.next\n        return f\"LRUCache({self.capacity}) {', '.join(res)}\"\n```",
+        "metrics": {
+          "elapsed_s": 287.61,
+          "input_tokens": 99,
+          "output_tokens": 6411,
+          "error": null,
+          "stop_reason": "end_turn",
+          "had_text_block": true,
+          "actual_model": "vllm/Qwen3.6-35B-A3B-NVFP4"
+        },
+        "task_type": "coding"
+      },
+      "reasoning-math": {
+        "response": "**Calculation:**\n\n$$ P(\\text{at least one match}) = 1 - \\left( \\frac{365}{365} \\times \\frac{364}{365} \\times \\frac{363}{365} \\times \\cdots \\times \\frac{343}{365} \\right) $$\n\n**Numeric Answer:**\n\n0.5073",
+        "metrics": {
+          "elapsed_s": 283.45,
+          "input_tokens": 74,
+          "output_tokens": 6360,
+          "error": null,
+          "stop_reason": "end_turn",
+          "had_text_block": true,
+          "actual_model": "vllm/Qwen3.6-35B-A3B-NVFP4"
+        },
+        "task_type": "reasoning"
+      },
+      "comprehension-read": {
+        "response": "Here are the answers to your questions:\n\n1. **What does it return?**  \n   It returns a dictionary where each key is a category string and each value is the arithmetic mean (average) of the `'value'` fields for all items belonging to that category.\n\n2. **What happens if data contains an empty dict?**  \n   The function handles it gracefully without crashing. Because `.get()` is used, an empty dict is treated as having a default category of `'unknown'` and a default value of `0`. This appends `0` to the `'unknown'` category's list, which will then be factored into that category's average.\n\n3. **What happens if a category has zero items?**  \n   In this specific implementation, it is **impossible** for a category to have zero items. The code initializes `result[k] = []` and immediately appends at least one value before the calculation step. If it were somehow possible, the average calculation would fail or be undefined, but the code's structure prevents it from ever occurring.\n\n4. **What edge case could cause a ZeroDivisionError?**  \n   A `ZeroDivisionError` would occur if `len(v) == 0` during the division `sum(v) / len(v)`. This would require a category to have an empty list of values. As explained in #3, the current code guarantees at least one value per category, so this edge case is **unreachable** with the given logic. It would only trigger if the code were modified to pre-initialize categories, remove items from lists, or process data differently.",
+        "metrics": {
+          "elapsed_s": 147.17,
+          "input_tokens": 166,
+          "output_tokens": 3121,
+          "error": null,
+          "stop_reason": "end_turn",
+          "had_text_block": true,
+          "actual_model": "vllm/Qwen3.6-35B-A3B-NVFP4"
+        },
+        "task_type": "comprehension"
+      },
+      "planning-task": {
+        "response": "1. **Database schema change (SQL)**: `ALTER TABLE users ADD COLUMN theme_mode TEXT NOT NULL DEFAULT 'light';` (Assumes an existing `users` table; adds a per-user preference column with a safe fallback.)\n2. **API endpoints needed (URL + method)**: \n   - `GET /api/theme` (Returns `{\"theme_mode\": \"light\"|\"dark\"}` for initial client-side hydration)\n   - `POST /api/theme` (Accepts `{\"theme_mode\": \"dark\"|\"light\"}` and writes the new value to SQLite)\n3. **Frontend components (HTML/CSS/JS) - what each does**: \n   - **HTML**: A toggle button or switch placed in the base Jinja2 layout template to provide the UI entry point for the feature.\n   - **CSS**: CSS custom properties (variables) defining light/dark color palettes, applied via a `.dark-theme` class on the `<html>` element so all nested components automatically inherit the new styles.\n   - **JavaScript**: A click event listener on the toggle that calls the API endpoint, toggles the `.dark-theme` class on the DOM, updates a `localStorage` key for immediate visual feedback, and applies the server-fetched value on page load.\n4. **Default/inheritance behavior**: The application defaults to `'light'` (with an optional `prefers-color-scheme: dark` media query fallback) if no preference is recorded; inheritance is handled by Jinja2 rendering the initial `theme_mode` value into a `<script>` or HTML data attribute, which a lightweight boot script uses to attach the correct CSS class to the root `<html>` element, allowing variables to cascade to all child templates and routes.\n5. User preferences are stored server-side in SQLite, guaranteeing that the selected theme automatically loads and displays identically across any device once the user is authenticated.",
+        "metrics": {
+          "elapsed_s": 143.13,
+          "input_tokens": 114,
+          "output_tokens": 3437,
+          "error": null,
+          "stop_reason": "end_turn",
+          "had_text_block": true,
+          "actual_model": "vllm/Qwen3.6-35B-A3B-NVFP4"
+        },
+        "task_type": "planning"
+      }
+    }
+  },
+  "errors": {
+    "vllm/Qwen3.6-35B-A3B-NVFP4": [
+      {
+        "task": "reasoning-puzzle",
+        "error": "The read operation timed out"
+      }
+    ]
+  },
+  "models_tested": [
+    "vllm/Qwen3.6-35B-A3B-NVFP4"
+  ]
+}

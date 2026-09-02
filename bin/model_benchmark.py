@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Benchmark models via the WebConsole gateway."""
-import sys, json, time, urllib.request, urllib.error
+import os, sys, json, time, urllib.request, urllib.error
 
 BASE_URL = "https://llm.ai-machine.cfappsecurity.com/v1/messages"
 # Resolved at run time, never stored here. This was a hardcoded literal, which
@@ -34,8 +34,32 @@ def _api_key() -> str:
 
 
 API_KEY = _api_key()
-MAX_TOKENS = 4096
-TIMEOUT = 180
+# A reasoning model spends this budget on thinking before it emits any answer.
+# At 4096, Qwen3.6 hit the cap on three of six tasks -- output_tokens was exactly
+# 4096 each time -- and produced no text block at all, which the extractor below
+# recorded as the literal string "[thinking]". The cap was the cause; the
+# placeholder was only how it looked.
+MAX_TOKENS = 16384
+# Raising MAX_TOKENS to 16384 moved Qwen3.6's failure rather than fixing it: the
+# three tasks that used to truncate at 4096 now spend longer thinking and hit
+# this read timeout instead, so the harness still records nothing. 180s was
+# never a considered value -- the baseline run measured Qwen at 123-177s per
+# task, which is to say every one of its successes landed inside 3s of the
+# limit. Any model slower than the five Azure ones was going to fail here on
+# arrival.
+#
+# So this is a cap on the *harness*, not a property of a model, and it belongs
+# in the environment where a slow backend can be measured rather than
+# disqualified.
+#
+# 600s was not enough either. At that ceiling Qwen3.6 completed coding-bug-fix
+# in 290.8s (6097 output tokens) and coding-algo in 287.6s (6411), but
+# reasoning-puzzle still timed out -- the same task the CLI transport answers
+# correctly in 23.0s. A 26x gap between two callers of the same model is a
+# property of the path, not the model, so this ceiling exists to stop the
+# harness disqualifying a backend before that gap is understood, not to paper
+# over it.
+TIMEOUT = int(os.environ.get("WC_BENCH_TIMEOUT_S", "1000"))
 
 TASKS = {
     "coding-bug-fix": {
@@ -136,14 +160,22 @@ def query_model(model_name, prompt):
             data = json.loads(resp.read())
         elapsed = time.time() - start
 
-        text_parts = []
+        # Text blocks are the answer. Thinking blocks are kept as a *fallback*
+        # rather than discarded: a model that spends its whole budget reasoning
+        # emits no text block at all, and replacing that with a placeholder threw
+        # away the only output there was. Preferring text keeps a clean answer
+        # clean, and the fallback means a truncated run still yields something
+        # scoreable instead of a ten-character string.
+        text_parts, thinking_parts = [], []
         for block in data.get("content", []):
             btype = block.get("type", "")
             if btype == "text":
                 text_parts.append(block.get("text", ""))
             elif btype == "thinking":
-                text_parts.append("[thinking]")
-        full_text = "\n".join(text_parts)
+                thinking_parts.append(block.get("thinking", ""))
+        full_text = "\n".join(x for x in text_parts if x).strip()
+        if not full_text:
+            full_text = "\n".join(x for x in thinking_parts if x).strip()
 
         usage = data.get("usage", {})
         metrics = {
@@ -151,6 +183,10 @@ def query_model(model_name, prompt):
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
             "error": None,
+            # Recorded so truncation is legible in the data. Without it a run
+            # capped at max_tokens looks like a short answer.
+            "stop_reason": data.get("stop_reason"),
+            "had_text_block": bool([x for x in text_parts if x]),
         }
         # Check if the model field indicates a different model than requested
         actual_model = data.get("model", model_name)

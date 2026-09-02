@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -81,6 +82,15 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         `get_backend` is the consumer whose answer decides whether the child gets
         credentials, so it is the honest place to observe. Everything past it is
         stubbed: this asserts the wiring, not the transport.
+
+        `PROJECTS_ROOT` is pointed at a directory this test creates. It used to
+        use the configured one, which exists on the machine this was written on
+        and does not in a clean checkout -- so `stream_turn` raised on its
+        work-dir check before reaching `get_backend`, `seen` stayed empty, and the
+        case failed claiming `owner` had not been delivered when the wiring was
+        fine. It passed in a working tree and failed in the committed tree, which
+        is what extract-and-test is for and what a test depending on the ambient
+        filesystem earns.
         """
         seen: dict[str, object] = {}
 
@@ -103,7 +113,11 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         # test -- `suppress` on the exact types rather than a blind
         # `assertRaises(BaseException)`, which would also have swallowed an
         # AssertionError and reported a pass.
+        # One group, evaluated left to right, so `root` is bound in time for the
+        # PROJECTS_ROOT patch that follows it.
         with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(config, "PROJECTS_ROOT", root),
             patch.object(config, "PROXY_ENABLED", proxy_enabled),
             patch.object(runner, "get_backend", fake_get_backend),
             patch.object(runner, "get_default_model", fake_default_model),
@@ -115,12 +129,21 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             async for _event in runner.stream_turn(
                 "do the thing",
                 None,
-                config.PROJECTS_ROOT,
+                root,
                 SUPERVISOR_CHAT_ID,
                 None,
                 OWNER,
             ):
                 pass
+        # Reached at all? Without this the assertions below cannot tell "owner was
+        # dropped" from "the turn never got as far as resolving a backend", and
+        # those have different fixes. The first version could not, and reported
+        # the wrong one.
+        self.assertIn(
+            "owner", seen,
+            "get_backend was never called, so this says nothing about owner -- "
+            "stream_turn failed earlier, most likely on its work_dir check",
+        )
         return seen
 
     async def test_the_direct_path_delivers_owner(self):
@@ -148,16 +171,22 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             raise OSError("stubbed")
 
         with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(config, "PROJECTS_ROOT", root),
             patch.object(config, "PROXY_ENABLED", False),
             patch.object(runner, "get_backend", fake_get_backend),
             patch.object(asyncio, "create_subprocess_exec", boom),
             contextlib.suppress(OSError, runner.TurnError),
         ):
             async for _event in runner.stream_turn(
-                "hello", None, config.PROJECTS_ROOT, "a-real-chat-id",
+                "hello", None, root, "a-real-chat-id",
             ):
                 pass
-        self.assertIsNone(seen.get("owner"))
+        # Same guard as above: an absent `owner` key would otherwise satisfy
+        # `assertIsNone` whether the default worked or the turn never reached
+        # resolution at all.
+        self.assertIn("owner", seen, "get_backend was never called")
+        self.assertIsNone(seen["owner"])
 
 
 if __name__ == "__main__":

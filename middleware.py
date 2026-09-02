@@ -32,6 +32,8 @@ _log = logging.getLogger("wc.app")
 # for the question this column answers -- "is this credential still in use".
 _TOKEN_TOUCH_S: Final[float] = 60.0
 _token_touched: dict[str, float] = {}
+
+
 async def _session_from_api_token(request: Request) -> dict | None:
     """Authenticate a request by API token, or return None.
 
@@ -83,6 +85,8 @@ async def _session_from_api_token(request: Request) -> dict | None:
         "via": "api_token",
         "token_id": token_id,
     }
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, handler):
         sid = request.cookies.get("wc_session")
@@ -109,6 +113,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
             return RedirectResponse(url="/login", status_code=303)
         return await handler(request)
+
+
 def _authenticated_by_token(request: Request) -> bool:
     """Whether this request authenticated with an API token rather than a cookie.
 
@@ -126,6 +132,8 @@ def _authenticated_by_token(request: Request) -> bool:
     """
     session = getattr(getattr(request, "state", None), "session", None)
     return isinstance(session, dict) and session.get("via") == "api_token"
+
+
 class CsrfMiddleware(BaseHTTPMiddleware):
     """Validate the X-CSRF-Token header on mutating requests.
 
@@ -166,6 +174,8 @@ class CsrfMiddleware(BaseHTTPMiddleware):
                     content={"error": "CSRF token invalid or missing"},
                 )
         return await handler(request)
+
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, handler):
         response = await handler(request)

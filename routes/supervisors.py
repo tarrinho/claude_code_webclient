@@ -858,5 +858,3 @@ async def _api_supervisor_task_stream(request: Request, supervisor_id: str, task
 @router.get("/api/supervisors/{supervisor_id}/messages")
 async def _api_supervisor_messages(request: Request, supervisor_id: str):
     return await handle_supervisor_messages_get(request, supervisor_id)
-
-

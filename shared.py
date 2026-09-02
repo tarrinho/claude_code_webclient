@@ -46,6 +46,8 @@ def backend_kind(machine: dict | None) -> str:
         return "anthropic"
     host = base_url.split("://", 1)[-1].split("/")[0].split(":")[0].lower()
     return "anthropic" if host in ("api.anthropic.com", "") else "anthropic-compatible"
+
+
 # Safe messages for SSE errors so internal details never leak. The first two are
 # aliases of turns.py's own constants: a turn now fails inside its task, so the
 # text is chosen there, and duplicating the literals here is how a timeout ends
@@ -66,6 +68,8 @@ _SSE_INTERNAL = turns.INTERNAL_MESSAGE
 _MODEL_RE = config.MODEL_ID_RE
 # hex-only session_id pattern for path-traversal protection.
 _HEX_SESSION_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+
 def _question_to_text(block: dict) -> str:
     """Render a question and every option as plain text for a message body.
 
@@ -93,12 +97,16 @@ def _question_to_text(block: dict) -> str:
             lines.append(f"  • {label} — {description}" if description else f"  • {label}")
         lines.append(_QUESTION_PENDING_NOTE)
     return "\n".join(lines).strip()
+
+
 def _answer_to_text(block: dict) -> str:
     """Render how a question was resolved."""
     status = block.get("status") or "resolved"
     label = {"answered": "Answered", "declined": "Declined"}.get(status, "Resolved")
     text = " ".join(str(block.get("text") or "").split())
     return f"{label} in the terminal: {text}" if text else f"{label} in the terminal"
+
+
 def _turn_to_message(turn: dict) -> tuple[str, str] | None:
     """Flatten one transcript turn into a (role, content) message row.
 

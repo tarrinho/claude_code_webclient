@@ -653,5 +653,3 @@ async def _api_machine_test(request: Request, machine_id: str):
 @router.delete("/api/machines/{machine_id}")
 async def _api_machine_delete(request: Request, machine_id: str):
     return await handle_machine_delete(request, machine_id)
-
-

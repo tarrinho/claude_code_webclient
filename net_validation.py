@@ -52,6 +52,8 @@ _BLOCKED_NETS: Final[list[IPv4Network | IPv6Network]] = [
     ip_network("fc00::/7"),  # ULA
     ip_network("fe80::/10"),  # IPv6 link-local
 ]
+
+
 def _parse_allow_nets() -> list[IPv4Network | IPv6Network]:
     """Ranges that stay reachable despite _BLOCKED_NETS.
 
@@ -81,7 +83,11 @@ def _parse_allow_nets() -> list[IPv4Network | IPv6Network]:
         except ValueError:
             _log.warning("ignoring invalid WC_SSRF_ALLOW_NETS entry: %s", item)
     return nets
+
+
 _ALLOWED_NETS: Final[list[IPv4Network | IPv6Network]] = _parse_allow_nets()
+
+
 def _trusted_proxies() -> list[IPv4Network | IPv6Network]:
     """Parse WC_TRUSTED_PROXIES into networks. Empty (the default) means none."""
     raw = config._str("WC_TRUSTED_PROXIES", "") or ""
@@ -95,6 +101,8 @@ def _trusted_proxies() -> list[IPv4Network | IPv6Network]:
         except ValueError:
             _log.warning("ignoring invalid WC_TRUSTED_PROXIES entry %r", part)
     return nets
+
+
 def _client_ip(request: Request) -> str:
     """Return the client address to attribute a request to.
 
@@ -127,6 +135,8 @@ def _client_ip(request: Request) -> str:
             continue
         return candidate
     return peer
+
+
 def _is_private_ip(host: str) -> bool:
     """Return True if *host* is a blocked address and not explicitly allowed."""
     if host.startswith("[") and host.endswith("]"):
@@ -138,6 +148,8 @@ def _is_private_ip(host: str) -> bool:
     if any(addr in net for net in _ALLOWED_NETS):
         return False
     return any(addr in net for net in _BLOCKED_NETS)
+
+
 def _validate_host(host: str) -> str:
     """Validate *host* and confirm it does not resolve to a blocked address.
 
@@ -151,6 +163,8 @@ def _validate_host(host: str) -> str:
             status_code=400, detail="Enter a valid hostname or IP address"
         )
     return _resolve_host(host)
+
+
 def _resolve_host(host: str) -> str:
     """Resolve *host* to an IP and check against the blocklist.
 
@@ -172,9 +186,13 @@ def _resolve_host(host: str) -> str:
             )
         return ip
     raise HTTPException(status_code=400, detail="DNS resolution failed")
+
+
 _HOST_PATTERN_LOCAL = _HOST_PATTERN
 # Allowed URL schemes for base_url validation.
 _ALLOWED_URL_SCHEMES = {"http", "https"}
+
+
 def _base_url_host(base_url: str) -> str:
     """Return the host portion of *base_url*, for host-level checks.
 
@@ -198,6 +216,8 @@ def _base_url_host(base_url: str) -> str:
     if not _HOST_PATTERN_LOCAL.fullmatch(host_part):
         raise HTTPException(status_code=400, detail="Enter a valid base URL")
     return host_part
+
+
 def _validate_base_url(base_url: str) -> str:
     """Validate *base_url* and return it unchanged (minus surrounding space).
 

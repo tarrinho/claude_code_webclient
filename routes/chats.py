@@ -182,7 +182,10 @@ async def handle_chat_create(request: Request):
             "(check permissions, disk space, and PROJECTS_ROOT=%s): %s",
             work_dir, config.PROJECTS_ROOT, exc,
         )
-        raise HTTPException(status_code=500, detail="Could not create conversation directory — check server logs for details")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create conversation directory — check server logs for details",
+        )
     chat_id = uuid.uuid4().hex
     now = await db.chat_create(
         chat_id, title, data.get("description"), work_dir, session["user"]
@@ -1699,5 +1702,3 @@ async def handle_chats_sync_all(request: Request):
             session["user"], scanned, len(changed), sum(changed.values()),
         )
     return JSONResponse({"scanned": scanned, "changed": changed})
-
-

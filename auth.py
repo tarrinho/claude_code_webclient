@@ -106,6 +106,15 @@ _LAST_PERSIST_S: Final[int] = 60
 _persisted_last: dict[str, float] = {}
 
 
+# How long a session write waits for the SQLite writer lock. Must equal
+# db._BUSY_TIMEOUT_MS: this connection and db.py's shared one are two writers
+# against a WAL file that permits one, and the shorter budget always loses.
+# Declared here rather than imported because auth.py is reached from the
+# middleware, and a module cycle would be a worse problem than a duplicated
+# integer. `tests/test_qa_busy_timeout.py` holds the two equal.
+_BUSY_TIMEOUT_MS: Final[int] = 15000
+
+
 def _sid_key(sid: str) -> str:
     return hashlib.sha256(sid.encode("utf-8")).hexdigest()
 
@@ -114,12 +123,19 @@ def _session_conn() -> sqlite3.Connection | None:
     """A short-lived synchronous handle, or None if the database is not ready.
 
     Separate from the app's aiosqlite connection because the session store is
-    read from middleware, which is synchronous; the same pattern the FTS
-    maintenance in db.py already uses.
+    read from middleware, which is synchronous.
+
+    That makes it the second writer against a WAL file, which permits only one,
+    and registry #47 is what happens when writers disagree about how long to
+    wait: this one waited 5s while db.py's shared connection waits
+    ``_BUSY_TIMEOUT_MS`` (15s), so under contention the session write was always
+    the one that lost. The two now use the same budget, for the reason db.py
+    gives for the number -- a wait is a slow request, a timeout is a lost write,
+    and a lost session write logs a user out for no reason they can see.
     """
     try:
-        conn = sqlite3.connect(str(config.DB_PATH), timeout=5)
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = sqlite3.connect(str(config.DB_PATH), timeout=_BUSY_TIMEOUT_MS / 1000)
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         return conn
     except sqlite3.Error:
         return None

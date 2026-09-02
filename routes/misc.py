@@ -1276,5 +1276,3 @@ async def _api_sessions_resume(request: Request, session_id: str):
 @router.delete("/api/sessions/{session_id}")
 async def _api_sessions_delete(request: Request, session_id: str):
     return await handle_session_delete(request, session_id)
-
-

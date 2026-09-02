@@ -146,46 +146,16 @@ _WEB_DIR: Final[Path] = Path(__file__).parent / "web"
 _assets_dir: Final[Path] = _WEB_DIR / "assets"
 
 
-
-
-
-
-
-
-
-
 # ── Auth middleware ────────────────────────────────────────────────────────────────
-
-
-
-
-
-
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────────
 
 
-
-
-
-
-
-
-
-
-
-
 # ── CSRF middleware ─────────────────────────────────────────────────────────────────
 
 
-
-
-
-
 # ── Security headers middleware ────────────────────────────────────────────────────
-
-
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────────
@@ -280,65 +250,7 @@ async def handle_logout(request: Request):
     return resp
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 turns.launcher = _launch_queued
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ── HTML templates ────────────────────────────────────────────────────────────────
@@ -499,94 +411,6 @@ app.add_route("/login", handle_login_page, methods=["GET"])
 # {chat_id} are injected by the framework.  add_route() does NOT do this.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ── API tokens ─────────────────────────────────────────────────────────────────
 #
 # The authenticated way in for a caller that cannot hold a cookie. This exists
@@ -596,201 +420,10 @@ app.add_route("/login", handle_login_page, methods=["GET"])
 # absence of one is what turns into a hole.
 
 
-
-
-
-
-
-
-
-
 _MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ── Session routes ─────────────────────────────────────────────────────────────────
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # Two paths, one page. "/supervisor.html" is what index.html's iframe and its
@@ -821,53 +454,7 @@ async def _serve_supervisor_page(request: Request):
 # so "/supervisor" and "/supervisor.html" still need a route of their own.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ── Machine routes ─────────────────────────────────────────────────────────────────
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":

@@ -68,6 +68,8 @@ _REPORTS_A_BLOCKER: Final[tuple[str, ...]] = (
     "requires your",
     "i was denied",
 )
+
+
 def _phrase_matcher(phrases: tuple[str, ...]) -> re.Pattern[str]:
     r"""One anchored pattern for *phrases*, matched on word boundaries.
 
@@ -96,8 +98,12 @@ def _phrase_matcher(phrases: tuple[str, ...]) -> re.Pattern[str]:
     """
     return re.compile(
         "|".join(rf"\b{re.escape(phrase)}\b" for phrase in phrases))
+
+
 _ASKS_PATTERN: Final[re.Pattern[str]] = _phrase_matcher(_ASKS_FOR_INPUT)
 _BLOCKER_PATTERN: Final[re.Pattern[str]] = _phrase_matcher(_REPORTS_A_BLOCKER)
+
+
 def _pending_question(turns: list[dict]) -> str | None:
     """An AskUserQuestion still awaiting a reply, or None.
 
@@ -121,6 +127,8 @@ def _pending_question(turns: list[dict]) -> str | None:
             first = (block.get("questions") or [{}])[0]
             return str(first.get("question") or "").strip() or "A question is waiting"
     return None
+
+
 def _last_thing_said(turns: list[dict]) -> str:
     """The newest assistant text in *turns*, skipping tool calls.
 
@@ -139,6 +147,8 @@ def _last_thing_said(turns: list[dict]) -> str:
         if text:
             return text
     return ""
+
+
 def _attention(text: str) -> str | None:
     """Why this output needs the user, or None if it is just talk.
 
@@ -172,6 +182,8 @@ def _attention(text: str) -> str | None:
     if _BLOCKER_PATTERN.search(lowered):
         return "blocked"
     return None
+
+
 def _asks_a_question(text: str) -> bool:
     """Whether *text* actually asks something, rather than merely needing a reply.
 
@@ -193,15 +205,21 @@ def _asks_a_question(text: str) -> bool:
     # Same tail-trimming as _attention: a question can end in a quote or a
     # closing bracket and still be a question.
     return body.rstrip().rstrip("`*_)\"'").endswith("?")
+
+
 def _one_line(text: str, limit: int = 120) -> str:
     """First line of *text*, collapsed, for the supervisor's preview column."""
     flat = " ".join((text or "").split())
     return flat[: limit - 1] + "…" if len(flat) > limit else flat
+
+
 # Last failure seen per session, keyed by the transcript mtime it was read at.
 # A file that has not moved cannot have gained a new failure, so the tail read
 # is skipped -- the busy fast path exists to make a five-second poll affordable
 # and it must stay affordable.
 _failure_cache: dict[str, tuple[str, str | None]] = {}
+
+
 async def _session_failure(session_id: str, file_touched: str) -> str | None:
     """The newest turn's failure text for *session_id*, or None."""
     cached = _failure_cache.get(session_id)
@@ -220,6 +238,8 @@ async def _session_failure(session_id: str, file_touched: str) -> str | None:
         return None
     _failure_cache[session_id] = (file_touched, failure)
     return failure
+
+
 async def _cli_maps(marks: dict) -> tuple[dict, dict, dict, dict]:
     """The four CLI lookups `classify_chat` needs, keyed by session id.
 
@@ -267,6 +287,8 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict, dict]:
         prompting[session_id] = await asyncio.to_thread(
             prompts.has_prompt, session_id)
     return status, dismissed, updated, prompting
+
+
 # Session statuses that do NOT mean "a person is needed".
 #
 # Claude Code writes `status` into ~/.claude/sessions/<pid>.json. Three values
@@ -281,6 +303,8 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict, dict]:
 # and not "idle" -- and unknown is handled by the `if cli_status` guard, so it
 # never reaches this set.
 _CLI_STATUS_NOT_BLOCKED: Final[frozenset[str]] = frozenset({"busy", "idle"})
+
+
 def _dismissed_at(mark: dict, cli_dismiss_map: dict, session_id: str) -> str:
     """When this row was last silenced, under *either* of its two identities.
 
@@ -304,6 +328,8 @@ def _dismissed_at(mark: dict, cli_dismiss_map: dict, session_id: str) -> str:
         cli_dismiss_map.get(session_id, "") or "",
         mark.get("dismissed_at") or "",
     )
+
+
 def _attention_reason(last: dict) -> str | None:
     """Why this message needs a person, or None.
 
@@ -326,6 +352,8 @@ def _attention_reason(last: dict) -> str | None:
     if not reason and _QUESTION_PENDING_NOTE in (tail + preview):
         reason = "asks"
     return reason
+
+
 def _session_needs_a_person(cli_status: str) -> bool:
     """Whether a linked CLI session's own status means someone is required.
 
@@ -343,6 +371,8 @@ def _session_needs_a_person(cli_status: str) -> bool:
     agent that may be stuck.
     """
     return bool(cli_status) and cli_status not in _CLI_STATUS_NOT_BLOCKED
+
+
 def classify_chat(
     chat: dict,
     last: dict,
@@ -521,6 +551,8 @@ def classify_chat(
     # narrower claim. A question is different and still needs answering or
     # dismissing, because looking at a question does not answer it.
     return {**entry, "status": "waiting", "reason": "done", "question": False}
+
+
 async def _classify_cli_session(cli: dict, meta: dict, mark: dict) -> dict | None:
     """Classify one terminal session as waiting, working, or not listed at all.
 

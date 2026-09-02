@@ -140,6 +140,72 @@ def gateway_key() -> str:
 
 
 def _http_once(model: str, messages: list[dict], key: str) -> Turn:
+    """Stream if we can, fall back to a single response if streaming breaks.
+
+    Streaming is preferred because it is the only way to measure
+    time-to-first-token, which the comparison document ranked "Interactive?"
+    on without ever measuring. But it is not available for every backend: the
+    gateway's Azure passthrough crashes when streaming, so insisting on it
+    would score five working models at zero.
+    """
+    turn = _http_stream(model, messages, key)
+    if turn.error and not turn.text:
+        fallback = _http_blocking(model, messages, key)
+        fallback.detail.insert(0, f"streaming failed ({turn.error}); "
+                                  "re-ran unstreamed, so no ttft for this run")
+        return fallback
+    return turn
+
+
+def _http_blocking(model: str, messages: list[dict], key: str) -> Turn:
+    """One unstreamed request. No TTFT is available, and none is invented."""
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "messages": messages,
+    }).encode()
+    req = urllib.request.Request(GATEWAY_URL, data=payload, method="POST")
+    req.add_header("x-api-key", key)
+    req.add_header("anthropic-version", "2023-06-01")
+    req.add_header("content-type", "application/json")
+
+    turn = Turn(text="", transport="http", model_requested=model)
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:  # noqa: BLE001 -- a transport fault is a datum
+        turn.error = f"{type(exc).__name__}: {exc}"
+        turn.total_s = round(time.monotonic() - started, 2)
+        return turn
+
+    turn.total_s = round(time.monotonic() - started, 2)
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        turn.error = f"gateway error: {msg.splitlines()[0][:200]}"
+        return turn
+
+    text_parts, thinking = [], 0
+    for block in data.get("content") or []:
+        if block.get("type") == "text":
+            text_parts.append(block.get("text") or "")
+        elif block.get("type") == "thinking":
+            thinking += len(block.get("thinking") or "")
+    usage = data.get("usage") or {}
+    turn.text = "".join(text_parts).strip()
+    turn.had_text_block = bool(turn.text)
+    turn.thinking_chars = thinking
+    turn.input_tokens = usage.get("input_tokens", 0)
+    turn.output_tokens = usage.get("output_tokens", 0)
+    turn.cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+    turn.cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
+    turn.stop_reason = data.get("stop_reason")
+    turn.model_served = data.get("model")
+    return turn
+
+
+def _http_stream(model: str, messages: list[dict], key: str) -> Turn:
     payload = json.dumps({
         "model": model,
         "max_tokens": MAX_TOKENS,
@@ -169,6 +235,28 @@ def _http_once(model: str, messages: list[dict], key: str) -> Turn:
                     event = json.loads(blob)
                 except json.JSONDecodeError:
                     continue
+                # An error delivered *inside* the stream. This has to be
+                # checked before `type`, because the frame has no `type` at
+                # all -- it is `{"error": {"message": ...}}` -- so a parser
+                # that switches on `type` drops it and reports silence.
+                #
+                # That is not hypothetical. The gateway crashes when asked to
+                # stream an Azure model:
+                #
+                #   {"error": {"message": "list index out of range\n\n
+                #    Traceback ... litellm/proxy/..."}}
+                #
+                # Every one of 16 Azure runs came back with out=0, stop=None
+                # and an empty response, and would have been published as the
+                # models scoring zero. A server-side traceback is the one thing
+                # that must never be attributed to a model.
+                if "error" in event and "type" not in event:
+                    err = event["error"]
+                    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    turn.error = f"gateway error in stream: {msg.splitlines()[0][:200]}"
+                    turn.detail.append("the gateway returned an error mid-stream, "
+                                       "not the model")
+                    break
                 kind = event.get("type")
                 if kind == "message_start":
                     message = event.get("message") or {}

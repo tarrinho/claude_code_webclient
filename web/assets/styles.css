@@ -205,7 +205,7 @@ button{touch-action:manipulation}
 /* Armed state reads as a live control, not a static icon: colour plus
    aria-pressed, so the state survives a monochrome display. */
 .auto-answer-toggle[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}
-.auto-answer-menu{position:absolute;z-index:40;top:100%;right:16px;left:auto;width:min(360px,calc(100vw - 32px));max-height:min(60vh,320px);overflow-y:auto;display:flex;flex-direction:column;gap:2px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:8px}
+.auto-answer-menu{position:absolute;z-index:40;top:calc(100% + 6px);right:0;left:auto;width:min(360px,calc(100vw - 32px));max-height:min(60vh,320px);overflow-y:auto;display:flex;flex-direction:column;gap:2px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:8px}
 .auto-answer-menu[hidden]{display:none}
 .auto-answer-menu h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:2px 4px 6px}
 .auto-answer-row{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:5px}
@@ -219,6 +219,10 @@ button{touch-action:manipulation}
 /* The auto margin lives on the group so the edit/refresh pair rides right
    with the status, instead of being stranded beside the model selects. */
 .strip-right{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
+/* Own positioning context, not .strip-right: that group also holds #runState
+   after this one, so a menu anchored to .strip-right's right edge landed past
+   the status dot instead of under the info button. */
+.auto-answer-group{position:relative;display:inline-flex;align-items:center;gap:6px}
 .run-state{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 /* The conversation name is a title, not a path: normal UI font and colour so
    it does not read as one long monospace run with the directory. */

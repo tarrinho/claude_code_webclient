@@ -278,6 +278,55 @@ def _approval_block(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Block ids already reported as malformed. The transcript is re-read on a timer,
+# so without this one bad block logs on every poll: a single Qwen payload produced
+# 749 identical lines in one day, which is more than every other warning in that
+# log combined. The defect is worth one line, not 749.
+_reported_payloads: set[str] = set()
+
+
+def reset_reported_payloads() -> None:
+    """Forget which blocks have been reported. For tests and process restarts."""
+    _reported_payloads.clear()
+
+
+def _report_once(block_id: str) -> bool:
+    """True the first time *block_id* is seen, False afterwards."""
+    if block_id in _reported_payloads:
+        return False
+    _reported_payloads.add(block_id)
+    return True
+
+
+def _repair_over_escaped(text: str) -> Any:
+    """Undo one specific defect: a JSON string whose quotes are over-escaped.
+
+    An OpenAI-compatible gateway sends tool arguments as a string of JSON, and
+    Qwen 3.6 emitted one that is correctly quoted for 279 characters and
+    backslash-escaped from there on. Replacing ``\\"`` with ``"`` recovers it.
+
+    Returns the decoded value, or None if the repair does not yield something
+    shaped like questions. Called **only** after a normal parse has failed:
+    ``\\"`` is legal inside a JSON string value, so a valid payload containing
+    ``"He said \\"hi\\""`` must never reach this. The shape check is the second
+    guard -- a repair that produces a scalar, or that parses into nonsense, is
+    rejected rather than trusted.
+
+    Deliberately not ``codecs.decode(text, "unicode_escape")``, which also
+    recovers this payload and would additionally decode every byte as latin-1,
+    turning "café" into "cafÃ©" in any non-English question.
+    """
+    try:
+        decoded = json.loads(text.replace('\\"', '"'))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(decoded, list) and all(isinstance(x, dict) for x in decoded):
+        return decoded
+    if isinstance(decoded, dict):
+        return [decoded]
+    return None
+
+
 def _questions_payload(raw: Any, block_id: str) -> tuple[list[Any], bool]:
     """Normalise a tool call's ``questions`` field to a list.
 
@@ -311,14 +360,25 @@ def _questions_payload(raw: Any, block_id: str) -> tuple[list[Any], bool]:
             # ("nope") is not evidence that anything was asked, and promoting it
             # to a visible question would invent an ask out of noise. Those keep
             # the old behaviour and fall back to the plain tool line.
+            repaired = _repair_over_escaped(text)
+            if repaired is not None:
+                # Recovered. Not "damaged": the user gets the question and every
+                # option, which is the whole point of attempting this.
+                if _report_once(block_id):
+                    _log.info(
+                        "question_payload_repaired: id=%s (%s) — over-escaped "
+                        "gateway payload recovered; options preserved",
+                        block_id, exc,
+                    )
+                return repaired, False
             looks_structured = text.startswith(("[", "{")) and '"question"' in text
-            if looks_structured:
+            if looks_structured and _report_once(block_id):
                 _log.warning(
                     "question_payload_unparseable: id=%s (%s) — a question was "
                     "asked but its options cannot be read; shown without them",
                     block_id, exc,
                 )
-            else:
+            elif not looks_structured and _report_once(block_id):
                 _log.warning(
                     "question_payload_not_json: id=%s (%s) — questions field held "
                     "text that names no question; rendered as a plain tool call",

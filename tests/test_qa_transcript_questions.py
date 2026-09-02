@@ -149,12 +149,38 @@ class GatewayPayloadShapeQA(unittest.TestCase):
         blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
         self.assertTrue(blocks[0]["questions"][0]["multi_select"])
 
-    def test_a_corrupt_but_question_shaped_payload_stays_visible(self):
-        # Observed in a real transcript: a gateway emitted mismatched escaping,
-        # so the options cannot be recovered. Dropping it hid the fact that the
-        # agent had stopped and was waiting on an answer.
+    def test_mismatched_escaping_is_now_recovered_with_its_options(self):
+        # Observed in a real transcript: a gateway emitted mismatched escaping.
+        #
+        # This case used to assert `unreadable`, on the stated premise that "the
+        # options cannot be recovered". They can. `_repair_over_escaped` undoes
+        # exactly this defect, so the payload below yields the question *and*
+        # its option, and marking it unreadable would now be the console
+        # under-reporting what it has.
+        #
+        # The assertion is inverted rather than deleted because the property the
+        # case was written for still holds and still matters: a question-shaped
+        # payload must stay visible, because dropping it hid that the agent had
+        # stopped and was waiting. Visible *with* options is the stronger form of
+        # the same guarantee. A genuinely unrecoverable payload is covered by the
+        # case below and by tests/test_qa_question_payload_repair.py.
         payload = ('[{"question": "Which one?", "options": [{"label": '
                    '\\\"Broken\\\", \\\"description\\\": \\\"bad\\\"}]}]')
+        blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
+        self.assertEqual(blocks[0]["kind"], "question")
+        self.assertNotIn("unreadable", blocks[0])
+        entry = blocks[0]["questions"][0]
+        self.assertEqual(entry["question"], "Which one?")
+        self.assertEqual([o["label"] for o in entry["options"]], ["Broken"])
+
+    def test_a_payload_beyond_repair_is_still_flagged_unreadable(self):
+        """The half of the old case that must not be lost.
+
+        Repair is a fallback, not a promise. A question-shaped payload that no
+        unescaping recovers still has to surface as an unreadable question, or a
+        stopped agent goes unnoticed — which was the original complaint.
+        """
+        payload = '[{"question": "why?", "options": [{"label": \x00\x01}]}]'
         blocks = _blocks([_record("assistant", [self._ask_with(payload)])])
         self.assertEqual(blocks[0]["kind"], "question")
         self.assertTrue(blocks[0].get("unreadable"))

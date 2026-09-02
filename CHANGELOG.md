@@ -22,6 +22,53 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A question whose options were over-escaped is now recovered instead of
+  discarded.** An OpenAI-compatible gateway sends tool arguments as a string of
+  JSON, and Qwen 3.6 emitted one whose escaping switches mid-payload: correctly
+  quoted for 279 characters, then `\"label\"` from there on, and back again
+  several times. `json.loads` fails at the character where the escaping changes,
+  so the console reported `question_payload_unparseable` and showed the question
+  with no options at all.
+
+  The payload this was losing was a real one — *"Which of these would give the
+  biggest improvement to daily use?"* with four options — so giving up cost the
+  whole point of the question.
+
+  `_repair_over_escaped` undoes that one defect. It runs **only** after a normal
+  parse has failed, and its result is accepted only if it parses *and* has the
+  shape questions have: `\"` is legal inside a JSON string value, so a valid
+  payload containing `"He said \"hi\""` must never be touched. `unicode_escape`
+  is deliberately not used — it recovers this payload too, and would decode every
+  byte as latin-1, turning "café" into "cafÃ©" in any non-English question.
+
+- **One malformed block no longer fills the log.** The transcript is re-read on a
+  timer, so a single unparseable payload produced **749 identical warnings in one
+  day** — more than every other warning in that log combined. Reported once per
+  block id now, with `reset_reported_payloads()` for tests and restarts. A
+  recovered payload logs at INFO rather than WARNING, since nothing is wrong once
+  it has been read.
+
+### Testing
+
+- `tests/test_qa_question_payload_repair.py`, 10 cases, written failing first.
+  The fixture is the exact 780-byte payload extracted from the transcript; a
+  hand-typed version carried 2 of the 4 options and was replaced, because the
+  docstring claimed verbatim and was not. Guards against over-correcting:
+  legitimate escaped quotes are not corrupted, non-ASCII survives, rubbish still
+  degrades gracefully, an unrecoverable payload is still flagged, and a second
+  block id still logs.
+
+- `test_a_corrupt_but_question_shaped_payload_stays_visible` **inverted** and
+  renamed. It asserted `unreadable` on the stated premise that "the options
+  cannot be recovered", which this change makes false — verified against that
+  exact fixture, which now yields question "Which one?" with option "Broken". The
+  case was not deleted: its purpose, that a question-shaped payload stays
+  visible, still holds, and visible *with* options is the stronger form.
+  `test_a_payload_beyond_repair_is_still_flagged_unreadable` keeps the half that
+  mattered.
+
 ### Changed
 
 - **Every route handler now lives in `routes/`, one module per URL prefix.**

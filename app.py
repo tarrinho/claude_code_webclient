@@ -23,6 +23,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 import auth
+import auto_answer
 import config
 import db
 import sysstats
@@ -39,7 +40,8 @@ from net_validation import (  # re-exported: app._client_ip and
 # `turns.launcher` is global wiring, so it stays in app.py for the same
 # reason include_router and add_middleware do: a module that installs
 # itself makes the wiring depend on import order.
-from routes.chats import _launch_queued
+from routes.chats import _deliver_answer, _launch_queued, _pending_options
+from routes.chats import _pending_prompt as _auto_answer_pending
 from routes.chats import router as chats_router
 from routes.machines import router as machines_router
 
@@ -344,9 +346,15 @@ async def lifespan(app: FastAPI):
     # History has to accumulate while nobody is watching, or the Server page
     # can only ever chart the moments someone had the tab open.
     sysstats.start(db.system_sample_insert)
+    # Answers permission and plan-approval prompts for chats whose owner armed
+    # this. The lookups are injected from routes.chats rather than imported by
+    # auto_answer, so that module carries no routes dependency and no cycle --
+    # see docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
+    auto_answer.start(_auto_answer_pending, _pending_options, _deliver_answer)
     yield
     # Stopped before db.close(): the sampler writes through the connection.
     await sysstats.stop()
+    await auto_answer.stop()
     # Before db.close(): a turn cancelled here still runs its `finish`, which
     # needs the connection. Leaving them to be torn down with the loop instead
     # abandoned tasks mid-write.

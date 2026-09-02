@@ -1218,6 +1218,16 @@ async def _api_chat_question_dismiss(request: Request, chat_id: str):
     return await handle_chat_question_dismiss(request)
 
 
+@router.put("/api/chats/{chat_id}/auto-answer")
+async def _api_chat_auto_answer_set(request: Request, chat_id: str):
+    return await handle_chat_auto_answer_set(request, chat_id)
+
+
+@router.get("/api/chats/{chat_id}/auto-answer")
+async def _api_chat_auto_answer_get(request: Request, chat_id: str):
+    return await handle_chat_auto_answer_get(request, chat_id)
+
+
 @router.get("/api/chats/{chat_id}/live")
 async def _api_chat_live(request: Request, chat_id: str):
     return await handle_chat_live(request, chat_id)
@@ -1357,6 +1367,28 @@ async def _pending_prompt(session_id: str) -> dict[str, Any] | None:
     if pending:
         return pending
     return await asyncio.to_thread(prompts.read_prompt, session_id)
+
+
+async def _pending_options(session_id: str) -> list[dict[str, Any]]:
+    """The options currently visible on *session_id*'s terminal.
+
+    For auto_answer.consider, which needs the live labels -- the same reason
+    handle_chat_question_get reads them off the screen rather than the
+    tool call: the terminal offers more than the call declared.
+    """
+    target = await asyncio.to_thread(prompts.find_target, session_id, "")
+    if not target:
+        return []
+    snapshot = target.get("snapshot") or ""
+    return prompts.visible_options(snapshot)
+
+
+async def _deliver_answer(session_id: str, index: int) -> dict[str, Any]:
+    """Press *index* on *session_id*'s prompt. For auto_answer.consider."""
+    target = await asyncio.to_thread(prompts.find_target, session_id, "")
+    if not target:
+        return {"ok": False, "reason": "not running inside screen or tmux"}
+    return await asyncio.to_thread(prompts.answer, target, index)
 
 
 async def handle_chat_question_get(request: Request):
@@ -1521,6 +1553,50 @@ async def handle_chat_question_dismiss(request: Request):
         chat_id, session["user"], pending.get("id"),
     )
     return JSONResponse({"ok": True, "dismissed": True})
+
+
+async def handle_chat_auto_answer_set(request: Request, chat_id: str):
+    """PUT /api/chats/{id}/auto-answer -- arm or disarm auto-approval.
+
+    Owner-scoped through db.chat_auto_answer_set, which is the property that
+    matters here: this route arms an automatic approver of permission prompts,
+    so a write that reached another user's chat would let one user turn on
+    silent approval inside a conversation that is not theirs. See
+    docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
+    """
+    session = request.state.session
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
+
+    ok = await db.chat_auto_answer_set(chat_id, session["user"], enabled)
+    if not ok:
+        # Covers both "no such chat" and "not this user's chat" with the same
+        # 404 that chat_get uses elsewhere on this page, so a cross-owner probe
+        # cannot distinguish "does not exist" from "not yours".
+        raise HTTPException(status_code=404, detail="Chat not found")
+    _log.info(
+        "auto_answer_set chat_id=%s user=%s enabled=%s",
+        chat_id, session["user"], enabled,
+    )
+    return JSONResponse({"ok": True, "enabled": enabled})
+
+
+async def handle_chat_auto_answer_get(request: Request, chat_id: str):
+    """GET /api/chats/{id}/auto-answer -- current state and the last ten
+    answers and skips.
+    """
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    enabled = await db.chat_auto_answer_get(chat_id, session["user"])
+    log = await db.chat_auto_answer_log_get(chat_id, session["user"])
+    return JSONResponse({"enabled": enabled, "log": log})
 
 
 async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:

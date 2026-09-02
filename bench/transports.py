@@ -30,6 +30,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -67,6 +68,9 @@ class Turn:
     thinking_chars: int = 0
     error: str | None = None
     detail: list[str] = field(default_factory=list)
+    #: Files the agent wrote instead of answering inline. Empty on the
+    #: http path, which has no tools.
+    files_written: list[str] = field(default_factory=list)
 
     @property
     def cap_headroom(self) -> float | None:
@@ -282,10 +286,24 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
     turn = Turn(text="", transport="cli", model_requested=model)
     started = time.monotonic()
     text_parts: list[str] = []
+    # A private directory per turn, for two reasons found the hard way.
+    #
+    # This used to be `cwd="/tmp"`, which is shared with everything else on the
+    # host -- the run left an `lru_cache.py` there next to eight other
+    # sessions' files, and a second run would have read the first one's answer.
+    #
+    # And the CLI is an *agent*, not a completion endpoint: it has file tools
+    # and runs with --dangerously-skip-permissions, so "return valid Python
+    # code only" can be satisfied by writing the code to disk and replying
+    # "Done. Doubly-linked list + hash map." That is a reasonable reading of
+    # the instruction and it scored 0 against a verifier that only reads the
+    # response. The directory is scanned below so the answer is found wherever
+    # the model chose to put it.
+    workdir = tempfile.mkdtemp(prefix="wc-bench-cli-")
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, cwd="/tmp",  # nosec B108 -- throwaway cwd on purpose
+            text=True, cwd=workdir,
             env=env,  # None inherits, which is what wc-claude.sh needs
         )
         assert proc.stdout is not None
@@ -348,6 +366,30 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
     turn.ttft_s = None
     turn.detail.append(
         "ttft not measurable over cli: stream-json emits whole message blocks")
+
+    # Whatever the agent wrote, appended as fenced code so the verifier sees
+    # it. Recorded in `detail` as well: an answer delivered by file is a real
+    # difference between the two transports and must be visible in the data,
+    # not silently folded into the response text.
+    try:
+        written = sorted(Path(workdir).rglob("*.py"))
+    except OSError:
+        written = []
+    if written:
+        turn.files_written = [p.name for p in written]
+        blocks = []
+        for path in written:
+            try:
+                blocks.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        if blocks:
+            turn.detail.append(
+                f"answer delivered as {len(blocks)} file(s) rather than inline: "
+                + ", ".join(p.name for p in written))
+            turn.text = (turn.text + "\n\n```python\n"
+                         + "\n\n".join(blocks) + "\n```").strip()
+    shutil.rmtree(workdir, ignore_errors=True)
     return turn
 
 

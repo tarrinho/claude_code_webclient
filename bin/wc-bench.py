@@ -122,6 +122,7 @@ def run_one(task, model: str, transport: str, key: str) -> dict:
         "cap_headroom": last.cap_headroom,
         "had_text_block": last.had_text_block,
         "thinking_chars": sum(r.thinking_chars for r in replies),
+        "files_written": [f for r in replies for f in r.files_written],
         "model_served": last.model_served,
         "error": last.error,
         "detail": [d for r in replies for d in r.detail],

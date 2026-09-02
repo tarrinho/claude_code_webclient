@@ -22,6 +22,31 @@ churn.
 
 ## [Unreleased]
 
+### Security
+
+- **A live gateway API key was hardcoded in `bin/model_benchmark.py`.** The
+  literal is replaced with a resolver: `WC_BENCH_API_KEY`, then
+  `ANTHROPIC_API_KEY`, then the active machine's key read **read-only** from the
+  WebConsole database — the same source `bin/wc-claude.sh` uses, and read-only
+  because a second process opening that file read-write is registry #41.
+
+  The file was untracked *and* not gitignored, so it sat one `git add -A` away
+  from a public remote in a tree where several sessions commit at once. It was
+  never committed — verified with `git grep` against the history — but the guard
+  that would have stopped it was luck rather than a rule: `.gitleaks.toml` has no
+  rule for this key shape, so the pre-push hook catching it depended on generic
+  entropy detection.
+
+  `Backend_Models_20260902.comparison.md` documented a four-character prefix of
+  the same key, now redacted. Worth distinguishing: the document held a fragment,
+  the script held the whole secret.
+
+  The key remains in CLI transcript history (13 occurrences live, 58 across eight
+  `.bak` files) and one `data/webconsole.db` message row, none of which are
+  tracked by git. **Rotation is the actual remedy** — a key that reached a
+  working tree and nine files of local history cannot be scrubbed back into
+  secrecy.
+
 ## [0.10.2] — 2026-09-02
 
 > A patch: the three fixes below are all cases of the console being unable to

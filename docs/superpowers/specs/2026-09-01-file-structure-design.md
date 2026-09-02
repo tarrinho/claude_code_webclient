@@ -76,6 +76,52 @@ of the calmest; `web/supervisor.js` is the hottest file in the repository.
 **No dead code.** Zero unreferenced private helpers, so there is nothing to
 delete before moving.
 
+### How often a change would cross two of the new files
+
+This is the number the split lives or dies by, because staging in this tree is
+whole-file: a patch that spans two files cannot be committed without carrying
+whoever else's edits are sitting in them. It is also the number this design got
+wrong twice, so the method is recorded alongside each figure rather than the
+figure alone.
+
+Window: the 22 commits touching `app.py` since 2026-08-30. Two mappings from
+function to target file, and two treatments of module-level lines:
+
+| mapping | module-level lines | commits crossing 2+ files |
+|---|---|---|
+| each function by its own name and decorator | counted | 27% |
+| each function by its own name and decorator | ignored | 36% |
+| §81's rule — routes carry their single-prefix helpers | counted | 22% |
+| §81's rule — routes carry their single-prefix helpers | ignored | **50%** |
+
+The mapping matters more than the module-level treatment. §81 puts a helper
+reached only from chat routes into `routes/chats.py`, so attribution has to
+propagate along the call graph from the decorated routes; classifying each
+function by its own name leaves those helpers in shared modules and inflates the
+count on nearly every commit. The transitive figures were measured by cweb2
+against the design's own rule; the earlier 56% quoted in conversation was mine,
+from a narrower window and a scan that matched only `@@ ... @@ def name` hunk
+headers, and it should not be relied on.
+
+Two facts verified here independently, by AST rather than by hunk header: 14 of
+the 22 commits change module-level lines, and 286 module-level lines change in
+total. (cweb2 counted 306; the gap is whether a top-level `def` header and its
+decorators count as module level. It does not affect the commit count.)
+
+**So the honest answer is a range, 22% to 50%, and which end applies is a
+judgement rather than a measurement** — it turns on whether editing a constant
+or a route registration counts as touching a second file. In this tree it does,
+because those lines land in `main.py` or `validation.py` under §81 and staging
+is whole-file, which argues for the upper end. That is an argument, not a
+finding, and it is stated here as one.
+
+**A shared helper layer survives the split.** Even under transitive
+attribution, a `shared` bucket appears in 8 of the 22 commits. The split does
+not eliminate cross-file helpers; it gives them names (`net_validation.py`,
+`transcript_render.py`, `validation.py`). "Every change lands in one route file"
+is not what the data supports at either end of the range, and the design should
+not be sold on it.
+
 ## Target structure
 
 ### `app.py` 5792 → 11 files

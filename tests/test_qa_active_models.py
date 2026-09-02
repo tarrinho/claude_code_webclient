@@ -30,11 +30,11 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
 import auth
 import config
 import db
 import runner
+from routes import machines as machine_routes
 
 GATEWAY_BODY = json.dumps(
     {
@@ -69,11 +69,11 @@ async def _setup(tc):
     tc._root_patch.start()
     await db.init()
     await auth.bootstrap_admin()
-    app._models_cache.clear()
+    machine_routes._models_cache.clear()
 
 
 async def _teardown(tc):
-    app._models_cache.clear()
+    machine_routes._models_cache.clear()
     await db.close()
     tc._db_patch.stop()
     tc._root_patch.stop()
@@ -159,10 +159,9 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await _setup(self)
-        self._resolve = patch.object(app, "_resolve_host", return_value="93.184.216.34")
+        self._resolve = patch.object(machine_routes, "_resolve_host", return_value="93.184.216.34")
         self._resolve.start()
-        self._probe = patch.object(
-            app, "_probe_anthropic", lambda url, key: (200, GATEWAY_BODY)
+        self._probe = patch.object(machine_routes, "_probe_anthropic", lambda url, key: (200, GATEWAY_BODY)
         )
         self._probe.start()
 
@@ -172,7 +171,7 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def _get(self, query=None):
-        response = await app.handle_models_list(_request(query=query))
+        response = await machine_routes.handle_models_list(_request(query=query))
         return json.loads(response.body)
 
     async def test_selection_reported_with_the_list(self):
@@ -204,7 +203,7 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_machine_id_is_404(self):
         await _gateway()
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_models_list(_request(query={"machine_id": "nope"}))
+            await machine_routes.handle_models_list(_request(query={"machine_id": "nope"}))
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_proxy_machine_still_reports_its_selection(self):
@@ -230,7 +229,7 @@ class SetModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def _put(self, body):
-        response = await app.handle_machine_models_set(_request(body), "m1")
+        response = await machine_routes.handle_machine_models_set(_request(body), "m1")
         return json.loads(response.body)
 
     async def test_sets_active_and_default(self):
@@ -289,7 +288,7 @@ class SetModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_machine_is_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_models_set(_request({"active": []}), "nope")
+            await machine_routes.handle_machine_models_set(_request({"active": []}), "nope")
         self.assertEqual(ctx.exception.status_code, 404)
 
 

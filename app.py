@@ -12,9 +12,6 @@ import json
 import logging
 import logging.config
 import re
-import time
-import urllib.error
-import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from html import escape as html_escape
@@ -42,7 +39,6 @@ import sysstats
 import transcripts
 import turns
 from classification import (  # the callers left in this module;
-    _QUESTION_PENDING_NOTE,  # see classification.py for why the
     _asks_a_question,  # whole cluster moved.
     _classify_cli_session,
     _cli_maps,
@@ -56,12 +52,17 @@ from middleware import (  # registered below; the order of add_middleware
 )
 from net_validation import (  # re-exported: app._client_ip and
     _HOST_PATTERN,
-    _HOST_PATTERN_LOCAL,
-    _base_url_host,
     _client_ip,
-    _resolve_host,
-    _validate_base_url,
     _validate_host,
+)
+from routes.machines import router as machines_router
+from shared import (  # helpers more than one route prefix needs;
+    _HEX_SESSION_ID_RE,  # see shared.py for the membership rule.
+    _MODEL_RE,
+    _SSE_INTERNAL,
+    _question_to_text,
+    _turn_to_message,
+    backend_kind,
 )
 
 
@@ -762,24 +763,6 @@ async def handle_chat_export(request: Request, chat_id: str):
     )
 
 
-def backend_kind(machine: dict | None) -> str:
-    """Classify a backend as ``anthropic``, ``anthropic-compatible`` or ``proxy``.
-
-    The stored ``provider`` column only says which wire protocol a machine
-    speaks, so a self-hosted gateway reads ``anthropic`` there too. This is the
-    finer distinction that actually matters: whether requests reach the official
-    API. Single source of truth for both usage accounting (where it decides
-    whether the CLI's cost figure is trustworthy) and the machine API, so the
-    two surfaces cannot drift apart.
-    """
-    if not machine or machine.get("provider") != "anthropic":
-        return "proxy"
-    base_url = (machine.get("base_url") or "").strip()
-    if not base_url:
-        # No override means the CLI's own default: the official API.
-        return "anthropic"
-    host = base_url.split("://", 1)[-1].split("/")[0].split(":")[0].lower()
-    return "anthropic" if host in ("api.anthropic.com", "") else "anthropic-compatible"
 
 
 async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
@@ -857,11 +840,6 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     )
 
 
-# Safe messages for SSE errors so internal details never leak. The first two are
-# aliases of turns.py's own constants: a turn now fails inside its task, so the
-# text is chosen there, and duplicating the literals here is how a timeout ends
-# up reported as a generic internal error.
-_SSE_INTERNAL = turns.INTERNAL_MESSAGE
 _SSE_TIMEOUT = turns.TIMEOUT_MESSAGE
 _SSE_UNKNOWN = "Connection lost during streaming."
 
@@ -1550,6 +1528,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="WebConsole", version=config.VERSION, lifespan=lifespan)
+# Routes for /api/machines and /api/models. FastAPI matches in the order
+# routers are included, so this line's position is the registration order.
+app.include_router(machines_router)
+
 app.add_middleware(
     CORSMiddleware, allow_origins=[], allow_methods=["*"], allow_headers=["*"]
 )
@@ -2487,52 +2469,8 @@ async def handle_tokens_revoke(request: Request):
     return JSONResponse({"ok": True, "revoked": token_id})
 
 
-_MACHINE_ALLOWED_FIELDS = {
-    "name",
-    "provider",
-    "host",
-    "port",
-    "api_key",
-    "model",
-    "base_url",
-    "description",
-}
-# Fields that must be a string (or null) when present in a machine PATCH.
-_MACHINE_TEXT_FIELDS = (
-    "name",
-    "provider",
-    "host",
-    "api_key",
-    "model",
-    "base_url",
-    "description",
-)
 
-# How a machine is reached. 'anthropic' is the official API -- what Claude Code
-# talks to out of the box; 'proxy' is a host running claude_proxy.py.
-_MACHINE_PROVIDERS = {"anthropic", "proxy"}
-_ANTHROPIC_PORT = 443
-# Required on every Anthropic API request; used for the probe and the model list.
-_ANTHROPIC_API_VERSION = "2023-06-01"
-# The model list comes from a user-configured endpoint, so cap what we read.
-_MODELS_BODY_MAX = 1_048_576
-# Opening Settings should not re-query the endpoint on every render.
-_MODELS_CACHE_TTL_S = 60.0
-_models_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 _MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
-# Square brackets are allowed for the documented "[1m]" context-window suffix
-# (e.g. "claude-opus-5[1m]"), which the CLI itself tells users to append. The
-# value is passed to the subprocess as a single argv entry, never through a
-# shell, so the brackets carry no meaning downstream.
-#
-# Now `config.MODEL_ID_RE`, shared with supervisor.py, and tightened at the
-# first character. The previous pattern was `^[A-Za-z0-9_.:/\[\]-]+$`, which
-# accepted `-p`, `--model` and `-dangerously-skip-permissions` -- flag-shaped
-# values that reach the child process as the argument to `--model`. No shell is
-# involved, so this is argument injection rather than command injection, and
-# whether the CLI mis-parses such a value is its business; the point is that
-# nothing downstream should have to be trusted to get it right.
-_MODEL_RE = config.MODEL_ID_RE
 
 
 
@@ -2566,527 +2504,32 @@ def _validate_projects_root(value: str) -> str:
     return str(candidate)
 
 
-async def handle_machines_list(request: Request):
-    """GET /api/machines -- list AI machines for the current user."""
-    session = request.state.session
-    # Claude Code's native backend should always be on offer, so materialise it
-    # for accounts created before the provider column existed.
-    await db.ai_machine_seed_anthropic(session["user"])
-    machines = await db.ai_machines_list(session["user"])
-    # Don't leak API keys in the listing
-    return JSONResponse(
-        {
-            "machines": [
-                # backend_kind is derived, not stored: clients should not have to
-                # reimplement the provider/base_url rule to label a backend.
-                {**{k: v for k, v in m.items() if k != "api_key"},
-                 "backend_kind": backend_kind(m)}
-                for m in machines
-            ],
-        }
-    )
 
 
-async def handle_machine_get(request: Request, machine_id: str):
-    """GET /api/machines/{id} -- get AI machine details."""
-    session = request.state.session
-    machine = await db.ai_machine_get(machine_id, session["user"])
-    if not machine:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    m = {k: v for k, v in machine.items() if k != "api_key"}
-    m["backend_kind"] = backend_kind(machine)
-    # ai_machine_get does not select api_key, so this reads the flag the query
-    # derives instead; deriving it from the absent column was always false.
-    m["has_api_key"] = bool(machine.get("has_api_key"))
-    return JSONResponse({"machine": m})
 
 
-async def handle_machine_create(request: Request):
-    """POST /api/machines -- create a new AI machine."""
-    session = request.state.session
-    data = await request.json()
-    name = (data.get("name") or "").strip()[:100]
-    provider = (data.get("provider") or "proxy").strip()
-    if provider not in _MACHINE_PROVIDERS:
-        raise HTTPException(status_code=400, detail="Unknown provider")
-    base_url = (data.get("base_url") or "").strip() or None
-    host = (data.get("host") or "").strip()
-    if provider == "anthropic":
-        # The endpoint is the transport, so derive host/port from it rather
-        # than asking for them twice and letting the two disagree.
-        base_url = base_url or config.ANTHROPIC_BASE_URL
-        host = host or _base_url_host(base_url)
-        data.setdefault("port", _ANTHROPIC_PORT)
-    try:
-        port = int(data.get("port", 9000))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Port must be a number")
-    if port < 1 or port > 65535:
-        raise HTTPException(status_code=400, detail="Port must be 1-65535")
-    if not name:
-        raise HTTPException(status_code=400, detail="Name is required")
-    if not host:
-        raise HTTPException(status_code=400, detail="Host is required")
-    if not _HOST_PATTERN_LOCAL.fullmatch(host):
-        raise HTTPException(
-            status_code=400, detail="Enter a valid hostname or IP address"
-        )
-    # SSRF: block internal IPs on creation.
-    _validate_host(host)
-    default_model = (
-        config.ANTHROPIC_MODEL if provider == "anthropic" else config.MODEL_NAME
-    )
-    model = (data.get("model") or default_model).strip()
-    if not _MODEL_RE.fullmatch(model):
-        raise HTTPException(
-            status_code=400, detail="Model name contains invalid characters"
-        )
-    if base_url:
-        base_url = _validate_base_url(base_url)
-    api_key = (data.get("api_key") or "").strip() or None
-    description = (data.get("description") or "").strip()[:500] or None
-    machine_id = uuid.uuid4().hex
-    await db.ai_machine_create(
-        machine_id,
-        name,
-        host,
-        port,
-        api_key,
-        model,
-        base_url,
-        description,
-        session["user"],
-        provider=provider,
-    )
-    _log.info(
-        "ai_machine created by user=%s name=%s provider=%s",
-        session["user"],
-        name,
-        provider,
-    )
-    return JSONResponse(
-        {
-            "ok": True,
-            "id": machine_id,
-            "name": name,
-            "provider": provider,
-        }
-    )
 
 
-async def handle_machine_patch(request: Request, machine_id: str):
-    """PATCH /api/machines/{id} -- update AI machine."""
-    session = request.state.session
-    data = await request.json()
-    if not data or not set(data).issubset(_MACHINE_ALLOWED_FIELDS):
-        raise HTTPException(status_code=400, detail="No valid fields to update")
-    # Reject non-string text fields up front: the validators below call .strip()
-    # and regex methods that would otherwise raise and surface as a 500.
-    for field in _MACHINE_TEXT_FIELDS:
-        if field in data and data[field] is not None and not isinstance(data[field], str):
-            raise HTTPException(status_code=400, detail=f"{field} must be text or null")
-    # Validate port
-    if "port" in data and data["port"] is not None:
-        try:
-            p = int(data["port"])
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="Port must be a number")
-        if p < 1 or p > 65535:
-            raise HTTPException(status_code=400, detail="Port must be 1-65535")
-        data["port"] = p
-    # Validate provider
-    if "provider" in data and data["provider"] is not None:
-        prov = data["provider"].strip()
-        if prov not in _MACHINE_PROVIDERS:
-            raise HTTPException(status_code=400, detail="Unknown provider")
-        data["provider"] = prov
-    # Validate host
-    if "host" in data and data["host"] is not None:
-        host = data["host"].strip()
-        if not host:
-            raise HTTPException(status_code=400, detail="Host is required")
-        if not _HOST_PATTERN_LOCAL.fullmatch(host):
-            raise HTTPException(
-                status_code=400, detail="Enter a valid hostname or IP address"
-            )
-        _validate_host(host)
-        data["host"] = host
-    # Validate model
-    if (
-        "model" in data
-        and data["model"] is not None
-        and not _MODEL_RE.fullmatch(data["model"])
-    ):
-        raise HTTPException(
-            status_code=400, detail="Model name contains invalid characters"
-        )
-    # Validate name
-    if "name" in data and data["name"] is not None:
-        name = data["name"].strip()[:100]
-        if not name:
-            raise HTTPException(status_code=400, detail="Name cannot be empty")
-        data["name"] = name
-    # Validate description
-    if "description" in data and data["description"] is not None:
-        data["description"] = data["description"][:500]
-    # Validate base_url
-    if "base_url" in data and data["base_url"] is not None:
-        bu = data["base_url"].strip() or None
-        if bu:
-            bu = _validate_base_url(bu)
-        data["base_url"] = bu
-    # Clear api_key if explicitly None
-    if "api_key" in data and data["api_key"] is not None:
-        data["api_key"] = data["api_key"].strip() or None
-    updated = await db.ai_machine_update(machine_id, session["user"], **data)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    _log.info("ai_machine updated by user=%s id=%s", session["user"], machine_id)
-    return JSONResponse({"ok": True})
 
 
-async def handle_machine_activate(request: Request, machine_id: str):
-    """POST /api/machines/{id}/activate -- activate an AI machine."""
-    session = request.state.session
-    exists = await db.ai_machine_get(machine_id, session["user"])
-    if not exists:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    activated = await db.ai_machine_activate(machine_id, session["user"])
-    _log.info("ai_machine activated by user=%s id=%s", session["user"], machine_id)
-    return JSONResponse({"ok": True, "activated": activated})
 
 
-async def handle_machine_delete(request: Request, machine_id: str):
-    """DELETE /api/machines/{id} -- delete AI machine."""
-    session = request.state.session
-    deleted = await db.ai_machine_delete(machine_id, session["user"])
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    _log.info("ai_machine deleted by user=%s id=%s", session["user"], machine_id)
-    return JSONResponse({"ok": True})
 
 
-def _probe_anthropic(url: str, api_key: str | None) -> tuple[int, bytes]:
-    """GET *url* and return (status, body). Runs in a worker thread.
-
-    The body is capped: it comes from a user-configured endpoint, so an
-    unbounded read would let a hostile or broken one exhaust memory.
-    """
-    headers = {"anthropic-version": _ANTHROPIC_API_VERSION}
-    if api_key:
-        headers["x-api-key"] = api_key
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=8) as resp:  # nosec B310: scheme checked
-            return resp.status, resp.read(_MODELS_BODY_MAX)
-    except urllib.error.HTTPError as exc:
-        return exc.code, b""
 
 
-async def _test_anthropic_endpoint(machine: dict, api_key: str | None):
-    """Probe the API itself, rather than only opening a TCP socket.
-
-    A bare connect reports "reachable" for an endpoint that rejects every turn
-    -- wrong key, wrong URL -- which reads as "this machine works". Asking
-    /v1/models separates reachable, unauthenticated and broken.
-    """
-    base_url = runner.normalise_base_url(machine.get("base_url")) or (
-        config.ANTHROPIC_BASE_URL
-    )
-    host = _base_url_host(base_url)
-    # Same SSRF blocklist the transport path applies before connecting out.
-    _resolve_host(host)
-    url = f"{base_url}/v1/models"
-    try:
-        status, _body = await asyncio.wait_for(
-            asyncio.to_thread(_probe_anthropic, url, api_key), timeout=10.0
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        _log.warning("anthropic probe timeout %s", host)
-        return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection timed out"},
-            status_code=502,
-        )
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        _log.warning("anthropic probe failed %s: %s", host, exc)
-        return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection failed"},
-            status_code=502,
-        )
-    if status == 200:
-        return JSONResponse({"ok": True, "status": "reachable"})
-    if status in (401, 403):
-        detail = (
-            "Endpoint rejected the API key"
-            if api_key
-            else "Endpoint requires an API key"
-        )
-        return JSONResponse(
-            {"ok": False, "status": "auth_failed", "error": detail}, status_code=502
-        )
-    return JSONResponse(
-        {"ok": False, "status": "error", "error": f"Endpoint returned HTTP {status}"},
-        status_code=502,
-    )
 
 
-async def handle_machine_test(request: Request, machine_id: str):
-    """POST /api/machines/{id}/test -- test connection to AI machine."""
-    session = request.state.session
-    machine = await db.ai_machine_get(machine_id, session["user"])
-    if not machine:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    if machine.get("provider") == "anthropic":
-        api_key = await db.ai_machine_api_key(machine_id, session["user"])
-        return await _test_anthropic_endpoint(machine, api_key)
-    host = machine["host"]
-    port = machine["port"]
-    try:
-        # Resolve and validate before connecting.
-        ip = _resolve_host(host)
-        _reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=5.0,
-        )
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except (ConnectionError, OSError):
-            pass
-        return JSONResponse({"ok": True, "status": "reachable"})
-    except HTTPException:
-        raise  # re-raise validation errors (403/400) as-is
-    except asyncio.TimeoutError:
-        _log.warning("machine test timeout %s:%d", host, port)
-        return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection timed out"},
-            status_code=502,
-        )
-    except (OSError, ConnectionRefusedError) as exc:
-        _log.warning("machine test failed %s:%d: %s", host, port, exc)
-        return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection failed"},
-            status_code=502,
-        )
 
 
-def _parse_model_list(body: bytes) -> list[dict[str, str]]:
-    """Pull model ids out of a /v1/models response.
-
-    Anthropic returns {"data": [{"id", "display_name", ...}]} and an
-    OpenAI-compatible gateway returns {"data": [{"id", ...}]}, so the same
-    shape covers both. Entries without an id are skipped rather than rendered
-    as blanks.
-    """
-    payload = json.loads(body.decode("utf-8", errors="replace"))
-    entries = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(entries, list):
-        raise TypeError("response has no model list")
-    models: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        model_id = entry.get("id")
-        if not isinstance(model_id, str) or not model_id.strip():
-            continue
-        model_id = model_id.strip()[:200]
-        if model_id in seen:
-            continue
-        seen.add(model_id)
-        display = entry.get("display_name")
-        models.append(
-            {
-                "id": model_id,
-                "display_name": (
-                    display.strip()[:200]
-                    if isinstance(display, str) and display.strip()
-                    else model_id
-                ),
-            }
-        )
-    models.sort(key=lambda m: m["id"])
-    return models
 
 
-def _machine_model_selection(machine: dict | None) -> dict:
-    """The active/default selection to report alongside a model list."""
-    if not machine:
-        return {"machine_id": None, "active": [], "default": ""}
-    return {
-        "machine_id": machine["id"],
-        # Empty means "everything served is offered" -- the UI renders that as
-        # all-checked rather than none, so the feature stays opt-in.
-        "active": db.parse_active_models(machine.get("active_models")),
-        "default": (machine.get("model") or "").strip(),
-    }
 
 
-def _builtin_models(
-    reason: str, endpoint: str | None = None, machine: dict | None = None
-) -> JSONResponse:
-    """Fall back to the ids shipped with the app, saying why.
-
-    The page previously showed a hardcoded list with no indication that it was
-    a guess, so a model the service does not serve looked identical to one it
-    does. The reason is surfaced instead of hidden.
-    """
-    return JSONResponse(
-        {
-            "models": [{"id": m, "display_name": m} for m in config.KNOWN_MODELS],
-            "source": "builtin",
-            "endpoint": endpoint,
-            "reason": reason,
-            **_machine_model_selection(machine),
-        }
-    )
 
 
-async def handle_models_list(request: Request):
-    """GET /api/models -- models a machine actually serves.
-
-    Defaults to the active machine. ``?machine_id=`` inspects another one
-    without activating it, so choosing which models a backend offers does not
-    require making it live first.
-    """
-    session = request.state.session
-    machine_id = (request.query_params.get("machine_id") or "").strip()
-    if machine_id:
-        machine = await db.ai_machine_get(machine_id, session["user"])
-        if not machine:
-            raise HTTPException(status_code=404, detail="Machine not found")
-    else:
-        machine = await db.ai_machine_active(session["user"])
-    if not machine:
-        return _builtin_models("No machine is active.")
-    if machine.get("provider") != "anthropic":
-        return _builtin_models(
-            "This is a Claude Code proxy, which does not publish a model list.",
-            None,
-            machine,
-        )
-    base_url = runner.normalise_base_url(machine.get("base_url")) or (
-        config.ANTHROPIC_BASE_URL
-    )
-    now = time.monotonic()
-    cached = _models_cache.get(base_url)
-    if cached and now - cached[0] < _MODELS_CACHE_TTL_S:
-        return JSONResponse(
-            {
-                "models": cached[1],
-                "source": "endpoint",
-                "endpoint": base_url,
-                "reason": None,
-                **_machine_model_selection(machine),
-            }
-        )
-    host = _base_url_host(base_url)
-    # Same SSRF blocklist the transport path applies before connecting out.
-    _resolve_host(host)
-    api_key = await db.ai_machine_api_key(machine["id"], session["user"])
-    # limit is Anthropic's page size; an OpenAI-compatible gateway ignores it
-    # and returns everything anyway.
-    url = f"{base_url}/v1/models?limit=1000"
-    try:
-        status, body = await asyncio.wait_for(
-            asyncio.to_thread(_probe_anthropic, url, api_key), timeout=10.0
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        _log.warning("model list timeout %s", host)
-        return _builtin_models("The endpoint timed out.", base_url, machine)
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        _log.warning("model list failed %s: %s", host, exc)
-        return _builtin_models("Could not reach the endpoint.", base_url, machine)
-    if status in (401, 403):
-        return _builtin_models(
-            "The endpoint rejected the API key."
-            if api_key
-            else "The endpoint requires an API key.",
-            base_url,
-            machine,
-        )
-    if status != 200:
-        return _builtin_models(f"The endpoint returned HTTP {status}.", base_url, machine)
-    try:
-        models = _parse_model_list(body)
-    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        _log.warning("model list unparseable from %s", host)
-        return _builtin_models("The endpoint returned an unreadable list.", base_url, machine)
-    if not models:
-        return _builtin_models("The endpoint listed no models.", base_url, machine)
-    _models_cache[base_url] = (now, models)
-    return JSONResponse(
-        {
-            "models": models,
-            "source": "endpoint",
-            "endpoint": base_url,
-            "reason": None,
-            **_machine_model_selection(machine),
-        }
-    )
 
 
-async def handle_machine_models_set(request: Request, machine_id: str):
-    """PUT /api/machines/{id}/models -- choose which models this machine offers.
-
-    Deliberately its own route rather than a field on PATCH /api/machines: that
-    handler rejects the whole body if any key falls outside its allowlist, and
-    the shape of that allowlist is still unsettled.
-
-    The selection only decides what the picker shows. A turn naming a model
-    outside it is still executed -- an old conversation whose model was later
-    deactivated must keep working, and a gateway will accept ids it does not
-    advertise.
-    """
-    session = request.state.session
-    machine = await db.ai_machine_get(machine_id, session["user"])
-    if not machine:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    data = await request.json()
-
-    raw_active = data.get("active", [])
-    if not isinstance(raw_active, list):
-        raise HTTPException(status_code=400, detail="active must be a list of models")
-    active: list[str] = []
-    for entry in raw_active:
-        if not isinstance(entry, str):
-            raise HTTPException(status_code=400, detail="Model ids must be text")
-        entry = entry.strip()
-        if not entry:
-            continue
-        if not _MODEL_RE.fullmatch(entry):
-            raise HTTPException(
-                status_code=400, detail="Model name contains invalid characters"
-            )
-        if entry not in active:
-            active.append(entry[:200])
-
-    default = data.get("default")
-    if default is not None and not isinstance(default, str):
-        raise HTTPException(status_code=400, detail="default must be text or null")
-    default = (default or "").strip()
-    if default:
-        if not _MODEL_RE.fullmatch(default):
-            raise HTTPException(
-                status_code=400, detail="Model name contains invalid characters"
-            )
-        # A default outside the offered set would be unreachable in the picker
-        # while still being applied to every new chat.
-        if active and default not in active:
-            raise HTTPException(
-                status_code=400, detail="The default model must be one of the active models"
-            )
-        default = default[:200]
-
-    await db.ai_machine_set_models(machine_id, session["user"], active, default or None)
-    _log.info(
-        "machine models set by user=%s id=%s active=%d default=%s",
-        session["user"],
-        machine_id,
-        len(active),
-        default or "(unchanged)",
-    )
-    return JSONResponse({"ok": True, "active": active, "default": default})
 
 
 
@@ -3493,8 +2936,6 @@ async def handle_sessions_list(request: Request):
     return JSONResponse({"sessions": items})
 
 
-# hex-only session_id pattern for path-traversal protection.
-_HEX_SESSION_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 
 def _sanitize_session_id(session_id: str) -> str:
@@ -3644,83 +3085,10 @@ async def handle_sessions_resume(request: Request, session_id: str):
 
 
 
-def _question_to_text(block: dict) -> str:
-    """Render a question and every option as plain text for a message body.
-
-    Message bodies are shown with textContent, not Markdown, so the shape has
-    to survive as plain text.
-    """
-    lines: list[str] = []
-    for entry in block.get("questions") or []:
-        if not isinstance(entry, dict):
-            continue
-        header = str(entry.get("header") or "").strip()
-        question = str(entry.get("question") or "").strip()
-        lines.append(f"Question — {header}" if header else "Question")
-        if question:
-            lines.append(question)
-        if entry.get("multi_select"):
-            lines.append("(choose one or more)")
-        for option in entry.get("options") or []:
-            if not isinstance(option, dict):
-                continue
-            label = str(option.get("label") or "").strip()
-            if not label:
-                continue
-            description = str(option.get("description") or "").strip()
-            lines.append(f"  • {label} — {description}" if description else f"  • {label}")
-        lines.append(_QUESTION_PENDING_NOTE)
-    return "\n".join(lines).strip()
 
 
-def _answer_to_text(block: dict) -> str:
-    """Render how a question was resolved."""
-    status = block.get("status") or "resolved"
-    label = {"answered": "Answered", "declined": "Declined"}.get(status, "Resolved")
-    text = " ".join(str(block.get("text") or "").split())
-    return f"{label} in the terminal: {text}" if text else f"{label} in the terminal"
 
 
-def _turn_to_message(turn: dict) -> tuple[str, str] | None:
-    """Flatten one transcript turn into a (role, content) message row.
-
-    The messages table holds a role and a body, with nowhere to record that a
-    turn came from a subagent, so sidechain traffic is dropped rather than
-    replayed unlabelled among the user's own turns -- the transcript viewer
-    already shows it marked. Thinking blocks are dropped for the same reason:
-    the terminal collapses them, so replaying them inline would show more than
-    the conversation the user actually saw.
-    """
-    if turn.get("sidechain"):
-        return None
-    parts: list[str] = []
-    for block in turn.get("blocks") or []:
-        kind = block.get("kind")
-        # A question carries no "text" -- its content is the question and its
-        # options -- so reading block["text"] dropped it from the conversation
-        # entirely. A question the user has to answer is the last thing that
-        # should go missing here.
-        if kind == "question":
-            rendered = _question_to_text(block)
-            if rendered:
-                parts.append(rendered)
-            continue
-        if kind == "answer":
-            rendered = _answer_to_text(block)
-            if rendered:
-                parts.append(rendered)
-            continue
-        text = (block.get("text") or "").strip()
-        if not text:
-            continue
-        if kind == "text":
-            parts.append(text)
-        elif kind == "tool":
-            parts.append(f"`{text}`")
-    if not parts:
-        return None
-    role = "assistant" if turn.get("role") == "assistant" else "user"
-    return role, "\n\n".join(parts)
 
 
 async def _import_transcript(chat_id: str, session_id: str) -> int:
@@ -4910,14 +4278,8 @@ async def _api_supervisor_messages(request: Request, supervisor_id: str):
     return await handle_supervisor_messages_get(request, supervisor_id)
 
 
-@app.get("/api/models")
-async def _api_models_list(request: Request):
-    return await handle_models_list(request)
 
 
-@app.put("/api/machines/{machine_id}/models")
-async def _api_machine_models_set(request: Request, machine_id: str):
-    return await handle_machine_models_set(request, machine_id)
 
 
 @app.get("/api/sessions")
@@ -4938,39 +4300,18 @@ async def _api_sessions_delete(request: Request, session_id: str):
 # ── Machine routes ─────────────────────────────────────────────────────────────────
 
 
-@app.get("/api/machines")
-async def _api_machines_list(request: Request):
-    return await handle_machines_list(request)
 
 
-@app.post("/api/machines")
-async def _api_machine_create(request: Request):
-    return await handle_machine_create(request)
 
 
-@app.get("/api/machines/{machine_id}")
-async def _api_machine_get(request: Request, machine_id: str):
-    return await handle_machine_get(request, machine_id)
 
 
-@app.patch("/api/machines/{machine_id}")
-async def _api_machine_patch(request: Request, machine_id: str):
-    return await handle_machine_patch(request, machine_id)
 
 
-@app.post("/api/machines/{machine_id}/activate")
-async def _api_machine_activate(request: Request, machine_id: str):
-    return await handle_machine_activate(request, machine_id)
 
 
-@app.post("/api/machines/{machine_id}/test")
-async def _api_machine_test(request: Request, machine_id: str):
-    return await handle_machine_test(request, machine_id)
 
 
-@app.delete("/api/machines/{machine_id}")
-async def _api_machine_delete(request: Request, machine_id: str):
-    return await handle_machine_delete(request, machine_id)
 
 
 if __name__ == "__main__":

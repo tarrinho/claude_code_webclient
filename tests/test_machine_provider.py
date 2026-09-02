@@ -26,12 +26,12 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
 import auth
 import claude_proxy
 import config
 import db
 import runner
+from routes import machines as machine_routes
 
 
 def _make_admin_session():
@@ -155,7 +155,7 @@ class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_listing_seeds_for_existing_accounts(self):
         request = _make_request()
-        response = await app.handle_machines_list(request)
+        response = await machine_routes.handle_machines_list(request)
         import json as _json
 
         machines = _json.loads(response.body)["machines"]
@@ -167,7 +167,7 @@ class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
             None, None, "admin",
         )
         request = _make_request()
-        response = await app.handle_machines_list(request)
+        response = await machine_routes.handle_machines_list(request)
         self.assertNotIn(b"sk-secret", response.body)
 
 
@@ -177,7 +177,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await _setup_db(self)
         # Creation resolves the host for the SSRF blocklist; keep it offline.
-        self._resolve = patch.object(app, "_validate_host", return_value="160.79.104.10")
+        self._resolve = patch.object(machine_routes, "_validate_host", return_value="160.79.104.10")
         self._resolve.start()
 
     async def asyncTearDown(self):
@@ -186,7 +186,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_anthropic_defaults_endpoint_and_port(self):
         request = _make_request({"name": "Anthropic", "provider": "anthropic"})
-        await app.handle_machine_create(request)
+        await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Anthropic")
         self.assertEqual(created["provider"], "anthropic")
@@ -196,7 +196,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_anthropic_defaults_model(self):
         request = _make_request({"name": "Anthropic", "provider": "anthropic"})
-        await app.handle_machine_create(request)
+        await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Anthropic")
         self.assertEqual(created["model"], config.ANTHROPIC_MODEL)
@@ -209,7 +209,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
                 "base_url": "https://gateway.example.com/v1",
             }
         )
-        await app.handle_machine_create(request)
+        await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Gateway")
         # The whole URL must survive -- scheme and path included.
@@ -219,7 +219,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_proxy_provider_still_requires_host(self):
         request = _make_request({"name": "Box", "provider": "proxy"})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_create(request)
+            await machine_routes.handle_machine_create(request)
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("Host", ctx.exception.detail)
 
@@ -228,13 +228,13 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
             {"name": "Nope", "provider": "openai", "host": "10.0.0.1"}
         )
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_create(request)
+            await machine_routes.handle_machine_create(request)
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail, "Unknown provider")
 
     async def test_omitted_provider_defaults_to_proxy(self):
         request = _make_request({"name": "Box", "host": "10.0.0.9"})
-        await app.handle_machine_create(request)
+        await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Box")
         self.assertEqual(created["provider"], "proxy")
@@ -256,7 +256,7 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
         request = _make_request(
             {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
         )
-        await app.handle_machine_patch(request, "m1")
+        await machine_routes.handle_machine_patch(request, "m1")
         machine = await db.ai_machine_get("m1", "admin")
         self.assertEqual(machine["provider"], "anthropic")
         self.assertEqual(machine["base_url"], "https://api.anthropic.com")
@@ -264,7 +264,7 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_provider_rejected(self):
         request = _make_request({"provider": "bedrock"})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_patch(request, "m1")
+            await machine_routes.handle_machine_patch(request, "m1")
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail, "Unknown provider")
 
@@ -272,7 +272,7 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
         """Reaches the type guard rather than blowing up in .strip()."""
         request = _make_request({"provider": 7})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_patch(request, "m1")
+            await machine_routes.handle_machine_patch(request, "m1")
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -339,7 +339,7 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
             "claude-opus-5", "https://api.anthropic.com", None, "admin",
             provider="anthropic",
         )
-        self._resolve = patch.object(app, "_resolve_host", return_value="160.79.104.10")
+        self._resolve = patch.object(machine_routes, "_resolve_host", return_value="160.79.104.10")
         self._resolve.start()
 
     async def asyncTearDown(self):
@@ -348,8 +348,8 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
 
     async def _run_test(self, probe):
         request = _make_request()
-        with patch.object(app, "_probe_anthropic", probe):
-            return await app.handle_machine_test(request, "m1")
+        with patch.object(machine_routes, "_probe_anthropic", probe):
+            return await machine_routes.handle_machine_test(request, "m1")
 
     async def test_success(self):
         import json as _json
@@ -403,12 +403,10 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         """The probe goes out from the server, so it keeps the SSRF blocklist."""
         self._resolve.stop()
         try:
-            with patch.object(
-                app,
-                "_resolve_host",
+            with patch.object(machine_routes, "_resolve_host",
                 side_effect=HTTPException(status_code=403, detail="Internal hosts"),
             ), self.assertRaises(HTTPException) as ctx:
-                await app.handle_machine_test(_make_request(), "m1")
+                await machine_routes.handle_machine_test(_make_request(), "m1")
             self.assertEqual(ctx.exception.status_code, 403)
         finally:
             self._resolve.start()

@@ -40,6 +40,7 @@ import auth
 import config
 import db
 import runner
+from routes import machines as machine_routes
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -413,13 +414,13 @@ class MachineTestTests(unittest.IsolatedAsyncioTestCase):
     async def test_machine_test_no_machines_returns_404(self):
         """No machine configured raises 404."""
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_test(self._req(), "mach-123")
+            await machine_routes.handle_machine_test(self._req(), "mach-123")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_test_404(self):
         """Non-existent machine raises 404."""
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_test(self._req("nonexistent"), "nonexistent")
+            await machine_routes.handle_machine_test(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_test_invalid_json(self):
@@ -433,7 +434,7 @@ class MachineTestTests(unittest.IsolatedAsyncioTestCase):
         req.headers = {"x-csrf-token": self.csrf}
         req.json = AsyncMock(side_effect=ValueError("invalid json"))
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_test(req, "mach-123")
+            await machine_routes.handle_machine_test(req, "mach-123")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_test_response_is_json(self):
@@ -445,7 +446,7 @@ class MachineTestTests(unittest.IsolatedAsyncioTestCase):
             "name": "test", "host": "127.0.0.1", "port": 9000, "model": "test"
         })
         r.body = {"name": "test", "host": "127.0.0.1", "port": 9000, "model": "test"}
-        create_resp = await app.handle_machine_create(r)
+        create_resp = await machine_routes.handle_machine_create(r)
         self.assertEqual(create_resp.status_code, 200)
         mid = json.loads(create_resp.body)["id"]
 
@@ -463,11 +464,14 @@ class MachineTestTests(unittest.IsolatedAsyncioTestCase):
         async def _fake_wait_for(fut, timeout=None):
             return await fut
         with (
-            patch("app._resolve_host", return_value="8.8.8.8"),
+            # routes.machines, not app: the handler under test resolves
+            # _resolve_host in its own module globals after the 0.10.0
+            # routes split, so rebinding it on app patches nothing.
+            patch("routes.machines._resolve_host", return_value="8.8.8.8"),
             patch("asyncio.open_connection", _fake_connect),
             patch("asyncio.wait_for", _fake_wait_for),
         ):
-            resp = await app.handle_machine_test(req, mid)
+            resp = await machine_routes.handle_machine_test(req, mid)
             self.assertEqual(resp.media_type, "application/json")
 
 
@@ -493,12 +497,12 @@ class MachineActivateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_machine_activate_no_machines_returns_404(self):
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_activate(self._req(), "mach-123")
+            await machine_routes.handle_machine_activate(self._req(), "mach-123")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_activate_404(self):
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_activate(self._req("nonexistent"), "nonexistent")
+            await machine_routes.handle_machine_activate(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
 
@@ -1429,25 +1433,25 @@ class MachineCreateValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_machine_create_invalid_port_400(self):
         req = self._make_request({"name": "test", "host": "8.8.8.8", "port": 99999})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_create(req)
+            await machine_routes.handle_machine_create(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_create_empty_name_400(self):
         req = self._make_request({"name": "", "host": "8.8.8.8", "port": 9000})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_create(req)
+            await machine_routes.handle_machine_create(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_create_missing_host_400(self):
         req = self._make_request({"name": "test", "port": 9000})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_create(req)
+            await machine_routes.handle_machine_create(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_create_invalid_model_chars(self):
         req = self._make_request({"name": "test", "host": "8.8.8.8", "port": 9000, "model": "bad/model!"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_create(req)
+            await machine_routes.handle_machine_create(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_create_valid_base_url(self):
@@ -1455,7 +1459,7 @@ class MachineCreateValidationTests(unittest.IsolatedAsyncioTestCase):
             "name": "test", "host": "8.8.8.8", "port": 9000,
             "base_url": "https://api.example.com/v1",
         })
-        resp = await app.handle_machine_create(req)
+        resp = await machine_routes.handle_machine_create(req)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
@@ -1463,7 +1467,7 @@ class MachineCreateValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_machine_create_non_numeric_port(self):
         req = self._make_request({"name": "test", "host": "8.8.8.8", "port": "abc"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_create(req)
+            await machine_routes.handle_machine_create(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -1493,7 +1497,7 @@ class MachineDeleteTests(unittest.IsolatedAsyncioTestCase):
     async def test_machine_delete_nonexistent_404(self):
         req = self._make_request()
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_delete(req, "nonexistent" * 4)
+            await machine_routes.handle_machine_delete(req, "nonexistent" * 4)
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_delete_returns_ok(self):
@@ -1503,11 +1507,11 @@ class MachineDeleteTests(unittest.IsolatedAsyncioTestCase):
         )
         req_create.state.session = {"user": "admin", "role": "admin"}
         req_create.json = AsyncMock(return_value={"name": "delme", "host": "8.8.8.8", "port": 9000})
-        resp_create = await app.handle_machine_create(req_create)
+        resp_create = await machine_routes.handle_machine_create(req_create)
         mid = json.loads(resp_create.body)["id"]
 
         req = self._make_request()
-        resp = await app.handle_machine_delete(req, mid)
+        resp = await machine_routes.handle_machine_delete(req, mid)
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(json.loads(resp.body)["ok"])
 
@@ -1542,11 +1546,11 @@ class MachineActivateTests2(unittest.IsolatedAsyncioTestCase):
         )
         req_create.state.session = {"user": "admin", "role": "admin"}
         req_create.json = AsyncMock(return_value={"name": "actme", "host": "8.8.8.8", "port": 9000})
-        resp_create = await app.handle_machine_create(req_create)
+        resp_create = await machine_routes.handle_machine_create(req_create)
         mid = json.loads(resp_create.body)["id"]
 
         req = self._make_request()
-        resp = await app.handle_machine_activate(req, mid)
+        resp = await machine_routes.handle_machine_activate(req, mid)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
         self.assertIsInstance(data["activated"], bool)
@@ -1579,25 +1583,25 @@ class MachinePatchValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_machine_patch_unknown_field_400(self):
         req = self._make_request({"unknown_field": "x"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_patch(req, "nonexistent" * 4)
+            await machine_routes.handle_machine_patch(req, "nonexistent" * 4)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_patch_empty_data_400(self):
         req = self._make_request({})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_patch(req, "nonexistent" * 4)
+            await machine_routes.handle_machine_patch(req, "nonexistent" * 4)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_patch_invalid_port(self):
         req = self._make_request({"port": 0})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_patch(req, "nonexistent" * 4)
+            await machine_routes.handle_machine_patch(req, "nonexistent" * 4)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_patch_invalid_model(self):
         req = self._make_request({"model": "bad/model!"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_patch(req, "nonexistent" * 4)
+            await machine_routes.handle_machine_patch(req, "nonexistent" * 4)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_patch_invalid_host_ssrf(self):
@@ -1610,7 +1614,7 @@ class MachinePatchValidationTests(unittest.IsolatedAsyncioTestCase):
         """
         req = self._make_request({"host": "169.254.169.254"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_machine_patch(req, "nonexistent" * 4)
+            await machine_routes.handle_machine_patch(req, "nonexistent" * 4)
         self.assertEqual(ctx.exception.status_code, 403)
 
 

@@ -13,6 +13,7 @@ import auth
 import config
 import db
 import runner
+from routes import machines as machine_routes
 
 
 class _FakeRequest:
@@ -559,14 +560,14 @@ class MachinePatchTests(unittest.IsolatedAsyncioTestCase):
             "host": "10.0.0.5",
             "model": "claude-opus-5",
         })
-        resp = await app.handle_machine_patch(req, "m1")
+        resp = await machine_routes.handle_machine_patch(req, "m1")
         self.assertEqual(resp.status_code, 200)
         machine = await db.ai_machine_get("m1", "admin")
         self.assertEqual(machine["model"], "claude-opus-5")
 
     async def test_patch_model_only(self):
         req = _FakeRequest(json_data={"model": "claude-haiku-4-5-20251001"})
-        resp = await app.handle_machine_patch(req, "m1")
+        resp = await machine_routes.handle_machine_patch(req, "m1")
         self.assertEqual(resp.status_code, 200)
         machine = await db.ai_machine_get("m1", "admin")
         self.assertEqual(machine["model"], "claude-haiku-4-5-20251001")
@@ -578,7 +579,7 @@ class MachinePatchTests(unittest.IsolatedAsyncioTestCase):
             "model": "claude-sonnet-5",
             "api_key": "sk-test-value",
         })
-        resp = await app.handle_machine_patch(req, "m1")
+        resp = await machine_routes.handle_machine_patch(req, "m1")
         self.assertEqual(resp.status_code, 200)
 
     async def test_patch_rejects_field_outside_allowlist(self):
@@ -592,19 +593,19 @@ class MachinePatchTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(field=field):
                 req = _FakeRequest(json_data={"model": "claude-opus-5", field: value})
                 with self.assertRaises(HTTPException) as ctx:
-                    await app.handle_machine_patch(req, "m1")
+                    await machine_routes.handle_machine_patch(req, "m1")
                 self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_patch_rejects_invalid_model_characters(self):
         req = _FakeRequest(json_data={"model": "bad model!"})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_patch(req, "m1")
+            await machine_routes.handle_machine_patch(req, "m1")
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_patch_unknown_machine_404(self):
         req = _FakeRequest(json_data={"model": "claude-opus-5"})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_patch(req, "does-not-exist")
+            await machine_routes.handle_machine_patch(req, "does-not-exist")
         self.assertEqual(ctx.exception.status_code, 404)
 
 

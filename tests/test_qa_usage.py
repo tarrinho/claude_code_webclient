@@ -27,6 +27,7 @@ import claude_proxy
 import config
 import db
 import runner
+from routes import machines as machine_routes
 
 # A real `result` frame, captured from Claude Code 2.1.251 against a LiteLLM
 # gateway. Trimmed to the fields the parser reads.
@@ -615,7 +616,7 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await self._make("official", "anthropic", "https://api.anthropic.com")
         await self._make("gateway", "anthropic", GATEWAY)
         await self._make("proxied", "proxy", None)
-        body = json.loads((await app.handle_machines_list(self._req())).body)
+        body = json.loads((await machine_routes.handle_machines_list(self._req())).body)
         kinds = {m["id"]: m["backend_kind"] for m in body["machines"]}
         self.assertEqual(kinds["official"], "anthropic")
         self.assertEqual(kinds["gateway"], "anthropic-compatible")
@@ -623,7 +624,7 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_get_labels_the_backend(self):
         await self._make("gateway", "anthropic", GATEWAY)
-        body = json.loads((await app.handle_machine_get(self._req(), "gateway")).body)
+        body = json.loads((await machine_routes.handle_machine_get(self._req(), "gateway")).body)
         self.assertEqual(body["machine"]["backend_kind"], "anthropic-compatible")
 
     async def test_label_matches_what_usage_records(self):
@@ -633,7 +634,7 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await db.ai_machine_activate("gateway", "admin")
         await db.chat_create("c1", "t", None, f"{self.tmp.name}/projects", "admin")
         await app._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
-        body = json.loads((await app.handle_machines_list(self._req())).body)
+        body = json.loads((await machine_routes.handle_machines_list(self._req())).body)
         label = next(m["backend_kind"] for m in body["machines"] if m["id"] == "gateway")
         recorded = (await db.usage_totals("admin", None))[0]["provider"]
         self.assertEqual(label, recorded)
@@ -641,6 +642,6 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_label_never_leaks_the_key(self):
         await db.ai_machine_create("k", "k", "h.invalid", 443, "super-secret", "m",
                                    GATEWAY, None, "admin", "anthropic")
-        for resp in (await app.handle_machines_list(self._req()),
-                     await app.handle_machine_get(self._req(), "k")):
+        for resp in (await machine_routes.handle_machines_list(self._req()),
+                     await machine_routes.handle_machine_get(self._req(), "k")):
             self.assertNotIn("super-secret", resp.body.decode())

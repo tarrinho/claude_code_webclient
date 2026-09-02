@@ -28,6 +28,7 @@ import app
 import auth
 import config
 import db
+from routes import machines as machine_routes
 
 ANTHROPIC_BODY = json.dumps(
     {
@@ -73,11 +74,11 @@ async def _setup_db(tc):
     tc._root_patch.start()
     await db.init()
     await auth.bootstrap_admin()
-    app._models_cache.clear()
+    machine_routes._models_cache.clear()
 
 
 async def _teardown_db(tc):
-    app._models_cache.clear()
+    machine_routes._models_cache.clear()
     await db.close()
     tc._db_patch.stop()
     tc._root_patch.stop()
@@ -96,40 +97,40 @@ class ParseModelListTests(unittest.TestCase):
     """One parser covers both response shapes the endpoint can return."""
 
     def test_anthropic_shape(self):
-        models = app._parse_model_list(ANTHROPIC_BODY)
+        models = machine_routes._parse_model_list(ANTHROPIC_BODY)
         self.assertEqual([m["id"] for m in models], ["claude-opus-5", "claude-sonnet-5"])
         self.assertEqual(models[0]["display_name"], "Claude Opus 5")
 
     def test_gateway_shape_falls_back_to_id_for_display(self):
-        models = app._parse_model_list(GATEWAY_BODY)
+        models = machine_routes._parse_model_list(GATEWAY_BODY)
         self.assertEqual(models[0]["id"], "azure_ai/gpt-5-mini")
         self.assertEqual(models[0]["display_name"], "azure_ai/gpt-5-mini")
 
     def test_results_are_sorted(self):
-        models = app._parse_model_list(GATEWAY_BODY)
+        models = machine_routes._parse_model_list(GATEWAY_BODY)
         self.assertEqual([m["id"] for m in models], sorted(m["id"] for m in models))
 
     def test_entries_without_an_id_are_skipped(self):
         body = json.dumps(
             {"data": [{"object": "model"}, {"id": ""}, {"id": "  "}, {"id": "real"}]}
         ).encode()
-        self.assertEqual([m["id"] for m in app._parse_model_list(body)], ["real"])
+        self.assertEqual([m["id"] for m in machine_routes._parse_model_list(body)], ["real"])
 
     def test_duplicate_ids_collapse(self):
         body = json.dumps({"data": [{"id": "a"}, {"id": "a"}]}).encode()
-        self.assertEqual(len(app._parse_model_list(body)), 1)
+        self.assertEqual(len(machine_routes._parse_model_list(body)), 1)
 
     def test_non_dict_entries_ignored(self):
         body = json.dumps({"data": ["a string", 7, None, {"id": "real"}]}).encode()
-        self.assertEqual([m["id"] for m in app._parse_model_list(body)], ["real"])
+        self.assertEqual([m["id"] for m in machine_routes._parse_model_list(body)], ["real"])
 
     def test_missing_data_key_raises(self):
         with self.assertRaises(TypeError):
-            app._parse_model_list(b'{"models": []}')
+            machine_routes._parse_model_list(b'{"models": []}')
 
     def test_invalid_json_raises(self):
         with self.assertRaises(json.JSONDecodeError):
-            app._parse_model_list(b"not json")
+            machine_routes._parse_model_list(b"not json")
 
 
 class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -137,7 +138,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await _setup_db(self)
-        self._resolve = patch.object(app, "_resolve_host", return_value="93.184.216.34")
+        self._resolve = patch.object(machine_routes, "_resolve_host", return_value="93.184.216.34")
         self._resolve.start()
 
     async def asyncTearDown(self):
@@ -145,8 +146,8 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _teardown_db(self)
 
     async def _call(self, probe):
-        with patch.object(app, "_probe_anthropic", probe):
-            response = await app.handle_models_list(_make_request())
+        with patch.object(machine_routes, "_probe_anthropic", probe):
+            response = await machine_routes.handle_models_list(_make_request())
         return json.loads(response.body)
 
     async def test_returns_models_from_the_endpoint(self):
@@ -204,8 +205,8 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_key_never_appears_in_the_response(self):
         await _add_anthropic_machine()
-        with patch.object(app, "_probe_anthropic", lambda url, key: (200, ANTHROPIC_BODY)):
-            response = await app.handle_models_list(_make_request())
+        with patch.object(machine_routes, "_probe_anthropic", lambda url, key: (200, ANTHROPIC_BODY)):
+            response = await machine_routes.handle_models_list(_make_request())
         self.assertNotIn(b"sk-test", response.body)
 
     async def test_private_endpoint_blocked(self):
@@ -213,12 +214,10 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _add_anthropic_machine()
         self._resolve.stop()
         try:
-            with patch.object(
-                app,
-                "_resolve_host",
+            with patch.object(machine_routes, "_resolve_host",
                 side_effect=HTTPException(status_code=403, detail="Internal hosts"),
             ), self.assertRaises(HTTPException) as ctx:
-                await app.handle_models_list(_make_request())
+                await machine_routes.handle_models_list(_make_request())
             self.assertEqual(ctx.exception.status_code, 403)
         finally:
             self._resolve.start()
@@ -229,7 +228,7 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await _setup_db(self)
-        self._resolve = patch.object(app, "_resolve_host", return_value="93.184.216.34")
+        self._resolve = patch.object(machine_routes, "_resolve_host", return_value="93.184.216.34")
         self._resolve.start()
 
     async def asyncTearDown(self):
@@ -238,10 +237,10 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def _call(self, probe=None):
         if probe is None:
-            response = await app.handle_models_list(_make_request())
+            response = await machine_routes.handle_models_list(_make_request())
         else:
-            with patch.object(app, "_probe_anthropic", probe):
-                response = await app.handle_models_list(_make_request())
+            with patch.object(machine_routes, "_probe_anthropic", probe):
+                response = await machine_routes.handle_models_list(_make_request())
         return json.loads(response.body)
 
     async def test_no_active_machine(self):

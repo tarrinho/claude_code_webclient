@@ -26,6 +26,7 @@ import auth
 import classification
 import config
 import db
+import shared
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -367,10 +368,10 @@ class QuestionPendingNoteTests(unittest.TestCase):
 
     def test_a_note_past_the_preview_still_asks(self):
         """The defect this class exists for, through the real call site."""
-        body = _QUIET_FILLER + "Pick one " + app._QUESTION_PENDING_NOTE
+        body = _QUIET_FILLER + "Pick one " + shared._QUESTION_PENDING_NOTE
         self.assertGreater(len(body), 400, "fixture too short to test the split")
         self.assertNotIn(
-            app._QUESTION_PENDING_NOTE, body[:200],
+            shared._QUESTION_PENDING_NOTE, body[:200],
             "the note is inside the preview, so this tests nothing",
         )
         self.assertIsNone(
@@ -403,7 +404,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
 
     def test_a_short_note_is_flagged_too(self):
         """The case the old fixtures were reaching for: preview == tail."""
-        entry = self._classify("Pick one " + app._QUESTION_PENDING_NOTE)
+        entry = self._classify("Pick one " + shared._QUESTION_PENDING_NOTE)
         self.assertEqual(entry["reason"], "asks")
         self.assertTrue(entry["question"])
 
@@ -413,7 +414,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
         catches a trailing "?" unaided -- nothing to do with the note.
         """
         body = "Which backend should I use?"
-        self.assertNotIn(app._QUESTION_PENDING_NOTE, body)
+        self.assertNotIn(shared._QUESTION_PENDING_NOTE, body)
         entry = self._classify(body)
         self.assertEqual(entry["reason"], "asks")
 

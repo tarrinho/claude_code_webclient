@@ -20,6 +20,7 @@ import unittest
 from pathlib import Path
 
 import app
+import shared
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_LIST = ROOT / "web" / "assets" / "chat-list.js"
@@ -61,7 +62,7 @@ class SignalTests(unittest.TestCase):
         Its presence means a question block exists with no answer, which is the
         same condition that raises the answerable question bar.
         """
-        text = f"Which backend should I use? {app._QUESTION_PENDING_NOTE}"
+        text = f"Which backend should I use? {shared._QUESTION_PENDING_NOTE}"
         self.assertTrue(app._asks_a_question(text))
 
     def test_a_trailing_colon_does_not_count(self):
@@ -164,7 +165,7 @@ class LongMessageTests(unittest.TestCase):
     def test_a_pending_structured_question_survives_a_long_message(self):
         """The worse half: this one is definitely unanswered."""
         row = self._classify(
-            self.FILLER + f"Which one do you want? {app._QUESTION_PENDING_NOTE}")
+            self.FILLER + f"Which one do you want? {shared._QUESTION_PENDING_NOTE}")
         self.assertEqual(row["reason"], "asks")
         self.assertTrue(row["question"])
 

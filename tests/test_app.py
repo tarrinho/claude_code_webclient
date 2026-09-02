@@ -15,6 +15,7 @@ import app
 import auth
 import config
 import db
+from routes import machines as machine_routes
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -566,7 +567,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         Claude Code's native backend is always on offer, so the list is never
         empty -- it was, before machines carried a provider.
         """
-        resp = await app.handle_machines_list(self._make_request())
+        resp = await machine_routes.handle_machines_list(self._make_request())
         data = json.loads(resp.body)
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(data["machines"]), 1)
@@ -579,13 +580,13 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
                 "model": "claude-sonnet-4-20250514",
             }),
         )
-        resp = await app.handle_machine_create(request)
+        resp = await machine_routes.handle_machine_create(request)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
         self.assertIsNotNone(data["id"])
         # Verify it appears in the list (api key hidden), alongside the
         # seeded Anthropic entry every account gets.
-        list_resp = await app.handle_machines_list(self._make_request())
+        list_resp = await machine_routes.handle_machines_list(self._make_request())
         list_data = json.loads(list_resp.body)
         self.assertEqual(len(list_data["machines"]), 2)
         created = next(m for m in list_data["machines"] if m["name"] == "GCP")
@@ -598,7 +599,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         )
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_create(request)
+            await machine_routes.handle_machine_create(request)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_create_rejects_bad_host(self):
@@ -607,7 +608,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         )
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_create(request)
+            await machine_routes.handle_machine_create(request)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_get(self):
@@ -616,9 +617,9 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
                 "name": "Local", "host": "127.0.0.1", "port": 9000,
             }),
         )
-        create_resp = await app.handle_machine_create(request)
+        create_resp = await machine_routes.handle_machine_create(request)
         mid = json.loads(create_resp.body)["id"]
-        get_resp = await app.handle_machine_get(self._make_request(), mid)
+        get_resp = await machine_routes.handle_machine_get(self._make_request(), mid)
         data = json.loads(get_resp.body)
         self.assertEqual(data["machine"]["name"], "Local")
         self.assertIsInstance(data["machine"]["has_api_key"], bool)
@@ -626,16 +627,16 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
     async def test_machine_get_404(self):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_get(self._make_request(), "zz" * 32)
+            await machine_routes.handle_machine_get(self._make_request(), "zz" * 32)
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_activate(self):
         request = self._make_request(
             json=AsyncMock(return_value={"name": "A", "host": "10.0.0.1", "port": 9000}),
         )
-        resp = await app.handle_machine_create(request)
+        resp = await machine_routes.handle_machine_create(request)
         mid = (json.loads(resp.body))["id"]
-        act_resp = await app.handle_machine_activate(self._make_request(), mid)
+        act_resp = await machine_routes.handle_machine_activate(self._make_request(), mid)
         data = json.loads(act_resp.body)
         self.assertTrue(data["ok"])
         self.assertTrue(data["activated"])
@@ -644,9 +645,9 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         request = self._make_request(
             json=AsyncMock(return_value={"name": "Old", "host": "10.0.0.1", "port": 9000}),
         )
-        resp = await app.handle_machine_create(request)
+        resp = await machine_routes.handle_machine_create(request)
         mid = (json.loads(resp.body))["id"]
-        patch_resp = await app.handle_machine_patch(
+        patch_resp = await machine_routes.handle_machine_patch(
             self._make_request(json=AsyncMock(return_value={"name": "New"})), mid,
         )
         data = json.loads(patch_resp.body)
@@ -656,15 +657,15 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         request = self._make_request(
             json=AsyncMock(return_value={"name": "X", "host": "10.0.0.1", "port": 9000}),
         )
-        resp = await app.handle_machine_create(request)
+        resp = await machine_routes.handle_machine_create(request)
         mid = (json.loads(resp.body))["id"]
-        del_resp = await app.handle_machine_delete(self._make_request(), mid)
+        del_resp = await machine_routes.handle_machine_delete(self._make_request(), mid)
         data = json.loads(del_resp.body)
         self.assertTrue(data["ok"])
         # Should now be gone
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_delete(self._make_request(), mid)
+            await machine_routes.handle_machine_delete(self._make_request(), mid)
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_machine_list_no_api_keys(self):
@@ -674,8 +675,8 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
                 "api_key": "supersecret",
             }),
         )
-        await app.handle_machine_create(request)
-        list_resp = await app.handle_machines_list(self._make_request())
+        await machine_routes.handle_machine_create(request)
+        list_resp = await machine_routes.handle_machines_list(self._make_request())
         list_data = json.loads(list_resp.body)
         self.assertNotIn("api_key", list_data["machines"][0])
 

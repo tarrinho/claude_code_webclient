@@ -24,6 +24,10 @@ import prompts
 import transcripts
 import turns
 
+# The note _question_to_text appends. Defined where it is written, not
+# where it is detected: shared.py renders it, this module only looks for it.
+from shared import _QUESTION_PENDING_NOTE
+
 # The same logger name app.py uses, so logging.conf routes these records exactly
 # as before. A new name would have needed a new section in that file, and one
 # missing section is how wc.transcripts reached the log only by propagating to
@@ -680,4 +684,3 @@ async def _classify_cli_session(cli: dict, meta: dict, mark: dict) -> dict | Non
 # an answer" would keep asserting that forever -- including next to the
 # "Declined in the terminal" message that immediately follows it. Where to
 # answer stays true either way; the outcome is reported by its own message.
-_QUESTION_PENDING_NOTE = "(answer this in the terminal)"

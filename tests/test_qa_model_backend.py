@@ -28,6 +28,7 @@ import claude_proxy
 import config
 import db
 import runner
+from routes import machines as machine_routes
 
 # Model ids the real gateway reports via GET /v1/models.
 SERVED_MODELS = (
@@ -283,7 +284,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
                                       base_url=GATEWAY, api_key="super-secret")
         await db.ai_machine_activate(mid, "admin")
         import json as _json
-        body = _json.loads((await app.handle_machines_list(self._req())).body)
+        body = _json.loads((await machine_routes.handle_machines_list(self._req())).body)
         blob = _json.dumps(body)
         self.assertNotIn("super-secret", blob)
         for machine in body["machines"]:
@@ -293,7 +294,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         import json as _json
         mid = await self.make_machine(machine_id="m-k2", provider="anthropic",
                                       base_url=GATEWAY, api_key="super-secret")
-        body = _json.loads((await app.handle_machine_get(self._req(), mid)).body)
+        body = _json.loads((await machine_routes.handle_machine_get(self._req(), mid)).body)
         machine = body["machine"]
         self.assertNotIn("api_key", machine)
         self.assertTrue(machine["has_api_key"])
@@ -302,7 +303,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_get_reports_absent_key_as_false(self):
         import json as _json
         mid = await self.make_machine(machine_id="m-nokey", provider="anthropic")
-        body = _json.loads((await app.handle_machine_get(self._req(), mid)).body)
+        body = _json.loads((await machine_routes.handle_machine_get(self._req(), mid)).body)
         self.assertFalse(body["machine"]["has_api_key"])
 
     async def test_base_url_survives_a_round_trip_with_scheme_and_path(self):
@@ -321,7 +322,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         url = "https://api.example.invalid/v1"
         with patch.object(net_validation, "_resolve_host",
                           return_value="93.184.216.34"):
-            resp = await app.handle_machine_create(self._req({
+            resp = await machine_routes.handle_machine_create(self._req({
                 "name": "M", "host": "api.example.invalid", "port": 443,
                 "model": SERVED_MODELS[0], "base_url": url,
             }))
@@ -334,7 +335,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         # persisted under a comment claiming SSRF protection.
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_create(self._req({
+            await machine_routes.handle_machine_create(self._req({
                 "name": "M", "host": "169.254.169.254",
                 "model": SERVED_MODELS[0],
             }))
@@ -344,7 +345,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         from fastapi import HTTPException
         for bad in ("ftp://x.invalid", "file:///etc/passwd", "notaurl"):
             with self.assertRaises(HTTPException, msg=bad) as ctx:
-                await app.handle_machine_create(self._req({
+                await machine_routes.handle_machine_create(self._req({
                     "name": "M", "host": "api.example.invalid",
                     "model": SERVED_MODELS[0], "base_url": bad,
                 }))
@@ -353,7 +354,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_create_rejects_an_invalid_model_name(self):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_machine_create(self._req({
+            await machine_routes.handle_machine_create(self._req({
                 "name": "M", "host": "api.example.invalid",
                 "model": "bad model; rm -rf /",
             }))
@@ -487,8 +488,8 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={}),
         )
-        for resp in (await app.handle_machines_list(req),
-                     await app.handle_machine_get(req, mid)):
+        for resp in (await machine_routes.handle_machines_list(req),
+                     await machine_routes.handle_machine_get(req, mid)):
             self.assertNotIn("do-not-leak-me", resp.body.decode())
 
 

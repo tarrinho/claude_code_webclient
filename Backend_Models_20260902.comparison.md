@@ -360,6 +360,64 @@ answers correct, no placeholder.
 
 ---
 
+## Qwen3.6: every problem in this document was the HTTP transport
+
+Head to head, same model, same six tasks, same prompts, 2 repeats each,
+2026-09-02 20:30. Medians:
+
+| task | HTTP | | CLI | | slower | more tokens |
+|---|---|---|---|---|---|---|
+| | time | out tok | time | out tok | | |
+| `floor-add` | 34.7s | 882 | **5.2s** | **41** | 6.7x | 21.5x |
+| `simple-fizzbuzz` | 88.2s | 2134 | **7.8s** | **125** | 11.3x | 17.1x |
+| `simple-count-vowels` | 158.7s | 3828 | **5.2s** | **64** | 30.6x | 60.3x |
+| `simple-reverse-words` | 108.7s | 2616 | **5.0s** | **58** | 21.5x | 44.7x |
+| `simple-sum-evens` | 349.9s | 8660 | **6.5s** | **82** | 53.5x | 105.0x |
+| `simple-json-field` | 433.2s | 10650 | **5.0s** | **56** | 86.8x | 191.9x |
+| **median** | **133.7s** | **3222** | **5.2s** | **61** | **25.8x** | **52.8x** |
+
+**Correctness is identical on both paths: 11 of 12.** Only the cost of getting
+there differs, and it differs by a factor of 26 in time and 53 in tokens.
+
+### The mechanism, measured
+
+| transport | thinking characters, median | max |
+|---|---|---|
+| HTTP | **6,540** | **53,052** |
+| CLI | **102** | 212 |
+
+The gateway's HTTP endpoint runs this model with effectively unbounded
+reasoning; the CLI path runs it with almost none. That is a **64x difference in
+thinking on identical prompts**, and it is the whole story:
+
+* the original 4096-token truncations
+* the 180s timeouts
+* the 26x water-jug gap
+* 75.86s to write FizzBuzz
+* 661s and a blown 16,384-token ceiling to sum the even numbers in a list
+* the "149s/task", then "230s/task" figures
+* and therefore the 55.4% and "not recommended for any task"
+
+**Every one of them is the HTTP path, not the model.** Over the CLI, Qwen3.6
+answers in 5.2s median with 61 output tokens — the same order as
+`claude-haiku-4-5` at 5.3s and 152 tokens on `floor-add`, and free.
+
+### Revised verdict
+
+`vllm/Qwen3.6-35B-A3B-NVFP4`, **over the CLI transport**: 11 of 12 correct,
+5.2s median, free. That is a genuinely usable default for cost-constrained
+work, including interactive work, which is the opposite of what this document
+said this morning.
+
+**Over HTTP it should not be used for anything with a deadline** — not because
+it is a poor model, but because the endpoint's reasoning is unbounded and its
+latency has a 17x range on identical trivial input.
+
+The one genuine miss is worth recording because it is a real defect and not a
+harness artefact: on `simple-json-field` over CLI it wrote
+`json.loads(raw)` with no `import json`, giving `NameError`. Terse output has a
+cost, and that is what it looks like.
+
 ## Anthropic tier, measured properly — 2026-09-02 19:33
 
 Four models, 14 tasks, 2 repeats, 112 runs, CLI transport. Coding tasks scored

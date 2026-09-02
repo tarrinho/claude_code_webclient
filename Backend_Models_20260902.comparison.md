@@ -178,7 +178,7 @@
 
 ---
 
-## Ta<redacted — see the active machine in the WebConsole DB> Scoring (Delegation Score per dimension)
+## Task-Level Scoring (Delegation Score per dimension)
 
 ### Coding Tasks
 

@@ -652,6 +652,88 @@ class SupervisorEngine:
             )
         )
 
+    async def _materialise_plan(self, tasks: list[ParsedTask]) -> None:
+        """Turn parsed tasks into graph nodes and task rows, losing none of them.
+
+        Lifted out of `_run_planner_turn`, which was 199 lines doing four jobs:
+        run the planning turn, validate its output, build the graph, and start
+        the scheduler. This is the third, and the only one with failure
+        semantics of its own -- a row that cannot be written must not stop the
+        tasks that can.
+
+        Two scars are recorded here rather than in a changelog, because both
+        were invisible from outside and both belong to this loop: the id
+        collision that let a second supervisor's writes fail silently, and the
+        bare warning that hid it.
+
+        Deliberately not split further. The per-task `try` has to stay inside
+        the loop; hoisting it would abandon every remaining task on the first
+        bad row, which is the opposite of what it is for.
+        """
+        if not tasks:
+            return
+        # Local, as every db use in this module is: db imports supervisor at
+        # load time, so a module-level import is a cycle. Ruff caught the
+        # omission when this block was lifted out of a method that had its own
+        # local import, and the suite did not -- 191 tests passed while this
+        # function could not run, because none of them called it with tasks.
+        import db
+
+        # PlanParser numbers tasks from 1 within a plan, so every supervisor
+        # produces a t001, and supervisor_tasks.id is a global PRIMARY KEY. The
+        # second supervisor's write failed on the UNIQUE constraint, was
+        # swallowed by a bare warning, and its task list sat empty at 0% while
+        # the work actually ran. Namespacing here rather than in the parser
+        # keeps {#taskN} references resolvable against the plan's own numbers.
+        def _row_id(plan_id: str) -> str:
+            return f"{self.supervisor_id[:8]}_{plan_id}"
+
+        for parsed_task in tasks:
+            node = TaskNode(
+                id=_row_id(parsed_task.id),
+                title=parsed_task.title,
+                description=parsed_task.description,
+                model=parsed_task.model,
+                parent_id=None,
+                depends_on=[_row_id(d) for d in parsed_task.depends_on],
+                created_at=db._now(),
+                updated_at=db._now(),
+            )
+            self.graph.add_task(node)
+            try:
+                await db.supervisor_task_create(
+                    supervisor_id=self.supervisor_id,
+                    task_id=node.id,
+                    title=parsed_task.title,
+                    description=parsed_task.description,
+                    model=parsed_task.model,
+                    parent_task_id=None,
+                    depends_on=node.depends_on,
+                )
+                self.tracker.record(ProgressEvent(
+                    event_type="plan",
+                    task_id=node.id,
+                    data={
+                        "created": True,
+                        "title": parsed_task.title,
+                        "model": parsed_task.model,
+                    },
+                ))
+            except Exception:  # noqa: BLE001 -- one bad row, not the whole plan
+                # `exception`, not `warning`: this was a bare warning with no
+                # reason attached, which is why a task list that stayed empty
+                # while the work ran took a live run to notice at all.
+                _log.exception(
+                    "supervisor_task_create failed for %s", parsed_task.id,
+                )
+
+        self.config["parsed_tasks"] = [
+            {"id": t.id, "title": t.title, "status": t.status}
+            for t in self.graph.tasks.values()
+        ]
+
+
+
     async def _run_planner_turn(self, user_prompt: str) -> None:
         """Run the LLM planning turn, then parse the plan and execute tasks."""
         try:
@@ -751,70 +833,7 @@ class SupervisorEngine:
                     {"kind": "plan"},
                 )
 
-            # Create tasks in the graph and DB
-            if tasks:
-                # PlanParser numbers tasks from 1 within a plan, so every
-                # supervisor produces a t001. supervisor_tasks.id is a global
-                # PRIMARY KEY, so the second supervisor's write failed with
-                # UNIQUE constraint failed -- caught by a bare warning, so the
-                # task ran and finished while the list stayed empty and progress
-                # sat at 0%. Namespacing here rather than in the parser keeps
-                # {#taskN} references resolvable against the plan's own numbers.
-                def _row_id(plan_id: str) -> str:
-                    return f"{self.supervisor_id[:8]}_{plan_id}"
-
-                for i, parsed_task in enumerate(tasks):
-                    node = TaskNode(
-                        id=_row_id(parsed_task.id),
-                        title=parsed_task.title,
-                        description=parsed_task.description,
-                        model=parsed_task.model,
-                        parent_id=None,
-                        depends_on=[_row_id(d) for d in parsed_task.depends_on],
-                        created_at=db._now(),
-                        updated_at=db._now(),
-                    )
-                    self.graph.add_task(node)
-
-                    # Create DB task row (try-catch so plan failure doesn't
-                    # prevent tasks from running)
-                    try:
-                        await db.supervisor_task_create(
-                            supervisor_id=self.supervisor_id,
-                            task_id=node.id,
-                            title=parsed_task.title,
-                            description=parsed_task.description,
-                            model=parsed_task.model,
-                            parent_task_id=None,
-                            depends_on=node.depends_on,
-                        )
-                        self.tracker.record(ProgressEvent(
-                            event_type="plan",
-                            task_id=node.id,
-                            data={
-                                "created": True,
-                                "title": parsed_task.title,
-                                "model": parsed_task.model,
-                            },
-                        ))
-                    except Exception:  # noqa: BLE001
-                        # Was a bare warning with no reason attached, which is
-                        # why a task list that silently stayed empty while the
-                        # work ran took a live run to notice at all.
-                        _log.exception(
-                            "supervisor_task_create failed for %s",
-                            parsed_task.id,
-                        )
-
-                # Store parsed plan text
-                self.config["parsed_tasks"] = [
-                    {
-                        "id": t.id,
-                        "title": t.title,
-                        "status": t.status,
-                    }
-                    for t in self.graph.tasks.values()
-                ]
+            await self._materialise_plan(tasks)
 
             # Update supervisor status to running
             await self._set_status("running")

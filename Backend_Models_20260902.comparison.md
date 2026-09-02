@@ -360,6 +360,110 @@ answers correct, no placeholder.
 
 ---
 
+## Anthropic tier, measured properly — 2026-09-02 19:33
+
+Four models, 14 tasks, 2 repeats, 112 runs, CLI transport. Coding tasks scored
+by **executing** the code; prose tasks by mechanical claim checks, labelled as
+such. Costs are the CLI's own `total_cost_usd` with `costBasis: list` — the
+number being billed, not a computed estimate.
+
+This is the first table in this document where every column was measured rather
+than read, and where cost, latency and consistency are all present at once.
+
+| Model | correct | median TTFT | median total | $ total | **$ per correct** | unstable tasks |
+|---|---|---|---|---|---|---|
+| `claude-fable-5` | **28/28** | 3.36s | 9.1s | $7.3130 | **$0.2612** | **0 of 14** |
+| `claude-opus-5` | 27/28 | 2.51s | 9.2s | $4.8428 | $0.1794 | 1 of 14 |
+| `claude-sonnet-5` | 27/28 | 1.98s | 6.7s | $2.4518 | $0.0908 | 3 of 14 |
+| `claude-haiku-4-5` | 27/28 | **1.79s** | 10.6s | **$1.1682** | **$0.0433** | 2 of 14 |
+
+**The value answer is haiku, by a wide margin.** It matches opus and sonnet on
+correctness — 27 of 28 — at **1/6th the cost per correct answer** and the
+fastest time to first token in the set. Fable 5 is the only clean sweep, and
+pays 6x haiku for that one extra correct answer.
+
+### Time to first token, which this document has never had
+
+The old table ranked an "Interactive?" column without measuring the quantity
+that decides it. TTFT comes from the CLI's `result` frame, and it is **17–37%
+of total time** — so total time badly misrepresents how these feel to use.
+
+`claude-haiku-4-5` has the *fastest* first token (1.79s) and the *slowest*
+total (10.6s). Any ranking on total time alone gets that model exactly
+backwards for interactive work.
+
+### Consistency, weighted 9% and never previously measured
+
+Two repeats per task. "Unstable" means the same prompt produced two different
+scores:
+
+* `claude-fable-5` — **0 of 14.** Identical verdict every time.
+* `claude-opus-5` — 1: `comprehension-read` scored 75 then 100.
+* `claude-haiku-4-5` — 2: `coding-algo` (96.3/100), `reasoning-math` (50/100).
+* `claude-sonnet-5` — 3: `coding-bug-fix` (88.9/100), `coding-algo`
+  (96.3/100), `reasoning-puzzle` (**50/100**).
+
+Every one of these is invisible at one run per task, which is how the original
+six-model table was produced. A 50-versus-100 swing on the same prompt means a
+single-run score for that cell is a coin flip, and there is no way to tell from
+the data which side it landed on.
+
+### The edge tier catches idioms, not models
+
+**All four models score exactly 75.0 on `simple-json-field`**, and all four fail
+the identical check: `KeyError: 'active'`, because each writes `o['active']`
+rather than `o.get('active')`. Four different models, four identical failures.
+
+That is the same pattern as the other two edge checks — `x[-0:]` on the bug fix
+and `len(cache) == capacity` on the LRU. **What the edge tier measures is which
+idiom is conventional, not which model is careless**, which is exactly why it
+was moved out of the correctness verdict rather than being deleted.
+
+### What is not yet measured
+
+Stated so the gaps are not mistaken for results:
+
+| Missing | Why |
+|---|---|
+| Azure five on this harness | Their 16 http runs were void — see the gateway bug below. Re-run pending |
+| Qwen3.6 http vs cli, head to head | Running now, ~2.5h; it is the open question the 26x gap raised |
+| Anthropic over http | Not reachable; the gateway does not serve these models |
+| Repeats beyond 2 | 2 finds instability but cannot quantify its rate |
+| Any task above `hard` | Every Anthropic model is at or near ceiling on 12 of 14 |
+
+## The gateway cannot stream Azure models
+
+Not a model finding and not really a benchmark one — it needs fixing
+independently of either.
+
+All 16 Azure runs over HTTP returned `out=0`, `stop_reason=None` and an empty
+response. They were one step from being published as five models scoring zero on
+every task. The cause is server-side, and the gateway states it inside the
+stream:
+
+```json
+{"error": {"message": "list index out of range\n\nTraceback (most recent call
+ last):\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/proxy/...\""}}
+```
+
+Confirmed by hand against the gateway:
+
+| request | result |
+|---|---|
+| `stream: false`, `azure_ai/gpt-5.4-mini` | correct 246-byte response |
+| `stream: true`, `azure_ai/gpt-5.4-mini` | **LiteLLM traceback after `content_block_start`** |
+| `stream: true`, `vllm/Qwen3.6-35B` | works, full delta stream |
+
+So it is specific to the Azure passthrough. **Nothing can stream an Azure model
+through this gateway today**, which matters for the console itself and not only
+for a benchmark.
+
+The harness compounded it: that error frame carries no `type` key, so a parser
+switching on `type` dropped it and reported silence. It is now checked first and
+attributed to the gateway, and a failed stream is re-run unstreamed with the
+reason recorded and no TTFT invented. `azure_ai/gpt-5.4-mini` now scores 100 on
+`floor-add` and `simple-fizzbuzz` in 1.16s and 1.59s.
+
 ## Cost
 
 **The Delegation Score has no cost dimension.** Its eight weights are
@@ -414,20 +518,30 @@ Measured over 8 hard tasks × 2 repeats per model, CLI transport, 2026-09-02:
 | `claude-sonnet-5` | 14/16 | $0.5449 | **$0.0389** |
 | `claude-haiku-4-5` | 13/16 | $0.2868 | **$0.0221** |
 
-> **These four figures understate the real cost, and are superseded.** They were
-> computed from `input_tokens` alone, and `input_tokens` from the CLI is only
-> the *uncached* portion. The tell was in the data: opus-5 reported a constant
-> 12,029 input tokens for every task including the 30,000-token long-context
-> one, and haiku-4-5 reported 10. The real volume sits in
+> **Superseded — these four understate the real cost by roughly 2x.** Replaced
+> by the 14-task table in "Anthropic tier, measured properly" above. Kept here
+> because the error is instructive.
+>
+> They were computed from `input_tokens` alone, and `input_tokens` from the CLI
+> is only the *uncached* portion. The tell was in the data: opus-5 reported a
+> constant 12,029 input tokens for every task including the 30,000-token
+> long-context one, and haiku-4-5 reported 10. The real volume sits in
 > `cache_read_input_tokens` and `cache_creation_input_tokens` — one trivial
 > haiku turn moves 12,276 cache writes and 18,905 cache reads and bills
-> $0.0269, more than the table above attributes to any single run of any model.
+> $0.0269, more than this table attributes to any single run of any model.
 >
-> The harness now captures both, and prefers the CLI's own `total_cost_usd`
-> where it is reported with `costBasis: list`, since that is the number being
-> billed. The full 14-task run in progress will replace this table. The
-> *ordering* is not expected to change — fable dearest, haiku cheapest — but
-> the magnitudes will rise substantially.
+> Measured against the CLI's own `total_cost_usd`, the correction is:
+
+| Model | computed from `input_tokens` | actual, billed | ratio |
+|---|---|---|---|
+| `claude-fable-5` | $0.1771 | **$0.2612** | 1.5x |
+| `claude-opus-5` | $0.0891 | **$0.1794** | 2.0x |
+| `claude-sonnet-5` | $0.0389 | **$0.0908** | 2.3x |
+| `claude-haiku-4-5` | $0.0221 | **$0.0433** | 2.0x |
+
+> The ordering held, as predicted; the magnitudes roughly doubled. Note the
+> ratios differ per model — a single correction factor would not have worked,
+> because how much a model caches is itself a model property.
 
 ### Non-Anthropic costs in `usage_events` are fictional
 

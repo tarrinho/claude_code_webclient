@@ -14,6 +14,7 @@ missed.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -426,6 +427,41 @@ class CostTests(unittest.TestCase):
             cost.rate_for("vllm/anything-at-all", {"vllm/*": {"input": 0.0}}),
             {"input": 0.0})
         self.assertIsNone(cost.rate_for("azure_ai/x", {"vllm/*": {"input": 0.0}}))
+
+    def test_documentation_keys_are_not_backends(self):
+        """`bench_rates.json` carries a `_comment` recording where the numbers
+        came from. Without filtering it, `rate_for` hands that comment back as
+        though it were a rate card."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rates.json"
+            path.write_text(json.dumps({
+                "_comment": ["a note", "another note"],
+                "_source": "derived",
+                "paid/m": {"input": 1.0, "output": 2.0},
+            }), encoding="utf-8")
+            import os
+            old = os.environ.get("WC_BENCH_RATES")
+            os.environ["WC_BENCH_RATES"] = str(path)
+            try:
+                rates = cost.load_rates()
+            finally:
+                if old is None:
+                    os.environ.pop("WC_BENCH_RATES", None)
+                else:
+                    os.environ["WC_BENCH_RATES"] = old
+        self.assertEqual(set(rates), {"paid/m"})
+        self.assertIsNone(cost.rate_for("_comment", rates))
+
+    def test_the_committed_rates_file_is_loadable_and_omits_azure(self):
+        """Azure rows are absent on purpose: nobody recorded what this
+        deployment pays, and an absent rate must read as unknown rather than
+        as free."""
+        rates = cost.load_rates()
+        self.assertIn("claude-opus-5", rates)
+        self.assertEqual(rates["claude-opus-5"]["input"], 5.0)
+        self.assertEqual(rates["claude-opus-5"]["output"], 25.0)
+        self.assertIsNone(cost.rate_for("azure_ai/gpt-5.6-luna", rates))
+        self.assertEqual(cost.rate_for("vllm/anything", rates)["input"], 0.0)
 
     def test_an_exact_rate_beats_a_glob(self):
         rates = {"vllm/*": {"input": 0.0}, "vllm/special": {"input": 9.0}}

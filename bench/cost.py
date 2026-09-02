@@ -57,7 +57,12 @@ def load_rates() -> dict[str, dict[str, float]]:
             except (OSError, json.JSONDecodeError):
                 continue
             if isinstance(data, dict):
-                return data
+                # Underscore keys are documentation, not backends. The rates
+                # file carries a long `_comment` explaining where the numbers
+                # came from, and without this filter `rate_for("_comment")`
+                # returns that comment as though it were a rate card.
+                return {k: v for k, v in data.items()
+                        if not k.startswith("_") and isinstance(v, dict)}
     return {}
 
 

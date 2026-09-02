@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "Per-token rates in US dollars per MILLION tokens, for bench/cost.py.",
+    "",
+    "The Anthropic rows are not estimates. The opus-5 row was recovered by",
+    "least squares from the 11 turns in usage_events that carry",
+    "cost_basis='list' -- the CLI's own reported list price -- and it fits all",
+    "11 to the cent, worst absolute error $0.0000. It then matched the",
+    "published rate card exactly, which is what makes the derivation",
+    "trustworthy rather than a coincidence of round numbers.",
+    "",
+    "The cache_write figures are the 1-hour TTL rate (2x base input), because",
+    "that is the one the fit recovered: $10.00/MTok against a $5.00 base. The",
+    "5-minute rate is 1.25x and is listed here for reference only.",
+    "",
+    "Azure rows are deliberately ABSENT, not zero. Nobody has recorded what",
+    "this deployment pays for gpt-5.6-luna, gpt-5.6-sol, gpt-5.4-mini,",
+    "gpt-5.4-mini-copilot or gpt-5-mini, and those names look like internal",
+    "deployment aliases rather than public SKUs, so no public rate card",
+    "applies to them. bench/cost.py reports an unrecorded rate as 'rate not",
+    "recorded' and never as free -- a model nobody priced must not come out",
+    "cheapest.",
+    "",
+    "The vllm row is 0.0 because it is self-hosted: no marginal per-token",
+    "charge. Its cost is wall-clock and GPU occupancy, which the benchmark",
+    "records separately as total_s.",
+    "",
+    "WARNING about usage_events: every non-Anthropic cost_usd in that table is",
+    "opus-5 list pricing applied to the wrong backend. Verified by recomputing",
+    "each model's recorded total at opus rates -- all four Azure models and",
+    "Qwen3.6 match to the cent. Only cost_basis='list' rows are real billing."
+  ],
+  "claude-opus-5": {
+    "input": 5.0,
+    "output": 25.0,
+    "cache_read": 0.5,
+    "cache_write": 10.0
+  },
+  "claude-sonnet-5": {
+    "input": 2.0,
+    "output": 10.0,
+    "cache_read": 0.2,
+    "cache_write": 4.0
+  },
+  "claude-fable-5": {
+    "input": 10.0,
+    "output": 50.0,
+    "cache_read": 1.0,
+    "cache_write": 20.0
+  },
+  "claude-haiku-4-5": {
+    "input": 1.0,
+    "output": 5.0,
+    "cache_read": 0.1,
+    "cache_write": 2.0
+  },
+  "vllm/*": {
+    "input": 0.0,
+    "output": 0.0,
+    "cache_read": 0.0,
+    "cache_write": 0.0
+  }
+}

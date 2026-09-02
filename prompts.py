@@ -36,6 +36,20 @@ _SNAPSHOT_MAX: Final[int] = 20000
 # Upper bound on a request typed into a terminal from the web.
 _TEXT_MAX: Final[int] = 4000
 
+# The frame Claude draws around the command a prompt is asking about. Used as a
+# stop when reading the question text upwards, so the framed command does not
+# get read back as the question.
+_BOX_CHARS: Final[str] = "│─╭╮╰╯├┤┌┐└┘┃━"
+_PROMPT_TEXT_MAX_LINES: Final[int] = 4
+_PROMPT_CACHE_TTL_S: Final[float] = 3.0
+_PROMPT_CACHE_MAX: Final[int] = 256
+# session_id -> (monotonic time of the capture, whether a prompt was showing)
+_prompt_cache: dict[str, tuple[float, bool]] = {}
+_PERMISSION_RE: Final[re.Pattern[str]] = re.compile(
+    r"Permission rule|requires confirmation|wants to (?:run|use|edit|create)",
+    re.IGNORECASE,
+)
+
 # Keystrokes we are willing to deliver. A prompt is answered by moving a
 # selection and confirming it, so nothing else needs to be expressible, and
 # refusing the rest keeps this from becoming a general remote-typing hole.
@@ -540,6 +554,149 @@ def visible_options(snapshot: str) -> list[dict[str, Any]]:
             "selected": "❯" in line,
         })
     return sorted(options, key=lambda option: option["index"])
+
+
+def prompt_lines(snapshot: str) -> list[str]:
+    """The question's lines, top to bottom, exactly as they appear on screen.
+
+    Kept as lines rather than one string because the two consumers need
+    different things. Display wants them joined; the needle that confirms the
+    prompt is still on screen must be a *contiguous* run of characters the
+    screen actually contains, and a joined string is not -- the lines are
+    separate rows there, so ``needle in snapshot`` would always be false and
+    every terminal-read prompt would be reported unanswerable.
+
+    Read backwards from the first numbered option, because that is the only
+    landmark whose position is fixed: the question above it runs to one line or
+    several, and everything below it is options and key hints.
+
+    Collection stops at a box-drawing character -- the frame Claude draws around
+    the command it is asking about -- and at a run of two blank lines. Without
+    the first stop the command's own text, which can be dozens of lines of diff
+    or commit message, would be read back as the question.
+
+    A *single* blank line is skipped rather than treated as the end, because
+    Claude puts blank lines inside the question block itself. Stopping on one
+    kept only the last line, which for a permission prompt is the useless half:
+    "Do you want to proceed?" with no trace of what was being proposed.
+    """
+    lines = snapshot.splitlines()
+    first: int | None = None
+    for index, line in enumerate(lines):
+        if re.match(r"\s*[❯>]?\s*\d+\.\s+\S", line):
+            first = index
+            break
+    if first is None:
+        return []
+    collected: list[str] = []
+    blanks = 0
+    for line in reversed(lines[:first]):
+        text = line.strip()
+        if not text:
+            blanks += 1
+            # Two in a row is a real gap between the prompt and whatever
+            # preceded it. One is part of the prompt's own layout.
+            if blanks >= 2:
+                break
+            continue
+        if any(char in text for char in _BOX_CHARS):
+            break
+        blanks = 0
+        collected.append(text)
+        if len(collected) >= _PROMPT_TEXT_MAX_LINES:
+            break
+    collected.reverse()
+    return collected
+
+
+def prompt_text(snapshot: str) -> str:
+    """The question the prompt on screen is asking, as one line."""
+    return " ".join(prompt_lines(snapshot))[:_TEXT_MAX]
+
+
+def read_prompt(session_id: str) -> dict[str, Any] | None:
+    """The prompt *session_id* is blocked on, read from its own terminal.
+
+    The transcript is the usual source for a pending question and it cannot see
+    every prompt. A permission prompt -- "Permission rule Bash(git push*)
+    requires confirmation for this command" -- is a TUI interaction that the CLI
+    never writes to the JSONL, so ``transcripts.pending_question`` returns None
+    while the session sits blocked indefinitely. The same is true of anything
+    else the terminal raises on its own account rather than through a tool call.
+
+    Returned in the shape ``transcripts.pending_question`` uses, so callers do
+    not branch on where the question came from. ``options`` is left empty for
+    the same reason :func:`transcripts._approval_block` leaves it empty: the
+    endpoint reads the real labels off the terminal with :func:`visible_options`,
+    and a list invented here would offer answers the terminal never showed.
+
+    ``source`` records that this was observed on screen rather than recorded by
+    the CLI. It is the honest provenance for a question with no tool_use id, and
+    the console does not claim a question it has not actually seen.
+    """
+    target = locate(session_id)
+    if target is None:
+        return None
+    snapshot = refresh(target)
+    if not looks_like_a_prompt(snapshot):
+        return None
+    if not visible_options(snapshot):
+        return None
+    lines = prompt_lines(snapshot)
+    text = " ".join(lines)[:_TEXT_MAX]
+    # The longest line, not the last: it is the most specific, and the last is
+    # usually "Do you want to proceed?" -- which every permission prompt shows,
+    # so it would confirm a *different* prompt just as readily as this one.
+    needle = max(lines, key=len) if lines else ""
+    return {
+        # No tool_use id exists: nothing recorded this question. Empty rather
+        # than synthesised, so it cannot be mistaken for a transcript id.
+        "id": "",
+        "questions": [{
+            "question": text or "This session is waiting on a prompt.",
+            "header": "Permission" if _PERMISSION_RE.search(text) else "Waiting",
+            "multi_select": False,
+            "options": [],
+        }],
+        "approval": True,
+        # Confirms the same prompt is still on screen when the keystroke is
+        # delivered. It came off the screen, so it matches unless the prompt
+        # changed in between -- which is the race worth catching, since the
+        # keystroke would otherwise land on whatever replaced it.
+        "needle": needle,
+        "source": "terminal",
+    }
+
+
+def has_prompt(session_id: str, ttl_s: float = _PROMPT_CACHE_TTL_S) -> bool:
+    """Whether *session_id* is showing a prompt, cheaply enough to poll.
+
+    :func:`read_prompt` captures the terminal, which costs a subprocess and can
+    wait up to ``_CMD_TIMEOUT_S``. The conversation list and the members panel
+    are polled every few seconds and only need the yes/no, so the answer is
+    cached briefly and shared between them.
+
+    The cache makes this answer up to ``ttl_s`` stale, which is the right
+    trade for a badge marker and the wrong one for delivering a keystroke.
+    Callers about to answer a prompt use :func:`read_prompt` directly and get a
+    fresh capture, because acting on a prompt that has since been replaced
+    would send the answer to whatever replaced it.
+    """
+    now = time.monotonic()
+    cached = _prompt_cache.get(session_id)
+    if cached is not None and now - cached[0] < ttl_s:
+        return cached[1]
+    try:
+        found = read_prompt(session_id) is not None
+    except Exception:  # noqa: BLE001 -- a surface must render without this
+        return False
+    # Bounded so a long-lived server does not accumulate an entry per session
+    # id it has ever seen. Cleared wholesale rather than by age: the entries are
+    # equivalent and the cache is a few seconds deep, so nothing is lost.
+    if len(_prompt_cache) > _PROMPT_CACHE_MAX:
+        _prompt_cache.clear()
+    _prompt_cache[session_id] = (now, found)
+    return found
 
 
 def answer(target: dict[str, Any], want: int, max_moves: int = 12) -> dict[str, Any]:

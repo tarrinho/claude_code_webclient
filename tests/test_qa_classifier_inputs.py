@@ -146,7 +146,12 @@ class SurfacesAgreeWithACliSessionTests(unittest.IsolatedAsyncioTestCase):
     async def _both_surfaces(self, cli_status: str):
         """The status each surface reports for the same chat, same inputs."""
         import json
-        maps = ({SESSION_ID: cli_status}, {}, {SESSION_ID: "2026-09-01T00:00:00Z"})
+        # Fourth map: whether the session is showing a prompt on its terminal.
+        # Empty here on purpose. This case is about the two surfaces agreeing
+        # from the session's *status*, so leaving it empty keeps a screen read
+        # from supplying an answer that status alone should decide.
+        maps = ({SESSION_ID: cli_status}, {}, {SESSION_ID: "2026-09-01T00:00:00Z"},
+                {})
         with patch.object(app, "_cli_maps", AsyncMock(return_value=maps)):
             feed = json.loads(bytes(
                 (await app.handle_supervisor(self._request())).body))

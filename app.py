@@ -3609,8 +3609,8 @@ async def _session_failure(session_id: str, file_touched: str) -> str | None:
     return failure
 
 
-async def _cli_maps(marks: dict) -> tuple[dict, dict, dict]:
-    """The three CLI lookups `classify_chat` needs, keyed by session id.
+async def _cli_maps(marks: dict) -> tuple[dict, dict, dict, dict]:
+    """The four CLI lookups `classify_chat` needs, keyed by session id.
 
     Extracted for the same reason `classify_chat` itself was: both the sidebar
     and the members panel classify conversations, and a classifier given
@@ -3621,13 +3621,24 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict]:
     correctly kept it quiet. Two surfaces, one function, and still a
     disagreement, because the shared thing was the logic and not the data.
 
+    The fourth map answers "is this session showing a prompt right now", read
+    off its terminal. It is here rather than inside `classify_chat` because that
+    function is pure and must stay so to be testable; and it is in `_cli_maps`
+    rather than at one call site for the reason the other three are, which is
+    that a surface computing its own inputs is how the two disagreed before.
+
+    Only sessions that already look blocked are captured. The capture costs a
+    subprocess, both callers are polled, and a session that is busy or idle is
+    not sitting on a prompt -- so asking about one would spend the subprocess to
+    be told what its status already said.
+
     Returns empty maps when the session registry cannot be read: unknown status
     is the safe default everywhere it is consulted.
     """
     try:
         sessions = await db.read_claude_sessions()
     except Exception:  # noqa: BLE001 -- a surface must render without them
-        return {}, {}, {}
+        return {}, {}, {}, {}
     status: dict[str, str] = {}
     dismissed: dict[str, str] = {}
     updated: dict[str, str] = {}
@@ -3639,7 +3650,12 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict]:
         dismissed[session_id] = marks.get(
             ("session", session_id), {}).get("dismissed_at", "")
         updated[session_id] = entry.get("status_updated_at", "")
-    return status, dismissed, updated
+    blocked = [sid for sid, value in status.items() if _session_needs_a_person(value)]
+    prompting: dict[str, bool] = {}
+    for session_id in blocked:
+        prompting[session_id] = await asyncio.to_thread(
+            prompts.has_prompt, session_id)
+    return status, dismissed, updated, prompting
 
 
 # Session statuses that do NOT mean "a person is needed".
@@ -3735,6 +3751,7 @@ def classify_chat(
     cli_status_map: dict,
     cli_dismiss_map: dict,
     cli_status_updated_map: dict,
+    cli_prompt_map: dict | None = None,
 ) -> dict | None:
     """Classify one conversation as waiting, working or updated.
 
@@ -3843,11 +3860,21 @@ def classify_chat(
                 "status": "waiting",
                 "reason": "asks",
                 "reason_detail": f"session={cli_status}",
-                # "asks" here comes from the session's status, not from reading
-                # anything, so it is not evidence of a question. Only the
-                # message itself can supply that.
-                "question": _asks_a_question(
-                    last.get("tail") or entry.get("preview") or ""),
+                # "asks" here comes from the session's status, which says a
+                # person is needed but not that a question was put to them. Two
+                # things can supply that, and both are observations rather than
+                # inferences: the message text, and a prompt actually on screen.
+                #
+                # The screen is what closes the case this could not see. A
+                # permission prompt is never written to the transcript, so a
+                # session blocked on one had no message to match and no "?" --
+                # it appeared in the badge as an agent that had merely stopped,
+                # with nothing to say a keystroke would free it.
+                "question": (
+                    _asks_a_question(
+                        last.get("tail") or entry.get("preview") or "")
+                    or bool((cli_prompt_map or {}).get(session_id))
+                ),
             }
         # Dismissed while blocked. Noted rather than returned: the read check
         # below must still run, because `read_mark_set` writes the same timestamp
@@ -4092,6 +4119,7 @@ async def handle_supervisor(request: Request):
         _cli_status_map,
         _cli_dismiss_map,
         _cli_status_updated_map,
+        _cli_prompt_map,
     ) = await _cli_maps(marks)
     for chat in chats:
         if chat.get("archived"):
@@ -4102,6 +4130,7 @@ async def handle_supervisor(request: Request):
         entry = classify_chat(
             chat, last, live_ids, queued, marks,
             _cli_status_map, _cli_dismiss_map, _cli_status_updated_map,
+            _cli_prompt_map,
         )
         if entry is None:
             continue
@@ -4209,7 +4238,7 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
     # still working, so it announced running work as finished while the sidebar
     # -- same function, better inputs -- kept it quiet. Sharing the classifier
     # was not enough; the data has to be shared too.
-    cli_status, cli_dismiss, cli_updated = await _cli_maps(marks)
+    cli_status, cli_dismiss, cli_updated, cli_prompting = await _cli_maps(marks)
 
     members = []
     for row in rows:
@@ -4230,7 +4259,7 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
         if last:
             entry = classify_chat(
                 chat, last, live_ids, queued, marks,
-                cli_status, cli_dismiss, cli_updated,
+                cli_status, cli_dismiss, cli_updated, cli_prompting,
             )
         since_ts = row["added_at"]
         if last and last.get("created_at"):
@@ -4756,6 +4785,33 @@ async def _skip_transcript_to_end(chat_id: str, session_id: str) -> None:
         await db.chat_set_transcript_offset(chat_id, int(payload.get("offset") or 0))
 
 
+async def _pending_prompt(session_id: str) -> dict[str, Any] | None:
+    """The prompt *session_id* is blocked on, from the transcript or the screen.
+
+    The transcript is asked first because it is the richer answer: an
+    AskUserQuestion call carries the question text, its header and its declared
+    options as structured data, and it is durable, so it reads the same whether
+    or not the session is still hosted in a multiplexer.
+
+    The terminal is the fallback, and it exists because the transcript is not a
+    complete record of what a session can be blocked on. A permission prompt --
+    "Permission rule Bash(curl*) requires confirmation for this command" -- is a
+    TUI interaction the CLI never writes to the JSONL. Every one of the three
+    question handlers gated on the transcript alone, so all three agreed there
+    was no question while the session sat blocked on one, the badge offered no
+    way to answer it, and the only way out was to walk to the terminal. The
+    session's own status said `waiting` the whole time.
+
+    Order matters and not only for richness: a session can hold a recorded
+    question *and* show a prompt, and the recorded one is the question the user
+    was asked. Reading the screen first would answer the wrong one.
+    """
+    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    if pending:
+        return pending
+    return await asyncio.to_thread(prompts.read_prompt, session_id)
+
+
 async def handle_chat_question_get(request: Request):
     """GET /api/chats/{id}/question -- the prompt this chat's session is waiting on.
 
@@ -4773,7 +4829,7 @@ async def handle_chat_question_get(request: Request):
     if not session_id:
         return JSONResponse({"pending": False, "reason": "not linked to a session"})
 
-    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    pending = await _pending_prompt(session_id)
     if not pending:
         return JSONResponse({"pending": False})
 
@@ -4821,7 +4877,7 @@ async def handle_chat_question_answer(request: Request):
     if not 1 <= want <= 9:
         raise HTTPException(status_code=400, detail="index out of range")
 
-    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    pending = await _pending_prompt(session_id)
     if not pending:
         raise HTTPException(status_code=409, detail="No question is waiting")
     target = await asyncio.to_thread(
@@ -4874,7 +4930,7 @@ async def handle_chat_question_dismiss(request: Request):
     if not session_id:
         raise HTTPException(status_code=400, detail="Chat is not linked to a session")
 
-    pending = await asyncio.to_thread(transcripts.pending_question, session_id)
+    pending = await _pending_prompt(session_id)
     if not pending:
         # Nothing to close is the state the caller asked for, so it is a
         # success. Answering has the opposite default -- a 409 there stops an

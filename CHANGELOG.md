@@ -22,6 +22,41 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Prompts that exist only on the terminal are now visible and answerable.** A
+  permission prompt — *"Permission rule `Bash(curl*)` requires confirmation for
+  this command. Do you want to proceed? ❯ 1. Yes / 2. No"* — is a TUI
+  interaction, and the CLI never writes it to the transcript JSONL. All three
+  question handlers (get, answer, dismiss) decided whether a question existed by
+  asking `transcripts.pending_question`, so all three agreed there was none while
+  the session sat blocked on one. The conversation showed nothing to answer and
+  the only way out was to walk to the terminal.
+
+  Everything needed was already present and nothing connected it: the session's
+  own status file said `waiting`, and `prompts.looks_like_a_prompt` and
+  `prompts.visible_options` read the prompt and both its choices off the screen
+  correctly when asked. What was missing was anyone asking. `prompts.read_prompt`
+  now reads a prompt from the terminal in the shape `pending_question` returns,
+  and one resolver serves all three handlers — the bug was one line repeated
+  three times, so a prompt was invisible, unanswerable *and* undismissable, and
+  fixing only the symptom that got noticed would have left the other two.
+
+  The transcript is still asked first. It is the richer answer, and it is also
+  the *right* one: a session can hold a recorded question and show a prompt at
+  the same time, and the recorded one is the question the user was actually
+  asked. Reading the screen first would answer the wrong one.
+
+- **Conversations blocked on such a prompt are marked as asking.** Being
+  answerable is no use if it cannot be found. A conversation whose session shows
+  a prompt now carries the question mark in the sidebar and the members panel,
+  from the prompt actually being on screen rather than from the status alone — a
+  session reported as `waiting` needs a person, which is not the same as having
+  put a question to them, and a mark that meant "stopped" would make the badge
+  worth less. Only sessions that already look blocked are captured, and the
+  answer is cached for a few seconds, because both surfaces are polled and each
+  capture costs a subprocess.
+
 ## [0.10.1] — 2026-09-02
 
 > First two steps of `docs/superpowers/specs/2026-09-01-supervisor-next-design.md`,

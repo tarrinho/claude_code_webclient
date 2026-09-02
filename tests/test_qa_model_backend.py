@@ -309,9 +309,18 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         # The validator used to return only the host, so the scheme and path
         # were silently discarded on save. _resolve_host is patched to keep the
         # test offline -- host validation now performs a real DNS lookup.
+        #
+        # Patched on net_validation, not on app. The 0.10.0 split moved this
+        # cluster into its own module, and `_validate_host` calls its
+        # module-local `_resolve_host` -- so rebinding the name app re-exports
+        # no longer intercepts anything, and the test went back to real DNS.
+        # Patch where a function lives, not where it is re-exported.
         import json as _json
+
+        import net_validation
         url = "https://api.example.invalid/v1"
-        with patch.object(app, "_resolve_host", return_value="93.184.216.34"):
+        with patch.object(net_validation, "_resolve_host",
+                          return_value="93.184.216.34"):
             resp = await app.handle_machine_create(self._req({
                 "name": "M", "host": "api.example.invalid", "port": 443,
                 "model": SERVED_MODELS[0], "base_url": url,

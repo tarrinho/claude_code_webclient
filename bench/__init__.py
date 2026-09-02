@@ -25,7 +25,7 @@ Modules:
 
 * `tasks`    — the task set, each with a mechanical verifier
 * `verify`   — runs model-written code in a subprocess and scores it
-* `transports` — HTTP and CLI paths, both streaming, both reporting TTFT
+* `transports` — the CLI path used by WebConsole, reporting TTFT
 * `cost`     — per-token rates, and cost per *correct* answer
 """
 from __future__ import annotations

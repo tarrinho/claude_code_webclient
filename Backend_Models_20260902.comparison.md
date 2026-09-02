@@ -1,702 +1,200 @@
-# Backend & Model Comparison — 2026-09-02
+# Backend and Model Comparison — 2026-09-02
 
-**Delegation Score**: How confident am I that this model will get the job done right without me reworking it? 0-100%.
+## Executive result
 
-**Benchmark**: 6 tasks × 6 models = 36 queries against the WebConsole gateway (`llm.ai-machine.cfappsecurity.com`).
+This comparison now uses the benchmark that WebConsole actually uses: the **CLI transport**. Raw HTTP is not an active WebConsole configuration and is included only in the diagnostic appendix because it exposed a separate gateway problem.
 
-> ## Correction, 2026-09-02 17:05 — read this before the tables
->
-> **Qwen3.6's original scores measured the benchmark harness, not the model.**
-> It was ranked last at 55.4% with "Code Quality 0" and "produces zero output
-> text", and that verdict is withdrawn. Three limits in the harness, each of
-> which disqualified the model before it could answer:
->
-> 1. **`max_tokens = 4096` covered thinking and answer together.** Qwen3.6 is
->    the only reasoning model in the set. Re-measured, it needs 6097, 6411 and
->    6360 output tokens on the three tasks that "failed" — so the answer was
->    being cut off mid-thought. No other model came near the cap: the highest
->    was luna at 2725, and the two cheap ones use under 800. The cap was
->    calibrated on non-reasoning models and only ever bound on this one.
-> 2. **The extractor recorded truncation as silence.** It substituted the
->    literal string `[thinking]` for a thinking block, so a truncated run and an
->    empty run became indistinguishable in the data. Visible in the original
->    JSON: the three Qwen tasks that *did* finish have responses beginning
->    `'[thinking]\n\n\n$'` — placeholder, then the real answer.
-> 3. **`TIMEOUT = 180s` was never a considered value.** The original run
->    measured Qwen at 123–177s per task, so every one of its successes landed
->    within 3s of the limit. Anything slower than the five Azure models failed
->    on arrival.
->
-> Re-run at `max_tokens = 16384` and a 600s timeout, **5 of 6 tasks complete
-> with `stop_reason: end_turn`, `had_text_block: true`, and no `[thinking]`
-> prefix anywhere.** Clean answers are this model's normal output; the prefix
-> was the harness flattening two channels into one string.
->
-> Evidence: `bench_qwen_rerun_20260902.json`, committed alongside this file.
->
-> **The speed column below is not safe to read as a model property.** See
-> "Transport, not model" — the same task the HTTP path cannot finish in 600s is
-> answered correctly through the CLI path in 23.0s.
+The benchmark ran 14 tasks, 2 repeats per task, with mechanical execution for code and claim checks for prose. Results below come from 264 measured CLI runs:
 
-## Delegation Scores (overall)
+- 4 Anthropic models × 14 tasks × 2 repeats = 112 runs
+- 5 Azure models × 14 tasks × 2 repeats = 140 runs
+- Qwen × 6 floor/simple tasks × 2 repeats = 12 runs
 
-Ranked on quality only, which is what these six dimensions measure. Cost is not
-one of them — see "Cost" below, which changes the ordering for most real work.
+Qwen was intentionally re-tested on simpler tasks. The clean or empty output seen in the old benchmark was a harness failure, not evidence that Qwen was unusable. Qwen is self-hosted and free; Anthropic models have the measured token costs below; Azure prices were not recorded.
 
-| Rank | Model | Delegation Score | Speed | $/MTok in/out | $ per correct | Quality Tier |
-|---|---|---|---|---|---|---|
-| 1 | **azure_ai/gpt-5.6-luna** | **73.7%** | 50s/task | not recorded | — | Best overall balance |
-| 2 | **azure_ai/gpt-5.4-mini-copilot** | **72.1%** | 6s/task | not recorded | — | Fastest capable |
-| 3 | **azure_ai/gpt-5.6-sol** | **69.5%** | 11s/task | not recorded | — | Solid code quality |
-| 4 | **azure_ai/gpt-5-mini** | **67.3%** | 14s/task | not recorded | — | Good for planning |
-| 5 | **azure_ai/gpt-5.4-mini** | **65.8%** | 3s/task | not recorded | — | Fastest, weakest code |
-| — | **claude-fable-5** | not scored here | 14.6s median | **$10 / $50** | $0.1771† | 15/16, dearest by 2x |
-| — | **claude-opus-5** | not scored here | 12.9s median | **$5 / $25** | $0.0891† | 15/16 |
-| — | **claude-sonnet-5** | not scored here | 10.2s median | **$2 / $10** | $0.0389† | 14/16, best value of the four |
-| — | **claude-haiku-4-5** | not scored here | 23.1s median | **$1 / $5** | $0.0221† | 13/16, cheapest |
-| — | **vllm/Qwen3.6-35B-A3B-NVFP4** | **withdrawn** | see caveat | **$0** | **$0** | Correct on 5/6; self-hosted |
+## Recommendation by scarce resource
 
-† Understated — computed before cached input was captured. See "Cost per
-correct answer". The ordering holds; the magnitudes rise.
-
-The four Anthropic models are measured on a **different task set** (the 8 hard
-tasks, executed and verified) than the five Azure rows (the original 6, scored
-by reading), so their Delegation Scores are not comparable and none is
-asserted. A single ranking across both would be the same mistake as the 55.4%:
-one number hiding which measurement produced it. The full 14-task run over both
-transports replaces every row here.
-
-Qwen3.6 is deliberately left unranked rather than given a new number. Five of
-its six tasks are re-measured and clean; the sixth cannot be measured on this
-path at all. A single figure would hide that, which is how the 55.4% happened.
-
----
-
-## Per-Model Breakdown
-
-### 1. azure_ai/gpt-5.6-luna — Delegation Score: 73.7%
-
-| Dimension | Score | Avg Rating | Notes |
-|---|---|---|---|
-| Correctness | 100 | 5.0 | All answers correct, math right, puzzle right |
-| Code Quality | 75 | 3.75 | Type hints, generic types, clean structure |
-| Completeness | 75 | 3.75 | Covers all requirements, minor detail gaps |
-| Reasoning | 75 | 3.75 | Sound multi-step, clear constraints noted |
-| Constraint Handling | 75 | 3.75 | Respects all stated constraints |
-| Clarity | 50 | 2.5 | Good structure but verbose in places |
-| **Avg Delegation Score** | **73.7%** | | **Best balance** |
-
-**Task detail:**
-- `coding-bug-fix`: ✅ Correct fix with TypeVar, early break on n reached
-- `reasoning-puzzle`: ✅ 7 pours, correct steps
-- `coding-algo`: ✅ OrderedDict, O(1), clean __repr__
-- `reasoning-math`: ✅ Correct formula and answer (0.5073), boxed
-- `comprehension-read`: ✅ All 4 questions correct, precise edge case analysis
-- `planning-task`: ✅ System/light/dark design with CHECK constraint, `data-theme` attribute, early init script
-
-**Verdict:** Best overall. Correct, well-typed code. Slowest at ~10s/task but worth it for quality. Delegate coding and reasoning freely.
-
----
-
-### 2. azure_ai/gpt-5.4-mini-copilot — Delegation Score: 72.1%
-
-| Dimension | Score | Avg Rating | Notes |
-|---|---|---|---|
-| Correctness | 100 | 5.0 | All answers correct |
-| Code Quality | 50 | 2.5 | Works but minimal typing, basic structure |
-| Completeness | 75 | 3.75 | Covers requirements, less detailed |
-| Reasoning | 75 | 3.75 | Correct reasoning, brief |
-| Constraint Handling | 75 | 3.75 | Respects constraints |
-| Clarity | 50 | 2.5 | Structured but terse explanations |
-| **Avg Delegation Score** | **72.1%** | | **Fastest capable** |
-
-**Task detail:**
-- `coding-bug-fix`: ✅ Correct fix, basic type hints (List[T])
-- `reasoning-puzzle`: ✅ 7 pours, correct
-- `coding-algo`: ✅ OrderedDict, O(1), no type annotations on class methods
-- `reasoning-math`: ✅ Correct, full expansion
-- `comprehension-read`: ✅ All correct, brief
-- `planning-task`: ✅ Solid plan, good structure
-
-**Verdict:** Fastest capable model (~6s/task). Gets everything right but produces leaner code. Best for batch/async tasks where speed matters and you'll review.
-
----
-
-### 3. azure_ai/gpt-5.6-sol — Delegation Score: 69.5%
-
-| Dimension | Score | Avg Rating | Notes |
-|---|---|---|---|
-| Correctness | 75 | 3.75 | Math correct, but coding issues |
-| Code Quality | 25 | 1.25 | LRU cache missing docstring, minimal type hints |
-| Completeness | 75 | 3.75 | Covers most, thin on some detail |
-| Reasoning | 75 | 3.75 | Correct reasoning steps |
-| Constraint Handling | 75 | 3.75 | Respects stated limits |
-| Clarity | 50 | 2.5 | Structured but terse |
-| **Avg Delegation Score** | **69.5%** | | **Good, but code needs review** |
-
-**Task detail:**
-- `coding-bug-fix`: ✅ Correct fix with TypeVar
-- `reasoning-puzzle`: ✅ 7 pours, correct steps
-- `coding-algo`: ⚠️ Full linked-list implementation but missing `__init__` type hint, no docstring, capacity=0 edge case silently does nothing (not clearly documented)
-- `reasoning-math`: ✅ Correct (0.5073)
-- `comprehension-read`: ✅ All correct
-- `planning-task`: ✅ Good, with trigger for updated_at
-
-**Verdict:** Good code structure, but produces minimal annotations. The linked-list LRU is more complex than needed (OrderedDict would be simpler). Delegate coding with review, best for reasoning tasks.
-
----
-
-### 4. azure_ai/gpt-5-mini — Delegation Score: 67.3%
-
-| Dimension | Score | Avg Rating | Notes |
-|---|---|---|---|
-| Correctness | 75 | 3.75 | Mostly correct, some imprecision |
-| Code Quality | 50 | 2.5 | Works but inconsistent typing |
-| Completeness | 75 | 3.75 | Covers requirements |
-| Reasoning | 50 | 2.5 | Some gaps in edge case analysis |
-| Constraint Handling | 75 | 3.75 | Respects constraints |
-| Clarity | 50 | 2.5 | Structured, some verbosity |
-| **Avg Delegation Score** | **67.3%** | | **Use for planning, not coding** |
-
-**Task detail:**
-- `coding-bug-fix`: ✅ Correct fix with set optimization
-- `reasoning-puzzle`: ✅ 7 pours, correct
-- `coding-algo`: ⚠️ Full linked-list LRU but `capacity=0` silently ignores puts (should raise or document), `__repr__` shows MRU first (not clearly specified), missing `__init__` docstring
-- `reasoning-math`: ✅ Correct (0.5073), shows full precision intermediate
-- `comprehension-read`: ✅ All correct, brief
-- `planning-task`: ✅ Excellent — most detailed plan, covers FOUC prevention, server-side injection
-
-**Verdict:** Best planner but weakest at edge-case awareness in coding. The LRU cache silently fails on capacity=0 and has inconsistent docs. Best for planning tasks, use code with review.
-
----
-
-### 5. azure_ai/gpt-5.4-mini — Delegation Score: 65.8%
-
-| Dimension | Score | Avg Rating | Notes |
-|---|---|---|---|
-| Correctness | 75 | 3.75 | Answers right but thin |
-| Code Quality | 25 | 1.25 | No docstrings, no type hints, minimal structure |
-| Completeness | 50 | 2.5 | Covers basics, thin on detail |
-| Reasoning | 50 | 2.5 | Correct but brief, edge cases missed |
-| Constraint Handling | 75 | 3.75 | Respects stated constraints |
-| Clarity | 50 | 2.5 | Structured but minimal |
-| **Avg Delegation Score** | **65.8%** | | **Fastest, lowest quality** |
-
-**Task detail:**
-- `coding-bug-fix`: ✅ Correct fix but no docstring, bare `List[Any]` type hints
-- `reasoning-puzzle`: ✅ 7 pours, correct
-- `coding-algo`: ⚠️ OrderedDict LRU works but no docstrings, no type hints on methods, bare `__repr__` return type but nothing else typed
-- `reasoning-math`: ✅ Correct (0.5073)
-- `comprehension-read`: ⚠️ Misses nuance — says "cannot happen" but doesn't discuss the pre-initialization edge case as clearly as luna
-- `planning-task`: ✅ Good plan, similar to gpt-5.4-mini-copilot but less detailed on FOUC prevention
-
-**Verdict:** Fastest model (~3s/task) but produces production-unready code. No docstrings anywhere, bare types. OK for quick tasks where speed trumps quality, not recommended for anything you're deploying.
-
----
-
-### 6. vllm/Qwen3.6-35B-A3B-NVFP4 — re-measured 2026-09-02 17:05
-
-The scores in this section previously read `Correctness 50 / Code Quality 0 /
-Clarity 25`, totalling 55.4%, with the verdict "unusable for production, not
-recommended for any task". **Every one of those numbers came from a truncated
-capture.** They are replaced, not adjusted — there is no partial credit to
-salvage from a measurement of the harness.
-
-Re-run: `max_tokens = 16384`, 600s timeout, current extractor.
-
-| Task | Result | Time | Output tokens | `stop_reason` |
-|---|---|---|---|---|
-| `coding-bug-fix` | ✅ correct, typed, full docstring | 290.8s | 6097 | `end_turn` |
-| `coding-algo` | ✅ correct O(1) LRU, hashmap + doubly-linked list | 287.6s | 6411 | `end_turn` |
-| `reasoning-math` | ✅ correct formula and answer (0.5073) | 283.5s | 6360 | `end_turn` |
-| `comprehension-read` | ✅ all 4 answers correct | 147.2s | 3121 | `end_turn` |
-| `planning-task` | ✅ SQL, endpoints, frontend components | 143.1s | 3437 | `end_turn` |
-| `reasoning-puzzle` | ⚠️ unmeasurable on this path — see below | >600s | — | timed out |
-
-All five completed tasks report `had_text_block: true` and **no `[thinking]`
-prefix**. Clean output is this model's ordinary behaviour.
-
-**Correctness verified rather than assumed**, on the two where correctness is
-checkable by reading:
-
-* `last_n_unique` returns `seen[::-1][-n:]`. Traced on `[1,2,3,2,1], n=2` → the
-  unique elements ordered by last occurrence, last two → `[2,1]`. Correct, and
-  it fixes the dropped-last-element bug the prompt describes.
-* The LRU is a genuine O(1) hashmap-plus-doubly-linked-list with sentinel head
-  and tail, type hints on the public methods, and a `__repr__` walking MRU to
-  LRU.
-
-**The one real code-quality gap:** `capacity=0` breaks. `put` compares
-`len(self.cache) == self.capacity`, so on an empty zero-capacity cache it calls
-`_pop_tail()` on an empty list, gets the sentinel head back, and raises
-`KeyError` deleting `cache[0]`. Worth noting that `gpt-5.6-sol` and
-`gpt-5-mini` have the same defect, scored there as a ⚠️ rather than a zero.
-Missing docstrings on the class and its methods.
-
-**Verdict:** correct on every task it can complete, with clean, well-structured
-output. Its costs are wall-clock time and one unmeasurable task on this
-transport — not correctness, and not code that has to be rewritten. Delegate
-freely for anything not blocking a person; see "Cost" for why that is often the
-whole job.
-
-#### Transport, not model
-
-`reasoning-puzzle` is the finding worth following up, and it is not about
-Qwen3.6:
-
-| Path | Result |
-|---|---|
-| `wc-claude.sh` (CLI) | **23.0s**, correct 7-pour solution |
-| HTTP gateway, `max_tokens=16384` | **>600s, timed out** |
-
-Same model, same task, same prompt, ≥26x apart. A model cannot be 26x slower
-because the caller used a different socket, so the difference is in the path —
-most likely that the HTTP route is unstreamed and the gateway buffers the whole
-reasoning output before returning a byte, or that the two paths send different
-thinking configuration. Unresolved, and larger than this comparison.
-
-**Consequence for every number in this document:** all per-task times were
-measured on the HTTP path, so the Speed column mixes model latency with
-transport latency and cannot separate them. It should not be read as a property
-of a model until that gap is closed.
-
----
-
-## Speed Comparison (avg time per task)
-
-**Measured on the HTTP path only, which for Qwen3.6 is a transport figure as
-much as a model figure** — the same task it cannot finish in 600s here is
-answered in 23.0s through the CLI. Treat the Azure rows as model latency and
-the Qwen row as an upper bound.
-
-| Model | Avg Time | Range | Interactive? |
-|---|---|---|---|
-| gpt-5.4-mini | 3s | 1-5s | ✅ Excellent |
-| gpt-5.4-mini-copilot | 6s | 2-5s | ✅ Good |
-| gpt-5.6-sol | 11s | 3-24s | ✅ Acceptable |
-| gpt-5-mini | 14s | 9-20s | ⚠️ Borderline |
-| gpt-5.6-luna | 50s | 4-29s | ❌ Batch only |
-| Qwen3.6-35B (re-run, 5 tasks) | 230s | 143-291s | ❌ Batch only, and free |
-
-The re-run figures are higher than the original 149s because the original run
-was truncating at 4096 tokens — it was timing incomplete answers. 230s is the
-cost of letting it finish.
-
----
-
-## Task-Level Scoring (Delegation Score per dimension)
-
-Qwen3.6's column is re-scored from the 2026-09-02 17:05 re-run. Its previous
-entries — `0 (empty)` on Bug fix, LRU cache and Water jug — were the truncated
-captures described at the top of this document, and they are replaced.
-
-### Coding Tasks
-
-| Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
-|---|---|---|---|---|---|---|
-| Bug fix | 100 | 100 | 75 | 75 | 75 | **91** |
-| LRU cache | 100 | 50 | 25 | 50 | 25 | **50** |
-| **Avg** | **100** | **75** | **50** | **62.5** | **50** | **70.5** |
-
-Qwen3.6's bug fix is correct with type hints and a full Args/Returns docstring,
-which is the same standard luna was given 100 for. Its LRU is correct and
-genuinely O(1) but raises `KeyError` at `capacity=0` and carries no docstrings —
-50 is the score `gpt-5.4-mini-copilot` received for an equivalent gap, and the
-`capacity=0` defect is the one `gpt-5.6-sol` and `gpt-5-mini` also have.
-
-**Correction, and it is against my own earlier score.** The bug fix was written
-up here as 100 after I traced it against `[1,2,3,2,1]` and `[1,2,3]` and stopped
-there. It returns `seen[::-1][-n:]`, which is wrong for `n=0`: `x[-0:]` is
-`x[0:]`, so asking for zero elements returns all of them. The executing
-verifier in `bench/` found it on the first run, 10 of 11 checks. 91 is that
-figure.
-
-The general point is the reason `bench/verify.py` exists: **a reader chooses
-which cases to try, and a check list does not.** `claude-sonnet-5` and
-`claude-haiku-4-5` write the same slicing bug, so it is a fair characterisation
-of the idiom rather than a mark against Qwen specifically — which is why it now
-sits in that harness's *edge* tier, scored but not treated as failing the task.
-
-### Reasoning Tasks
-
-| Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
-|---|---|---|---|---|---|---|
-| Water jug | 100 | 100 | 100 | 100 | 100 | **n/m** |
-| Birthday paradox | 100 | 100 | 100 | 100 | 100 | **100** |
-| **Avg** | **100** | **100** | **100** | **100** | **100** | **100** (of 1 task) |
-
-`n/m` = not measurable on this path. Water jug exceeds 600s over HTTP and is
-answered correctly in 23.0s through the CLI transport, so a 0 here would record
-a transport limit as a model failure — which is exactly what this document did
-the first time. It is left unscored rather than scored generously: the CLI
-answer was correct, but it was not produced by the same harness as every other
-cell in these tables, and mixing the two would make the column unreadable.
-
-Birthday paradox is raised from 75 to 100. The original 75 was for a response
-beginning with a `[thinking]` placeholder; the re-run returns the correct
-formula and 0.5073 with no placeholder, which is what the other five models
-were scored 100 for.
-
-### Comprehension
-
-| Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
-|---|---|---|---|---|---|---|
-| Function explain | 100 | 100 | 100 | 75 | 75 | **100** |
-| **Avg** | **100** | **100** | **100** | **75** | **75** | **100** |
-
-Raised from 75. `gpt-5.4-mini` was given 75 for saying an edge case "cannot
-happen" without discussing the pre-initialisation case as clearly as luna. The
-re-run answers that directly — *"it would only trigger if the code were
-modified to pre-initialize categories, remove items from lists, or process data
-differently"* — so it meets the standard the 100s were given for. All four
-answers correct, no placeholder.
-
-### Planning
-
-| Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
-|---|---|---|---|---|---|---|
-| Dark mode toggle | 75 | 75 | 75 | 75 | 50 | 75 |
-| **Avg** | **75** | **75** | **75** | **75** | **50** | **75** |
-
----
-
-## Qwen3.6: every problem in this document was the HTTP transport
-
-Head to head, same model, same six tasks, same prompts, 2 repeats each,
-2026-09-02 20:30. Medians:
-
-| task | HTTP | | CLI | | slower | more tokens |
-|---|---|---|---|---|---|---|
-| | time | out tok | time | out tok | | |
-| `floor-add` | 34.7s | 882 | **5.2s** | **41** | 6.7x | 21.5x |
-| `simple-fizzbuzz` | 88.2s | 2134 | **7.8s** | **125** | 11.3x | 17.1x |
-| `simple-count-vowels` | 158.7s | 3828 | **5.2s** | **64** | 30.6x | 60.3x |
-| `simple-reverse-words` | 108.7s | 2616 | **5.0s** | **58** | 21.5x | 44.7x |
-| `simple-sum-evens` | 349.9s | 8660 | **6.5s** | **82** | 53.5x | 105.0x |
-| `simple-json-field` | 433.2s | 10650 | **5.0s** | **56** | 86.8x | 191.9x |
-| **median** | **133.7s** | **3222** | **5.2s** | **61** | **25.8x** | **52.8x** |
-
-**Correctness is identical on both paths: 11 of 12.** Only the cost of getting
-there differs, and it differs by a factor of 26 in time and 53 in tokens.
-
-### The mechanism, measured
-
-| transport | thinking characters, median | max |
+| Constraint | First choice | Why |
 |---|---|---|
-| HTTP | **6,540** | **53,052** |
-| CLI | **102** | 212 |
+| **Lowest cost** | `vllm/Qwen3.6-35B-A3B-NVFP4` | 11/12 on the floor/simple CLI tier, 5.2 s median, $0 marginal token cost |
+| **Best measured quality** | `claude-fable-5` | 28/28 CLI runs correct; most expensive Anthropic option |
+| **Best Anthropic value** | `claude-haiku-4-5` | 27/28, $0.0433 per correct answer, fastest Anthropic TTFT |
+| **Fast capable Azure option** | `azure_ai/gpt-5.4-mini-copilot` | 24/28, 5.8 s median; Azure price not recorded |
+| **Fastest measured Azure option** | `azure_ai/gpt-5.4-mini` | 25/28, 6.3 s median; Azure price not recorded |
+| **Higher-quality Azure fallback** | `azure_ai/gpt-5.6-sol` | 25/28, but 10.5 s median and Azure price not recorded |
 
-The gateway's HTTP endpoint runs this model with effectively unbounded
-reasoning; the CLI path runs it with almost none. That is a **64x difference in
-thinking on identical prompts**, and it is the whole story:
+No single quality-only ranking should hide cost. Qwen is the correct default when latency is not scarce. Anthropic is the expensive quality tier. Azure cannot be ranked on cost until its deployment rate card is recorded.
 
-* the original 4096-token truncations
-* the 180s timeouts
-* the 26x water-jug gap
-* 75.86s to write FizzBuzz
-* 661s and a blown 16,384-token ceiling to sum the even numbers in a list
-* the "149s/task", then "230s/task" figures
-* and therefore the 55.4% and "not recommended for any task"
+## CLI measurements
 
-**Every one of them is the HTTP path, not the model.** Over the CLI, Qwen3.6
-answers in 5.2s median with 61 output tokens — the same order as
-`claude-haiku-4-5` at 5.3s and 152 tokens on `floor-add`, and free.
+All rows below are CLI runs. `Correct` means all core checks for the run passed. Edge checks remain visible in task scores but do not decide whether the task is solved. `$ total` is the CLI-reported cost only when the result carries `costBasis: list`; unknown Azure pricing is reported as `n/r`, never as zero.
 
-### Revised verdict
+| Tier | Model | Runs | Correct | Median total | Median TTFT | Median output tokens | $ total | $/correct |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Anthropic | `claude-fable-5` | 28 | **28/28** | 9.1 s | 3.31 s | 142 | $7.3130 | **$0.2612** |
+| Anthropic | `claude-opus-5` | 28 | **27/28** | 8.3 s | 2.55 s | 122 | $4.8428 | **$0.1794** |
+| Anthropic | `claude-sonnet-5` | 28 | **27/28** | 6.0 s | 1.97 s | 132 | $2.4518 | **$0.0908** |
+| Anthropic | `claude-haiku-4-5` | 28 | **27/28** | 10.6 s | **1.75 s** | 611 | $1.1682 | **$0.0433** |
+| Azure | `azure_ai/gpt-5.6-sol` | 28 | **25/28** | 10.5 s | 4.80 s | 131 | n/r | n/r |
+| Azure | `azure_ai/gpt-5.4-mini` | 28 | **25/28** | **6.3 s** | 1.53 s | 163 | n/r | n/r |
+| Azure | `azure_ai/gpt-5-mini` | 28 | **25/28** | 35.1 s | 13.21 s | n/r | n/r | n/r |
+| Azure | `azure_ai/gpt-5.4-mini-copilot` | 28 | **24/28** | **5.8 s** | 1.42 s | 161 | n/r | n/r |
+| Azure | `azure_ai/gpt-5.6-luna` | 28 | **24/28** | 6.2 s | 3.52 s | 116 | n/r | n/r |
+| Self-hosted | `vllm/Qwen3.6-35B-A3B-NVFP4` | 12 | **11/12** | **5.2 s** | **0.74 s** | 56 | **$0.0000** | **$0.0000** |
 
-`vllm/Qwen3.6-35B-A3B-NVFP4`, **over the CLI transport**: 11 of 12 correct,
-5.2s median, free. That is a genuinely usable default for cost-constrained
-work, including interactive work, which is the opposite of what this document
-said this morning.
+### What the table means
 
-**Over HTTP it should not be used for anything with a deadline** — not because
-it is a poor model, but because the endpoint's reasoning is unbounded and its
-latency has a 17x range on identical trivial input.
+- Fable is the only clean sweep across the full 14-task Anthropic tier. It costs approximately 6× Haiku per correct answer.
+- Opus and Sonnet each miss one of 28 runs. Opus costs about 2× Sonnet per correct answer.
+- Haiku matches Opus and Sonnet at 27/28 while having the fastest Anthropic TTFT and the lowest Anthropic cost per correct answer. Its total time is higher because some reasoning tasks produce substantially more output.
+- Azure models are all unpriced in the recorded data. Their cost must not be inferred from the old console totals, which applied Anthropic fallback rates to non-Anthropic backends.
+- Qwen's measured CLI result is fast and free on the simpler tier. It is not directly comparable to the Anthropic/Azure 14-task count because only the floor/simple tier was re-run for Qwen.
 
-The one genuine miss is worth recording because it is a real defect and not a
-harness artefact: on `simple-json-field` over CLI it wrote
-`json.loads(raw)` with no `import json`, giving `NameError`. Terse output has a
-cost, and that is what it looks like.
+## CLI task comparison
 
-## Anthropic tier, measured properly — 2026-09-02 19:33
+Task cells are median scores across the two CLI repeats. `100` means all core and edge checks passed; a lower score shows a visible verifier failure. For prose tasks, verification is claim-based and therefore weaker than code execution.
 
-Four models, 14 tasks, 2 repeats, 112 runs, CLI transport. Coding tasks scored
-by **executing** the code; prose tasks by mechanical claim checks, labelled as
-such. Costs are the CLI's own `total_cost_usd` with `costBasis: list` — the
-number being billed, not a computed estimate.
+| Task | Difficulty | Verified by | Fable | Opus | Sonnet | Haiku | gpt-5.6-sol | gpt-5.4-mini | gpt-5-mini | copilot | luna | Qwen |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `floor-add` | floor | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| `simple-fizzbuzz` | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| `simple-count-vowels` | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| `simple-reverse-words` | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| `simple-sum-evens` | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| `simple-json-field` | simple | execution | 75 | 75 | 75 | 75 | 75 | 100 | 100 | 75 | 75 | 75/0 |
+| `coding-bug-fix` | hard | execution | 100 | 100 | 94 | 100 | 100 | 100 | 100 | 100 | 100 | — |
+| `coding-algo` | hard | execution | 100 | 100 | 96 | 98 | 100 | 100 | 100 | 100 | 100 | — |
+| `reasoning-puzzle` | hard | claim | 100 | 100 | 75 | 100 | 50 | 100/50 | 50 | 50 | 50 | — |
+| `reasoning-math` | hard | claim | 100 | 100 | 100 | 75/100 | 100 | 100 | 100 | 100 | 100 | — |
+| `comprehension-read` | hard | claim | 100 | 100/75 | 100 | 100 | 75/100 | 75 | 75/100 | 75 | 75 | — |
+| `planning-task` | hard | claim | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | — |
+| `long-context-needle` | hard | claim | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | — |
+| `multi-turn-resume` | hard | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | — |
 
-This is the first table in this document where every column was measured rather
-than read, and where cost, latency and consistency are all present at once.
+Qwen's two CLI repeats on `simple-json-field` scored `75` and `0`: one run passed the core checks but failed the optional edge check, while the other omitted the `json` import and failed execution. This is the one measured Qwen miss, not a clean/empty response.
 
-| Model | correct | median TTFT | median total | $ total | **$ per correct** | unstable tasks |
-|---|---|---|---|---|---|---|
-| `claude-fable-5` | **28/28** | 3.36s | 9.1s | $7.3130 | **$0.2612** | **0 of 14** |
-| `claude-opus-5` | 27/28 | 2.51s | 9.2s | $4.8428 | $0.1794 | 1 of 14 |
-| `claude-sonnet-5` | 27/28 | 1.98s | 6.7s | $2.4518 | $0.0908 | 3 of 14 |
-| `claude-haiku-4-5` | 27/28 | **1.79s** | 10.6s | **$1.1682** | **$0.0433** | 2 of 14 |
+### Task-level observations
 
-**The value answer is haiku, by a wide margin.** It matches opus and sonnet on
-correctness — 27 of 28 — at **1/6th the cost per correct answer** and the
-fastest time to first token in the set. Fable 5 is the only clean sweep, and
-pays 6x haiku for that one extra correct answer.
+- All models handled the five simplest executable tasks consistently.
+- `simple-json-field` exposes a common idiom failure: direct indexing of an optional field instead of using `.get()`. This is an edge-quality signal, not a reason to reject a model that passes the core task.
+- The malformed `reasoning-puzzle` target asks for 4 litres in a 3-litre jug. Models that identify the impossibility receive only the claim-check partial score. This task is useful for constraint awareness but should not be read as evidence that the models failed to reason.
+- The hard coding tasks separate the Anthropic tier slightly from the Azure tier, but the sample is small and consists of only two repeats.
 
-### Time to first token, which this document has never had
+## Consistency
 
-The old table ranked an "Interactive?" column without measuring the quantity
-that decides it. TTFT comes from the CLI's `result` frame, and it is **17–37%
-of total time** — so total time badly misrepresents how these feel to use.
+"Unstable" means the same prompt produced different scores in its two repeats.
 
-`claude-haiku-4-5` has the *fastest* first token (1.79s) and the *slowest*
-total (10.6s). Any ranking on total time alone gets that model exactly
-backwards for interactive work.
+| Model / transport | Unstable tasks |
+|---|---:|
+| `claude-fable-5` / CLI | 0 of 14 |
+| `claude-opus-5` / CLI | 1 of 14 |
+| `claude-sonnet-5` / CLI | 3 of 14 |
+| `claude-haiku-4-5` / CLI | 2 of 14 |
+| `azure_ai/gpt-5.6-sol` / CLI | 1 of 14 |
+| `azure_ai/gpt-5.4-mini` / CLI | 1 of 14 |
+| `azure_ai/gpt-5-mini` / CLI | 1 of 14 |
+| `azure_ai/gpt-5.4-mini-copilot` / CLI | 1 of 14 |
+| `azure_ai/gpt-5.6-luna` / CLI | 0 of 14 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` / CLI | 1 of 6 |
 
-### Consistency, weighted 9% and never previously measured
-
-Two repeats per task. "Unstable" means the same prompt produced two different
-scores:
-
-* `claude-fable-5` — **0 of 14.** Identical verdict every time.
-* `claude-opus-5` — 1: `comprehension-read` scored 75 then 100.
-* `claude-haiku-4-5` — 2: `coding-algo` (96.3/100), `reasoning-math` (50/100).
-* `claude-sonnet-5` — 3: `coding-bug-fix` (88.9/100), `coding-algo`
-  (96.3/100), `reasoning-puzzle` (**50/100**).
-
-Every one of these is invisible at one run per task, which is how the original
-six-model table was produced. A 50-versus-100 swing on the same prompt means a
-single-run score for that cell is a coin flip, and there is no way to tell from
-the data which side it landed on.
-
-### The edge tier catches idioms, not models
-
-**All four models score exactly 75.0 on `simple-json-field`**, and all four fail
-the identical check: `KeyError: 'active'`, because each writes `o['active']`
-rather than `o.get('active')`. Four different models, four identical failures.
-
-That is the same pattern as the other two edge checks — `x[-0:]` on the bug fix
-and `len(cache) == capacity` on the LRU. **What the edge tier measures is which
-idiom is conventional, not which model is careless**, which is exactly why it
-was moved out of the correctness verdict rather than being deleted.
-
-### What is not yet measured
-
-Stated so the gaps are not mistaken for results:
-
-| Missing | Why |
-|---|---|
-| Azure five on this harness | Their 16 http runs were void — see the gateway bug below. Re-run pending |
-| Qwen3.6 http vs cli, head to head | Running now, ~2.5h; it is the open question the 26x gap raised |
-| Anthropic over http | Not reachable; the gateway does not serve these models |
-| Repeats beyond 2 | 2 finds instability but cannot quantify its rate |
-| Any task above `hard` | Every Anthropic model is at or near ceiling on 12 of 14 |
-
-## The gateway cannot stream Azure models
-
-Not a model finding and not really a benchmark one — it needs fixing
-independently of either.
-
-All 16 Azure runs over HTTP returned `out=0`, `stop_reason=None` and an empty
-response. They were one step from being published as five models scoring zero on
-every task. The cause is server-side, and the gateway states it inside the
-stream:
-
-```json
-{"error": {"message": "list index out of range\n\nTraceback (most recent call
- last):\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/proxy/...\""}}
-```
-
-Confirmed by hand against the gateway:
-
-| request | result |
-|---|---|
-| `stream: false`, `azure_ai/gpt-5.4-mini` | correct 246-byte response |
-| `stream: true`, `azure_ai/gpt-5.4-mini` | **LiteLLM traceback after `content_block_start`** |
-| `stream: true`, `vllm/Qwen3.6-35B` | works, full delta stream |
-
-So it is specific to the Azure passthrough. **Nothing can stream an Azure model
-through this gateway today**, which matters for the console itself and not only
-for a benchmark.
-
-The harness compounded it: that error frame carries no `type` key, so a parser
-switching on `type` dropped it and reported silence. It is now checked first and
-attributed to the gateway, and a failed stream is re-run unstreamed with the
-reason recorded and no TTFT invented. `azure_ai/gpt-5.4-mini` now scores 100 on
-`floor-add` and `simple-fizzbuzz` in 1.16s and 1.59s.
+Two repeats show that instability exists; they do not estimate long-run failure rates. Sonnet's three unstable tasks include a 50-versus-100 swing on `reasoning-puzzle`, so one-shot results should not be treated as deterministic.
 
 ## Cost
 
-**The Delegation Score has no cost dimension.** Its eight weights are
-Correctness 25, Completeness 15, Reasoning 15, Code Quality 10, Constraint
-Handling 10, Consistency 9, Clarity 8, Speed 8. Nothing for what a query costs
-to run — which means the league table above prices every backend at zero, and
-ranks the only free one last.
+### Recorded rate card
 
-### The rate card
-
-US dollars per million tokens. Cache write is the 1-hour TTL rate, which is the
-one this deployment uses — the CLI's own usage frames report
-`cache_creation.ephemeral_1h_input_tokens`.
-
-| Backend | input | output | cache read | cache write | source |
-|---|---|---|---|---|---|
+| Model/backend | Input / 1M tokens | Output / 1M tokens | Cache read | Cache write | Basis |
+|---|---:|---:|---:|---:|---|
 | `claude-fable-5` | $10.00 | $50.00 | $1.00 | $20.00 | published |
-| `claude-opus-5` | **$5.00** | **$25.00** | **$0.50** | **$10.00** | **derived here, then confirmed** |
+| `claude-opus-5` | $5.00 | $25.00 | $0.50 | $10.00 | published and independently confirmed |
 | `claude-sonnet-5` | $2.00 | $10.00 | $0.20 | $4.00 | published |
 | `claude-haiku-4-5` | $1.00 | $5.00 | $0.10 | $2.00 | published |
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | $0 | $0 | — | — | self-hosted |
-| `azure_ai/*` (all five) | **not recorded** | | | | — |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | $0 | $0 | — | — | self-hosted, marginal token cost treated as zero |
+| `azure_ai/*` | not recorded | not recorded | not recorded | not recorded | no deployment rate supplied |
 
-The opus-5 row is not an estimate. `usage_events` holds 11 turns with
-`cost_basis='list'`, and least squares over those 11 — solving for four
-unknowns — reproduces every one of them to the cent, worst absolute error
-$0.0000, on turns costing $0.0225 to $12.59. It then matched the published card
-exactly. A derivation agreeing with an independent source is what makes the
-round numbers evidence rather than coincidence.
+Anthropic totals use the CLI's `total_cost_usd` only when `costBasis` is `list`. The harness also captures uncached input, cache-read, cache-write, and output tokens. Unknown vendor pricing is not silently converted to zero.
 
-**Fable 5 is 2x opus on both input and output.** Worth knowing before anyone
-delegates to it for being the newer model.
+### Why old non-Anthropic console costs are not usable
 
-The five Azure entries are **absent, not zero**. Nobody has recorded what this
-deployment pays, and those names read as internal deployment aliases rather
-than public SKUs, so no public card applies. `bench/cost.py` reports an
-unrecorded rate as "rate not recorded" and never as free: a model nobody priced
-must not come out cheapest. Supply the Azure card and the column fills in.
+The old usage table charged non-Anthropic backends with an Anthropic fallback rate. That made self-hosted Qwen appear to cost money and produced fictional Azure costs. Those figures are excluded from this comparison. Qwen is free under the stated self-hosted deployment assumption. Azure remains `n/r` until its actual rate card is supplied.
 
-### Cost per correct answer
+## Qwen: corrected interpretation
 
-The unit that decides anything. A free model that needs two attempts is still
-free; a cheap model that is wrong once can cost more than an expensive one that
-is right first time.
+The first benchmark ranked Qwen at 55.4% and described empty output as a model failure. That result is withdrawn.
 
-Measured over 8 hard tasks × 2 repeats per model, CLI transport, 2026-09-02:
+The old harness used a 4,096-token cap for both reasoning and answer, a 180-second timeout, and an extractor that collapsed truncated thinking into the literal `[thinking]` marker. Qwen's reasoning output consumed the budget and time limit. A truncated answer and an empty answer became indistinguishable.
 
-| Model | correct | total spend | **$ per correct answer** |
-|---|---|---|---|
-| `claude-fable-5` | 15/16 | $2.6562 | **$0.1771** |
-| `claude-opus-5` | 15/16 | $1.3366 | **$0.0891** |
-| `claude-sonnet-5` | 14/16 | $0.5449 | **$0.0389** |
-| `claude-haiku-4-5` | 13/16 | $0.2868 | **$0.0221** |
+The corrected benchmark used 16,384 maximum output tokens, a 1,000-second timeout, private per-run directories, file-delivery recovery, and explicit core versus edge checks. The simpler CLI tier produced:
 
-> **Superseded — these four understate the real cost by roughly 2x.** Replaced
-> by the 14-task table in "Anthropic tier, measured properly" above. Kept here
-> because the error is instructive.
->
-> They were computed from `input_tokens` alone, and `input_tokens` from the CLI
-> is only the *uncached* portion. The tell was in the data: opus-5 reported a
-> constant 12,029 input tokens for every task including the 30,000-token
-> long-context one, and haiku-4-5 reported 10. The real volume sits in
-> `cache_read_input_tokens` and `cache_creation_input_tokens` — one trivial
-> haiku turn moves 12,276 cache writes and 18,905 cache reads and bills
-> $0.0269, more than this table attributes to any single run of any model.
->
-> Measured against the CLI's own `total_cost_usd`, the correction is:
+- 11/12 core tasks correct
+- 5.2 s median total time
+- 0.74 s median TTFT
+- 56 median output tokens
+- $0 marginal token cost
+- no clean/empty runs in the corrected CLI result
 
-| Model | computed from `input_tokens` | actual, billed | ratio |
-|---|---|---|---|
-| `claude-fable-5` | $0.1771 | **$0.2612** | 1.5x |
-| `claude-opus-5` | $0.0891 | **$0.1794** | 2.0x |
-| `claude-sonnet-5` | $0.0389 | **$0.0908** | 2.3x |
-| `claude-haiku-4-5` | $0.0221 | **$0.0433** | 2.0x |
+The one miss was `simple-json-field`, where one answer omitted `import json`. That is a real answer defect. It is not the earlier harness artefact.
 
-> The ordering held, as predicted; the magnitudes roughly doubled. Note the
-> ratios differ per model — a single correction factor would not have worked,
-> because how much a model caches is itself a model property.
+## Historical HTTP diagnostic: not active configuration
 
-### Non-Anthropic costs in `usage_events` are fictional
+Raw HTTP was removed from the benchmark because WebConsole production uses the CLI path. The following measurements remain only to explain why old conclusions were wrong.
 
-Not a benchmark finding, and worth acting on separately: **every non-Anthropic
-`cost_usd` in the console's usage table is opus-5 list pricing applied to the
-wrong backend.** Recomputing each model's recorded total at $5/$25/$0.50/$10
-matches to the cent:
+### Qwen head-to-head, same six floor/simple tasks
 
-| model | recorded | at opus-5 rates | |
-|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | $13.2645 | $13.2645 | exact |
-| `azure_ai/gpt-5.4-mini-copilot` | $0.0890 | $0.0890 | exact |
-| `azure_ai/gpt-5.6-luna` | $0.0876 | $0.0876 | exact |
-| `azure_ai/gpt-5.6-sol` | $0.0871 | $0.0871 | exact |
-| `azure_ai/gpt-5-mini` | $0.0176 | $0.0176 | exact |
+| Metric | HTTP | CLI |
+|---|---:|---:|
+| Correct | 11/12 | 11/12 |
+| Median total time | 88.2 s | **5.2 s** |
+| Median output tokens | 2,134 | **56** |
+| Median thinking characters | 6,540 | **102** |
+| Median TTFT | 76.71 s | **0.74 s** |
 
-So the $13.26 the console attributes to a self-hosted model is an artefact of
-the CLI having no rate card for a gateway backend and falling back to
-Anthropic's. Qwen3.6 is free; the console overstates it.
+The model's correctness was the same. The HTTP path generated far more reasoning and was much slower. Those HTTP figures must not be used to choose the current WebConsole backend because that transport is no longer part of the application benchmark.
 
-`cost_basis` already records this honestly — `'list'` versus `'unknown'` — and
-nothing downstream reads that column. The statistics pages sum `cost_usd`
-regardless of basis.
+### Azure HTTP gateway failure
 
-**No single ranking survives this.** Which backend is correct depends on which
-resource is scarce:
+The historical Azure HTTP stream returned a LiteLLM gateway error (`list index out of range`) for most streaming attempts. The stream error carried no normal `type` field, so the old parser recorded silence. The corrected parser surfaces the error and can re-run unstreamed, but the raw HTTP transport was then removed from the production comparison.
 
-| Constraint | Choose | Why |
-|---|---|---|
-| **Cost** — batch, background, scheduled, anything not blocking a person | `vllm/Qwen3.6` | free, and correct on all five tasks it completes; slowness is nearly irrelevant when nobody is waiting |
-| **Latency** — anything a person is watching | `gpt-5.4-mini-copilot` or `gpt-5.6-luna` | 6s and 50s/task against Qwen's 143–291s. Two orders of magnitude, and unsoftened |
-| **Quality** — code going to production, hard reasoning | `anthropic/*`, then `gpt-5.6-luna` | best output, and explicitly the most expensive per token |
+This is a gateway/transport finding, not a model-quality finding. It should be fixed in the gateway separately if HTTP streaming is needed. It does not change the CLI measurements above.
 
-A weighted cost dimension is deliberately **not** added to the existing formula.
-Folding cost into one number is what produced a 55.4% that nobody could take
-apart; the trade-off belongs on the surface where it can be argued with.
+## Benchmark method and limits
 
-## Recommended Task Assignments
+- Harness: `bin/wc-bench.py`
+- Report generator: `bin/wc-bench-report.py`
+- Verifiers: `bench/verify.py`
+- Tasks: `bench/tasks.py`
+- Cost logic: `bench/cost.py`
+- Maximum output tokens: 16,384
+- Timeout: 1,000 seconds
+- Repeats: 2 for the completed comparison
+- Active transport: CLI only
+- Code correctness: extracted code executed in a subprocess with a restricted environment
+- Prose correctness: mechanical claim checks, weaker than execution
+- Core checks decide `correct`; edge checks remain in the score and report
+- Result files: `bench_anthropic_20260902.json`, `bench_azure_20260902.json`, `bench_qwen_transport_20260902.json`
 
-Quality-ranked, cost ignored. Read with the table above.
+Limitations remain:
 
-| Task Type | Recommended Model | Backup | Notes |
-|---|---|---|---|
-| **Coding** (bug fix, algo) | gpt-5.6-luna | Qwen3.6 (free) or gpt-5.4-mini-copilot | luna for quality; Qwen correct on both coding tasks at zero cost if latency allows |
-| **Reasoning** (puzzle, math) | Any Azure model | Qwen3.6 for math | All Azure models score 100%. Qwen's math is correct; its puzzle is unmeasurable on the HTTP path but correct via CLI |
-| **Comprehension** | gpt-5.6-luna | Qwen3.6 (free) | luna most thorough; Qwen all 4 correct |
-| **Planning** | gpt-5-mini | Qwen3.6 (free) | mini most detailed; Qwen produced SQL, endpoints and components |
-| **Fast batch** | gpt-5.4-mini-copilot | gpt-5.4-mini | copilot better, mini fastest |
-| **Cheap bulk** | **Qwen3.6** | — | the only zero-cost option, and correct where measured |
+1. Azure and Anthropic are not identical vendor deployments, so raw scores do not establish general model rankings outside this environment.
+2. Qwen was re-run on the floor/simple tier after the original harness failure; its 11/12 is not a 14-task score.
+3. Two repeats are enough to expose some instability, not enough to establish production failure probabilities.
+4. Claim checks can miss errors that execution would catch.
+5. Azure rates are not recorded, so no Azure cost-per-correct result is claimed.
+6. The benchmark measures model responses in isolated CLI runs, not complete end-to-end WebConsole user journeys.
 
-**Previously here:** "Avoid for production: Qwen3.6-35B (50% of tasks produce no
-output)." Withdrawn — that was a 4096-token cap and a 180s timeout, not the
-model.
+## Files and provenance
 
----
+| File | Contents |
+|---|---|
+| `bench_anthropic_20260902.json` | 112 Anthropic CLI runs |
+| `bench_azure_20260902.json` | Completed Azure run: 280 historical CLI/HTTP rows, including diagnostic HTTP rows |
+| `bench_qwen_transport_20260902.json` | 12 Qwen CLI rows and 12 historical HTTP rows |
+| `bench_rates.json` | Explicit rate card used by the harness |
+| `bin/wc-bench-report.py` | Reproducible report generator |
 
-## Technical Notes
+The final recommendation is therefore conditional, not a single league-table number:
 
-- **Gateway:** `https://llm.ai-machine.cfappsecurity.com` (vLLM OpenAI-compatible endpoint)
-- **Authentication:** ANTHROPIC_API_KEY header (`<redacted>`)
-- **Models served:** 6 models total (1 vLLM, 5 Azure AI)
-- **Anthropic models (opus-5, sonnet-5, etc.)** are NOT accessible through this gateway — only the 6 listed above
-- **benchmark script:** `bin/model_benchmark.py`
-- **raw results:** `model_benchmark_results.json` (untracked — the original
-  six-model run, whose Qwen rows have since been partly overwritten by a CLI
-  re-run. The script writes this file into the *current directory* and
-  overwrites it whole, so run it from a scratch directory or lose the baseline.)
-- **Qwen re-run evidence:** `bench_qwen_rerun_20260902.json` (tracked, so the
-  corrected numbers above have something behind them)
-- **harness limits, now configurable:** `MAX_TOKENS = 16384`,
-  `TIMEOUT = int(os.environ.get("WC_BENCH_TIMEOUT_S", "1000"))`. Both defaults
-  were raised because both disqualified a working model; the timeout moved to
-  the environment because it is a property of the harness, not of any backend.
-
-## Scoring Methodology
-
-**Known limitations of this methodology**, added after it produced a wrong
-verdict:
-
-1. **No cost dimension.** See "Cost". The formula prices every backend at zero.
-2. **Speed conflates model and transport.** All timings come from one HTTP path.
-3. **One run per task.** Consistency is weighted at 9% but never measured across
-   repeats, so it is an impression rather than a number.
-4. **A harness limit is indistinguishable from a model failure in the output.**
-   This is the one that caused real damage. Guarding it now: `stop_reason` and
-   `had_text_block` are recorded per task, and a run that hits `max_tokens`
-   keeps its thinking content instead of being replaced by a placeholder. Any
-   future score of 0 should be checked against those two fields first.
-
-8 weighted dimensions → Delegation Score (0-100%):
-- Correctness (25%): Right answer, no hallucinations
-- Completeness (15%): Does the full task
-- Reasoning (15%): Multi-step chain holds together
-- Code Quality (10%): Readable, idiomatic, maintainable code
-- Constraint Handling (10%): Respects stated and implicit limits
-- Clarity (8%): Well-organized, scannable output
-- Speed (8%): Time to first token + total
-- Consistency (9%): Quality holds across tasks and runs
-
-Each dimension scored 1-5 per task, converted to 0-100 with weighted average.
+- Choose **Qwen** for free background and batch work where the corrected floor/simple task bar is sufficient.
+- Choose **Haiku** for the best measured Anthropic cost/quality balance.
+- Choose **Fable** when the extra clean-sweep quality is worth its much higher cost.
+- Choose **Azure** based on latency and task fit only until actual Azure pricing is recorded.

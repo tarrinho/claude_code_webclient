@@ -41,6 +41,12 @@ def run_in_browser(html: str, budget_ms: int = 8000) -> str:
         page.write_text(html, encoding="utf-8")
         result = subprocess.run(
             [CHROMIUM, "--headless", "--disable-gpu", "--no-sandbox",
+             # Chromium writes a ~126 MB profile per launch. Without this it
+             # picks its own /tmp/org.chromium.Chromium.scoped_dir.* and
+             # leaves it behind, so a single run of this file leaked 11 of
+             # them and filled a 1.9 GB tmpfs -- after which every browser
+             # test in the suite fails on a timeout and leaks another.
+             f"--user-data-dir={page.parent}/chrome-profile",
              f"--virtual-time-budget={budget_ms}", "--dump-dom", f"file://{page}"],
             capture_output=True, text=True, timeout=120, check=False,
         )

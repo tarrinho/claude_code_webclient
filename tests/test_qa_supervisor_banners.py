@@ -191,6 +191,12 @@ class CompletionBannerCountingTests(unittest.TestCase):
                 page.write_text(sandbox, encoding="utf-8")
                 result = subprocess.run(
                     [CHROMIUM, "--headless", "--disable-gpu", "--no-sandbox",
+                     # Chromium writes a ~126 MB profile per launch. Without this it
+                     # picks its own /tmp/org.chromium.Chromium.scoped_dir.* and
+                     # leaves it behind, so a single run of this file leaked 11 of
+                     # them and filled a 1.9 GB tmpfs -- after which every browser
+                     # test in the suite fails on a timeout and leaks another.
+                     f"--user-data-dir={page.parent}/chrome-profile",
                      "--virtual-time-budget=5000", "--dump-dom", f"file://{page}"],
                     capture_output=True, text=True, timeout=60, check=False,
                 )
@@ -566,6 +572,12 @@ class BrowserIntegrationTests(unittest.TestCase):
             page.write_text(html, encoding="utf-8")
             result = subprocess.run(
                 [CHROMIUM, "--headless", "--disable-gpu", "--no-sandbox",
+                 # Chromium writes a ~126 MB profile per launch. Without this it
+                 # picks its own /tmp/org.chromium.Chromium.scoped_dir.* and
+                 # leaves it behind, so a single run of this file leaked 11 of
+                 # them and filled a 1.9 GB tmpfs -- after which every browser
+                 # test in the suite fails on a timeout and leaks another.
+                 f"--user-data-dir={page.parent}/chrome-profile",
                  "--virtual-time-budget=8000", "--dump-dom", f"file://{page}"],
                 capture_output=True, text=True, timeout=60, check=False,
             )

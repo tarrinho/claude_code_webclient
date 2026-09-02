@@ -32,10 +32,17 @@ churn.
 
   The file was untracked *and* not gitignored, so it sat one `git add -A` away
   from a public remote in a tree where several sessions commit at once. It was
-  never committed — verified with `git grep` against the history — but the guard
-  that would have stopped it was luck rather than a rule: `.gitleaks.toml` has no
-  rule for this key shape, so the pre-push hook catching it depended on generic
-  entropy detection.
+  never committed: `git grep` across all 147 commits and every ref finds nothing,
+  and a full `gitleaks detect` over the history reports no leaks.
+
+  **Correction to the commit message on `e2ca70c`**, which claimed the pre-push
+  hook would have caught this only by luck. It would have caught it by rule. That
+  was asserted from `.gitleaks.toml` containing no custom rule for the shape, and
+  then tested rather than left as a reading: a synthetic key of the same shape,
+  committed to a scratch repository using this project's own config, is detected.
+  `.gitleaks.toml` defines only an allowlist for two CI test credentials, so the
+  gitleaks default rule set applies and covers this. The control was real; the
+  gap was the hardcoded literal alone.
 
   `Backend_Models_20260902.comparison.md` documented a four-character prefix of
   the same key, now redacted. Worth distinguishing: the document held a fragment,

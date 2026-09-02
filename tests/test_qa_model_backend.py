@@ -23,11 +23,12 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import app
 import claude_proxy
 import config
 import db
 import runner
+import shared
+from routes import chats as chat_routes
 from routes import machines as machine_routes
 
 # Model ids the real gateway reports via GET /v1/models.
@@ -109,17 +110,17 @@ class UnitQA(unittest.TestCase):
 
     def test_model_regex_accepts_every_served_id(self):
         for model in SERVED_MODELS:
-            self.assertTrue(app._MODEL_RE.fullmatch(model), model)
+            self.assertTrue(shared._MODEL_RE.fullmatch(model), model)
 
     def test_model_regex_accepts_the_1m_context_suffix(self):
         # Claude Code tells the user to append [1m] for a 1M window; rejecting
         # it would make its own documented advice unusable through the API.
-        self.assertTrue(app._MODEL_RE.fullmatch("vllm/Qwen3.6-35B-A3B-NVFP4[1m]"))
+        self.assertTrue(shared._MODEL_RE.fullmatch("vllm/Qwen3.6-35B-A3B-NVFP4[1m]"))
 
     def test_model_regex_still_rejects_shell_metacharacters(self):
         for bad in ("model; rm -rf /", "model$(id)", "model`id`", "model|tee",
                     "model with space", "model\nnewline"):
-            self.assertIsNone(app._MODEL_RE.fullmatch(bad), bad)
+            self.assertIsNone(shared._MODEL_RE.fullmatch(bad), bad)
 
     def test_anthropic_env_carries_endpoint_and_key(self):
         env = runner._build_env(
@@ -389,7 +390,7 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
         req = self._make_request({"content": "hi", "model": SERVED_MODELS[2]})
         with patch.object(runner, "run_turn", fake_run_turn):
-            await app.handle_submit_message(req, "c1")
+            await chat_routes.handle_submit_message(req, "c1")
         self.assertEqual(seen["model"], SERVED_MODELS[2])
 
     async def test_turn_environment_points_at_the_configured_gateway(self):

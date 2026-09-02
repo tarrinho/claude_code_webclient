@@ -10,6 +10,7 @@ import app
 import auth
 import claude_proxy
 import runner
+from routes import chats as chat_routes
 
 
 class ProxyAuthenticationTests(unittest.IsolatedAsyncioTestCase):
@@ -255,8 +256,8 @@ class AppPersistenceTests(unittest.IsolatedAsyncioTestCase):
              patch.object(app.db, "chat_set_session", AsyncMock()) as set_session, \
              patch.object(app.db, "bump_chat_updated_at", AsyncMock()), \
              patch.object(app.db, "bump_chat_updated_at", AsyncMock()), \
-             patch.object(app.runner, "run_turn", AsyncMock(return_value=(["hello", " world"], "session-5"))):
-            response = await app.handle_submit_message(request, "chat-1")
+             patch.object(runner, "run_turn", AsyncMock(return_value=(["hello", " world"], "session-5"))):
+            response = await chat_routes.handle_submit_message(request, "chat-1")
 
         self.assertEqual(response.status_code, 200)
         set_session.assert_awaited_once_with("chat-1", "session-5")

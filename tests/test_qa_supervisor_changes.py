@@ -26,7 +26,10 @@ import auth
 import classification
 import config
 import db
+import runner
 import shared
+import transcripts
+from routes import chats as chat_routes
 from routes import supervisors as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -80,6 +83,18 @@ async def _chat_with(chat_id, *messages, owner="admin", title="Work"):
 
 
 # ── _attention — new detection rules ─────────────────────────────────────────
+
+
+def _app_and_routes() -> str:
+    """app.py and every route module, joined.
+
+    The 0.10.0 split moved most handlers into routes/, so a source assertion
+    against app.py alone searches a file that no longer contains its subject --
+    and an absent name reads as "the call is gone" rather than "it moved".
+    """
+    root = Path(app.__file__).parent
+    paths = [root / "app.py", *sorted((root / "routes").glob("*.py"))]
+    return "\n".join(p.read_text(encoding="utf-8") for p in paths if p.is_file())
 
 class AttentionTrailingColonTests(unittest.TestCase):
     """A message that finishes with ':' is NOT a request for input.
@@ -539,11 +554,15 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await _teardown(self)
 
-    async def _get(self, cli_sessions=None, transcripts=None):
+    async def _get(self, cli_sessions=None, recent=None):
+        # `recent`, not `transcripts`: the parameter shadowed the module of the
+        # same name, so patch.object was handed the default list and failed
+        # with "list does not have the attribute list_recent". Harmless while
+        # the call read app.transcripts; a live collision once it did not.
         with patch.object(db, "read_claude_sessions", AsyncMock(
                 return_value=cli_sessions or [])), \
-             patch.object(app.transcripts, "list_recent", AsyncMock(
-                 return_value=transcripts or [])):
+             patch.object(transcripts, "list_recent", AsyncMock(
+                 return_value=recent or [])):
             return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_web_linked_cli_session_is_skipped_in_cli_path(self):
@@ -563,7 +582,7 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
                     "status_updated_at": "2026-08-30T18:00:00Z",
                 }
             ],
-            transcripts=[
+            recent=[
                 {"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "c"},
             ],
         )
@@ -589,7 +608,7 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
                 "found": True,
             }
         )
-        with patch.object(app.transcripts, "read_turns", read_turns_mock):
+        with patch.object(transcripts, "read_turns", read_turns_mock):
             data = await self._get(
                 cli_sessions=[
                     {
@@ -598,7 +617,7 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
                         "status_updated_at": "2026-08-30T18:00:00Z",
                     }
                 ],
-                transcripts=[
+                recent=[
                     {"session_id": free_sid, "updated_at": 1_800_000_000, "title": "free"},
                 ],
             )
@@ -617,7 +636,7 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
                     "kind": "interactive", "entrypoint": "webconsole",
                 }
             ],
-            transcripts=[
+            recent=[
                 {"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "s"},
             ],
         )
@@ -641,7 +660,7 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
                     "status_updated_at": "2026-08-30T18:00:00Z",
                 }
             ],
-            transcripts=[
+            recent=[
                 {"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "c"},
             ],
         )
@@ -680,9 +699,9 @@ class MessagePathBumpUpdatedAtTests(unittest.IsolatedAsyncioTestCase):
 
         bump_mock = AsyncMock()
         with patch.object(db, "bump_chat_updated_at", bump_mock), \
-                patch.object(app.runner, "run_turn", AsyncMock(return_value=([], "mock-session"))):
+                patch.object(runner, "run_turn", AsyncMock(return_value=([], "mock-session"))):
             response = json.loads(
-                (await app.handle_submit_message(request, "c1")).body
+                (await chat_routes.handle_submit_message(request, "c1")).body
             )
         self.assertIn("response", response)
         self.assertTrue(bump_mock.called,
@@ -713,17 +732,26 @@ class BumpInAllPathsTests(unittest.TestCase):
     """
 
     def test_bump_in_blocking_path(self):
-        content = Path(app.__file__).read_text(encoding="utf-8")
+        # app.py plus routes/: these three paths moved into routes/chats.py
+        # in the 0.10.0 split, so a scan of app.py alone no longer finds the
+        # handlers it is asserting about.
+        content = _app_and_routes()
         # The blocking path is handle_submit_message
         self.assertIn("handle_submit_message", content)
 
     def test_bump_in_stream_path(self):
-        content = Path(app.__file__).read_text(encoding="utf-8")
+        # app.py plus routes/: these three paths moved into routes/chats.py
+        # in the 0.10.0 split, so a scan of app.py alone no longer finds the
+        # handlers it is asserting about.
+        content = _app_and_routes()
         # The stream path is the SSE handler
         self.assertIn("stream_handler", content)
 
     def test_bump_in_sync_path(self):
-        content = Path(app.__file__).read_text(encoding="utf-8")
+        # app.py plus routes/: these three paths moved into routes/chats.py
+        # in the 0.10.0 split, so a scan of app.py alone no longer finds the
+        # handlers it is asserting about.
+        content = _app_and_routes()
         # The sync path is the terminal sync handler (handle_chat_sync).
         self.assertIn("handle_chat_sync", content)
 
@@ -731,7 +759,10 @@ class BumpInAllPathsTests(unittest.TestCase):
         """The source must contain exactly 3 calls to bump_chat_updated_at
         (plus the function definition = 4 occurrences).
         """
-        content = Path(app.__file__).read_text(encoding="utf-8")
+        # app.py plus routes/: these three paths moved into routes/chats.py
+        # in the 0.10.0 split, so a scan of app.py alone no longer finds the
+        # handlers it is asserting about.
+        content = _app_and_routes()
         count = content.count("bump_chat_updated_at(")
         self.assertGreaterEqual(count, 3,
                                 f"expected >=3 calls to bump_chat_updated_at, found {count}")

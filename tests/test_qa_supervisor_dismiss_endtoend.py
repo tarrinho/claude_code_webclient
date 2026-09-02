@@ -28,10 +28,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import auth
 import config
 import db
+import transcripts
 from routes import supervisors as supervisor_routes
 
 
@@ -121,7 +121,7 @@ class DismissEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self._cli.start()
         # The transcript store is not what this is about; keep it quiet.
         self._recent = patch.object(
-            app.transcripts, "list_recent", AsyncMock(return_value=[])
+            transcripts, "list_recent", AsyncMock(return_value=[])
         )
         self._recent.start()
 

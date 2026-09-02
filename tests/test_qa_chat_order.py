@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
 import config
 import db
+from routes import chats as chat_routes
 
 
 def make_request(body=None, user="admin"):
@@ -181,7 +181,7 @@ class ReorderEndpointTests(ChatOrderBase):
 
     async def test_places_the_given_order(self):
         await self.make_chats("a", "b", "c")
-        response = await app.handle_chats_reorder(
+        response = await chat_routes.handle_chats_reorder(
             make_request({"order": ["c", "a", "b"]}))
         self.assertEqual(json.loads(response.body)["placed"], 3)
         self.assertEqual(await self.titles(), ["C", "A", "B"])
@@ -189,30 +189,30 @@ class ReorderEndpointTests(ChatOrderBase):
     async def test_empty_order_clears_placements(self):
         await self.make_chats("a", "b")
         await db.chats_reorder("admin", ["b", "a"])
-        response = await app.handle_chats_reorder(make_request({"order": []}))
+        response = await chat_routes.handle_chats_reorder(make_request({"order": []}))
         payload = json.loads(response.body)
         self.assertEqual(payload["cleared"], 2)
         self.assertIsNone((await db.chat_get("a", "admin"))["position"])
 
     async def test_a_missing_order_is_rejected(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chats_reorder(make_request({}))
+            await chat_routes.handle_chats_reorder(make_request({}))
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_a_non_list_order_is_rejected(self):
         for value in ("abc", 7, {"a": 1}):
             with self.assertRaises(HTTPException) as ctx:
-                await app.handle_chats_reorder(make_request({"order": value}))
+                await chat_routes.handle_chats_reorder(make_request({"order": value}))
             self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_non_string_ids_are_rejected(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chats_reorder(make_request({"order": ["a", 7]}))
+            await chat_routes.handle_chats_reorder(make_request({"order": ["a", 7]}))
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_an_absurd_list_is_rejected(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chats_reorder(
+            await chat_routes.handle_chats_reorder(
                 make_request({"order": [f"c{i}" for i in range(501)]}))
         self.assertEqual(ctx.exception.status_code, 400)
 
@@ -220,12 +220,12 @@ class ReorderEndpointTests(ChatOrderBase):
         request = make_request()
         request.json = AsyncMock(side_effect=ValueError("bad body"))
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chats_reorder(request)
+            await chat_routes.handle_chats_reorder(request)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_one_owner_cannot_reorder_anothers_conversations(self):
         await self.make_chats("theirs", owner="bob")
-        response = await app.handle_chats_reorder(
+        response = await chat_routes.handle_chats_reorder(
             make_request({"order": ["theirs"]}, user="admin"))
         self.assertEqual(json.loads(response.body)["placed"], 0)
 

@@ -34,6 +34,7 @@ import auth
 import config
 import db
 import runner
+from routes import chats as chat_routes
 from routes import misc as misc_routes
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -308,7 +309,7 @@ class ChatCreateErrorTests(unittest.IsolatedAsyncioTestCase):
             )
             request.state.session = self.session
             with self.assertRaises(HTTPException) as ctx:
-                await app.handle_chat_create(request)
+                await chat_routes.handle_chat_create(request)
             self.assertEqual(ctx.exception.status_code, 500)
             self.assertIn("Could not create conversation", str(ctx.exception.detail))
             self.assertIn("could_not_create_conversation", self.buf.getvalue())
@@ -321,7 +322,7 @@ class ChatCreateErrorTests(unittest.IsolatedAsyncioTestCase):
             cookies={"wc_session": "x", "wc_csrf": "y"},
         )
         request.state.session = self.session
-        response = await app.handle_chat_create(request)
+        response = await chat_routes.handle_chat_create(request)
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
         self.assertIn("id", body)
@@ -363,7 +364,7 @@ class ChatDeleteErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_delete(request, "nonexistent")
+            await chat_routes.handle_chat_delete(request, "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
         log_text = self.buf.getvalue()
         self.assertIn("chat_delete", log_text)
@@ -405,7 +406,7 @@ class SubmitMessageErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(request, "does-not-exist")
+            await chat_routes.handle_submit_message(request, "does-not-exist")
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertEqual(ctx.exception.detail, "Chat not found")
         self.assertIn("chat not found", self.buf.getvalue())
@@ -421,7 +422,7 @@ class SubmitMessageErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(request, chat_id)
+            await chat_routes.handle_submit_message(request, chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("empty", ctx.exception.detail.lower())
         self.assertIn("empty prompt", self.buf.getvalue())
@@ -439,7 +440,7 @@ class SubmitMessageErrorTests(unittest.IsolatedAsyncioTestCase):
                 cookies={"wc_session": "x", "wc_csrf": "y"},
             )
             request.state.session = self.session
-            response = await app.handle_submit_message(request, chat_id)
+            response = await chat_routes.handle_submit_message(request, chat_id)
             self.assertEqual(response.status_code, 500)
             body = json.loads(response.body)
             self.assertIn("error", body)
@@ -488,7 +489,7 @@ class StreamHandlerErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.stream_handler(request, "nonexistent")
+            await chat_routes.stream_handler(request, "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
         log_text = self.buf.getvalue()
         self.assertIn("stream_handler", log_text)
@@ -505,7 +506,7 @@ class StreamHandlerErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         with self.assertRaises(HTTPException) as ctx:
-            await app.stream_handler(request, chat_id)
+            await chat_routes.stream_handler(request, chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("empty prompt", self.buf.getvalue())
 
@@ -530,7 +531,7 @@ class StreamHandlerErrorTests(unittest.IsolatedAsyncioTestCase):
                 cookies={"wc_session": self.sid},
             )
             request.state.session = self.session
-            response = await app.stream_handler(request, chat_id)
+            response = await chat_routes.stream_handler(request, chat_id)
             # Collect SSE events
             events = []
             async for event in response.body_iterator:
@@ -540,7 +541,7 @@ class StreamHandlerErrorTests(unittest.IsolatedAsyncioTestCase):
                 next(e for e in events if "error" in e).replace("data: ", "").strip()
             )
             self.assertEqual(error_event["type"], "error")
-            self.assertEqual(error_event["error"], app._SSE_TIMEOUT)
+            self.assertEqual(error_event["error"], chat_routes._SSE_TIMEOUT)
         # Logged by turns.py under "turn_timed_out", not by stream_handler:
         # the turn runs as a background task now, so the timeout is detected
         # where the work happens rather than on the request that started it.
@@ -631,7 +632,7 @@ class E2EErrorFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         request.headers = _Headers({"X-CSRF-Token": self.csrf})
-        response = await app.handle_chat_create(request)
+        response = await chat_routes.handle_chat_create(request)
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.body)
         self.assertIn("id", data)
@@ -642,7 +643,7 @@ class E2EErrorFlowTests(unittest.IsolatedAsyncioTestCase):
             cookies={"wc_session": self.sid, "wc_csrf": self.csrf},
         )
         list_req.state.session = self.session
-        list_resp = await app.handle_chats_list(list_req)
+        list_resp = await chat_routes.handle_chats_list(list_req)
         chats_data = json.loads(list_resp.body)
         self.assertEqual(len(chats_data["chats"]), 1)
         self.assertEqual(chats_data["chats"][0]["title"], "integration test")

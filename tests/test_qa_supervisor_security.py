@@ -45,6 +45,7 @@ from unittest.mock import patch
 import auth
 import config
 import db
+import shared
 import supervisor
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -244,8 +245,7 @@ class ModelArgumentInjectionTests(unittest.TestCase):
         """Two copies of a security pattern is the drift this project keeps
         paying for, so app.py's `_MODEL_RE` is the shared object rather than a
         second regex that happens to agree today."""
-        import app
-        self.assertIs(app._MODEL_RE, config.MODEL_ID_RE)
+        self.assertIs(shared._MODEL_RE, config.MODEL_ID_RE)
 
     def test_the_api_refuses_a_flag_shaped_model(self):
         """End to end, because the validator being right is not the same as the

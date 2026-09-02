@@ -11,10 +11,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import auth
 import config
 import db
+import runner
+import turns
+from routes import chats as chat_routes
 from routes import machines as machine_routes
 from routes import misc as misc_routes
 
@@ -169,7 +171,7 @@ class ExportTests(unittest.IsolatedAsyncioTestCase):
         await db.messages_append(chat_id, "assistant", "answer")
         chat = await db.chat_get(chat_id, "admin", include_archived=True)
         messages = await db.messages_get(chat_id)
-        md = app._render_chat_markdown(chat, messages)
+        md = chat_routes.render_chat_markdown(chat, messages)
         self.assertIn("# Export Me", md)
         self.assertIn("> A description", md)
         self.assertIn("question", md)
@@ -180,7 +182,7 @@ class ExportTests(unittest.IsolatedAsyncioTestCase):
     async def test_export_404_for_missing(self):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_export(
+            await chat_routes.handle_chat_export(
                 SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": "admin"})),
                 "nonexistent",
             )
@@ -240,7 +242,7 @@ class ChatTitleDescriptionTests(unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={"title": "x" * 300}),
         )
-        response = await app.handle_chat_patch(request, chat_id)
+        response = await chat_routes.handle_chat_patch(request, chat_id)
         self.assertEqual(response.status_code, 200)
 
         chat = await db.chat_get(chat_id, "admin")
@@ -272,7 +274,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
         )
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_delete(request, "nonexistent")
+            await chat_routes.handle_chat_delete(request, "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_chat_delete_success(self):
@@ -285,11 +287,11 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(
             state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
         )
-        response = await app.handle_chat_delete(request, chat_id)
+        response = await chat_routes.handle_chat_delete(request, chat_id)
         self.assertEqual(response.status_code, 200)
         # Second call should raise 404
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_delete(request, chat_id)
+            await chat_routes.handle_chat_delete(request, chat_id)
         self.assertEqual(ctx.exception.status_code, 404)
         # Workspace still exists
         self.assertTrue(work_dir.exists())
@@ -305,7 +307,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_patch(request, chat_id)
+            await chat_routes.handle_chat_patch(request, chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_patch_rejects_blank_title_and_caps_description(self):
@@ -319,13 +321,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             json=AsyncMock(return_value={"title": "   "}),
         )
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_patch(blank, chat_id)
+            await chat_routes.handle_chat_patch(blank, chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
         capped = SimpleNamespace(
             state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
             json=AsyncMock(return_value={"description": "d" * 600}),
         )
-        await app.handle_chat_patch(capped, chat_id)
+        await chat_routes.handle_chat_patch(capped, chat_id)
         chat = await db.chat_get(chat_id, "admin")
         self.assertEqual(len(chat["description"]), 500)
 
@@ -339,7 +341,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(
             state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
         )
-        response = await app.handle_chat_export(request, chat_id)
+        response = await chat_routes.handle_chat_export(request, chat_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.media_type, "text/markdown; charset=utf-8")
         self.assertIn("Export Test", response.body.decode("utf-8"))
@@ -368,7 +370,7 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
         # Live turns are module state in turns.py, so one test's turn would
         # otherwise still be registered when the next one starts and every
         # subsequent send would queue behind a corpse.
-        await app.turns.shutdown()
+        await turns.shutdown()
         await db.close()
         self.db_patch.stop()
         self.root_patch.stop()
@@ -380,8 +382,8 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 yield event
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn", fake_stream):
-            response = await app.stream_handler(self.request, self.chat_id)
+             patch.object(runner, "stream_turn", fake_stream):
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
             chunks = [chunk async for chunk in response.body_iterator]
             return "".join(
                 chunk.decode() if isinstance(chunk, bytes) else chunk
@@ -391,10 +393,10 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_oversized_stream_prompt_is_rejected_before_runner(self):
         self.request.json = AsyncMock(return_value={"content": "x" * (config.PROMPT_MAX_CHARS + 1)})
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn") as stream_turn:
+             patch.object(runner, "stream_turn") as stream_turn:
             from fastapi import HTTPException
             with self.assertRaises(HTTPException) as ctx:
-                await app.stream_handler(self.request, self.chat_id)
+                await chat_routes.stream_handler(self.request, self.chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
         stream_turn.assert_not_called()
 
@@ -458,17 +460,17 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn", fake_stream):
-            response = await app.stream_handler(self.request, self.chat_id)
+             patch.object(runner, "stream_turn", fake_stream):
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
             iterator = response.body_iterator
             await anext(iterator)          # start frame
             await anext(iterator)          # first token
             await iterator.aclose()        # the user switches conversation
 
             # Still alive with nobody watching.
-            self.assertTrue(app.turns.is_running(self.chat_id))
+            self.assertTrue(turns.is_running(self.chat_id))
             release.set()
-            await app.turns.get(self.chat_id).task
+            await turns.get(self.chat_id).task
 
         self.assertEqual(
             [(m["role"], m["content"])
@@ -488,8 +490,8 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn", fake_stream):
-            response = await app.stream_handler(self.request, self.chat_id)
+             patch.object(runner, "stream_turn", fake_stream):
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
             iterator = response.body_iterator
             await anext(iterator)
             await anext(iterator)
@@ -497,13 +499,13 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
             seen = []
             async def reattach():
-                async for event in app.turns.follow(self.chat_id, 0):
+                async for event in turns.follow(self.chat_id, 0):
                     if event.get("type") == "text":
                         seen.append(event["content"])
             follower = asyncio.create_task(reattach())
             await asyncio.sleep(0)
             release.set()
-            await app.turns.get(self.chat_id).task
+            await turns.get(self.chat_id).task
             await asyncio.wait_for(follower, timeout=1)
 
         # "first" was emitted before the reattach and still arrives.
@@ -518,14 +520,14 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn", fake_stream):
-            first = await app.stream_handler(self.request, self.chat_id)
+             patch.object(runner, "stream_turn", fake_stream):
+            first = await chat_routes.stream_handler(self.request, self.chat_id)
             iterator = first.body_iterator
             await anext(iterator)
             await anext(iterator)
 
             self.request.json = AsyncMock(return_value={"content": "second ask"})
-            second = await app.stream_handler(self.request, self.chat_id)
+            second = await chat_routes.stream_handler(self.request, self.chat_id)
             body = "".join([
                 chunk.decode() if isinstance(chunk, bytes) else chunk
                 async for chunk in second.body_iterator
@@ -538,7 +540,7 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
             )
             await iterator.aclose()
             release.set()
-            await app.turns.get(self.chat_id).task
+            await turns.get(self.chat_id).task
 
 
 class MachineTests(unittest.IsolatedAsyncioTestCase):

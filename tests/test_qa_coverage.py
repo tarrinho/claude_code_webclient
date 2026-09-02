@@ -34,12 +34,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 import app
 import auth
 import config
 import db
 import runner
+from routes import chats as chat_routes
 from routes import machines as machine_routes
 from routes import misc as misc_routes
 
@@ -147,7 +149,7 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_fork_response_schema(self):
         chat_id = "fork-schema"
         await db.chat_create(chat_id, "Fork Me", None, f"{self.tmpdir.name}/p", "admin")
-        resp = await app.handle_chat_fork(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_fork(self._req(chat_id), chat_id)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertIn("id", data)
@@ -162,7 +164,7 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(chat_id, "Fork Msgs", None, work, "admin")
         await db.messages_append(chat_id, "user", "hello")
         await db.messages_append(chat_id, "assistant", "hi")
-        resp = await app.handle_chat_fork(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_fork(self._req(chat_id), chat_id)
         data = json.loads(resp.body)
         messages = await db.messages_get(data["id"])
         self.assertEqual(len(messages), 2)
@@ -171,7 +173,7 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fork_unknown_chat_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_fork(self._req("nonexistent"), "nonexistent")
+            await chat_routes.handle_chat_fork(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_fork_distinct_workspace(self):
@@ -179,7 +181,7 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
         work = f"{self.tmpdir.name}/p/{chat_id}"
         Path(work).mkdir(parents=True)
         await db.chat_create(chat_id, "Fork WS", None, work, "admin")
-        resp = await app.handle_chat_fork(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_fork(self._req(chat_id), chat_id)
         data = json.loads(resp.body)
         self.assertNotEqual(data["work_dir"], work)
         self.assertTrue(Path(data["work_dir"]).is_dir())
@@ -188,7 +190,7 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
         chat_id = "fork-model"
         await db.chat_create(chat_id, "Model Fork", None, f"{self.tmpdir.name}/p", "admin")
         await db.chat_set_model(chat_id, "claude-opus-4-20250514")
-        fork_resp = await app.handle_chat_fork(self._req(chat_id), chat_id)
+        fork_resp = await chat_routes.handle_chat_fork(self._req(chat_id), chat_id)
         fork_id = json.loads(fork_resp.body)["id"]
         forked = await db.chat_get(fork_id, "admin")
         self.assertEqual(forked["model"], "claude-opus-4-20250514")
@@ -222,7 +224,7 @@ class SearchAPITests(unittest.IsolatedAsyncioTestCase):
         chat_id = "search-schema"
         await db.chat_create(chat_id, "Search QA", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "find this")
-        resp = await app.handle_chat_search(self._req({"query": "find this"}))
+        resp = await chat_routes.handle_chat_search(self._req({"query": "find this"}))
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertIn("results", data)
@@ -232,7 +234,7 @@ class SearchAPITests(unittest.IsolatedAsyncioTestCase):
         chat_id = "search-snippet"
         await db.chat_create(chat_id, "Snippet Chat", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "unique keyword here")
-        resp = await app.handle_chat_search(
+        resp = await chat_routes.handle_chat_search(
             self._req({"query": "unique keyword"})
         )
         data = json.loads(resp.body)
@@ -241,14 +243,14 @@ class SearchAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_empty_query_returns_400(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_search(self._req({"query": "   "}))
+            await chat_routes.handle_chat_search(self._req({"query": "   "}))
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_search_long_query_truncated(self):
         chat_id = "search-long"
         await db.chat_create(chat_id, "Long Query Chat", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "common")
-        resp = await app.handle_chat_search(
+        resp = await chat_routes.handle_chat_search(
             self._req({"query": "x" * 500})
         )
         self.assertEqual(resp.status_code, 200)
@@ -260,7 +262,7 @@ class SearchAPITests(unittest.IsolatedAsyncioTestCase):
         chat_id = "search-id"
         await db.chat_create(chat_id, "Id Chat", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "test")
-        resp = await app.handle_chat_search(
+        resp = await chat_routes.handle_chat_search(
             self._req({"query": "test"})
         )
         data = json.loads(resp.body)
@@ -271,7 +273,7 @@ class SearchAPITests(unittest.IsolatedAsyncioTestCase):
         chat_id = "search-empty"
         await db.chat_create(chat_id, "No Match", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "hello world")
-        resp = await app.handle_chat_search(
+        resp = await chat_routes.handle_chat_search(
             self._req({"query": "zzznonexistentzzz"})
         )
         data = json.loads(resp.body)
@@ -531,14 +533,14 @@ class ChatGetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_get_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_get(self._req(), "nonexistent")
+            await chat_routes.handle_chat_get(self._req(), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_chat_get_returns_schema(self):
         chat_id = "get-schema"
         await db.chat_create(chat_id, "Get Schema", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "hello")
-        resp = await app.handle_chat_get(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_get(self._req(chat_id), chat_id)
         data = json.loads(resp.body)
         self.assertIn("chat", data)
         self.assertIn("messages", data)
@@ -564,7 +566,7 @@ class ChatPatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_patch_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_patch(self._req("nonexistent"), "nonexistent")
+            await chat_routes.handle_chat_patch(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_patch_valid_fields(self):
@@ -576,7 +578,7 @@ class ChatPatchTests(unittest.IsolatedAsyncioTestCase):
             body={"title": "After"},
         )
         r.state.session = _make_admin_session()
-        resp = await app.handle_chat_patch(r, chat_id)
+        resp = await chat_routes.handle_chat_patch(r, chat_id)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
@@ -601,13 +603,13 @@ class ChatExportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_export_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_export(self._req("nonexistent"), "nonexistent")
+            await chat_routes.handle_chat_export(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_export_has_attachment_header(self):
         chat_id = "exp-disp"
         await db.chat_create(chat_id, "Disp", None, f"{self.tmpdir.name}/p", "admin")
-        resp = await app.handle_chat_export(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_export(self._req(chat_id), chat_id)
         self.assertEqual(resp.status_code, 200)
         self.assertIn("attachment", resp.headers.get("content-disposition", ""))
         self.assertEqual(resp.media_type, "text/markdown; charset=utf-8")
@@ -615,7 +617,7 @@ class ChatExportTests(unittest.IsolatedAsyncioTestCase):
     async def test_export_has_filename(self):
         chat_id = "exp-fn"
         await db.chat_create(chat_id, "My Export", None, f"{self.tmpdir.name}/p", "admin")
-        resp = await app.handle_chat_export(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_export(self._req(chat_id), chat_id)
         self.assertIn("my-export", resp.headers.get("content-disposition", "").lower())
 
     async def test_export_includes_messages(self):
@@ -623,7 +625,7 @@ class ChatExportTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(chat_id, "Export Msgs", None, f"{self.tmpdir.name}/p", "admin")
         await db.messages_append(chat_id, "user", "q")
         await db.messages_append(chat_id, "assistant", "a")
-        resp = await app.handle_chat_export(self._req(chat_id), chat_id)
+        resp = await chat_routes.handle_chat_export(self._req(chat_id), chat_id)
         text = resp.body.decode()
         self.assertIn("User", text)
         self.assertIn("Assistant", text)
@@ -649,7 +651,7 @@ class ChatDeleteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_delete(self._req("nonexistent"), "nonexistent")
+            await chat_routes.handle_chat_delete(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
 
@@ -680,14 +682,14 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         chat_id = "c-empty"
         await db.chat_create(chat_id, "Empty", None, f"{self.tmpdir.name}/p", "admin")
         with self.assertRaises(HTTPException) as ctx:
-            await app.stream_handler(self._req(chat_id, content=""), chat_id)
+            await chat_routes.stream_handler(self._req(chat_id, content=""), chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_stream_whitespace_prompt_rejected(self):
         chat_id = "c-ws"
         await db.chat_create(chat_id, "WS", None, f"{self.tmpdir.name}/p", "admin")
         with self.assertRaises(HTTPException) as ctx:
-            await app.stream_handler(self._req(chat_id, content="   "), chat_id)
+            await chat_routes.stream_handler(self._req(chat_id, content="   "), chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_stream_io_error_returns_200(self):
@@ -699,7 +701,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             raise OSError("connection reset")
 
         with patch.object(runner, "stream_turn", mock_gen()):
-            response = await app.stream_handler(self._req(chat_id), chat_id)
+            response = await chat_routes.stream_handler(self._req(chat_id), chat_id)
             self.assertEqual(response.status_code, 200)
 
 
@@ -856,7 +858,7 @@ class CrossForkSearchTests(unittest.IsolatedAsyncioTestCase):
             cookies={"wc_session": self.sid, "wc_csrf": self.csrf},
         )
         fork_req.state = SimpleNamespace(session=self.session)
-        fork_resp = await app.handle_chat_fork(fork_req, chat_id)
+        fork_resp = await chat_routes.handle_chat_fork(fork_req, chat_id)
         fork_id = json.loads(fork_resp.body)["id"]
 
         search_req = _make_request(
@@ -867,7 +869,7 @@ class CrossForkSearchTests(unittest.IsolatedAsyncioTestCase):
         )
         search_req.state.session = self.session
         search_req.headers = {"x-csrf-token": self.csrf}
-        search_resp = await app.handle_chat_search(search_req)
+        search_resp = await chat_routes.handle_chat_search(search_req)
         data = json.loads(search_resp.body)
         self.assertGreater(data["count"], 0)
         self.assertIn(fork_id, [r["id"] for r in data["results"]])
@@ -956,7 +958,7 @@ class ChatListTests(unittest.IsolatedAsyncioTestCase):
             cookies={"wc_session": admin_sid},
         )
         admin_req.state.session = auth.session_get(admin_sid)
-        admin_resp = await app.handle_chats_list(admin_req)
+        admin_resp = await chat_routes.handle_chats_list(admin_req)
         admin_data = json.loads(admin_resp.body)
         admin_ids = [c["id"] for c in admin_data["chats"]]
         self.assertIn("c-admin", admin_ids)
@@ -968,7 +970,7 @@ class ChatListTests(unittest.IsolatedAsyncioTestCase):
             cookies={"wc_session": bob_sid},
         )
         bob_req.state.session = auth.session_get(bob_sid)
-        bob_resp = await app.handle_chats_list(bob_req)
+        bob_resp = await chat_routes.handle_chats_list(bob_req)
         bob_data = json.loads(bob_resp.body)
         bob_ids = [c["id"] for c in bob_data["chats"]]
         self.assertIn("c-bob", bob_ids)
@@ -1040,7 +1042,7 @@ class ChatCreateTests(unittest.IsolatedAsyncioTestCase):
         """Empty title defaults to 'Untitled'."""
         r = self._req(title="")
         r.state.session = _make_admin_session()
-        resp = await app.handle_chat_create(r)
+        resp = await chat_routes.handle_chat_create(r)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertEqual(data["title"], "Untitled")
@@ -1049,7 +1051,7 @@ class ChatCreateTests(unittest.IsolatedAsyncioTestCase):
         """Whitespace-only title strips to empty (no fallback in handler)."""
         r = self._req(title="   ")
         r.state.session = _make_admin_session()
-        resp = await app.handle_chat_create(r)
+        resp = await chat_routes.handle_chat_create(r)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertEqual(data["title"], "")  # stripped, no reversion
@@ -1059,7 +1061,7 @@ class ChatCreateTests(unittest.IsolatedAsyncioTestCase):
         r = self._req(title="x" * 500)
         r.state.session = _make_admin_session()
         r.body = {"title": "x" * 500}
-        resp = await app.handle_chat_create(r)
+        resp = await chat_routes.handle_chat_create(r)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertEqual(len(data["title"]), 200)
@@ -1067,7 +1069,7 @@ class ChatCreateTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_returns_schema(self):
         r = self._req(title="Schema Chat")
         r.state.session = _make_admin_session()
-        resp = await app.handle_chat_create(r)
+        resp = await chat_routes.handle_chat_create(r)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertIn("id", data)
@@ -1078,7 +1080,7 @@ class ChatCreateTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_creates_workspace_dir(self):
         r = self._req(title="Workspace Test")
         r.state.session = _make_admin_session()
-        resp = await app.handle_chat_create(r)
+        resp = await chat_routes.handle_chat_create(r)
         data = json.loads(resp.body)
         self.assertTrue(Path(data["work_dir"]).is_dir())
 
@@ -1107,7 +1109,7 @@ class SubmitMessageValidationTests(unittest.IsolatedAsyncioTestCase):
         chat_id = "submit-empty"
         await db.chat_create(chat_id, "Submit", None, f"{self.tmpdir.name}/p", "admin")
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(self._req(chat_id, content=""), chat_id)
+            await chat_routes.handle_submit_message(self._req(chat_id, content=""), chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_submit_too_long_prompt_400(self):
@@ -1115,12 +1117,12 @@ class SubmitMessageValidationTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(chat_id, "Submit", None, f"{self.tmpdir.name}/p", "admin")
         long_prompt = "x" * 10000
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(self._req(chat_id, content=long_prompt), chat_id)
+            await chat_routes.handle_submit_message(self._req(chat_id, content=long_prompt), chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_submit_to_chat_not_found_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(self._req("nonexistent"), "nonexistent")
+            await chat_routes.handle_submit_message(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
 
@@ -1650,7 +1652,7 @@ class SubmitMessageModelTests(unittest.IsolatedAsyncioTestCase):
         req = _make_request(method="POST", path="/api/chats", cookies={})
         req.state.session = {"user": "admin", "role": "admin"}
         req.json = AsyncMock(return_value={"title": "test"})
-        resp = await app.handle_chat_create(req)
+        resp = await chat_routes.handle_chat_create(req)
         return json.loads(resp.body)["id"]
 
     async def test_submit_with_model_override(self):
@@ -1659,7 +1661,7 @@ class SubmitMessageModelTests(unittest.IsolatedAsyncioTestCase):
         mock_runner = AsyncMock(return_value=([], None))
         with patch.object(runner, "run_turn", mock_runner):
             req = self._make_request({"content": "hello", "model": "claude-opus-4-20250514"})
-            resp = await app.handle_submit_message(req, cid)
+            resp = await chat_routes.handle_submit_message(req, cid)
             self.assertEqual(resp.status_code, 200)
             data = json.loads(resp.body)
             self.assertIn("response", data)
@@ -1671,14 +1673,14 @@ class SubmitMessageModelTests(unittest.IsolatedAsyncioTestCase):
         req = self._make_request({"content": "hello", "model": "bad/model!"})
         cid = await self._create_chat()
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_submit_message(req, cid)
+            await chat_routes.handle_submit_message(req, cid)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_submit_model_too_long(self):
         req = self._make_request({"content": "hello", "model": "x" * 101})
         cid = await self._create_chat()
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_submit_message(req, cid)
+            await chat_routes.handle_submit_message(req, cid)
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -1710,7 +1712,7 @@ class SubmitMessagePersistenceTests(unittest.IsolatedAsyncioTestCase):
         req = _make_request(method="POST", path="/api/chats", cookies={})
         req.state.session = {"user": "admin", "role": "admin"}
         req.json = AsyncMock(return_value={"title": "test"})
-        resp = await app.handle_chat_create(req)
+        resp = await chat_routes.handle_chat_create(req)
         return json.loads(resp.body)["id"]
 
     async def test_submit_persists_user_message(self):
@@ -1718,7 +1720,7 @@ class SubmitMessagePersistenceTests(unittest.IsolatedAsyncioTestCase):
         mock_runner = AsyncMock(return_value=(["yes"], None))
         with patch.object(runner, "run_turn", mock_runner):
             req = self._make_request({"content": "hello"})
-            await app.handle_submit_message(req, cid)
+            await chat_routes.handle_submit_message(req, cid)
         messages = await db.messages_get(cid)
         self.assertEqual(messages[-1]["role"], "assistant")
         self.assertEqual(messages[0]["content"], "hello")
@@ -1728,7 +1730,7 @@ class SubmitMessagePersistenceTests(unittest.IsolatedAsyncioTestCase):
         mock_runner = AsyncMock(return_value=(["response text"], None))
         with patch.object(runner, "run_turn", mock_runner):
             req = self._make_request({"content": "hello"})
-            resp = await app.handle_submit_message(req, cid)
+            resp = await chat_routes.handle_submit_message(req, cid)
         messages = await db.messages_get(cid)
         self.assertEqual(messages[0]["content"], "hello")
         self.assertIn("response text", messages[1]["content"])
@@ -1739,7 +1741,7 @@ class SubmitMessagePersistenceTests(unittest.IsolatedAsyncioTestCase):
         mock_runner = AsyncMock(return_value=(["ok"], None))
         with patch.object(runner, "run_turn", mock_runner):
             req = self._make_request({"content": "hello"})
-            await app.handle_submit_message(req, cid)
+            await chat_routes.handle_submit_message(req, cid)
         mock_runner.assert_called_once()
         call_args = mock_runner.call_args
         self.assertTrue(call_args[0][2].startswith(config.PROJECTS_ROOT))
@@ -1781,7 +1783,7 @@ class SessionsListTests(unittest.IsolatedAsyncioTestCase):
         req_create = _make_request(method="POST", path="/api/chats", cookies={})
         req_create.state.session = {"user": "admin", "role": "admin"}
         req_create.json = AsyncMock(return_value={"title": "Session Test"})
-        resp_create = await app.handle_chat_create(req_create)
+        resp_create = await chat_routes.handle_chat_create(req_create)
         cid = json.loads(resp_create.body)["id"]
 
         req = self._make_request()
@@ -1823,14 +1825,14 @@ class ChatPatchValidationTests(unittest.IsolatedAsyncioTestCase):
         req = _make_request(method="POST", path="/api/chats", cookies={})
         req.state.session = {"user": "admin", "role": "admin"}
         req.json = AsyncMock(return_value={"title": "Patch Test"})
-        resp = await app.handle_chat_create(req)
+        resp = await chat_routes.handle_chat_create(req)
         return json.loads(resp.body)["id"]
 
     async def test_chat_patch_unknown_field(self):
         cid = await self._create_chat()
         req = self._make_request({"unknown_field": "x"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_chat_patch(req, cid)
+            await chat_routes.handle_chat_patch(req, cid)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_chat_patch_non_boolean_archive(self):
@@ -1838,14 +1840,14 @@ class ChatPatchValidationTests(unittest.IsolatedAsyncioTestCase):
         cid = await self._create_chat()
         req = self._make_request({"archived": "yes"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_chat_patch(req, cid)
+            await chat_routes.handle_chat_patch(req, cid)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_chat_patch_non_boolean_pinned(self):
         req = self._make_request({"pinned": "true"})
         cid = await self._create_chat()
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_chat_patch(req, cid)
+            await chat_routes.handle_chat_patch(req, cid)
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -1891,7 +1893,7 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
         req = _make_request(method="POST", path="/api/chats", cookies={})
         req.state.session = {"user": "admin", "role": "admin"}
         req.json = AsyncMock(return_value={"title": "Stream Test"})
-        resp = await app.handle_chat_create(req)
+        resp = await chat_routes.handle_chat_create(req)
         return json.loads(resp.body)["id"]
 
     async def test_stream_timeout_error_event(self):
@@ -1902,8 +1904,8 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
         async def _cancel_stream(*args, **kwargs):
             raise asyncio.CancelledError()
         with patch.object(runner, "stream_turn", _cancel_stream):
-            resp = await app.stream_handler(req, cid)
-            self.assertIsInstance(resp, app.StreamingResponse)
+            resp = await chat_routes.stream_handler(req, cid)
+            self.assertIsInstance(resp, StreamingResponse)
             # Read the response body to check for error events
             parts = []
             async for chunk in resp.body_iterator:
@@ -1919,8 +1921,8 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
         with patch.object(runner, "stream_turn", _fake_stream):
             req = self._make_request({"content": "hello"})
-            resp = await app.stream_handler(req, cid)
-            self.assertIsInstance(resp, app.StreamingResponse)
+            resp = await chat_routes.stream_handler(req, cid)
+            self.assertIsInstance(resp, StreamingResponse)
             self.assertEqual(resp.media_type, "text/event-stream")
 
     async def test_stream_model_override(self):
@@ -1932,7 +1934,7 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
         with patch.object(runner, "stream_turn", _capture_stream):
             req = self._make_request({"content": "hello", "model": "claude-opus-4"})
-            resp = await app.stream_handler(req, cid)
+            resp = await chat_routes.stream_handler(req, cid)
             # StreamingResponse is lazy: the generator -- and therefore
             # stream_turn -- only runs once the body is consumed.
             async for _chunk in resp.body_iterator:

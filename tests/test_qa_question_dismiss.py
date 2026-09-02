@@ -28,6 +28,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import prompts
+import transcripts
+from routes import chats as chat_routes
 
 SCREEN = {"kind": "screen", "session": "123.pts-6.host", "window": "2"}
 
@@ -48,6 +50,19 @@ CLOSED = """
   ⏵⏵ accept edits on (shift+tab to cycle)
 """
 
+
+
+def _mounted_routes(application):
+    """Every route the app serves, including those reached through a router."""
+    out = []
+    for route in application.routes:
+        out.append(route)
+        # An included router appears as one wrapper object, not as its routes;
+        # effective_candidates() is how the wrapper hands them over.
+        candidates = getattr(route, "effective_candidates", None)
+        if callable(candidates):
+            out.extend(candidates())
+    return out
 
 class DismissKeystrokeQA(unittest.TestCase):
     """What is sent, and what is claimed about the result."""
@@ -144,7 +159,7 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get", AsyncMock(return_value=None)), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_question_dismiss(self._req())
+            await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_a_chat_with_no_session_is_a_400(self):
@@ -154,7 +169,7 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": None})), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_question_dismiss(self._req())
+            await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_nothing_pending_is_a_success_not_a_conflict(self):
@@ -166,8 +181,8 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question", return_value=None):
-            response = await app.handle_chat_question_dismiss(self._req())
+             patch.object(transcripts, "pending_question", return_value=None):
+            response = await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
         self.assertTrue(body["ok"])
@@ -177,10 +192,10 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question",
+             patch.object(transcripts, "pending_question",
                           return_value=dict(self.PENDING)), \
-             patch.object(app.prompts, "find_target", return_value=None):
-            response = await app.handle_chat_question_dismiss(self._req())
+             patch.object(prompts, "find_target", return_value=None):
+            response = await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(response.status_code, 409)
         body = json.loads(response.body)
         self.assertFalse(body["delivered"])
@@ -193,14 +208,14 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question",
+             patch.object(transcripts, "pending_question",
                           return_value=dict(self.PENDING)), \
-             patch.object(app.prompts, "find_target",
+             patch.object(prompts, "find_target",
                           return_value={**SCREEN, "snapshot": PROMPT}), \
-             patch.object(app.prompts, "dismiss",
+             patch.object(prompts, "dismiss",
                           return_value={"ok": False, "delivered": True,
                                         "reason": "The prompt is still open."}):
-            response = await app.handle_chat_question_dismiss(self._req())
+            response = await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(response.status_code, 409)
         body = json.loads(response.body)
         self.assertTrue(body["delivered"])
@@ -209,14 +224,14 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question",
+             patch.object(transcripts, "pending_question",
                           return_value=dict(self.PENDING)), \
-             patch.object(app.prompts, "find_target",
+             patch.object(prompts, "find_target",
                           return_value={**SCREEN, "snapshot": PROMPT}), \
-             patch.object(app.prompts, "dismiss",
+             patch.object(prompts, "dismiss",
                           return_value={"ok": False, "delivered": False,
                                         "reason": "Could not reach the terminal."}):
-            response = await app.handle_chat_question_dismiss(self._req())
+            response = await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(response.status_code, 409)
         self.assertFalse(json.loads(response.body)["delivered"])
 
@@ -227,14 +242,14 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question",
+             patch.object(transcripts, "pending_question",
                           return_value=dict(self.PENDING)), \
-             patch.object(app.prompts, "find_target",
+             patch.object(prompts, "find_target",
                           return_value={**SCREEN, "snapshot": PROMPT}), \
-             patch.object(app.prompts, "dismiss",
+             patch.object(prompts, "dismiss",
                           return_value={"ok": True, "delivered": True}), \
              self.assertLogs("wc.app", level="INFO") as logs:
-            response = await app.handle_chat_question_dismiss(self._req())
+            response = await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(response.status_code, 200)
         self.assertTrue(json.loads(response.body)["dismissed"])
         line = "\n".join(logs.output)
@@ -249,7 +264,10 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         methods = {
             method
-            for route in app.app.routes
+            # Not app.app.routes: that list holds one opaque entry per
+            # include_router call, so the real routes are a level down and
+            # this set came back empty rather than wrong.
+            for route in _mounted_routes(app.app)
             if getattr(route, "path", "") == "/api/chats/{chat_id}/question"
             for method in (getattr(route, "methods", None) or set())
         }

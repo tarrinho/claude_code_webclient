@@ -15,9 +15,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import config
 import db
+import shared
+import transcripts
 from routes import misc as misc_routes
 
 
@@ -36,31 +37,31 @@ class TurnFlatteningTests(unittest.TestCase):
 
     def test_text_block_becomes_the_body(self):
         self.assertEqual(
-            app._turn_to_message(_turn("user", "hello")), ("user", "hello")
+            shared._turn_to_message(_turn("user", "hello")), ("user", "hello")
         )
 
     def test_assistant_role_is_preserved(self):
-        role, _ = app._turn_to_message(_turn("assistant", "hi"))
+        role, _ = shared._turn_to_message(_turn("assistant", "hi"))
         self.assertEqual(role, "assistant")
 
     def test_unknown_role_falls_back_to_user(self):
-        role, _ = app._turn_to_message(_turn("system", "note"))
+        role, _ = shared._turn_to_message(_turn("system", "note"))
         self.assertEqual(role, "user")
 
     def test_tool_block_is_marked_not_dropped(self):
-        _role, body = app._turn_to_message(_turn("assistant", "Read foo.py", kind="tool"))
+        _role, body = shared._turn_to_message(_turn("assistant", "Read foo.py", kind="tool"))
         self.assertEqual(body, "`Read foo.py`")
 
     def test_thinking_block_is_dropped(self):
         """The terminal collapses thinking; replaying it shows more than was seen."""
-        self.assertIsNone(app._turn_to_message(_turn("assistant", "hmm", kind="thinking")))
+        self.assertIsNone(shared._turn_to_message(_turn("assistant", "hmm", kind="thinking")))
 
     def test_sidechain_turn_is_dropped(self):
         """Subagent traffic has nowhere to be labelled in a role/content row."""
-        self.assertIsNone(app._turn_to_message(_turn("assistant", "sub", sidechain=True)))
+        self.assertIsNone(shared._turn_to_message(_turn("assistant", "sub", sidechain=True)))
 
     def test_blank_turn_is_dropped(self):
-        self.assertIsNone(app._turn_to_message(_turn("user", "   ")))
+        self.assertIsNone(shared._turn_to_message(_turn("user", "   ")))
 
     def test_multiple_blocks_join_with_a_blank_line(self):
         turn = {
@@ -72,7 +73,7 @@ class TurnFlatteningTests(unittest.TestCase):
             ],
             "sidechain": False,
         }
-        _role, body = app._turn_to_message(turn)
+        _role, body = shared._turn_to_message(turn)
         self.assertEqual(body, "one\n\n`Bash ls`\n\ntwo")
 
 
@@ -103,7 +104,7 @@ class TranscriptImportTests(unittest.IsolatedAsyncioTestCase):
             _turn("assistant", "second"),
             _turn("user", "third"),
         ])
-        with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
+        with patch.object(transcripts, "read_turns", AsyncMock(return_value=payload)):
             count = await misc_routes._import_transcript("c1", "sess-1")
         self.assertEqual(count, 3)
         rows = await db.messages_get("c1")
@@ -111,19 +112,19 @@ class TranscriptImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["role"] for r in rows], ["user", "assistant", "user"])
 
     async def test_missing_transcript_imports_nothing(self):
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=self._payload([], found=False))):
             self.assertEqual(await misc_routes._import_transcript("c1", "sess-1"), 0)
         self.assertEqual(await db.messages_get("c1"), [])
 
     async def test_transcript_with_only_sidechains_imports_nothing(self):
         payload = self._payload([_turn("assistant", "sub", sidechain=True)])
-        with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
+        with patch.object(transcripts, "read_turns", AsyncMock(return_value=payload)):
             self.assertEqual(await misc_routes._import_transcript("c1", "sess-1"), 0)
         self.assertEqual(await db.messages_get("c1"), [])
 
     async def test_read_error_is_survived(self):
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(side_effect=OSError("boom"))):
             self.assertEqual(await misc_routes._import_transcript("c1", "sess-1"), 0)
 
@@ -136,7 +137,7 @@ class TranscriptImportTests(unittest.IsolatedAsyncioTestCase):
         import, and testing it here would hide the thing being tested.
         """
         payload = self._payload([_turn("user", "unmistakabletoken")])
-        with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
+        with patch.object(transcripts, "read_turns", AsyncMock(return_value=payload)):
             await misc_routes._import_transcript("c1", "sess-1")
         results = await db.chat_search("admin", "unmistakabletoken")
         self.assertEqual([r["id"] for r in results], ["c1"])
@@ -173,7 +174,7 @@ class ResumeImportTests(unittest.IsolatedAsyncioTestCase):
         sessions = [{"sessionId": self.sid, "cwd": f"{self.tmp.name}/p", "name": "cweb2"}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=sessions)), \
              patch.object(db, "write_claude_session_file", lambda *a, **k: None), \
-             patch.object(app.transcripts, "read_turns",
+             patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=self.payload)):
             resp = await misc_routes.handle_sessions_resume(self._req(), self.sid)
         return json.loads(resp.body)

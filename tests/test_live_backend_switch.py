@@ -14,7 +14,7 @@ Both directions on purpose. They are not symmetrical: only one of them puts a
 strict API in front of a permissive gateway's output, and that is the direction
 that fails.
 
-The turns go through `app._prepare_transcript_for_backend` first, exactly as a
+The turns go through `chat_routes._prepare_transcript_for_backend` first, exactly as a
 real turn does, so this measures the guard the product actually has rather than
 a guard the test supplies for it.
 
@@ -33,11 +33,11 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-import app
 import config
 import db
 import runner
 import transcripts
+from routes import chats as chat_routes
 
 # The suite has no convention for importing one test module from another, and
 # the alternatives are worse: a tests/__init__.py would change collection
@@ -151,7 +151,7 @@ class BackendSwitchTests(unittest.IsolatedAsyncioTestCase):
         chat = await db.chat_get(self.chat_id, self.owner)
         # The app does this before every turn; without it this test would be
         # measuring a guard the product does not actually run.
-        await app._prepare_transcript_for_backend(chat)
+        await chat_routes._prepare_transcript_for_backend(chat)
 
         text, events = [], []
         try:

@@ -24,9 +24,9 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-import app
 import config
 import db
+from routes import chats as chat_routes
 
 
 def assistant(text: str, session_id: str) -> dict:
@@ -86,7 +86,7 @@ class SyncAllBase(unittest.IsolatedAsyncioTestCase):
         return path
 
     async def sweep(self, user="admin"):
-        response = await app.handle_chats_sync_all(request_for(user))
+        response = await chat_routes.handle_chats_sync_all(request_for(user))
         return json.loads(response.body)
 
 
@@ -220,14 +220,14 @@ class ResilienceTests(SyncAllBase):
         self.write_transcript(bad, [assistant("unreachable", bad)])
         self.write_transcript(good, [assistant("reachable", good)])
 
-        real = app._sync_linked_chat
+        real = chat_routes._sync_linked_chat
 
         async def explode(chat):
             if chat.get("session_id") == bad:
                 raise OSError("permission denied")
             return await real(chat)
 
-        with patch.object(app, "_sync_linked_chat", explode):
+        with patch.object(chat_routes, "_sync_linked_chat", explode):
             result = await self.sweep()
 
         self.assertEqual(result["changed"], {good_id: 1},

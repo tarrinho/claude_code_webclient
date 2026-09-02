@@ -28,6 +28,8 @@ import auth
 import config
 import db
 import runner
+import shared
+from routes import chats as chat_routes
 from routes import misc as misc_routes
 
 
@@ -174,7 +176,7 @@ class UnitQA(unittest.TestCase):
 
     def test_render_chat_markdown_uses_safe_role_labels(self):
         chat = {"title": "Unit", "created_at": "bad-date", "work_dir": None, "session_id": None}
-        markdown = app.render_chat_markdown(chat, [{"role": "attacker", "content": "payload"}])
+        markdown = chat_routes.render_chat_markdown(chat, [{"role": "attacker", "content": "payload"}])
         self.assertIn("## Message", markdown)
         self.assertNotIn("## attacker", markdown)
 
@@ -369,9 +371,9 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         )
         chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
-             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn, \
+             patch.object(runner, "run_turn", AsyncMock()) as run_turn, \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(request, "chat")
+            await chat_routes.handle_submit_message(request, "chat")
         self.assertEqual(ctx.exception.status_code, 400)
         run_turn.assert_not_awaited()
 
@@ -382,9 +384,9 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         )
         chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
-             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn, \
+             patch.object(runner, "run_turn", AsyncMock()) as run_turn, \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(request, "chat")
+            await chat_routes.handle_submit_message(request, "chat")
         self.assertEqual(ctx.exception.status_code, 400)
         run_turn.assert_not_awaited()
 
@@ -398,8 +400,8 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
              patch.object(app.db, "messages_batch", AsyncMock()) as batch, \
              patch.object(app.db, "chat_set_session", AsyncMock()) as set_session, \
              patch.object(app.db, "bump_chat_updated_at", AsyncMock()), \
-             patch.object(app.runner, "run_turn", AsyncMock(return_value=(["answer"], "sid"))):
-            response = await app.handle_submit_message(request, "chat")
+             patch.object(runner, "run_turn", AsyncMock(return_value=(["answer"], "sid"))):
+            response = await chat_routes.handle_submit_message(request, "chat")
         self.assertEqual(response.status_code, 200)
         batch.assert_awaited_once_with("chat", [("user", "hello"), ("assistant", "answer")])
         set_session.assert_awaited_once_with("chat", "sid")
@@ -410,7 +412,7 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
             json=AsyncMock(return_value={"owner_id": "bob"}),
         )
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_patch(request, "chat")
+            await chat_routes.handle_chat_patch(request, "chat")
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_security_middleware_wraps_auth_rejections(self):
@@ -447,7 +449,7 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
     async def test_stream_requires_independent_cookie_auth(self):
         request = SimpleNamespace(cookies={}, headers={}, state=SimpleNamespace(session=None))
         with self.assertRaises(HTTPException) as ctx:
-            await app.stream_handler(request, "chat")
+            await chat_routes.stream_handler(request, "chat")
         self.assertEqual(ctx.exception.status_code, 401)
 
     async def test_chat_create_defaults_title_and_truncates_input(self):
@@ -458,7 +460,7 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(config, "PROJECTS_ROOT", tmp), \
              patch.object(app.db, "chat_create", AsyncMock(return_value="now")):
-            response = await app.handle_chat_create(request)
+            response = await chat_routes.handle_chat_create(request)
             payload = json.loads(response.body)
             self.assertEqual(len(payload["title"]), 200)
             self.assertTrue(Path(payload["work_dir"]).is_dir())
@@ -469,7 +471,7 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
             json=AsyncMock(return_value={"description": 123}),
         )
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_patch(request, "chat")
+            await chat_routes.handle_chat_patch(request, "chat")
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_submit_maps_runner_error_to_json_contract(self):
@@ -480,14 +482,14 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         chat = {"id": "chat", "session_id": None, "work_dir": "/tmp/work", "owner_id": "alice"}
         with patch.object(app.db, "chat_get", AsyncMock(return_value=chat)), \
              patch.object(app.db, "messages_append", AsyncMock()), \
-             patch.object(app.runner, "run_turn", AsyncMock(side_effect=runner.TurnError("proxy down", fatal=False))):
-            response = await app.handle_submit_message(request, "chat")
+             patch.object(runner, "run_turn", AsyncMock(side_effect=runner.TurnError("proxy down", fatal=False))):
+            response = await chat_routes.handle_submit_message(request, "chat")
         self.assertEqual(response.status_code, 500)
         # The raw exception text must not reach the client -- this path now
         # masks it the same way the SSE branch always did. It previously
         # returned str(e) verbatim, which this test asserted.
         body = json.loads(response.body)
-        self.assertEqual(body, {"error": app._SSE_INTERNAL, "fatal": False})
+        self.assertEqual(body, {"error": shared._SSE_INTERNAL, "fatal": False})
         self.assertNotIn("proxy down", response.body.decode())
 
     async def test_submit_rejects_missing_chat_before_runner(self):
@@ -496,9 +498,9 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
             json=AsyncMock(return_value={"content": "hello"}),
         )
         with patch.object(app.db, "chat_get", AsyncMock(return_value=None)), \
-             patch.object(app.runner, "run_turn", AsyncMock()) as run_turn, \
+             patch.object(runner, "run_turn", AsyncMock()) as run_turn, \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_submit_message(request, "missing")
+            await chat_routes.handle_submit_message(request, "missing")
         self.assertEqual(ctx.exception.status_code, 404)
         run_turn.assert_not_awaited()
 
@@ -525,17 +527,17 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": self.owner}),
             json=AsyncMock(return_value={"title": "End to End", "description": "full flow"}),
         )
-        created = await app.handle_chat_create(create_request)
+        created = await chat_routes.handle_chat_create(create_request)
         created_payload = json.loads(created.body)
         chat_id = created_payload["id"]
-        with patch.object(app.runner, "run_turn", AsyncMock(return_value=(["reply", " complete"], "e2e-session"))):
+        with patch.object(runner, "run_turn", AsyncMock(return_value=(["reply", " complete"], "e2e-session"))):
             submit_request = SimpleNamespace(
                 state=SimpleNamespace(session={"user": self.owner}),
                 json=AsyncMock(return_value={"content": "hello"}),
             )
-            response = await app.handle_submit_message(submit_request, chat_id)
+            response = await chat_routes.handle_submit_message(submit_request, chat_id)
         self.assertEqual(json.loads(response.body)["response"], "reply complete")
-        loaded = await app.handle_chat_get(self.request, chat_id)
+        loaded = await chat_routes.handle_chat_get(self.request, chat_id)
         payload = json.loads(loaded.body)
         self.assertEqual([m["role"] for m in payload["messages"]], ["user", "assistant"])
         self.assertEqual(payload["chat"]["session_id"], "e2e-session")
@@ -545,15 +547,15 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": self.owner}),
             json=AsyncMock(return_value={"title": "Export Flow"}),
         )
-        created = await app.handle_chat_create(create_request)
+        created = await chat_routes.handle_chat_create(create_request)
         chat_id = json.loads(created.body)["id"]
-        with patch.object(app.runner, "run_turn", AsyncMock(return_value=(["finished"], "flow-session"))):
+        with patch.object(runner, "run_turn", AsyncMock(return_value=(["finished"], "flow-session"))):
             submit_request = SimpleNamespace(
                 state=SimpleNamespace(session={"user": self.owner}),
                 json=AsyncMock(return_value={"content": "complete this"}),
             )
-            await app.handle_submit_message(submit_request, chat_id)
-        export = await app.handle_chat_export(self.request, chat_id)
+            await chat_routes.handle_submit_message(submit_request, chat_id)
+        export = await chat_routes.handle_chat_export(self.request, chat_id)
         body = export.body.decode()
         self.assertIn("# Export Flow", body)
         self.assertIn("complete this", body)
@@ -564,8 +566,8 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": self.owner}),
             json=AsyncMock(return_value={"title": "Same Title"}),
         )
-        first = json.loads((await app.handle_chat_create(request)).body)
-        second = json.loads((await app.handle_chat_create(request)).body)
+        first = json.loads((await chat_routes.handle_chat_create(request)).body)
+        second = json.loads((await chat_routes.handle_chat_create(request)).body)
         self.assertNotEqual(first["id"], second["id"])
         self.assertNotEqual(first["work_dir"], second["work_dir"])
 
@@ -574,13 +576,13 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": self.owner}),
             json=AsyncMock(return_value={"title": "Failure Flow"}),
         )
-        chat_id = json.loads((await app.handle_chat_create(create_request)).body)["id"]
-        with patch.object(app.runner, "run_turn", AsyncMock(side_effect=runner.TurnError("model unavailable", fatal=False))):
+        chat_id = json.loads((await chat_routes.handle_chat_create(create_request)).body)["id"]
+        with patch.object(runner, "run_turn", AsyncMock(side_effect=runner.TurnError("model unavailable", fatal=False))):
             submit_request = SimpleNamespace(
                 state=SimpleNamespace(session={"user": self.owner}),
                 json=AsyncMock(return_value={"content": "hello"}),
             )
-            response = await app.handle_submit_message(submit_request, chat_id)
+            response = await chat_routes.handle_submit_message(submit_request, chat_id)
         self.assertEqual(response.status_code, 500)
         messages = await db.messages_get(chat_id)
         self.assertEqual(messages, [])
@@ -613,7 +615,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await db.chat_create("uat-chat", "Release Notes", "Acceptance", "/tmp/uat", "uat-user")
         await db.messages_append("uat-chat", "user", "Summarize")
         await db.messages_append("uat-chat", "assistant", "Done")
-        response = await app.handle_chat_export(self.request, "uat-chat")
+        response = await chat_routes.handle_chat_export(self.request, "uat-chat")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Release Notes", response.body.decode())
         self.assertIn("Done", response.body.decode())
@@ -622,7 +624,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_user_cannot_access_another_users_chat(self):
         await db.chat_create("private", "Private", None, "/tmp/private", "someone-else")
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_get(self.request, "private")
+            await chat_routes.handle_chat_get(self.request, "private")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_archiving_removes_chat_from_default_user_view(self):
@@ -631,7 +633,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": "uat-user"}),
             json=AsyncMock(return_value={"archived": True}),
         )
-        response = await app.handle_chat_patch(patch_request, "archive-uat")
+        response = await chat_routes.handle_chat_patch(patch_request, "archive-uat")
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(await db.chat_get("archive-uat", "uat-user"))
         self.assertIsNotNone(await db.chat_get("archive-uat", "uat-user", include_archived=True))

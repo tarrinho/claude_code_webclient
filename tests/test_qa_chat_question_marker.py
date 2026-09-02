@@ -40,10 +40,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import app
 import auth
 import config
 import db
+from routes import chats as chat_routes
 
 ROOT = Path(__file__).resolve().parents[1]
 CONVERSATION_JS = ROOT / "web" / "assets" / "conversation.js"
@@ -92,7 +92,7 @@ class ServedMessagesTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(CHAT_ID, "cweb4", None, "/tmp", "admin")
 
     async def _messages(self):
-        response = await app.handle_chat_get(_request(), CHAT_ID)
+        response = await chat_routes.handle_chat_get(_request(), CHAT_ID)
         return json.loads(response.body)["messages"]
 
     async def test_every_message_carries_the_flag(self):
@@ -178,9 +178,12 @@ class SingleSourceOfTruthTests(unittest.TestCase):
         A conversation that disagreed with the sidebar about the same message
         would be worse than either mark alone.
         """
-        source = (ROOT / "app.py").read_text(encoding="utf-8")
-        served = source.split("async def handle_chat_get")[1].split(
-            "\nasync def ")[0]
+        # routes/chats.py since the 0.10.0 split; the marker is asserted
+        # before the slice so a move shows up as a clear failure.
+        source = Path(chat_routes.__file__).read_text(encoding="utf-8")
+        marker = "async def handle_chat_get"
+        self.assertIn(marker, source, "the handler is no longer in routes/chats.py")
+        served = source.split(marker)[1].split("\nasync def ")[0]
         self.assertIn("_asks_a_question", served,
                       "handle_chat_get must ask the shared helper")
 

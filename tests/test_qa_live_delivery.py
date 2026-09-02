@@ -28,11 +28,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import auth
 import config
 import db
 import prompts
+import runner
+from routes import chats as chat_routes
 
 SCREEN = {"kind": "screen", "session": "2126909.pts-5.kali-2", "window": "0"}
 TMUX = {"kind": "tmux", "window": "%3"}
@@ -298,7 +299,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_chat_with_no_session_is_never_routed(self):
         chat = {"id": "c1", "session_id": None, "work_dir": "/tmp"}
-        self.assertIsNone(await app._route_to_live_terminal(chat, "hello"))
+        self.assertIsNone(await chat_routes._route_to_live_terminal(chat, "hello"))
 
     async def test_no_live_window_falls_back(self):
         """A missing terminal must run the headless turn, not drop the request."""
@@ -308,7 +309,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             return_value={"delivered": False, "reason": "no live terminal window",
                           "target": None},
         ):
-            self.assertIsNone(await app._route_to_live_terminal(chat, "hello"))
+            self.assertIsNone(await chat_routes._route_to_live_terminal(chat, "hello"))
 
     async def test_a_refusing_terminal_falls_back(self):
         chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
@@ -316,7 +317,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             prompts, "deliver_request",
             return_value={"delivered": False, "reason": "refused", "target": SCREEN},
         ):
-            self.assertIsNone(await app._route_to_live_terminal(chat, "hello"))
+            self.assertIsNone(await chat_routes._route_to_live_terminal(chat, "hello"))
 
     async def test_a_live_window_is_used(self):
         chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
@@ -324,7 +325,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             prompts, "deliver_request",
             return_value={"delivered": True, "reason": "", "target": SCREEN},
         ):
-            routed = await app._route_to_live_terminal(chat, "hello")
+            routed = await chat_routes._route_to_live_terminal(chat, "hello")
         self.assertTrue(routed["delivered"])
 
 
@@ -358,7 +359,7 @@ class StreamRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _events(self):
-        response = await app.stream_handler(
+        response = await chat_routes.stream_handler(
             self._request({"content": "make it wider"}), "c1"
         )
         chunks = []
@@ -377,7 +378,7 @@ class StreamRoutingTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             prompts, "deliver_request",
             return_value={"delivered": True, "reason": "", "target": SCREEN},
-        ), patch.object(app.runner, "stream_turn", stream):
+        ), patch.object(runner, "stream_turn", stream):
             await self._events()
         stream.assert_not_called()
 
@@ -414,8 +415,8 @@ class StreamRoutingTests(unittest.IsolatedAsyncioTestCase):
             prompts, "deliver_request",
             return_value={"delivered": False, "reason": "no live terminal window",
                           "target": None},
-        ), patch.object(app.runner, "stream_turn", _stream), \
-                patch.object(app, "_prepare_transcript_for_backend", AsyncMock()):
+        ), patch.object(runner, "stream_turn", _stream), \
+                patch.object(chat_routes, "_prepare_transcript_for_backend", AsyncMock()):
             events = await self._events()
         texts = [e.get("content") for e in events if e.get("type") == "text"]
         self.assertIn("answered headlessly", texts)

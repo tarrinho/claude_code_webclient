@@ -19,7 +19,6 @@ import re
 import unittest
 from pathlib import Path
 
-import app
 import classification
 import shared
 
@@ -49,13 +48,13 @@ class SignalTests(unittest.TestCase):
     """_asks_a_question is the whole judgement; test it directly."""
 
     def test_a_plain_question_counts(self):
-        self.assertTrue(app._asks_a_question("Shall I commit this?"))
+        self.assertTrue(classification._asks_a_question("Shall I commit this?"))
 
     def test_a_question_inside_closing_punctuation_counts(self):
         """A question can end in a quote or bracket and still be a question."""
         for text in ('Ready to go?"', "Ready to go?)", "Ready to go?`"):
             with self.subTest(text=text):
-                self.assertTrue(app._asks_a_question(text))
+                self.assertTrue(classification._asks_a_question(text))
 
     def test_the_pending_note_counts(self):
         """The strongest evidence: a structured question rendered to text.
@@ -64,7 +63,7 @@ class SignalTests(unittest.TestCase):
         same condition that raises the answerable question bar.
         """
         text = f"Which backend should I use? {shared._QUESTION_PENDING_NOTE}"
-        self.assertTrue(app._asks_a_question(text))
+        self.assertTrue(classification._asks_a_question(text))
 
     def test_a_trailing_colon_does_not_count(self):
         """An invitation to read on, not a question.
@@ -75,21 +74,21 @@ class SignalTests(unittest.TestCase):
         failed for a change that was both correct and none of its business. A
         test should pin the behaviour it is named for and nothing else.
         """
-        self.assertFalse(app._asks_a_question("Here are the options:"))
-        self.assertFalse(app._asks_a_question("Here is what I found:"))
+        self.assertFalse(classification._asks_a_question("Here are the options:"))
+        self.assertFalse(classification._asks_a_question("Here is what I found:"))
 
     def test_a_request_for_input_does_not_count(self):
-        self.assertFalse(app._asks_a_question("Let me know how you want to proceed."))
+        self.assertFalse(classification._asks_a_question("Let me know how you want to proceed."))
 
     def test_a_mid_sentence_question_mark_does_not_count(self):
         """Only the end of the message counts, matching _attention()."""
         self.assertFalse(
-            app._asks_a_question("You asked whether it works? It does. All green."))
+            classification._asks_a_question("You asked whether it works? It does. All green."))
 
     def test_empty_and_missing_text_are_safe(self):
         for text in ("", "   ", None):
             with self.subTest(text=text):
-                self.assertFalse(app._asks_a_question(text))
+                self.assertFalse(classification._asks_a_question(text))
 
 
 class PanelTests(unittest.TestCase):

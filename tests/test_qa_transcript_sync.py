@@ -16,9 +16,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
 import config
 import db
+import transcripts
+from routes import chats as chat_routes
 from routes import misc as misc_routes
 
 
@@ -76,16 +77,16 @@ class TranscriptOffsetTests(_Base):
         self.assertEqual((await db.chat_get("c1", "admin"))["updated_at"], before)
 
     async def test_import_records_the_offset(self):
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([_turn("user", "hi")], 900))):
             await misc_routes._import_transcript("c1", "sess-1")
         self.assertEqual((await db.chat_get("c1", "admin"))["transcript_offset"], 900)
 
     async def test_skip_advances_without_importing(self):
         """After a web turn the bytes are consumed, not replayed as messages."""
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([_turn("user", "echo")], 700))):
-            await app._skip_transcript_to_end("c1", "sess-1")
+            await chat_routes._skip_transcript_to_end("c1", "sess-1")
         self.assertEqual((await db.chat_get("c1", "admin"))["transcript_offset"], 700)
         self.assertEqual(await db.messages_get("c1"), [])
 
@@ -93,8 +94,8 @@ class TranscriptOffsetTests(_Base):
 class ChatSyncHandlerTests(_Base):
     async def test_sync_appends_new_turns(self):
         payload = _payload([_turn("user", "from terminal")], 500)
-        with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
-            resp = await app.handle_chat_sync(_Req(), "c1")
+        with patch.object(transcripts, "read_turns", AsyncMock(return_value=payload)):
+            resp = await chat_routes.handle_chat_sync(_Req(), "c1")
         body = json.loads(resp.body)
         self.assertTrue(body["linked"])
         self.assertEqual([m["content"] for m in body["messages"]], ["from terminal"])
@@ -105,17 +106,17 @@ class ChatSyncHandlerTests(_Base):
         """The whole point: a 20 MB transcript is never re-parsed per poll."""
         await db.chat_set_transcript_offset("c1", 12345)
         reader = AsyncMock(return_value=_payload([], 12345))
-        with patch.object(app.transcripts, "read_turns", reader):
-            await app.handle_chat_sync(_Req(), "c1")
+        with patch.object(transcripts, "read_turns", reader):
+            await chat_routes.handle_chat_sync(_Req(), "c1")
         self.assertEqual(reader.await_args.args[1], 12345)
 
     async def test_repeated_sync_does_not_duplicate(self):
         payload = _payload([_turn("user", "once")], 500)
-        with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
-            await app.handle_chat_sync(_Req(), "c1")
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns", AsyncMock(return_value=payload)):
+            await chat_routes.handle_chat_sync(_Req(), "c1")
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([], 500))):
-            await app.handle_chat_sync(_Req(), "c1")
+            await chat_routes.handle_chat_sync(_Req(), "c1")
         self.assertEqual(len(await db.messages_get("c1")), 1)
 
     async def test_pre_offset_chat_is_not_reimported(self):
@@ -127,50 +128,50 @@ class ChatSyncHandlerTests(_Base):
         """
         await db.messages_batch("c1", [("user", "already here")])
         await db.chat_set_transcript_offset("c1", 0)
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([_turn("user", "already here")], 900))):
-            body = json.loads((await app.handle_chat_sync(_Req(), "c1")).body)
+            body = json.loads((await chat_routes.handle_chat_sync(_Req(), "c1")).body)
         self.assertEqual(body["messages"], [])
         self.assertEqual(len(await db.messages_get("c1")), 1)
         self.assertEqual((await db.chat_get("c1", "admin"))["transcript_offset"], 900)
 
     async def test_empty_chat_at_offset_zero_still_imports(self):
         """A genuinely fresh linked chat must not be skipped by that guard."""
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([_turn("user", "new")], 300))):
-            body = json.loads((await app.handle_chat_sync(_Req(), "c1")).body)
+            body = json.loads((await chat_routes.handle_chat_sync(_Req(), "c1")).body)
         self.assertEqual([m["content"] for m in body["messages"]], ["new"])
 
     async def test_unlinked_chat_reports_not_linked(self):
         await db.chat_create("c2", "Plain", None, f"{self.tmp.name}/p", "admin")
-        body = json.loads((await app.handle_chat_sync(_Req(), "c2")).body)
+        body = json.loads((await chat_routes.handle_chat_sync(_Req(), "c2")).body)
         self.assertFalse(body["linked"])
         self.assertEqual(body["messages"], [])
 
     async def test_missing_transcript_is_not_an_error(self):
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([], 0, found=False))):
-            resp = await app.handle_chat_sync(_Req(), "c1")
+            resp = await chat_routes.handle_chat_sync(_Req(), "c1")
         self.assertEqual(json.loads(resp.body)["messages"], [])
 
     async def test_read_error_is_survived(self):
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(side_effect=OSError("boom"))):
-            resp = await app.handle_chat_sync(_Req(), "c1")
+            resp = await chat_routes.handle_chat_sync(_Req(), "c1")
         self.assertEqual(json.loads(resp.body)["messages"], [])
 
     async def test_unknown_chat_is_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_sync(_Req(), "nope")
+            await chat_routes.handle_chat_sync(_Req(), "nope")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_sidechain_only_window_still_advances_the_offset(self):
         """Otherwise subagent bytes are re-read on every single poll."""
         turn = _turn("assistant", "sub")
         turn["sidechain"] = True
-        with patch.object(app.transcripts, "read_turns",
+        with patch.object(transcripts, "read_turns",
                           AsyncMock(return_value=_payload([turn], 800))):
-            await app.handle_chat_sync(_Req(), "c1")
+            await chat_routes.handle_chat_sync(_Req(), "c1")
         self.assertEqual((await db.chat_get("c1", "admin"))["transcript_offset"], 800)
 
 

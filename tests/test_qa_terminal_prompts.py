@@ -35,6 +35,8 @@ from unittest.mock import AsyncMock, patch
 import app
 import classification
 import prompts
+import transcripts
+from routes import chats as chat_routes
 
 # Verbatim from `screen -X hardcopy` of a blocked session. Two details matter:
 #
@@ -246,28 +248,28 @@ class ResolverTests(unittest.IsolatedAsyncioTestCase):
         recorded = {"id": "tool_1", "questions": [{"question": "recorded?"}],
                     "approval": False, "needle": "recorded?"}
         with (
-            patch.object(app.transcripts, "pending_question", return_value=recorded),
-            patch.object(app.prompts, "read_prompt", return_value={"id": ""}) as live,
+            patch.object(transcripts, "pending_question", return_value=recorded),
+            patch.object(prompts, "read_prompt", return_value={"id": ""}) as live,
         ):
-            got = await app._pending_prompt("s1")
+            got = await chat_routes._pending_prompt("s1")
         self.assertEqual(got["id"], "tool_1")
         live.assert_not_called()
 
     async def test_the_terminal_is_used_when_the_transcript_is_silent(self):
         with (
-            patch.object(app.transcripts, "pending_question", return_value=None),
-            patch.object(app.prompts, "read_prompt",
+            patch.object(transcripts, "pending_question", return_value=None),
+            patch.object(prompts, "read_prompt",
                          return_value={"id": "", "source": "terminal"}),
         ):
-            got = await app._pending_prompt("s1")
+            got = await chat_routes._pending_prompt("s1")
         self.assertEqual(got["source"], "terminal")
 
     async def test_neither_is_no_question(self):
         with (
-            patch.object(app.transcripts, "pending_question", return_value=None),
-            patch.object(app.prompts, "read_prompt", return_value=None),
+            patch.object(transcripts, "pending_question", return_value=None),
+            patch.object(prompts, "read_prompt", return_value=None),
         ):
-            self.assertIsNone(await app._pending_prompt("s1"))
+            self.assertIsNone(await chat_routes._pending_prompt("s1"))
 
 
 class EveryHandlerUsesTheResolverTests(unittest.TestCase):
@@ -288,7 +290,8 @@ class EveryHandlerUsesTheResolverTests(unittest.TestCase):
     def test_none_of_them_calls_the_transcript_directly(self):
         for name in self.HANDLERS:
             with self.subTest(handler=name):
-                body = inspect.getsource(getattr(app, name))
+                # routes/chats.py since the 0.10.0 split.
+                body = inspect.getsource(getattr(chat_routes, name))
                 self.assertNotIn(
                     "transcripts.pending_question", body,
                     f"{name} asks the transcript directly, so it is blind to "
@@ -355,7 +358,7 @@ class CliMapsTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app.db, "read_claude_sessions",
                          AsyncMock(return_value=sessions)),
-            patch.object(app.prompts, "has_prompt",
+            patch.object(prompts, "has_prompt",
                          lambda sid: asked.append(sid) or True),
         ):
             _status, _dismiss, _updated, prompting = await classification._cli_maps({})

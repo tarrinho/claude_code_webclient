@@ -26,11 +26,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import auth
 import config
 import db
+import runner
 import turns
+from routes import chats as chat_routes
 
 
 def _events(*items):
@@ -289,8 +290,8 @@ class PersistenceQA(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn", fake_stream):
-            response = await app.stream_handler(self.request, self.chat_id)
+             patch.object(runner, "stream_turn", fake_stream):
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
             iterator = response.body_iterator
             await anext(iterator)
             await anext(iterator)
@@ -318,8 +319,8 @@ class PersistenceQA(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
 
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app.runner, "stream_turn", fake_stream):
-            response = await app.stream_handler(self.request, self.chat_id)
+             patch.object(runner, "stream_turn", fake_stream):
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
             iterator = response.body_iterator
             await anext(iterator)
             await anext(iterator)
@@ -347,8 +348,8 @@ class PersistenceQA(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
 
         chat = await db.chat_get(self.chat_id, "admin")
-        with patch.object(app.runner, "stream_turn", fake_stream):
-            await app._start_turn(chat, "admin", "hello", None)
+        with patch.object(runner, "stream_turn", fake_stream):
+            await chat_routes._start_turn(chat, "admin", "hello", None)
             await asyncio.wait_for(started.wait(), timeout=2)
             await turns.cancel(self.chat_id)
 
@@ -492,13 +493,13 @@ class LiveEndpointQA(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_idle_reports_not_running_rather_than_failing(self):
-        response = await app.handle_chat_live(self._request(), self.chat_id)
+        response = await chat_routes.handle_chat_live(self._request(), self.chat_id)
         self.assertEqual(json.loads(response.body), {"running": False, "state": "idle"})
 
     async def test_another_owner_cannot_attach(self):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_live(self._request(user="intruder"), self.chat_id)
+            await chat_routes.handle_chat_live(self._request(user="intruder"), self.chat_id)
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_attaching_replays_from_since(self):
@@ -512,7 +513,7 @@ class LiveEndpointQA(unittest.IsolatedAsyncioTestCase):
             finish=_noop_finish,
         )
         await turn.task
-        response = await app.handle_chat_live(self._request(since=1), self.chat_id)
+        response = await chat_routes.handle_chat_live(self._request(since=1), self.chat_id)
         body = "".join([
             chunk.decode() if isinstance(chunk, bytes) else chunk
             async for chunk in response.body_iterator
@@ -531,7 +532,7 @@ class LiveEndpointQA(unittest.IsolatedAsyncioTestCase):
         turns.start(self.chat_id, "admin", "hi", None, produce=produce,
                     finish=_noop_finish)
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}))
-        payload = json.loads((await app.handle_chats_list(request)).body)
+        payload = json.loads((await chat_routes.handle_chats_list(request)).body)
         entry = next(c for c in payload["chats"] if c["id"] == self.chat_id)
         self.assertTrue(entry["running"])
         self.assertEqual(entry["queued"], 1)
@@ -549,7 +550,7 @@ class LiveEndpointQA(unittest.IsolatedAsyncioTestCase):
         turns.start(self.chat_id, "admin", "hi", None, produce=produce,
                     finish=_noop_finish)
         await asyncio.wait_for(started.wait(), timeout=1)
-        response = await app.handle_turn_stop(self._request(), self.chat_id)
+        response = await chat_routes.handle_turn_stop(self._request(), self.chat_id)
         payload = json.loads(response.body)
         self.assertTrue(payload["stopped"])
         # A stop is not "move on to the next one".

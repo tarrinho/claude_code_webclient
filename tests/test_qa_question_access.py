@@ -187,7 +187,7 @@ class QuestionAccessTests(unittest.IsolatedAsyncioTestCase):
         and reaching that answer means the request passed auth, CSRF, routing
         and ownership on the way in."""
         client, headers = self._login("alice")
-        with patch("app.transcripts.pending_question", return_value=None):
+        with patch("transcripts.pending_question", return_value=None):
             response = client.delete("/api/chats/a-linked/question", headers=headers)
         self.assertEqual(response.status_code, 200)
         body: dict[str, Any] = response.json()
@@ -196,7 +196,7 @@ class QuestionAccessTests(unittest.IsolatedAsyncioTestCase):
 
     def test_an_owner_reading_a_settled_question_sees_nothing_pending(self):
         client, _headers = self._login("alice")
-        with patch("app.transcripts.pending_question", return_value=None):
+        with patch("transcripts.pending_question", return_value=None):
             response = client.get("/api/chats/a-linked/question")
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["pending"])

@@ -10,6 +10,7 @@ import app
 import auth
 import config
 import db
+from routes import chats as chat_routes
 from routes import misc as misc_routes
 
 
@@ -95,14 +96,14 @@ class ChatSearchApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_api_empty_query(self):
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_chat_search(
+            await chat_routes.handle_chat_search(
                 self._make_request(json=AsyncMock(return_value={"query": ""}))
             )
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_search_api_no_query_key(self):
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_chat_search(
+            await chat_routes.handle_chat_search(
                 self._make_request(json=AsyncMock(return_value={}))
             )
         self.assertEqual(ctx.exception.status_code, 400)
@@ -116,7 +117,7 @@ class ChatSearchApiTests(unittest.IsolatedAsyncioTestCase):
         req = self._make_request(
             json=AsyncMock(return_value={"query": "x" * 300})
         )
-        resp = await app.handle_chat_search(req)
+        resp = await chat_routes.handle_chat_search(req)
         data = json.loads(resp.body)
         self.assertIn("results", data)
         self.assertIn("count", data)
@@ -130,7 +131,7 @@ class ChatSearchApiTests(unittest.IsolatedAsyncioTestCase):
         req = self._make_request(
             json=AsyncMock(return_value={"query": "find me"})
         )
-        resp = await app.handle_chat_search(req)
+        resp = await chat_routes.handle_chat_search(req)
         data = json.loads(resp.body)
         self.assertEqual(data["count"], 1)
         result = data["results"][0]
@@ -232,7 +233,7 @@ class ChatForkApiTests(unittest.IsolatedAsyncioTestCase):
         work_dir.mkdir(parents=True)
         await db.chat_create(chat_id, "Fork Me", None, str(work_dir), "admin")
 
-        resp = await app.handle_chat_fork(self._make_request(), chat_id)
+        resp = await chat_routes.handle_chat_fork(self._make_request(), chat_id)
         data = json.loads(resp.body)
         self.assertIn("id", data)
         self.assertEqual(data["title"], "Fork Me (fork)")
@@ -240,7 +241,7 @@ class ChatForkApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fork_api_404_for_missing_chat(self):
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_chat_fork(
+            await chat_routes.handle_chat_fork(
                 self._make_request(), "nonexistent"
             )
         self.assertEqual(ctx.exception.status_code, 404)
@@ -251,7 +252,7 @@ class ChatForkApiTests(unittest.IsolatedAsyncioTestCase):
         work_dir.mkdir(parents=True)
         await db.chat_create(chat_id, "Workspace Fork", None, str(work_dir), "admin")
 
-        resp = await app.handle_chat_fork(self._make_request(), chat_id)
+        resp = await chat_routes.handle_chat_fork(self._make_request(), chat_id)
         data = json.loads(resp.body)
         new_work_dir = Path(data["work_dir"])
         self.assertTrue(new_work_dir.exists())

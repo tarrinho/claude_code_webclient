@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import unittest
 
+import shared
 import transcripts
 
 
@@ -327,8 +328,7 @@ class ConversationSyncQA(unittest.TestCase):
     """
 
     def _msg(self, blocks, role="assistant"):
-        import app
-        return app._turn_to_message({"role": role, "blocks": blocks})
+        return shared._turn_to_message({"role": role, "blocks": blocks})
 
     def _question(self, **over):
         entry = {
@@ -403,8 +403,7 @@ class ConversationSyncQA(unittest.TestCase):
             self.assertIsNone(self._msg([bad]), repr(bad))
 
     def test_subagent_turns_are_still_dropped(self):
-        import app
-        self.assertIsNone(app._turn_to_message(
+        self.assertIsNone(shared._turn_to_message(
             {"role": "assistant", "sidechain": True, "blocks": [self._question()]}))
 
     def test_a_real_transcript_question_reaches_the_conversation(self):
@@ -416,8 +415,7 @@ class ConversationSyncQA(unittest.TestCase):
         raw = json.dumps({"type": "assistant",
                           "message": {"role": "assistant", "content": [ask]}}).encode()
         turns = transcripts._turns_from_bytes(raw)
-        import app
-        rows = [r for r in (app._turn_to_message(t) for t in turns) if r]
+        rows = [r for r in (shared._turn_to_message(t) for t in turns) if r]
         self.assertEqual(len(rows), 1)
         self.assertIn("Proceed?", rows[0][1])
         self.assertIn("Yes — go ahead", rows[0][1])

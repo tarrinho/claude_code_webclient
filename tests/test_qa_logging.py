@@ -246,10 +246,13 @@ class SwallowedErrorsAreExplainedTests(unittest.TestCase):
             # repointing the call without repointing the import left it raising
             # NameError, which the harness reported as "the view must still
             # render" rather than as a broken probe.
-            "import asyncio, logging, unittest.mock, app, classification;"
+            # `transcripts` too: the module rewrite turned app.transcripts into a
+            # bare reference, and this snippet runs in a subprocess whose
+            # imports are its own.
+            "import asyncio, logging, unittest.mock, app, classification, transcripts;"
             "logging.basicConfig(level=logging.INFO);"
             "p = unittest.mock.patch.object("
-            "    app.transcripts, 'last_error',"
+            "    transcripts, 'last_error',"
             "    side_effect=NameError(\"name 'wrongly_spelled' is not defined\"));"
             "p.start();"
             "asyncio.run(classification._session_failure('s1', 'now'))"

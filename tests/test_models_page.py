@@ -24,10 +24,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
 import auth
 import config
 import db
+import shared
 from routes import machines as machine_routes
 
 ANTHROPIC_BODY = json.dumps(
@@ -308,18 +308,18 @@ class ModelNameSuffixTests(unittest.TestCase):
     """The CLI tells users to append [1m] for the 1M context window."""
 
     def test_context_window_suffix_accepted(self):
-        self.assertTrue(app._MODEL_RE.fullmatch("claude-opus-5[1m]"))
+        self.assertTrue(shared._MODEL_RE.fullmatch("claude-opus-5[1m]"))
 
     def test_gateway_id_with_suffix_accepted(self):
-        self.assertTrue(app._MODEL_RE.fullmatch("vllm/Qwen3.6-35B-A3B-NVFP4[1m]"))
+        self.assertTrue(shared._MODEL_RE.fullmatch("vllm/Qwen3.6-35B-A3B-NVFP4[1m]"))
 
     def test_plain_ids_still_accepted(self):
         for model in ("claude-opus-5", "vllm/Qwen3.6-35B-A3B-NVFP4", "azure_ai/gpt-5-mini"):
-            self.assertTrue(app._MODEL_RE.fullmatch(model), model)
+            self.assertTrue(shared._MODEL_RE.fullmatch(model), model)
 
     def test_shell_metacharacters_still_rejected(self):
         for bad in ("model; rm -rf /", "model$(id)", "model`id`", "model|tee", "a b"):
-            self.assertIsNone(app._MODEL_RE.fullmatch(bad), bad)
+            self.assertIsNone(shared._MODEL_RE.fullmatch(bad), bad)
 
 
 if __name__ == "__main__":

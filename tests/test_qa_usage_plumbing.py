@@ -26,11 +26,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import config
 import db
 import runner
 import transcripts
+import turns
+from routes import chats as chat_routes
 
 # ── Unit: what counts as a prompt boundary ────────────────────────────────────
 
@@ -237,7 +238,7 @@ class MarkRoutedQA(unittest.IsolatedAsyncioTestCase):
     async def test_a_marker_records_the_prompt_and_the_offset(self):
         chat = await db.chat_get("c1", "admin")
         with patch.object(transcripts, "transcript_size", return_value=4242):
-            await app._mark_routed(chat, "admin", "please do the thing")
+            await chat_routes._mark_routed(chat, "admin", "please do the thing")
         marks = await db.routed_markers("sess-live")
         self.assertEqual(len(marks), 1)
         self.assertEqual(marks[0]["chat_id"], "c1")
@@ -249,13 +250,13 @@ class MarkRoutedQA(unittest.IsolatedAsyncioTestCase):
     async def test_a_conversation_with_no_session_records_nothing(self):
         await db.chat_create("c2", "web only", None, "/tmp/x", "admin")
         chat = await db.chat_get("c2", "admin")
-        await app._mark_routed(chat, "admin", "anything")
+        await chat_routes._mark_routed(chat, "admin", "anything")
         self.assertEqual(await db.routed_markers(""), [])
 
     async def test_a_very_long_prompt_is_stored_bounded(self):
         chat = await db.chat_get("c1", "admin")
         with patch.object(transcripts, "transcript_size", return_value=0):
-            await app._mark_routed(chat, "admin", "z" * 9000)
+            await chat_routes._mark_routed(chat, "admin", "z" * 9000)
         marks = await db.routed_markers("sess-live")
         self.assertLessEqual(len(marks[0]["prompt"]), 4000)
 
@@ -360,20 +361,20 @@ class RoutedParityQA(unittest.IsolatedAsyncioTestCase):
         self.db_patch.stop(); self.root_patch.stop(); self.tmp.cleanup()
 
     async def test_the_blocking_path_marks_the_request(self):
-        with patch.object(app, "_route_to_live_terminal",
+        with patch.object(chat_routes, "_route_to_live_terminal",
                           AsyncMock(return_value={"delivered": True})), \
              patch.object(transcripts, "transcript_size", return_value=7):
-            await app.handle_submit_message(self.request, self.chat_id)
+            await chat_routes.handle_submit_message(self.request, self.chat_id)
         marks = await db.routed_markers("sess-parity")
         self.assertEqual([m["prompt"] for m in marks], ["the routed ask"])
 
     async def test_the_streaming_path_marks_the_request(self):
         import auth
         with patch.object(auth, "session_get", return_value={"user": "admin"}), \
-             patch.object(app, "_route_to_live_terminal",
+             patch.object(chat_routes, "_route_to_live_terminal",
                           AsyncMock(return_value={"delivered": True})), \
              patch.object(transcripts, "transcript_size", return_value=9):
-            response = await app.stream_handler(self.request, self.chat_id)
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
             async for _chunk in response.body_iterator:
                 pass
         marks = await db.routed_markers("sess-parity")
@@ -383,13 +384,13 @@ class RoutedParityQA(unittest.IsolatedAsyncioTestCase):
     async def test_an_unrouted_turn_marks_nothing(self):
         # Otherwise every ordinary web turn would leave a marker able to claim
         # the session's terminal work.
-        with patch.object(app, "_route_to_live_terminal",
+        with patch.object(chat_routes, "_route_to_live_terminal",
                           AsyncMock(return_value=None)), \
-             patch.object(app, "_start_turn", AsyncMock()), \
-             patch.object(app.turns, "follow", lambda *a, **k: _empty()):
+             patch.object(chat_routes, "_start_turn", AsyncMock()), \
+             patch.object(turns, "follow", lambda *a, **k: _empty()):
             import auth
             with patch.object(auth, "session_get", return_value={"user": "admin"}):
-                response = await app.stream_handler(self.request, self.chat_id)
+                response = await chat_routes.stream_handler(self.request, self.chat_id)
                 async for _chunk in response.body_iterator:
                     pass
         self.assertEqual(await db.routed_markers("sess-parity"), [])

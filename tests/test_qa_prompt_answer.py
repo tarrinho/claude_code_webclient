@@ -25,6 +25,8 @@ from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 import prompts
+import transcripts
+from routes import chats as chat_routes
 
 SCREEN = {"kind": "screen", "session": "123.pts-6.host", "window": "2"}
 
@@ -386,22 +388,22 @@ class QuestionAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get", AsyncMock(return_value=None)), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_question_get(self._req())
+            await chat_routes.handle_chat_question_get(self._req())
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_a_chat_with_no_session_is_not_pending(self):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": None})):
-            body = json.loads((await app.handle_chat_question_get(self._req())).body)
+            body = json.loads((await chat_routes.handle_chat_question_get(self._req())).body)
         self.assertFalse(body["pending"])
 
     async def test_no_question_reports_not_pending(self):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question", return_value=None):
-            body = json.loads((await app.handle_chat_question_get(self._req())).body)
+             patch.object(transcripts, "pending_question", return_value=None):
+            body = json.loads((await chat_routes.handle_chat_question_get(self._req())).body)
         self.assertFalse(body["pending"])
 
     async def test_an_unreachable_session_is_pending_but_not_answerable(self):
@@ -411,9 +413,9 @@ class QuestionAPIQA(unittest.IsolatedAsyncioTestCase):
                                   "options": [{"label": "A", "description": ""}]}]}
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question", return_value=pending), \
-             patch.object(app.prompts, "find_target", return_value=None):
-            body = json.loads((await app.handle_chat_question_get(self._req())).body)
+             patch.object(transcripts, "pending_question", return_value=pending), \
+             patch.object(prompts, "find_target", return_value=None):
+            body = json.loads((await chat_routes.handle_chat_question_get(self._req())).body)
         self.assertTrue(body["pending"])
         self.assertFalse(body["answerable"])
         self.assertIn("screen or tmux", body["reason"])
@@ -426,10 +428,10 @@ class QuestionAPIQA(unittest.IsolatedAsyncioTestCase):
                                   "options": []}]}
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question", return_value=pending), \
-             patch.object(app.prompts, "find_target",
+             patch.object(transcripts, "pending_question", return_value=pending), \
+             patch.object(prompts, "find_target",
                           return_value={**SCREEN, "snapshot": PROMPT}):
-            body = json.loads((await app.handle_chat_question_get(self._req())).body)
+            body = json.loads((await chat_routes.handle_chat_question_get(self._req())).body)
         self.assertTrue(body["answerable"])
         self.assertEqual(body["selected"], 1)
         self.assertEqual(len(body["options"]), 6)
@@ -443,7 +445,7 @@ class QuestionAPIQA(unittest.IsolatedAsyncioTestCase):
             with patch.object(app.db, "chat_get",
                               AsyncMock(return_value={"session_id": "s1"})), \
                  self.assertRaises(HTTPException, msg=str(bad)) as ctx:
-                await app.handle_chat_question_answer(self._req(body=bad))
+                await chat_routes.handle_chat_question_answer(self._req(body=bad))
             self.assertEqual(ctx.exception.status_code, 400, str(bad))
 
     async def test_answering_with_nothing_pending_is_a_conflict(self):
@@ -452,9 +454,9 @@ class QuestionAPIQA(unittest.IsolatedAsyncioTestCase):
         import app
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question", return_value=None), \
+             patch.object(transcripts, "pending_question", return_value=None), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_question_answer(self._req(body={"index": 1}))
+            await chat_routes.handle_chat_question_answer(self._req(body={"index": 1}))
         self.assertEqual(ctx.exception.status_code, 409)
 
     async def test_a_failed_answer_surfaces_as_a_conflict_not_a_success(self):
@@ -464,13 +466,13 @@ class QuestionAPIQA(unittest.IsolatedAsyncioTestCase):
         pending = {"id": "q1", "needle": "Which of these", "questions": [{}]}
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
-             patch.object(app.transcripts, "pending_question", return_value=pending), \
-             patch.object(app.prompts, "find_target",
+             patch.object(transcripts, "pending_question", return_value=pending), \
+             patch.object(prompts, "find_target",
                           return_value={**SCREEN, "snapshot": PROMPT}), \
-             patch.object(app.prompts, "answer",
+             patch.object(prompts, "answer",
                           return_value={"ok": False, "reason": "did not move"}), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_question_answer(self._req(body={"index": 2}))
+            await chat_routes.handle_chat_question_answer(self._req(body={"index": 2}))
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertIn("did not move", str(ctx.exception.detail))
 

@@ -93,7 +93,11 @@ class WriteBackTests(unittest.TestCase):
     """The turn paths must not pin a conversation to what happened to answer."""
 
     def _turn_paths(self) -> str:
-        return (ROOT / "app.py").read_text(encoding="utf-8")
+        # app.py plus routes/: the turn paths moved into routes/chats.py in
+        # the 0.10.0 split, and a scan of app.py alone would report both call
+        # sites gone whether they were removed or merely relocated.
+        paths = [ROOT / "app.py", *sorted((ROOT / "routes").glob("*.py"))]
+        return "\n".join(p.read_text(encoding="utf-8") for p in paths)
 
     def test_no_turn_path_writes_the_served_model_back(self):
         """Parsed, not grepped: a comment mentioning it must not count.
@@ -111,7 +115,8 @@ class WriteBackTests(unittest.TestCase):
         ]
         self.assertEqual(
             calls, [],
-            f"app.py calls db.chat_set_model at lines {calls}; a turn that "
+            f"a turn path calls db.chat_set_model at lines {calls}; a turn "
+            "that "
             "records its own model pins the conversation to it",
         )
 

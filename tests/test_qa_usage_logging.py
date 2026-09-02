@@ -20,9 +20,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import app
 import config
 import db
+from routes import chats as chat_routes
 
 
 class UsageRecordDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
@@ -81,14 +81,14 @@ class RecordTurnUsageDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_absent_frame_names_the_stale_proxy_as_a_cause(self):
         with self.assertLogs("wc.app", level="WARNING") as caught:
-            await app._record_turn_usage("c1", "admin", {})
+            await chat_routes._record_turn_usage("c1", "admin", {})
         text = "\n".join(caught.output)
         self.assertIn("usage_missing", text)
         self.assertIn("claude_proxy", text)
 
     async def test_frame_without_models_is_logged(self):
         with self.assertLogs("wc.app", level="WARNING") as caught:
-            await app._record_turn_usage("c1", "admin", {"models": {}, "cost_usd": 1})
+            await chat_routes._record_turn_usage("c1", "admin", {"models": {}, "cost_usd": 1})
         self.assertIn("usage_frame_has_no_models", "\n".join(caught.output))
 
     async def test_a_usable_frame_logs_what_it_recorded(self):
@@ -98,7 +98,7 @@ class RecordTurnUsageDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(db, "usage_record", AsyncMock(return_value=1)),
             self.assertLogs("wc.app", level="INFO") as caught,
         ):
-            await app._record_turn_usage("c1", "admin", frame)
+            await chat_routes._record_turn_usage("c1", "admin", frame)
         self.assertIn("usage_recorded", "\n".join(caught.output))
 
 

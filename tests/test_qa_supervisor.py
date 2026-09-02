@@ -33,6 +33,8 @@ import auth
 import classification
 import config
 import db
+import transcripts
+import turns
 from routes import supervisors as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -294,8 +296,8 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def _get(self, cli, listing, turns):
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=cli)), \
-                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
-                patch.object(app.transcripts, "read_turns", AsyncMock(return_value=turns)):
+                patch.object(transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(transcripts, "read_turns", AsyncMock(return_value=turns)):
             return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_session_awaiting_a_reply_is_waiting(self):
@@ -347,8 +349,8 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         await db.read_mark_set("admin", "session", SESSION_ID, "2036-01-01T00:00:00Z")
         read = AsyncMock(return_value=self._turns("assistant", "Shall I continue?"))
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
-                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
-                patch.object(app.transcripts, "read_turns", read):
+                patch.object(transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(transcripts, "read_turns", read):
             await supervisor_routes.handle_supervisor(_request())
         read.assert_not_called()
 
@@ -552,7 +554,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unreadable_session_registry_does_not_break_the_view(self):
         with patch.object(db, "read_claude_sessions", AsyncMock(side_effect=OSError("nope"))), \
-                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=[])):
+                patch.object(transcripts, "list_recent", AsyncMock(return_value=[])):
             data = json.loads((await supervisor_routes.handle_supervisor(_request())).body)
         self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
 
@@ -644,7 +646,7 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await _setup(self)
-        self._live = patch.object(app.turns, "running_ids", return_value=set())
+        self._live = patch.object(turns, "running_ids", return_value=set())
         self._live.start()
 
     async def asyncTearDown(self):
@@ -661,7 +663,7 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
         self._live.stop()
         try:
-            with patch.object(app.turns, "running_ids", return_value={"c1"}):
+            with patch.object(turns, "running_ids", return_value={"c1"}):
                 data = await self._get()
         finally:
             self._live.start()
@@ -693,7 +695,7 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
         await _chat_with("c1", ("user", "2026-08-29T10:00:00Z", "do the thing"))
         self._live.stop()
         try:
-            with patch.object(app.turns, "running_ids", return_value={"c1"}):
+            with patch.object(turns, "running_ids", return_value={"c1"}):
                 data = await self._get()
         finally:
             self._live.start()
@@ -710,7 +712,7 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
         await _chat_with("c1", ("user", "2026-08-29T10:00:00Z", "do the thing"))
         self.assertEqual((await self._get())["counts"]["working"], 1)
         stopped = SimpleNamespace(state="cancelled")
-        with patch.object(app.turns, "get", return_value=stopped):
+        with patch.object(turns, "get", return_value=stopped):
             data = await self._get()
         self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
 
@@ -719,7 +721,7 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
         worth surfacing."""
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         finished = SimpleNamespace(state="done")
-        with patch.object(app.turns, "get", return_value=finished):
+        with patch.object(turns, "get", return_value=finished):
             data = await self._get()
         self.assertEqual(data["counts"]["waiting"], 1)
 
@@ -953,8 +955,8 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
     async def _get(self, failure):
         listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
-                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
-                patch.object(app.transcripts, "last_error", AsyncMock(return_value=failure)):
+                patch.object(transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(transcripts, "last_error", AsyncMock(return_value=failure)):
             return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_a_busy_session_with_no_failure_is_still_working(self):
@@ -990,8 +992,8 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
         listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
         reader = AsyncMock(return_value=None)
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
-                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
-                patch.object(app.transcripts, "last_error", reader):
+                patch.object(transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(transcripts, "last_error", reader):
             await supervisor_routes.handle_supervisor(_request())
             await supervisor_routes.handle_supervisor(_request())
             await supervisor_routes.handle_supervisor(_request())
@@ -1000,9 +1002,9 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_moved_file_is_re_read(self):
         reader = AsyncMock(return_value=None)
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
-                patch.object(app.transcripts, "last_error", reader):
+                patch.object(transcripts, "last_error", reader):
             for stamp in (1_800_000_000, 1_800_000_600):
-                with patch.object(app.transcripts, "list_recent", AsyncMock(
+                with patch.object(transcripts, "list_recent", AsyncMock(
                         return_value=[{"session_id": SESSION_ID, "updated_at": stamp,
                                        "title": "t"}])):
                     await supervisor_routes.handle_supervisor(_request())
@@ -1011,8 +1013,8 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_unreadable_transcript_does_not_break_the_view(self):
         listing = [{"session_id": SESSION_ID, "updated_at": 1_800_000_000, "title": "t"}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
-                patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
-                patch.object(app.transcripts, "last_error",
+                patch.object(transcripts, "list_recent", AsyncMock(return_value=listing)), \
+                patch.object(transcripts, "last_error",
                              AsyncMock(side_effect=OSError("gone"))):
             data = json.loads((await supervisor_routes.handle_supervisor(_request())).body)
         self.assertEqual(data["counts"]["working"], 1)

@@ -20,10 +20,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import app
 import config
 import db
 import transcripts
+from routes import chats as chat_routes
 
 
 def _at(path: Path, when: datetime.datetime) -> None:
@@ -60,7 +60,7 @@ class LiveUpdatedAtTests(unittest.IsolatedAsyncioTestCase):
 
     async def _live(self):
         with self._resolver():
-            return await app._live_updated_at(await db.chat_list("admin"))
+            return await chat_routes._live_updated_at(await db.chat_list("admin"))
 
     async def test_terminal_activity_freshens_a_linked_chat(self):
         _at(self.tx, datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2))
@@ -85,25 +85,31 @@ class LiveUpdatedAtTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_missing_transcript_is_not_an_error(self):
         with patch.object(transcripts, "transcript_path", lambda _s: None):
-            self.assertEqual(await app._live_updated_at(await db.chat_list("admin")), {})
+            self.assertEqual(await chat_routes._live_updated_at(await db.chat_list("admin")), {})
 
     async def test_an_unreadable_transcript_is_skipped_not_raised(self):
         """One bad path must not blank the whole sidebar."""
         missing = self.root / "gone.jsonl"
         with patch.object(transcripts, "transcript_path", lambda _s: missing):
-            self.assertEqual(await app._live_updated_at(await db.chat_list("admin")), {})
+            self.assertEqual(await chat_routes._live_updated_at(await db.chat_list("admin")), {})
 
     async def test_no_linked_chats_does_no_filesystem_work(self):
         """The common case for an unlinked workspace stays free."""
         calls = []
-        with patch.object(app, "_transcript_mtimes_sync", lambda ids: calls.append(ids) or {}):
-            await app._live_updated_at([{"id": "plain", "session_id": None}])
+        with patch.object(chat_routes, "_transcript_mtimes_sync", lambda ids: calls.append(ids) or {}):
+            await chat_routes._live_updated_at([{"id": "plain", "session_id": None}])
         self.assertEqual(calls, [])
 
     async def test_lookup_runs_off_the_event_loop(self):
         """Locating a transcript globs the projects directory."""
-        source = Path(app.__file__).read_text()
-        body = source.split("async def _live_updated_at")[1].split("\nasync def ")[0]
+        # routes/chats.py, not app.py: the helper moved there in the 0.10.0
+        # split. Assert the marker before slicing on it -- a scan of the wrong
+        # file raises IndexError, which reads as a broken test rather than the
+        # missing to_thread this is here to catch.
+        source = Path(chat_routes.__file__).read_text()
+        marker = "async def _live_updated_at"
+        self.assertIn(marker, source, "the helper is no longer in routes/chats.py")
+        body = source.split(marker)[1].split("\nasync def ")[0]
         self.assertIn("asyncio.to_thread", body)
 
 
@@ -115,7 +121,7 @@ class TimestampFormatTests(unittest.TestCase):
             path = Path(tmp) / "t.jsonl"
             path.write_text("{}")
             with patch.object(transcripts, "transcript_path", lambda _s: path):
-                out = app._transcript_mtimes_sync(["s"])
+                out = chat_routes._transcript_mtimes_sync(["s"])
         stamp = out["s"]
         self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
         # Same shape db._now() produces, or the comparison silently misorders.

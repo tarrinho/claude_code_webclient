@@ -33,7 +33,8 @@ SOURCE = "\n".join(
     path.read_text(encoding="utf-8")
     for path in (APP, APP.parent / "middleware.py",
                  APP.parent / "net_validation.py",
-                 APP.parent / "classification.py")
+                 APP.parent / "classification.py",
+                 *sorted((APP.parent / "routes").glob("*.py")))
     if path.is_file()
 )
 TREE = ast.parse(SOURCE)
@@ -55,7 +56,12 @@ def route_functions():
             func = call.func if call else dec
             if (isinstance(func, ast.Attribute)
                     and isinstance(func.value, ast.Name)
-                    and func.value.id == "app"):
+                    # "router" as well as "app": a route in routes/*.py is
+                    # declared on an APIRouter and mounted on the application
+                    # just the same. Scanning for "app" alone found 3 routes
+                    # where there are 60 -- caught by the find-nothing guard
+                    # below, which is exactly what it is there for.
+                    and func.value.id in ("app", "router")):
                 path = ""
                 if call and call.args and isinstance(call.args[0], ast.Constant):
                     path = str(call.args[0].value)

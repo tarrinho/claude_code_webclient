@@ -23,10 +23,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import config
 import db
 import runner
+from routes import chats as chat_routes
 
 OFFICIAL = "https://api.anthropic.com"
 GATEWAY = "https://llm.example-gateway.invalid"
@@ -72,7 +72,7 @@ class RoutingMixin:
         )
 
     async def patch_chat(self, chat_id, body):
-        return await app.handle_chat_patch(self._req(body), chat_id)
+        return await chat_routes.handle_chat_patch(self._req(body), chat_id)
 
 
 # ── Unit ───────────────────────────────────────────────────────────────────────
@@ -375,13 +375,13 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         frame = {"type": "usage",
                  "models": {"claude-opus-5": {"input_tokens": 10, "output_tokens": 1}},
                  "cost_usd": None, "duration_ms": 1, "is_error": False}
-        await app._record_turn_usage("work", "admin", frame)
+        await chat_routes._record_turn_usage("work", "admin", frame)
         await self.patch_chat("work", {"ai_machine_id": "ai-machine"})
         await db.ai_machine_activate("ai-machine", "admin")
         frame2 = {"type": "usage",
                   "models": {"vllm/Q": {"input_tokens": 20, "output_tokens": 2}},
                   "cost_usd": None, "duration_ms": 1, "is_error": False}
-        await app._record_turn_usage("work", "admin", frame2)
+        await chat_routes._record_turn_usage("work", "admin", frame2)
         providers = {r["model"]: r["provider"]
                      for r in await db.usage_totals("admin", None)}
         self.assertEqual(providers["claude-opus-5"], "anthropic")
@@ -427,24 +427,24 @@ class ChatPayloadQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_detail_payload_exposes_the_pinned_backend(self):
         await self.patch_chat("c1", {"ai_machine_id": "gw"})
-        body = json.loads((await app.handle_chat_get(self._get_req(), "c1")).body)
+        body = json.loads((await chat_routes.handle_chat_get(self._get_req(), "c1")).body)
         self.assertEqual(body["chat"]["ai_machine_id"], "gw")
 
     async def test_detail_payload_exposes_an_absent_pin_as_null(self):
-        body = json.loads((await app.handle_chat_get(self._get_req(), "c1")).body)
+        body = json.loads((await chat_routes.handle_chat_get(self._get_req(), "c1")).body)
         self.assertIn("ai_machine_id", body["chat"])
         self.assertIsNone(body["chat"]["ai_machine_id"])
 
     async def test_detail_payload_exposes_the_model(self):
         await self.patch_chat("c1", {"model": "vllm/Q"})
-        body = json.loads((await app.handle_chat_get(self._get_req(), "c1")).body)
+        body = json.loads((await chat_routes.handle_chat_get(self._get_req(), "c1")).body)
         self.assertEqual(body["chat"]["model"], "vllm/Q")
 
     async def test_list_payload_also_carries_the_pin(self):
         # The picker is populated from whichever payload arrives first.
         await self.patch_chat("c1", {"ai_machine_id": "gw"})
         req = self._get_req()
-        body = json.loads((await app.handle_chats_list(req)).body)
+        body = json.loads((await chat_routes.handle_chats_list(req)).body)
         entry = next(c for c in body["chats"] if c["id"] == "c1")
         self.assertEqual(entry["ai_machine_id"], "gw")
 
@@ -453,8 +453,8 @@ class ChatPayloadQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         await self.make_machine("secret-machine", base_url=GATEWAY, model="m",
                                 api_key="SENTINEL-KEY-9f3a")
         await self.patch_chat("c1", {"ai_machine_id": "secret-machine"})
-        for resp in (await app.handle_chat_get(self._get_req(), "c1"),
-                     await app.handle_chats_list(self._get_req())):
+        for resp in (await chat_routes.handle_chat_get(self._get_req(), "c1"),
+                     await chat_routes.handle_chats_list(self._get_req())):
             body = resp.body.decode()
             self.assertNotIn("SENTINEL-KEY-9f3a", body)
             self.assertNotIn("api_key", body)

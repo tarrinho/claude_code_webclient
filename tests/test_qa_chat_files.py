@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-import app
 import config
 import db
+from routes import chats as chat_routes
 
 # The smallest valid PNG, so the tests exercise a real file rather than bytes
 # that happen to have the right extension.
@@ -59,7 +59,7 @@ class ChatFileTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def _get(self, path):
-        return await app.handle_chat_file(_Req(path), "c1")
+        return await chat_routes.handle_chat_file(_Req(path), "c1")
 
     async def test_serves_an_image_from_the_workspace(self):
         resp = await self._get("shot.png")
@@ -114,14 +114,14 @@ class ChatFileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_another_owners_chat_is_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_chat_file(_Req("shot.png", user="bob"), "c1")
+            await chat_routes.handle_chat_file(_Req("shot.png", user="bob"), "c1")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_oversized_image_is_refused(self):
         big = self.work / "big.png"
         big.write_bytes(_PNG)
         with (
-            patch.object(app, "_IMAGE_MAX_BYTES", 4),
+            patch.object(chat_routes, "_IMAGE_MAX_BYTES", 4),
             self.assertRaises(HTTPException) as ctx,
         ):
             await self._get("big.png")

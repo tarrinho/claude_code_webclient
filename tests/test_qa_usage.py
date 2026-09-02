@@ -22,11 +22,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import claude_proxy
 import config
 import db
 import runner
+import shared
+from routes import chats as chat_routes
 from routes import machines as machine_routes
 from routes import misc as misc_routes
 
@@ -241,22 +242,22 @@ class ProviderClassificationQA(unittest.TestCase):
             {"provider": "anthropic", "base_url": "https://api.anthropic.com"},
             {"provider": "anthropic", "base_url": "https://api.anthropic.com/"},
         ):
-            self.assertEqual(app.backend_kind(machine), "anthropic", repr(machine))
+            self.assertEqual(shared.backend_kind(machine), "anthropic", repr(machine))
 
     def test_a_gateway_is_not_trusted_for_cost(self):
         # provider='anthropic' only describes the wire protocol; a self-hosted
         # gateway speaks it too, and the CLI still prices it at Anthropic rates.
         for base in (GATEWAY, "http://10.0.0.5:4000/llm", "https://litellm.internal"):
             self.assertEqual(
-                app.backend_kind({"provider": "anthropic", "base_url": base}),
+                shared.backend_kind({"provider": "anthropic", "base_url": base}),
                 "anthropic-compatible",
                 base,
             )
 
     def test_proxy_and_missing_machines_are_untrusted(self):
-        self.assertEqual(app.backend_kind({"provider": "proxy"}), "proxy")
-        self.assertEqual(app.backend_kind(None), "proxy")
-        self.assertEqual(app.backend_kind({}), "proxy")
+        self.assertEqual(shared.backend_kind({"provider": "proxy"}), "proxy")
+        self.assertEqual(shared.backend_kind(None), "proxy")
+        self.assertEqual(shared.backend_kind({}), "proxy")
 
 
 # ── Integration ────────────────────────────────────────────────────────────────
@@ -511,7 +512,7 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_blocking_path_records_via_take_last_usage(self):
         # _execute_proxy / _collect_chunks stash the frame; the handler drains it.
         runner.record_usage_frame("c1", runner.usage_frame(RESULT_FRAME))
-        await app._record_turn_usage("c1", "admin", runner.take_last_usage("c1"))
+        await chat_routes._record_turn_usage("c1", "admin", runner.take_last_usage("c1"))
         rows = await self._rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["model"], "vllm/Qwen3.6-35B-A3B-NVFP4")
@@ -519,7 +520,7 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_streaming_path_records_the_event_directly(self):
         # _do_proxy_stream / _do_direct_stream yield the event to the handler.
-        await app._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
+        await chat_routes._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
         self.assertEqual(len(await self._rows()), 1)
 
     async def test_proxy_dispatch_passes_usage_through_to_the_stream(self):
@@ -551,26 +552,26 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
                 "vllm/Q": {"inputTokens": 20, "outputTokens": 2},
             },
         })
-        await app._record_turn_usage("c1", "admin", frame)
+        await chat_routes._record_turn_usage("c1", "admin", frame)
         rows = await self._rows()
         self.assertEqual(len(rows), 2)
         # The turn cost is charged once, not once per model.
         self.assertAlmostEqual(sum(r["cost_usd"] for r in rows), 0.5)
 
     async def test_provider_is_captured_from_the_active_machine(self):
-        await app._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
+        await chat_routes._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
         self.assertEqual((await self._rows())[0]["provider"], "anthropic-compatible")
 
     async def test_empty_frame_records_nothing(self):
         for frame in ({}, None, {"models": {}}):
-            await app._record_turn_usage("c1", "admin", frame)
+            await chat_routes._record_turn_usage("c1", "admin", frame)
         self.assertEqual(await self._rows(), [])
 
     async def test_recording_never_raises_when_the_database_is_down(self):
         # Accounting must not turn a completed turn into a 500.
         await db.close()
         try:
-            await app._record_turn_usage(
+            await chat_routes._record_turn_usage(
                 "c1", "admin", runner.usage_frame(RESULT_FRAME)
             )
         finally:
@@ -634,7 +635,7 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await self._make("gateway", "anthropic", GATEWAY)
         await db.ai_machine_activate("gateway", "admin")
         await db.chat_create("c1", "t", None, f"{self.tmp.name}/projects", "admin")
-        await app._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
+        await chat_routes._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
         body = json.loads((await machine_routes.handle_machines_list(self._req())).body)
         label = next(m["backend_kind"] for m in body["machines"] if m["id"] == "gateway")
         recorded = (await db.usage_totals("admin", None))[0]["provider"]

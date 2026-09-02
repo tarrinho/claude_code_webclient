@@ -22,6 +22,32 @@ churn.
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-09-02
+
+
+### Changed
+
+- **Every route handler now lives in `routes/`, one module per URL prefix.**
+  `app.py` is down from 5,964 lines to **876** — 15% of where it started — and
+  holds only what has to be central: logging setup, login/logout, the three HTML
+  templates, the lifespan hook, and the wiring. Four modules were extracted in
+  order: `routes/machines.py` (657 lines), `routes/misc.py` (1,280),
+  `routes/supervisors.py` (862) and `routes/chats.py` (1,703).
+
+  The order was forced rather than chosen. A supervisors helper adopts a session
+  by calling a sessions route handler, so extracting supervisors first would have
+  left the router importing `app` while `app` imported the router — a cycle,
+  which Python refuses at import time rather than resolving at first call.
+
+  Nothing about the served API changed: the same 63 paths, in the same
+  registration order, since FastAPI matches routes in the order routers are
+  included.
+
+- **The turn paths no longer write the served model back to the conversation.**
+  Recording which model happened to answer pinned the conversation to it, so a
+  chat left on "whatever the machine offers" silently became a chat pinned to one
+  model after its first turn.
+
 ### Fixed
 
 - **Session writes no longer lose every lock fight with the rest of the
@@ -71,49 +97,6 @@ churn.
   recovered payload logs at INFO rather than WARNING, since nothing is wrong once
   it has been read.
 
-### Testing
-
-- `tests/test_qa_question_payload_repair.py`, 10 cases, written failing first.
-  The fixture is the exact 780-byte payload extracted from the transcript; a
-  hand-typed version carried 2 of the 4 options and was replaced, because the
-  docstring claimed verbatim and was not. Guards against over-correcting:
-  legitimate escaped quotes are not corrupted, non-ASCII survives, rubbish still
-  degrades gracefully, an unrecoverable payload is still flagged, and a second
-  block id still logs.
-
-- `test_a_corrupt_but_question_shaped_payload_stays_visible` **inverted** and
-  renamed. It asserted `unreadable` on the stated premise that "the options
-  cannot be recovered", which this change makes false — verified against that
-  exact fixture, which now yields question "Which one?" with option "Broken". The
-  case was not deleted: its purpose, that a question-shaped payload stays
-  visible, still holds, and visible *with* options is the stronger form.
-  `test_a_payload_beyond_repair_is_still_flagged_unreadable` keeps the half that
-  mattered.
-
-### Changed
-
-- **Every route handler now lives in `routes/`, one module per URL prefix.**
-  `app.py` is down from 5,964 lines to **876** — 15% of where it started — and
-  holds only what has to be central: logging setup, login/logout, the three HTML
-  templates, the lifespan hook, and the wiring. Four modules were extracted in
-  order: `routes/machines.py` (657 lines), `routes/misc.py` (1,280),
-  `routes/supervisors.py` (862) and `routes/chats.py` (1,703).
-
-  The order was forced rather than chosen. A supervisors helper adopts a session
-  by calling a sessions route handler, so extracting supervisors first would have
-  left the router importing `app` while `app` imported the router — a cycle,
-  which Python refuses at import time rather than resolving at first call.
-
-  Nothing about the served API changed: the same 63 paths, in the same
-  registration order, since FastAPI matches routes in the order routers are
-  included.
-
-- **The turn paths no longer write the served model back to the conversation.**
-  Recording which model happened to answer pinned the conversation to it, so a
-  chat left on "whatever the machine offers" silently became a chat pinned to one
-  model after its first turn.
-
-### Fixed
 
 - **A conversation moved to a different backend mid-session no longer breaks.**
   Switching provider replays a transcript the first provider wrote, and a strict
@@ -136,6 +119,57 @@ churn.
   agreed no question existed. The conversation list also marks a chat with `?`
   when it is waiting on one, using the same helper the panel uses rather than a
   second definition of "is this a question".
+
+### Security
+
+- **A live gateway API key was hardcoded in `bin/model_benchmark.py`.** The
+  literal is replaced with a resolver: `WC_BENCH_API_KEY`, then
+  `ANTHROPIC_API_KEY`, then the active machine's key read **read-only** from the
+  WebConsole database — the same source `bin/wc-claude.sh` uses, and read-only
+  because a second process opening that file read-write is registry #41.
+
+  The file was untracked *and* not gitignored, so it sat one `git add -A` away
+  from a public remote in a tree where several sessions commit at once. It was
+  never committed: `git grep` across all 147 commits and every ref finds nothing,
+  and a full `gitleaks detect` over the history reports no leaks.
+
+  **Correction to the commit message on `e2ca70c`**, which claimed the pre-push
+  hook would have caught this only by luck. It would have caught it by rule. That
+  was asserted from `.gitleaks.toml` containing no custom rule for the shape, and
+  then tested rather than left as a reading: a synthetic key of the same shape,
+  committed to a scratch repository using this project's own config, is detected.
+  `.gitleaks.toml` defines only an allowlist for two CI test credentials, so the
+  gitleaks default rule set applies and covers this. The control was real; the
+  gap was the hardcoded literal alone.
+
+  `Backend_Models_20260902.comparison.md` documented a four-character prefix of
+  the same key, now redacted. Worth distinguishing: the document held a fragment,
+  the script held the whole secret.
+
+  The key remains in CLI transcript history (13 occurrences live, 58 across eight
+  `.bak` files) and one `data/webconsole.db` message row, none of which are
+  tracked by git. **Rotation is the actual remedy** — a key that reached a
+  working tree and nine files of local history cannot be scrubbed back into
+  secrecy.
+
+### Testing
+
+- `tests/test_qa_question_payload_repair.py`, 10 cases, written failing first.
+  The fixture is the exact 780-byte payload extracted from the transcript; a
+  hand-typed version carried 2 of the 4 options and was replaced, because the
+  docstring claimed verbatim and was not. Guards against over-correcting:
+  legitimate escaped quotes are not corrupted, non-ASCII survives, rubbish still
+  degrades gracefully, an unrecoverable payload is still flagged, and a second
+  block id still logs.
+
+- `test_a_corrupt_but_question_shaped_payload_stays_visible` **inverted** and
+  renamed. It asserted `unreadable` on the stated premise that "the options
+  cannot be recovered", which this change makes false — verified against that
+  exact fixture, which now yields question "Which one?" with option "Broken". The
+  case was not deleted: its purpose, that a question-shaped payload stays
+  visible, still holds, and visible *with* options is the stronger form.
+  `test_a_payload_beyond_repair_is_still_flagged_unreadable` keeps the half that
+  mattered.
 
 ### Documentation
 
@@ -173,38 +207,6 @@ churn.
   Also updated: 105 test files and 2,388 collected cases, `bin/` at 14 scripts
   and 2,134 lines, and this file's own §9 entry as `~1359` rather than an exact
   count that the next edit invalidates.
-
-### Security
-
-- **A live gateway API key was hardcoded in `bin/model_benchmark.py`.** The
-  literal is replaced with a resolver: `WC_BENCH_API_KEY`, then
-  `ANTHROPIC_API_KEY`, then the active machine's key read **read-only** from the
-  WebConsole database — the same source `bin/wc-claude.sh` uses, and read-only
-  because a second process opening that file read-write is registry #41.
-
-  The file was untracked *and* not gitignored, so it sat one `git add -A` away
-  from a public remote in a tree where several sessions commit at once. It was
-  never committed: `git grep` across all 147 commits and every ref finds nothing,
-  and a full `gitleaks detect` over the history reports no leaks.
-
-  **Correction to the commit message on `e2ca70c`**, which claimed the pre-push
-  hook would have caught this only by luck. It would have caught it by rule. That
-  was asserted from `.gitleaks.toml` containing no custom rule for the shape, and
-  then tested rather than left as a reading: a synthetic key of the same shape,
-  committed to a scratch repository using this project's own config, is detected.
-  `.gitleaks.toml` defines only an allowlist for two CI test credentials, so the
-  gitleaks default rule set applies and covers this. The control was real; the
-  gap was the hardcoded literal alone.
-
-  `Backend_Models_20260902.comparison.md` documented a four-character prefix of
-  the same key, now redacted. Worth distinguishing: the document held a fragment,
-  the script held the whole secret.
-
-  The key remains in CLI transcript history (13 occurrences live, 58 across eight
-  `.bak` files) and one `data/webconsole.db` message row, none of which are
-  tracked by git. **Rotation is the actual remedy** — a key that reached a
-  working tree and nine files of local history cannot be scrubbed back into
-  secrecy.
 
 ## [0.10.2] — 2026-09-02
 

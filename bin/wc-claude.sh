@@ -22,22 +22,37 @@
 #
 # Flags are passed through untouched. --model is added only when you did not
 # give one, so an explicit --model always wins.
+#
+# WC_CLAUDE_HOTSWAP=1, combined with --resume <name>, keeps the session on the
+# active machine as it changes: see wc_claude_supervised_loop below.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${WC_DB_PATH:-$HERE/data/webconsole.db}"
 
-if [ ! -f "$DB" ]; then
-    echo "wc-claude: no WebConsole database at $DB — starting claude unchanged" >&2
-    exec claude "$@"
-fi
+# Sets global RESUME_NAME to the value following --resume in "$@", or "".
+# Used both for the transcript-doctor mismatch check and to gate hot-swap.
+detect_resume_name() {
+    RESUME_NAME=""
+    local i j
+    for i in $(seq 1 $#); do
+        if [ "${!i}" = "--resume" ]; then
+            j=$((i + 1))
+            RESUME_NAME="${!j:-}"
+            return
+        fi
+    done
+}
 
 # Read-only, always. Opening this database read-write from a second process is
 # what took production's write path down for 37 minutes (registry #41): the
 # server's connection could never upgrade its transaction.
 #
-# Tab-separated on one line so the shell can split it without eval.
-read -r PROVIDER BASE_URL API_KEY MODEL NAME <<<"$(python3 - "$DB" <<'PY'
+# Pure: prints one tab-separated line, sets nothing. Called by resolve_backend
+# on startup and, from Task 2 onward, by the poller on a timer -- one query
+# definition, not two copies to keep in sync.
+query_backend() {
+    python3 - "$DB" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 con.row_factory = sqlite3.Row
@@ -79,59 +94,64 @@ else:
         row["provider"], row["base_url"], row["api_key"], model)]
     print("\t".join([*fields, last_field(row["name"])]))
 PY
-)"
+}
 
-if [ "$PROVIDER" = "-" ]; then
-    echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
-    exec claude "$@"
-fi
+# Sets globals PROVIDER BASE_URL API_KEY MODEL NAME from query_backend's output.
+resolve_backend() {
+    read -r PROVIDER BASE_URL API_KEY MODEL NAME <<<"$(query_backend)"
+}
 
 # Mirror claude_proxy._backend_env exactly, including what it *removes*. A
 # non-anthropic backend must not inherit Anthropic variables from this shell,
 # and a machine with no base_url means "the official API" — leaving an inherited
 # one there is registry #68, the bug whose workaround was to unset these by hand.
-unset ANTHROPIC_AUTH_TOKEN
-if [ "$PROVIDER" != "anthropic" ]; then
-    unset ANTHROPIC_BASE_URL
-elif [ "$BASE_URL" != "-" ]; then
-    export ANTHROPIC_BASE_URL="$BASE_URL"
-else
-    unset ANTHROPIC_BASE_URL
-fi
+apply_env() {
+    unset ANTHROPIC_AUTH_TOKEN
+    if [ "$PROVIDER" != "anthropic" ]; then
+        unset ANTHROPIC_BASE_URL
+    elif [ "$BASE_URL" != "-" ]; then
+        export ANTHROPIC_BASE_URL="$BASE_URL"
+    else
+        unset ANTHROPIC_BASE_URL
+    fi
 
-if [ "$PROVIDER" = "anthropic" ] && [ "$API_KEY" != "-" ]; then
-    export ANTHROPIC_API_KEY="$API_KEY"
-else
-    # No key: the CLI must fall back to the host's own login, which it will not
-    # do while CLAUDE_CODE_SIMPLE is set.
-    unset ANTHROPIC_API_KEY
-    unset CLAUDE_CODE_SIMPLE
-fi
+    if [ "$PROVIDER" = "anthropic" ] && [ "$API_KEY" != "-" ]; then
+        export ANTHROPIC_API_KEY="$API_KEY"
+    else
+        # No key: the CLI must fall back to the host's own login, which it will
+        # not do while CLAUDE_CODE_SIMPLE is set.
+        unset ANTHROPIC_API_KEY
+        unset CLAUDE_CODE_SIMPLE
+    fi
+}
 
-# --model only if you did not pass one.
-want_model=1
-for arg in "$@"; do
-    case "$arg" in
-        --model|--model=*) want_model=0 ;;
-    esac
-done
-
-MODEL_ARGS=()
-if [ "$want_model" = 1 ] && [ "$MODEL" != "-" ]; then
-    MODEL_ARGS=(--model "$MODEL")
-fi
+# --model only if the caller did not pass one. Sets global array MODEL_ARGS.
+build_model_args() {
+    local want_model=1 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --model|--model=*) want_model=0 ;;
+        esac
+    done
+    MODEL_ARGS=()
+    if [ "$want_model" = 1 ] && [ "$MODEL" != "-" ]; then
+        MODEL_ARGS=(--model "$MODEL")
+    fi
+}
 
 # Switching a session between providers is what poisons a transcript: a thinking
 # block carries a provider-specific signature, and the other provider rejects the
 # whole conversation from then on. WebConsole repairs that before every turn; a
 # terminal session has nothing doing it. So warn before resuming a session whose
 # last turn ran on a different model, and say what to do about it.
-for i in $(seq 1 $#); do
-    if [ "${!i}" = "--resume" ]; then
-        j=$((i + 1))
-        target="${!j:-}"
-        [ -z "$target" ] && break
-        last="$(python3 - "$target" <<'PY' 2>/dev/null || true
+#
+# Uses the RESUME_NAME global (set by detect_resume_name) rather than
+# re-scanning "$@" -- from Task 3 onward this runs again on every hot-swap
+# restart, and the resume target never changes across those restarts.
+check_transcript_doctor() {
+    [ -z "$RESUME_NAME" ] && return
+    local last
+    last="$(python3 - "$RESUME_NAME" <<'PY' 2>/dev/null || true
 import json, pathlib, sys
 name = sys.argv[1]
 sess = pathlib.Path.home() / ".claude" / "sessions"
@@ -162,40 +182,56 @@ for path in proj.glob(f"*/{sid}.jsonl"):
     break
 PY
 )"
-        if [ -n "$last" ] && [ "$MODEL" != "-" ] && [ "$last" != "$MODEL" ]; then
-            # Repair rather than warn. A warning puts the work on someone who
-            # has to remember it every time, and the whole reason this failure
-            # cost five sessions is that nothing was watching.
-            #
-            # This is the one moment the repair is safe to run unattended: the
-            # session is closed, because we are the thing about to open it. The
-            # doctor's own banner says to close it first, and here that is
-            # guaranteed rather than requested.
-            #
-            # Safe in both directions. Going to a gateway there is nothing to
-            # remove -- every block Anthropic wrote is signed -- so it is a
-            # no-op. Going back to Anthropic it removes exactly the blocks that
-            # would otherwise fail the conversation permanently. The doctor
-            # keeps <file>.orig (never overwritten) and a .bak per run, and
-            # refuses to install anything that does not parse or that breaks the
-            # uuid chain.
-            if [ "${WC_CLAUDE_NO_REPAIR:-}" = "1" ]; then
-                echo "wc-claude: '$last' -> '$MODEL'; repair skipped " \
-                     "(WC_CLAUDE_NO_REPAIR=1)" >&2
-            else
-                echo "wc-claude: '$last' -> '$MODEL' — checking the transcript" >&2
-                if ! "$HERE/bin/claude-transcript-doctor.py" --fix "$target" >&2; then
-                    cat >&2 <<'WARN'
+    if [ -n "$last" ] && [ "$MODEL" != "-" ] && [ "$last" != "$MODEL" ]; then
+        # Repair rather than warn. A warning puts the work on someone who
+        # has to remember it every time, and the whole reason this failure
+        # cost five sessions is that nothing was watching.
+        #
+        # This is the one moment the repair is safe to run unattended: the
+        # session is closed, because we are the thing about to open it. The
+        # doctor's own banner says to close it first, and here that is
+        # guaranteed rather than requested.
+        #
+        # Safe in both directions. Going to a gateway there is nothing to
+        # remove -- every block Anthropic wrote is signed -- so it is a
+        # no-op. Going back to Anthropic it removes exactly the blocks that
+        # would otherwise fail the conversation permanently. The doctor
+        # keeps <file>.orig (never overwritten) and a .bak per run, and
+        # refuses to install anything that does not parse or that breaks the
+        # uuid chain.
+        if [ "${WC_CLAUDE_NO_REPAIR:-}" = "1" ]; then
+            echo "wc-claude: '$last' -> '$MODEL'; repair skipped " \
+                 "(WC_CLAUDE_NO_REPAIR=1)" >&2
+        else
+            echo "wc-claude: '$last' -> '$MODEL' — checking the transcript" >&2
+            if ! "$HERE/bin/claude-transcript-doctor.py" --fix "$RESUME_NAME" >&2; then
+                cat >&2 <<'WARN'
 wc-claude: the transcript repair did not succeed. Starting anyway, but if this
            conversation was written by a different provider the API may refuse
            it. Run bin/claude-transcript-doctor.py --fix <name> by hand.
 WARN
-                fi
             fi
         fi
-        break
     fi
-done
+}
+
+detect_resume_name "$@"
+
+if [ ! -f "$DB" ]; then
+    echo "wc-claude: no WebConsole database at $DB — starting claude unchanged" >&2
+    exec claude "$@"
+fi
+
+resolve_backend
+
+if [ "$PROVIDER" = "-" ]; then
+    echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
+    exec claude "$@"
+fi
+
+apply_env
+build_model_args "$@"
+check_transcript_doctor
 
 echo "wc-claude: ${NAME} · ${MODEL} · ${BASE_URL}" >&2
 
@@ -206,10 +242,6 @@ if [ "${WC_CLAUDE_DRY_RUN:-}" = "1" ]; then
     echo "would exec: claude ${MODEL_ARGS[*]} $*"
     for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \
              CLAUDE_CODE_SIMPLE; do
-        # Indirect expansion into a variable first. `${#!v}` is not valid bash --
-        # it fails with "bad substitution" and, under `set -e`, took the rest of
-        # this report with it. Length and indirection cannot be combined in one
-        # expansion.
         val="${!v-}"
         if [ -n "$val" ]; then
             case "$v" in

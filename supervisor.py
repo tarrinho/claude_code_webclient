@@ -516,6 +516,61 @@ class SupervisorEngine:
         task.add_done_callback(self._report_task_failure)
         return task
 
+    async def _record_usage(self, chat_id: str, model: str | None) -> None:
+        """Persist what a supervisor turn cost, one row per model.
+
+        Usage is recorded by the *caller*: `runner` collects the frames and hands
+        them over through `take_last_usage`, and `app.py` does this for every
+        conversation turn. `supervisor.py` never did -- so a supervisor fanning
+        out ten subtasks spent ten turns' worth of tokens and appeared in the
+        usage tables as nothing at all. The engine is the only caller that can
+        attribute them, because it owns the synthetic chat ids.
+
+        `origin="supervisor"` rather than the default `"web"`. The origin column
+        exists precisely so spend can be told apart by where it came from, and a
+        supervisor's fan-out is the case most worth separating: it is the one
+        that can multiply a single request into a dozen turns without the user
+        issuing a dozen prompts.
+
+        Never raises. Accounting must not break a turn that has already
+        succeeded -- the same rule `db.usage_record` states for itself.
+        """
+        try:
+            import runner  # circular import at module level
+
+            frame = runner.take_last_usage(chat_id)
+            if not frame:
+                return
+            import db
+
+            models = frame.get("models") or {}
+            # The CLI reports cost for the whole turn, not per model, so it is
+            # attached to the first row only -- the same rule app.py applies, or
+            # a two-model turn would be billed twice.
+            cost = frame.get("cost_usd")
+            for name, stats in models.items():
+                await db.usage_record(
+                    chat_id=chat_id,
+                    owner_id=self.owner_id,
+                    model=name or (model or ""),
+                    provider="proxy" if config.PROXY_ENABLED else "anthropic",
+                    input_tokens=stats.get("input_tokens", 0),
+                    output_tokens=stats.get("output_tokens", 0),
+                    cache_read_tokens=stats.get("cache_read_tokens", 0),
+                    cache_creation_tokens=stats.get("cache_creation_tokens", 0),
+                    cost_usd=cost,
+                    cost_basis=stats.get("cost_basis"),
+                    duration_ms=frame.get("duration_ms"),
+                    is_error=bool(frame.get("is_error")),
+                    origin="supervisor",
+                )
+                cost = None
+        except Exception:  # noqa: BLE001 -- accounting must not fail a turn
+            _log.exception(
+                "supervisor_usage_not_recorded supervisor_id=%s chat_id=%s",
+                self.supervisor_id, chat_id,
+            )
+
     async def _persist_progress(self) -> None:
         """Write the graph's overall progress onto the supervisor row.
 
@@ -631,6 +686,10 @@ class SupervisorEngine:
                 self.owner_id,
             )
             result = "".join(chunks) if chunks else ""
+            # Before the empty-result check below, which returns early: a turn
+            # that produced no text still spent tokens, and the earlier version
+            # of this path recorded nothing either way.
+            await self._record_usage(plan_chat_id, planner_model)
 
             if not result:
                 _log.warning(
@@ -821,6 +880,16 @@ class SupervisorEngine:
             data={"title": node.title},
         ))
 
+        # Outside the try, deliberately. It is a pure function of task_id, and the
+        # failure handler below needs it to record what the turn cost. Left where
+        # it was -- after `_build_dep_context` and a path resolve, both of which
+        # can raise -- the handler would hit an unbound local and report a
+        # NameError instead of the real fault. That exact substitution has
+        # already cost one diagnosis in `_run_planner_turn`, where a locally
+        # imported `db` was unbound on the early-failure path and swallowed the
+        # message the block existed to record.
+        task_chat_id = f"subtask_{task_id}"
+
         try:
             dep_context = self._build_dep_context(task_id)
             full_prompt = (
@@ -828,7 +897,6 @@ class SupervisorEngine:
             ) if dep_context else prompt
 
             work_dir = str(Path(config.PROJECTS_ROOT).resolve())
-            task_chat_id = f"subtask_{task_id}"
 
             chunks, _sid = await runner.run_turn(
                 full_prompt,
@@ -840,6 +908,7 @@ class SupervisorEngine:
                 self.owner_id,
             )
             result = "".join(chunks) if chunks else ""
+            await self._record_usage(task_chat_id, model)
 
             graph.update_result(task_id, result)
             graph.update_progress(task_id, 100.0)
@@ -894,6 +963,11 @@ class SupervisorEngine:
 
         except Exception as exc:  # noqa: BLE001
             graph.update_status(task_id, "failed")
+            # A failed turn still spent tokens, and often more than a successful
+            # one: a task that ran for two minutes and then hit an error has been
+            # paid for. Recording only on success would make the cheapest-looking
+            # supervisor the one that fails most.
+            await self._record_usage(task_chat_id, model)
             self.tracker.record(ProgressEvent(
                 event_type="task_error",
                 task_id=task_id,

@@ -725,13 +725,14 @@ async def _proxy_stream_turn(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Stream a turn over TCP to the host claude_proxy."""
     sem = _get_sem()
     async with sem:
         try:
             async for event in _do_proxy_stream(
-                prompt, session_id, work_dir, chat_id, model
+                prompt, session_id, work_dir, chat_id, model, owner
             ):
                 yield event
         except TurnError as e:
@@ -744,8 +745,8 @@ async def _do_proxy_stream(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
-
-    owner: str | None = None,) -> AsyncGenerator[dict, None]:
+    owner: str | None = None,
+) -> AsyncGenerator[dict, None]:
     """Connect to proxy, send turn, yield events from the NDJSON stream."""
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
@@ -865,12 +866,13 @@ async def _execute_direct_stream(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Stream a turn by spawning claude subprocess directly."""
     sem = _get_sem()
     async with sem:
         async for event in _do_direct_stream(
-            prompt, session_id, work_dir, chat_id, model
+            prompt, session_id, work_dir, chat_id, model, owner
         ):
             yield event
 
@@ -982,8 +984,26 @@ async def stream_turn(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
+    owner: str | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """Yield SSE-compatible event dicts from the Claude Code subprocess/stream."""
+    """Yield SSE-compatible event dicts from the Claude Code subprocess/stream.
+
+    *owner* has the same meaning as in :func:`run_turn`: the fallback identity for
+    a caller whose *chat_id* is not a row in ``chats``. The supervisor is that
+    caller -- its ids are ``supervisor_<uuid>`` for the planning turn and
+    ``subtask_<id>`` for each task, which are labels rather than conversations --
+    so without it ``get_backend`` finds no routing row, the child process is given
+    no base URL and no API key, and every turn dies on "Not logged in - Please run
+    /login".
+
+    That failure has already been diagnosed once, on the blocking path, and fixed
+    by passing this argument at the ``run_turn`` call site. It was reachable here
+    too: ``_do_proxy_stream`` and ``_do_direct_stream`` have both accepted
+    ``owner`` and consumed it via ``get_backend`` all along, and neither of their
+    callers passed it -- so the parameter existed at the bottom of both chains and
+    was unreachable from the top, permanently ``None``. Threading it is this
+    function's whole change; the consumers were already correct.
+    """
     if len(prompt) > config.PROMPT_MAX_CHARS:
         raise TurnError(
             f"Prompt too long: {len(prompt)} chars (max {config.PROMPT_MAX_CHARS})",
@@ -1001,11 +1021,11 @@ async def stream_turn(
 
     if config.PROXY_ENABLED:
         async for event in _proxy_stream_turn(
-            prompt, session_id, str(resolved), chat_id, model
+            prompt, session_id, str(resolved), chat_id, model, owner
         ):
             yield event
     else:
         async for event in _execute_direct_stream(
-            prompt, session_id, str(resolved), chat_id, model
+            prompt, session_id, str(resolved), chat_id, model, owner
         ):
             yield event

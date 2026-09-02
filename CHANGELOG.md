@@ -22,7 +22,62 @@ churn.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-09-02
+
+> First two steps of `docs/superpowers/specs/2026-09-01-supervisor-next-design.md`,
+> landed in that document's own order. Both are prerequisites for the streaming
+> and budget work behind them, and both are useful on their own.
+
 ### Fixed
+
+- **`runner.stream_turn` now carries `owner` to backend resolution.** It is the
+  fallback identity for a caller whose `chat_id` is not a row in `chats` — which
+  is exactly what the supervisor is, since `supervisor_<uuid>` and
+  `subtask_<id>` are labels rather than conversations. Without it `get_backend`
+  finds no routing row, the child process is handed no base URL and no API key,
+  and the turn dies on *"Not logged in — Please run /login"*.
+
+  The interesting part is where the parameter already was. `_do_proxy_stream` and
+  `_do_direct_stream` had both accepted `owner` and consumed it via `get_backend`
+  all along, and **neither of their callers passed it** — so it existed at the
+  bottom of both chains, was unreachable from the top, and was permanently
+  `None`. A fix half-applied at some earlier point, and complete-looking from
+  either end on its own. Every signature involved was already correct, which is
+  why the new tests assert what arrives at `get_backend` rather than what the
+  signatures say.
+
+  Nothing depended on it yet — the streaming paths have no callers that pass an
+  owner today — so this changes no current behaviour. It is landed alone
+  deliberately: a regression here would otherwise be blamed on the streaming
+  work that needs it.
+
+- **A supervisor turn's cost is recorded.** Usage is written by the *caller* —
+  `runner` collects the frames and hands them over through `take_last_usage`, and
+  `app.py` does this for every conversation turn. `supervisor.py` never did, so a
+  supervisor fanning out ten subtasks spent ten turns' worth of tokens and
+  appeared in the usage tables as nothing at all.
+
+  Recorded with `origin="supervisor"` rather than the default `"web"`. The column
+  exists so spend can be told apart by where it came from, and a fan-out is the
+  case most worth separating: one request becoming a dozen turns without the user
+  issuing a dozen prompts.
+
+  Three details that are decisions:
+
+  - **A failed turn is recorded too.** A task that ran for two minutes and then
+    errored has been paid for. Recording only successes would make the
+    cheapest-looking supervisor the one that fails most.
+  - **Cost is charged once across models,** matching `app.py` — the CLI reports
+    it for the whole turn, so attaching it per row would bill a two-model turn
+    twice.
+  - **`task_chat_id` moved above its `try`.** The failure handler needs it, and
+    `_build_dep_context` and a path resolve both run inside that block and can
+    raise — leaving the assignment inside would have made the handler report an
+    `UnboundLocalError` over the real fault. This file has already lost one real
+    error message to exactly that substitution.
+
+  Found while auditing what the supervisor could observe about itself, which is
+  the thesis of the design document: it was spending money it could not see.
 
 - **Opening a conversation on a phone no longer raises the on-screen keyboard.**
   Changing chat focused the composer, and on a touch device focusing a text input

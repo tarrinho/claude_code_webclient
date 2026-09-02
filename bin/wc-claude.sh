@@ -58,6 +58,16 @@ def clean(value):
     text = "" if value is None else str(value).strip()
     return "".join(text.split()) or "-"
 
+
+def last_field(value):
+    # The name is read last, and `read` puts everything remaining into the final
+    # variable -- so spaces are safe there and only newlines are not. Collapsing
+    # them like the others printed "CurrentAIMachine" in the banner, which is a
+    # small thing to get wrong in the one line that tells you which backend you
+    # are about to talk to.
+    text = "" if value is None else str(value).strip()
+    return " ".join(text.split()) or "-"
+
 if row is None:
     print("- - - - -")
 else:
@@ -65,8 +75,9 @@ else:
     # runner.get_default_model uses once a chat pins nothing.
     model = (row["model"] or "").strip() or (
         (setting["value"] if setting else "") or "").strip()
-    print("\t".join(clean(x) for x in (
-        row["provider"], row["base_url"], row["api_key"], model, row["name"])))
+    fields = [clean(x) for x in (
+        row["provider"], row["base_url"], row["api_key"], model)]
+    print("\t".join([*fields, last_field(row["name"])]))
 PY
 )"
 

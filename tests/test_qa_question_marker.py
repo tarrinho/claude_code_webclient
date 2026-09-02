@@ -25,6 +25,23 @@ ROOT = Path(__file__).resolve().parents[1]
 CHAT_LIST = ROOT / "web" / "assets" / "chat-list.js"
 STYLES = ROOT / "web" / "assets" / "styles.css"
 
+def _classifier_source() -> str:
+    """The module that owns classify_chat and its waiting rows.
+
+    app.py until 0.10.0, classification.py after it. Both are read and joined
+    so the assertions hold either side of the split rather than needing the two
+    changes to land in one commit.
+    """
+    parts = []
+    for name in ("classification.py", "app.py"):
+        path = ROOT / name
+        if path.is_file():
+            parts.append(path.read_text(encoding="utf-8"))
+    if not parts:
+        raise AssertionError("neither classification.py nor app.py is readable")
+    return "\n".join(parts)
+
+
 
 class SignalTests(unittest.TestCase):
     """_asks_a_question is the whole judgement; test it directly."""
@@ -173,7 +190,7 @@ class WiringTests(unittest.TestCase):
         eight sessions edit this file and two of these sites were written by
         someone else after this test.
         """
-        tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+        tree = ast.parse(_classifier_source())
         waiting: list[int] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Dict):
@@ -209,7 +226,13 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(missing, [1])
 
     def test_a_failure_is_never_marked_as_a_question(self):
-        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        # classification.py, not app.py: the whole attention cluster moved
+        # there in 0.10.0. Reading app.py found no `"reason": "failed"` at all,
+        # so the split raised IndexError rather than failing an assertion --
+        # a test that cannot find its subject should say so, not crash.
+        source = _classifier_source()
+        self.assertIn('"reason": "failed"', source,
+                      "the failure row is not where this test is looking")
         failed = source.split('"reason": "failed"', 1)[1][:300]
         self.assertIn('"question": False', failed)
 

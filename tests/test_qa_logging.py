@@ -241,13 +241,18 @@ class SwallowedErrorsAreExplainedTests(unittest.TestCase):
     def test_a_failed_transcript_read_reports_why(self):
         """A NameError here must not read the same as an empty transcript."""
         probe = (
-            "import asyncio, logging, unittest.mock, app;"
+            # `classification` too: _session_failure moved there in 0.10.0.
+            # This snippet runs in a subprocess, so its imports are its own --
+            # repointing the call without repointing the import left it raising
+            # NameError, which the harness reported as "the view must still
+            # render" rather than as a broken probe.
+            "import asyncio, logging, unittest.mock, app, classification;"
             "logging.basicConfig(level=logging.INFO);"
             "p = unittest.mock.patch.object("
             "    app.transcripts, 'last_error',"
             "    side_effect=NameError(\"name 'wrongly_spelled' is not defined\"));"
             "p.start();"
-            "asyncio.run(app._session_failure('s1', 'now'))"
+            "asyncio.run(classification._session_failure('s1', 'now'))"
         )
         with tempfile.TemporaryDirectory() as tmp:
             result = subprocess.run(

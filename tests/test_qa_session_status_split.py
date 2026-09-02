@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 
 import app
+import classification
 
 CHAT_ID = "c0ffee00c0ffee00c0ffee00c0ffee00"
 SESSION_ID = "8db15c35-74bc-4670-a617-ad2ff0426ec4"
@@ -153,10 +154,10 @@ class AllowlistShapeTests(unittest.TestCase):
         If the CLI grows a fourth value, the choice of which side it falls on
         should be made here, deliberately, with the reason written down.
         """
-        self.assertEqual(app._CLI_STATUS_NOT_BLOCKED, frozenset({"busy", "idle"}))
+        self.assertEqual(classification._CLI_STATUS_NOT_BLOCKED, frozenset({"busy", "idle"}))
 
     def test_waiting_is_not_in_it(self):
-        self.assertNotIn("waiting", app._CLI_STATUS_NOT_BLOCKED)
+        self.assertNotIn("waiting", classification._CLI_STATUS_NOT_BLOCKED)
 
     def test_the_check_is_membership_rather_than_a_comparison_to_busy(self):
         """`status != "busy"` is the bug; it must not come back.
@@ -172,7 +173,11 @@ class AllowlistShapeTests(unittest.TestCase):
         is to look only at code. `tests/test_qa_timer_handles.py` strips
         comments for exactly this.
         """
-        code = _code_only(Path(app.__file__).read_text(encoding="utf-8"))
+        # classification.py as well: the attention cluster, including
+        # _CLI_STATUS_NOT_BLOCKED, moved there in 0.10.0.
+        code = _code_only("\n".join(
+            Path(mod.__file__).read_text(encoding="utf-8")
+            for mod in (app, classification)))
         self.assertNotIn('cli_status != "busy"', code)
         self.assertIn("_CLI_STATUS_NOT_BLOCKED", code)
 

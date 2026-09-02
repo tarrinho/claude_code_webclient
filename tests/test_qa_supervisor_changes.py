@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 
 import app
 import auth
+import classification
 import config
 import db
 
@@ -97,10 +98,10 @@ class AttentionTrailingColonTests(unittest.TestCase):
     """
 
     def test_plain_trailing_colon_does_not_ask(self):
-        self.assertIsNone(app._attention("The next steps are:"))
+        self.assertIsNone(classification._attention("The next steps are:"))
 
     def test_trailing_colon_with_bold_does_not_ask(self):
-        self.assertIsNone(app._attention("**Two things left open:**"))
+        self.assertIsNone(classification._attention("**Two things left open:**"))
 
     def test_a_real_question_still_asks(self):
         """Guards the reversal: dropping the colon must not silence everything.
@@ -108,24 +109,24 @@ class AttentionTrailingColonTests(unittest.TestCase):
         Without this the class above passes against an ``_attention`` that has
         stopped detecting anything at all.
         """
-        self.assertEqual(app._attention("Which branch should I use?"), "asks")
+        self.assertEqual(classification._attention("Which branch should I use?"), "asks")
 
     def test_colon_mid_message_does_not(self):
         """A colon while explaining is not a request for input."""
         self.assertIsNone(
-            app._attention("The list is: first item, second item, third item.")
+            classification._attention("The list is: first item, second item, third item.")
         )
 
     def test_colon_after_markdown_bold_and_spaces(self):
         self.assertEqual(
-            app._attention("**Result:** `Everything up-to-date`."),
+            classification._attention("**Result:** `Everything up-to-date`."),
             None,
         )
 
     def test_colon_at_end_of_multiline(self):
         """Only the very last trimmed text is checked, not an earlier line."""
         self.assertIsNone(
-            app._attention("Here is what happened:\n\nSome explanation.\n\n")
+            classification._attention("Here is what happened:\n\nSome explanation.\n\n")
         )
 
 
@@ -146,18 +147,18 @@ class AttentionTrailingEllipsisTests(unittest.TestCase):
     """
 
     def test_an_explicit_invitation_asks_whatever_it_ends_with(self):
-        self.assertEqual(app._attention("What would you like me to do next…"), "asks")
+        self.assertEqual(classification._attention("What would you like me to do next…"), "asks")
 
     def test_a_second_explicit_invitation_also_asks(self):
-        self.assertEqual(app._attention("Let me know when you are ready…"), "asks")
+        self.assertEqual(classification._attention("Let me know when you are ready…"), "asks")
 
     def test_an_ellipsis_alone_does_not_ask(self):
         """The reversal itself: narration trailing off summons nobody."""
-        self.assertIsNone(app._attention("Still working through the files…"))
+        self.assertIsNone(classification._attention("Still working through the files…"))
 
     def test_ellipsis_mid_message_does_not(self):
         self.assertIsNone(
-            app._attention("I was thinking about… something else entirely.")
+            classification._attention("I was thinking about… something else entirely.")
         )
 
 
@@ -167,13 +168,13 @@ class AttentionExpandedPhraseTests(unittest.TestCase):
     """New phrases added to _ASKS_FOR_INPUT must all return 'asks'."""
 
     def test_yours_to_call(self):
-        self.assertEqual(app._attention("Two things left open, both yours to call:"), "asks")
+        self.assertEqual(classification._attention("Two things left open, both yours to call:"), "asks")
 
     def test_worth_doing(self):
-        self.assertEqual(app._attention("It is worth doing, let me know what you think."), "asks")
+        self.assertEqual(classification._attention("It is worth doing, let me know what you think."), "asks")
 
     def test_worth_fixing(self):
-        self.assertEqual(app._attention("That is worth fixing — should I tackle it?"), "asks")
+        self.assertEqual(classification._attention("That is worth fixing — should I tackle it?"), "asks")
 
     def test_existing_phrases_still_work(self):
         """The old phrases must not regress."""
@@ -192,24 +193,24 @@ class AttentionExpandedPhraseTests(unittest.TestCase):
             "waiting on your reply.",
         ):
             with self.subTest(text=text):
-                self.assertEqual(app._attention(text), "asks")
+                self.assertEqual(classification._attention(text), "asks")
 
     def test_your_call_phrase_does_match_any_occurrence(self):
         """The existing 'your call' entry already matches mid-sentence — that
         is a known accepted trade-off. New phrases must NOT have that problem.
         """
         # Old phrase: known false positive, not our concern here
-        self.assertEqual(app._attention("That is your call."), "asks")
+        self.assertEqual(classification._attention("That is your call."), "asks")
 
     def test_new_phrases_not_false_positives(self):
         """New phrases must not match unrelated contexts."""
         # "yours to call" should not match "yours" + unrelated "call"
         self.assertIsNone(
-            app._attention("The results are yours. Let me call you back.")
+            classification._attention("The results are yours. Let me call you back.")
         )
         # "worth doing" vs "worth" + unrelated "doing"
         self.assertIsNone(
-            app._attention("It's worth noting that this needs doing later.")
+            classification._attention("It's worth noting that this needs doing later.")
         )
 
 
@@ -250,19 +251,19 @@ class IncidentalPhraseTests(unittest.TestCase):
 
     def test_the_pad_is_neutral(self):
         """Guards every case in this class."""
-        self.assertIsNone(app._attention(self._PAD))
+        self.assertIsNone(classification._attention(self._PAD))
 
     def test_should_include_is_not_an_ask(self):
         """The reported case: 'should i' inside 'should include'."""
         text = self._PAD + "I documented whether I should include the rebuild."
-        self.assertIsNone(app._attention(text))
+        self.assertIsNone(classification._attention(text))
 
     def test_confirmed_is_not_a_request_to_confirm(self):
-        self.assertIsNone(app._attention(self._PAD + "I confirmed the tests pass."))
+        self.assertIsNone(classification._attention(self._PAD + "I confirmed the tests pass."))
 
     def test_unblocked_is_not_a_blocker(self):
         """The sharpest: the opposite claim, read as the claim."""
-        self.assertIsNone(app._attention(self._PAD + "The task is unblocked now."))
+        self.assertIsNone(classification._attention(self._PAD + "The task is unblocked now."))
 
     def test_a_finished_report_whose_tail_holds_a_phrase_is_done(self):
         """The end-to-end form, which is how this reached a release.
@@ -303,7 +304,7 @@ class IncidentalPhraseTests(unittest.TestCase):
             ("This needs your approval.", "blocked"),
         ):
             with self.subTest(text=text):
-                self.assertEqual(app._attention(text), expected)
+                self.assertEqual(classification._attention(text), expected)
 
     def test_a_blocker_only_in_the_tail_is_still_found(self):
         """Why the reversion was refused, pinned so it is not tried again.
@@ -314,17 +315,17 @@ class IncidentalPhraseTests(unittest.TestCase):
         expensive direction.
         """
         body = self._PAD + "Note: blocked here."
-        self.assertIsNone(app._attention(body[:200]),
+        self.assertIsNone(classification._attention(body[:200]),
                           "the pad must not carry the signal on its own")
-        self.assertEqual(app._attention(body[-200:]), "blocked")
+        self.assertEqual(classification._attention(body[-200:]), "blocked")
 
     def test_every_phrase_is_anchored_at_both_ends(self):
         """The property, rather than a sample of its consequences."""
-        for phrase in (*app._ASKS_FOR_INPUT, *app._REPORTS_A_BLOCKER):
+        for phrase in (*classification._ASKS_FOR_INPUT, *classification._REPORTS_A_BLOCKER):
             with self.subTest(phrase=phrase):
                 # Glued to a letter on either side, it must not match.
-                self.assertIsNone(app._attention(f"x{phrase}"))
-                self.assertIsNone(app._attention(f"{phrase}x"))
+                self.assertIsNone(classification._attention(f"x{phrase}"))
+                self.assertIsNone(classification._attention(f"{phrase}x"))
 
 
 class QuestionPendingNoteTests(unittest.TestCase):
@@ -373,7 +374,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
             "the note is inside the preview, so this tests nothing",
         )
         self.assertIsNone(
-            app._attention(body[:200]),
+            classification._attention(body[:200]),
             "_attention flags the preview on its own; only the note may flag it",
         )
         entry = self._classify(body)
@@ -383,7 +384,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
     def test_a_question_mark_past_the_preview_still_asks(self):
         """Same window, without the structured note."""
         body = _QUIET_FILLER + "Which branch do you prefer?"
-        self.assertIsNone(app._attention(body[:200]))
+        self.assertIsNone(classification._attention(body[:200]))
         entry = self._classify(body)
         self.assertEqual(entry["reason"], "asks")
         self.assertTrue(entry["question"])

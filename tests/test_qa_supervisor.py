@@ -30,6 +30,7 @@ from fastapi import HTTPException
 
 import app
 import auth
+import classification
 import config
 import db
 
@@ -590,16 +591,16 @@ class AttentionTests(unittest.TestCase):
     """
 
     def test_a_trailing_question_asks(self):
-        self.assertEqual(app._attention("Which way do you want it?"), "asks")
+        self.assertEqual(classification._attention("Which way do you want it?"), "asks")
 
     def test_a_question_mid_message_does_not(self):
         """Quoting a question while explaining is not a request for input."""
         self.assertIsNone(
-            app._attention("I wondered whether it was cached? It was not. Fixed.")
+            classification._attention("I wondered whether it was cached? It was not. Fixed.")
         )
 
     def test_trailing_markdown_does_not_hide_the_question(self):
-        self.assertEqual(app._attention("Shall I go ahead?**"), "asks")
+        self.assertEqual(classification._attention("Shall I go ahead?**"), "asks")
 
     def test_explicit_asks_without_a_question_mark(self):
         for text in (
@@ -608,7 +609,7 @@ class AttentionTests(unittest.TestCase):
             "Your call.",
         ):
             with self.subTest(text=text):
-                self.assertEqual(app._attention(text), "asks")
+                self.assertEqual(classification._attention(text), "asks")
 
     def test_blockers_are_flagged(self):
         for text in (
@@ -617,7 +618,7 @@ class AttentionTests(unittest.TestCase):
             "This needs your approval first.",
         ):
             with self.subTest(text=text):
-                self.assertEqual(app._attention(text), "blocked")
+                self.assertEqual(classification._attention(text), "blocked")
 
     def test_routine_output_is_silent(self):
         for text in (
@@ -627,7 +628,7 @@ class AttentionTests(unittest.TestCase):
             "",
         ):
             with self.subTest(text=text):
-                self.assertIsNone(app._attention(text))
+                self.assertIsNone(classification._attention(text))
 
 
 class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
@@ -848,28 +849,28 @@ class StructuredQuestionTests(unittest.TestCase):
 
     def test_an_unanswered_question_is_pending(self):
         self.assertEqual(
-            app._pending_question([self._q("q1")]), "Which way do you want it?"
+            classification._pending_question([self._q("q1")]), "Which way do you want it?"
         )
 
     def test_an_answered_question_is_not_pending(self):
-        self.assertIsNone(app._pending_question([self._q("q1"), self._a("q1")]))
+        self.assertIsNone(classification._pending_question([self._q("q1"), self._a("q1")]))
 
     def test_a_declined_question_is_also_resolved(self):
         """Declining is answering: the agent is no longer blocked on it."""
         self.assertIsNone(
-            app._pending_question([self._q("q1"), self._a("q1", "declined")])
+            classification._pending_question([self._q("q1"), self._a("q1", "declined")])
         )
 
     def test_the_newest_question_decides(self):
         turns = [self._q("q1"), self._a("q1"), self._q("q2", "And now?")]
-        self.assertEqual(app._pending_question(turns), "And now?")
+        self.assertEqual(classification._pending_question(turns), "And now?")
 
     def test_an_answer_to_a_different_question_does_not_resolve_it(self):
         turns = [self._q("q1"), self._a("q99")]
-        self.assertEqual(app._pending_question(turns), "Which way do you want it?")
+        self.assertEqual(classification._pending_question(turns), "Which way do you want it?")
 
     def test_no_questions_at_all(self):
-        self.assertIsNone(app._pending_question([
+        self.assertIsNone(classification._pending_question([
             {"role": "assistant", "blocks": [{"kind": "text", "text": "hi"}]}]))
 
 
@@ -934,10 +935,10 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await _setup(self)
         self._cli_patch.stop()
-        app._failure_cache.clear()
+        classification._failure_cache.clear()
 
     async def asyncTearDown(self):
-        app._failure_cache.clear()
+        classification._failure_cache.clear()
         self._cli_patch.start()
         await _teardown(self)
 
@@ -970,7 +971,7 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_failure_is_not_retired_by_reading_it(self):
         """A failing endpoint does not fix itself by being looked at."""
         await db.read_mark_set("admin", "session", SESSION_ID, "2036-01-01T00:00:00Z")
-        app._failure_cache.clear()
+        classification._failure_cache.clear()
         data = await self._get("API Error: 500")
         self.assertEqual(data["counts"]["waiting"], 1)
 
@@ -978,7 +979,7 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
         await db.read_mark_set(
             "admin", "session", SESSION_ID, "2036-01-01T00:00:00Z", dismiss=True
         )
-        app._failure_cache.clear()
+        classification._failure_cache.clear()
         data = await self._get("API Error: 500")
         self.assertEqual(data["counts"]["waiting"], 0)
 
@@ -1062,16 +1063,16 @@ class FramingPolicyTests(unittest.TestCase):
 class OneLineTests(unittest.TestCase):
 
     def test_collapses_whitespace(self):
-        self.assertEqual(app._one_line("a\n  b\tc"), "a b c")
+        self.assertEqual(classification._one_line("a\n  b\tc"), "a b c")
 
     def test_truncates_with_an_ellipsis(self):
-        out = app._one_line("x" * 500, limit=50)
+        out = classification._one_line("x" * 500, limit=50)
         self.assertEqual(len(out), 50)
         self.assertTrue(out.endswith("…"))
 
     def test_empty_input_is_empty(self):
-        self.assertEqual(app._one_line(""), "")
-        self.assertEqual(app._one_line(None), "")
+        self.assertEqual(classification._one_line(""), "")
+        self.assertEqual(classification._one_line(None), "")
 
 
 if __name__ == "__main__":

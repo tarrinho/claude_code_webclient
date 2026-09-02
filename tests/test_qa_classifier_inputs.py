@@ -38,9 +38,9 @@ import unittest
 import uuid
 from unittest.mock import AsyncMock, patch
 
-import app
 import config
 import db
+from routes import supervisors as supervisor_routes
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -51,7 +51,14 @@ class ClassifierInputSourceTests(unittest.TestCase):
 
     @staticmethod
     def _callers_of_classify_chat():
-        tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+        # app.py plus routes/: the 0.10.0 split moved both callers of
+        # classify_chat into routes/supervisors.py. Scanning app.py alone
+        # found zero, which is exactly the vacuous state the guard below
+        # exists to catch -- and it did catch it.
+        sources = [ROOT / "app.py", *sorted((ROOT / "routes").glob("*.py"))]
+        tree = ast.parse("\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sources if path.is_file()))
         found = []
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.AsyncFunctionDef, ast.FunctionDef)):
@@ -152,11 +159,11 @@ class SurfacesAgreeWithACliSessionTests(unittest.IsolatedAsyncioTestCase):
         # from supplying an answer that status alone should decide.
         maps = ({SESSION_ID: cli_status}, {}, {SESSION_ID: "2026-09-01T00:00:00Z"},
                 {})
-        with patch.object(app, "_cli_maps", AsyncMock(return_value=maps)):
+        with patch.object(supervisor_routes, "_cli_maps", AsyncMock(return_value=maps)):
             feed = json.loads(bytes(
-                (await app.handle_supervisor(self._request())).body))
+                (await supervisor_routes.handle_supervisor(self._request())).body))
             members = json.loads(bytes(
-                (await app.handle_supervisor_members_get(
+                (await supervisor_routes.handle_supervisor_members_get(
                     self._request(), self.sup)).body))["members"]
         sidebar = None
         for bucket in ("waiting", "working", "updated"):

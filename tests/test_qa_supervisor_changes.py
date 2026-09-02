@@ -27,6 +27,7 @@ import classification
 import config
 import db
 import shared
+from routes import supervisors as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -277,7 +278,7 @@ class IncidentalPhraseTests(unittest.TestCase):
         """
         body = self._PAD + "I noted whether I should include it. The work is complete."
         self.assertGreater(len(body), 400)
-        entry = app.classify_chat(
+        entry = classification.classify_chat(
             chat={"id": "c1", "title": "t", "session_id": ""},
             last={"role": "assistant", "created_at": "2026-08-31T19:12:04Z",
                   "preview": body[:200], "tail": body[-200:]},
@@ -358,7 +359,7 @@ class QuestionPendingNoteTests(unittest.TestCase):
     @staticmethod
     def _classify(body, *, session=""):
         """Real classifier, real preview/tail split (db.py: first 200, last 200)."""
-        return app.classify_chat(
+        return classification.classify_chat(
             chat={"id": "c1", "title": "cweb2", "session_id": session},
             last={"role": "assistant", "created_at": "2026-08-31T19:12:04Z",
                   "preview": body[:200], "tail": body[-200:]},
@@ -435,7 +436,7 @@ class WebCliCrossReferenceTests(unittest.IsolatedAsyncioTestCase):
     async def _get(self, cli_sessions=None):
         with patch.object(db, "read_claude_sessions", AsyncMock(
                 return_value=cli_sessions or [])):
-            return json.loads((await app.handle_supervisor(_request())).body)
+            return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_web_chat_linked_to_idle_cli_is_waiting(self):
         """cweb3's scenario: the web chat preview is a plain statement but
@@ -543,7 +544,7 @@ class CliDeduplicationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=cli_sessions or [])), \
              patch.object(app.transcripts, "list_recent", AsyncMock(
                  return_value=transcripts or [])):
-            return json.loads((await app.handle_supervisor(_request())).body)
+            return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_web_linked_cli_session_is_skipped_in_cli_path(self):
         """A CLI session whose session_id is linked to a web chat must not
@@ -750,7 +751,7 @@ class FullSupervisorIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def _get(self, cli_sessions=None):
         with patch.object(db, "read_claude_sessions", AsyncMock(
                 return_value=cli_sessions or [])):
-            return json.loads((await app.handle_supervisor(_request())).body)
+            return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_no_duplicate_entries_across_paths(self):
         """Two chats + one CLI session — the CLI session is linked to one chat,

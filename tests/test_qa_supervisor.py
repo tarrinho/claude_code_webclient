@@ -33,6 +33,7 @@ import auth
 import classification
 import config
 import db
+from routes import supervisors as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -152,7 +153,7 @@ class SupervisorChatTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def _get(self):
-        return json.loads((await app.handle_supervisor(_request())).body)
+        return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_unseen_assistant_reply_is_waiting(self):
         await _chat_with(
@@ -255,7 +256,7 @@ class SupervisorChatTests(unittest.IsolatedAsyncioTestCase):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         request = _request()
         request.state.session = {"user": "bob", "role": "user"}
-        data = json.loads((await app.handle_supervisor(request)).body)
+        data = json.loads((await supervisor_routes.handle_supervisor(request)).body)
         self.assertEqual(data["counts"]["waiting"], 0)
 
 
@@ -295,7 +296,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=cli)), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
                 patch.object(app.transcripts, "read_turns", AsyncMock(return_value=turns)):
-            return json.loads((await app.handle_supervisor(_request())).body)
+            return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_session_awaiting_a_reply_is_waiting(self):
         data = await self._get(
@@ -348,7 +349,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
                 patch.object(app.transcripts, "read_turns", read):
-            await app.handle_supervisor(_request())
+            await supervisor_routes.handle_supervisor(_request())
         read.assert_not_called()
 
     async def test_busy_status_means_working_whatever_the_transcript_says(self):
@@ -552,7 +553,7 @@ class SupervisorSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_unreadable_session_registry_does_not_break_the_view(self):
         with patch.object(db, "read_claude_sessions", AsyncMock(side_effect=OSError("nope"))), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=[])):
-            data = json.loads((await app.handle_supervisor(_request())).body)
+            data = json.loads((await supervisor_routes.handle_supervisor(_request())).body)
         self.assertEqual(data["counts"], {"waiting": 0, "working": 0, "updated": 0})
 
 
@@ -565,20 +566,20 @@ class SupervisorReadEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def test_marks_a_chat(self):
-        response = await app.handle_supervisor_read(_request({"kind": "chat", "id": "c1"}))
+        response = await supervisor_routes.handle_supervisor_read(_request({"kind": "chat", "id": "c1"}))
         self.assertTrue(json.loads(response.body)["ok"])
         marks = await db.read_marks_get("admin")
         self.assertIn(("chat", "c1"), marks)
 
     async def test_rejects_an_unknown_kind(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_supervisor_read(_request({"kind": "robot", "id": "c1"}))
+            await supervisor_routes.handle_supervisor_read(_request({"kind": "robot", "id": "c1"}))
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_rejects_a_traversal_id(self):
         for bad in ("../../etc/passwd", "a/b", "", "a b"):
             with self.subTest(ref=bad), self.assertRaises(HTTPException) as ctx:
-                await app.handle_supervisor_read(_request({"kind": "chat", "id": bad}))
+                await supervisor_routes.handle_supervisor_read(_request({"kind": "chat", "id": bad}))
             self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -651,7 +652,7 @@ class LiveTurnAwarenessTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def _get(self):
-        return json.loads((await app.handle_supervisor(_request())).body)
+        return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_a_live_turn_is_working_even_with_an_unread_question(self):
         """The agent asked something and is now working again -- do not
@@ -748,7 +749,7 @@ class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def _get(self):
-        return json.loads((await app.handle_supervisor(_request())).body)
+        return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_a_finished_reply_is_surfaced_as_done(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Done, all green."))
@@ -767,7 +768,7 @@ class RoutineOutputTests(unittest.IsolatedAsyncioTestCase):
         """
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Pushing now."))
         await db.chat_set_session("c1", SESSION_ID)
-        entry = app.classify_chat(
+        entry = classification.classify_chat(
             chat={"id": "c1", "title": "c1", "session_id": SESSION_ID},
             last={"role": "assistant", "created_at": "2026-08-29T10:01:00Z",
                   "preview": "Pushing now.", "tail": "Pushing now."},
@@ -884,19 +885,19 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def _get(self):
-        return json.loads((await app.handle_supervisor(_request())).body)
+        return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_clearing_silences_an_unanswered_question(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
-        response = await app.handle_supervisor_read(_request({"all": True}))
+        response = await supervisor_routes.handle_supervisor_read(_request({"all": True}))
         self.assertTrue(json.loads(response.body)["ok"])
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
     async def test_clearing_reports_how_many_it_cleared(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I?"))
         await _chat_with("c2", ("assistant", "2026-08-29T10:01:00Z", "Done, all green."))
-        body = json.loads((await app.handle_supervisor_read(_request({"all": True}))).body)
+        body = json.loads((await supervisor_routes.handle_supervisor_read(_request({"all": True}))).body)
         self.assertEqual(body["cleared"], 2)
         counts = (await self._get())["counts"]
         self.assertEqual((counts["waiting"], counts["updated"]), (0, 0))
@@ -904,7 +905,7 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_later_question_returns_after_clearing(self):
         """Clearing silences what is there now, not the agent forever."""
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
-        await app.handle_supervisor_read(_request({"all": True}))
+        await supervisor_routes.handle_supervisor_read(_request({"all": True}))
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
         await db.db_conn.execute(
             "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?,?,?,?)",
@@ -916,7 +917,7 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_reading_alone_never_dismisses(self):
         """The distinction the whole change rests on."""
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
-        await app.handle_supervisor_read(_request({"kind": "chat", "id": "c1"}))
+        await supervisor_routes.handle_supervisor_read(_request({"kind": "chat", "id": "c1"}))
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
         marks = await db.read_marks_get("admin")
         self.assertFalse(marks[("chat", "c1")]["dismissed_at"])
@@ -954,7 +955,7 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
                 patch.object(app.transcripts, "last_error", AsyncMock(return_value=failure)):
-            return json.loads((await app.handle_supervisor(_request())).body)
+            return json.loads((await supervisor_routes.handle_supervisor(_request())).body)
 
     async def test_a_busy_session_with_no_failure_is_still_working(self):
         data = await self._get(None)
@@ -991,9 +992,9 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[self._cli()])), \
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
                 patch.object(app.transcripts, "last_error", reader):
-            await app.handle_supervisor(_request())
-            await app.handle_supervisor(_request())
-            await app.handle_supervisor(_request())
+            await supervisor_routes.handle_supervisor(_request())
+            await supervisor_routes.handle_supervisor(_request())
+            await supervisor_routes.handle_supervisor(_request())
         self.assertEqual(reader.await_count, 1, "the tail was re-read on every poll")
 
     async def test_a_moved_file_is_re_read(self):
@@ -1004,7 +1005,7 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(app.transcripts, "list_recent", AsyncMock(
                         return_value=[{"session_id": SESSION_ID, "updated_at": stamp,
                                        "title": "t"}])):
-                    await app.handle_supervisor(_request())
+                    await supervisor_routes.handle_supervisor(_request())
         self.assertEqual(reader.await_count, 2)
 
     async def test_an_unreadable_transcript_does_not_break_the_view(self):
@@ -1013,7 +1014,7 @@ class BusyFailureTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app.transcripts, "list_recent", AsyncMock(return_value=listing)), \
                 patch.object(app.transcripts, "last_error",
                              AsyncMock(side_effect=OSError("gone"))):
-            data = json.loads((await app.handle_supervisor(_request())).body)
+            data = json.loads((await supervisor_routes.handle_supervisor(_request())).body)
         self.assertEqual(data["counts"]["working"], 1)
 
 

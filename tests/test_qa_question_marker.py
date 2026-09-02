@@ -20,6 +20,7 @@ import unittest
 from pathlib import Path
 
 import app
+import classification
 import shared
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,7 +147,7 @@ class LongMessageTests(unittest.TestCase):
             "preview": content[:200],
             "tail": content[-200:],
         }
-        return app.classify_chat(chat, last, set(), {}, {}, {}, {}, {})
+        return classification.classify_chat(chat, last, set(), {}, {}, {}, {}, {})
 
     FILLER = "I compared the three options and checked each one carefully. " * 10
 

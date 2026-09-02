@@ -29,9 +29,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
+import classification
 import config
 import db
+from routes import supervisors as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -144,7 +145,7 @@ class OwnershipTests(MembersBase):
         intruder = await self._chat(owner="bob", title="bob's private work")
         request = make_request(user="alice",
                                body={"members": [{"kind": "chat", "ref_id": intruder}]})
-        response = await app.handle_supervisor_members_add(request, self.sup)
+        response = await supervisor_routes.handle_supervisor_members_add(request, self.sup)
         payload = body_of(response)
         self.assertEqual(payload["added"], [],
                          "another owner's conversation must never become a member")
@@ -157,13 +158,13 @@ class OwnershipTests(MembersBase):
         request = make_request(user="alice",
                                body={"members": [{"kind": "chat", "ref_id": chat}]})
         with self.assertRaises(HTTPException) as caught:
-            await app.handle_supervisor_members_add(request, theirs)
+            await supervisor_routes.handle_supervisor_members_add(request, theirs)
         self.assertEqual(caught.exception.status_code, 404)
 
     async def test_listing_someone_elses_supervisor_is_not_found(self):
         theirs = await self._supervisor("bob", "bob's supervisor")
         with self.assertRaises(HTTPException) as caught:
-            await app.handle_supervisor_members_get(make_request(user="alice"), theirs)
+            await supervisor_routes.handle_supervisor_members_get(make_request(user="alice"), theirs)
         self.assertEqual(caught.exception.status_code, 404)
 
     async def test_removing_from_someone_elses_supervisor_is_not_found(self):
@@ -171,7 +172,7 @@ class OwnershipTests(MembersBase):
         chat = await self._chat(owner="bob")
         await db.supervisor_member_add(theirs, chat)
         with self.assertRaises(HTTPException) as caught:
-            await app.handle_supervisor_member_remove(
+            await supervisor_routes.handle_supervisor_member_remove(
                 make_request(user="alice"), theirs, chat)
         self.assertEqual(caught.exception.status_code, 404)
         self.assertEqual(len(await db.supervisor_members_list(theirs)), 1,
@@ -185,7 +186,7 @@ class BulkAddTests(MembersBase):
         good = [await self._chat() for _ in range(3)]
         payload = {"members": [{"kind": "chat", "ref_id": c} for c in good]
                    + [{"kind": "chat", "ref_id": "does-not-exist"}]}
-        response = await app.handle_supervisor_members_add(
+        response = await supervisor_routes.handle_supervisor_members_add(
             make_request(body=payload), self.sup)
         result = body_of(response)
         self.assertCountEqual(result["added"], good)
@@ -193,19 +194,19 @@ class BulkAddTests(MembersBase):
 
     async def test_an_empty_list_is_rejected(self):
         with self.assertRaises(HTTPException) as caught:
-            await app.handle_supervisor_members_add(
+            await supervisor_routes.handle_supervisor_members_add(
                 make_request(body={"members": []}), self.sup)
         self.assertEqual(caught.exception.status_code, 400)
 
     async def test_an_unreasonable_batch_is_rejected(self):
         payload = {"members": [{"kind": "chat", "ref_id": str(i)} for i in range(101)]}
         with self.assertRaises(HTTPException) as caught:
-            await app.handle_supervisor_members_add(
+            await supervisor_routes.handle_supervisor_members_add(
                 make_request(body=payload), self.sup)
         self.assertEqual(caught.exception.status_code, 400)
 
     async def test_an_unknown_kind_is_refused(self):
-        response = await app.handle_supervisor_members_add(
+        response = await supervisor_routes.handle_supervisor_members_add(
             make_request(body={"members": [{"kind": "wormhole", "ref_id": "x"}]}),
             self.sup)
         self.assertEqual(body_of(response)["added"], [])
@@ -213,9 +214,9 @@ class BulkAddTests(MembersBase):
     async def test_a_repeat_add_is_reported_separately_from_a_new_one(self):
         chat = await self._chat()
         payload = {"members": [{"kind": "chat", "ref_id": chat}]}
-        first = body_of(await app.handle_supervisor_members_add(
+        first = body_of(await supervisor_routes.handle_supervisor_members_add(
             make_request(body=payload), self.sup))
-        second = body_of(await app.handle_supervisor_members_add(
+        second = body_of(await supervisor_routes.handle_supervisor_members_add(
             make_request(body=payload), self.sup))
         self.assertEqual(first["added"], [chat])
         self.assertEqual(second["added"], [])
@@ -232,9 +233,9 @@ class AdoptionTests(MembersBase):
         # app, not routes.misc: the caller is _resolve_member, which still
         # lives in app.py and imported this handler into app's globals, so a
         # patch has to rebind the name the caller actually reads.
-        with patch.object(app, "handle_sessions_resume",
+        with patch.object(supervisor_routes, "handle_sessions_resume",
                           AsyncMock(return_value=fake)) as resume:
-            response = await app.handle_supervisor_members_add(
+            response = await supervisor_routes.handle_supervisor_members_add(
                 make_request(body={"members": [
                     {"kind": "session", "ref_id": "8e2e8bd0-1111-2222-3333-444455556666"}
                 ]}), self.sup)
@@ -248,9 +249,9 @@ class AdoptionTests(MembersBase):
         # app, not routes.misc: the caller is _resolve_member, which still
         # lives in app.py and imported this handler into app's globals, so a
         # patch has to rebind the name the caller actually reads.
-        with patch.object(app, "handle_sessions_resume",
+        with patch.object(supervisor_routes, "handle_sessions_resume",
                           AsyncMock(side_effect=HTTPException(404, "no session"))):
-            response = await app.handle_supervisor_members_add(
+            response = await supervisor_routes.handle_supervisor_members_add(
                 make_request(body={"members": [{"kind": "session", "ref_id": "gone"}]}),
                 self.sup)
         self.assertEqual(body_of(response)["added"], [])
@@ -268,7 +269,7 @@ class StatusReuseTests(MembersBase):
 
     async def _sidebar_status(self, chat_id):
         """What /api/supervisor says about this chat, for comparison."""
-        feed = body_of(await app.handle_supervisor(make_request()))
+        feed = body_of(await supervisor_routes.handle_supervisor(make_request()))
         for bucket in ("waiting", "working", "updated"):
             for entry in feed[bucket]:
                 if entry["kind"] == "chat" and entry["id"] == chat_id:
@@ -276,7 +277,7 @@ class StatusReuseTests(MembersBase):
         return None, None
 
     async def _members(self):
-        return body_of(await app.handle_supervisor_members_get(
+        return body_of(await supervisor_routes.handle_supervisor_members_get(
             make_request(), self.sup))["members"]
 
     async def test_an_asking_member_agrees_with_the_sidebar(self):
@@ -402,7 +403,7 @@ class StatusReuseTests(MembersBase):
         for c in (asker, broken):
             await db.supervisor_member_add(self.sup, c)
 
-        real = app.classify_chat
+        real = classification.classify_chat
 
         def fake(chat, last, *args, **kwargs):
             entry = real(chat, last, *args, **kwargs)
@@ -417,7 +418,7 @@ class StatusReuseTests(MembersBase):
                         "since": "2026-08-30T00:00:01Z"}
             return entry
 
-        with patch.object(app, "classify_chat", fake):
+        with patch.object(supervisor_routes, "classify_chat", fake):
             titles = [m["title"] for m in await self._members()]
         self.assertEqual(
             titles, ["broken", "asker"],

@@ -23,47 +23,47 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-import app
 import config
 import db
+from routes import supervisors as supervisor_routes
 
 
 class SupervisorConfigBoundTests(unittest.TestCase):
     """The ceiling, and the 400 that replaces a 500."""
 
     def test_none_passes_through(self):
-        self.assertIsNone(app._validated_supervisor_config(None))
+        self.assertIsNone(supervisor_routes._validated_supervisor_config(None))
 
     def test_a_small_config_is_accepted_unchanged(self):
         value = {"model": "claude-opus-5", "tasks": [1, 2, 3]}
-        self.assertEqual(app._validated_supervisor_config(value), value)
+        self.assertEqual(supervisor_routes._validated_supervisor_config(value), value)
 
     def test_a_config_at_the_limit_is_accepted(self):
         # Serialised length is what is measured, so build against that.
-        padding = "x" * (app._SUPERVISOR_CONFIG_MAX - 20)
+        padding = "x" * (supervisor_routes._SUPERVISOR_CONFIG_MAX - 20)
         value = {"k": padding}
-        self.assertLessEqual(len(json.dumps(value)), app._SUPERVISOR_CONFIG_MAX)
-        self.assertEqual(app._validated_supervisor_config(value), value)
+        self.assertLessEqual(len(json.dumps(value)), supervisor_routes._SUPERVISOR_CONFIG_MAX)
+        self.assertEqual(supervisor_routes._validated_supervisor_config(value), value)
 
     def test_an_oversized_config_is_rejected(self):
-        value = {"k": "x" * (app._SUPERVISOR_CONFIG_MAX + 1000)}
+        value = {"k": "x" * (supervisor_routes._SUPERVISOR_CONFIG_MAX + 1000)}
         with self.assertRaises(HTTPException) as caught:
-            app._validated_supervisor_config(value)
+            supervisor_routes._validated_supervisor_config(value)
         self.assertEqual(caught.exception.status_code, 400)
 
     def test_an_unserialisable_config_is_a_400_not_a_500(self):
         """It used to reach json.dumps inside the DB layer, where the
         TypeError surfaced as a server error rather than a bad request."""
         with self.assertRaises(HTTPException) as caught:
-            app._validated_supervisor_config({"when": object()})
+            supervisor_routes._validated_supervisor_config({"when": object()})
         self.assertEqual(caught.exception.status_code, 400)
         self.assertIn("serialisable", caught.exception.detail)
 
     def test_the_limit_is_below_the_upload_cap_and_above_a_real_config(self):
         """A sanity bound in both directions: large enough that a genuine plan
         fits, small enough to be a limit rather than a formality."""
-        self.assertGreater(app._SUPERVISOR_CONFIG_MAX, 8 * 1024)
-        self.assertLess(app._SUPERVISOR_CONFIG_MAX, config.MAX_UPLOAD_BYTES)
+        self.assertGreater(supervisor_routes._SUPERVISOR_CONFIG_MAX, 8 * 1024)
+        self.assertLess(supervisor_routes._SUPERVISOR_CONFIG_MAX, config.MAX_UPLOAD_BYTES)
 
 
 class QuestionIdsRowAccessTests(unittest.IsolatedAsyncioTestCase):

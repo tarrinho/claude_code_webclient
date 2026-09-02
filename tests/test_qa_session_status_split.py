@@ -33,7 +33,7 @@ SPOKE_AT = "2026-08-31T19:12:04Z"
 
 def classify(cli_status, marks=None, last_role="assistant"):
     """Classify a conversation linked to a CLI session in *cli_status*."""
-    return app.classify_chat(
+    return classification.classify_chat(
         chat={"id": CHAT_ID, "title": "cweb2", "session_id": SESSION_ID},
         last={"role": last_role, "created_at": SPOKE_AT,
               "preview": "I have finished the refactor and the tests pass."},

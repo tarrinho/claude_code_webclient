@@ -29,12 +29,13 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-import app
 import auth
 import config
 import db
 import supervisor
+from routes import supervisors as supervisor_routes
 
+REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "assets" / "supervisor" / "main.js"
 
 def supervisor_source() -> str:
@@ -196,7 +197,7 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pause_nonexistent_raises_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app._api_supervisor_pause(
+            await supervisor_routes._api_supervisor_pause(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/pause"),
@@ -210,7 +211,7 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_pause_while_stopped_raises_409(self):
         await _create_supervisor(self, status="stopped")
         with self.assertRaises(HTTPException) as ctx:
-            await app._api_supervisor_pause(
+            await supervisor_routes._api_supervisor_pause(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/pause"),
@@ -225,8 +226,8 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
         await _create_supervisor(self, status="running")
         engine = supervisor.SupervisorEngine("s1", "admin")
         engine._running = True
-        with patch.dict(app._supervisor_engines, {"s1": engine}):
-            resp = await app._api_supervisor_pause(
+        with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
+            resp = await supervisor_routes._api_supervisor_pause(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/pause"),
@@ -242,7 +243,7 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_nonexistent_raises_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app._api_supervisor_resume(
+            await supervisor_routes._api_supervisor_resume(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/resume"),
@@ -256,7 +257,7 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_resume_while_running_raises_409(self):
         await _create_supervisor(self, status="running")
         with self.assertRaises(HTTPException) as ctx:
-            await app._api_supervisor_resume(
+            await supervisor_routes._api_supervisor_resume(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/resume"),
@@ -272,8 +273,8 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
         engine = supervisor.SupervisorEngine("s1", "admin")
         engine._paused = True  # engine has been paused, so resume() returns True
         engine._pre_pause_status = "running"
-        with patch.dict(app._supervisor_engines, {"s1": engine}):
-            resp = await app._api_supervisor_resume(
+        with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
+            resp = await supervisor_routes._api_supervisor_resume(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/resume"),
@@ -296,8 +297,8 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
         # Pause — the API handler calls pause() (sets _paused=True, stores
         # _pre_pause_status="running") then writes DB status=paused.
-        with patch.dict(app._supervisor_engines, {"s1": engine}):
-            resp = await app._api_supervisor_pause(
+        with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
+            resp = await supervisor_routes._api_supervisor_pause(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/pause"),
@@ -314,8 +315,8 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
         # Resume — the engine was paused by the API call above, so resume()
         # returns True and the DB is restored to "running".
-        with patch.dict(app._supervisor_engines, {"s1": engine}):
-            resp = await app._api_supervisor_resume(
+        with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
+            resp = await supervisor_routes._api_supervisor_resume(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/resume"),
@@ -336,8 +337,8 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
         engine = supervisor.SupervisorEngine("s1", "admin")
         engine._running = True
         engine.set_status_for_pause("planning")
-        with patch.dict(app._supervisor_engines, {"s1": engine}):
-            resp = await app._api_supervisor_pause(
+        with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
+            resp = await supervisor_routes._api_supervisor_pause(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/pause"),
@@ -353,8 +354,8 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
         engine2 = supervisor.SupervisorEngine("s1", "admin")
         engine2._paused = True  # resume() returns True only when _paused
         engine2._pre_pause_status = "planning"
-        with patch.dict(app._supervisor_engines, {"s1": engine2}):
-            resp = await app._api_supervisor_resume(
+        with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine2}):
+            resp = await supervisor_routes._api_supervisor_resume(
                 SimpleNamespace(
                     method="POST",
                     url=SimpleNamespace(path="/api/supervisors/s1/resume"),
@@ -632,7 +633,15 @@ class FeatureCompletenessTests(unittest.TestCase):
     def setUp(self):
         self.js = supervisor_source()
         self.html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        self.app_src = Path(app.__file__).read_text(encoding="utf-8")
+        # app.py plus the route modules. The 0.10.0 split moved these
+        # endpoints into routes/, so scanning app.py alone searches a file
+        # that no longer declares them -- and an absent path reads as "the
+        # endpoint is gone" rather than "it moved".
+        self.app_src = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [REPO / "app.py", *sorted((REPO / "routes").glob("*.py"))]
+            if path.is_file()
+        )
 
     def test_pause_button_in_html(self):
         self.assertIn("pauseResumeBtn", self.html)

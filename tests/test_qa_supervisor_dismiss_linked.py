@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import unittest
 
-import app
+import classification
 
 CHAT_ID = "c0ffee00c0ffee00c0ffee00c0ffee00"
 SESSION_ID = "8db15c35-74bc-4670-a617-ad2ff0426ec4"
@@ -29,7 +29,7 @@ SESSION_ID = "8db15c35-74bc-4670-a617-ad2ff0426ec4"
 
 def classify(marks, status_updated, cli_status="waiting", last_role="assistant"):
     """Run the classifier for a conversation linked to a CLI session."""
-    return app.classify_chat(
+    return classification.classify_chat(
         chat={"id": CHAT_ID, "title": "cweb2", "session_id": SESSION_ID},
         last={"role": last_role, "created_at": "2026-08-31T19:12:04Z",
               "preview": "Let me study the existing test files."},
@@ -66,7 +66,7 @@ class LinkedConversationDismissTests(unittest.TestCase):
 
     def test_dismissing_the_session_still_removes_it(self):
         """The path that already worked must keep working."""
-        entry = app.classify_chat(
+        entry = classification.classify_chat(
             chat={"id": CHAT_ID, "title": "cweb2", "session_id": SESSION_ID},
             last={"role": "assistant", "created_at": "2026-08-31T19:12:04Z",
                   "preview": "Let me study the existing test files."},
@@ -91,7 +91,7 @@ class LinkedConversationDismissTests(unittest.TestCase):
     def test_the_later_of_the_two_dismissals_wins(self):
         """Either identity may silence the row; neither may un-silence it."""
         marks = {("chat", CHAT_ID): {"dismissed_at": "2026-08-31T19:06:28Z"}}
-        entry = app.classify_chat(
+        entry = classification.classify_chat(
             chat={"id": CHAT_ID, "title": "cweb2", "session_id": SESSION_ID},
             last={"role": "assistant", "created_at": "2026-08-31T19:12:04Z",
                   "preview": "Let me study the existing test files."},

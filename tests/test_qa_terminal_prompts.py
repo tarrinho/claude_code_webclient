@@ -33,6 +33,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import app
+import classification
 import prompts
 
 # Verbatim from `screen -X hardcopy` of a blocked session. Two details matter:
@@ -302,7 +303,7 @@ class FeedMarksTheQuestionTests(unittest.TestCase):
     SESSION = "sess-1"
 
     def _classify(self, prompt_map):
-        return app.classify_chat(
+        return classification.classify_chat(
             {"id": "c1", "title": "cweb2", "session_id": self.SESSION},
             {"role": "assistant", "created_at": "2026-09-02T10:00:00Z",
              "preview": "running the push", "tail": "running the push"},
@@ -357,7 +358,7 @@ class CliMapsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app.prompts, "has_prompt",
                          lambda sid: asked.append(sid) or True),
         ):
-            _status, _dismiss, _updated, prompting = await app._cli_maps({})
+            _status, _dismiss, _updated, prompting = await classification._cli_maps({})
         self.assertEqual(asked, ["waiting-1"])
         self.assertTrue(prompting["waiting-1"])
 
@@ -366,7 +367,7 @@ class CliMapsTests(unittest.IsolatedAsyncioTestCase):
         the whole endpoint down rather than degrade."""
         with patch.object(app.db, "read_claude_sessions",
                           AsyncMock(side_effect=OSError("boom"))):
-            maps = await app._cli_maps({})
+            maps = await classification._cli_maps({})
         self.assertEqual(len(maps), 4)
         self.assertEqual(maps, ({}, {}, {}, {}))
 

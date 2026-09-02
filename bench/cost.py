@@ -147,9 +147,25 @@ def summarise(model: str, results: list, rates: dict) -> Spend:
     cache_w = sum(r.get("cache_write_tokens", 0) for r in results)
     correct = sum(1 for r in results if r["correct"])
 
+    # A reported figure is only authoritative when the vendor says what it is
+    # based on. `cost_basis='list'` means real list pricing; 'unknown' means
+    # the CLI had no rate card for this backend and guessed -- and it guesses
+    # with *Anthropic* prices, which is exactly why every non-Anthropic
+    # cost_usd in the console's usage_events is fictional.
+    #
+    # I reproduced that bug here before catching it: Qwen3.6 over the CLI came
+    # out at $1.0760 and over http at $0.0000, for the same self-hosted model
+    # that is free on both. The CLI reported $0.08222 per turn with
+    # cost_basis='unknown' and this function believed it. Documenting the
+    # distinction was not the same as applying it.
+    LIST = "list"
     reported = [r.get("reported_cost_usd") for r in results
-                if r.get("reported_cost_usd") is not None]
+                if r.get("reported_cost_usd") is not None
+                and r.get("cost_basis") == LIST]
     bases = {r.get("cost_basis") for r in results if r.get("cost_basis")}
+    guessed = [r for r in results
+               if r.get("reported_cost_usd") is not None
+               and r.get("cost_basis") not in (LIST, None)]
 
     spend = Spend(
         model=model, input_tokens=inp, output_tokens=out,
@@ -162,6 +178,12 @@ def summarise(model: str, results: list, rates: dict) -> Spend:
         spend.source = "reported by the CLI"
         spend.basis = "/".join(sorted(bases)) if bases else None
     elif entry is not None:
+        if guessed:
+            spend.detail = (
+                f"{len(guessed)} run(s) carried a vendor cost with "
+                f"cost_basis={sorted({r['cost_basis'] for r in guessed})} "
+                "rather than 'list'; ignored, because the CLI prices an "
+                "unknown backend at Anthropic rates")
         spend.dollars = round(
             inp / 1_000_000 * float(entry.get("input", 0.0))
             + out / 1_000_000 * float(entry.get("output", 0.0))
@@ -170,7 +192,7 @@ def summarise(model: str, results: list, rates: dict) -> Spend:
             6,
         )
         spend.source = "computed from bench_rates.json"
-        if reported:
+        if reported and not spend.detail:
             # Partial vendor data: say so rather than mixing the two silently.
             spend.detail = (f"{len(reported)} of {len(results)} runs also "
                             "reported a cost; computed figure used for "

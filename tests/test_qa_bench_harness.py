@@ -541,6 +541,36 @@ class CostTests(unittest.TestCase):
         self.assertEqual(spend.basis, "list")
         self.assertIn("reported by the CLI", spend.source)
 
+    def test_a_vendor_cost_without_a_list_basis_is_not_trusted(self):
+        """The bug I documented in usage_events and then reproduced here.
+
+        The CLI reports total_cost_usd for a gateway backend too, with
+        cost_basis='unknown', and it prices an unknown backend at *Anthropic*
+        rates. Believing it put Qwen3.6 -- self-hosted and free -- at $1.0760
+        over the CLI and $0.0000 over http, for the same model on the same
+        tasks. Only cost_basis='list' is authoritative.
+        """
+        rates = {"vllm/*": {"input": 0.0, "output": 0.0,
+                            "cache_read": 0.0, "cache_write": 0.0}}
+        spend = cost.summarise("vllm/Qwen3.6", [{
+            "input_tokens": 12, "output_tokens": 56, "correct": True,
+            "reported_cost_usd": 0.08222, "cost_basis": "unknown"}], rates)
+        self.assertEqual(spend.dollars, 0.0,
+                         "a self-hosted model must not be billed at Anthropic "
+                         "rates because the CLI guessed")
+        self.assertIn("computed", spend.source)
+        self.assertIn("unknown", spend.detail)
+
+    def test_the_same_free_model_costs_the_same_on_both_transports(self):
+        """The symptom that exposed it: $1.0760 over cli, $0.0000 over http."""
+        rates = {"vllm/*": {"input": 0.0, "output": 0.0}}
+        cli = cost.summarise("vllm/Q", [{
+            "input_tokens": 12, "output_tokens": 56, "correct": True,
+            "reported_cost_usd": 0.08222, "cost_basis": "unknown"}], rates)
+        http = cost.summarise("vllm/Q", [{
+            "input_tokens": 12, "output_tokens": 56, "correct": True}], rates)
+        self.assertEqual(cli.dollars, http.dollars)
+
     def test_a_partially_reported_set_says_so_rather_than_mixing(self):
         rates = {"m": {"input": 1.0, "output": 1.0}}
         spend = cost.summarise("m", [

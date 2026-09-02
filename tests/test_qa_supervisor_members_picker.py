@@ -35,6 +35,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_JS = REPO / "web" / "assets" / "supervisor" / "main.js"
+# Where the 0.10.0 split moves it. Read alongside the legacy path, not instead
+# of it, so this file works before, during and after the move.
+SUPERVISOR_MODULES = REPO / "web" / "assets" / "supervisor"
 SUPERVISOR_HTML = REPO / "web" / "supervisor.html"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
@@ -136,11 +139,77 @@ def run_page(html: str, budget_ms: int = 20000) -> str:
                 browser.close()
 
 
+def supervisor_source() -> str:
+    """Every line of the supervisor page's script, wherever it now lives.
+
+    `web/supervisor.js` is being split into ES modules under
+    `web/assets/supervisor/`. Reading only the legacy path would not fail when
+    that lands -- it would find a file that still exists (a module shim, say)
+    and no longer contains what is lifted below, which is the quiet version of
+    a broken test. Concatenating whichever locations exist means the lift
+    survives the move without needing the split and this file updated in one
+    commit.
+
+    Raises rather than returning "" when neither exists: assertions against an
+    empty string all pass, so an empty source is the one outcome that must not
+    be allowed to look like success.
+
+    Pattern taken from tests/test_qa_supervisor_page_restore.py (cweb3).
+    """
+    # Deduplicated by resolved path. Once the split landed, SUPERVISOR_JS moved
+    # to web/assets/supervisor/main.js -- which is INSIDE SUPERVISOR_MODULES,
+    # so the naive version read that file twice and every marker appeared twice
+    # in the concatenation. Harmless for `index()`, which takes the first hit,
+    # but it makes the inverted-pair guard below reason about a source that
+    # does not exist on disk, and a duplicated marker is the kind of thing a
+    # later change trips over rather than the current one.
+    seen: set[Path] = set()
+    parts: list[str] = []
+    candidates = [SUPERVISOR_JS] + (
+        sorted(SUPERVISOR_MODULES.glob("*.js"))
+        if SUPERVISOR_MODULES.is_dir() else []
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        parts.append(path.read_text(encoding="utf-8"))
+    if not parts:
+        raise AssertionError(
+            f"no supervisor script found at {SUPERVISOR_JS} or "
+            f"{SUPERVISOR_MODULES}/*.js -- the page's script has moved and this "
+            "test does not know where to"
+        )
+    return "\n".join(parts)
+
+
 def _lift(source: str, start_marker: str, end_marker: str) -> str:
+    """Slice between two markers, refusing anything that yields nothing.
+
+    `index()` raising is the good case. The dangerous one is an *inverted*
+    pair: concatenating modules need not preserve the order two markers had
+    inside one file, and a start that follows its end produces "" -- a browser
+    test driving a page with no script under test, failing for a reason that
+    names nothing.
+    """
+    if start_marker not in source:
+        raise AssertionError(f"lift marker not found: {start_marker!r}")
     start = source.index(start_marker)
+    if end_marker not in source[start:]:
+        raise AssertionError(
+            f"end marker {end_marker!r} does not follow {start_marker!r} -- "
+            "markers may have been reordered by the module split"
+        )
     end = source.index(end_marker, start)
     # De-indent from inside the file's IIFE so it runs at top level.
-    return source[start:end].replace("\n  ", "\n")
+    lifted = source[start:end].replace("\n  ", "\n")
+    if not lifted.strip():
+        raise AssertionError(f"lift produced nothing between {start_marker!r} "
+                             f"and {end_marker!r}")
+    return lifted
 
 
 def members_section() -> str:
@@ -159,9 +228,19 @@ def members_section() -> str:
     never had. A harness may stub the boundary (fetch), never the code under
     test's own collaborators.
     """
-    source = SUPERVISOR_JS.read_text(encoding="utf-8")
+    source = supervisor_source()
     if SECTION_START not in source:
-        raise unittest.SkipTest("members section not implemented yet")
+        # Was `raise unittest.SkipTest("members section not implemented yet")`,
+        # accurate when the feature did not exist and a liar afterwards: the
+        # same absence now means the code MOVED, and 13 tests retiring quietly
+        # with "not implemented yet" is invisible in an aggregate (registry
+        # #50). A guard stays honest only while its precondition means what it
+        # meant when written.
+        raise AssertionError(
+            f"members section marker {SECTION_START!r} not found in the "
+            "supervisor script -- the section was renamed or the banners were "
+            "consumed as module boundaries by the split"
+        )
     return (
         "let csrfToken = '';\n"
         + _lift(source, "function getCsrf()", "// ── API helpers")

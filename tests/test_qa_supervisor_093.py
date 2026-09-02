@@ -35,7 +35,7 @@ import config
 import db
 import supervisor
 
-SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "supervisor.js"
+SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "assets" / "supervisor" / "main.js"
 SUPERVISOR_HTML = Path(__file__).resolve().parent.parent / "web" / "supervisor.html"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 

@@ -21,7 +21,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 WEB = REPO / "web"
 SUPERVISOR_HTML = WEB / "supervisor.html"
-SUPERVISOR_JS = WEB / "supervisor.js"
+SUPERVISOR_JS = WEB / "assets" / "supervisor" / "main.js"
 SUPERVISOR_CSS = SUPERVISOR_HTML  # inline in the HTML file
 
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")

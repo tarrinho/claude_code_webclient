@@ -260,7 +260,7 @@ class EventLogResetTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.source = (REPO / "web" / "supervisor.js").read_text(
+        self.source = (REPO / "web" / "assets" / "supervisor" / "main.js").read_text(
             encoding="utf-8")
 
     def _select_supervisor_body(self) -> str:
@@ -303,7 +303,7 @@ class ResizeDragTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.source = (REPO / "web" / "supervisor.js").read_text(
+        self.source = (REPO / "web" / "assets" / "supervisor" / "main.js").read_text(
             encoding="utf-8")
 
     def test_the_drag_listeners_are_on_document(self):

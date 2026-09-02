@@ -24,7 +24,7 @@ import threading
 import unittest
 from pathlib import Path
 
-SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "supervisor.js"
+SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "assets" / "supervisor" / "main.js"
 
 # What the API actually hands this function, and what must come out.
 #
@@ -203,9 +203,15 @@ class CacheBustingQA(unittest.TestCase):
         reason, and the symptom was indistinguishable from the bug not being
         fixed at all.
         """
-        html = (SUPERVISOR_JS.parent / "supervisor.html").read_text(encoding="utf-8")
-        match = re.search(r"supervisor\.js\?v=(\d+)", html)
-        self.assertIsNotNone(match, "supervisor.js is loaded without a version")
+        # Not `SUPERVISOR_JS.parent`: the script moved to
+        # web/assets/supervisor/ in 0.10.0, so its parent is the module
+        # directory and the page is no longer beside it. Deriving one path from
+        # another is what made this break on a move that did not touch the HTML.
+        html = (Path(__file__).resolve().parent.parent / "web" /
+                "supervisor.html").read_text(encoding="utf-8")
+        match = re.search(r"supervisor/main\.js\?v=(\d+)", html)
+        self.assertIsNotNone(
+            match, "the supervisor module is loaded without a version")
         self.assertGreaterEqual(int(match.group(1)), 2)
 
 

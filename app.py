@@ -5718,19 +5718,20 @@ async def _serve_supervisor_page(request: Request):
     return await handle_supervisor_page(request)
 
 
-@app.get("/supervisor.js")
-async def _serve_supervisor_js(request: Request):
-    # application/javascript, not HTML. Browsers enforce strict MIME checking on
-    # scripts, so served as text/html this file was refused outright and the
-    # supervisor page rendered its markup with none of its behaviour.
-    try:
-        return Response(
-            (_WEB_DIR / "supervisor.js").read_text(),
-            media_type="application/javascript",
-        )
-    except FileNotFoundError:
-        return Response("// supervisor.js missing", status_code=500,
-                        media_type="application/javascript")
+# `_serve_supervisor_js` was here. The supervisor script lived in web/ rather
+# than web/assets/, so nothing served it and this route existed to read the file
+# and set `application/javascript` by hand -- browsers enforce strict MIME
+# checking on scripts, and served as text/html it was refused outright, leaving
+# the page rendering its markup with none of its behaviour.
+#
+# The script now lives under web/assets/supervisor/, which StaticFiles already
+# mounts, so the MIME type is correct without a route. Its old location is also
+# why the section-4 timer scan globbed the wrong directory and missed a bare
+# timer for a whole sweep: a file outside the directory everything else lives in
+# is invisible to every check written against that directory.
+#
+# `_serve_supervisor_page` below stays. StaticFiles is mounted on /assets only,
+# so "/supervisor" and "/supervisor.html" still need a route of their own.
 
 
 # Supervisor routes — these match the pattern from the design spec.

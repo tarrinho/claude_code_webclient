@@ -956,7 +956,7 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
         else never appeared until a manual reload -- and staleness you cannot
         see is worse than a list that never claims to be current.
         """
-        source = (ROOT / "web" / "supervisor.js").read_text(encoding="utf-8")
+        source = (ROOT / "web" / "assets" / "supervisor" / "main.js").read_text(encoding="utf-8")
         start = source.index("setInterval(")
         body = source[start:source.index("30000", start)]
         self.assertIn("loadSupervisors()", body)

@@ -32,7 +32,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SUPERVISOR_JS = REPO / "web" / "supervisor.js"
+SUPERVISOR_JS = REPO / "web" / "assets" / "supervisor" / "main.js"
 # `web/supervisor.js` is being split into ES modules under this directory.
 # Both are read, so this harness keeps finding the code either side of the move
 # instead of inspecting a file that no longer holds it.
@@ -170,8 +170,13 @@ class SourceWiringTests(unittest.TestCase):
     def test_the_script_tag_was_cache_busted(self):
         """A cached script would mask the fix entirely."""
         html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        match = re.search(r"supervisor\.js\?v=(\d+)", html)
-        self.assertIsNotNone(match, "supervisor.js must carry a version query")
+        # Matches the module path rather than the old `supervisor.js`: the
+        # script moved to web/assets/supervisor/ in 0.10.0 so StaticFiles could
+        # serve it. The property under test is unchanged -- the page must name
+        # its script with a cache-buster -- so only the filename moved.
+        match = re.search(r"supervisor/main\.js\?v=(\d+)", html)
+        self.assertIsNotNone(
+            match, "the supervisor module must carry a version query")
         self.assertGreaterEqual(int(match.group(1)), 4)
 
 

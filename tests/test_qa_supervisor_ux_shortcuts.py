@@ -80,7 +80,7 @@ DRIVER_OK, DRIVER_WHY = _driver_status()
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPERVISOR_HTML = ROOT / "web" / "supervisor.html"
-SUPERVISOR_JS = ROOT / "web" / "supervisor.js"
+SUPERVISOR_JS = ROOT / "web" / "assets" / "supervisor" / "main.js"
 CHROMIUM = (shutil.which("chromium") or shutil.which("chromium-browser")
             or shutil.which("google-chrome"))
 
@@ -149,7 +149,11 @@ class _SupervisorPage(unittest.TestCase):
 
         def handler(route):
             url = route.request.url
-            if "supervisor.js" in url:
+            # "supervisor/main.js" rather than "supervisor.js": the script moved
+            # under /assets/ in 0.10.0. Matching the old name meant this handler
+            # stopped fulfilling the script request, so the page loaded with no
+            # behaviour and every shortcut test failed on a dead page.
+            if "supervisor/main.js" in url:
                 route.fulfill(status=200, body=js,
                               content_type="application/javascript")
             elif "/api/" in url:

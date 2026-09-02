@@ -34,7 +34,7 @@ STATED = (
     ("web/index.html", r'<span class="ver" id="ver">([^<]+)</span>'),
     ("web/supervisor.html", r"<title>Supervisor — WebConsole ([^<]+)</title>"),
     ("web/supervisor.html", r'id="topbar-info">([^<]+)</span>'),
-    ("web/supervisor.js", r'topbarInfo\.textContent\s*=\s*"([^"]+)"'),
+    ("web/assets/supervisor/main.js", r'topbarInfo\.textContent\s*=\s*"([^"]+)"'),
 )
 
 

@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SUPERVISOR_JS = REPO / "web" / "supervisor.js"
+SUPERVISOR_JS = REPO / "web" / "assets" / "supervisor" / "main.js"
 SUPERVISOR_HTML = REPO / "web" / "supervisor.html"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 

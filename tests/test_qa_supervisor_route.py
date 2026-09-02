@@ -40,8 +40,10 @@ class SupervisorRouteQA(unittest.IsolatedAsyncioTestCase):
         body = response.body.decode()
         self.assertEqual(response.status_code, 200)
         self.assertIn("Supervisor", body)
-        # The script tag the page depends on, and its cache-buster.
-        self.assertIn("supervisor.js?v=", body)
+        # The script tag the page depends on, and its cache-buster. The path
+        # moved to /assets/supervisor/main.js in 0.10.0; the assertion is still
+        # that the page names its script and busts the cache.
+        self.assertIn("/assets/supervisor/main.js?v=", body)
 
     def test_every_asset_the_page_requests_has_a_route(self):
         """A page that loads but whose script 404s looks identical to a bug.

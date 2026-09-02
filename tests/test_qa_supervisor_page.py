@@ -123,7 +123,18 @@ class ApiFetchTerminatesTests(unittest.TestCase):
         end = source.index("async function apiJson", start) if "async function apiJson" in source \
             else source.index("\n  // ──", source.index("async function apiFetch", start))
         body = source[start:end]
-        return "let csrfToken = \"\";\n" + body.replace("\n  ", "\n")
+        # Drop any `import ...;` the lifted region carries. This harness runs
+        # the code in a classic <script>, where an import is a syntax error --
+        # and once the 0.10.0 split moves getCsrf/apiFetch into their own
+        # module, the region above them starts with one.
+        body = "\n".join(line for line in body.splitlines()
+                         if not line.lstrip().startswith("import "))
+        # `state`, not a bare `csrfToken`: the shared bindings moved into a
+        # state object in 0.10.0, because an ES module's exports are live
+        # bindings that an importing module cannot assign to. The stub has to
+        # match what the lifted code now reads, or it throws "state is not
+        # defined" and the failure reads as apiFetch never reaching fetch.
+        return 'const state = { csrfToken: "" };\n' + body.replace("\n  ", "\n")
 
     def test_a_call_reaches_fetch_and_carries_the_token(self):
         title = run_in_browser(self.HARNESS % {"definitions": self._definitions()})

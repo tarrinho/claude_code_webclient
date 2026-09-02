@@ -198,10 +198,15 @@ class RestoreBehaviourTests(unittest.TestCase):
       },
       configurable: true,
     });
-    let activeSupervisorId = %(active)s;
-    let supervisors = %(supervisors)s;
+    // A `state` object rather than two bare `let`s. The 0.10.0 split moved the
+    // shared bindings into one, because an ES module's exports are live
+    // bindings that an importing module cannot assign to -- so the lifted code
+    // reads `state.activeSupervisorId` and `state.supervisors` now. Under the
+    // old stubs it threw, the title came back empty, and the failure read as
+    // "restore picked nothing" rather than "the harness did not define it".
+    const state = { activeSupervisorId: %(active)s, supervisors: %(supervisors)s };
     const picked = [];
-    function selectSupervisor(id) { activeSupervisorId = id; picked.push(id); rememberOpen(id); }
+    function selectSupervisor(id) { state.activeSupervisorId = id; picked.push(id); rememberOpen(id); }
     %(lifted)s
     restoreOpen();
     document.title = picked.length ? picked.join(",") : "(none)";

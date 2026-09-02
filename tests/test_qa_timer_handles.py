@@ -178,9 +178,18 @@ class TimerHandleTests(unittest.TestCase):
                    or "supervisor" in p.parent.name]
         self.assertTrue(sources, "no supervisor client script found to check")
         source = "\n".join(p.read_text(encoding="utf-8") for p in sources)
-        self.assertIn("_refreshTimer = setInterval", source)
-        self.assertIn("if (!_refreshTimer)", source)
-        self.assertIn("clearInterval(_refreshTimer)", source)
+        # `state.` is optional in each of these. The 0.10.0 split moved the
+        # shared bindings into a state object, so the handle is now
+        # `state._refreshTimer` -- an ES module export is a live binding and
+        # cannot be reassigned by an importing module, so a bare `let` could not
+        # survive the split. Matching either spelling keeps the assertion about
+        # the property (the timer is held, guarded and cleared) rather than
+        # about which file happens to own the variable this month.
+        for pattern in (r"(?:state\.)?_refreshTimer = setInterval",
+                        r"if \(!(?:state\.)?_refreshTimer\)",
+                        r"clearInterval\((?:state\.)?_refreshTimer\)"):
+            with self.subTest(pattern=pattern):
+                self.assertRegex(source, pattern)
 
     def test_a_timer_that_can_be_replaced_is_also_cleared(self):
         """conversation.js's 30s timer lives in a factory, so a second call must

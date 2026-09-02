@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -145,17 +146,36 @@ class _SupervisorPage(unittest.TestCase):
 
     def _install_routes(self):
         html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        js = SUPERVISOR_JS.read_text(encoding="utf-8")
 
         def handler(route):
             url = route.request.url
-            # "supervisor/main.js" rather than "supervisor.js": the script moved
-            # under /assets/ in 0.10.0. Matching the old name meant this handler
-            # stopped fulfilling the script request, so the page loaded with no
-            # behaviour and every shortcut test failed on a dead page.
-            if "supervisor/main.js" in url:
-                route.fulfill(status=200, body=js,
-                              content_type="application/javascript")
+            # Serve any file under /assets/supervisor/ from disk, by name,
+            # rather than one hard-coded script.
+            #
+            # The script is an ES module now, so it fetches its own imports:
+            # matching only "supervisor/main.js" fulfilled the entry point and
+            # 404'd `state.js`, the import failed, and the page rendered its
+            # markup with no behaviour at all. That looks identical to a broken
+            # selector -- every test timed out waiting for `.supervisor-list-item`
+            # and none of them said "a script failed to load".
+            #
+            # Resolving by name also means the eight-way split needs no edit
+            # here: a new module is simply another file in the directory.
+            match = re.search(r"/assets/supervisor/([\w.-]+\.js)", url)
+            if match:
+                target = SUPERVISOR_JS.parent / match.group(1)
+                if target.is_file():
+                    route.fulfill(status=200,
+                                  body=target.read_text(encoding="utf-8"),
+                                  content_type="application/javascript")
+                else:
+                    # Loudly, not as a 404 the page swallows: a missing module
+                    # is a broken test setup, and it should not present as a
+                    # feature that failed to render.
+                    route.fulfill(
+                        status=200,
+                        body=f'throw new Error("test harness: no {target.name}");',
+                        content_type="application/javascript")
             elif "/api/" in url:
                 route.fulfill(status=200, body=json.dumps(self._api_body(url)),
                               content_type="application/json")

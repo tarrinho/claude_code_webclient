@@ -1,20 +1,18 @@
-// supervisor.js — Supervisor orchestration UI for WebConsole 0.9.0
+// supervisor/main.js — Supervisor orchestration UI.
+//
+// An ES module rather than an IIFE: a module has its own scope, so the
+// wrapper that used to provide one is gone. It lives under /assets/ so
+// StaticFiles serves it, which is what let _serve_supervisor_js be deleted
+// from app.py -- that route existed only to set the MIME type by hand.
+//
+// Body indentation is still the IIFE's. Dedenting is a separate commit:
+// eleven multi-line template literals carry HTML, and their leading
+// whitespace is content, so that change deserves its own verification.
 
-(function () {
-  "use strict";
 
   // ── State ────────────────────────────────────────────────────────────
-  let supervisors = [];
-  let activeSupervisorId = null;
-  let activeSupervisor = null;
-  let tasks = [];
-  let activeTaskId = null;
-  let chatMessages = [];
-  let eventLog = [];
   // The live EventSource, held so it can be closed. It used to be an
   // AbortController, which EventSource ignores -- see connectSSE().
-  let sseStream = null;
-  let csrfToken = "";
 
   // The 30s refresh poller, held rather than left bare. rules.md §4 names a
   // bare `setInterval` as the failure case: nothing can stop it, and it doubles
@@ -22,38 +20,24 @@
   // that fixed every other timer (`3a68c5c`) because that sweep, §4's grep and
   // the test enforcing it all looked only at `web/assets/*.js` -- and this is
   // the one client script that lives directly in `web/`.
-  let _refreshTimer = null;
 
   // Smart-scroll state for chat and event log: follow along only when the
   // user is at the bottom (within 20px), otherwise let them read freely.
   // A floating button invites them back to the latest when they've scrolled up.
-  let chatScrollFollow = true;
-  let logScrollFollow = true;
-  let _chatScrollBtn = null;
-  let _logScrollBtn = null;
 
   // Notification badge count: SSE events that arrive while user is scrolled up.
-  let _unreadCount = 0;
 
   // Goal banner shrink: transitions to slim strip when user scrolls past it.
-  let _goalShrunk = false;
 
   // Set when the user expands the slim strip back by hand. Without it the very
   // next streamed message re-shrank the banner they had just expanded, so the
   // restore arrow looked like it did nothing. Cleared when a new goal is set.
-  let _goalUserRestored = false;
 
   // Expanded task row: only one detail row open at a time.
-  let _expandedTaskId = null;
 
   // Track previous supervisor statuses so we can flash badges on change.
-  let _prevStatuses = {};
 
   // ── Panel sizing state ──────────────────────────────────────────────
-  const PANEL_MIN_WIDTHS = { left: 200, center: 300, right: 200 };
-  const PANEL_MIN_HEIGHTS = { bottom: 80 };
-  let panelSizes = { left: 320, right: 320, bottom: 200 };
-  let lastMinimized = {};
 
   // ── CSRF ─────────────────────────────────────────────────────────────
   // Read straight from the cookie, and synchronously. The token is only ever
@@ -71,14 +55,16 @@
   // Being synchronous is the point rather than a tidy-up: with no await here
   // apiFetch cannot re-enter this function, so the bug is gone by
   // construction instead of by remembering not to reintroduce it.
+import { state, PANEL_MIN_WIDTHS, PANEL_MIN_HEIGHTS } from "./state.js";
+
   function getCsrf() {
-    if (!csrfToken) {
-      csrfToken = document.cookie
+    if (!state.csrfToken) {
+      state.csrfToken = document.cookie
         .split("; ")
         .find((c) => c.startsWith("wc_csrf="))
         ?.split("=")[1] || "";
     }
-    return csrfToken;
+    return state.csrfToken;
   }
 
   // ── API helpers ──────────────────────────────────────────────────────
@@ -193,7 +179,7 @@
   async function loadSupervisors() {
     try {
       const data = await apiFetch("/api/supervisors");
-      supervisors = data.supervisors || [];
+      state.supervisors = data.supervisors || [];
       renderSupervisorList();
       restoreOpen();
     } catch (e) {
@@ -214,7 +200,7 @@
   function renderSupervisorList() {
     // An edit in progress outranks a refresh; the poll catches up when it ends.
     if (renamingId) return;
-    if (!supervisors.length) {
+    if (!state.supervisors.length) {
       el.supervisorList.innerHTML =
         '<div class="empty-state">No supervisors yet.<br>Click <b>+ New</b> to create one.</div>';
       return;
@@ -222,7 +208,7 @@
     // Sort the list. Default newest-first (UUID ≈ creation time),
     // but "updated" sorts by last activity so the most-recently-used
     // supervisors stay at the top.
-    const sorted = supervisors
+    const sorted = state.supervisors
       .map((s) => ({ ...s }))
       .sort((a, b) => {
         if (supervisorSortMode === "updated") {
@@ -241,7 +227,7 @@
           timeLabel = `&middot; ${formatTime(s.updated_at)}`;
         }
         return `<div class="supervisor-list-item ${
-          s.id === activeSupervisorId ? "active" : ""
+          s.id === state.activeSupervisorId ? "active" : ""
         }" data-id="${s.id}">
           <div class="sl-title">${esc(s.title || "Untitled")}</div>
           <div class="sl-status">
@@ -258,15 +244,15 @@
 
       // Status pulse: flash badge when the supervisor's status changed.
       const rowId = row.dataset.id;
-      const sup = supervisors.find((s) => s.id === rowId);
-      if (sup && _prevStatuses[rowId] && _prevStatuses[rowId] !== (sup.status || "idle")) {
+      const sup = state.supervisors.find((s) => s.id === rowId);
+      if (sup && state._prevStatuses[rowId] && state._prevStatuses[rowId] !== (sup.status || "idle")) {
         const badge = row.querySelector(".status-badge");
         if (badge) {
           badge.classList.add("flash");
           setTimeout(() => badge.classList.remove("flash"), 700);
         }
       }
-      _prevStatuses[rowId] = sup?.status || "idle";
+      state._prevStatuses[rowId] = sup?.status || "idle";
 
       const titleEl = row.querySelector(".sl-title");
       if (!titleEl) return;
@@ -378,7 +364,7 @@
   }
 
   function restoreOpen() {
-    if (activeSupervisorId || !supervisors.length) return;
+    if (state.activeSupervisorId || !state.supervisors.length) return;
     let wanted = null;
     try {
       wanted = localStorage.getItem(LAST_OPEN_KEY);
@@ -387,12 +373,12 @@
     }
     // The remembered one if it still exists, otherwise the most recent, because
     // an empty centre panel next to a populated list reads as a broken page.
-    const found = supervisors.find((s) => s.id === wanted);
-    selectSupervisor((found || supervisors[0]).id);
+    const found = state.supervisors.find((s) => s.id === wanted);
+    selectSupervisor((found || state.supervisors[0]).id);
   }
 
   function selectSupervisor(id) {
-    activeSupervisorId = id;
+    state.activeSupervisorId = id;
     // The count belongs to the conversation you were reading, not to the one
     // you just opened.
     clearBadge();
@@ -404,18 +390,18 @@
     // Immediately before showActiveSupervisor, which reconnects SSE and
     // starts filling it again.
     if (el.eventLog) el.eventLog.innerHTML = "";
-    eventLog.length = 0;
+    state.eventLog.length = 0;
     showActiveSupervisor();
   }
 
   async function showActiveSupervisor() {
-    if (!activeSupervisorId) return;
+    if (!state.activeSupervisorId) return;
     try {
-      const data = await apiFetch("/api/supervisors/" + activeSupervisorId);
-      activeSupervisor = data.supervisor;
+      const data = await apiFetch("/api/supervisors/" + state.activeSupervisorId);
+      state.activeSupervisor = data.supervisor;
       // The pause button reflects what the server says, not what the engine
       // had last time — the engine may have been restarted between page loads.
-      updatePauseResumeBtn(activeSupervisor.status);
+      updatePauseResumeBtn(state.activeSupervisor.status);
     } catch (e) {
       console.error("Failed to load supervisor:", e);
       return;
@@ -429,25 +415,25 @@
 
     // Load messages and tasks in parallel — neither blocks the other.
     const [msgData, taskData] = await Promise.allSettled([
-      apiFetch("/api/supervisors/" + activeSupervisorId + "/messages"),
-      apiFetch("/api/supervisors/" + activeSupervisorId + "/tasks"),
+      apiFetch("/api/supervisors/" + state.activeSupervisorId + "/messages"),
+      apiFetch("/api/supervisors/" + state.activeSupervisorId + "/tasks"),
     ]);
 
     if (msgData.status === "fulfilled") {
-      chatMessages = msgData.value.messages || [];
+      state.chatMessages = msgData.value.messages || [];
       renderChatMessages();
     } else {
-      chatMessages = [];
+      state.chatMessages = [];
       addChatMessage("system", "Could not load chat messages: " + (msgData.reason || "Unknown error"));
       renderChatMessages();
     }
 
     if (taskData.status === "fulfilled") {
-      tasks = taskData.value.tasks || [];
+      state.tasks = taskData.value.tasks || [];
       renderTaskTree();
       updateOverallProgress();
     } else {
-      tasks = [];
+      state.tasks = [];
       renderTaskTree();
     }
 
@@ -456,12 +442,12 @@
   }
 
   function renderChatMessages() {
-    if (!chatMessages.length) {
+    if (!state.chatMessages.length) {
       el.chatMessages.innerHTML =
         '<div class="empty-state">No messages yet. Send a prompt to get started.</div>';
       return;
     }
-    el.chatMessages.innerHTML = chatMessages
+    el.chatMessages.innerHTML = state.chatMessages
       .map((m) => {
         if (m.role === "user") {
           return `<div class="chat-message user"><strong>You:</strong><br>${esc(m.content || "")}</div>`;
@@ -475,15 +461,15 @@
         return `<div class="chat-message system">${esc(m.content || "")}</div>`;
       })
       .join("");
-    if (chatScrollFollow) {
+    if (state.chatScrollFollow) {
       el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
     } else {
-      showScrollBtn(_chatScrollBtn);
+      showScrollBtn(state._chatScrollBtn);
     }
   }
 
   function addChatMessage(role, content, metadata) {
-    chatMessages.push({ role, content, created_at: new Date().toISOString(), metadata });
+    state.chatMessages.push({ role, content, created_at: new Date().toISOString(), metadata });
     renderChatMessages();
   }
 
@@ -493,8 +479,8 @@
   function showGoalBanner(promptText) {
     _currentGoal = promptText;
     // A new goal starts expanded, whatever the user did to the last one.
-    _goalShrunk = false;
-    _goalUserRestored = false;
+    state._goalShrunk = false;
+    state._goalUserRestored = false;
     el.goalBanner.classList.remove("slim");
     if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = true;
     el.goalText.textContent = promptText;
@@ -505,25 +491,25 @@
 
   function dismissGoalBanner() {
     _currentGoal = null;
-    _goalShrunk = false;
-    _goalUserRestored = false;
+    state._goalShrunk = false;
+    state._goalUserRestored = false;
     el.goalBanner.classList.remove("slim");
     el.goalBanner.hidden = true;
     if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = true;
   }
 
   function restoreGoalBanner() {
-    _goalShrunk = false;
+    state._goalShrunk = false;
     // Sticky: this is the user overruling the auto-shrink, so it has to
     // outlast the next message.
-    _goalUserRestored = true;
+    state._goalUserRestored = true;
     el.goalBanner.classList.remove("slim");
     if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = true;
   }
 
   function shrinkGoalBanner() {
-    if (!_currentGoal || _goalShrunk || _goalUserRestored) return;
-    _goalShrunk = true;
+    if (!_currentGoal || state._goalShrunk || state._goalUserRestored) return;
+    state._goalShrunk = true;
     el.goalBanner.classList.add("slim");
     if (el.goalRestoreBtn) el.goalRestoreBtn.hidden = false;
   }
@@ -533,8 +519,8 @@
   function updateNotificationBadge() {
     const badge = el.topbarBadge;
     if (!badge) return;
-    if (_unreadCount > 0) {
-      badge.textContent = _unreadCount > 99 ? "99+" : String(_unreadCount);
+    if (state._unreadCount > 0) {
+      badge.textContent = state._unreadCount > 99 ? "99+" : String(state._unreadCount);
       badge.classList.add("visible");
       badge.hidden = false;
     } else {
@@ -547,14 +533,14 @@
   // the bottom the content is already in front of them, so a badge would just
   // be noise they have to clear.
   function incrementBadge(n) {
-    if (chatScrollFollow) return;
-    _unreadCount += n > 0 ? n : 1;
+    if (state.chatScrollFollow) return;
+    state._unreadCount += n > 0 ? n : 1;
     updateNotificationBadge();
   }
 
   function clearBadge() {
-    if (_unreadCount === 0) return;
-    _unreadCount = 0;
+    if (state._unreadCount === 0) return;
+    state._unreadCount = 0;
     updateNotificationBadge();
   }
 
@@ -563,7 +549,7 @@
 
   function showCompletionBanner(eng) {
     // Gather results from all tasks
-    const allTasks = tasks;
+    const allTasks = state.tasks;
     const total = allTasks.length;
     const doneCount = allTasks.filter(t => t.status === "done").length;
     const failCount = allTasks.filter(t => t.status === "failed").length;
@@ -596,18 +582,18 @@
 
   // ── Task tree ────────────────────────────────────────────────────────
   function renderTaskTree() {
-    if (!tasks.length) {
+    if (!state.tasks.length) {
       el.taskTree.innerHTML = '<div class="empty-state">No tasks yet. Wait for the supervisor to create a plan.</div>';
-      _expandedTaskId = null;
+      state._expandedTaskId = null;
       return;
     }
-    el.taskTree.innerHTML = tasks
+    el.taskTree.innerHTML = state.tasks
       .map((t) => {
         const statusClass = t.status || "pending";
         const progress = Math.min(100, Math.round(t.progress_pct || 0));
         const progressClass = progress >= 100 ? "complete" : "";
-        const isActive = t.id === activeTaskId;
-        const isExpanded = t.id === _expandedTaskId;
+        const isActive = t.id === state.activeTaskId;
+        const isExpanded = t.id === state._expandedTaskId;
         const expandClass = isExpanded ? "expanded" : "";
         const expandIcon = isExpanded ? "▼" : "▶";
         const expandLabel = isExpanded ? "Collapse" : "Expand";
@@ -652,10 +638,10 @@
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         const id = btn.dataset.expand;
-        if (_expandedTaskId === id) {
-          _expandedTaskId = null;
+        if (state._expandedTaskId === id) {
+          state._expandedTaskId = null;
         } else {
-          _expandedTaskId = id;
+          state._expandedTaskId = id;
         }
         renderTaskTree();
       });
@@ -663,13 +649,13 @@
   }
 
   function selectTask(taskId) {
-    activeTaskId = taskId;
+    state.activeTaskId = taskId;
     renderTaskTree();
     renderTaskDetail(taskId);
   }
 
   function renderTaskDetail(taskId) {
-    const task = tasks.find((t) => t.id === taskId);
+    const task = state.tasks.find((t) => t.id === taskId);
     if (!task) {
       el.detailContent.innerHTML = '<div class="empty-state">Task not found</div>';
       return;
@@ -714,12 +700,12 @@
   }
 
   function updateOverallProgress() {
-    if (!tasks.length) {
+    if (!state.tasks.length) {
       el.progressBarFill.style.width = "0%";
       return;
     }
-    const total = tasks.reduce((s, t) => s + (t.progress_pct || 0), 0);
-    const avg = total / tasks.length;
+    const total = state.tasks.reduce((s, t) => s + (t.progress_pct || 0), 0);
+    const avg = total / state.tasks.length;
     el.progressBarFill.style.width = Math.min(100, Math.round(avg)) + "%";
   }
 
@@ -732,16 +718,16 @@
     // (OPEN), and only close() reaches 2. Every supervisor switch therefore
     // left a stream open on both ends, and the stale one kept delivering into
     // handleSSEEvent for a supervisor the user had already left.
-    if (sseStream) {
-      sseStream.close();
-      sseStream = null;
+    if (state.sseStream) {
+      state.sseStream.close();
+      state.sseStream = null;
     }
 
     const url =
-      "/api/supervisors/" + activeSupervisorId + "/stream";
+      "/api/supervisors/" + state.activeSupervisorId + "/stream";
 
     const evtSource = new EventSource(url);
-    sseStream = evtSource;
+    state.sseStream = evtSource;
 
     evtSource.onopen = function () {
       addLogEntry("system", "SSE connected");
@@ -758,7 +744,7 @@
 
     evtSource.onerror = function () {
       // A stream we replaced is not an error worth reporting.
-      if (sseStream !== evtSource) return;
+      if (state.sseStream !== evtSource) return;
       // Deliberately no close() here. EventSource reconnects on its own after
       // a transient failure, and closing it is precisely what prevents that --
       // so the old code announced a reconnection and then made it impossible,
@@ -806,12 +792,12 @@
   }
 
   function handleStatusUpdate(data) {
-    if (data.status && activeSupervisor) {
-      activeSupervisor.status = data.status;
+    if (data.status && state.activeSupervisor) {
+      state.activeSupervisor.status = data.status;
       // Sync to the supervisors array — renderSupervisorList() renders from
       // that array, not from activeSupervisor. Without this the sidebar
       // badge stays stale for up to 30s (the poll interval).
-      const sup = supervisors.find(s => s.id === activeSupervisorId);
+      const sup = state.supervisors.find(s => s.id === state.activeSupervisorId);
       if (sup) sup.status = data.status;
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
@@ -822,12 +808,12 @@
   function handleProgress(data) {
     // Update tasks from server data
     if (data.tasks) {
-      const oldMap = new Map(tasks.map((t) => [t.id, t]));
+      const oldMap = new Map(state.tasks.map((t) => [t.id, t]));
       data.tasks.forEach((t) => {
         if (oldMap.has(t.id)) {
           Object.assign(oldMap.get(t.id), t);
         } else {
-          tasks.push(t);
+          state.tasks.push(t);
           oldMap.set(t.id, t);
         }
       });
@@ -836,11 +822,11 @@
     updateOverallProgress();
 
     // Update supervisor status if available
-    if (data.status && activeSupervisor) {
-      activeSupervisor.status = data.status;
+    if (data.status && state.activeSupervisor) {
+      state.activeSupervisor.status = data.status;
       // Same fix as handleStatusUpdate — renderSupervisorList() renders from
       // the supervisors array, so we must keep it in sync.
-      const sup = supervisors.find(s => s.id === activeSupervisorId);
+      const sup = state.supervisors.find(s => s.id === state.activeSupervisorId);
       if (sup) sup.status = data.status;
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
@@ -864,12 +850,12 @@
   // from the SSE stream (plan text, task results) so the chat stays live.
   function handleSSEMessages(msgs) {
     // Filter out messages we already have (dedup by content).
-    const known = new Set(chatMessages.map(m => m.content));
+    const known = new Set(state.chatMessages.map(m => m.content));
     const newMsgs = msgs.filter(m => !known.has(m.content || ""));
     if (newMsgs.length) {
       newMsgs.forEach(m => {
         try {
-          chatMessages.push({
+          state.chatMessages.push({
             role: m.role,
             content: m.content,
             created_at: m.created_at || new Date().toISOString(),
@@ -884,7 +870,7 @@
       // New chat content pushes the goal above the fold, so compact it. Guarded
       // on chatScrollFollow only: when the user has scrolled up they are not
       // looking at the banner and moving it under them is disorienting.
-      if (chatScrollFollow) {
+      if (state.chatScrollFollow) {
         shrinkGoalBanner();
       }
     }
@@ -900,18 +886,18 @@
       <span class="log-msg">${esc(msg)}</span>
     `;
     el.eventLog.appendChild(div);
-    if (logScrollFollow) {
+    if (state.logScrollFollow) {
       el.eventLog.scrollTop = el.eventLog.scrollHeight;
     } else {
-      showScrollBtn(_logScrollBtn);
+      showScrollBtn(state._logScrollBtn);
     }
-    eventLog.push({ type, msg, time });
+    state.eventLog.push({ type, msg, time });
   }
 
   // ── Sending prompts ─────────────────────────────────────────────────
   async function sendPrompt() {
     const text = el.promptInput.value.trim();
-    if (!text || !activeSupervisorId) return;
+    if (!text || !state.activeSupervisorId) return;
 
     el.promptInput.value = "";
     el.promptInput.disabled = true;
@@ -921,7 +907,7 @@
     showGoalBanner(text);
 
     try {
-      const data = await apiFetch("/api/supervisors/" + activeSupervisorId + "/send", {
+      const data = await apiFetch("/api/supervisors/" + state.activeSupervisorId + "/send", {
         method: "POST",
         body: { prompt: text },
       });
@@ -949,16 +935,16 @@
   }
 
   async function loadTasks() {
-    if (!activeSupervisorId) return;
+    if (!state.activeSupervisorId) return;
     try {
       const data = await apiFetch(
-        "/api/supervisors/" + activeSupervisorId + "/tasks"
+        "/api/supervisors/" + state.activeSupervisorId + "/tasks"
       );
-      tasks = data.tasks || [];
+      state.tasks = data.tasks || [];
       renderTaskTree();
       updateOverallProgress();
-      if (activeTaskId) {
-        const task = tasks.find((t) => t.id === activeTaskId);
+      if (state.activeTaskId) {
+        const task = state.tasks.find((t) => t.id === state.activeTaskId);
         if (task) renderTaskDetail(task.id);
       }
     } catch (e) {
@@ -998,14 +984,14 @@
 
     if (panel) {
       // Minimize / restore
-      if (lastMinimized[panel]) {
+      if (state.lastMinimized[panel]) {
         restorePanel(panel);
-        lastMinimized[panel] = false;
+        state.lastMinimized[panel] = false;
         btn.classList.remove("minimized");
         return;
       }
       minimizePanel(panel);
-      lastMinimized[panel] = true;
+      state.lastMinimized[panel] = true;
       btn.classList.add("minimized");
     }
 
@@ -1016,26 +1002,26 @@
         // When exiting maximize mode, restore any panels that were
         // minimized while maximized — they are CSS-hidden by the
         // max-xxx rules until restorePanel strips that styling.
-        Object.keys(lastMinimized).forEach((p) => {
-          if (lastMinimized[p] && p !== maxTarget) {
+        Object.keys(state.lastMinimized).forEach((p) => {
+          if (state.lastMinimized[p] && p !== maxTarget) {
             restorePanel(p);
-            lastMinimized[p] = false;
+            state.lastMinimized[p] = false;
           }
         });
         // Show all minimize buttons now that their panels are visible
         allMinimizeButtons.forEach((b) => (b.style.display = ""));
         // Restore button icons for panels we just restored
         $$(".panel-btn[data-panel]").forEach((b) => {
-          if (b.dataset.panel && !lastMinimized[b.dataset.panel]) {
+          if (b.dataset.panel && !state.lastMinimized[b.dataset.panel]) {
             b.classList.remove("minimized");
           }
         });
       } else {
         // Entering maximize mode. If the target panel is minimized,
         // restore it first so the maximize transition feels responsive.
-        if (lastMinimized[maxTarget]) {
+        if (state.lastMinimized[maxTarget]) {
           restorePanel(maxTarget);
-          lastMinimized[maxTarget] = false;
+          state.lastMinimized[maxTarget] = false;
         }
         document.body.classList.add("max-" + maxTarget);
         // Hide minimize buttons on panels that are about to be hidden by
@@ -1064,7 +1050,7 @@
       bottom: $("#panel-bottom"),
     }[panel];
     if (!el) return;
-    const stored = panelSizes[panel] || (panel === "bottom" ? 200 : 320);
+    const stored = state.panelSizes[panel] || (panel === "bottom" ? 200 : 320);
     el.dataset.minimizeSaved = String(stored);
     if (panel === "bottom") {
       el.style.height = "30px";
@@ -1108,7 +1094,7 @@
       $("#panel-left").style.width = newWidth + "px";
       $("#panel-left").style.minWidth = PANEL_MIN_WIDTHS.left + "px";
       $("#panel-left").style.maxWidth = "600px";
-      panelSizes.left = newWidth;
+      state.panelSizes.left = newWidth;
     }
     if (resizing === "right" || resizing === "center-delta") {
       const newWidth = Math.max(
@@ -1122,7 +1108,7 @@
         $("#panel-right").style.width = newWidth + "px";
         $("#panel-right").style.minWidth = PANEL_MIN_WIDTHS.right + "px";
         $("#panel-right").style.maxWidth = "600px";
-        panelSizes.right = newWidth;
+        state.panelSizes.right = newWidth;
       }
     }
     if (resizing === "bottom") {
@@ -1134,7 +1120,7 @@
       $("#panel-bottom").style.height = newHeight + "px";
       $("#panel-bottom").style.minHeight = PANEL_MIN_HEIGHTS.bottom + "px";
       $("#panel-bottom").style.maxHeight = "600px";
-      panelSizes.bottom = newHeight;
+      state.panelSizes.bottom = newHeight;
     }
   }
 
@@ -1538,7 +1524,7 @@
     document
       .getElementById("addMembersBtn")
       ?.addEventListener("click", () => {
-        if (activeSupervisorId) openMembersPicker(activeSupervisorId);
+        if (state.activeSupervisorId) openMembersPicker(state.activeSupervisorId);
         else membersNotice("Pick a supervisor first.", true);
       });
     el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
@@ -1570,10 +1556,10 @@
     // sits rather than of the code, and this page is loaded in an iframe whose
     // `src` the console resets each time the supervisor pane opens. The guard
     // makes a second `init()` idempotent instead of doubling the poll rate.
-    if (!_refreshTimer) {
-      _refreshTimer = setInterval(() => {
+    if (!state._refreshTimer) {
+      state._refreshTimer = setInterval(() => {
         loadSupervisors();
-        if (activeSupervisorId) {
+        if (state.activeSupervisorId) {
           loadTasks();
         }
       }, 30000);
@@ -1584,56 +1570,56 @@
     // the event that reliably fires for it; a poll that outlives its document
     // is the thing the handle exists to prevent.
     window.addEventListener("pagehide", () => {
-      if (_refreshTimer) {
-        clearInterval(_refreshTimer);
-        _refreshTimer = null;
+      if (state._refreshTimer) {
+        clearInterval(state._refreshTimer);
+        state._refreshTimer = null;
       }
     });
 
     // Smart scroll: follow along only when the user is at the bottom (within
     // 20px). A floating button invites them back when they've scrolled up.
-    _chatScrollBtn = document.getElementById("chat-scroll-btn");
-    _logScrollBtn = document.getElementById("log-scroll-btn");
+    state._chatScrollBtn = document.getElementById("chat-scroll-btn");
+    state._logScrollBtn = document.getElementById("log-scroll-btn");
 
-    if (_chatScrollBtn) {
-      _chatScrollBtn.addEventListener("click", () => {
+    if (state._chatScrollBtn) {
+      state._chatScrollBtn.addEventListener("click", () => {
         el.chatMessages.scrollTo({ top: el.chatMessages.scrollHeight, behavior: "smooth" });
-        chatScrollFollow = true;
-        hideScrollBtn(_chatScrollBtn);
+        state.chatScrollFollow = true;
+        hideScrollBtn(state._chatScrollBtn);
         // Explicit, not left to the scroll handler: the smooth scroll may be
         // interrupted before it ever reports reaching the bottom.
         clearBadge();
       });
     }
-    if (_logScrollBtn) {
-      _logScrollBtn.addEventListener("click", () => {
+    if (state._logScrollBtn) {
+      state._logScrollBtn.addEventListener("click", () => {
         el.eventLog.scrollTo({ top: el.eventLog.scrollHeight, behavior: "smooth" });
-        logScrollFollow = true;
-        hideScrollBtn(_logScrollBtn);
+        state.logScrollFollow = true;
+        hideScrollBtn(state._logScrollBtn);
       });
     }
 
     if (el.chatMessages) {
       el.chatMessages.addEventListener("scroll", function () {
         if (isNearBottom(el.chatMessages)) {
-          chatScrollFollow = true;
-          hideScrollBtn(_chatScrollBtn);
+          state.chatScrollFollow = true;
+          hideScrollBtn(state._chatScrollBtn);
           // Back at the bottom: they have caught up by definition.
           clearBadge();
         } else {
-          chatScrollFollow = false;
-          showScrollBtn(_chatScrollBtn);
+          state.chatScrollFollow = false;
+          showScrollBtn(state._chatScrollBtn);
         }
       });
     }
     if (el.eventLog) {
       el.eventLog.addEventListener("scroll", function () {
         if (isNearBottom(el.eventLog)) {
-          logScrollFollow = true;
-          hideScrollBtn(_logScrollBtn);
+          state.logScrollFollow = true;
+          hideScrollBtn(state._logScrollBtn);
         } else {
-          logScrollFollow = false;
-          showScrollBtn(_logScrollBtn);
+          state.logScrollFollow = false;
+          showScrollBtn(state._logScrollBtn);
         }
       });
     }
@@ -1687,12 +1673,12 @@
   }
 
   async function togglePauseResume() {
-    if (!activeSupervisorId) return;
+    if (!state.activeSupervisorId) return;
     if (!el.pauseResumeBtn) return;
     // Decide which action to take from the current button text.
     const action = el.pauseResumeBtn.textContent === "⏸" ? "pause" : "resume";
     try {
-      await apiFetch(`/api/supervisors/${encodeURIComponent(activeSupervisorId)}/${action}`, {
+      await apiFetch(`/api/supervisors/${encodeURIComponent(state.activeSupervisorId)}/${action}`, {
         method: "POST",
       });
       // Refresh the supervisor so status and list update in one call.
@@ -1708,4 +1694,3 @@
   } else {
     init();
   }
-})();

@@ -241,12 +241,29 @@ def members_section() -> str:
             "supervisor script -- the section was renamed or the banners were "
             "consumed as module boundaries by the split"
         )
-    return (
-        "let csrfToken = '';\n"
-        + _lift(source, "function getCsrf()", "// ── API helpers")
+    # `state`, not a bare `csrfToken`. The 0.10.0 split moved the shared
+    # bindings into a state object because an ES module's exports are live
+    # bindings an importing module cannot assign to, so every lifted line that
+    # used to read `csrfToken` now reads `state.csrfToken`. Without this the
+    # lifted code throws "state is not defined" and the picker renders the
+    # exception text -- which surfaced as "an empty picker must explain itself"
+    # failing with the *error message* in place of the explanation.
+    #
+    # Only the fields the lifted sections actually touch. A wholesale copy of
+    # the real state module would let a test pass on a field the page never
+    # populates.
+    stub = ("const state = { csrfToken: '', supervisors: [], activeSupervisorId: null,"
+            " activeSupervisor: null, tasks: [], chatMessages: [], eventLog: [] };\n")
+    lifted = (
+        _lift(source, "function getCsrf()", "// ── API helpers")
         + _lift(source, "async function apiFetch(", "// Every timestamp on this page")
         + _lift(source, SECTION_START, SECTION_END)
     )
+    # Imports cannot appear in the classic <script> these harnesses build, and
+    # after the split each lifted region begins with one.
+    lifted = "\n".join(line for line in lifted.splitlines()
+                       if not line.lstrip().startswith("import "))
+    return stub + lifted
 
 
 AGENTS = [

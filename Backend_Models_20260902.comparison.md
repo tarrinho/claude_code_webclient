@@ -272,28 +272,57 @@ cost of letting it finish.
 
 ## Task-Level Scoring (Delegation Score per dimension)
 
+Qwen3.6's column is re-scored from the 2026-09-02 17:05 re-run. Its previous
+entries — `0 (empty)` on Bug fix, LRU cache and Water jug — were the truncated
+captures described at the top of this document, and they are replaced.
+
 ### Coding Tasks
 
 | Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
 |---|---|---|---|---|---|---|
-| Bug fix | 100 | 100 | 75 | 75 | 75 | 0 (empty) |
-| LRU cache | 100 | 50 | 25 | 50 | 25 | 0 (empty) |
-| **Avg** | **100** | **75** | **50** | **62.5** | **50** | **0** |
+| Bug fix | 100 | 100 | 75 | 75 | 75 | **100** |
+| LRU cache | 100 | 50 | 25 | 50 | 25 | **50** |
+| **Avg** | **100** | **75** | **50** | **62.5** | **50** | **75** |
+
+Qwen3.6's bug fix is correct with type hints and a full Args/Returns docstring,
+which is the same standard luna was given 100 for. Its LRU is correct and
+genuinely O(1) but raises `KeyError` at `capacity=0` and carries no docstrings —
+50 is the score `gpt-5.4-mini-copilot` received for an equivalent gap, and the
+`capacity=0` defect is the one `gpt-5.6-sol` and `gpt-5-mini` also have.
 
 ### Reasoning Tasks
 
 | Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
 |---|---|---|---|---|---|---|
-| Water jug | 100 | 100 | 100 | 100 | 100 | 0 (empty) |
-| Birthday paradox | 100 | 100 | 100 | 100 | 100 | 75 |
-| **Avg** | **100** | **100** | **100** | **100** | **100** | **37.5** |
+| Water jug | 100 | 100 | 100 | 100 | 100 | **n/m** |
+| Birthday paradox | 100 | 100 | 100 | 100 | 100 | **100** |
+| **Avg** | **100** | **100** | **100** | **100** | **100** | **100** (of 1 task) |
+
+`n/m` = not measurable on this path. Water jug exceeds 600s over HTTP and is
+answered correctly in 23.0s through the CLI transport, so a 0 here would record
+a transport limit as a model failure — which is exactly what this document did
+the first time. It is left unscored rather than scored generously: the CLI
+answer was correct, but it was not produced by the same harness as every other
+cell in these tables, and mixing the two would make the column unreadable.
+
+Birthday paradox is raised from 75 to 100. The original 75 was for a response
+beginning with a `[thinking]` placeholder; the re-run returns the correct
+formula and 0.5073 with no placeholder, which is what the other five models
+were scored 100 for.
 
 ### Comprehension
 
 | Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
 |---|---|---|---|---|---|---|
-| Function explain | 100 | 100 | 100 | 75 | 75 | 75 |
-| **Avg** | **100** | **100** | **100** | **75** | **75** | **75** |
+| Function explain | 100 | 100 | 100 | 75 | 75 | **100** |
+| **Avg** | **100** | **100** | **100** | **75** | **75** | **100** |
+
+Raised from 75. `gpt-5.4-mini` was given 75 for saying an edge case "cannot
+happen" without discussing the pre-initialisation case as clearly as luna. The
+re-run answers that directly — *"it would only trigger if the code were
+modified to pre-initialize categories, remove items from lists, or process data
+differently"* — so it meets the standard the 100s were given for. All four
+answers correct, no placeholder.
 
 ### Planning
 

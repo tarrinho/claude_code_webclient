@@ -33,8 +33,36 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_JS = REPO / "web" / "supervisor.js"
+# `web/supervisor.js` is being split into ES modules under this directory.
+# Both are read, so this harness keeps finding the code either side of the move
+# instead of inspecting a file that no longer holds it.
+SUPERVISOR_MODULES = REPO / "web" / "assets" / "supervisor"
 SUPERVISOR_HTML = REPO / "web" / "supervisor.html"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
+
+
+def supervisor_source() -> str:
+    """Every line of the supervisor page's script, wherever it now lives.
+
+    Reading the single legacy path would not fail when the split lands -- it
+    would find a file that still exists and no longer contains what is being
+    asserted, which is the quiet version of a broken test.
+    """
+    parts: list[str] = []
+    if SUPERVISOR_JS.is_file():
+        parts.append(SUPERVISOR_JS.read_text(encoding="utf-8"))
+    if SUPERVISOR_MODULES.is_dir():
+        parts.extend(
+            path.read_text(encoding="utf-8")
+            for path in sorted(SUPERVISOR_MODULES.glob("*.js"))
+        )
+    if not parts:
+        raise AssertionError(
+            f"no supervisor script found at {SUPERVISOR_JS} or "
+            f"{SUPERVISOR_MODULES}/*.js -- if it moved again, add the new "
+            "location here rather than letting these tests pass on nothing"
+        )
+    return "\n".join(parts)
 
 
 def run_page(html: str, budget_ms: int = 6000) -> str:
@@ -58,11 +86,30 @@ def run_page(html: str, budget_ms: int = 6000) -> str:
 
 def lifted() -> str:
     """restoreOpen, rememberOpen and the key, verbatim from the page."""
-    source = SUPERVISOR_JS.read_text(encoding="utf-8")
+    source = supervisor_source()
     if "function restoreOpen()" not in source:
-        raise unittest.SkipTest("restoreOpen not implemented")
-    start = source.index("const LAST_OPEN_KEY")
-    end = source.index("function selectSupervisor(")
+        # This used to skip, reading a missing string as "the feature is not
+        # written yet". It has been written since, so the same absence now means
+        # the code moved and this harness is looking in the wrong place -- and a
+        # skip reports that as success. A guard stays honest only while its
+        # precondition means what it meant when it was written.
+        raise AssertionError(
+            "restoreOpen() is not in the supervisor script. It is implemented, "
+            "so this means the source moved -- point supervisor_source() at "
+            "its new location"
+        )
+    start = source.find("const LAST_OPEN_KEY")
+    end = source.find("function selectSupervisor(")
+    if start < 0 or end <= start:
+        # Slicing between two markers assumes both live in one file, in this
+        # order. Concatenated modules need not preserve either, and an inverted
+        # pair yields an empty string -- a page with no script under test, which
+        # fails for a reason that names nothing.
+        raise AssertionError(
+            "LAST_OPEN_KEY and selectSupervisor() are no longer a contiguous "
+            f"block in that order (start={start}, end={end}); lift them from "
+            "their own modules instead of slicing one file"
+        )
     return source[start:end].replace("\n  ", "\n")
 
 
@@ -70,7 +117,7 @@ class SourceWiringTests(unittest.TestCase):
     """The call has to happen where the list becomes known."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     @staticmethod
     def _extract_block(source: str, func_name: str) -> str:

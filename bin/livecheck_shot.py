@@ -15,10 +15,31 @@ still timed out with no PNG produced:
 
 So the JS path is opt-in via LIVECHECK_WITH_JS=1 purely to reproduce the hang;
 it produces no image. This is the same wall that moved
-tests/test_qa_supervisor_ux_shortcuts.py onto playwright, and playwright cannot
-run on this host either -- its driver needs /usr/bin/node, which is absent, so
-81 browser tests currently skip rather than run. Installing node is the real
-unblock for browser-level verification of this page.
+tests/test_qa_supervisor_ux_shortcuts.py onto playwright.
+
+**Playwright DOES run on this host now.** This paragraph used to say it could
+not, and that was correct when written and is worth reading rather than
+deleting, because the reason it stopped being correct is that it worked.
+
+It said playwright's driver needs `/usr/bin/node`, which was absent, so 81
+browser tests skipped, and installing node was the real unblock. Checked
+against the timestamps: this file was committed at 2026-09-01 22:08:12 and
+`nodejs` 24.19.0 was installed at 22:12:18 -- four minutes later, evidently in
+response. So the diagnosis was right, the recommendation was acted on, and the
+text went stale by being taken.
+
+One part was wrong even then, and it is the part worth keeping: the driver does
+NOT need the *system* node. Under `.venv` it resolves to playwright's own
+bundled `playwright/driver/node`, which was present all along, so the browser
+layer was runnable before anyone installed anything -- as `.venv/bin/python -m
+pytest` would have shown. That is registry #50: the skips were real under
+system `python3` and invisible as skips in an aggregate, which is what made
+"cannot run here" the natural reading.
+
+Current state, measured: ux_shortcuts 28 passed; and
+tests/test_qa_supervisor_members_picker.py was moved onto playwright and runs
+13 tests in ~21s, where `--dump-dom` never finished at all. So this page IS
+drivable by playwright if anyone wants to supersede the chromium path below.
 
 `fetch` is stubbed from JSON captured off a running instance, so if the JS ever
 does become drivable the data is already wired.
@@ -44,6 +65,17 @@ from pathlib import Path
 
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
+# Derived, never written down. The stubbed /api/settings response used to carry
+# a hardcoded "0.9.5", so every screenshot this tool produced showed a version
+# the project had left behind -- a layout-check artefact misreporting the build
+# it was checking. Reading config.VERSION means it cannot go stale again, which
+# is the same reason bin/run-suite-chunked.sh asks pytest for its file list
+# instead of keeping a parallel glob.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config
+
+VERSION = config.VERSION.split("_", 1)[1]
+
 
 def build(served: Path, json_dir: Path, action: str, width: int, height: int,
           body_class: str) -> str:
@@ -54,6 +86,9 @@ def build(served: Path, json_dir: Path, action: str, width: int, height: int,
         "TASKS": json.loads((json_dir / "api_tasks.json").read_text()),
         "MESSAGES": json.loads((json_dir / "api_messages.json").read_text()),
         "MEMBERS": json.loads((json_dir / "api_members.json").read_text()),
+        # Travels in the payload rather than being written into the stub, so
+        # the screenshot reports the build it is actually checking.
+        "SETTINGS": {"version": VERSION},
     }
 
     if body_class:
@@ -87,7 +122,7 @@ def build(served: Path, json_dir: Path, action: str, width: int, height: int,
     } else if (/\\/tasks$/.test(url))    { body = DATA.TASKS; }
     else if (/\\/messages$/.test(url))   { body = DATA.MESSAGES; }
     else if (/\\/members$/.test(url))    { body = DATA.MEMBERS; }
-    else if (/\\/api\\/settings$/.test(url)) { body = {version: "0.9.5"}; }
+    else if (/\\/api\\/settings$/.test(url)) { body = DATA.SETTINGS; }
     return Promise.resolve({
       ok: true, status: 200,
       json: function () { return Promise.resolve(body); },

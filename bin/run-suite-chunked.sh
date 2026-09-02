@@ -73,11 +73,29 @@ echo "plain files   : $(echo "$PLAIN_FILES" | grep -c . )"
 echo "results dir   : $OUT"
 echo
 
+# Per-chunk wall-clock cap. Without one, a single hanging chunk eats the whole
+# outer budget and starves every chunk after it -- and the aggregate then
+# reports the survivors as though the run were complete, which is the exact
+# thing this file exists to refuse. Observed: a chunk holding the six raw
+# `chromium --dump-dom` harnesses sat for 13 minutes accumulating failures,
+# because those pages never make chromium exit so each test burns its whole
+# subprocess timeout in turn.
+#
+# `timeout` reports 124 when it fires. That is treated like 137 (killed) below:
+# a chunk that did not finish is a chunk needing attention, never a pass.
+CHUNK_TIMEOUT="${WC_CHUNK_TIMEOUT:-600}"
+
 run_chunk() {
   local name="$1"; shift
   local log="$OUT/$name.log"
-  "$PY" -m pytest -rs -q "$@" >"$log" 2>&1
+  timeout "$CHUNK_TIMEOUT" "$PY" -m pytest -rs -q "$@" >"$log" 2>&1
   local rc=$?
+  if [ "$rc" -eq 124 ]; then
+    # Say so in the log itself, so the file is self-describing rather than
+    # only the console line carrying the fact.
+    echo "" >>"$log"
+    echo "CHUNK TIMED OUT after ${CHUNK_TIMEOUT}s -- killed, results incomplete" >>"$log"
+  fi
   local summary
   # The same rule the aggregator below uses: the last line that actually
   # carries counts. The earlier pattern here alternated on the bare words

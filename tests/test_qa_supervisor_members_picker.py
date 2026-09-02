@@ -27,9 +27,8 @@ send the right thing", which is the question that matters here.
 from __future__ import annotations
 
 import json
-import re
+import os
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,23 +38,102 @@ SUPERVISOR_JS = REPO / "web" / "supervisor.js"
 SUPERVISOR_HTML = REPO / "web" / "supervisor.html"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
+
+def _driver_status() -> tuple[bool, str]:
+    """Whether playwright's own node driver can start, and why not if it can't.
+
+    Same check as tests/test_frontend_browser.py and the UX-shortcuts suite,
+    and for the same reason: importing playwright proves nothing, because it
+    shells out to a node binary it ships itself. Guarding on the import alone
+    makes every test here raise FileNotFoundError on a machine without node
+    instead of skipping.
+    """
+    try:
+        from playwright._impl._driver import compute_driver_executable
+    except Exception as exc:  # noqa: BLE001
+        return False, f"playwright not importable: {exc.__class__.__name__}"
+    try:
+        parts = compute_driver_executable()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"driver path unresolvable: {exc.__class__.__name__}"
+    for path in (parts if isinstance(parts, (list, tuple)) else [parts]):
+        if not os.path.exists(path):
+            return False, f"driver missing: {path} (try: playwright install)"
+    return True, "ok"
+
+
+DRIVER_OK, DRIVER_WHY = _driver_status()
+
 # Marks the section this feature owns, so it can be lifted out of the file
 # without dragging in the goal-banner and scheduler code around it.
 SECTION_START = "// ── Members ─"
 SECTION_END = "// ── Members end ─"
 
 
+class ProbeFailed(AssertionError):
+    """The browser never produced a title. Raised rather than returned.
+
+    The old helper returned ``""`` on failure and the caller wrote
+    ``json.loads(run_page(...) or "{}")``, so a browser that answered nothing
+    became a successful parse of an empty dict. Every assertion downstream then
+    failed on missing keys -- "an empty picker must explain itself, got ''" --
+    which describes the picker and not the browser, and sent three sessions
+    looking at the markup. An instrument that cannot answer must say so.
+    """
+
+
 def run_page(html: str, budget_ms: int = 20000) -> str:
+    """Render *html* and return its ``document.title``.
+
+    Driven through playwright rather than ``chromium --dump-dom``, which does
+    not work on this page. Measured on chromium 148.0.7778.178: a trivial page
+    dumps in 0.6s, `web/supervisor.html` alone dumps in 0.6s, and the same
+    markup plus `web/supervisor.js` never exits at all -- rc=124 under
+    `--headless`, `--headless=old` and `--headless=new` alike, with no output
+    and no stderr. Bisected to the 30-second `setInterval` that `init()`
+    installs: neutralise that one call and the identical page dumps in 1.0s.
+    So `--virtual-time-budget` never retires while that timer is outstanding,
+    and the budget is what `--dump-dom` waits on.
+
+    Playwright drives the same chromium binary and renders the same page in
+    under four seconds, because it asks the DevTools protocol for the DOM
+    instead of depending on virtual time to expire. It also owns its own
+    profile directory, which retires the 126 MB-per-launch leak this file used
+    to cause -- a single run left 11 of them and filled a 1.9 GB tmpfs, after
+    which every browser test in the suite failed on a timeout and leaked
+    another.
+    """
+    from playwright.sync_api import TimeoutError as PWTimeout
+    from playwright.sync_api import sync_playwright
+
     with tempfile.TemporaryDirectory() as tmp:
-        page = Path(tmp) / "probe.html"
-        page.write_text(html, encoding="utf-8")
-        result = subprocess.run(
-            [CHROMIUM, "--headless", "--disable-gpu", "--no-sandbox",
-             f"--virtual-time-budget={budget_ms}", "--dump-dom", f"file://{page}"],
-            capture_output=True, text=True, timeout=120, check=False,
-        )
-    match = re.search(r"<title>([^<]*)</title>", result.stdout)
-    return match.group(1) if match else ""
+        page_file = Path(tmp) / "probe.html"
+        page_file.write_text(html, encoding="utf-8")
+        with sync_playwright() as pw:
+            # The system chromium, as the other playwright suites do. Without
+            # executable_path playwright looks for a browser it downloads
+            # itself, which is not installed here.
+            browser = pw.chromium.launch(
+                executable_path=CHROMIUM, args=["--no-sandbox"])
+            try:
+                page = browser.new_page()
+                errors: list[str] = []
+                page.on("pageerror", lambda e: errors.append(str(e)))
+                page.goto(f"file://{page_file}")
+                try:
+                    # The harness signals completion by setting document.title
+                    # as its last act, so that is the wait -- not a fixed sleep,
+                    # which is what made the old suite flaky under load.
+                    page.wait_for_function(
+                        "document.title.length > 0", timeout=budget_ms)
+                except PWTimeout:
+                    raise ProbeFailed(
+                        "page never set document.title within "
+                        f"{budget_ms}ms; page errors: {errors or 'none'}"
+                    ) from None
+                return page.title()
+            finally:
+                browser.close()
 
 
 def _lift(source: str, start_marker: str, end_marker: str) -> str:
@@ -117,6 +195,7 @@ class MarkupTests(unittest.TestCase):
         self.assertIn("membersPanel", self.html)
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipUnless(CHROMIUM, "chromium not installed")
 class PickerTests(unittest.TestCase):
     """Drive the real picker; assert the request it produces."""
@@ -213,7 +292,10 @@ class PickerTests(unittest.TestCase):
         """
 
     def _run(self, **kwargs):
-        return json.loads(run_page(self._harness(**kwargs)) or "{}")
+        # No `or "{}"` fallback: run_page raises when the browser gives it
+        # nothing, and swallowing that turned a dead browser into a picker
+        # that "rendered no text". Let the real failure surface.
+        return json.loads(run_page(self._harness(**kwargs)))
 
     def test_it_offers_both_agents_and_conversations(self):
         result = self._run(clicks="none")
@@ -289,6 +371,7 @@ class PickerTests(unittest.TestCase):
                           "confirming with nothing ticked must not call the API")
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipUnless(CHROMIUM, "chromium not installed")
 class EmptyStateTests(unittest.TestCase):
     """An empty box reads as a failure; the first run is not one."""

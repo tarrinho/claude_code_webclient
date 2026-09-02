@@ -152,7 +152,13 @@ class DevExemptionIsGoneTests(ApiTokenBase):
     def test_only_login_and_assets_are_public(self):
         """Pins the whole public set, not just the prefix that was removed.
         A future addition to this list should have to change a test."""
-        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        # middleware.py, not app.py: AuthMiddleware moved there in 0.10.0. The
+        # split on a missing marker raised IndexError rather than failing an
+        # assertion, so the test crashed instead of saying the public set had
+        # moved -- assert the marker is present before slicing on it.
+        source = (ROOT / "middleware.py").read_text(encoding="utf-8")
+        self.assertIn("public_route = ", source,
+                      "the public-path decision is not where this test looks")
         block = source.split("public_route = ")[1].split("if not public_route")[0]
         self.assertIn('== "/login"', block)
         self.assertIn('startswith(\n            "/assets/"', block)

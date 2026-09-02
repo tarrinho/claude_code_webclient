@@ -25,7 +25,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app.py"
-SOURCE = APP.read_text(encoding="utf-8")
+# app.py plus the modules the 0.10.0 split moved its guards into. The CSRF
+# and auth middleware now live in middleware.py, so a scan of app.py alone
+# searches a file that no longer contains the thing being asserted -- and
+# an absent string reads as "the guard is gone" rather than "it moved".
+SOURCE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (APP, APP.parent / "middleware.py",
+                 APP.parent / "net_validation.py",
+                 APP.parent / "classification.py")
+    if path.is_file()
+)
 TREE = ast.parse(SOURCE)
 
 # Where minting a session is legitimate: the login handler, and the bootstrap

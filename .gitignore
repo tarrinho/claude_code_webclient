@@ -48,3 +48,4 @@ Thumbs.db
 # some chats show questions and others not"; its findings are now pinned by
 # tests/test_qa_approval_questions.py and tests/test_qa_question_marker.py.
 scratch_*.py
+.worktrees/

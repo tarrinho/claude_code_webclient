@@ -22,7 +22,64 @@ churn.
 
 ## [Unreleased]
 
+### Changed
+
+- **Every route handler now lives in `routes/`, one module per URL prefix.**
+  `app.py` is down from 5,964 lines to **876** — 15% of where it started — and
+  holds only what has to be central: logging setup, login/logout, the three HTML
+  templates, the lifespan hook, and the wiring. Four modules were extracted in
+  order: `routes/machines.py` (657 lines), `routes/misc.py` (1,280),
+  `routes/supervisors.py` (862) and `routes/chats.py` (1,703).
+
+  The order was forced rather than chosen. A supervisors helper adopts a session
+  by calling a sessions route handler, so extracting supervisors first would have
+  left the router importing `app` while `app` imported the router — a cycle,
+  which Python refuses at import time rather than resolving at first call.
+
+  Nothing about the served API changed: the same 63 paths, in the same
+  registration order, since FastAPI matches routes in the order routers are
+  included.
+
+- **The turn paths no longer write the served model back to the conversation.**
+  Recording which model happened to answer pinned the conversation to it, so a
+  chat left on "whatever the machine offers" silently became a chat pinned to one
+  model after its first turn.
+
+### Fixed
+
+- **A conversation moved to a different backend mid-session no longer breaks.**
+  Switching provider replays a transcript the first provider wrote, and a strict
+  API refuses blocks a permissive gateway emits happily: empty text blocks, and
+  `thinking` blocks with no signature. A signature is provider-specific, so a
+  block produced elsewhere cannot be replayed and the API rejects the whole
+  request. The repair now removes both kinds before a turn on a strict backend,
+  where it previously handled only the empty text — which meant a switched
+  conversation was repaired, logged as repaired, and still accumulating the
+  state that makes every later turn fail at once.
+
+  This removes the manual `unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN` step
+  that moving between backends used to require: the child environment is now
+  built per backend, with the variables the other provider would have used
+  actively removed rather than merely left unset.
+
+- **Approval prompts are visible in the web chat.** Sixty questions were
+  invisible: the console only looked for them in one of the two places a
+  question can appear, so a session sat blocked on a prompt while every view
+  agreed no question existed. The conversation list also marks a chat with `?`
+  when it is waiting on one, using the same helper the panel uses rather than a
+  second definition of "is this a question".
+
 ### Documentation
+
+- **`README.md` brought back in step with the tree.** It described a source
+  layout that no longer exists (no mention of `routes/` or any of the modules
+  split out since 0.10.0), claimed 173 automated tests where the suite collects
+  2,432, and gave a test command — `python3 -m unittest discover` — that runs on
+  a system interpreter. That last one is not cosmetic: `quickjs` is absent
+  outside the virtualenv, so the browser layer skips silently and a run that
+  never executed reports as green. The commands now name `.venv/bin/python` and
+  `-rs`, and the expected skip count is stated so an unexplained skip is
+  visible rather than absorbed into a total.
 
 - **`ARCHITECTURE.md` §9 and §13 re-measured at 0.10.2.** Both were written at
   0.10.1 and the tree has moved: `app.py` is down from 5,787 lines to **4,979**,

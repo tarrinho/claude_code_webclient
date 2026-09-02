@@ -138,6 +138,30 @@ Each web conversation gets a unique workspace below `WC_PROJECTS_ROOT`. Chat
 metadata and transcripts are stored in SQLite. Deleting a conversation removes
 its database records but deliberately leaves its workspace on disk.
 
+### Source layout
+
+Route handlers live in `routes/`, one module per URL prefix. `app.py` holds only
+what has to be central: logging setup, login/logout, the HTML templates, the
+lifespan hook, and the wiring — `include_router`, `add_middleware` and
+`turns.launcher`. Registration order matters, because FastAPI matches routes in
+the order routers are included, so it stays in one readable place rather than
+being spread across modules that install themselves on import.
+
+```text
+app.py            wiring, login/logout, templates, lifespan
+routes/chats.py   conversations, turns, questions, transcripts
+routes/misc.py    tokens, sessions, settings, system, usage, admin
+routes/supervisors.py  the supervisor panel and its subtasks
+routes/machines.py     /api/machines and /api/models
+middleware.py     auth, CSRF and security-header middleware
+classification.py which conversations need a person, and why
+net_validation.py host and base-URL validation
+shared.py         helpers reached from more than one prefix
+db.py             SQLite schema, queries, migrations
+runner.py         turn execution: direct spawn or host proxy
+transcripts.py    reading and repairing the CLI's JSONL
+```
+
 ## Security model
 
 - Server-side sessions use `HttpOnly`, `SameSite=Strict` cookies.
@@ -212,12 +236,18 @@ over HTTP as well. Notes worth knowing before you rely on them:
 
 ## Tests and security checks
 
-Runtime tests:
+Runtime tests. **Use the virtualenv interpreter, not a system Python:** `quickjs`
+is absent from every system interpreter, so the browser layer silently skips and
+a run that never executed reports as green.
 
 ```bash
-python3 -m py_compile app.py auth.py claude_proxy.py config.py db.py runner.py
-python3 -m unittest discover -s . -p 'test*.py' -v
+.venv/bin/python -m compileall -q . routes
+.venv/bin/python -m pytest -rs
 ```
+
+`-rs` prints the skip reasons. A trustworthy run shows exactly six skips, all
+`WC_LIVE_TESTS=1` opt-ins that spend real tokens against a live backend. Any
+other skip count means something stopped running.
 
 The suite is layered across the QA pyramid:
 
@@ -227,7 +257,20 @@ The suite is layered across the QA pyramid:
 - **System/E2E tests** run a complete create → submit → persist → reload transcript flow with a fake Claude turn.
 - **Acceptance/UAT tests** validate user requirements for CLI-session resume, conversation export, sidebar session visibility, and cross-user privacy.
 
-The layered additions are in `tests/test_qa_layers.py`. They use temporary databases and mocked Claude boundaries, so the suite is deterministic and does not require a live model. The current suite contains 173 automated tests, including coverage for malformed session metadata, migration recovery, error contracts, duplicate workspace names, failed turns, model selection, skills inventory, and full export workflows.
+The layered additions are in `tests/test_qa_layers.py`. They use temporary databases and mocked Claude boundaries, so the suite is deterministic and does not require a live model. The suite currently collects **2,432 tests across 106 files**, including coverage for malformed session metadata, migration recovery, error contracts, duplicate workspace names, failed turns, model selection, skills inventory, and full export workflows.
+
+Six of those are opt-in and excluded by default because they spend real tokens
+against a live backend:
+
+```bash
+WC_LIVE_TESTS=1 .venv/bin/python -m pytest \
+    tests/test_live_backends.py tests/test_live_backend_switch.py -v
+```
+
+They prove what no static check can: that each configured backend answers, that
+the two are genuinely different backends rather than the same one twice, and
+that a conversation survives being moved between them mid-session in both
+directions.
 
 Install development and security tooling with:
 
@@ -236,8 +279,8 @@ python3 -m pip install -r requirements-dev.txt
 pip-audit -r requirements.txt --strict
 # Optional: requires SAFETY_API_KEY in the environment
 safety --stage cicd --key "$SAFETY_API_KEY" scan --target .
-bandit -r app.py auth.py claude_proxy.py config.py db.py runner.py -ll
-ruff check app.py auth.py claude_proxy.py config.py db.py runner.py tests test_functional.py
+bandit -r . -x .venv,__pycache__ --skip B101,B104,B604 -ll
+ruff check .
 ```
 
 The GitHub Actions security workflow also runs Gitleaks and scans the Docker

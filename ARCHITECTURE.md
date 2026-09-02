@@ -21,6 +21,7 @@ A self-hosted web interface for a local Claude Code CLI. It provides mobile-frie
 10. [Deployment Options](#10-deployment-options)
 11. [Testing Strategy](#11-testing-strategy)
 12. [Development Workflow](#12-development-workflow)
+13. [Code Size and Composition](#13-code-size-and-composition)
 
 ---
 
@@ -1092,64 +1093,77 @@ These persist across restarts and override config.py defaults:
 
 ```
 claude-code-webconsole/
-├── app.py                  5364  FastAPI app, routes, middleware, handlers
-├── db.py                   3116  SQLite: schema, CRUD, migrations, CLI sync
-├── transcripts.py          1275  Read and parse Claude CLI transcripts
-├── runner.py               1011  Claude Code invocation (direct + proxy)
-├── supervisor.py            955  Orchestration: plan parsing, task graph, scheduler
-├── claude_proxy.py          645  Host-side TCP proxy to Claude Code
-├── prompts.py               631  Detect and answer a CLI permission prompt
+├── app.py                  5787  FastAPI app, routes, middleware, handlers
+├── db.py                   3600  SQLite: schema, CRUD, migrations, CLI sync
+├── transcripts.py          1618  Read and parse Claude CLI transcripts
+├── supervisor.py           1134  Orchestration: plan parsing, task graph, scheduler
+├── runner.py               1031  Claude Code invocation (direct + proxy)
+├── prompts.py               788  Detect and answer a CLI permission prompt
+├── claude_proxy.py          667  Host-side TCP proxy to Claude Code
+├── auth.py                  461  Auth: passwords, sessions, CSRF, rate-limit, tokens
 ├── sysstats.py              458  Host sampling from /proc + write-health probe
 ├── turns.py                 380  Turn lifecycle: a turn outlives its request
-├── auth.py                  379  Auth: passwords, sessions, CSRF, rate-limit
-├── config.py                155  Env-driven config with validation
-├── _setup_db.py              22  One-time DB bootstrap script
-├── logging.conf                  Rotating file handler; path from config.LOG_FILE
-├── launch.sh                     Start with TLS on the tailnet address
-├── requirements.txt            6  Pinned dependencies
-├── requirements-dev.txt       ~10  Dev + security tooling
-├── rules.md                      Build/release pipeline (gitignored, not shipped)
-├── SECURITY.md                75  Security policy + deployment requirements
-├── README.md                 198  User documentation
-├── TODO.md                       Outstanding work
-├── LICENSE                     1  Proprietary
-├── .gitignore
-├── .bandit
-├── .gitleaks.toml
-├── .githooks/pre-push        Git pre-push hook (gitleaks)
-├── bin/                      Supervision helpers: health check, proxy run,
-│                             token, port reclaim, install
-├── systemd/                  --user units: app, proxy, health service + timer
-├── docs/
-│   ├── threat-model.md       Dated attacker analysis (see its currency note)
-│   └── superpowers/          Design specs and implementation plans
-├── docker/Dockerfile          Container image (non-root user)
-├── .env                       Local secrets (gitignored)
-├── .env.example               Config template (committed)
-├── web/
-│   ├── index.html             Main SPA
-│   ├── login.html             Login page
+├── net_validation.py        212  Outbound address validation (SSRF guard)
+├── config.py                185  Env-driven config with validation
+├── launch.sh                203  Start with TLS on the tailnet address
+├── start.sh                  31  Thin wrapper around launch.sh
+├── logging.conf              84  Rotating file handler; path from config.LOG_FILE
+├── requirements.txt          13  Pinned runtime dependencies
+├── requirements-dev.txt      15  Dev + security tooling
+├── rules.md                 943  Build/release pipeline (gitignored, not shipped)
+├── CHANGELOG.md            1796  Operator-facing record; see §15a of rules.md
+├── ARCHITECTURE.md        ~1341  This document
+├── docs/threat-model.md     841  Dated attacker analysis (see its currency note)
+├── README.md                255  User documentation
+├── SECURITY.md               74  Security policy + deployment requirements
+├── TODO.md                   37  Outstanding work
+├── LICENSE                        Proprietary
+├── .gitignore  .bandit  .gitleaks.toml
+├── .githooks/pre-push             gitleaks scan, runs on push
+├── .github/workflows/             CI + dependabot
+├── bin/                    1900  13 operator scripts: release, health, proxy
+│                                 run, API tokens, chunked suite runner,
+│                                 transcript doctor, wc-claude (run the CLI on
+│                                 the backend WebConsole is configured to use)
+├── systemd/                       --user units: app, proxy, health service + timer
+├── docker/Dockerfile              Container image (non-root user)
+├── docs/superpowers/              Design specs and implementation plans
+├── .env                           Local secrets (gitignored)
+├── .env.example              62   Config template (committed)
+├── web/                   10149  Vanilla-JS SPA; no framework, no build step
+│   ├── index.html            297  Main SPA
+│   ├── supervisor.html      1095  Supervisor page markup
+│   ├── login.html             81  Login page
 │   └── assets/
-│       ├── app.js             Core: auth, API, chat, SSE, settings, machines
-│       ├── chat-list.js       Sidebar: groups, supervisor highlights, dismiss
-│       ├── conversation.js    Message render: markdown, export, model dropdown
-│       ├── transcript.js      CLI transcript viewer
-│       ├── stats.js           Charts shared by the usage and server pages
-│       ├── server.js          Server statistics rendering
-│       ├── api.js             escapeHtml + fetch wrapper with CSRF
-│       ├── login.js           Login page
-│       ├── styles.css         Full stylesheet (light/dark theme)
-│       └── favicon.svg
-├── web/supervisor.html        Supervisor page markup
-├── web/supervisor.js          Supervisor page: list, tasks, SSE, members, rename
-├── data/
-│   ├── webconsole.db          SQLite database
-│   ├── webconsole.db-wal      WAL file
-│   └── webconsole.db-shm      SHM file
-├── tests/                    79 files. Unit, integration, browser (Playwright)
-│                             and QA suites; `test_qa_*` are the QA layer
-├── test_functional.py         Functional integration tests
-└── projects/                  (created at runtime)
+│       ├── app.js           3010  Core: auth, API, chat, SSE, settings, machines
+│       ├── conversation.js  1019  Message render, drafts, stream lifecycle
+│       ├── chat-list.js      812  Sidebar: groups, highlights, dismiss, "?" mark
+│       ├── styles.css        583  Full stylesheet (light/dark theme)
+│       ├── transcript.js     567  CLI transcript viewer
+│       ├── stats.js          404  Charts shared by the usage and server pages
+│       ├── server.js         285  Server statistics rendering
+│       ├── api.js             61  escapeHtml + fetch wrapper with CSRF
+│       ├── login.js           54  Login page
+│       ├── favicon.svg
+│       └── supervisor/      1881  Ten ES modules, split from the old
+│           ├── list.js       324  single-file supervisor.js in 0.10.0.
+│           ├── main.js       302  Loaded as `type="module"`; entry is main.js.
+│           ├── members.js    275
+│           ├── tasks.js      241
+│           ├── layout.js     226
+│           ├── stream.js     195
+│           ├── banners.js    113
+│           ├── api.js         94
+│           ├── state.js       70
+│           └── dom.js         41
+├── tests/                 38252  105 files. Unit, integration, browser
+│   ├── conftest.py           Capability guard: aborts a partial or blind run
+│   ├── capabilities.py       quickjs + playwright driver detection
+│   └── test_qa_*.py          The QA layer, ~90 suites
+├── data/                     SQLite database, WAL/SHM, and the session-secret
+│                             and proxy-token files launch.sh manages. All
+│                             gitignored; none are ever committed.
+└── projects/                 Per-conversation workspaces (created at runtime)
 ```
 
 ---
@@ -1261,3 +1275,67 @@ python3 -m pytest test_qa_layers.py -v
 bandit -r . -x __pycache__ -ll
 ruff check app.py auth.py config.py db.py runner.py tests
 ```
+
+---
+
+## 13. Code Size and Composition
+
+Measured on 2026-09-02 at `WebConsole_0.10.1`. Per-file counts are in §9; this
+chapter is the shape those numbers make, and the two conclusions worth acting on.
+
+| Layer | Lines | Share of code |
+|---|---:|---:|
+| Tests (`tests/`, 105 files) | 38,252 | 57% |
+| Server (root `*.py`, 12 modules) | 16,423 | 25% |
+| Client (`web/`, 22 files) | 10,149 | 15% |
+| Tooling (`bin/`, 13 scripts) | 1,900 | 3% |
+| **Total code** | **66,724** | |
+| Documentation (Markdown) | 5,457 | — |
+
+Excluded: `.venv/` (281 MB), `.git/` (35 MB), `data/`, `logs/`, and the
+`__pycache__` / `.*_cache` directories. Two counted files are not in a clone —
+`rules.md` (943) and `scratch_qdiag.py` (102) are both gitignored — so a fresh
+checkout is about 1,045 lines smaller than a working tree.
+
+### Test-to-code ratio: 1.44 : 1
+
+38,252 lines of tests against 26,572 of server and client. High, and deliberately
+so: the suites carry the reasoning for their own existence, because several bugs
+here were first *locked in* by a test that asserted the broken behaviour. Where a
+test's docstring is longer than its body, that is the cost of recording why the
+obvious assertion was wrong.
+
+The ratio is also uneven, and that is the useful part. `test_qa_coverage.py`
+(1,938) and `test_frontend_browser.py` (1,459) are each larger than every server
+module except `app.py`, `db.py` and `transcripts.py`.
+
+### Two files carry a disproportionate share
+
+- **`app.py` — 5,787 lines, 35% of the server.** Routes, middleware, the
+  supervisor API, chat classification and the CLI-session cross-reference all
+  live in one module.
+- **`web/assets/app.js` — 3,010 lines, 30% of the client.** Auth, API wrapper,
+  chat, SSE, settings and machine management in one file.
+
+The precedent for splitting them is in this repository and recent. `0.10.0` broke
+the old 1,600-line `web/supervisor.js` into the ten modules now under
+`web/assets/supervisor/`, averaging 188 lines each — `dom.js` is 41. Measured
+against the file that split was judged worth doing to, `app.py` is 3.6× larger
+and `app.js` is 1.9× larger.
+
+That split also cost something worth noting before repeating it: the move changed
+the page from a classic script to `type="module"`, which invalidated every test
+that read `web/supervisor.js` by path, broke a `?v=` cache-busting assertion, and
+required the version-consistency table in
+`tests/test_qa_version_consistency.py` to be repointed — because one of the six
+surfaces that must agree on the version string lived in the file being moved.
+A comparable split of `app.py` would touch the same class of dependency.
+
+### Where the documentation weight sits
+
+`CHANGELOG.md` (1,796) is larger than every source file except `app.py` and
+`db.py`, and larger than this document. That is a consequence of §15a of
+`rules.md`: an entry is written on every run that touches code, and it states the
+cause rather than only the change. `docs/threat-model.md` (841) is pinned to the
+build it analysed and is deliberately *not* refreshed on a version bump, so its
+line count is stable while the rest moves.

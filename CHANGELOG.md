@@ -22,6 +22,27 @@ churn.
 
 ## [Unreleased]
 
+### Documentation
+
+- **`ARCHITECTURE.md` gains §13, Code Size and Composition**, and §9's inventory
+  is brought back in line with the tree. The new chapter records the per-layer
+  totals, the 1.44:1 test-to-code ratio, and the two files that carry a
+  disproportionate share — `app.py` at 35% of the server and
+  `web/assets/app.js` at 30% of the client — measured against the 1,600-line
+  `supervisor.js` that 0.10.0 was judged worth splitting into ten modules.
+
+  §9 had drifted enough to mislead. It listed three files that no longer exist
+  (`_setup_db.py`, `web/supervisor.js`, and `test_functional.py` at the
+  repository root), omitted two that do (`net_validation.py`, `start.sh`),
+  reported 79 test files where there are 105, and understated every line count
+  it gave — `app.py` as 5364 against 5787. Refreshing it was not optional once
+  §13 existed: a document stating two different sizes for the same file, two
+  chapters apart, is worse than one that states neither.
+
+  This file's own entry in §9 is now written as `~1341` rather than an exact
+  count, because adding §13 invalidated the exact figure that was there and the
+  next edit would invalidate any replacement.
+
 ### Fixed
 
 - **The statistics and server charts now have a continuous time axis.** Both

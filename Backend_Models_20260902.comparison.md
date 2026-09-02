@@ -43,14 +43,28 @@
 Ranked on quality only, which is what these six dimensions measure. Cost is not
 one of them — see "Cost" below, which changes the ordering for most real work.
 
-| Rank | Model | Delegation Score | Speed | Marginal cost | Quality Tier |
-|---|---|---|---|---|---|
-| 1 | **azure_ai/gpt-5.6-luna** | **73.7%** | 50s/task | paid | Best overall balance |
-| 2 | **azure_ai/gpt-5.4-mini-copilot** | **72.1%** | 6s/task | paid | Fastest capable |
-| 3 | **azure_ai/gpt-5.6-sol** | **69.5%** | 11s/task | paid | Solid code quality |
-| 4 | **azure_ai/gpt-5-mini** | **67.3%** | 14s/task | paid | Good for planning |
-| 5 | **azure_ai/gpt-5.4-mini** | **65.8%** | 3s/task | paid | Fastest, weakest code |
-| — | **vllm/Qwen3.6-35B-A3B-NVFP4** | **withdrawn** | see caveat | **free** | Correct on 5/6; self-hosted |
+| Rank | Model | Delegation Score | Speed | $/MTok in/out | $ per correct | Quality Tier |
+|---|---|---|---|---|---|---|
+| 1 | **azure_ai/gpt-5.6-luna** | **73.7%** | 50s/task | not recorded | — | Best overall balance |
+| 2 | **azure_ai/gpt-5.4-mini-copilot** | **72.1%** | 6s/task | not recorded | — | Fastest capable |
+| 3 | **azure_ai/gpt-5.6-sol** | **69.5%** | 11s/task | not recorded | — | Solid code quality |
+| 4 | **azure_ai/gpt-5-mini** | **67.3%** | 14s/task | not recorded | — | Good for planning |
+| 5 | **azure_ai/gpt-5.4-mini** | **65.8%** | 3s/task | not recorded | — | Fastest, weakest code |
+| — | **claude-fable-5** | not scored here | 14.6s median | **$10 / $50** | $0.1771† | 15/16, dearest by 2x |
+| — | **claude-opus-5** | not scored here | 12.9s median | **$5 / $25** | $0.0891† | 15/16 |
+| — | **claude-sonnet-5** | not scored here | 10.2s median | **$2 / $10** | $0.0389† | 14/16, best value of the four |
+| — | **claude-haiku-4-5** | not scored here | 23.1s median | **$1 / $5** | $0.0221† | 13/16, cheapest |
+| — | **vllm/Qwen3.6-35B-A3B-NVFP4** | **withdrawn** | see caveat | **$0** | **$0** | Correct on 5/6; self-hosted |
+
+† Understated — computed before cached input was captured. See "Cost per
+correct answer". The ordering holds; the magnitudes rise.
+
+The four Anthropic models are measured on a **different task set** (the 8 hard
+tasks, executed and verified) than the five Azure rows (the original 6, scored
+by reading), so their Delegation Scores are not comparable and none is
+asserted. A single ranking across both would be the same mistake as the 55.4%:
+one number hiding which measurement produced it. The full 14-task run over both
+transports replaces every row here.
 
 Qwen3.6 is deliberately left unranked rather than given a new number. Five of
 its six tasks are re-measured and clean; the sixth cannot be measured on this
@@ -280,15 +294,28 @@ captures described at the top of this document, and they are replaced.
 
 | Task | gpt-5.6-luna | gpt-5.4-mini-copilot | gpt-5.6-sol | gpt-5-mini | gpt-5.4-mini | Qwen3.6 |
 |---|---|---|---|---|---|---|
-| Bug fix | 100 | 100 | 75 | 75 | 75 | **100** |
+| Bug fix | 100 | 100 | 75 | 75 | 75 | **91** |
 | LRU cache | 100 | 50 | 25 | 50 | 25 | **50** |
-| **Avg** | **100** | **75** | **50** | **62.5** | **50** | **75** |
+| **Avg** | **100** | **75** | **50** | **62.5** | **50** | **70.5** |
 
 Qwen3.6's bug fix is correct with type hints and a full Args/Returns docstring,
 which is the same standard luna was given 100 for. Its LRU is correct and
 genuinely O(1) but raises `KeyError` at `capacity=0` and carries no docstrings —
 50 is the score `gpt-5.4-mini-copilot` received for an equivalent gap, and the
 `capacity=0` defect is the one `gpt-5.6-sol` and `gpt-5-mini` also have.
+
+**Correction, and it is against my own earlier score.** The bug fix was written
+up here as 100 after I traced it against `[1,2,3,2,1]` and `[1,2,3]` and stopped
+there. It returns `seen[::-1][-n:]`, which is wrong for `n=0`: `x[-0:]` is
+`x[0:]`, so asking for zero elements returns all of them. The executing
+verifier in `bench/` found it on the first run, 10 of 11 checks. 91 is that
+figure.
+
+The general point is the reason `bench/verify.py` exists: **a reader chooses
+which cases to try, and a check list does not.** `claude-sonnet-5` and
+`claude-haiku-4-5` write the same slicing bug, so it is a fair characterisation
+of the idiom rather than a mark against Qwen specifically — which is why it now
+sits in that harness's *edge* tier, scored but not treated as failing the task.
 
 ### Reasoning Tasks
 
@@ -341,16 +368,89 @@ Handling 10, Consistency 9, Clarity 8, Speed 8. Nothing for what a query costs
 to run — which means the league table above prices every backend at zero, and
 ranks the only free one last.
 
-Three tiers, cheapest first:
+### The rate card
 
-| Backend | Marginal cost per query | What you pay instead |
-|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | **none** — self-hosted | wall-clock, and GPU occupancy on our own hardware |
-| `azure_ai/*` | per-token, moderate | little; 3–14s/task |
-| `anthropic/*` (opus-5, sonnet-5, fable-5, haiku-4-5) | per-token, **highest** | little; 4–7s/task measured 2026-09-02 |
+US dollars per million tokens. Cache write is the 1-hour TTL rate, which is the
+one this deployment uses — the CLI's own usage frames report
+`cache_creation.ephemeral_1h_input_tokens`.
 
-Per-token rates for this deployment are not recorded here; the ordering is, and
-the ordering is what changes the decision.
+| Backend | input | output | cache read | cache write | source |
+|---|---|---|---|---|---|
+| `claude-fable-5` | $10.00 | $50.00 | $1.00 | $20.00 | published |
+| `claude-opus-5` | **$5.00** | **$25.00** | **$0.50** | **$10.00** | **derived here, then confirmed** |
+| `claude-sonnet-5` | $2.00 | $10.00 | $0.20 | $4.00 | published |
+| `claude-haiku-4-5` | $1.00 | $5.00 | $0.10 | $2.00 | published |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | $0 | $0 | — | — | self-hosted |
+| `azure_ai/*` (all five) | **not recorded** | | | | — |
+
+The opus-5 row is not an estimate. `usage_events` holds 11 turns with
+`cost_basis='list'`, and least squares over those 11 — solving for four
+unknowns — reproduces every one of them to the cent, worst absolute error
+$0.0000, on turns costing $0.0225 to $12.59. It then matched the published card
+exactly. A derivation agreeing with an independent source is what makes the
+round numbers evidence rather than coincidence.
+
+**Fable 5 is 2x opus on both input and output.** Worth knowing before anyone
+delegates to it for being the newer model.
+
+The five Azure entries are **absent, not zero**. Nobody has recorded what this
+deployment pays, and those names read as internal deployment aliases rather
+than public SKUs, so no public card applies. `bench/cost.py` reports an
+unrecorded rate as "rate not recorded" and never as free: a model nobody priced
+must not come out cheapest. Supply the Azure card and the column fills in.
+
+### Cost per correct answer
+
+The unit that decides anything. A free model that needs two attempts is still
+free; a cheap model that is wrong once can cost more than an expensive one that
+is right first time.
+
+Measured over 8 hard tasks × 2 repeats per model, CLI transport, 2026-09-02:
+
+| Model | correct | total spend | **$ per correct answer** |
+|---|---|---|---|
+| `claude-fable-5` | 15/16 | $2.6562 | **$0.1771** |
+| `claude-opus-5` | 15/16 | $1.3366 | **$0.0891** |
+| `claude-sonnet-5` | 14/16 | $0.5449 | **$0.0389** |
+| `claude-haiku-4-5` | 13/16 | $0.2868 | **$0.0221** |
+
+> **These four figures understate the real cost, and are superseded.** They were
+> computed from `input_tokens` alone, and `input_tokens` from the CLI is only
+> the *uncached* portion. The tell was in the data: opus-5 reported a constant
+> 12,029 input tokens for every task including the 30,000-token long-context
+> one, and haiku-4-5 reported 10. The real volume sits in
+> `cache_read_input_tokens` and `cache_creation_input_tokens` — one trivial
+> haiku turn moves 12,276 cache writes and 18,905 cache reads and bills
+> $0.0269, more than the table above attributes to any single run of any model.
+>
+> The harness now captures both, and prefers the CLI's own `total_cost_usd`
+> where it is reported with `costBasis: list`, since that is the number being
+> billed. The full 14-task run in progress will replace this table. The
+> *ordering* is not expected to change — fable dearest, haiku cheapest — but
+> the magnitudes will rise substantially.
+
+### Non-Anthropic costs in `usage_events` are fictional
+
+Not a benchmark finding, and worth acting on separately: **every non-Anthropic
+`cost_usd` in the console's usage table is opus-5 list pricing applied to the
+wrong backend.** Recomputing each model's recorded total at $5/$25/$0.50/$10
+matches to the cent:
+
+| model | recorded | at opus-5 rates | |
+|---|---|---|---|
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | $13.2645 | $13.2645 | exact |
+| `azure_ai/gpt-5.4-mini-copilot` | $0.0890 | $0.0890 | exact |
+| `azure_ai/gpt-5.6-luna` | $0.0876 | $0.0876 | exact |
+| `azure_ai/gpt-5.6-sol` | $0.0871 | $0.0871 | exact |
+| `azure_ai/gpt-5-mini` | $0.0176 | $0.0176 | exact |
+
+So the $13.26 the console attributes to a self-hosted model is an artefact of
+the CLI having no rate card for a gateway backend and falling back to
+Anthropic's. Qwen3.6 is free; the console overstates it.
+
+`cost_basis` already records this honestly — `'list'` versus `'unknown'` — and
+nothing downstream reads that column. The statistics pages sum `cost_usd`
+regardless of basis.
 
 **No single ranking survives this.** Which backend is correct depends on which
 resource is scarce:

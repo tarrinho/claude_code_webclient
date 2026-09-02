@@ -40,7 +40,20 @@ _FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
 
 @dataclass
 class Verdict:
-    """The outcome of verifying one response."""
+    """The outcome of verifying one response.
+
+    Checks are split into **core** and **edge**, because a single all-or-nothing
+    verdict over a long check list lets one strict corner case decide
+    everything. The first Anthropic run showed exactly that: an LRU scoring
+    26 of 27 was recorded as "not correct" for raising on `capacity=0`, sitting
+    in the same column as a response that contained no code at all. Those are
+    not the same outcome and a benchmark that cannot tell them apart is not
+    measuring what anyone wants to know.
+
+    So: **core** is "did it solve the stated problem" and decides `correct`.
+    **edge** is "did it handle the corners", reported beside it and never
+    gating. Both still contribute to `score`, so granularity is not lost.
+    """
 
     kind: str                      # "exec" | "claim"
     passed: int
@@ -50,13 +63,36 @@ class Verdict:
     #: separate from "code that failed": an empty answer and a wrong answer are
     #: different findings, and conflating them is the original defect.
     no_code: bool = False
+    #: Of `passed`/`total`, how many were core. When a verifier declares no
+    #: edge checks these equal `passed`/`total`.
+    core_passed: int = 0
+    core_total: int = 0
 
     @property
     def score(self) -> float:
-        """0-100, comparable with the old Delegation Score dimensions."""
+        """0-100 over every check, comparable with the old score dimensions."""
         if not self.total:
             return 0.0
         return round(100.0 * self.passed / self.total, 1)
+
+    @property
+    def core_score(self) -> float:
+        if not self.core_total:
+            return 0.0
+        return round(100.0 * self.core_passed / self.core_total, 1)
+
+    @property
+    def solved(self) -> bool:
+        """Every core check passed: the stated problem was solved."""
+        return bool(self.core_total) and self.core_passed == self.core_total
+
+    @property
+    def edge_passed(self) -> int:
+        return self.passed - self.core_passed
+
+    @property
+    def edge_total(self) -> int:
+        return self.total - self.core_total
 
 
 def extract_code(response: str) -> str:
@@ -81,24 +117,34 @@ def extract_code(response: str) -> str:
     return text
 
 
-def run_checks(code: str, checks: str) -> Verdict:
-    """Run *checks* against *code* in a subprocess, one assertion per line.
+def run_checks(code: str, checks: str, edge_checks: str = "") -> Verdict:
+    """Run *checks* against *code* in a subprocess, one statement at a time.
 
     *checks* is Python source that may use anything *code* defines. Each
     top-level statement is run independently so one failure does not hide the
     rest -- a class that gets eviction right and `capacity=0` wrong should score
     partial, not zero.
+
+    *edge_checks* are run the same way but do not count toward `solved`. They
+    are for corners a competent answer may reasonably miss: `n=0`,
+    `capacity=0`, and the like. Both sonnet-5 and haiku-4-5 miss the `n=0` case
+    on the bug-fix task, and calling that "incorrect" tells you nothing useful
+    about either model while hiding the difference between them and a model
+    that returned no code.
     """
     if not code.strip():
         return Verdict(kind="exec", passed=0, total=1,
                        detail=["no extractable code in the response"],
-                       no_code=True)
+                       no_code=True, core_passed=0, core_total=1)
 
     try:
-        statements = ast.parse(checks).body
+        core_statements = ast.parse(checks).body
+        edge_statements = ast.parse(edge_checks).body if edge_checks.strip() else []
     except SyntaxError as exc:  # pragma: no cover -- our own checks are fixed
         raise ValueError(f"check source is not valid Python: {exc}") from exc
-    sources = [ast.unparse(node) for node in statements]
+    core_sources = [ast.unparse(node) for node in core_statements]
+    sources = core_sources + [ast.unparse(node) for node in edge_statements]
+    n_core = len(core_sources)
 
     runner = _RUNNER_TEMPLATE.format(count=len(sources))
     with tempfile.TemporaryDirectory() as tmp:
@@ -120,20 +166,36 @@ def run_checks(code: str, checks: str) -> Verdict:
             )
         except subprocess.TimeoutExpired:
             return Verdict(kind="exec", passed=0, total=len(sources),
+                           core_passed=0, core_total=n_core,
                            detail=[(f"timed out after {EXEC_TIMEOUT_S}s "
                                     "(model code did not terminate)")])
 
-    passed, detail = 0, []
+    passed, core_passed, detail = 0, 0, []
     for line in proc.stdout.splitlines():
         if line.startswith("PASS "):
             passed += 1
+            # The runner prints the check's index, so core and edge results are
+            # attributable without a second channel.
+            try:
+                if int(line[5:].strip()) < n_core:
+                    core_passed += 1
+            except ValueError:
+                pass
         elif line.startswith("FAIL "):
-            detail.append(line[5:])
+            label = "edge" if _index_of(line) >= n_core else "core"
+            detail.append(f"[{label}] {line[5:]}")
     if not proc.stdout.strip():
         # The candidate module itself blew up on import, so no check ran.
         detail.append("candidate failed to import: "
                       + (proc.stderr.strip().splitlines() or ["<no output>"])[-1])
-    return Verdict(kind="exec", passed=passed, total=len(sources), detail=detail)
+    return Verdict(kind="exec", passed=passed, total=len(sources), detail=detail,
+                   core_passed=core_passed, core_total=n_core)
+
+
+def _index_of(fail_line: str) -> int:
+    """The check index out of `FAIL check 12: ...`, or -1."""
+    match = re.search(r"check (\d+)", fail_line)
+    return int(match.group(1)) if match else -1
 
 
 #: Runs each check in its own try/except and prints one line per check, so a
@@ -176,4 +238,7 @@ def check_claims(response: str, claims: list[tuple[str, str]]) -> Verdict:
         else:
             detail.append(f"missing: {label}")
     return Verdict(kind="claim", passed=passed, total=len(claims), detail=detail,
-                   no_code=not text.strip())
+                   no_code=not text.strip(),
+                   # Claim checks have no edge tier: each one is a distinct
+                   # question the prompt asked, so all of them are core.
+                   core_passed=passed, core_total=len(claims))

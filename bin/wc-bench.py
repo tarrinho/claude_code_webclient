@@ -102,12 +102,16 @@ def run_one(task, model: str, transport: str, key: str) -> dict:
         "model": model,
         "transport": transport,
         "turns": len(replies),
-        # Correct only if it passed everything *and* was not truncated. A
-        # truncated answer that happens to satisfy some checks is not a
-        # measurement of the model.
-        "correct": verdict.passed == verdict.total and not last.hit_cap
-                   and not last.error,
+        # Correct means every *core* check passed and the run was not
+        # truncated or errored. Edge checks are reported separately and do not
+        # gate: an LRU scoring 26 of 27 for raising on capacity=0 used to sit
+        # in the same column as a response containing no code at all, and those
+        # are not the same outcome.
+        "correct": verdict.solved and not last.hit_cap and not last.error,
         "score": verdict.score,
+        "core_score": verdict.core_score,
+        "core": f"{verdict.core_passed}/{verdict.core_total}",
+        "edge": f"{verdict.edge_passed}/{verdict.edge_total}",
         "verified_by": verdict.kind,
         "checks_passed": verdict.passed,
         "checks_total": verdict.total,
@@ -165,6 +169,10 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", default=",".join(DEFAULT_MODELS))
     parser.add_argument("--tasks", default="", help="default: all")
+    parser.add_argument("--difficulty", default="",
+                        help="comma-separated: floor,simple,hard. Default all. "
+                             "floor-add is a control every model must pass; a "
+                             "failure there means a broken invocation")
     parser.add_argument("--transports", default=DEFAULT_TRANSPORTS,
                         help=f"comma-separated (default: {DEFAULT_TRANSPORTS}). "
                              "Anthropic models are reachable over cli only")
@@ -178,16 +186,21 @@ def main() -> int:
 
     if args.list:
         for task in tasks_mod.TASKS:
-            kind = "exec " if task.id in {"coding-bug-fix", "coding-algo",
-                                          "multi-turn-resume"} else "claim"
+            kind = task.verifier("").kind
             extra = f"  [{', '.join(task.tags)}]" if task.tags else ""
-            print(f"  {task.id:24} {kind}  {task.description}{extra}")
+            print(f"  {task.id:24} {task.difficulty:7} {kind:5}  "
+                  f"{task.description}{extra}")
         return 0
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     paths = [t.strip() for t in args.transports.split(",") if t.strip()]
     selected = ([tasks_mod.BY_ID[t.strip()] for t in args.tasks.split(",") if t.strip()]
                 if args.tasks else list(tasks_mod.TASKS))
+    if args.difficulty:
+        want = {d.strip() for d in args.difficulty.split(",") if d.strip()}
+        selected = [t for t in selected if t.difficulty in want]
+        if not selected:
+            raise SystemExit(f"bench: no tasks with difficulty in {sorted(want)}")
 
     out_path = Path(args.out) if args.out else Path(
         f"bench_results_{time.strftime('%Y%m%d-%H%M%S')}.json")
@@ -227,9 +240,9 @@ def main() -> int:
                             "TRUNCATED" if run["hit_cap"] else
                             "ok" if run["correct"] else "partial")
                     print(f"      {flag} score={run['score']} "
-                          f"({run['checks_passed']}/{run['checks_total']} "
-                          f"{run['verified_by']}) {run['total_s']}s "
-                          f"ttft={run['ttft_s']} out={run['output_tokens']}",
+                          f"core={run['core']} edge={run['edge']} "
+                          f"({run['verified_by']}) {run['total_s']}s "
+                          f"out={run['output_tokens']}",
                           file=sys.stderr, flush=True)
                     for line in run["check_failures"][:3]:
                         print(f"        - {line}", file=sys.stderr, flush=True)

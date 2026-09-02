@@ -48,6 +48,12 @@ class Task:
     #: Rough input size, so a long-context task is not silently compared with a
     #: 100-token one on cost.
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: ``floor`` is a control every model must pass -- a failure there means a
+    #: broken invocation, not a weak model. ``simple`` discriminates at the
+    #: bottom, ``hard`` at the top. The original set was all ``hard``, which is
+    #: why every Anthropic model landed between 90 and 100 and the remaining
+    #: differences were Python trivia.
+    difficulty: str = "hard"
 
 
 # --- verifiers ---------------------------------------------------------------
@@ -62,19 +68,25 @@ def _verify_bug_fix(response: str) -> verify.Verdict:
     right *order* -- the original bug report says "preserving order", and an
     implementation can pass the first while failing the second.
     """
-    checks = '''
+    core = '''
 assert last_n_unique([1, 2, 3, 2, 1], 2) == [2, 1]
 assert last_n_unique([1, 2, 3], 2) == [2, 3]
 assert last_n_unique([1, 2, 3], 5) == [1, 2, 3]
 assert last_n_unique([], 3) == []
 assert last_n_unique([7, 7, 7], 2) == [7]
 assert last_n_unique(["a", "b", "a", "c"], 3) == ["b", "a", "c"]
-assert last_n_unique([1, 2, 3, 4], 0) == []
 assert last_n_unique.__doc__, "the prompt asked for a docstring"
-import inspect; assert inspect.signature(last_n_unique).parameters, "no params"
 assert getattr(last_n_unique, "__annotations__", None), "the prompt asked for type hints"
 '''
-    return verify.run_checks(verify.extract_code(response), checks)
+    # n=0 is the edge tier. `seen[::-1][-n:]` is the natural fix and it returns
+    # the whole list for n=0, because x[-0:] is x[0:]. Qwen3.6, sonnet-5 and
+    # haiku-4-5 all write it that way. Calling three models incorrect for a
+    # Python slicing quirk says nothing useful about any of them, and it put a
+    # 10-of-11 answer in the same column as a response containing no code.
+    edge = '''
+assert last_n_unique([1, 2, 3, 4], 0) == []
+'''
+    return verify.run_checks(verify.extract_code(response), core, edge)
 
 
 def _verify_lru(response: str) -> verify.Verdict:
@@ -86,23 +98,26 @@ def _verify_lru(response: str) -> verify.Verdict:
     -- reject at construction, or accept and store nothing -- so the check
     accepts both and fails only a crash.
     """
-    checks = '''
-c = LRUCache(2); c.put(1, 1); c.put(2, 2)
+    core = '''
+c = LRUCache(2)
+c.put(1, 1)
+c.put(2, 2)
 assert c.get(1) == 1
 c.put(3, 3)
 assert c.get(2) == -1, "least-recently-used key was not evicted"
 assert c.get(3) == 3
-c2 = LRUCache(2); c2.put(1, 1); c2.put(2, 2); c2.get(1); c2.put(3, 3)
+c2 = LRUCache(2)
+c2.put(1, 1)
+c2.put(2, 2)
+c2.get(1)
+c2.put(3, 3)
 assert c2.get(2) == -1 and c2.get(1) == 1, "get() did not count as a use"
-c3 = LRUCache(1); c3.put(1, 1); c3.put(1, 9)
+c3 = LRUCache(1)
+c3.put(1, 1)
+c3.put(1, 9)
 assert c3.get(1) == 9, "overwriting an existing key lost the new value"
 c4 = LRUCache(2)
 assert c4.get(99) == -1, "a miss must return -1"
-try:
-    c5 = LRUCache(0); c5.put(1, 1)
-    assert c5.get(1) == -1, "a zero-capacity cache stored something"
-except (ValueError, TypeError):
-    pass
 import time
 big = LRUCache(5000)
 start = time.monotonic()
@@ -113,7 +128,24 @@ for i in range(5000):
 assert time.monotonic() - start < 3.0, "10k operations took over 3s; not O(1)"
 assert repr(LRUCache(2)), "the prompt asked for a __repr__"
 '''
-    return verify.run_checks(verify.extract_code(response), checks)
+    # capacity=0 is the edge tier. The prompt never mentions it, and every
+    # model that got it wrong wrote `len(cache) == capacity`, which is the
+    # obvious formulation. It is worth reporting and not worth failing an
+    # otherwise-correct O(1) cache over.
+    #
+    # The setup lines above are also one statement each now, rather than
+    # semicolon-joined: `c = LRUCache(2); c.put(1,1); c.put(2,2)` was counted
+    # as three separate checks, so trivial setup inflated the denominator to 27
+    # and made a single real failure read as 96.3%.
+    edge = '''
+try:
+    c5 = LRUCache(0)
+    c5.put(1, 1)
+    assert c5.get(1) == -1, "a zero-capacity cache stored something"
+except (ValueError, TypeError):
+    pass
+'''
+    return verify.run_checks(verify.extract_code(response), core, edge)
 
 
 def _verify_math(response: str) -> verify.Verdict:
@@ -172,6 +204,86 @@ def _verify_planning(response: str) -> verify.Verdict:
     ])
 
 
+# --- the simple tier -------------------------------------------------------
+#
+# Added because the original six discriminate only at the top. Every Anthropic
+# model scored 90-100 on the coding tasks, and the differences that remained
+# were a Python slicing quirk (`x[-0:]`) and an edge case the prompt never
+# mentioned (`capacity=0`) -- so the set separated models on trivia while
+# reporting it as correctness. A benchmark needs a floor as well as a ceiling:
+# without easy tasks there is no way to tell "this model is weak" from "this
+# task was unfair", and no way to notice the harness breaking.
+#
+# `floor-add` exists purely as a control. Any model that fails it has a broken
+# invocation, not a capability gap, and that has now happened twice in one day
+# (the gateway rejecting an Anthropic model, and answers delivered as files).
+
+
+def _verify_floor(response: str) -> verify.Verdict:
+    """The control. If this fails, suspect the harness before the model."""
+    return verify.run_checks(verify.extract_code(response), '''
+assert add(2, 3) == 5
+assert add(-1, 1) == 0
+assert add(0, 0) == 0
+''')
+
+
+def _verify_fizzbuzz(response: str) -> verify.Verdict:
+    return verify.run_checks(verify.extract_code(response), '''
+out = fizzbuzz(15)
+assert len(out) == 15, "expected 15 entries for n=15"
+assert out[0] == "1" or out[0] == 1, "1 should be itself"
+assert out[2] in ("Fizz",), "3 should be Fizz"
+assert out[4] in ("Buzz",), "5 should be Buzz"
+assert out[14] in ("FizzBuzz",), "15 should be FizzBuzz"
+''', '''
+assert fizzbuzz(0) == [], "n=0 should give an empty list"
+''')
+
+
+def _verify_count_vowels(response: str) -> verify.Verdict:
+    return verify.run_checks(verify.extract_code(response), '''
+assert count_vowels("hello") == 2
+assert count_vowels("") == 0
+assert count_vowels("xyz") == 0
+assert count_vowels("AEIOU") == 5, "uppercase vowels count too"
+assert count_vowels("aeiou") == 5
+''')
+
+
+def _verify_reverse_words(response: str) -> verify.Verdict:
+    return verify.run_checks(verify.extract_code(response), '''
+assert reverse_words("hello world") == "world hello"
+assert reverse_words("one") == "one"
+assert reverse_words("") == ""
+assert reverse_words("a b c") == "c b a"
+''', '''
+assert reverse_words("  padded  words  ") == "words padded", \\
+    "collapsing repeated whitespace is the usual reading"
+''')
+
+
+def _verify_sum_evens(response: str) -> verify.Verdict:
+    return verify.run_checks(verify.extract_code(response), '''
+assert sum_evens([1, 2, 3, 4]) == 6
+assert sum_evens([]) == 0
+assert sum_evens([1, 3, 5]) == 0
+assert sum_evens([2]) == 2
+assert sum_evens([-2, -4, 1]) == -6, "negative evens are still even"
+''')
+
+
+def _verify_json_field(response: str) -> verify.Verdict:
+    return verify.run_checks(verify.extract_code(response), '''
+assert active_names('[{"name":"a","active":true},{"name":"b","active":false}]') == ["a"]
+assert active_names("[]") == []
+assert active_names('[{"name":"x","active":true},{"name":"y","active":true}]') == ["x", "y"]
+''', '''
+assert active_names('[{"name":"z"}]') == [], \\
+    "a missing 'active' key should not count as active"
+''')
+
+
 NEEDLE = "The proxy token rotation window is 4200 seconds"
 
 
@@ -228,6 +340,54 @@ assert count_words("a b a") == {"a": 2, "b": 1}
 
 
 TASKS: tuple[Task, ...] = (
+    Task(
+        id="floor-add",
+        description="Add two integers (control task)",
+        task_type="coding",
+        difficulty="floor",
+        verifier=_verify_floor,
+        prompt="""Write a Python function add(a, b) that returns the sum of two integers. Return valid Python code only.""",
+    ),
+    Task(
+        id="simple-fizzbuzz",
+        description="FizzBuzz up to n",
+        task_type="coding",
+        difficulty="simple",
+        verifier=_verify_fizzbuzz,
+        prompt="""Write a Python function fizzbuzz(n) that returns a list of length n. For each i from 1 to n inclusive, the entry is "FizzBuzz" if i is divisible by both 3 and 5, "Fizz" if by 3, "Buzz" if by 5, and otherwise the string form of i. Return valid Python code only.""",
+    ),
+    Task(
+        id="simple-count-vowels",
+        description="Count vowels in a string",
+        task_type="coding",
+        difficulty="simple",
+        verifier=_verify_count_vowels,
+        prompt="""Write a Python function count_vowels(text) that returns how many vowels (a, e, i, o, u) the string contains, counting both upper and lower case. Return valid Python code only.""",
+    ),
+    Task(
+        id="simple-reverse-words",
+        description="Reverse the word order of a sentence",
+        task_type="coding",
+        difficulty="simple",
+        verifier=_verify_reverse_words,
+        prompt="""Write a Python function reverse_words(text) that returns the string with its whitespace-separated words in reverse order, joined by single spaces. Return valid Python code only.""",
+    ),
+    Task(
+        id="simple-sum-evens",
+        description="Sum the even numbers in a list",
+        task_type="coding",
+        difficulty="simple",
+        verifier=_verify_sum_evens,
+        prompt="""Write a Python function sum_evens(numbers) that returns the sum of the even integers in the list. An empty list sums to 0. Return valid Python code only.""",
+    ),
+    Task(
+        id="simple-json-field",
+        description="Extract a field from a small JSON document",
+        task_type="coding",
+        difficulty="simple",
+        verifier=_verify_json_field,
+        prompt="""Write a Python function active_names(raw) that takes a JSON string containing a list of objects, each with a "name" string and an "active" boolean, and returns the list of names whose "active" is true, in the order they appear. Return valid Python code only.""",
+    ),
     Task(
         id="coding-bug-fix",
         description="Fix: return last n unique elements preserving order",

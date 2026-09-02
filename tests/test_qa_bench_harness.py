@@ -212,12 +212,13 @@ class VerifierDiscriminationTests(unittest.TestCase):
         A reader chooses which cases to try. A test list does not.
         """
         verdict = tasks.BY_ID["coding-bug-fix"].verifier(QWEN_BUG_FIX)
-        self.assertGreater(verdict.score, 60.0, "the fix is substantially right")
+        self.assertTrue(verdict.solved, "the fix solves the stated bug")
         self.assertLess(verdict.score, 100.0,
                         "n=0 returns the whole list; a perfect score would "
                         "mean the check list is not being run")
-        self.assertTrue(any("check 6" in d for d in verdict.detail),
-                        f"expected the n=0 check to fail; got {verdict.detail}")
+        self.assertEqual(verdict.edge_passed, 0, "the n=0 check must fail")
+        self.assertTrue(any("[edge]" in d for d in verdict.detail),
+                        f"expected a labelled edge failure; got {verdict.detail}")
 
     def test_a_fix_without_the_requested_docstring_loses_those_checks(self):
         verdict = tasks.BY_ID["coding-bug-fix"].verifier(BARE_FIX)
@@ -225,12 +226,21 @@ class VerifierDiscriminationTests(unittest.TestCase):
             any("docstring" in d or "type hints" in d for d in verdict.detail),
             f"the prompt asked for both; detail was {verdict.detail}")
 
-    def test_the_lru_capacity_zero_defect_is_found_mechanically(self):
-        """Three models shipped this and it was scored ⚠️ twice and 0 once,
-        depending on who traced it. Now it is the same check every time."""
+    def test_the_lru_capacity_zero_defect_is_reported_but_does_not_fail_it(self):
+        """Found mechanically, and in the edge tier where it belongs.
+
+        Three models shipped this and it was scored a warning twice and 0 once,
+        depending on who traced it. It is now the same check every time -- and
+        it no longer decides the verdict, because a correct O(1) cache that
+        raises on a capacity the prompt never mentioned is not the same outcome
+        as a response containing no code.
+        """
         verdict = tasks.BY_ID["coding-algo"].verifier(QWEN_LRU)
-        self.assertGreater(verdict.score, 50.0, "the cache is otherwise correct")
-        self.assertLess(verdict.score, 100.0, "capacity=0 raises KeyError")
+        self.assertTrue(verdict.solved, "the cache solves the stated problem")
+        self.assertEqual(verdict.edge_passed, 0, "capacity=0 must still fail")
+        self.assertLess(verdict.score, 100.0, "and must still show in the score")
+        self.assertTrue(any("[edge]" in d for d in verdict.detail),
+                        f"the failure must be labelled: {verdict.detail}")
 
     def test_the_fixed_lru_scores_full(self):
         """Without this, the test above passes for a verifier that always
@@ -253,6 +263,104 @@ class VerifierDiscriminationTests(unittest.TestCase):
             tasks.BY_ID["reasoning-puzzle"].verifier("(4, 0, 4) in 7 pours").kind,
             "claim")
         self.assertEqual(tasks.BY_ID["coding-algo"].verifier(QWEN_LRU).kind, "exec")
+
+    def test_there_is_a_floor_a_simple_tier_and_a_hard_tier(self):
+        """The original set was all `hard`, which is why every Anthropic model
+        landed between 90 and 100 and the differences that remained were a
+        Python slicing quirk and an edge case the prompt never mentioned. A
+        benchmark with no floor cannot tell a weak model from an unfair task.
+        """
+        levels = {t.difficulty for t in tasks.TASKS}
+        self.assertEqual(levels, {"floor", "simple", "hard"})
+        self.assertEqual(
+            [t.id for t in tasks.TASKS if t.difficulty == "floor"], ["floor-add"],
+            "exactly one control task, or it stops being a control")
+        self.assertGreaterEqual(
+            sum(1 for t in tasks.TASKS if t.difficulty == "simple"), 5)
+
+    def test_the_floor_task_is_trivial_and_its_verifier_agrees(self):
+        """If this ever fails for a real model, suspect the harness. It has
+        been the harness twice in one day: a gateway rejecting an Anthropic
+        model, and answers delivered as files."""
+        verifier = tasks.BY_ID["floor-add"].verifier
+        self.assertEqual(verifier("def add(a, b):\n    return a + b\n").score, 100.0)
+        self.assertEqual(verifier("def add(a, b):\n    return a - b\n").core_passed, 1,
+                         "only the -1+1==0 case survives a subtraction")
+        self.assertFalse(verifier("def add(a, b):\n    return a - b\n").solved)
+
+    def test_every_simple_task_is_solved_by_an_obvious_answer(self):
+        """Guards the guard. A simple tier whose verifiers reject correct
+        answers is worse than no simple tier -- it would read as every model
+        being weak.
+        """
+        answers = {
+            "simple-fizzbuzz": (
+                "def fizzbuzz(n):\n"
+                "    out = []\n"
+                "    for i in range(1, n + 1):\n"
+                "        if i % 15 == 0: out.append('FizzBuzz')\n"
+                "        elif i % 3 == 0: out.append('Fizz')\n"
+                "        elif i % 5 == 0: out.append('Buzz')\n"
+                "        else: out.append(str(i))\n"
+                "    return out\n"),
+            "simple-count-vowels": (
+                "def count_vowels(text):\n"
+                "    return sum(1 for c in text.lower() if c in 'aeiou')\n"),
+            "simple-reverse-words": (
+                "def reverse_words(text):\n"
+                "    return ' '.join(reversed(text.split()))\n"),
+            "simple-sum-evens": (
+                "def sum_evens(numbers):\n"
+                "    return sum(n for n in numbers if n % 2 == 0)\n"),
+            "simple-json-field": (
+                "import json\n"
+                "def active_names(raw):\n"
+                "    return [o['name'] for o in json.loads(raw) if o.get('active')]\n"),
+        }
+        for task_id, code in answers.items():
+            verdict = tasks.BY_ID[task_id].verifier(code)
+            self.assertTrue(verdict.solved,
+                            f"{task_id} rejected a correct answer: {verdict.detail}")
+            self.assertEqual(verdict.score, 100.0,
+                             f"{task_id} edge checks failed a good answer: "
+                             f"{verdict.detail}")
+
+    def test_every_simple_task_rejects_a_wrong_answer(self):
+        """Otherwise the tier is decoration: a verifier that passes anything
+        measures nothing, which is how a clean tree and a broken scanner became
+        indistinguishable in the first place."""
+        wrong = {
+            "simple-fizzbuzz": "def fizzbuzz(n):\n    return []\n",
+            "simple-count-vowels": "def count_vowels(text):\n    return 0\n",
+            "simple-reverse-words": "def reverse_words(text):\n    return text\n",
+            "simple-sum-evens": "def sum_evens(numbers):\n    return 0\n",
+            "simple-json-field": "def active_names(raw):\n    return []\n",
+        }
+        for task_id, code in wrong.items():
+            verdict = tasks.BY_ID[task_id].verifier(code)
+            self.assertFalse(verdict.solved,
+                             f"{task_id} accepted a stub answer")
+
+    def test_core_and_edge_are_counted_separately(self):
+        verdict = verify.run_checks(
+            "x = 1", "assert x == 1\nassert x == 1", "assert x == 99")
+        self.assertEqual((verdict.core_passed, verdict.core_total), (2, 2))
+        self.assertEqual((verdict.edge_passed, verdict.edge_total), (0, 1))
+        self.assertTrue(verdict.solved, "core passed, so the problem is solved")
+        self.assertEqual(verdict.score, 66.7, "the edge miss still shows")
+        self.assertEqual(verdict.core_score, 100.0)
+
+    def test_a_core_failure_still_means_unsolved(self):
+        verdict = verify.run_checks(
+            "x = 1", "assert x == 99", "assert x == 1")
+        self.assertFalse(verdict.solved)
+
+    def test_claim_checks_are_all_core(self):
+        """Each claim is a distinct question the prompt asked, so none of them
+        is optional."""
+        verdict = tasks.BY_ID["reasoning-math"].verifier("0.5073 via 1 - prod")
+        self.assertEqual(verdict.core_total, verdict.total)
+        self.assertTrue(verdict.solved)
 
     def test_the_needle_task_is_long_and_has_exactly_one_needle(self):
         task = tasks.BY_ID["long-context-needle"]

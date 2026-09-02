@@ -24,6 +24,27 @@ churn.
 
 ### Fixed
 
+- **Session writes no longer lose every lock fight with the rest of the
+  application.** `auth.py` keeps its own short-lived SQLite handle, because the
+  session store is read from synchronous middleware, and it waited 5 seconds for
+  the writer lock while `db.py`'s shared connection waits 15. They write the same
+  WAL file, which permits one writer at a time, so the outcome of every collision
+  between the two was decided in advance — against the session write. A lost
+  session write logs somebody out for a reason they cannot see and nothing in the
+  interface explains.
+
+  This is the residue of the `database is locked` work: that round removed one of
+  the three writers and lengthened another, and left this one on the budget it
+  had. Both are now 15 seconds, held equal by a test.
+
+  Worth recording about that test, because it nearly shipped meaning nothing:
+  its first version asserted "the `PRAGMA busy_timeout` is set" and still passed
+  with the `PRAGMA` statement deleted. `sqlite3.connect(timeout=)` and
+  `PRAGMA busy_timeout` are one setting reached two ways, so it had been
+  measuring the keyword argument while claiming to measure the statement. It now
+  asserts the connection's effective budget, and that the two spellings agree —
+  the `PRAGMA` runs second, so tuning one silently makes the other a lie.
+
 - **A question whose options were over-escaped is now recovered instead of
   discarded.** An OpenAI-compatible gateway sends tool arguments as a string of
   JSON, and Qwen 3.6 emitted one whose escaping switches mid-payload: correctly

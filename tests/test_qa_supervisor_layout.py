@@ -24,6 +24,22 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_HTML = REPO / "web" / "supervisor.html"
+
+def supervisor_source() -> str:
+    """Every supervisor module, concatenated.
+
+    The 0.10.0 split turned one file into nine; a substring assertion against
+    the entry point alone would search a fraction of the code and fail on the
+    rest. Globbing means the next extraction needs no edit here.
+    """
+    paths = sorted((REPO / "web" / "assets" / "supervisor").glob("*.js"))
+    if not paths:
+        raise AssertionError(
+            "no supervisor modules found -- the split moved them somewhere "
+            "this test does not know about"
+        )
+    return "\n".join(p.read_text(encoding="utf-8") for p in paths)
+
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
 PANELS = ("#panel-left", "#panel-center", "#panel-right", "#panel-bottom")
@@ -260,8 +276,10 @@ class EventLogResetTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.source = (REPO / "web" / "assets" / "supervisor" / "main.js").read_text(
-            encoding="utf-8")
+        # Every module, not main.js alone: the 0.10.0 split moved the resize
+        # and minimise code into layout.js, so reading the entry point searches
+        # a file that no longer contains what is asserted here.
+        self.source = supervisor_source()
 
     def _select_supervisor_body(self) -> str:
         start = self.source.index("function selectSupervisor(")
@@ -303,8 +321,10 @@ class ResizeDragTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.source = (REPO / "web" / "assets" / "supervisor" / "main.js").read_text(
-            encoding="utf-8")
+        # Every module, not main.js alone: the 0.10.0 split moved the resize
+        # and minimise code into layout.js, so reading the entry point searches
+        # a file that no longer contains what is asserted here.
+        self.source = supervisor_source()
 
     def test_the_drag_listeners_are_on_document(self):
         self.assertIn('document.addEventListener("mousemove", onResizeMove)',

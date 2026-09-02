@@ -1,0 +1,41 @@
+// supervisor/dom.js — the element handles every module reaches for.
+//
+// A leaf module on purpose. These lived in main.js, which imports every
+// other module, so every user of `$$` or `el` closed a cycle -- and a
+// cycle is only harmless while nothing touches the binding during module
+// evaluation. layout.js does: `allMinimizeButtons` is an IIFE that runs
+// as the module loads, and it threw `Cannot access '$$' before
+// initialization` because layout.js is evaluated before main.js finishes.
+// With no imports of its own this module is always initialised first.
+
+
+  // ── DOM refs ─────────────────────────────────────────────────────────
+  export const $ = (s) => document.querySelector(s);
+  export const $$ = (s) => document.querySelectorAll(s);
+
+  export const el = {
+    supervisorList: $("#supervisor-list"),
+    taskTree: $("#task-tree"),
+    chatMessages: $("#chat-messages"),
+    eventLog: $("#event-log"),
+    composer: $("#composer"),
+    promptInput: $("#prompt-input"),
+    sendBtn: $("#send-btn"),
+    startScreen: $("#start-screen"),
+    supervisorChat: $("#supervisor-chat"),
+    detailContent: $("#detail-content"),
+    progressBarFill: $("#overall-progress-fill"),
+    newSupervisorBtn: $("#new-supervisor-btn"),
+    topbarInfo: $("#topbar-info"),
+    goalBanner: $("#goal-banner"),
+    goalText: $("#goal-text"),
+    completionBanner: $("#completion-banner"),
+    completionStats: $("#completion-stats"),
+    completionSummary: $("#completion-summary"),
+    goalDismissBtn: $(".goal-banner-dismiss"),
+    topbarBadge: $("#topbar-badge"),
+    goalRestoreBtn: $(".goal-banner-restore"),
+    completionCloseBtn: $(".completion-close"),
+    pauseResumeBtn: $("#pauseResumeBtn"),
+  };
+

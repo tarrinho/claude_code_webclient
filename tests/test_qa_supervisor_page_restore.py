@@ -48,14 +48,20 @@ def supervisor_source() -> str:
     would find a file that still exists and no longer contains what is being
     asserted, which is the quiet version of a broken test.
     """
+    # Deduplicated by resolved path: SUPERVISOR_JS now lives *inside*
+    # SUPERVISOR_MODULES, so reading both without this returns main.js twice --
+    # every marker appears twice and any slice between two of them is taken from
+    # a source that does not exist on disk.
+    seen: set = set()
     parts: list[str] = []
-    if SUPERVISOR_JS.is_file():
-        parts.append(SUPERVISOR_JS.read_text(encoding="utf-8"))
-    if SUPERVISOR_MODULES.is_dir():
-        parts.extend(
-            path.read_text(encoding="utf-8")
-            for path in sorted(SUPERVISOR_MODULES.glob("*.js"))
-        )
+    for path in [SUPERVISOR_JS, *sorted(SUPERVISOR_MODULES.glob("*.js"))]:
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        parts.append(path.read_text(encoding="utf-8"))
     if not parts:
         raise AssertionError(
             f"no supervisor script found at {SUPERVISOR_JS} or "
@@ -84,6 +90,23 @@ def run_page(html: str, budget_ms: int = 6000) -> str:
     return match.group(1) if match else ""
 
 
+def _plain(code: str) -> str:
+    """Lifted module code, made runnable in a classic <script>.
+
+    Two things a module carries that a classic script rejects outright: the
+    `export` keyword on every declaration, and `import` lines. Both are syntax
+    errors, so the whole block fails to parse and nothing runs -- which shows up
+    as an empty page title or a picker rendering nothing, never as "your lifted
+    code did not compile".
+    """
+    out = []
+    for line in code.splitlines():
+        if line.lstrip().startswith("import ") and '"./' in line:
+            continue
+        out.append(re.sub(r"^(\s*)export\s+", r"\1", line))
+    return "\n".join(out)
+
+
 def lifted() -> str:
     """restoreOpen, rememberOpen and the key, verbatim from the page."""
     source = supervisor_source()
@@ -110,7 +133,7 @@ def lifted() -> str:
             f"block in that order (start={start}, end={end}); lift them from "
             "their own modules instead of slicing one file"
         )
-    return source[start:end].replace("\n  ", "\n")
+    return _plain(source[start:end]).replace("\n  ", "\n")
 
 
 class SourceWiringTests(unittest.TestCase):

@@ -36,6 +36,30 @@ import db
 import supervisor
 
 SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "assets" / "supervisor" / "main.js"
+
+def supervisor_source() -> str:
+    """Every supervisor module, concatenated.
+
+    The 0.10.0 split turned one file into nine, so a substring assertion that
+    reads main.js alone searches a fraction of the code and fails on everything
+    that moved. Globbing the directory means the next extraction needs no edit
+    here, and deduplicating by resolved path means SUPERVISOR_JS pointing inside
+    that directory does not read one module twice.
+    """
+    seen, parts = set(), []
+    for path in sorted(SUPERVISOR_JS.parent.glob("*.js")):
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        parts.append(path.read_text(encoding="utf-8"))
+    if not parts:
+        raise AssertionError(
+            f"no supervisor modules found beside {SUPERVISOR_JS} -- the split "
+            "moved them somewhere this test does not know about"
+        )
+    return "\n".join(parts)
+
 SUPERVISOR_HTML = Path(__file__).resolve().parent.parent / "web" / "supervisor.html"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
@@ -349,7 +373,7 @@ class RecencySortSourceTests(unittest.TestCase):
     """Sort mode toggle and localStorage persistence in supervisor.js."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_sort_mode_variable_exists(self):
         self.assertIn("supervisorSortMode", self.source)
@@ -395,7 +419,7 @@ class RecencySortBehaviourTests(unittest.TestCase):
     """Verify the sort toggle logic via source inspection."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_sort_toggle_cycles_newest_to_updated(self):
         """The toggle switches between 'newest' and 'updated'."""
@@ -420,7 +444,7 @@ class MemberHeartbeatSourceTests(unittest.TestCase):
     """last_seen is rendered as a heartbeat time label on member rows."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_last_seen_is_read_from_member(self):
         self.assertIn("m.last_seen", self.source)
@@ -460,7 +484,7 @@ class TaskDepSourceTests(unittest.TestCase):
     """depends_on list is rendered below task titles."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_depends_on_is_checked(self):
         self.assertIn("t.depends_on", self.source)
@@ -499,7 +523,7 @@ class AutoGrowComposerSourceTests(unittest.TestCase):
     """The prompt textarea grows as the user types, up to 200 px."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_autoGrowComposer_function_exists(self):
         self.assertIn("autoGrowComposer", self.source)
@@ -526,7 +550,7 @@ class RecencyTimeLabelSourceTests(unittest.TestCase):
     """When a supervisor was updated after creation, a time label appears."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_time_label_uses_formatTime(self):
         self.assertIn("formatTime", self.source)
@@ -606,7 +630,7 @@ class FeatureCompletenessTests(unittest.TestCase):
     """One shot-check that all 0.9.3 features are wired in the source files."""
 
     def setUp(self):
-        self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js = supervisor_source()
         self.html = SUPERVISOR_HTML.read_text(encoding="utf-8")
         self.app_src = Path(app.__file__).read_text(encoding="utf-8")
 

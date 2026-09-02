@@ -31,6 +31,30 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_JS = REPO / "web" / "assets" / "supervisor" / "main.js"
+
+def supervisor_source() -> str:
+    """Every supervisor module, concatenated.
+
+    The 0.10.0 split turned one file into nine, so a substring assertion that
+    reads main.js alone searches a fraction of the code and fails on everything
+    that moved. Globbing the directory means the next extraction needs no edit
+    here, and deduplicating by resolved path means SUPERVISOR_JS pointing inside
+    that directory does not read one module twice.
+    """
+    seen, parts = set(), []
+    for path in sorted(SUPERVISOR_JS.parent.glob("*.js")):
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        parts.append(path.read_text(encoding="utf-8"))
+    if not parts:
+        raise AssertionError(
+            f"no supervisor modules found beside {SUPERVISOR_JS} -- the split "
+            "moved them somewhere this test does not know about"
+        )
+    return "\n".join(parts)
+
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
 
@@ -58,7 +82,7 @@ class GetCsrfSourceTests(unittest.TestCase):
     """Cheap structural guards, so a rewrite cannot quietly restore the loop."""
 
     def setUp(self):
-        self.source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.source = supervisor_source()
 
     def test_get_csrf_is_synchronous(self):
         """An async getCsrf is what let apiFetch await its way back into it."""
@@ -117,7 +141,7 @@ class ApiFetchTerminatesTests(unittest.TestCase):
 
     def _definitions(self) -> str:
         """Lift getCsrf and apiFetch out of the real file, verbatim."""
-        source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        source = supervisor_source()
         start = source.index("function getCsrf()")
         # Up to the end of apiFetch, which is the next helper after it.
         end = source.index("async function apiJson", start) if "async function apiJson" in source \
@@ -127,8 +151,10 @@ class ApiFetchTerminatesTests(unittest.TestCase):
         # the code in a classic <script>, where an import is a syntax error --
         # and once the 0.10.0 split moves getCsrf/apiFetch into their own
         # module, the region above them starts with one.
-        body = "\n".join(line for line in body.splitlines()
-                         if not line.lstrip().startswith("import "))
+        body = "\n".join(
+            re.sub(r"^(\s*)export\s+", r"\1", line)
+            for line in body.splitlines()
+            if not line.lstrip().startswith("import "))
         # `state`, not a bare `csrfToken`: the shared bindings moved into a
         # state object in 0.10.0, because an ES module's exports are live
         # bindings that an importing module cannot assign to. The stub has to

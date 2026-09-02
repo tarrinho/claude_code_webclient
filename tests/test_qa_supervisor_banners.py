@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +23,30 @@ REPO = Path(__file__).resolve().parent.parent
 WEB = REPO / "web"
 SUPERVISOR_HTML = WEB / "supervisor.html"
 SUPERVISOR_JS = WEB / "assets" / "supervisor" / "main.js"
+
+def supervisor_source() -> str:
+    """Every supervisor module, concatenated.
+
+    The 0.10.0 split turned one file into nine, so a substring assertion that
+    reads main.js alone searches a fraction of the code and fails on everything
+    that moved. Globbing the directory means the next extraction needs no edit
+    here, and deduplicating by resolved path means SUPERVISOR_JS pointing inside
+    that directory does not read one module twice.
+    """
+    seen, parts = set(), []
+    for path in sorted(SUPERVISOR_JS.parent.glob("*.js")):
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        parts.append(path.read_text(encoding="utf-8"))
+    if not parts:
+        raise AssertionError(
+            f"no supervisor modules found beside {SUPERVISOR_JS} -- the split "
+            "moved them somewhere this test does not know about"
+        )
+    return "\n".join(parts)
+
 SUPERVISOR_CSS = SUPERVISOR_HTML  # inline in the HTML file
 
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
@@ -32,7 +57,7 @@ class GoalBannerStructureTests(unittest.TestCase):
 
     def setUp(self):
         self.html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js = supervisor_source()
 
     def test_goal_banner_has_html_container(self):
         self.assertIn('id="goal-banner"', self.html)
@@ -94,7 +119,7 @@ class CompletionBannerStructureTests(unittest.TestCase):
 
     def setUp(self):
         self.html = SUPERVISOR_HTML.read_text(encoding="utf-8")
-        self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js = supervisor_source()
 
     def test_completion_banner_has_html_container(self):
         self.assertIn('id="completion-banner"', self.html)
@@ -149,7 +174,7 @@ class CompletionBannerCountingTests(unittest.TestCase):
     """Test the counting logic in showCompletionBanner with controlled task data."""
 
     def setUp(self):
-        self.js_source = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js_source = supervisor_source()
 
     def _run_completion_logic(self, tasks_data):
         """Create a sandbox with the JS and run showCompletionBanner manually.
@@ -337,7 +362,7 @@ class XSSSafetyTests(unittest.TestCase):
     """Ensure banner content is rendered safely (textContent, not innerHTML)."""
 
     def setUp(self):
-        self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js = supervisor_source()
 
     def test_goal_text_uses_textContent(self):
         """User prompt text must use textContent to prevent XSS."""
@@ -364,12 +389,17 @@ class XSSSafetyTests(unittest.TestCase):
         does use innerHTML for the chat list and task tree).
         """
         js = self.js
+        # Both end markers allow `export`, which the 0.10.0 split put on every
+        # top-level declaration. Without it the slice runs past the end of
+        # banners.js into the next concatenated module and picks up an
+        # innerHTML that belongs to the task tree.
+        end = r"\n  (?:export )?function "
         # Extract showGoalBanner body
-        goal_fn = js.split('function showGoalBanner(')[1].split('\n  function ')[0]
+        goal_fn = re.split(end, js.split('function showGoalBanner(')[1])[0]
         self.assertNotIn("innerHTML", goal_fn,
                          "showGoalBanner must not use innerHTML")
         # Extract showCompletionBanner body
-        comp_fn = js.split('function showCompletionBanner(')[1].split('\n  function ')[0]
+        comp_fn = re.split(end, js.split('function showCompletionBanner(')[1])[0]
         self.assertNotIn("innerHTML", comp_fn,
                          "showCompletionBanner must not use innerHTML")
 
@@ -390,8 +420,13 @@ class XSSSafetyTests(unittest.TestCase):
         property asserted, and it is the one that breaks if somebody reaches for
         a template string later.
         """
-        body = self.js.split("function showCompletionBanner(")[1].split(
-            "\n  function ")[0]
+        # The end marker allows `export`, which the 0.10.0 split put on every
+        # top-level declaration. Without it the split found nothing, the slice
+        # ran past the end of banners.js into the next concatenated module, and
+        # the test failed on an `innerHTML` belonging to a different file.
+        body = re.split(
+            r"\n  (?:export )?function ",
+            self.js.split("function showCompletionBanner(")[1])[0]
         for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML"):
             self.assertNotIn(sink, body, f"task data must not reach {sink}")
         self.assertIn("completionSummary.textContent", body)
@@ -402,7 +437,7 @@ class InitWiringTests(unittest.TestCase):
     """Verify the dismiss buttons are wired up in the init function."""
 
     def setUp(self):
-        self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js = supervisor_source()
 
     def test_goal_dismiss_button_wired(self):
         self.assertIn("el.goalDismissBtn", self.js)
@@ -434,7 +469,7 @@ class CompletionBannerTriggerTests(unittest.TestCase):
     """Verify the completion banner is triggered on the right SSE events."""
 
     def setUp(self):
-        self.js = SUPERVISOR_JS.read_text(encoding="utf-8")
+        self.js = supervisor_source()
 
     def test_completion_banner_triggered_on_done_event(self):
         self.assertIn('case "done":', self.js)

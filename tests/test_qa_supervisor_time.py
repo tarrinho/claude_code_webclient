@@ -26,6 +26,30 @@ from pathlib import Path
 
 SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "assets" / "supervisor" / "main.js"
 
+def supervisor_source() -> str:
+    """Every supervisor module, concatenated.
+
+    The 0.10.0 split turned one file into nine, so a substring assertion that
+    reads main.js alone searches a fraction of the code and fails on everything
+    that moved. Globbing the directory means the next extraction needs no edit
+    here, and deduplicating by resolved path means SUPERVISOR_JS pointing inside
+    that directory does not read one module twice.
+    """
+    seen, parts = set(), []
+    for path in sorted(SUPERVISOR_JS.parent.glob("*.js")):
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        parts.append(path.read_text(encoding="utf-8"))
+    if not parts:
+        raise AssertionError(
+            f"no supervisor modules found beside {SUPERVISOR_JS} -- the split "
+            "moved them somewhere this test does not know about"
+        )
+    return "\n".join(parts)
+
+
 # What the API actually hands this function, and what must come out.
 #
 # "Renders a time" is asserted rather than an exact string: the output is
@@ -55,7 +79,7 @@ CASES = (
 
 def _extract_format_time() -> str:
     """The real function's source, lifted out of the IIFE it lives in."""
-    text = SUPERVISOR_JS.read_text(encoding="utf-8")
+    text = supervisor_source()
     start = text.index("function formatTime(")
     depth = 0
     for index in range(start, len(text)):

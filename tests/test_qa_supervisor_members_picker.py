@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -259,10 +260,15 @@ def members_section() -> str:
         + _lift(source, "async function apiFetch(", "// Every timestamp on this page")
         + _lift(source, SECTION_START, SECTION_END)
     )
-    # Imports cannot appear in the classic <script> these harnesses build, and
-    # after the split each lifted region begins with one.
-    lifted = "\n".join(line for line in lifted.splitlines()
-                       if not line.lstrip().startswith("import "))
+    # Module syntax a classic <script> rejects outright: `import` lines, and the
+    # `export` keyword the split put on every declaration. Either one is a parse
+    # error, so the whole block fails to compile and nothing runs -- which
+    # surfaces as a picker that renders nothing, never as "the lifted code did
+    # not parse".
+    lifted = "\n".join(
+        re.sub(r"^(\s*)export\s+", r"\1", line)
+        for line in lifted.splitlines()
+        if not line.lstrip().startswith("import "))
     return stub + lifted
 
 

@@ -22,6 +22,19 @@ churn.
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-09-02
+
+> A patch: the three fixes below are all cases of the console being unable to
+> report something it already knew. A terminal-only prompt existed and was
+> invisible, a conversation blocked on one was not marked as asking, and the
+> charts drew a time axis with gaps where no sample happened to land.
+>
+> Bumped with `config.VERSION`, so this heading is the build rather than a claim
+> about one — §15a rule 1's ordering. All six stated surfaces moved in this one
+> commit, including `web/assets/supervisor/main.js`, which is where the version
+> string went when `supervisor.js` was split; `docs/threat-model.md` stays at
+> 0.9.2 on purpose, because it records which build was analysed.
+
 ### Documentation
 
 - **`ARCHITECTURE.md` gains §13, Code Size and Composition**, and §9's inventory

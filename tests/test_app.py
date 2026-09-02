@@ -16,6 +16,7 @@ import auth
 import config
 import db
 from routes import machines as machine_routes
+from routes import misc as misc_routes
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -703,7 +704,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": "admin"}), **extra)
 
     async def test_settings_get_includes_defaults(self):
-        resp = await app.handle_settings_get(self._make_request())
+        resp = await misc_routes.handle_settings_get(self._make_request())
         data = json.loads(resp.body)
         self.assertIn("session_ttl_s", data)
         self.assertIn("turn_timeout_s", data)
@@ -711,7 +712,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("version", data)
 
     async def test_settings_patch_updates_session_ttl(self):
-        resp = await app.handle_settings_patch(
+        resp = await misc_routes.handle_settings_patch(
             self._make_request(json=AsyncMock(return_value={"session_ttl": 7200})),
         )
         data = json.loads(resp.body)
@@ -720,7 +721,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_settings_patch_rejects_invalid_ttl(self):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_settings_patch(
+            await misc_routes.handle_settings_patch(
                 self._make_request(json=AsyncMock(return_value={"session_ttl": 5})),
             )
         self.assertEqual(ctx.exception.status_code, 400)

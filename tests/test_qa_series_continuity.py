@@ -30,6 +30,7 @@ import time
 import unittest
 
 import db
+from routes import misc as misc_routes
 
 
 class SpineKeysMatchTheSqlTests(unittest.TestCase):
@@ -241,16 +242,14 @@ class FillIsOptInTests(unittest.TestCase):
         and nothing else in the suite would notice."""
         import inspect
 
-        import app
-        body = inspect.getsource(app.handle_system_series_get)
+        body = inspect.getsource(misc_routes.handle_system_series_get)
         self.assertIn("fill=True", body)
         self.assertIn("db.system_series", body)
 
     def test_the_usage_endpoint_sends_a_spine(self):
         import inspect
 
-        import app
-        body = inspect.getsource(app.handle_usage_series_get)
+        body = inspect.getsource(misc_routes.handle_usage_series_get)
         self.assertIn('"spine"', body)
         self.assertIn("bucket_spine", body)
 
@@ -259,8 +258,7 @@ class FillIsOptInTests(unittest.TestCase):
         where the busiest account on the machine begins."""
         import inspect
 
-        import app
-        body = inspect.getsource(app.handle_usage_series_get)
+        body = inspect.getsource(misc_routes.handle_usage_series_get)
         self.assertIn("usage_earliest", body)
         self.assertIn("owner", body.split("usage_earliest", 1)[1][:40])
 

@@ -10,6 +10,7 @@ import app
 import auth
 import config
 import db
+from routes import misc as misc_routes
 
 
 class ChatSearchTests(unittest.IsolatedAsyncioTestCase):
@@ -354,11 +355,11 @@ class BackupApiTests(unittest.IsolatedAsyncioTestCase):
         req = self._make_request()
         req.state.session.pop("role", None)
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_db_backup(req)
+            await misc_routes.handle_db_backup(req)
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_backup_admin_returns_gzip(self):
-        resp = await app.handle_db_backup(self._make_admin_request())
+        resp = await misc_routes.handle_db_backup(self._make_admin_request())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.media_type, "application/gzip")
         disp = resp.headers.get("content-disposition", "")
@@ -370,7 +371,7 @@ class BackupApiTests(unittest.IsolatedAsyncioTestCase):
         form = await self._make_form({"file": b"data"})
         req.form = AsyncMock(return_value=form)
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_db_restore(req)
+            await misc_routes.handle_db_restore(req)
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def _make_form(self, data):
@@ -385,7 +386,7 @@ class BackupApiTests(unittest.IsolatedAsyncioTestCase):
         req = self._make_admin_request()
         req.form = AsyncMock(return_value={})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_db_restore(req)
+            await misc_routes.handle_db_restore(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_restore_rejects_empty_file(self):
@@ -393,5 +394,5 @@ class BackupApiTests(unittest.IsolatedAsyncioTestCase):
         form = await self._make_form({"file": b""})
         req.form = AsyncMock(return_value=form)
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_db_restore(req)
+            await misc_routes.handle_db_restore(req)
         self.assertEqual(ctx.exception.status_code, 400)

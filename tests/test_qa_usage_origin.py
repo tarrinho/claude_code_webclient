@@ -29,10 +29,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import app
 import config
 import db
 import transcripts
+from routes import misc as misc_routes
 
 
 def _record(model="claude-opus-5", *, cache=True, inp=1000, out=50):
@@ -271,8 +271,8 @@ class UsageApiQA(unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(
             state=SimpleNamespace(session={"user": "admin"}), query_params={}
         )
-        with patch.object(app, "_import_cli_usage", return_value=0):
-            response = await app.handle_usage_get(request)
+        with patch.object(misc_routes, "_import_cli_usage", return_value=0):
+            response = await misc_routes.handle_usage_get(request)
         return json.loads(response.body)
 
     async def test_the_response_carries_both_breakdowns(self):

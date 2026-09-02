@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import app
 import config
 import db
+from routes import misc as misc_routes
 
 
 def _turn(role, text, sidechain=False, kind="text"):
@@ -103,7 +104,7 @@ class TranscriptImportTests(unittest.IsolatedAsyncioTestCase):
             _turn("user", "third"),
         ])
         with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
-            count = await app._import_transcript("c1", "sess-1")
+            count = await misc_routes._import_transcript("c1", "sess-1")
         self.assertEqual(count, 3)
         rows = await db.messages_get("c1")
         self.assertEqual([r["content"] for r in rows], ["first", "second", "third"])
@@ -112,19 +113,19 @@ class TranscriptImportTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_transcript_imports_nothing(self):
         with patch.object(app.transcripts, "read_turns",
                           AsyncMock(return_value=self._payload([], found=False))):
-            self.assertEqual(await app._import_transcript("c1", "sess-1"), 0)
+            self.assertEqual(await misc_routes._import_transcript("c1", "sess-1"), 0)
         self.assertEqual(await db.messages_get("c1"), [])
 
     async def test_transcript_with_only_sidechains_imports_nothing(self):
         payload = self._payload([_turn("assistant", "sub", sidechain=True)])
         with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
-            self.assertEqual(await app._import_transcript("c1", "sess-1"), 0)
+            self.assertEqual(await misc_routes._import_transcript("c1", "sess-1"), 0)
         self.assertEqual(await db.messages_get("c1"), [])
 
     async def test_read_error_is_survived(self):
         with patch.object(app.transcripts, "read_turns",
                           AsyncMock(side_effect=OSError("boom"))):
-            self.assertEqual(await app._import_transcript("c1", "sess-1"), 0)
+            self.assertEqual(await misc_routes._import_transcript("c1", "sess-1"), 0)
 
     async def test_imported_messages_are_searchable(self):
         """Import goes through messages_batch, so FTS picks the turns up.
@@ -136,7 +137,7 @@ class TranscriptImportTests(unittest.IsolatedAsyncioTestCase):
         """
         payload = self._payload([_turn("user", "unmistakabletoken")])
         with patch.object(app.transcripts, "read_turns", AsyncMock(return_value=payload)):
-            await app._import_transcript("c1", "sess-1")
+            await misc_routes._import_transcript("c1", "sess-1")
         results = await db.chat_search("admin", "unmistakabletoken")
         self.assertEqual([r["id"] for r in results], ["c1"])
 
@@ -174,7 +175,7 @@ class ResumeImportTests(unittest.IsolatedAsyncioTestCase):
              patch.object(db, "write_claude_session_file", lambda *a, **k: None), \
              patch.object(app.transcripts, "read_turns",
                           AsyncMock(return_value=self.payload)):
-            resp = await app.handle_sessions_resume(self._req(), self.sid)
+            resp = await misc_routes.handle_sessions_resume(self._req(), self.sid)
         return json.loads(resp.body)
 
     async def test_first_resume_imports_the_history(self):

@@ -28,7 +28,35 @@ import auth
 import config
 import db
 import runner
+from routes import misc as misc_routes
 
+
+def _registered_routes() -> set[tuple[str, str]]:
+    """Every (method, path) the app serves, including via included routers.
+
+    `app.routes` holds an opaque entry per `include_router` rather than the
+    routes themselves, so enumerating it alone stops seeing a prefix the moment
+    that prefix moves into `routes/`. That fails in the worst direction: the set
+    simply gets smaller, and an assertion that a route exists is the only thing
+    that notices. The 0.10.0 split moved /api/machines and /api/sessions out
+    this way, and this walk is what keeps the contract test honest as the rest
+    follow.
+    """
+    found: set[tuple[str, str]] = set()
+
+    def add(route) -> None:
+        path = getattr(route, "path", None)
+        for method in (getattr(route, "methods", None) or ()):
+            if path:
+                found.add((method, path))
+
+    for route in app.app.routes:
+        add(route)
+        candidates = getattr(route, "effective_candidates", None)
+        if callable(candidates):
+            for inner in candidates():
+                add(inner)
+    return found
 
 class UnitQA(unittest.TestCase):
     """Individual helpers and isolated functions/classes."""
@@ -232,7 +260,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         available = [{"sessionId": "cli-session-123", "name": "CLI", "cwd": "/tmp/cli"}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=available)), \
              patch.object(db, "write_claude_session_file") as write_file:
-            response = await app.handle_sessions_resume(request, "cli-session-123")
+            response = await misc_routes.handle_sessions_resume(request, "cli-session-123")
         payload = json.loads(response.body)
         self.assertEqual(payload["session_id"], "cli-session-123")
         chat = await db.chat_get(payload["id"], "alice", include_archived=True)
@@ -243,7 +271,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])), \
              self.assertRaises(HTTPException) as ctx:
-            await app.handle_sessions_resume(request, "unknown-session-id")
+            await misc_routes.handle_sessions_resume(request, "unknown-session-id")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_resume_handler_rejects_traversal_session_id(self):
@@ -254,7 +282,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         for bad in ("../../unknown", "a/../../", "x/../../../../", "has space"):
             with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])), \
                  self.assertRaises(HTTPException) as ctx:
-                await app.handle_sessions_resume(request, bad)
+                await misc_routes.handle_sessions_resume(request, bad)
             self.assertEqual(ctx.exception.status_code, 400, bad)
 
     async def test_resume_handler_reuses_existing_linked_chat(self):
@@ -263,7 +291,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "alice"}))
         available = [{"sessionId": "cli-existing", "name": "CLI", "cwd": "/tmp/cli"}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=available)):
-            response = await app.handle_sessions_resume(request, "cli-existing")
+            response = await misc_routes.handle_sessions_resume(request, "cli-existing")
         payload = json.loads(response.body)
         self.assertEqual(payload["id"], "existing")
         self.assertEqual(len(await db.chat_list("alice")), 1)
@@ -275,7 +303,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             "id": "cli", "name": "CLI Session", "cwd": "/tmp/cli", "kind": "interactive",
             "startedAt": "", "updatedAt": "", "sessionId": "cli",
         }])):
-            response = await app.handle_sessions_list(request)
+            response = await misc_routes.handle_sessions_list(request)
         payload = json.loads(response.body)
         self.assertEqual({item["id"] for item in payload["sessions"]}, {"cli", "web-chat"})
 
@@ -305,7 +333,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             "kind": "interactive", "startedAt": "", "updatedAt": "",
             "sessionId": "linked-session",
         }])):
-            response = await app.handle_sessions_list(request)
+            response = await misc_routes.handle_sessions_list(request)
         items = json.loads(response.body)["sessions"]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["id"], "web-chat")
@@ -410,11 +438,7 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response.body), {"error": "Session expired", "redirect": "/login"})
 
     async def test_route_contract_contains_required_api_methods(self):
-        routes = {
-            (method, route.path)
-            for route in app.app.routes
-            for method in (getattr(route, "methods", None) or set())
-        }
+        routes = _registered_routes()
         self.assertIn(("GET", "/api/chats"), routes)
         self.assertIn(("POST", "/api/chats/{chat_id}/stream"), routes)
         self.assertIn(("GET", "/api/sessions"), routes)
@@ -576,9 +600,9 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         available = [{"sessionId": "cli-uat", "name": "CLI", "cwd": "/tmp/cli"}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=available)), \
              patch.object(db, "write_claude_session_file"):
-            resumed = await app.handle_sessions_resume(self.request, "cli-uat")
+            resumed = await misc_routes.handle_sessions_resume(self.request, "cli-uat")
             resumed_payload = json.loads(resumed.body)
-            listed = await app.handle_sessions_list(self.request)
+            listed = await misc_routes.handle_sessions_list(self.request)
         items = json.loads(listed.body)["sessions"]
         matching = [item for item in items if item["id"] == resumed_payload["id"]]
         self.assertEqual(len(matching), 1)
@@ -616,7 +640,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await db.chat_create("mine", "Mine", None, "/tmp/mine", "uat-user")
         await db.chat_create("other", "Other", None, "/tmp/other", "other-user")
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])):
-            response = await app.handle_sessions_list(self.request)
+            response = await misc_routes.handle_sessions_list(self.request)
         items = json.loads(response.body)["sessions"]
         self.assertEqual([item["id"] for item in items], ["mine"])
 
@@ -625,7 +649,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             "id": "cli-follow-up", "sessionId": "cli-follow-up", "name": "CLI Follow Up",
             "cwd": "/tmp/cli", "kind": "interactive", "startedAt": "", "updatedAt": "",
         }])), patch.object(db, "write_claude_session_file"):
-            response = await app.handle_sessions_resume(self.request, "cli-follow-up")
+            response = await misc_routes.handle_sessions_resume(self.request, "cli-follow-up")
         payload = json.loads(response.body)
         chat = await db.chat_get(payload["id"], "uat-user")
         self.assertTrue(Path(chat["work_dir"]).is_dir())

@@ -28,6 +28,7 @@ import config
 import db
 import runner
 from routes import machines as machine_routes
+from routes import misc as misc_routes
 
 # A real `result` frame, captured from Claude Code 2.1.251 against a LiteLLM
 # gateway. Trimmed to the fields the parser reads.
@@ -387,8 +388,8 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         # temporary database -- 18,572 rows on this machine, which drowns every
         # assertion about what the test itself inserted. It also made a unit
         # test depend on the machine it ran on, and take 16 seconds.
-        with patch.object(app, "_import_cli_usage", return_value=0):
-            return json.loads((await app.handle_usage_get(self._req(query))).body)
+        with patch.object(misc_routes, "_import_cli_usage", return_value=0):
+            return json.loads((await misc_routes.handle_usage_get(self._req(query))).body)
 
     async def test_response_shape(self):
         body = await self._get()

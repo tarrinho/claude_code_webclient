@@ -27,10 +27,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-import app
 import config
 import db
 import transcripts
+from routes import misc as misc_routes
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -555,19 +555,19 @@ class TranscriptEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestC
 
     async def test_list_returns_transcripts(self):
         write_transcript(self.root, "e1", [user("Hello there"), assistant("hi", "e1")])
-        response = await app.handle_transcripts_list(make_request({"limit": "10"}))
+        response = await misc_routes.handle_transcripts_list(make_request({"limit": "10"}))
         payload = json.loads(response.body)
         self.assertEqual(len(payload["transcripts"]), 1)
         self.assertEqual(payload["transcripts"][0]["title"], "Hello there")
 
     async def test_list_survives_a_junk_limit(self):
         write_transcript(self.root, "e2", [assistant("x", "e2")])
-        response = await app.handle_transcripts_list(make_request({"limit": "abc"}))
+        response = await misc_routes.handle_transcripts_list(make_request({"limit": "abc"}))
         self.assertEqual(response.status_code, 200)
 
     async def test_get_returns_history(self):
         write_transcript(self.root, "e3", [user("q"), assistant("a", "e3")])
-        response = await app.handle_transcript_get(make_request(), "e3")
+        response = await misc_routes.handle_transcript_get(make_request(), "e3")
         payload = json.loads(response.body)
         self.assertEqual(len(payload["turns"]), 2)
         self.assertIn("offset", payload)
@@ -575,12 +575,12 @@ class TranscriptEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestC
 
     async def test_get_unknown_session_is_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_transcript_get(make_request(), "missing")
+            await misc_routes.handle_transcript_get(make_request(), "missing")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_get_rejects_a_traversal_id(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_transcript_get(make_request(), "../../etc/passwd")
+            await misc_routes.handle_transcript_get(make_request(), "../../etc/passwd")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_get_refuses_a_traversal_that_would_resolve(self):
@@ -590,7 +590,7 @@ class TranscriptEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestC
         self.assertEqual(
             len(sorted(self.root.glob("*/../-home-kali-demo/hidden.jsonl"))), 1)
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_transcript_get(
+            await misc_routes.handle_transcript_get(
                 make_request(), "../-home-kali-demo/hidden")
         self.assertEqual(ctx.exception.status_code, 404)
 
@@ -599,8 +599,8 @@ class TranscriptEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestC
                          [assistant(f"line {i}", "e4") for i in range(200)])
         with patch.object(transcripts, "HISTORY_TAIL_BYTES", 1200):
             first = json.loads(
-                (await app.handle_transcript_get(make_request(), "e4")).body)
-            older = json.loads((await app.handle_transcript_get(
+                (await misc_routes.handle_transcript_get(make_request(), "e4")).body)
+            older = json.loads((await misc_routes.handle_transcript_get(
                 make_request({"before": str(first["start"])}), "e4")).body)
         self.assertTrue(older["turns"], "paging back must return earlier turns")
         self.assertLess(older["start"], first["start"])
@@ -608,17 +608,17 @@ class TranscriptEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestC
     async def test_before_must_be_a_number(self):
         write_transcript(self.root, "e5", [assistant("x", "e5")])
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_transcript_get(make_request({"before": "soon"}), "e5")
+            await misc_routes.handle_transcript_get(make_request({"before": "soon"}), "e5")
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_stream_unknown_session_is_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_transcript_stream(make_request(), "missing")
+            await misc_routes.handle_transcript_stream(make_request(), "missing")
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_stream_opens_with_a_start_frame(self):
         write_transcript(self.root, "e6", [assistant("x", "e6")])
-        response = await app.handle_transcript_stream(
+        response = await misc_routes.handle_transcript_stream(
             make_request({"offset": "0"}), "e6")
         iterator = response.body_iterator
         try:
@@ -648,30 +648,30 @@ class AdoptSessionCwdTests(unittest.TestCase):
     def test_a_cwd_inside_the_root_is_adopted(self):
         inside = self.root / "workspace"
         inside.mkdir()
-        self.assertEqual(app._adopt_session_cwd(str(inside), "abcd1234"), str(inside))
+        self.assertEqual(misc_routes._adopt_session_cwd(str(inside), "abcd1234"), str(inside))
 
     def test_the_root_itself_is_adopted(self):
-        self.assertEqual(app._adopt_session_cwd(str(self.root), "abcd1234"), str(self.root))
+        self.assertEqual(misc_routes._adopt_session_cwd(str(self.root), "abcd1234"), str(self.root))
 
     def test_a_cwd_outside_the_root_falls_back(self):
-        result = app._adopt_session_cwd("/etc", "abcd1234")
+        result = misc_routes._adopt_session_cwd("/etc", "abcd1234")
         self.assertNotEqual(result, "/etc")
         self.assertTrue(Path(result).resolve().is_relative_to(self.root))
 
     def test_a_missing_directory_falls_back(self):
-        result = app._adopt_session_cwd(str(self.root / "gone"), "abcd1234")
+        result = misc_routes._adopt_session_cwd(str(self.root / "gone"), "abcd1234")
         self.assertTrue(Path(result).is_dir())
         self.assertTrue(Path(result).resolve().is_relative_to(self.root))
 
     def test_blank_and_null_fall_back(self):
         for value in ("", "   ", None):
-            result = app._adopt_session_cwd(value, "abcd1234")
+            result = misc_routes._adopt_session_cwd(value, "abcd1234")
             self.assertTrue(Path(result).resolve().is_relative_to(self.root))
 
     def test_every_outcome_stays_inside_the_root(self):
         """The fallback is the boundary's last line; it must never leak."""
         for value in ("/etc", "/", "../../..", str(self.root / "nope"), "", None):
-            result = app._adopt_session_cwd(value, "abcd1234")
+            result = misc_routes._adopt_session_cwd(value, "abcd1234")
             self.assertTrue(
                 Path(result).resolve().is_relative_to(self.root), f"escaped for {value!r}")
 
@@ -707,7 +707,7 @@ class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
             user("Investigate the outage"), assistant("looking", "dead1"),
         ])
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])):
-            response = await app.handle_sessions_resume(make_request(), "dead1")
+            response = await misc_routes.handle_sessions_resume(make_request(), "dead1")
         payload = json.loads(response.body)
         chat = await db.chat_get(payload["id"], "admin")
         self.assertEqual(chat["session_id"], "dead1")
@@ -719,7 +719,7 @@ class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
                                               assistant("ok", "live1")])
         live = [{"sessionId": "live1", "name": "cweb9", "cwd": str(self.workspace)}]
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=live)):
-            response = await app.handle_sessions_resume(make_request(), "live1")
+            response = await misc_routes.handle_sessions_resume(make_request(), "live1")
         chat = await db.chat_get(json.loads(response.body)["id"], "admin")
         self.assertEqual(chat["title"], "cweb9")
 
@@ -728,7 +728,7 @@ class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
             patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])),
             self.assertRaises(HTTPException) as ctx,
         ):
-            await app.handle_sessions_resume(make_request(), "nothing")
+            await misc_routes.handle_sessions_resume(make_request(), "nothing")
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertIn("no running session and no transcript", ctx.exception.detail)
 
@@ -739,9 +739,9 @@ class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
         ])
         with patch.object(db, "read_claude_sessions", AsyncMock(return_value=[])):
             first = json.loads(
-                (await app.handle_sessions_resume(make_request(), "dead2")).body)
+                (await misc_routes.handle_sessions_resume(make_request(), "dead2")).body)
             second = json.loads(
-                (await app.handle_sessions_resume(make_request(), "dead2")).body)
+                (await misc_routes.handle_sessions_resume(make_request(), "dead2")).body)
         self.assertEqual(first["id"], second["id"],
                          "resuming again must not create a duplicate chat")
 
@@ -906,14 +906,14 @@ class AgentTrafficEndpointTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
 
     async def test_endpoint_returns_messages_and_count(self):
         write_transcript(self.root, "e1", [incoming("cweb2", "hello there")])
-        response = await app.handle_agent_traffic(make_request())
+        response = await misc_routes.handle_agent_traffic(make_request())
         payload = json.loads(response.body)
         self.assertEqual(payload["count"], len(payload["messages"]))
         self.assertEqual(payload["messages"][0]["text"], "hello there")
 
     async def test_junk_parameters_do_not_break_it(self):
         write_transcript(self.root, "e2", [incoming("cweb2", "hi")])
-        response = await app.handle_agent_traffic(
+        response = await misc_routes.handle_agent_traffic(
             make_request({"limit": "lots", "files": "many"}))
         self.assertEqual(response.status_code, 200)
 
@@ -1181,7 +1181,7 @@ class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase)
 
     async def test_imported_rows_reach_the_usage_totals(self):
         write_transcript(self.root, "i1", [spent(inp=500, out=50)])
-        imported = await app._import_cli_usage("admin")
+        imported = await misc_routes._import_cli_usage("admin")
         self.assertEqual(imported, 1)
         totals = await db.usage_totals("admin", days=None)
         row = next(t for t in totals if t["model"] == "claude-opus-5")
@@ -1189,8 +1189,8 @@ class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase)
 
     async def test_importing_twice_does_not_double_the_totals(self):
         write_transcript(self.root, "i2", [spent(inp=500)])
-        await app._import_cli_usage("admin")
-        again = await app._import_cli_usage("admin")
+        await misc_routes._import_cli_usage("admin")
+        again = await misc_routes._import_cli_usage("admin")
         self.assertEqual(again, 0, "a second import must add nothing")
         totals = await db.usage_totals("admin", days=None)
         row = next(t for t in totals if t["model"] == "claude-opus-5")
@@ -1199,14 +1199,14 @@ class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase)
     async def test_the_turns_keep_the_time_they_happened(self):
         """Stamping imported history 'now' would break every windowed query."""
         write_transcript(self.root, "i3", [spent()])
-        await app._import_cli_usage("admin")
+        await misc_routes._import_cli_usage("admin")
         cur = await db.db_conn.execute(
             "SELECT created_at FROM usage_events WHERE provider='cli'")
         self.assertEqual((await cur.fetchone())["created_at"], "2026-08-28T09:00:00Z")
 
     async def test_rows_are_marked_as_coming_from_the_cli(self):
         write_transcript(self.root, "i4", [spent()])
-        await app._import_cli_usage("admin")
+        await misc_routes._import_cli_usage("admin")
         cur = await db.db_conn.execute(
             "SELECT provider, chat_id, session_id FROM usage_events")
         row = await cur.fetchone()

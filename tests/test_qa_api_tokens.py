@@ -46,6 +46,7 @@ from unittest.mock import patch
 import auth
 import config
 import db
+import middleware
 
 HTTPS = "https://testserver"
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,8 +91,7 @@ class ApiTokenBase(unittest.IsolatedAsyncioTestCase):
         await db.chat_create("c-alice", "Alice's", None, f"{self.tmp.name}/p", "alice")
         # Cleared between tests: the touch throttle is process-global, so a
         # token id reused across tests would silently skip its own write.
-        import app
-        app._token_touched.clear()
+        middleware._token_touched.clear()
 
     async def _mint(self, user="alice", role="admin", name="test",
                     expires_at=None) -> str:

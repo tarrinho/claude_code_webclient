@@ -19,6 +19,7 @@ from fastapi import HTTPException
 import app
 import config
 import db
+from routes import misc as misc_routes
 
 
 def _turn(role, text):
@@ -77,7 +78,7 @@ class TranscriptOffsetTests(_Base):
     async def test_import_records_the_offset(self):
         with patch.object(app.transcripts, "read_turns",
                           AsyncMock(return_value=_payload([_turn("user", "hi")], 900))):
-            await app._import_transcript("c1", "sess-1")
+            await misc_routes._import_transcript("c1", "sess-1")
         self.assertEqual((await db.chat_get("c1", "admin"))["transcript_offset"], 900)
 
     async def test_skip_advances_without_importing(self):

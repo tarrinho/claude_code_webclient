@@ -41,6 +41,7 @@ import config
 import db
 import runner
 from routes import machines as machine_routes
+from routes import misc as misc_routes
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -302,11 +303,11 @@ class BackupAPITests(unittest.IsolatedAsyncioTestCase):
         return r
 
     async def test_backup_content_type_is_gzip(self):
-        resp = await app.handle_db_backup(self._req())
+        resp = await misc_routes.handle_db_backup(self._req())
         self.assertEqual(resp.media_type, "application/gzip")
 
     async def test_backup_content_disposition_has_extension(self):
-        resp = await app.handle_db_backup(self._req())
+        resp = await misc_routes.handle_db_backup(self._req())
         disp = resp.headers.get("content-disposition", "")
         self.assertIn(".db.gz", disp)
 
@@ -319,7 +320,7 @@ class BackupAPITests(unittest.IsolatedAsyncioTestCase):
         )
         req.state.session = {"user": "bob", "role": "user"}
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_db_backup(req)
+            await misc_routes.handle_db_backup(req)
         self.assertEqual(ctx.exception.status_code, 403)
 
 
@@ -355,7 +356,7 @@ class RestoreAPITests(unittest.IsolatedAsyncioTestCase):
         form = self._make_form({"file": b"not-gzip"})
         req.form = AsyncMock(return_value=form)
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_db_restore(req)
+            await misc_routes.handle_db_restore(req)
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_restore_invalid_gzip_400(self):
@@ -371,7 +372,7 @@ class RestoreAPITests(unittest.IsolatedAsyncioTestCase):
         # db_restore returns False for invalid data → handler raises 500.
         with patch("app.db.db_restore", return_value=False):
             with self.assertRaises(HTTPException) as ctx:
-                await app.handle_db_restore(req)
+                await misc_routes.handle_db_restore(req)
             self.assertEqual(ctx.exception.status_code, 500)
 
     async def test_restore_missing_file_400(self):
@@ -384,7 +385,7 @@ class RestoreAPITests(unittest.IsolatedAsyncioTestCase):
         req.headers = {"X-CSRF-Token": self.csrf}
         req.form = AsyncMock(return_value={})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_db_restore(req)
+            await misc_routes.handle_db_restore(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -793,14 +794,14 @@ class SkillsGetTests(unittest.IsolatedAsyncioTestCase):
         return r
 
     async def test_skills_response_schema(self):
-        resp = await app.handle_skills_get(self._req())
+        resp = await misc_routes.handle_skills_get(self._req())
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertIn("skills", data)
         self.assertIn("session_id", data)
 
     async def test_skills_is_list(self):
-        resp = await app.handle_skills_get(self._req())
+        resp = await misc_routes.handle_skills_get(self._req())
         data = json.loads(resp.body)
         self.assertIsInstance(data["skills"], list)
 
@@ -818,8 +819,8 @@ class SkillsGetTests(unittest.IsolatedAsyncioTestCase):
                 "description: A QA test skill\n---\n",
                 encoding="utf-8",
             )
-            with patch.object(app, "_USER_SKILLS_ROOT", root):
-                resp = await app.handle_skills_get(self._req())
+            with patch.object(misc_routes, "_USER_SKILLS_ROOT", root):
+                resp = await misc_routes.handle_skills_get(self._req())
             data = json.loads(resp.body)
             names = [s["name"] for s in data["skills"]]
             self.assertIn("test-qacoverage-skill", names)
@@ -1144,7 +1145,7 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_sessions_resume(self._req("nonexistent"), "nonexistent")
+            await misc_routes.handle_sessions_resume(self._req("nonexistent"), "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
 
 
@@ -1369,37 +1370,37 @@ class SettingsPatchTests(unittest.IsolatedAsyncioTestCase):
         req = self._make_request({"session_ttl": 600})
         req.state.session = {"user": "bob", "role": "user"}
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_settings_patch_valid_ttl(self):
         req = self._make_request({"session_ttl": 600})
-        resp = await app.handle_settings_patch(req)
+        resp = await misc_routes.handle_settings_patch(req)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
 
     async def test_settings_patch_invalid_ttl_too_low(self):
         req = self._make_request({"session_ttl": 10})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_invalid_ttl_too_high(self):
         req = self._make_request({"session_ttl": 100000})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_valid_model(self):
         req = self._make_request({"default_model": "claude-sonnet-4-20250514"})
-        resp = await app.handle_settings_patch(req)
+        resp = await misc_routes.handle_settings_patch(req)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
 
     async def test_settings_patch_invalid_model_chars(self):
         req = self._make_request({"default_model": "bad/model!"})
         with self.assertRaises(app.HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -1772,7 +1773,7 @@ class SessionsListTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sessions_list_returns_key(self):
         req = self._make_request()
-        resp = await app.handle_sessions_list(req)
+        resp = await misc_routes.handle_sessions_list(req)
         self.assertIn("sessions", json.loads(resp.body))
 
     async def test_sessions_list_includes_web_chats(self):
@@ -1784,7 +1785,7 @@ class SessionsListTests(unittest.IsolatedAsyncioTestCase):
         cid = json.loads(resp_create.body)["id"]
 
         req = self._make_request()
-        resp = await app.handle_sessions_list(req)
+        resp = await misc_routes.handle_sessions_list(req)
         data = json.loads(resp.body)
         web_items = [s for s in data["sessions"] if s.get("webchat")]
         self.assertGreaterEqual(len(web_items), 1)

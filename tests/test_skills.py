@@ -24,6 +24,7 @@ import claude_proxy
 import config
 import db
 import runner
+from routes import misc as misc_routes
 
 
 def _make_request(query=None):
@@ -57,7 +58,7 @@ def _write_skill(root: Path, name: str, description: str | None = "A skill.") ->
 class SkillDescriptionTests(unittest.TestCase):
     def test_reads_frontmatter_description(self):
         text = "---\nname: demo\ndescription: Does a thing.\n---\n\nBody.\n"
-        self.assertEqual(app._skill_description(text), "Does a thing.")
+        self.assertEqual(misc_routes._skill_description(text), "Does a thing.")
 
     def test_joins_wrapped_continuation_lines(self):
         text = (
@@ -67,32 +68,32 @@ class SkillDescriptionTests(unittest.TestCase):
             "metadata: other\n---\n"
         )
         self.assertEqual(
-            app._skill_description(text),
+            misc_routes._skill_description(text),
             "First part of the value and the wrapped remainder.",
         )
 
     def test_stops_at_next_frontmatter_key(self):
         text = "---\ndescription: Only this.\nallowed-tools: Read\n---\n"
-        self.assertEqual(app._skill_description(text), "Only this.")
+        self.assertEqual(misc_routes._skill_description(text), "Only this.")
 
     def test_strips_surrounding_double_quotes(self):
         text = '---\ndescription: "Quoted value."\n---\n'
-        self.assertEqual(app._skill_description(text), "Quoted value.")
+        self.assertEqual(misc_routes._skill_description(text), "Quoted value.")
 
     def test_strips_surrounding_single_quotes(self):
         text = "---\ndescription: 'Quoted value.'\n---\n"
-        self.assertEqual(app._skill_description(text), "Quoted value.")
+        self.assertEqual(misc_routes._skill_description(text), "Quoted value.")
 
     def test_falls_back_to_bare_line_without_frontmatter(self):
         text = "# Title\n\ndescription: Plain line.\n"
-        self.assertEqual(app._skill_description(text), "Plain line.")
+        self.assertEqual(misc_routes._skill_description(text), "Plain line.")
 
     def test_returns_empty_when_absent(self):
-        self.assertEqual(app._skill_description("# Title\n\nJust prose.\n"), "")
+        self.assertEqual(misc_routes._skill_description("# Title\n\nJust prose.\n"), "")
 
     def test_caps_length(self):
         text = "---\ndescription: %s\n---\n" % ("x" * 900)
-        self.assertEqual(len(app._skill_description(text)), 500)
+        self.assertEqual(len(misc_routes._skill_description(text)), 500)
 
 
 # ── Summary condensation ───────────────────────────────────────────────────────
@@ -102,31 +103,31 @@ class SkillSummaryTests(unittest.TestCase):
     def test_prefers_first_sentence(self):
         text = "Creates a proxy bundle for the platform. Also does other things later."
         self.assertEqual(
-            app._skill_summary(text), "Creates a proxy bundle for the platform."
+            misc_routes._skill_summary(text), "Creates a proxy bundle for the platform."
         )
 
     def test_truncates_long_text_on_word_boundary(self):
-        summary = app._skill_summary("word " * 60)
-        self.assertLessEqual(len(summary), app._SKILL_SUMMARY_MAX + 1)
+        summary = misc_routes._skill_summary("word " * 60)
+        self.assertLessEqual(len(summary), misc_routes._SKILL_SUMMARY_MAX + 1)
         self.assertTrue(summary.endswith("…"))
         self.assertNotIn("  ", summary)
 
     def test_strips_markdown_emphasis_and_code_ticks(self):
         text = "**MANDATORY** — call the `do_thing` tool with __care__ before starting."
         self.assertEqual(
-            app._skill_summary(text),
+            misc_routes._skill_summary(text),
             "MANDATORY — call the do_thing tool with care before starting.",
         )
 
     def test_preserves_snake_case_identifiers(self):
-        self.assertIn("get_design_context", app._skill_summary("Use `get_design_context` now."))
+        self.assertIn("get_design_context", misc_routes._skill_summary("Use `get_design_context` now."))
 
     def test_collapses_whitespace(self):
-        self.assertEqual(app._skill_summary("A   b\n\tc."), "A b c.")
+        self.assertEqual(misc_routes._skill_summary("A   b\n\tc."), "A b c.")
 
     def test_empty_description_yields_empty_summary(self):
-        self.assertEqual(app._skill_summary(""), "")
-        self.assertEqual(app._skill_summary("  \n "), "")
+        self.assertEqual(misc_routes._skill_summary(""), "")
+        self.assertEqual(misc_routes._skill_summary("  \n "), "")
 
 
 # ── User skill discovery ───────────────────────────────────────────────────────
@@ -137,7 +138,7 @@ class UserSkillDiscoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "skills"
         self.root.mkdir()
-        self.patch = patch.object(app, "_USER_SKILLS_ROOT", self.root)
+        self.patch = patch.object(misc_routes, "_USER_SKILLS_ROOT", self.root)
         self.patch.start()
 
     def tearDown(self):
@@ -147,12 +148,12 @@ class UserSkillDiscoveryTests(unittest.TestCase):
     def test_finds_skills_sorted_by_name(self):
         _write_skill(self.root, "zebra")
         _write_skill(self.root, "alpha")
-        names = [s["name"] for s in app._discover_user_skills()]
+        names = [s["name"] for s in misc_routes._discover_user_skills()]
         self.assertEqual(names, ["alpha", "zebra"])
 
     def test_entry_shape(self):
         _write_skill(self.root, "demo", "Does a thing well.")
-        skill = app._discover_user_skills()[0]
+        skill = misc_routes._discover_user_skills()[0]
         self.assertEqual(skill["name"], "demo")
         self.assertEqual(skill["description"], "Does a thing well.")
         self.assertEqual(skill["summary"], "Does a thing well.")
@@ -162,21 +163,21 @@ class UserSkillDiscoveryTests(unittest.TestCase):
 
     def test_skips_directory_without_skill_md(self):
         (self.root / "empty").mkdir()
-        self.assertEqual(app._discover_user_skills(), [])
+        self.assertEqual(misc_routes._discover_user_skills(), [])
 
     def test_skips_loose_files(self):
         (self.root / "README.md").write_text("hi", encoding="utf-8")
-        self.assertEqual(app._discover_user_skills(), [])
+        self.assertEqual(misc_routes._discover_user_skills(), [])
 
     def test_skips_invalid_directory_names(self):
         _write_skill(self.root, ".hidden")
         _write_skill(self.root, "ok-name")
-        names = [s["name"] for s in app._discover_user_skills()]
+        names = [s["name"] for s in misc_routes._discover_user_skills()]
         self.assertEqual(names, ["ok-name"])
 
     def test_missing_root_is_not_an_error(self):
-        with patch.object(app, "_USER_SKILLS_ROOT", self.root / "nope"):
-            self.assertEqual(app._discover_user_skills(), [])
+        with patch.object(misc_routes, "_USER_SKILLS_ROOT", self.root / "nope"):
+            self.assertEqual(misc_routes._discover_user_skills(), [])
 
 
 # ── Plugin skill discovery ─────────────────────────────────────────────────────
@@ -187,7 +188,7 @@ class PluginSkillDiscoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.plugins = Path(self.tmp.name) / "plugins"
         self.plugins.mkdir()
-        self.patch = patch.object(app, "_PLUGINS_ROOT", self.plugins)
+        self.patch = patch.object(misc_routes, "_PLUGINS_ROOT", self.plugins)
         self.patch.start()
 
     def tearDown(self):
@@ -208,7 +209,7 @@ class PluginSkillDiscoveryTests(unittest.TestCase):
         install = self._install("figma")
         _write_skill(install / "skills", "figma-use", "Use Figma.")
         self._manifest({"figma@official": [{"installPath": str(install)}]})
-        skills = app._discover_plugin_skills()
+        skills = misc_routes._discover_plugin_skills()
         self.assertEqual([s["name"] for s in skills], ["figma:figma-use"])
         self.assertEqual(skills[0]["source"], "plugin:figma")
         self.assertEqual(skills[0]["source_label"], "figma")
@@ -218,20 +219,20 @@ class PluginSkillDiscoveryTests(unittest.TestCase):
         for name in ("brainstorming", "writing-plans", "tdd"):
             _write_skill(install / "skills", name)
         self._manifest({"superpowers@sp": [{"installPath": str(install)}]})
-        self.assertEqual(len(app._discover_plugin_skills()), 3)
+        self.assertEqual(len(misc_routes._discover_plugin_skills()), 3)
 
     def test_ignores_plugin_without_skills_directory(self):
         path = self.plugins / "cache" / "code-review" / "1.0.0"
         path.mkdir(parents=True)
         self._manifest({"code-review@official": [{"installPath": str(path)}]})
-        self.assertEqual(app._discover_plugin_skills(), [])
+        self.assertEqual(misc_routes._discover_plugin_skills(), [])
 
     def test_ignores_install_path_outside_plugins_root(self):
         outside = Path(self.tmp.name) / "elsewhere"
         (outside / "skills").mkdir(parents=True)
         _write_skill(outside / "skills", "sneaky")
         self._manifest({"evil@x": [{"installPath": str(outside)}]})
-        self.assertEqual(app._discover_plugin_skills(), [])
+        self.assertEqual(misc_routes._discover_plugin_skills(), [])
 
     def test_deduplicates_repeated_installs(self):
         install = self._install("figma")
@@ -244,24 +245,24 @@ class PluginSkillDiscoveryTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(len(app._discover_plugin_skills()), 1)
+        self.assertEqual(len(misc_routes._discover_plugin_skills()), 1)
 
     def test_missing_manifest_returns_empty(self):
-        self.assertEqual(app._discover_plugin_skills(), [])
+        self.assertEqual(misc_routes._discover_plugin_skills(), [])
 
     def test_malformed_manifest_returns_empty(self):
         (self.plugins / "installed_plugins.json").write_text("{not json", encoding="utf-8")
-        self.assertEqual(app._discover_plugin_skills(), [])
+        self.assertEqual(misc_routes._discover_plugin_skills(), [])
 
     def test_manifest_without_plugins_key_returns_empty(self):
         (self.plugins / "installed_plugins.json").write_text(
             json.dumps({"version": 2}), encoding="utf-8"
         )
-        self.assertEqual(app._discover_plugin_skills(), [])
+        self.assertEqual(misc_routes._discover_plugin_skills(), [])
 
     def test_skips_non_dict_install_entries(self):
         self._manifest({"figma@official": ["not-a-dict", {"installPath": ""}]})
-        self.assertEqual(app._discover_plugin_skills(), [])
+        self.assertEqual(misc_routes._discover_plugin_skills(), [])
 
 
 # ── Response shape ─────────────────────────────────────────────────────────────
@@ -276,8 +277,8 @@ class SkillsResponseTests(unittest.IsolatedAsyncioTestCase):
         self.plugins = base / "plugins"
         self.plugins.mkdir()
         self.patches = [
-            patch.object(app, "_USER_SKILLS_ROOT", self.user_root),
-            patch.object(app, "_PLUGINS_ROOT", self.plugins),
+            patch.object(misc_routes, "_USER_SKILLS_ROOT", self.user_root),
+            patch.object(misc_routes, "_PLUGINS_ROOT", self.plugins),
         ]
         for p in self.patches:
             p.start()
@@ -299,7 +300,7 @@ class SkillsResponseTests(unittest.IsolatedAsyncioTestCase):
 
     async def _get(self, query=None, active=()):
         with patch.object(runner, "active_skills", return_value=list(active)):
-            response = await app.handle_skills_get(_make_request(query))
+            response = await misc_routes.handle_skills_get(_make_request(query))
         return json.loads(response.body)
 
     async def test_response_schema(self):
@@ -364,7 +365,7 @@ class SkillsResponseTests(unittest.IsolatedAsyncioTestCase):
     async def test_respects_skill_limit(self):
         for i in range(12):
             _write_skill(self.user_root, f"bulk-{i:02d}")
-        with patch.object(app, "_SKILL_LIMIT", 5):
+        with patch.object(misc_routes, "_SKILL_LIMIT", 5):
             data = await self._get()
         self.assertEqual(len(data["skills"]), 5)
         self.assertEqual(data["total"], 5)

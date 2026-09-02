@@ -28,10 +28,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import app
 import config
 import db
 import sysstats
+from routes import misc as misc_routes
 
 # A trimmed /proc/stat. The aggregate line is what _read_cpu reads: the fields
 # after the label are user, nice, system, idle, iowait, ...
@@ -395,7 +395,7 @@ class EndpointTests(_DbCase):
     async def test_live_snapshot_carries_the_sampling_contract(self):
         """The page needs both numbers to explain an empty chart: how often a
         sample is taken, and how long one is kept."""
-        body = self._body(await app.handle_system_get(self._request()))
+        body = self._body(await misc_routes.handle_system_get(self._request()))
         self.assertIn("cpu_pct", body)
         self.assertEqual(body["sample_interval_s"], config.SYSTEM_SAMPLE_S)
         self.assertEqual(body["retention_days"], config.SYSTEM_RETENTION_DAYS)
@@ -403,24 +403,24 @@ class EndpointTests(_DbCase):
     async def test_series_defaults_to_a_day_in_half_hours(self):
         """Deliberately not the usage page's 30-days-by-day: a machine in
         trouble is read by the hour."""
-        body = self._body(await app.handle_system_series_get(self._request()))
+        body = self._body(await misc_routes.handle_system_series_get(self._request()))
         self.assertEqual(body["days"], 1)
         self.assertEqual(body["bucket"], "halfhour")
 
     async def test_unknown_bucket_falls_back_rather_than_reaching_sql(self):
         body = self._body(
-            await app.handle_system_series_get(self._request(bucket="'; DROP TABLE--"))
+            await misc_routes.handle_system_series_get(self._request(bucket="'; DROP TABLE--"))
         )
         self.assertEqual(body["bucket"], "halfhour")
 
     async def test_all_means_no_window(self):
-        body = self._body(await app.handle_system_series_get(self._request(days="all")))
+        body = self._body(await misc_routes.handle_system_series_get(self._request(days="all")))
         self.assertEqual(body["days"], 0)
 
     async def test_days_is_clamped(self):
         for given, expected in (("99999", 3650), ("-5", 1), ("nonsense", 1)):
             body = self._body(
-                await app.handle_system_series_get(self._request(days=given))
+                await misc_routes.handle_system_series_get(self._request(days=given))
             )
             self.assertEqual(body["days"], expected, f"days={given}")
 
@@ -435,7 +435,7 @@ class EndpointTests(_DbCase):
         """
         await self._store(db._now(), cpu_pct=7.0)
         body = self._body(
-            await app.handle_system_series_get(self._request(days="1", bucket="day"))
+            await misc_routes.handle_system_series_get(self._request(days="1", bucket="day"))
         )
         measured = [r for r in body["series"] if r["cpu_pct"] is not None]
         self.assertEqual(len(measured), 1)
@@ -450,7 +450,7 @@ class EndpointTests(_DbCase):
         """
         await self._store(db._now(), cpu_pct=7.0)
         body = self._body(
-            await app.handle_system_series_get(self._request(days="3", bucket="day"))
+            await misc_routes.handle_system_series_get(self._request(days="3", bucket="day"))
         )
         buckets = [r["bucket"] for r in body["series"]]
         self.assertEqual(buckets, sorted(buckets))

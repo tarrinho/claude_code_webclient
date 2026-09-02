@@ -229,6 +229,9 @@ class AdoptionTests(MembersBase):
         adopted_chat = await self._chat(title="cweb5")
         fake = types.SimpleNamespace(
             body=json.dumps({"id": adopted_chat, "title": "cweb5"}).encode())
+        # app, not routes.misc: the caller is _resolve_member, which still
+        # lives in app.py and imported this handler into app's globals, so a
+        # patch has to rebind the name the caller actually reads.
         with patch.object(app, "handle_sessions_resume",
                           AsyncMock(return_value=fake)) as resume:
             response = await app.handle_supervisor_members_add(
@@ -242,6 +245,9 @@ class AdoptionTests(MembersBase):
         self.assertEqual([m["chat_id"] for m in stored], [adopted_chat])
 
     async def test_an_agent_that_cannot_be_adopted_is_reported_not_stored(self):
+        # app, not routes.misc: the caller is _resolve_member, which still
+        # lives in app.py and imported this handler into app's globals, so a
+        # patch has to rebind the name the caller actually reads.
         with patch.object(app, "handle_sessions_resume",
                           AsyncMock(side_effect=HTTPException(404, "no session"))):
             response = await app.handle_supervisor_members_add(

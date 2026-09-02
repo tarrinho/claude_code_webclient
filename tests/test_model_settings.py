@@ -8,12 +8,13 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-import app
 import auth
 import config
 import db
+import net_validation
 import runner
 from routes import machines as machine_routes
+from routes import misc as misc_routes
 
 
 class _FakeRequest:
@@ -309,7 +310,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_settings_get_returns_host_version(self):
-        handler = app.handle_settings_get
+        handler = misc_routes.handle_settings_get
         req = _FakeRequest()
         resp = await handler(req)
         body = json.loads(resp.body.decode())
@@ -322,7 +323,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_settings_patch_updates_host(self):
-        handler = app.handle_settings_patch
+        handler = misc_routes.handle_settings_patch
         req = _FakeRequest(json_data={"ai_machine_host": "192.168.1.100"})
         resp = await handler(req)
         data = json.loads(resp.body.decode())
@@ -331,7 +332,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(value, "192.168.1.100")
 
     async def test_settings_patch_updates_session_ttl(self):
-        handler = app.handle_settings_patch
+        handler = misc_routes.handle_settings_patch
         req = _FakeRequest(json_data={"session_ttl": 3600})
         resp = await handler(req)
         data = json.loads(resp.body.decode())
@@ -340,7 +341,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(value, "3600")
 
     async def test_settings_patch_updates_models(self):
-        handler = app.handle_settings_patch
+        handler = misc_routes.handle_settings_patch
         req = _FakeRequest(json_data={"default_model": "claude-opus-5"})
         resp = await handler(req)
         self.assertTrue(json.loads(resp.body.decode())["ok"])
@@ -350,25 +351,25 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         """fallback_model was stored but never read -- a control implying a
         retry behaviour that did not exist. It is no longer accepted."""
         req = _FakeRequest(json_data={"fallback_model": "claude-haiku-4-5"})
-        await app.handle_settings_patch(req)
+        await misc_routes.handle_settings_patch(req)
         self.assertIsNone(await db.setting_get("fallback_model"))
 
     async def test_settings_get_returns_models(self):
         await db.setting_set("default_model", "claude-opus-5")
-        body = json.loads((await app.handle_settings_get(_FakeRequest())).body.decode())
+        body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
         self.assertEqual(body["default_model"], "claude-opus-5")
 
     async def test_settings_get_no_longer_reports_a_fallback_model(self):
-        body = json.loads((await app.handle_settings_get(_FakeRequest())).body.decode())
+        body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
         self.assertNotIn("fallback_model", body)
 
     async def test_settings_patch_rejects_invalid_model(self):
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_settings_patch(_FakeRequest(json_data={"default_model": "bad model"}))
+            await misc_routes.handle_settings_patch(_FakeRequest(json_data={"default_model": "bad model"}))
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_updates_multiple(self):
-        handler = app.handle_settings_patch
+        handler = misc_routes.handle_settings_patch
         req = _FakeRequest(json_data={
             "ai_machine_host": "10.0.0.5",
             "session_ttl": 3600,
@@ -387,25 +388,25 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_settings_patch_rejects_non_string_host(self):
         req = _FakeRequest(json_data={"ai_machine_host": 12345})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_rejects_malformed_host(self):
         req = _FakeRequest(json_data={"ai_machine_host": "http://evil.com"})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_rejects_port_in_host(self):
         req = _FakeRequest(json_data={"ai_machine_host": "10.0.0.1:8080"})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_rejects_invalid_ttl(self):
         req = _FakeRequest(json_data={"session_ttl": 0})
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_settings_patch(req)
+            await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -415,7 +416,7 @@ class HostValidationTests(unittest.TestCase):
     """_HOST_PATTERN must accept hostnames/IPs but reject URLs and ports."""
 
     def setUp(self):
-        self.pattern = app._HOST_PATTERN
+        self.pattern = net_validation._HOST_PATTERN
 
     def test_accept_ipv4(self):
         self.assertTrue(self.pattern.fullmatch("10.0.0.1"))

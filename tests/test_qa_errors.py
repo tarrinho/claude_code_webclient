@@ -34,6 +34,7 @@ import auth
 import config
 import db
 import runner
+from routes import misc as misc_routes
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -582,7 +583,7 @@ class SessionsResumeErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         request.state.session = self.session
         with self.assertRaises(HTTPException) as ctx:
-            await app.handle_sessions_resume(request, "nonexistent")
+            await misc_routes.handle_sessions_resume(request, "nonexistent")
         self.assertEqual(ctx.exception.status_code, 404)
         # Resume now falls back to the transcript when no session is running, so
         # a 404 means neither exists. The message no longer blames a stopped CLI,

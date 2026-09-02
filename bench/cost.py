@@ -87,6 +87,14 @@ class Spend:
     correct: int
     known: bool
     dollars: float | None = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    #: Where `dollars` came from. Printed, because a vendor-reported figure and
+    #: one computed from a rate card deserve different amounts of trust.
+    source: str | None = None
+    #: The vendor's own basis, e.g. 'list'. Absent for a computed figure.
+    basis: str | None = None
+    detail: str | None = None
 
     @property
     def per_correct(self) -> float | None:
@@ -117,21 +125,54 @@ class Spend:
 def summarise(model: str, results: list, rates: dict) -> Spend:
     """Total spend and cost-per-correct for one model's results.
 
-    *results* are the per-run records the runner produces: each needs
-    `input_tokens`, `output_tokens` and a boolean `correct`.
+    Two sources, in order of authority.
+
+    **The vendor's own figure wins.** The CLI reports `total_cost_usd` per turn
+    together with a `costBasis`, and where the basis is `list` that is the
+    number being billed. Nothing computed here can beat it.
+
+    **Otherwise, compute from the rate card -- including cache.** Costing a
+    turn from `input_tokens` alone undercounts it badly: the CLI caches its
+    system prompt and tool definitions, so opus-5 reported a constant 12,029
+    input tokens for every task including the 30k-token long-context one, and
+    haiku-4-5 reported 10. The real volume was 12,226 cache writes and 18,905
+    cache reads on a single trivial turn. A cost table built on `input_tokens`
+    would have understated the expensive models by an order of magnitude and
+    published it as measured.
     """
     entry = rate_for(model, rates)
-    inp = sum(r["input_tokens"] for r in results)
-    out = sum(r["output_tokens"] for r in results)
+    inp = sum(r.get("input_tokens", 0) for r in results)
+    out = sum(r.get("output_tokens", 0) for r in results)
+    cache_r = sum(r.get("cache_read_tokens", 0) for r in results)
+    cache_w = sum(r.get("cache_write_tokens", 0) for r in results)
     correct = sum(1 for r in results if r["correct"])
+
+    reported = [r.get("reported_cost_usd") for r in results
+                if r.get("reported_cost_usd") is not None]
+    bases = {r.get("cost_basis") for r in results if r.get("cost_basis")}
+
     spend = Spend(
         model=model, input_tokens=inp, output_tokens=out,
-        runs=len(results), correct=correct, known=entry is not None,
+        cache_read_tokens=cache_r, cache_write_tokens=cache_w,
+        runs=len(results), correct=correct,
+        known=bool(reported) or entry is not None,
     )
-    if entry is not None:
+    if reported and len(reported) == len(results):
+        spend.dollars = round(sum(reported), 6)
+        spend.source = "reported by the CLI"
+        spend.basis = "/".join(sorted(bases)) if bases else None
+    elif entry is not None:
         spend.dollars = round(
             inp / 1_000_000 * float(entry.get("input", 0.0))
-            + out / 1_000_000 * float(entry.get("output", 0.0)),
+            + out / 1_000_000 * float(entry.get("output", 0.0))
+            + cache_r / 1_000_000 * float(entry.get("cache_read", 0.0))
+            + cache_w / 1_000_000 * float(entry.get("cache_write", 0.0)),
             6,
         )
+        spend.source = "computed from bench_rates.json"
+        if reported:
+            # Partial vendor data: say so rather than mixing the two silently.
+            spend.detail = (f"{len(reported)} of {len(results)} runs also "
+                            "reported a cost; computed figure used for "
+                            "consistency")
     return spend

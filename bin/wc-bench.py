@@ -120,6 +120,12 @@ def run_one(task, model: str, transport: str, key: str) -> dict:
         "ttft_s": last.ttft_s,
         "total_s": round(sum(r.total_s for r in replies), 2),
         "input_tokens": sum(r.input_tokens for r in replies),
+        "cache_read_tokens": sum(r.cache_read_tokens for r in replies),
+        "cache_write_tokens": sum(r.cache_write_tokens for r in replies),
+        "reported_cost_usd": (
+            sum(r.reported_cost_usd for r in replies)
+            if all(r.reported_cost_usd is not None for r in replies) else None),
+        "cost_basis": next((r.cost_basis for r in replies if r.cost_basis), None),
         "output_tokens": sum(r.output_tokens for r in replies),
         "stop_reason": last.stop_reason,
         "hit_cap": last.hit_cap,
@@ -259,8 +265,11 @@ def main() -> int:
         s = cost_mod.summarise(model, [r for r in runs if r["model"] == model], rates)
         spend[model] = {
             "input_tokens": s.input_tokens, "output_tokens": s.output_tokens,
+            "cache_read_tokens": s.cache_read_tokens,
+            "cache_write_tokens": s.cache_write_tokens,
             "runs": s.runs, "correct": s.correct, "known": s.known,
             "dollars": s.dollars, "per_correct": s.per_correct, "note": s.note,
+            "source": s.source, "basis": s.basis, "detail": s.detail,
         }
     _write(out_path, runs, models, paths, args.repeats, spend, skipped)
 
@@ -276,9 +285,11 @@ def main() -> int:
         print("  no rates recorded; set bench_rates.json or WC_BENCH_RATES. "
               "Cost is reported as unknown rather than as zero.", file=sys.stderr)
     for model, s in spend.items():
+        src = f" [{s['source']}"+(f", basis={s['basis']}" if s['basis'] else "")+"]" \
+              if s['source'] else ""
         print(f"  {model}: {s['correct']}/{s['runs']} correct, "
-              f"dollars={s['dollars']} per_correct={s['per_correct']} "
-              f"{s['note']}".rstrip(), file=sys.stderr)
+              f"dollars={s['dollars']} per_correct={s['per_correct']}"
+              f"{src} {s['note']}".rstrip(), file=sys.stderr)
     if skipped:
         print("\n=== skipped (unreachable, not scored) ===", file=sys.stderr)
         for reason in skipped:

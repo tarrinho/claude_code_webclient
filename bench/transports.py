@@ -71,6 +71,23 @@ class Turn:
     #: Files the agent wrote instead of answering inline. Empty on the
     #: http path, which has no tools.
     files_written: list[str] = field(default_factory=list)
+    #: Cached input. `input_tokens` alone badly understates what a turn cost:
+    #: the CLI caches its system prompt and tool definitions, so opus-5
+    #: reported a constant 12,029 input tokens for every task including the
+    #: 30k-token long-context one, while the real volume sat in these two
+    #: fields. Costing a turn from `input_tokens` undercounts it by orders of
+    #: magnitude.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    #: What the CLI itself says the turn cost, and on what basis. This is
+    #: authoritative where present -- it is the number the vendor bills -- and
+    #: is preferred over anything computed from a rate card. `cost_basis` is
+    #: 'list' for first-party models and absent or 'unknown' for a gateway
+    #: backend that the CLI has no rates for, which is precisely the
+    #: distinction that made every non-Anthropic figure in usage_events
+    #: fictional.
+    reported_cost_usd: float | None = None
+    cost_basis: str | None = None
 
     @property
     def cap_headroom(self) -> float | None:
@@ -321,19 +338,19 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
                 turn.model_served = message.get("model") or turn.model_served
                 for block in message.get("content") or []:
                     if block.get("type") == "text" and block.get("text"):
-                        # No TTFT is recorded on this path, on purpose.
+                        # TTFT is deliberately NOT taken from here.
                         #
                         # `--output-format stream-json` emits a whole assistant
                         # *message* per frame, not per-token deltas, so the
-                        # earliest moment this loop can observe text is when the
-                        # complete answer has arrived. The first live run made
-                        # that obvious: ttft=57.05 against total=57.44.
+                        # earliest moment this loop can observe text is when
+                        # the complete answer has already arrived. Timing it
+                        # here produced ttft=57.05 against total=57.44 -- which
+                        # would have said "unusable interactively" about a
+                        # model whose stream simply is not visible from here.
                         #
-                        # Publishing that as a time-to-first-token would say
-                        # "unusable interactively" about a model whose stream
-                        # this harness simply cannot see -- the exact shape of
-                        # the defect this whole module exists to prevent. An
-                        # absent measurement is reported as absent.
+                        # The real figure comes off the `result` frame's
+                        # `ttft_ms`, below. Measured on the same model that
+                        # produced the 57.05: 2.35s against 4.94s total.
                         text_parts.append(block["text"])
                     elif block.get("type") == "thinking":
                         turn.thinking_chars += len(block.get("thinking") or "")
@@ -341,7 +358,27 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
                 usage = frame.get("usage") or {}
                 turn.input_tokens = usage.get("input_tokens", 0)
                 turn.output_tokens = usage.get("output_tokens", 0)
+                turn.cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                turn.cache_write_tokens = usage.get(
+                    "cache_creation_input_tokens", 0)
                 turn.stop_reason = frame.get("stop_reason") or "end_turn"
+                # The CLI reports its own cost and the basis for it. Preferred
+                # over anything this harness computes: it is what gets billed.
+                if frame.get("total_cost_usd") is not None:
+                    turn.reported_cost_usd = float(frame["total_cost_usd"])
+                for entry in (frame.get("modelUsage") or {}).values():
+                    if isinstance(entry, dict) and entry.get("costBasis"):
+                        turn.cost_basis = entry["costBasis"]
+                        break
+                # Real time-to-first-token, from the field rather than from
+                # watching the stream. An earlier version of this module
+                # concluded TTFT was "not measurable over cli" because
+                # stream-json emits whole message blocks -- true of the stream,
+                # and beside the point, since the CLI measures it for us.
+                for key in ("ttft_stream_ms", "ttft_ms"):
+                    if frame.get(key):
+                        turn.ttft_s = round(float(frame[key]) / 1000.0, 2)
+                        break
                 if frame.get("is_error"):
                     # CLAUDE.md §4: a failed turn arrives as an event, not an
                     # exception. Code that only catches exceptions reads it as
@@ -363,9 +400,10 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
     turn.total_s = round(time.monotonic() - started, 2)
     turn.text = "".join(text_parts).strip()
     turn.had_text_block = bool(turn.text)
-    turn.ttft_s = None
-    turn.detail.append(
-        "ttft not measurable over cli: stream-json emits whole message blocks")
+    if turn.ttft_s is None:
+        turn.detail.append(
+            "no ttft in the result frame; stream-json emits whole message "
+            "blocks so it cannot be recovered from the stream either")
 
     # Whatever the agent wrote, appended as fenced code so the verifier sees
     # it. Recorded in `detail` as well: an answer delivered by file is a real

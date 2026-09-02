@@ -431,19 +431,29 @@ class TransportTests(unittest.TestCase):
     def test_both_transports_are_registered(self):
         self.assertEqual(set(transports.TRANSPORTS), {"http", "cli"})
 
-    def test_the_cli_path_reports_no_ttft_rather_than_a_fake_one(self):
-        """`stream-json` emits whole message blocks, not token deltas.
+    def test_the_cli_ttft_comes_from_the_result_frame_not_the_stream(self):
+        """Both halves of this were learned the hard way.
 
-        The first live run measured ttft=57.05 against total=57.44 -- the
-        harness seeing the finished answer, not a first token. Publishing that
-        would say "unusable interactively" about a model whose stream cannot be
-        observed here, so the CLI path reports the absence.
+        Timing the first `assistant` frame gives a fake TTFT: stream-json emits
+        whole message blocks, so the earliest observable text is the finished
+        answer, and that measured ttft=57.05 against total=57.44. An earlier
+        version of this module concluded TTFT was therefore unmeasurable here
+        and reported None -- which was also wrong, because the `result` frame
+        carries `ttft_ms` outright. Same model, measured properly: 2.35s
+        against 4.94s total.
+
+        So the requirement is specific: read the field, not the stream.
         """
         source = (ROOT / "bench" / "transports.py").read_text(encoding="utf-8")
         cli = source.split("def _cli_once")[1].split("TRANSPORTS = ")[0]
-        self.assertIn("turn.ttft_s = None", cli)
-        self.assertNotIn("turn.ttft_s = round(", cli,
-                         "the cli path must not claim a time-to-first-token")
+        self.assertIn("ttft_ms", cli, "the result frame's own figure must be used")
+        # The assignment must live in the `result` branch, not the `assistant`
+        # branch where the fake measurement came from.
+        assistant_branch = cli.split('kind == "assistant"')[1].split(
+            'elif kind == "result"')[0]
+        self.assertNotIn("turn.ttft_s =", assistant_branch,
+                         "timing the first assistant frame measures the "
+                         "finished answer, not a first token")
 
     def test_anthropic_models_get_the_bare_binary_and_the_login_env(self):
         """`wc-claude.sh` resolves the *active machine*, which is the gateway.
@@ -497,6 +507,49 @@ class CostTests(unittest.TestCase):
     def _runs(n_correct: int, n_total: int):
         return [{"input_tokens": 100, "output_tokens": 1000,
                  "correct": i < n_correct} for i in range(n_total)]
+
+    def test_cached_input_is_priced_not_ignored(self):
+        """Costing a turn from `input_tokens` alone understates it hugely.
+
+        The CLI caches its system prompt and tool definitions, so opus-5
+        reported a constant 12,029 input tokens for every task -- including the
+        30k-token long-context one -- and haiku-4-5 reported 10. A single
+        trivial haiku turn actually moved 12,276 cache writes and 18,905 cache
+        reads. My first cost table priced haiku's whole 16-run set at $0.2868
+        on `input_tokens`; one floor-add turn alone bills $0.0269.
+        """
+        rates = {"m": {"input": 5.0, "output": 25.0,
+                       "cache_read": 0.5, "cache_write": 10.0}}
+        without = cost.summarise("m", [{
+            "input_tokens": 10, "output_tokens": 100, "correct": True}], rates)
+        with_cache = cost.summarise("m", [{
+            "input_tokens": 10, "output_tokens": 100,
+            "cache_read_tokens": 18905, "cache_write_tokens": 12276,
+            "correct": True}], rates)
+        self.assertGreater(with_cache.dollars, without.dollars * 20,
+                           "cache tokens dominate and must be charged")
+        self.assertEqual(with_cache.cache_read_tokens, 18905)
+
+    def test_the_vendors_own_figure_beats_a_computed_one(self):
+        """The CLI reports total_cost_usd with a costBasis. Where the basis is
+        'list' that is what gets billed, and nothing computed here beats it."""
+        rates = {"m": {"input": 999.0, "output": 999.0}}
+        spend = cost.summarise("m", [{
+            "input_tokens": 10, "output_tokens": 100, "correct": True,
+            "reported_cost_usd": 0.0269425, "cost_basis": "list"}], rates)
+        self.assertEqual(spend.dollars, 0.026943)
+        self.assertEqual(spend.basis, "list")
+        self.assertIn("reported by the CLI", spend.source)
+
+    def test_a_partially_reported_set_says_so_rather_than_mixing(self):
+        rates = {"m": {"input": 1.0, "output": 1.0}}
+        spend = cost.summarise("m", [
+            {"input_tokens": 10, "output_tokens": 10, "correct": True,
+             "reported_cost_usd": 0.5, "cost_basis": "list"},
+            {"input_tokens": 10, "output_tokens": 10, "correct": True},
+        ], rates)
+        self.assertIn("computed", spend.source)
+        self.assertIn("1 of 2", spend.detail)
 
     def test_an_unrecorded_rate_is_unknown_not_free(self):
         """The important one. A model whose price nobody wrote down must not

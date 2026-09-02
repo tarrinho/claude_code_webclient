@@ -22,6 +22,33 @@ churn.
 
 ## [Unreleased]
 
+### Documentation
+
+- **`ARCHITECTURE.md` §9 and §13 re-measured at 0.10.2.** Both were written at
+  0.10.1 and the tree has moved: `app.py` is down from 5,787 lines to **4,979**,
+  and two modules were lifted out of it in 0.10.0 — `classification.py` (683,
+  attention and why a conversation needs a person) and `middleware.py` (197, the
+  three middleware classes and the API-token session).
+
+  So §13 no longer reads as a recommendation to split `app.py`; it records that
+  the split started, and that both extractions chose their boundary from the call
+  graph — twenty names closed over, seven names in 165 contiguous lines — rather
+  than from a line target. `web/assets/app.js` (3,010) is now the least-divided
+  large file in the repository.
+
+  §13 also gains what the completed `supervisor.js` split actually cost, because
+  the chapter previously argued for more of them without a price: tests reading
+  the file by path broke, a `?v=` assertion broke, `STATED` in
+  `test_qa_version_consistency.py` had to be repointed because a version surface
+  lived in the moved file, and `test_qa_timer_handles.py`'s two flat globs
+  silently stopped scanning it — nothing failed, the scan just stopped looking,
+  which is what a moved file does by default. Fixed in `cf175d6` before the split
+  landed.
+
+  Also updated: 105 test files and 2,388 collected cases, `bin/` at 14 scripts
+  and 2,134 lines, and this file's own §9 entry as `~1359` rather than an exact
+  count that the next edit invalidates.
+
 ### Security
 
 - **A live gateway API key was hardcoded in `bin/model_benchmark.py`.** The

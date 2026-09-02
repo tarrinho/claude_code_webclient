@@ -52,6 +52,21 @@
     <div class="strip-right">
       <button class="btn-icon strip-action" id="editChatBtn" aria-label="Edit conversation" title="Edit conversation" hidden>✎</button>
       <button class="btn-icon strip-action" id="syncBtn" aria-label="Refresh history from the terminal session" title="Refresh history" hidden>⟳</button>
+      <!-- Auto-answer: approves permission and plan-approval prompts for this
+           chat without asking. The label says what it does, not "Auto-answer" -
+           this is a real transfer of authority, not a display preference. -->
+      <button class="btn-icon strip-action auto-answer-toggle" id="autoAnswerToggle"
+              aria-label="Auto-approve permission prompts for this conversation"
+              title="Auto-approve permission prompts" aria-pressed="false" hidden>🤖</button>
+      <!-- A button, not a span: it opens the last-ten log, so it must be
+           reachable by keyboard and announce that it controls a popup. -->
+      <button type="button" class="btn-icon strip-action auto-answer-info" id="autoAnswerInfo"
+              aria-label="Show the last ten auto-answers" title="Auto-answer history"
+              aria-haspopup="true" aria-expanded="false" aria-controls="autoAnswerMenu" hidden>ⓘ</button>
+      <!-- Absolutely positioned, mirrors #lastCommandMenu: it must not become a
+           grid item in the strip or it pushes the strip into a second row. -->
+      <div class="auto-answer-menu" id="autoAnswerMenu" role="log" aria-live="polite"
+           aria-label="Last ten auto-answers" tabindex="-1" hidden></div>
       <span class="run-state" id="runState" data-state="ready">Ready</span>
     </div>
   </div>

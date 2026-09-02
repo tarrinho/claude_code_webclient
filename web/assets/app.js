@@ -1495,6 +1495,7 @@ function updateCurrentUi(chat) {
   ensurePinnedModels(chat);
   refreshQuestion();
   startQuestionPolling();
+  startAutoAnswerPolling();
   // The pickers show this conversation's own routing, not a blank slate: both
   // are persisted per conversation, so two chats can sit on different backends.
   populateModelPicker(chat);
@@ -1578,6 +1579,179 @@ const QUESTION_POLL_MS = 4000;
 let _questionTimer = null;
 let _questionState = null;
 let _answering = false;
+
+// ── Auto-answer: arm/disarm and the last-ten log ────────────────────────────
+//
+// Polled on its own timer rather than folded into refreshQuestion: the two are
+// unrelated states (one is "is something waiting", the other is "is this chat
+// allowed to answer for itself"), and a chat with the knob off should not pay
+// for a question lookup it does not use.
+const AUTO_ANSWER_POLL_MS = 5000;
+let _autoAnswerTimer = null;
+let _autoAnswerEnabled = false;
+let _autoAnswerLog = [];
+
+async function refreshAutoAnswer() {
+  const chat = state.currentChat;
+  const toggle = byId('autoAnswerToggle');
+  const info = byId('autoAnswerInfo');
+  if (!chat || !chat.session_id) {
+    // No session to answer on behalf of: the server-side watcher only polls
+    // chats that carry one, so showing an armed-looking toggle here would be a
+    // control that looks live and can never fire.
+    if (toggle) toggle.hidden = true;
+    if (info) info.hidden = true;
+    closeAutoAnswerMenu();
+    return;
+  }
+  try {
+    const response = await apiFetch(
+      `/api/chats/${encodeURIComponent(chat.id)}/auto-answer`);
+    if (!response.ok) { if (toggle) toggle.hidden = true; if (info) info.hidden = true; return; }
+    const data = await response.json();
+    _autoAnswerEnabled = Boolean(data.enabled);
+    _autoAnswerLog = Array.isArray(data.log) ? data.log : [];
+  } catch {
+    if (toggle) toggle.hidden = true;
+    if (info) info.hidden = true;
+    return;
+  }
+  if (toggle) {
+    toggle.hidden = false;
+    toggle.setAttribute('aria-pressed', String(_autoAnswerEnabled));
+    toggle.title = _autoAnswerEnabled
+      ? 'Auto-approving permission prompts — click to turn off'
+      : 'Auto-approve permission prompts';
+  }
+  if (info) info.hidden = false;
+  if (!byId('autoAnswerMenu')?.hidden) renderAutoAnswerMenu();
+}
+
+function startAutoAnswerPolling() {
+  if (_autoAnswerTimer) return;
+  _autoAnswerTimer = setInterval(refreshAutoAnswer, AUTO_ANSWER_POLL_MS);
+  refreshAutoAnswer();
+}
+
+async function toggleAutoAnswer() {
+  const chat = state.currentChat;
+  if (!chat) return;
+  const toggle = byId('autoAnswerToggle');
+  const next = !_autoAnswerEnabled;
+  if (toggle) toggle.disabled = true;
+  try {
+    const response = await apiFetch(
+      `/api/chats/${encodeURIComponent(chat.id)}/auto-answer`,
+      {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: next}),
+      },
+    );
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not change auto-answer');
+    }
+    _autoAnswerEnabled = next;
+    showToast(next
+      ? 'Auto-approving permission prompts for this conversation'
+      : 'Auto-approve turned off');
+    await refreshAutoAnswer();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    if (toggle) toggle.disabled = false;
+  }
+}
+
+// ── The last-ten popover ─────────────────────────────────────────────────────
+// Mirrors #lastCommandMenu in conversation.js: outside click and Escape close
+// it and return focus to the button that opened it.
+
+function closeAutoAnswerMenu() {
+  const menu = byId('autoAnswerMenu');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  byId('autoAnswerInfo')?.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('click', _onDocumentClickForAutoAnswerMenu, true);
+}
+
+function _onDocumentClickForAutoAnswerMenu(event) {
+  const menu = byId('autoAnswerMenu');
+  const info = byId('autoAnswerInfo');
+  if (menu?.contains(event.target) || info?.contains(event.target)) return;
+  closeAutoAnswerMenu();
+}
+
+function openAutoAnswerMenu() {
+  const menu = byId('autoAnswerMenu');
+  if (!menu) return;
+  renderAutoAnswerMenu();
+  menu.hidden = false;
+  byId('autoAnswerInfo')?.setAttribute('aria-expanded', 'true');
+  document.addEventListener('click', _onDocumentClickForAutoAnswerMenu, true);
+  menu.focus();
+}
+
+function toggleAutoAnswerMenu() {
+  if (byId('autoAnswerMenu')?.hidden) openAutoAnswerMenu();
+  else closeAutoAnswerMenu();
+}
+
+function renderAutoAnswerMenu() {
+  const menu = byId('autoAnswerMenu');
+  if (!menu) return;
+  // replaceChildren + createElement throughout: every row quotes a prompt read
+  // off someone's terminal, and that text must never reach markup.
+  menu.replaceChildren();
+  const heading = document.createElement('h3');
+  heading.textContent = 'Last auto-answers';
+  menu.appendChild(heading);
+
+  if (!_autoAnswerLog.length) {
+    const empty = document.createElement('p');
+    empty.className = 'auto-answer-empty';
+    empty.textContent = 'No auto-answers yet.';
+    menu.appendChild(empty);
+    return;
+  }
+
+  _autoAnswerLog.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'auto-answer-row';
+
+    const head = document.createElement('div');
+    head.className = 'auto-answer-row-head';
+
+    const outcome = document.createElement('span');
+    outcome.className = 'auto-answer-row-outcome ' + (entry.outcome || '');
+    outcome.textContent = entry.outcome === 'answered'
+      ? `Answered “${entry.label || ''}”`
+      : 'Skipped';
+    head.appendChild(outcome);
+
+    const when = document.createElement('span');
+    when.textContent = entry.at ? formatTime(entry.at) : '';
+    head.appendChild(when);
+    row.appendChild(head);
+
+    const prompt = document.createElement('p');
+    prompt.className = 'auto-answer-row-prompt';
+    // A skip's reason is the more useful line: it says why nothing was
+    // pressed, which is what a skip entry exists to explain.
+    prompt.textContent = entry.outcome === 'skipped'
+      ? (entry.reason || '')
+      : (entry.prompt || '');
+    row.appendChild(prompt);
+
+    menu.appendChild(row);
+  });
+}
+
+// Escape is handled by the single global keydown chain near the end of this
+// file, not here -- a second listener on the menu itself would fire first on
+// bubble, close the menu, and then the global handler's own now-stale "menu
+// hidden?" check would fall through to closeSidebar() on the same keypress.
 
 // Questions the user has declined. Without this the bar comes straight back:
 // the poll re-reads the transcript every 4s, and a question that was cancelled
@@ -1978,6 +2152,9 @@ function showWelcome() {
   if (lastBar) lastBar.hidden = true;
   byId('editChatBtn').hidden = true;
   byId('syncBtn').hidden = true;
+  byId('autoAnswerToggle').hidden = true;
+  byId('autoAnswerInfo').hidden = true;
+  closeAutoAnswerMenu();
   byId('composerArea').style.display = 'none';
   const area = byId('messagesArea');
   area.replaceChildren();
@@ -2807,6 +2984,8 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('logoutBtn').addEventListener('click', logout);
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
   byId('syncBtn').addEventListener('click', () => syncTranscript({announce: true}));
+  byId('autoAnswerToggle').addEventListener('click', toggleAutoAnswer);
+  byId('autoAnswerInfo').addEventListener('click', toggleAutoAnswerMenu);
   byId('questionDismiss')?.addEventListener('click', _dismissQuestion);
   byId('settingsBtn').addEventListener('click', openSettingsDialog);
   byId('supervisorBtn')?.addEventListener('click', openSupervisorPane);
@@ -3013,6 +3192,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (document.getElementById('supervisorPickDialog')) _closeSupervisorPicker();
       else if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
       else if (byId('chatDialog').classList.contains('open')) closeDialog();
+      else if (!byId('autoAnswerMenu')?.hidden) {
+        closeAutoAnswerMenu();
+        byId('autoAnswerInfo')?.focus();
+      }
       else closeSidebar();
     }
   });

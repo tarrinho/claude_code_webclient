@@ -425,12 +425,43 @@ class EndpointTests(_DbCase):
             self.assertEqual(body["days"], expected, f"days={given}")
 
     async def test_series_returns_stored_rows(self):
+        """The stored sample is returned, on a continuous axis.
+
+        This asserted a length of 1. The endpoint now fills the window, so a
+        one-day request spans yesterday and today and returns two rows: the
+        reading, and a placeholder for the day that has none. The count was
+        never the subject -- the stored value is -- so it is asserted by
+        finding the row rather than by trusting its position.
+        """
         await self._store(db._now(), cpu_pct=7.0)
         body = self._body(
             await app.handle_system_series_get(self._request(days="1", bucket="day"))
         )
-        self.assertEqual(len(body["series"]), 1)
-        self.assertEqual(body["series"][0]["cpu_pct"], 7.0)
+        measured = [r for r in body["series"] if r["cpu_pct"] is not None]
+        self.assertEqual(len(measured), 1)
+        self.assertEqual(measured[0]["cpu_pct"], 7.0)
+
+    async def test_the_series_axis_is_continuous_and_holes_are_null(self):
+        """A day with no sample must not report a reading of zero.
+
+        Zero would draw the machine idling at 0% CPU across an interval nothing
+        was measured in, which is an invented measurement -- and the wider the
+        window, the more of the chart is invention.
+        """
+        await self._store(db._now(), cpu_pct=7.0)
+        body = self._body(
+            await app.handle_system_series_get(self._request(days="3", bucket="day"))
+        )
+        buckets = [r["bucket"] for r in body["series"]]
+        self.assertEqual(buckets, sorted(buckets))
+        self.assertGreater(
+            len(buckets), 1, "the window was not filled, so the axis still skips"
+        )
+        holes = [r for r in body["series"] if r["samples"] == 0]
+        self.assertTrue(holes, "a 3-day window with one sample has holes")
+        for row in holes:
+            self.assertIsNone(row["cpu_pct"])
+            self.assertIsNone(row["mem_pct"])
 
 
 class SamplerTests(unittest.IsolatedAsyncioTestCase):

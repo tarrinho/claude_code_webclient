@@ -24,6 +24,39 @@ churn.
 
 ### Fixed
 
+- **The statistics and server charts now have a continuous time axis.** Both
+  series queries end in `GROUP BY bucket`, so a bucket no row falls into was not
+  in the result at all, and `lineChart` places points by index — an idle interval
+  was therefore not drawn as a gap, it was *absent from the axis*, and its
+  neighbours were rendered adjacent. Measured on this machine: 41,429 usage
+  events spanning about 166 hours, of which only 105 hours contained any usage,
+  and five idle hours overnight put midnight one step from 06:00.
+
+  The two pages needed different fills, and this is the part worth knowing. An
+  hour with no usage genuinely *is* zero tokens, so the usage charts zero-fill.
+  An interval with no host sample is **no measurement**, so `system_series`
+  returns nulls and the renderer breaks the line: zero-filling it would have
+  drawn the machine sitting at 0% CPU and 0% memory across precisely the windows
+  the sampler was not running. `server.js` did `Number(row[field]) || 0`, so
+  without that change the continuous axis would have made the Server page worse
+  than the gap it replaced — a confident flat line where there was no data at
+  all. Summary figures (mean, peak) skip the holes for the same reason.
+
+  Spine keys are generated in **local** time, because `_bucket_expr` buckets in
+  local time. A UTC spine would have produced labels that look right and keys
+  that never match a row, so every real bucket would be counted as an extra one
+  and every series would double. That is asserted against SQLite's own output
+  rather than against a reading of the expression.
+
+  Also fixed while here: the tooltip showed `0` for an unmeasured bucket, since
+  its default formatter renders null as zero. It now reads *"no data"* — it is
+  the one place a user goes to check a specific moment.
+
+  Months get no spine: a month is not a fixed number of seconds, and a bucket
+  that coarse reads as a gap anyway. A window too wide to enumerate (ten years
+  of half hours is 175,000 keys) is left unfilled rather than truncated, because
+  half a spine mislabels the axis it exists to fix.
+
 - **Prompts that exist only on the terminal are now visible and answerable.** A
   permission prompt — *"Permission rule `Bash(curl*)` requires confirmation for
   this command. Do you want to proceed? ❯ 1. Yes / 2. No"* — is a TUI

@@ -61,8 +61,20 @@ export function exact(n) {
  * makes a line jump between non-adjacent points and reads as continuous
  * activity that never happened.
  */
-export function toSeries(rows, keyField, valueOf) {
-  const buckets = [...new Set(rows.map(r => r.bucket))].sort();
+export function toSeries(rows, keyField, valueOf, spine = null) {
+  // The spine is the complete bucket axis for the window, including buckets no
+  // row falls into. Without it the axis is built from the rows themselves, so a
+  // bucket nobody wrote is not merely unfilled -- it is absent, and the chart,
+  // which places points by index, renders its neighbours adjacent. That is the
+  // same error this function already avoids between series, one dimension over:
+  // filling a silent source with zeros is pointless if a silent *hour* has no
+  // column to be zero in.
+  //
+  // Unioned rather than trusted outright, so a row outside the spine still
+  // appears: a bucket holding data is evidence, and a spine that disagrees with
+  // it is the thing to distrust.
+  const seen = new Set(rows.map(r => r.bucket));
+  const buckets = [...new Set([...(spine || []), ...seen])].sort();
   const byKey = new Map();
   for (const row of rows) {
     const key = row[keyField];
@@ -79,6 +91,38 @@ export function toSeries(rows, keyField, valueOf) {
   }));
   series.sort((a, b) => b.total - a.total);
   return {buckets, series};
+}
+
+/**
+ * Split values into runs of consecutive real readings, dropping the holes.
+ *
+ * Returns [[index, value], ...] per run, so each run can be drawn as its own
+ * polyline and a hole becomes a break rather than a point.
+ *
+ * A null is an interval where nothing was measured -- the sampler was not
+ * running. Plotting it as a value would draw the machine at 0% CPU through
+ * exactly the windows the console was down, and joining the line across it is
+ * wrong the other way: the line would span the outage as though the readings
+ * either side were consecutive, which is the gap this is meant to expose.
+ *
+ * Its own function because it is the whole of the decision and it is pure,
+ * which is what lets it be tested without a chart around it.
+ */
+export function segments(values) {
+  const runs = [];
+  let run = [];
+  (values || []).forEach((v, i) => {
+    // NaN and Infinity are holes too. They reach here from a metric that was
+    // stored but is not a number, and y() would place them off the canvas.
+    if (v === null || v === undefined || !Number.isFinite(Number(v))) {
+      if (run.length) runs.push(run);
+      run = [];
+      return;
+    }
+    run.push([i, Number(v)]);
+  });
+  if (run.length) runs.push(run);
+  return runs;
 }
 
 /** Short axis label for a bucket key: "2026-08-29" -> "Aug 29". */
@@ -125,7 +169,12 @@ export function lineChart(container, {buckets, series}, {
   const figure = el('figure', 'stat-figure');
   figure.appendChild(el('figcaption', 'stat-caption', title));
 
-  const max = axisMax || Math.max(1, ...series.flatMap(s => s.values));
+  // Null means "not measured", so it must not reach Math.max: a single null
+  // read as 0 is harmless to the scale, but read as NaN it poisons it and the
+  // whole chart renders blank.
+  const measured = series.flatMap(s => s.values).filter(v => v !== null
+    && v !== undefined && Number.isFinite(Number(v)));
+  const max = axisMax || Math.max(1, ...measured);
   const x = i => buckets.length < 2
     ? pad.left + plotW / 2
     : pad.left + (i / (buckets.length - 1)) * plotW;
@@ -158,17 +207,31 @@ export function lineChart(container, {buckets, series}, {
   });
 
   series.forEach(entry => {
-    const points = entry.values.map((v, i) => `${x(i)},${y(v)}`).join(' ');
-    root.appendChild(svg('polyline', {
-      points, class: 'stat-line', stroke: colorFor(entry.key), fill: 'none',
-    }));
-    // A single bucket draws no line, so mark the point or it renders blank.
-    if (buckets.length === 1) {
-      root.appendChild(svg('circle', {
-        cx: x(0), cy: y(entry.values[0]), r: 4,
-        fill: colorFor(entry.key), class: 'stat-dot',
+    // Split on nulls and draw one polyline per run of real readings, rather
+    // than one line through everything. A null is an interval where nothing
+    // was measured -- the sampler was not running -- and plotting it as a
+    // value would draw the machine sitting at 0% CPU through exactly the
+    // windows the console was down. Joining across it is just as wrong in the
+    // other direction: the line would span the outage as though the readings
+    // either side were consecutive, which is the gap this whole change exists
+    // to stop the chart from hiding.
+    segments(entry.values).forEach(segment => {
+      root.appendChild(svg('polyline', {
+        points: segment.map(([i, v]) => `${x(i)},${y(v)}`).join(' '),
+        class: 'stat-line', stroke: colorFor(entry.key), fill: 'none',
       }));
-    }
+      // A run of one has no line to draw, so it needs a dot or it is invisible.
+      // This is not only the single-bucket case any more: an isolated reading
+      // between two outages is a run of one in the middle of a wide chart, and
+      // silently dropping it would under-report the machine having been up.
+      if (segment.length === 1) {
+        const [i, v] = segment[0];
+        root.appendChild(svg('circle', {
+          cx: x(i), cy: y(v), r: 4,
+          fill: colorFor(entry.key), class: 'stat-dot',
+        }));
+      }
+    });
   });
 
   // Crosshair + tooltip. An SVG chart is interactive by default; without this
@@ -211,7 +274,14 @@ export function lineChart(container, {buckets, series}, {
       swatch.style.background = colorFor(entry.key);
       row.appendChild(swatch);
       row.appendChild(el('span', 'stat-tip-name', labelFor(entry.key)));
-      row.appendChild(el('span', 'stat-tip-value', formatTip(entry.values[i])));
+      // A null bucket was never measured. formatTip is exact() by default,
+      // which renders null as "0" -- so the tooltip would state a reading for
+      // an interval that has none, and it is the one place the user goes to
+      // check a specific moment.
+      const value = entry.values[i];
+      const shown = (value === null || value === undefined)
+        ? 'no data' : formatTip(value);
+      row.appendChild(el('span', 'stat-tip-value', shown));
       tip.appendChild(row);
     });
     tip.hidden = false;
@@ -295,8 +365,12 @@ export function renderStats(container, payload) {
   const sourceLabel = key => known.get(key)?.label || key;
   const sourceColor = key => slotColor(known.get(key)?.slot ?? 8);
 
+  // The spine is the full bucket axis for the window. An hour with no usage
+  // genuinely is zero tokens, so these fill with zeros -- unlike the Server
+  // page, where a missing bucket means nothing was measured and stays null.
+  const spine = payload.spine || null;
   const tokens = toSeries(rows, 'provider',
-    r => (r.input_tokens || 0) + (r.output_tokens || 0));
+    r => (r.input_tokens || 0) + (r.output_tokens || 0), spine);
   lineChart(container, tokens, {
     title: 'Tokens over time, by source',
     colorFor: sourceColor, labelFor: sourceLabel,
@@ -304,7 +378,7 @@ export function renderStats(container, payload) {
   seriesTable(container, tokens,
     {labelFor: sourceLabel, caption: 'Tokens by source'});
 
-  const requests = toSeries(rows, 'provider', r => r.requests || 0);
+  const requests = toSeries(rows, 'provider', r => r.requests || 0, spine);
   lineChart(container, requests, {
     title: 'Requests over time, by source',
     colorFor: sourceColor, labelFor: sourceLabel,
@@ -315,7 +389,7 @@ export function renderStats(container, payload) {
   const modelRows = payload.models || [];
   if (modelRows.length) {
     const models = toSeries(modelRows, 'model',
-      r => (r.input_tokens || 0) + (r.output_tokens || 0));
+      r => (r.input_tokens || 0) + (r.output_tokens || 0), spine);
     // Colour follows the entity by rank within this chart only; the series are
     // already sorted by total, so a range change cannot repaint a survivor
     // differently from how it was drawn a moment ago.

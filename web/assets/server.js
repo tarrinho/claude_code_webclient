@@ -54,13 +54,29 @@ export function duration(seconds) {
 export function seriesFrom(rows, defs) {
   const buckets = rows.map(row => row.bucket);
   const series = defs.map(def => {
-    const values = rows.map(row => Number(row[def.field]) || 0);
+    // Null is preserved rather than coerced. The series now arrives on a
+    // continuous bucket spine, and a bucket the sampler never wrote comes back
+    // with null metrics because no measurement was taken. `Number(null) || 0`
+    // turned that into a reading of zero, which would draw the box at 0% CPU
+    // and 0% memory across precisely the windows it was not being sampled --
+    // an invented measurement, and the chart looks most confident exactly
+    // where it knows least.
+    const values = rows.map(row => {
+      const raw = row[def.field];
+      if (raw === null || raw === undefined) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    });
+    // Summary figures describe what was measured, so they skip the holes. An
+    // outage must not drag the mean towards zero, or a page of green averages
+    // would be the visible effect of the sampler having stopped.
+    const real = values.filter(v => v !== null);
     return {
       key: def.key,
       values,
-      total: values.reduce((a, b) => a + b, 0),
-      peak: values.length ? Math.max(...values) : 0,
-      mean: values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0,
+      total: real.reduce((a, b) => a + b, 0),
+      peak: real.length ? Math.max(...real) : 0,
+      mean: real.length ? real.reduce((a, b) => a + b, 0) / real.length : 0,
     };
   });
   return {buckets, series};

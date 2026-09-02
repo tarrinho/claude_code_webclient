@@ -2161,6 +2161,109 @@ USAGE_BUCKETS: Final[dict[str, int]] = {
 _LOCAL_TS: Final[str] = "replace(datetime(created_at, 'localtime'), ' ', 'T')"
 
 
+# A spine is one string per bucket, so a wide window at a narrow bucket is the
+# expensive case: 30 days of half hours is 1,440 keys, which is fine, and an
+# unbounded range at half hours is not. Past this the spine is dropped rather
+# than truncated, because half a spine silently mislabels the axis it is meant
+# to fix -- worse than the gap it replaces.
+_SPINE_MAX: Final[int] = 5000
+
+_BUCKET_STEP_S: Final[dict[str, int]] = {
+    "halfhour": 1800,
+    "hour": 3600,
+    "day": 86400,
+}
+
+
+def bucket_spine(
+    bucket: str, days: int | None, earliest: str | None = None
+) -> list[str]:
+    """Every bucket key across the window, in order, with none missing.
+
+    The series queries GROUP BY the bucket expression, so a bucket that no row
+    falls into is not in the result at all. The chart places points by index, so
+    an absent bucket is not drawn as a gap -- it is absent from the axis, and its
+    neighbours are rendered adjacent. Five idle hours overnight put midnight
+    one step from 06:00 and the time axis stops being a time axis.
+
+    Keys are built in *local* time because :func:`_bucket_expr` buckets in local
+    time. Generating them in UTC would produce an axis whose labels look right
+    and whose keys never match a row, so every real bucket would be treated as
+    an extra one and the series would double.
+
+    ``earliest`` bounds an unbounded window: with ``days=None`` the caller wants
+    everything, and everything has no start until the data supplies one. Passing
+    the oldest row keeps the spine to the range that can contain data.
+
+    Months are not generated. Their step is not a fixed number of seconds, and a
+    month bucket is already coarse enough that an empty one is legible as a gap.
+    """
+    step = _BUCKET_STEP_S.get(bucket)
+    if step is None:
+        return []
+    now = time.time()
+    if days is not None:
+        start = now - max(0, days) * 86400
+    elif earliest:
+        start = _epoch_of(earliest)
+        if start is None:
+            return []
+    else:
+        return []
+    # Floor to the bucket in local time, which is where the boundary is: an
+    # hour bucket starts on the local hour, and flooring in UTC would offset
+    # every key by the zone's fractional-hour part where one exists.
+    first = _floor_local(start, bucket)
+    keys: list[str] = []
+    cursor = first
+    while cursor <= now + step:
+        keys.append(_bucket_key(cursor, bucket))
+        if len(keys) > _SPINE_MAX:
+            return []
+        cursor += step
+    # The trailing key can overshoot into the future by up to one step.
+    cutoff = _bucket_key(now, bucket)
+    return [key for key in keys if key <= cutoff]
+
+
+def _epoch_of(stamp: str) -> float | None:
+    """Seconds since the epoch for a stored UTC timestamp, or None."""
+    text = (stamp or "").strip().rstrip("Z")
+    for shape in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.datetime.strptime(text[:19], shape).replace(
+                tzinfo=datetime.UTC)
+        except ValueError:
+            continue
+        return parsed.timestamp()
+    return None
+
+
+def _floor_local(epoch: float, bucket: str) -> float:
+    """*epoch* floored to the start of its local bucket."""
+    parts = time.localtime(epoch)
+    if bucket == "day":
+        floored = (*parts[:3], 0, 0, 0, *parts[6:])
+    elif bucket == "hour":
+        floored = (*parts[:4], 0, 0, *parts[6:])
+    else:  # halfhour
+        floored = (*parts[:4], 30 if parts.tm_min >= 30 else 0, 0, *parts[6:])
+    # mktime re-derives the offset, so a bucket spanning a DST change keeps its
+    # real local start rather than inheriting the offset in force at `epoch`.
+    return time.mktime(time.struct_time(floored))
+
+
+def _bucket_key(epoch: float, bucket: str) -> str:
+    """The key :func:`_bucket_expr` would produce for *epoch*, in local time."""
+    parts = time.localtime(epoch)
+    if bucket == "day":
+        return time.strftime("%Y-%m-%d", parts)
+    if bucket == "hour":
+        return time.strftime("%Y-%m-%dT%H", parts)
+    return time.strftime("%Y-%m-%dT%H:", parts) + (
+        "30" if parts.tm_min >= 30 else "00")
+
+
 def _bucket_expr(bucket: str) -> tuple[str, list[Any]]:
     """SQL mapping ``created_at`` to a local-time bucket key, and its params.
 
@@ -2343,7 +2446,7 @@ async def system_latest() -> dict[str, Any] | None:
 
 
 async def system_series(
-    days: int | None = 7, bucket: str = "hour"
+    days: int | None = 7, bucket: str = "hour", fill: bool = False
 ) -> list[dict[str, Any]]:
     """Host samples averaged per time bucket, oldest first.
 
@@ -2356,6 +2459,15 @@ async def system_series(
     Bucketing goes through _bucket_expr() rather than USAGE_BUCKETS, because
     'halfhour' is not a prefix width: its entry in that dict is a sentinel, and
     reading it as a substr length silently buckets by the minute instead.
+
+    ``fill`` places the result on a continuous bucket spine, with the buckets no
+    sample fell into carried as nulls. Off by default, and the default is the
+    point: this is the storage read, and a continuous axis is a presentation
+    need. Filling here unconditionally changed what every caller gets -- two
+    stored samples came back as 2,437 rows -- and it obscured the questions the
+    storage tests ask, which are about the bucket expression itself and want to
+    see exactly the buckets the data produced. Only the chart endpoint asks for
+    the spine.
     """
     expr, expr_params = _bucket_expr(bucket)
     params: list[Any] = [*expr_params]
@@ -2388,7 +2500,74 @@ async def system_series(
         "GROUP BY bucket ORDER BY bucket ASC",
         params,
     )
-    return [dict(row) for row in await cur.fetchall()]
+    rows = [dict(row) for row in await cur.fetchall()]
+    if not fill:
+        return rows
+    # An unbounded window has no start until the data supplies one.
+    earliest = await _earliest("system_samples") if days is None else None
+    return _on_spine(rows, bucket, days, earliest)
+
+
+async def usage_earliest(owner_id: str) -> str | None:
+    """The oldest usage timestamp for *owner_id*, or None.
+
+    Owner-scoped, like every other read of this table: the spine for an
+    unbounded window must start where *this* caller's data starts, not where
+    the busiest account on the machine happens to begin.
+    """
+    cur = await db_conn.execute(
+        "SELECT MIN(created_at) AS first FROM usage_events WHERE owner_id = ?",
+        (owner_id,),
+    )
+    row = await cur.fetchone()
+    return (row["first"] if row else None) or None
+
+
+async def _earliest(table: str) -> str | None:
+    """The oldest ``created_at`` in *table*, or None when it is empty."""
+    cur = await db_conn.execute(
+        f"SELECT MIN(created_at) AS first FROM {table}")  # nosec B608: fixed
+    row = await cur.fetchone()
+    return (row["first"] if row else None) or None
+
+
+def _on_spine(
+    rows: list[dict[str, Any]], bucket: str, days: int | None,
+    earliest: str | None = None,
+) -> list[dict[str, Any]]:
+    """Place *rows* on a continuous bucket spine, missing buckets as nulls.
+
+    A host sample that does not exist is not a reading of zero. Zero-filling
+    would draw the machine sitting at 0% CPU and 0% memory across exactly the
+    windows the sampler was not running -- asserting a measurement where none
+    was taken, and the more confident the chart looks the worse that is. The
+    metrics come back as None so the renderer can break the line instead.
+
+    ``samples: 0`` is the one honest number in a missing bucket, and it is what
+    tells a caller the row is a placeholder rather than a reading.
+    """
+    spine = bucket_spine(bucket, days, earliest)
+    if not spine:
+        # No spine available -- an unsupported bucket, or a window too wide to
+        # enumerate. The unfilled rows are still correct, just not continuous.
+        return rows
+    present = {row["bucket"]: row for row in rows}
+    if not present:
+        return rows
+    # Every column any real row carries, so a placeholder has the same shape.
+    fields = {key for row in rows for key in row}
+    blank = {key: None for key in fields if key not in ("bucket", "samples")}
+    filled: list[dict[str, Any]] = []
+    for key in spine:
+        row = present.get(key)
+        filled.append(row if row else {"bucket": key, "samples": 0, **blank})
+    # Rows outside the spine are kept rather than dropped: a bucket holding data
+    # is evidence, and a spine that disagrees with it is the thing to distrust.
+    extra = [row for key, row in present.items() if key not in set(spine)]
+    if extra:
+        filled.extend(extra)
+        filled.sort(key=lambda row: row["bucket"])
+    return filled
 
 
 async def system_prune(days: int) -> int:

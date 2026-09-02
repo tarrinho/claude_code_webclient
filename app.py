@@ -2473,6 +2473,23 @@ async def handle_usage_series_get(request: Request):
             "retention_days": config.USAGE_RETENTION_DAYS,
             "series": series,
             "models": await db.usage_model_series(owner, days, bucket),
+            # The complete bucket axis for the window, including the buckets no
+            # row falls into. The series GROUP BY only returns buckets that
+            # have rows, and the chart places points by index, so an idle hour
+            # is not drawn as a gap -- it is missing from the axis, and its
+            # neighbours are rendered adjacent. Five idle hours overnight put
+            # midnight one step from 06:00.
+            #
+            # Sent as a separate axis rather than as zero-valued rows: a
+            # placeholder row would need a provider and a model to be shaped
+            # like the others, and inventing those adds a series nobody used.
+            # An hour with no usage really is zero tokens, so the client fills
+            # these with zeros -- unlike the system series, where a missing
+            # bucket means no measurement was taken and must stay null.
+            "spine": db.bucket_spine(
+                bucket, days,
+                await db.usage_earliest(owner) if days is None else None,
+            ),
         }
     )
 
@@ -2525,7 +2542,10 @@ async def handle_system_series_get(request: Request):
             "buckets": list(db.USAGE_BUCKETS),
             "sample_interval_s": config.SYSTEM_SAMPLE_S,
             "retention_days": config.SYSTEM_RETENTION_DAYS,
-            "series": await db.system_series(days, bucket),
+            # fill=True: the buckets no sample fell into come back as nulls, so
+            # the chart can break its line instead of skipping the interval and
+            # drawing the readings either side as though they were consecutive.
+            "series": await db.system_series(days, bucket, fill=True),
         }
     )
 

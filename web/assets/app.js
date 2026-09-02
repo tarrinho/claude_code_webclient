@@ -856,12 +856,16 @@ function _buildModelSection(machine) {
   } else if (entry.source === 'endpoint') {
     const count = entry.models.length;
     status.textContent = `${count} model${count === 1 ? '' : 's'} from ${entry.endpoint}`;
-  } else {
+  } else if (entry.reason) {
     // Never present a guess as the real list -- say why it is a guess.
     status.classList.add('models-status-warn');
-    status.textContent = entry.reason
-      ? `${entry.reason} Showing built-in suggestions.`
-      : 'Showing built-in suggestions.';
+    status.textContent = `${entry.reason} Showing built-in suggestions.`;
+  } else {
+    // No reason means the server called this fallback expected, not a fault --
+    // an anthropic machine with no stored key cannot be probed over HTTP, yet
+    // serves turns normally through the host login. Warning about it flagged a
+    // working backend as broken, so this stays a quiet label.
+    status.textContent = 'Built-in model list';
   }
   toolbar.appendChild(status);
 
@@ -1216,7 +1220,11 @@ function _syncMachineProviderFields() {
   const isAnthropic = provider === 'anthropic';
   byId('machineProxyFields').hidden = isAnthropic;
   byId('machineAnthropicFields').hidden = !isAnthropic;
-  byId('machineApiKeyHint').hidden = !isAnthropic;
+  // The whole api_key group, not just its hint. Only an anthropic backend
+  // carries its key to the CLI; a proxy machine's key is stored and then never
+  // read by any turn, so offering the field there asked for a credential that
+  // could not take effect.
+  byId('machineApiKeyFields').hidden = !isAnthropic;
   byId('machineModel').placeholder = isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5';
 }
 
@@ -1261,10 +1269,13 @@ async function _saveMachine() {
     if (isAnthropic) {
       // Blank means "the default endpoint"; the server fills it in.
       if (base_url) body.base_url = base_url;
+      // Only an anthropic backend consumes the key, so only that provider
+      // sends one. Storing it for a proxy machine put a live credential in the
+      // database that no turn could ever use -- cost with no effect.
+      if (api_key !== null) body.api_key = api_key;
     } else {
       body.host = host;
     }
-    if (api_key !== null) body.api_key = api_key;
     if (_machineEditing) {
       resp = await apiFetch(`/api/machines/${encodeURIComponent(_machineEditing)}`, {
         method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),

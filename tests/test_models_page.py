@@ -266,10 +266,17 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["source"], "builtin")
         self.assertIn("rejected the API key", data["reason"])
 
-    async def test_missing_key(self):
+    async def test_missing_key_falls_back_without_a_warning(self):
+        # No stored key is the working configuration here: the CLI authenticates
+        # with the host's own login, and this probe cannot -- it speaks plain
+        # HTTP and holds no OAuth token. So the fallback is expected, and
+        # reason stays None rather than blaming the backend for the probe's
+        # limitation on a backend that serves turns fine.
         await _add_anthropic_machine(key=None)
         data = await self._call(lambda url, key: (403, b""))
-        self.assertIn("requires an API key", data["reason"])
+        self.assertEqual(data["source"], "builtin")
+        self.assertIsNone(data["reason"])
+        self.assertTrue(data["models"], "built-in ids must still be offered")
 
     async def test_unexpected_status_named(self):
         await _add_anthropic_machine()

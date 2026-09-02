@@ -444,13 +444,17 @@ def _machine_model_selection(machine: dict | None) -> dict:
 
 
 def _builtin_models(
-    reason: str, endpoint: str | None = None, machine: dict | None = None
+    reason: str | None, endpoint: str | None = None, machine: dict | None = None
 ) -> JSONResponse:
     """Fall back to the ids shipped with the app, saying why.
 
     The page previously showed a hardcoded list with no indication that it was
     a guess, so a model the service does not serve looked identical to one it
     does. The reason is surfaced instead of hidden.
+
+    ``reason=None`` means the fallback is expected rather than a fault, and the
+    page shows no warning for it. Only the 401/403-without-a-stored-key case
+    uses that: see the call site for why it is normal here.
     """
     return JSONResponse(
         {
@@ -519,10 +523,16 @@ async def handle_models_list(request: Request):
         _log.warning("model list failed %s: %s", host, exc)
         return _builtin_models("Could not reach the endpoint.", base_url, machine)
     if status in (401, 403):
+        # A stored key that the endpoint refuses is a real misconfiguration and
+        # is still reported. No stored key is not: on this deployment an
+        # anthropic machine without one is the *working* configuration, because
+        # the CLI authenticates with the host's own login and this probe cannot
+        # -- it speaks plain HTTP and holds no OAuth token. Reporting that as
+        # "the endpoint requires an API key" described the probe's limitation as
+        # a fault in the backend, on a backend that was serving turns fine.
+        # reason=None marks the fallback as expected, and the page stays quiet.
         return _builtin_models(
-            "The endpoint rejected the API key."
-            if api_key
-            else "The endpoint requires an API key.",
+            "The endpoint rejected the API key." if api_key else None,
             base_url,
             machine,
         )

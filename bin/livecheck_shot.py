@@ -5,13 +5,33 @@ where, the `body.max-*` maximize rules, behaviour at narrow widths. It CANNOT
 verify anything `web/supervisor.js` renders, because with that script loaded
 headless chromium never exits and never captures a frame at all.
 
-That was measured, not assumed. With the script present, every one of these
-still timed out with no PNG produced:
+THE CAUSE, bisected. `init()` installs a 30-second `setInterval` to poll the
+supervisor list. `--virtual-time-budget` does not retire while that timer is
+outstanding, and the budget is what `--dump-dom` waits on, so chromium never
+reaches the point of emitting anything. Three probes on the same binary
+(chromium 148.0.7778.178) isolate it:
+
+    web/supervisor.html, script tag stripped       dumps in 0.6s
+    the same page + web/supervisor.js              never exits
+    the same page, that one setInterval neutered   dumps in 1.0s
+
+That last line is the whole finding: one call, not the script as a whole.
+
+This is also why every mitigation tried before that bisection failed, and the
+list is kept because the failures were real and correctly measured:
 
     animations and transitions disabled            timeout, no PNG
     alert/confirm/prompt stubbed                   timeout, no PNG
     EventSource and setInterval neutralised        timeout, no PNG
     --virtual-time-budget=6000 / 2000 / omitted    timeout, no PNG
+
+The third is the instructive one. `setInterval` *was* stubbed — from a script
+injected before supervisor.js — but the page installs its timer through the
+reference it had already captured, so the stub never intercepted it and the
+budget stayed open. A mitigation that looks like it addresses the cause and
+does not is worse than one that obviously misses, because it retires the
+hypothesis. Varying the budget could not help either: the budget is not what
+fails to expire, it is what never gets the chance to.
 
 So the JS path is opt-in via LIVECHECK_WITH_JS=1 purely to reproduce the hang;
 it produces no image. This is the same wall that moved

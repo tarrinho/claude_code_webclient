@@ -396,6 +396,18 @@ async def _ensure_chat_columns() -> None:
             "ALTER TABLE chats ADD COLUMN question_ids TEXT NOT NULL DEFAULT ''"
         ),
         "supervisor": "ALTER TABLE chats ADD COLUMN supervisor TEXT",
+        # Per-chat auto-approval of permission and plan-approval prompts.
+        # Default 0, and deliberately not settable globally: on, this chat
+        # approves the prompts that exist to ask a person, and the answer is a
+        # keystroke into a live terminal with nothing to undo.
+        "auto_answer": (
+            "ALTER TABLE chats ADD COLUMN auto_answer INTEGER NOT NULL DEFAULT 0"
+        ),
+        # The last ten answers and skips, newest first, as a JSON array. Capped
+        # on write rather than pruned later, so the column cannot grow: it is
+        # read with the chat, and a long-running conversation would otherwise
+        # accumulate one entry per approval for ever.
+        "auto_answer_log": "ALTER TABLE chats ADD COLUMN auto_answer_log TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:
@@ -736,6 +748,124 @@ async def chat_get_question_ids(chat_id: str) -> list[str]:
         # silently either.
         _log.warning("chat %s has unreadable question_ids", chat_id)
         return []
+
+
+# ── Auto-answer knob ────────────────────────────────────────────────────────
+#
+# Storage only. The watcher that consumes this, and the routes that set it, are
+# steps 2 and 3 of
+# docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
+#
+# Reads and writes of the knob are owner-scoped, unlike most of the per-chat
+# helpers above, and that is not incidental: switching it on arms an automatic
+# approver of permission prompts, so an unscoped write would let one user turn
+# on silent approval inside another user's conversation. The log is scoped for a
+# second reason -- it quotes prompt text out of somebody else's session.
+
+_AUTO_ANSWER_LOG_MAX: Final[int] = 10
+
+
+async def chat_auto_answer_set(chat_id: str, owner_id: str, enabled: bool) -> bool:
+    """Arm or disarm auto-approval for one conversation. True if it landed."""
+    cur = await db_conn.execute(
+        "UPDATE chats SET auto_answer = ?, updated_at = ? "
+        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+        (1 if enabled else 0, _now(), chat_id, owner_id),
+    )
+    await db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def chat_auto_answer_get(chat_id: str, owner_id: str) -> bool:
+    """Whether auto-approval is on. False for a chat that is not the owner's,
+    which is the same answer as "off" on purpose: a caller that cannot set it
+    should not be told what it is.
+    """
+    cur = await db_conn.execute(
+        "SELECT auto_answer FROM chats "
+        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+        (chat_id, owner_id),
+    )
+    row = await cur.fetchone()
+    return bool(row and row["auto_answer"])
+
+
+async def chat_auto_answer_log_append(chat_id: str, entry: dict[str, Any]) -> None:
+    """Record one answer or skip, newest first, keeping at most ten.
+
+    Not owner-scoped, because the caller is the watcher rather than a request:
+    it already resolved the chat through :func:`chats_with_auto_answer`, and
+    there is no user to attribute the write to. Reading is scoped.
+
+    Stamps ``at`` here rather than trusting the caller, so every entry has one
+    and they are comparable.
+    """
+    cur = await db_conn.execute(
+        "SELECT auto_answer_log FROM chats WHERE id = ?", (chat_id,)
+    )
+    row = await cur.fetchone()
+    if not row:
+        return
+    existing = _auto_answer_log_decode(chat_id, row["auto_answer_log"])
+    record = {"at": _now(), **entry}
+    trimmed = [record, *existing][:_AUTO_ANSWER_LOG_MAX]
+    await db_conn.execute(
+        "UPDATE chats SET auto_answer_log = ? WHERE id = ?",
+        (json.dumps(trimmed), chat_id),
+    )
+    await db_conn.commit()
+
+
+async def chat_auto_answer_log_get(chat_id: str, owner_id: str) -> list[dict[str, Any]]:
+    """The last ten answers and skips for this chat, newest first."""
+    cur = await db_conn.execute(
+        "SELECT auto_answer_log FROM chats "
+        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+        (chat_id, owner_id),
+    )
+    row = await cur.fetchone()
+    if not row:
+        return []
+    return _auto_answer_log_decode(chat_id, row["auto_answer_log"])
+
+
+def _auto_answer_log_decode(chat_id: str, raw: object) -> list[dict[str, Any]]:
+    """Parse the stored log, treating anything unreadable as empty.
+
+    This is our own column, so a bad value should not happen -- but a crash
+    mid-write or a manual edit are both possible, and a tooltip is not worth
+    failing the whole chat view over. Logged rather than swallowed, because
+    silently showing no approvals for a chat that made some is the misleading
+    outcome.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        _log.warning("chat %s has unreadable auto_answer_log", chat_id)
+        return []
+    if not isinstance(parsed, list):
+        _log.warning("chat %s auto_answer_log is not a list", chat_id)
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+async def chats_with_auto_answer() -> list[dict[str, Any]]:
+    """Every armed conversation the watcher should poll.
+
+    Filtered to chats that carry a ``session_id``: answering means locating the
+    session's terminal, so a chat without one can never be answered and polling
+    it every tick would be pure cost. Deleted chats are excluded for the same
+    reason.
+    """
+    cur = await db_conn.execute(
+        "SELECT id, owner_id, session_id, title FROM chats "
+        "WHERE auto_answer = 1 AND deleted_at IS NULL "
+        "AND session_id IS NOT NULL AND session_id != '' "
+        "ORDER BY id"
+    )
+    return [dict(row) for row in await cur.fetchall()]
 
 
 async def bump_chat_updated_at(chat_id: str) -> None:

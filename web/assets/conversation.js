@@ -622,7 +622,7 @@ export function createConversationController(dependencies) {
   // state nobody reads any more, on top of the accumulation §4 forbids.
   if (_lastCommandTimer) clearInterval(_lastCommandTimer);
   _lastCommandTimer = setInterval(
-    () => { if (lastCommand) renderLastCommand(); }, 30000,
+    () => { if (shownCommand()) renderLastCommand(); }, 30000,
   );
 
   function persistDraft() {

@@ -33,6 +33,16 @@ Index 2 grants a standing permission for every future matching command. Since
 sees it. So a broadening clause disqualifies an option, and if that leaves no
 single unambiguous affirmative the watcher records a skip and moves on.
 
+**A structured question stays somebody's decision, unless a second authority
+says otherwise.** A chat can additionally arm "accept recommended" (the
+`auto_answer_recommend` column). With that on, a structured `AskUserQuestion`
+is no longer skipped in silence: if exactly one visible option's label ends in
+"(Recommended)" -- the convention this deployment's own question-asking tools
+use for the option their author judged best -- that one gets pressed, by the
+same by-label-never-by-position rule as the affirmative case. Anything else
+(no marked option, more than one, wording that does not end that way) is
+recorded as a skip rather than guessed at.
+
 The pending-prompt lookup and the keystroke delivery are injected rather than
 imported. The canonical lookup is `routes.chats._pending_prompt`, private to a
 module that was split out of app.py; injection keeps this module free of a
@@ -78,6 +88,13 @@ _BROADENING_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# Anchored at the end, like _AFFIRMATIVE_RE is anchored at the start: the
+# marker has to be what the label ends with, not merely contain, so an option
+# that happens to quote the phrase mid-sentence cannot match by accident.
+_RECOMMENDED_RE: Final[re.Pattern[str]] = re.compile(
+    r"\(recommended\)\s*$", re.IGNORECASE,
+)
+
 _task: asyncio.Task | None = None
 
 
@@ -116,6 +133,28 @@ def choose_affirmative(
     return candidates[0]
 
 
+def choose_recommended(
+    options: Sequence[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """The one option marked "(Recommended)", or None if there is not exactly
+    one.
+
+    Same reasoning as :func:`choose_affirmative`'s None case: two options both
+    claiming the marker means something upstream is malformed, and guessing
+    between them is exactly what this module exists not to do.
+    """
+    candidates = [
+        option
+        for option in options
+        if isinstance(option, dict)
+        and isinstance(option.get("label"), str)
+        and _RECOMMENDED_RE.search(option["label"].strip())
+    ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
 def _prompt_text(pending: dict[str, Any]) -> str:
     questions = pending.get("questions") or []
     if questions and isinstance(questions[0], dict):
@@ -142,9 +181,9 @@ async def consider(
     """Answer *chat*'s pending prompt if it is safe to. Returns the log entry.
 
     None means nothing was recorded, and that is the right outcome twice over:
-    no prompt is waiting, or the prompt is a structured question this module
-    does not touch. Neither is a decision, so neither belongs in a log the user
-    reads to see what was decided for them.
+    no prompt is waiting, or the prompt is a structured question this chat has
+    not armed "accept recommended" for. Neither is a decision, so neither
+    belongs in a log the user reads to see what was decided for them.
     """
     session_id = chat.get("session_id") or ""
     if not session_id:
@@ -155,9 +194,17 @@ async def consider(
         pending = await pending
     if not pending:
         return None
-    if not is_answerable(pending):
-        # A structured question. Left for the user, and not logged: it was never
-        # this module's to answer, so recording it would read as a refusal.
+
+    if is_answerable(pending):
+        chooser = choose_affirmative
+        skip_reason = "no single unambiguously affirmative option; left for you"
+    elif chat.get("auto_answer_recommend") and pending.get("questions"):
+        chooser = choose_recommended
+        skip_reason = "no single option marked \"(Recommended)\"; left for you"
+    else:
+        # A structured question this chat has not armed "accept recommended"
+        # for. Left for the user, and not logged: it was never this module's
+        # to answer, so recording it would read as a refusal.
         return None
 
     entry: dict[str, Any] = {
@@ -168,12 +215,9 @@ async def consider(
     options = read_options(session_id)
     if asyncio.iscoroutine(options):
         options = await options
-    chosen = choose_affirmative(options or [])
+    chosen = chooser(options or [])
     if chosen is None:
-        entry.update(
-            outcome="skipped",
-            reason="no single unambiguously affirmative option; left for you",
-        )
+        entry.update(outcome="skipped", reason=skip_reason)
         await _record(chat, entry)
         return entry
 

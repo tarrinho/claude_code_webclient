@@ -124,8 +124,19 @@ button{touch-action:manipulation}
 .chat-menu button.danger{color:#f85149}
 .chat-menu button.danger:hover,.chat-menu button.danger:focus-visible{background:rgba(248,81,73,.12);color:#f85149}
 /* Dot on the row whose conversation is mid-turn, so leaving it stays visible. */
-.chat-running{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:middle;animation:chat-pulse 1.4s ease-in-out infinite}
-@keyframes chat-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* Dot on the row whose conversation is mid-turn, so leaving it stays visible.
+   Sized and glowed up from a plain 6px dot -- that size read as barely there
+   next to a chat title, easy to miss at a glance across a long sidebar list. */
+.chat-running{display:inline-block;width:10px;height:10px;margin-right:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px 1px var(--accent);vertical-align:middle;animation:chat-pulse 1.2s ease-in-out infinite}
+/* Reported live as "flashing": the sidebar's poll rebuilds every row from
+   scratch every 6s (chat-list.js render() -- list.replaceChildren()), which
+   restarts this animation's timeline on a brand new element each time. A
+   rebuild landing mid-dip snapped straight back to full opacity, and a wide
+   1 -> .25 swing made that snap read as a flash rather than a pulse -- worse
+   than the original 1 -> .35 this was bumped up from. Narrowed so a restart
+   lands close enough to wherever the old element already was that it is not
+   perceptible as a jump, while still visibly breathing. */
+@keyframes chat-pulse{0%,100%{opacity:1}50%{opacity:.65}}
 /* Usage origin + per-session breakdown. Two columns so long conversation
    titles ellipsise rather than pushing the figure off the panel. */
 .usage-origin{margin:10px 0 14px}
@@ -159,6 +170,17 @@ button{touch-action:manipulation}
 /* Replied while you were elsewhere: same footprint as the running dot so the
    row does not shift when a turn finishes, but hollow and still. */
 .chat-unread{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--accent);box-sizing:border-box;vertical-align:middle}
+/* A quiet "it finished" for a chat you already know about. Green
+   (var(--ok)) for the same reason a diff adds lines in green: it is a
+   completion, not a warning. */
+.chat-ended{display:inline-block;width:11px;margin-right:6px;font-size:11px;line-height:1;color:var(--ok);vertical-align:middle}
+.chat-ended::before{content:'↗'}
+/* Lowest tier of all: nothing running, busy, unread, just-finished or queued.
+   A hollow circle rather than a filled dot -- every other indicator here
+   fills or glows to say "look at this"; this one is the one state that
+   should read as calm, so it stays a plain outline in --muted, no motion. */
+.chat-free{display:inline-block;width:11px;margin-right:6px;font-size:11px;line-height:1;color:var(--muted);vertical-align:middle}
+.chat-free::before{content:'○'}
 /* Count of prompts waiting to send. Trails the title rather than leading it:
    it is a property of the queue, not an alert. */
 .chat-queued{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:.7rem;line-height:1.35;background:var(--surface-2,rgba(127,127,127,.18));color:var(--text-muted,inherit);vertical-align:middle}

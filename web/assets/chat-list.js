@@ -120,6 +120,11 @@ export function createChatListController(dependencies) {
   // rather than in the database: "have I read this" is per-browser, and
   // updated_at already tells us when something changed.
   let unreadIds = new Set();
+  // Conversations whose turn has finished and nobody has sent a new prompt
+  // since. Distinct from unread: unread tracks "have I looked", this tracks
+  // "is it done" -- true even for the chat you are currently viewing, and
+  // cleared the moment you send into it again rather than by opening it.
+  let endedIds = new Set();
   let historyEntries = [];
   // {waiting: [...], working: [...]} from GET /api/supervisor.
   let supervisor = {waiting: [], working: []};
@@ -267,6 +272,38 @@ export function createChatListController(dependencies) {
         mark.className = 'chat-unread';
         mark.setAttribute('aria-label', 'New reply');
         mark.title = 'Replied while you were elsewhere';
+        title.prepend(mark);
+      } else if (endedIds.has(chat.id)) {
+        // Lowest tier: running, terminal work and an unread reply all already
+        // say enough about this conversation's state, so this only shows when
+        // none of them apply -- a quiet "it finished" for a chat you already
+        // know about.
+        const mark = document.createElement('span');
+        mark.className = 'chat-ended';
+        mark.setAttribute('aria-label', 'Finished responding');
+        mark.title = 'Finished responding';
+        title.prepend(mark);
+      } else if (!chat.queued) {
+        // Nothing running, nothing happening in a linked terminal, no unread
+        // reply, no just-finished marker, and nothing queued to send once
+        // something else wraps up -- genuinely nothing outstanding. Checked
+        // last and gated on !chat.queued specifically because queued is
+        // otherwise independent of this chain (rendered as its own badge
+        // below): a chat with prompts waiting to send is still "waiting for
+        // tasks to end" even when none of the tiers above apply to it right
+        // now, so it must not read as free.
+        //
+        // Deliberately does NOT check for a pending, unanswered question --
+        // that would mean reading each chat's transcript or live terminal on
+        // every poll, for every chat, which is the kind of per-poll cost that
+        // was already reported as making the whole page slow. A chat left
+        // free here that actually has an old unanswered question sitting in
+        // it is the accepted gap; opening it still shows the question bar as
+        // normal regardless of what the sidebar icon said.
+        const mark = document.createElement('span');
+        mark.className = 'chat-free';
+        mark.setAttribute('aria-label', 'Nothing outstanding');
+        mark.title = 'Nothing running or queued for this conversation';
         title.prepend(mark);
       }
       if (chat.queued) {
@@ -734,6 +771,23 @@ export function createChatListController(dependencies) {
     render();
   }
 
+  function setEnded(ids) {
+    const next = new Set(ids || []);
+    if (next.size === endedIds.size
+        && [...next].every(id => endedIds.has(id))) return;
+    endedIds = next;
+    render();
+  }
+
+  // Single-id removal, not setEnded([]) or setEnded(withoutThisId): the
+  // caller (clearEndedFlag, on sending into a chat) only knows the one id
+  // that just stopped being "ended", not the current full set.
+  function clearEnded(chatId) {
+    if (!endedIds.has(chatId)) return;
+    endedIds.delete(chatId);
+    render();
+  }
+
   function setCliSessions(sessions) {
     cliSessions = sessions;
   }
@@ -812,6 +866,8 @@ export function createChatListController(dependencies) {
     setMessageResults,
     setActiveTurns,
     setUnread,
+    setEnded,
+    clearEnded,
     setHistory,
     setSupervisor,
   };

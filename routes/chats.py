@@ -1589,18 +1589,31 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
     enabled = data.get("enabled")
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled must be a boolean")
+    # Defaults to off, not to whatever was stored before: an older client that
+    # only ever sends `enabled` should land on the unambiguous two-state
+    # behaviour it asked for, not silently inherit a flag it does not know
+    # exists.
+    accept_recommended = data.get("accept_recommended", False)
+    if not isinstance(accept_recommended, bool):
+        raise HTTPException(
+            status_code=400, detail="accept_recommended must be a boolean"
+        )
 
-    ok = await db.chat_auto_answer_set(chat_id, session["user"], enabled)
+    ok = await db.chat_auto_answer_set(
+        chat_id, session["user"], enabled, accept_recommended,
+    )
     if not ok:
         # Covers both "no such chat" and "not this user's chat" with the same
         # 404 that chat_get uses elsewhere on this page, so a cross-owner probe
         # cannot distinguish "does not exist" from "not yours".
         raise HTTPException(status_code=404, detail="Chat not found")
     _log.info(
-        "auto_answer_set chat_id=%s user=%s enabled=%s",
-        chat_id, session["user"], enabled,
+        "auto_answer_set chat_id=%s user=%s enabled=%s accept_recommended=%s",
+        chat_id, session["user"], enabled, accept_recommended,
     )
-    return JSONResponse({"ok": True, "enabled": enabled})
+    return JSONResponse({
+        "ok": True, "enabled": enabled, "accept_recommended": accept_recommended,
+    })
 
 
 async def handle_chat_auto_answer_get(request: Request, chat_id: str):
@@ -1612,8 +1625,13 @@ async def handle_chat_auto_answer_get(request: Request, chat_id: str):
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     enabled = await db.chat_auto_answer_get(chat_id, session["user"])
+    accept_recommended = await db.chat_auto_answer_recommend_get(
+        chat_id, session["user"],
+    )
     log = await db.chat_auto_answer_log_get(chat_id, session["user"])
-    return JSONResponse({"enabled": enabled, "log": log})
+    return JSONResponse({
+        "enabled": enabled, "accept_recommended": accept_recommended, "log": log,
+    })
 
 
 async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:

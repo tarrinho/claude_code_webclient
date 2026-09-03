@@ -6,8 +6,8 @@
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=1';
-import {createChatListController} from './chat-list.js?v=1';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=1';
+import {createChatListController} from './chat-list.js?v=2';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=2';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './supervisor.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=1';
 
@@ -319,7 +319,7 @@ import { startServerPolling, stopServerPolling, loadServer, notifyResult, setSta
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js';
 
-import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList } from './machines.js?v=3';
+import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList } from './machines.js?v=4';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();
@@ -624,10 +624,22 @@ function _autoAnswerMode() {
 
 const _AUTO_ANSWER_NEXT_MODE = {off: 'on', on: 'recommend', recommend: 'off'};
 
+// Bumped at the start of every call and compared after the fetch resolves.
+// toggleAutoAnswer() awaits its own call to this function right after its
+// PUT, but the 5s poll can have an older call already in flight when that
+// happens -- with no guard, that older GET (issued before the click) landing
+// after the newer one would overwrite the just-confirmed state with what the
+// server had before it, flipping the icon back for up to one more poll
+// interval. Comparing seq after every await this function makes is what
+// lets a call recognise it is no longer the latest and stand down instead of
+// rendering something stale over something current.
+let _autoAnswerFetchSeq = 0;
+
 async function refreshAutoAnswer() {
   const chat = state.currentChat;
   const toggle = byId('autoAnswerToggle');
   const info = byId('autoAnswerInfo');
+  const seq = ++_autoAnswerFetchSeq;
   if (!chat || !chat.session_id) {
     // No session to answer on behalf of: the server-side watcher only polls
     // chats that carry one, so showing an armed-looking toggle here would be a
@@ -637,19 +649,23 @@ async function refreshAutoAnswer() {
     closeAutoAnswerMenu();
     return;
   }
+  let data;
   try {
     const response = await apiFetch(
       `/api/chats/${encodeURIComponent(chat.id)}/auto-answer`);
+    if (seq !== _autoAnswerFetchSeq) return; // superseded while the fetch was in flight
     if (!response.ok) { if (toggle) toggle.hidden = true; if (info) info.hidden = true; return; }
-    const data = await response.json();
-    _autoAnswerEnabled = Boolean(data.enabled);
-    _autoAnswerRecommend = Boolean(data.accept_recommended);
-    _autoAnswerLog = Array.isArray(data.log) ? data.log : [];
+    data = await response.json();
+    if (seq !== _autoAnswerFetchSeq) return; // superseded while parsing the body
   } catch {
+    if (seq !== _autoAnswerFetchSeq) return;
     if (toggle) toggle.hidden = true;
     if (info) info.hidden = true;
     return;
   }
+  _autoAnswerEnabled = Boolean(data.enabled);
+  _autoAnswerRecommend = Boolean(data.accept_recommended);
+  _autoAnswerLog = Array.isArray(data.log) ? data.log : [];
   if (toggle) {
     toggle.hidden = false;
     const mode = _autoAnswerMode();
@@ -751,6 +767,14 @@ function toggleAutoAnswerMenu() {
 function renderAutoAnswerMenu() {
   const menu = byId('autoAnswerMenu');
   if (!menu) return;
+  // The 5s auto-answer poll calls this again while the menu is left open, and
+  // replaceChildren below destroys whichever row the tooltip is anchored to.
+  // Left open across that, the tooltip stayed on screen pointing at a
+  // detached node and could never re-position, and the anchor identity check
+  // in _toggleAutoAnswerTooltip could never match the freshly built row
+  // again -- so a second click on the same-looking row reopened it instead
+  // of closing it, for the rest of the menu's time open.
+  closeAutoAnswerTooltip();
   // replaceChildren + createElement throughout: every row quotes a prompt read
   // off someone's terminal, and that text must never reach markup.
   menu.replaceChildren();

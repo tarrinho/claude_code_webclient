@@ -13,7 +13,7 @@ import {
   byId, storageGet, storageSet, _machines, _activeMachineId, _setActiveMachineId,
   _machineEditing, _setMachineEditing, _servedModels, _modelOptions, _modelsSource,
   _turnsByModel, loadModelsFor, _refreshServedModels,
-} from './app.js?v=30';
+} from './app.js?v=31';
 import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
 
@@ -30,31 +30,44 @@ import {notifyResult, setStatus} from './server-stats.js?v=1';
 // racing two.
 let _machinesLoad = null;
 
-export async function loadMachines() {
-  if (_machinesLoad) return _machinesLoad;
-  _machinesLoad = (async () => {
-    try {
-      const resp = await apiFetch('/api/machines');
-      // !resp.ok reaches here too -- fetch() only rejects on a network error,
-      // not on a 4xx/5xx status. Falling through to the same "replace with
-      // whatever we got" line as success used to overwrite a previously good
-      // list with an empty one on every HTTP error, not just a thrown
-      // exception -- the same erasure the catch below guards against, taking
-      // a path the catch never sees.
-      if (resp.ok) {
-        const list = (await resp.json()).machines || [];
-        _machines.length = 0;
-        _machines.push(...list);
-      }
-    } catch {
-      // Keep whatever _machines already held -- a failed refresh should not
-      // erase a previously successful one.
-    } finally {
-      _machinesLoad = null;
+async function _fetchMachines() {
+  try {
+    const resp = await apiFetch('/api/machines');
+    // !resp.ok reaches here too -- fetch() only rejects on a network error,
+    // not on a 4xx/5xx status. Falling through to the same "replace with
+    // whatever we got" line as success used to overwrite a previously good
+    // list with an empty one on every HTTP error, not just a thrown
+    // exception -- the same erasure the catch below guards against, taking
+    // a path the catch never sees.
+    if (resp.ok) {
+      const list = (await resp.json()).machines || [];
+      _machines.length = 0;
+      _machines.push(...list);
     }
-  })();
+  } catch {
+    // Keep whatever _machines already held -- a failed refresh should not
+    // erase a previously successful one.
+  }
+}
+
+// force=true is for a caller that just changed the server's own state
+// (activate/delete/save) and needs the *next* fetch to actually be new, not
+// whatever GET was already in flight from an unrelated poll. Coalescing that
+// caller onto a stale in-flight promise the way plain dedup does would
+// re-render a machine that had just been deleted, still present, with no
+// error at all -- the mutation succeeded but the read racing it predated it.
+export async function loadMachines(force = false) {
+  if (force || !_machinesLoad) {
+    const load = _fetchMachines().finally(() => {
+      if (_machinesLoad === load) _machinesLoad = null;
+    });
+    _machinesLoad = load;
+  }
   await _machinesLoad;
-  // Check for a stored active machine
+  // Check for a stored active machine. Runs for every caller, not only the
+  // one that triggered the fetch -- a caller that coalesced onto someone
+  // else's in-flight promise still needs this to have run once, and an
+  // early return here used to skip it for exactly that caller.
   const stored = storageGet('wc_active_machine');
   if (stored && _machines.some(m => m.id === stored)) {
     _setActiveMachineId(stored);
@@ -404,7 +417,7 @@ export async function _activateMachine(id) {
   try {
     const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/activate`, {method: 'POST'});
     if (!resp.ok) throw new Error('Could not activate machine');
-    await loadMachines();
+    await loadMachines(true);
     _setActiveMachineId(id);
     storageSet('wc_active_machine', id);
     // The model picker offers what the *active* machine serves, and
@@ -456,7 +469,7 @@ async function _deleteMachine(id) {
     const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}`, {method: 'DELETE'});
     if (!resp.ok) throw new Error('Could not delete machine');
     if (_activeMachineId === id) _setActiveMachineId(null);
-    await loadMachines();
+    await loadMachines(true);
     _renderMachineList();
     notifyResult('Machine deleted');
   } catch (error) {
@@ -563,7 +576,7 @@ export async function _saveMachine() {
     _setMachineEditing(null);
     byId('machineForm').hidden = true;
     byId('addMachineBtn').hidden = false;
-    await loadMachines();
+    await loadMachines(true);
     _renderMachineList();
     setStatus('Machine saved', 'success');
   } catch (error) {

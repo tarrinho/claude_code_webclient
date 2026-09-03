@@ -47,6 +47,23 @@ def _db_path() -> Path:
     return Path(os.environ.get("WC_DB_PATH") or (HERE / "data" / "webconsole.db"))
 
 
+def _owner_scope(rows: list[dict[str, object]]) -> str | None:
+    """The owner whose machines this host operates as, or None if unknowable.
+
+    Taken from whichever machine is active, because that is the identity the
+    console is actually routing under. Everything else in this codebase scopes
+    machine reads by owner -- `get_backend(chat_id, owner)`, `usage_earliest(owner)`
+    -- and this helper did not, which meant `--profile <name>` could select a
+    machine belonging to somebody else and export *their* API key into a shell.
+    Found when a second owner created a machine on 2026-09-03 at 09:24.
+    """
+    for row in rows:
+        if row.get("active"):
+            owner = str(row.get("owner_id") or "").strip()
+            return owner or None
+    return None
+
+
 def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
     """The machine to use: *profile* by slug, or the console's active one.
 
@@ -77,6 +94,12 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
             default_model = ""
     finally:
         con.close()
+    # Only this owner's machines are selectable. Without this, naming a profile
+    # could pin somebody else's backend and export their credential.
+    owner = _owner_scope(rows)
+    if owner:
+        rows = [r for r in rows if str(r.get("owner_id") or "").strip() == owner]
+
     if profile:
         wanted = profile.strip().lower()
         matches = [r for r in rows if profile_slug(r) == wanted]
@@ -84,6 +107,17 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
             known = ", ".join(sorted({profile_slug(r) for r in rows})) or "none"
             print(f"wc-backend-env: no backend named {profile!r}. "
                   f"Known profiles: {known}", file=sys.stderr)
+            raise SystemExit(2)
+        if len(matches) > 1:
+            # Refuse rather than pick. Two machines can share a name, and they
+            # did: `matches[0]` over an unordered SELECT would silently choose
+            # one, so which backend a session ran on would depend on row order.
+            detail = ", ".join(
+                f"{str(m.get('id'))[:8]} (model={m.get('model') or '-'})"
+                for m in matches)
+            print(f"wc-backend-env: {profile!r} matches {len(matches)} backends: "
+                  f"{detail}.\n  Rename one in the console, or the choice is "
+                  f"row order rather than a decision.", file=sys.stderr)
             raise SystemExit(2)
         record = matches[0]
     else:
@@ -158,12 +192,32 @@ def _resolve_model(db: Path, model: str) -> int:
         rows = [dict(r) for r in con.execute("SELECT * FROM ai_machines")]
     finally:
         con.close()
-    matches = {
-        profile_slug(r) for r in rows
+    owner = _owner_scope(rows)
+    if owner:
+        rows = [r for r in rows if str(r.get("owner_id") or "").strip() == owner]
+    # Keyed by id, not by slug. Keying by slug let two same-named machines
+    # collapse into one entry, so a genuinely ambiguous model looked decided.
+    matching = [
+        r for r in rows
         if model in served_models(r) or str(r.get("model") or "").strip() == model
-    }
-    if len(matches) == 1:
-        print(matches.pop())
+    ]
+    # Exactly one *machine*, not one slug. Keying on the slug let two
+    # same-named machines collapse to a single entry, so this answered
+    # "anthropic-api" for a model both of them served -- and machine_for then
+    # refused that very slug as ambiguous. An inference followed by a refusal
+    # of its own answer is worse than staying silent and letting the ordinary
+    # unserved-model message explain itself.
+    if len(matching) != 1:
+        return 0
+    slug = profile_slug(matching[0])
+    # The slug also has to be usable. One machine can match the model while
+    # sharing its name -- and therefore its slug -- with another, in which case
+    # machine_for refuses that slug as ambiguous. Emitting it anyway would make
+    # the wrapper announce "switching this session to anthropic-api" and then
+    # fail on the very name it just chose.
+    if sum(1 for r in rows if profile_slug(r) == slug) != 1:
+        return 0
+    print(slug)
     return 0
 
 

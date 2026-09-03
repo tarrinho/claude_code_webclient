@@ -262,3 +262,139 @@ class SchemaToleranceTests(unittest.TestCase):
                                  capture_output=True, text=True, env=env,
                                  timeout=60, check=True)
             self.assertIn("unset WC_PROFILE", out.stdout)
+
+
+def make_multi_db(path: Path, rows) -> None:
+    """A throwaway database with several machines.
+
+    *rows* are (id, name, base_url, api_key, model, active_models, active, owner).
+    """
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            "CREATE TABLE ai_machines (id TEXT PRIMARY KEY, name TEXT, "
+            "provider TEXT, base_url TEXT, api_key TEXT, model TEXT, "
+            "active_models TEXT, active INT, owner_id TEXT)")
+        con.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+        con.executemany(
+            "INSERT INTO ai_machines (id, name, provider, base_url, api_key, "
+            "model, active_models, active, owner_id) "
+            "VALUES (?,?,'anthropic',?,?,?,?,?,?)", rows)
+        con.commit()
+    finally:
+        con.close()
+
+
+class OwnerScopingTests(unittest.TestCase):
+    """A profile must never select another owner's backend.
+
+    Found in production rather than reasoned about: a second owner created a
+    machine on 2026-09-03 at 09:24, and `--profile` read every row regardless of
+    owner. That row happened to carry no key, so nothing leaked -- but the
+    design would have exported somebody else's credential into a shell, and
+    every other machine read in this codebase is owner-scoped already
+    (`get_backend(chat_id, owner)`, `usage_earliest(owner)`).
+
+    The owner is taken from whichever machine is active, because that is the
+    identity the console is actually routing under.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "wc.db"
+
+    def _run(self, *args):
+        env = {**os.environ, "WC_DB_PATH": str(self.db)}
+        # check=False is the point: these cases assert on a refusal.
+        return subprocess.run(["python3", str(TOOL), *args], capture_output=True,
+                              text=True, env=env, timeout=60, check=False)
+
+    def test_another_owners_machine_is_not_selectable(self):
+        make_multi_db(self.db, [
+            ("a1", "Mine", "", "", "m1", "[]", 1, "admin"),
+            ("b1", "Theirs", "https://gw.invalid", "their-secret", "m2", "[]", 0,
+             "someone-else"),
+        ])
+        result = self._run("--profile", "theirs", "--json")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no backend named", result.stderr)
+
+    def test_another_owners_machine_is_not_even_listed(self):
+        """The "Known profiles" hint must not enumerate what it will refuse --
+        naming another owner's backends is itself a small disclosure."""
+        make_multi_db(self.db, [
+            ("a1", "Mine", "", "", "m1", "[]", 1, "admin"),
+            ("b1", "Theirs", "https://gw.invalid", "s", "m2", "[]", 0, "else"),
+        ])
+        result = self._run("--profile", "nope", "--json")
+        self.assertIn("mine", result.stderr)
+        self.assertNotIn("theirs", result.stderr)
+
+    def test_another_owners_model_is_not_resolved_to(self):
+        make_multi_db(self.db, [
+            ("a1", "Mine", "", "", "m1", "[]", 1, "admin"),
+            ("b1", "Theirs", "https://gw.invalid", "s", "exotic/model", "[]", 0,
+             "else"),
+        ])
+        self.assertEqual(self._run("--resolve-model", "exotic/model").stdout.strip(),
+                         "")
+
+
+class SlugCollisionTests(unittest.TestCase):
+    """Two machines can share a name. They did, so ambiguity must be refused.
+
+    `matches[0]` over an unordered SELECT silently picked one, which made the
+    backend a session ran on depend on row order rather than on a decision.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "wc.db"
+
+    def _run(self, *args):
+        env = {**os.environ, "WC_DB_PATH": str(self.db)}
+        # check=False is the point: these cases assert on a refusal.
+        return subprocess.run(["python3", str(TOOL), *args], capture_output=True,
+                              text=True, env=env, timeout=60, check=False)
+
+    def _duplicated(self):
+        make_multi_db(self.db, [
+            ("a1", "Anthropic API", "", "", "claude-sonnet-5", "[]", 1, "admin"),
+            ("a2", "Anthropic API", "", "", "claude-opus-5", "[]", 0, "admin"),
+            ("g1", "CF AI Machine", "https://gw.invalid", "k", "vllm/Q", "[]", 0,
+             "admin"),
+        ])
+
+    def test_a_duplicated_name_is_refused_not_guessed(self):
+        self._duplicated()
+        result = self._run("--profile", "anthropic-api", "--json")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("matches 2 backends", result.stderr)
+
+    def test_the_refusal_names_both_candidates(self):
+        """So the operator can tell which two to rename."""
+        self._duplicated()
+        stderr = self._run("--profile", "anthropic-api", "--json").stderr
+        self.assertIn("a1", stderr)
+        self.assertIn("a2", stderr)
+
+    def test_a_model_on_a_shared_slug_machine_is_not_inferred(self):
+        """Otherwise the wrapper announces "switching to anthropic-api" and then
+        fails on the very name it just chose -- an inference that refuses its own
+        answer, which is worse than staying silent."""
+        self._duplicated()
+        self.assertEqual(
+            self._run("--resolve-model", "claude-opus-5").stdout.strip(), "")
+
+    def test_a_model_on_a_unique_slug_machine_is_still_inferred(self):
+        self._duplicated()
+        self.assertEqual(
+            self._run("--resolve-model", "vllm/Q").stdout.strip(), "cf-ai-machine")
+
+    def test_an_unambiguous_name_still_works(self):
+        self._duplicated()
+        result = self._run("--profile", "cf-ai-machine", "--json")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["name"], "CF AI Machine")

@@ -48,6 +48,27 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         chats = await db.chat_list("admin")
         self.assertEqual([c["id"] for c in chats], ["pinned-new", "pinned-old", "recent", "archived"])
 
+    async def test_last_model_used_single_chat_matches_the_batched_form(self):
+        """`db.last_model_used(chat_id, owner)` is the single-chat form of
+        `last_models_used` used by GET /api/chats/{id} -- the two must never
+        disagree about the same conversation."""
+        await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
+        await db.usage_record("c1", "admin", "claude-sonnet-5", "anthropic")
+        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic")
+        single = await db.last_model_used("c1", "admin")
+        batched = (await db.last_models_used("admin"))["c1"]
+        self.assertEqual(single, "claude-opus-5")
+        self.assertEqual(single, batched)
+
+    async def test_last_model_used_is_empty_for_a_chat_with_no_turns(self):
+        await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
+        self.assertEqual(await db.last_model_used("c1", "admin"), "")
+
+    async def test_last_model_used_is_owner_scoped(self):
+        await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
+        await db.usage_record("c1", "someone-else", "claude-opus-5", "anthropic")
+        self.assertEqual(await db.last_model_used("c1", "admin"), "")
+
     async def test_last_models_used_is_the_newest_row_per_chat(self):
         await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
         await db.chat_create("c2", "C2", None, f"{self.tmp.name}/c2", "admin")

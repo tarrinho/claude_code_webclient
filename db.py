@@ -27,6 +27,7 @@ def __getattr__(name: str):
     _SYMBOLS = {
         # queue
         "QUEUE_MAX": "routes.db_queue",
+        "last_model_used": "routes.db_queue",
         "last_models_used": "routes.db_queue",
         "queue_add": "routes.db_queue",
         "queue_counts": "routes.db_queue",

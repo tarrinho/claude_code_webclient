@@ -235,6 +235,13 @@ async def handle_chat_get(request: Request, chat_id: str):
                         "ai_machine_id",
                     )
                 },
+                # What actually answered the last turn -- distinct from
+                # `model` above, the routing override, which stays empty
+                # until a user pins one. Same field as the chat-list
+                # response; without it here, the top-of-conversation model
+                # label went back to hidden every time a chat was (re)opened,
+                # since this is the endpoint that path actually reads from.
+                "last_model_used": await db.last_model_used(chat_id, session["user"]),
                 "archived": bool(chat["archived"]),
                 "pinned": bool(chat["pinned"]),
                 # Opening a conversation has to be able to tell whether a turn

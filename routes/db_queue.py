@@ -3,7 +3,6 @@
 # Extracted from db.py so that the queue-drain path does not need the full
 # database module.
 
-import json
 from typing import Any
 
 import db
@@ -80,6 +79,22 @@ async def last_models_used(owner_id: str) -> dict[str, str]:
         (owner_id,),
     )
     return {row["chat_id"]: row["model"] for row in await cur.fetchall()}
+
+
+async def last_model_used(chat_id: str, owner_id: str) -> str:
+    """Single-chat form of `last_models_used`, for GET /api/chats/{id}.
+
+    The list endpoint batches this for every chat in one query; opening one
+    chat by id only needs its own row, and running the batched query for a
+    single id would scan every conversation's usage to answer about one.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT model FROM usage_events WHERE chat_id = ? AND owner_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (chat_id, owner_id),
+    )
+    row = await cur.fetchone()
+    return row["model"] if row else ""
 
 
 async def queue_next(chat_id: str) -> dict[str, Any] | None:

@@ -1,34 +1,73 @@
-import {apiFetch, downloadMarkdown} from './api.js';
-import {createChatListController} from './chat-list.js';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js';
+// Versioned like the <script> tags below (?v=N), for a reason those tags do
+// not have to deal with: a bare specifier ('./chat-list.js') is its own cache
+// key, untouched by bumping app.js's own ?v= on its <script> tag. Bumping
+// app.js changed nothing about how long a browser keeps a cached chat-list.js
+// -- which is why editing that file could leave a page rendering with stale
+// logic indefinitely, no matter how many times app.js itself was reloaded.
+// Bump the number here whenever the imported file's behaviour changes.
+import {apiFetch, downloadMarkdown} from './api.js?v=1';
+import {createChatListController} from './chat-list.js?v=1';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=1';
+import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './supervisor.js?v=1';
+import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=1';
 
-const state = {
+// Exported for supervisor.js/device-alerts.js, which need this live app state
+// but are also loaded standalone (own <script type="module">) and so cannot
+// see app.js's top-level scope any other way. A circular import back to the
+// file that imports them is safe here because both are only read inside
+// function bodies in the consumers, never at their own module top level --
+// by the time either runs (after DOMContentLoaded), every module involved has
+// finished its own top-level evaluation.
+export const state = {
   chats: [],
   currentChat: null,
   streamState: 'ready',
+  // Element to restore focus to when a dialog/menu closes. A property here
+  // rather than its own top-level `let`, because supervisor.js needs to write
+  // it too, and an imported binding for a bare `let` is read-only -- only a
+  // shared object's properties can be assigned across modules.
+  previousFocus: null,
 };
 
-const byId = id => document.getElementById(id);
-const storageGet = key => { try { return localStorage.getItem(key); } catch { return null; } };
-const storageSet = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+// Exported for machines.js, same circular-import argument as `state` above --
+// machines.js only reads these inside function bodies, never at its own
+// module top level, so by the time any of it runs, this module has already
+// finished its own top-level evaluation.
+export const byId = id => document.getElementById(id);
+export const storageGet = key => { try { return localStorage.getItem(key); } catch { return null; } };
+export const storageSet = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
 const storageRemove = key => { try { localStorage.removeItem(key); } catch {} };
-let previousFocus = null;
 let dialogMode = 'create';
 let dialogChat = null;
-let listController;
+// Reassigned once in loadInitialData-adjacent setup; exported for the same
+// reason and under the same safety argument as `state` above.
+export let listController;
 let conversationController;
-let settingsVisible = false;
-let _activeMachineId = null;
-let _machines = [];
-let _machineEditing = null;
+// Exported read-only: server-stats.js only reads this to decide whether a
+// result reports as a toast or a status line, never reassigns it, so unlike
+// listController/state it needs no setter.
+export let settingsVisible = false;
+// A bare `let` gives an importer a live *read*, but reassigning an imported
+// binding is illegal (it is read-only from the importing side) -- the same
+// restriction `previousFocus` above exists to work around. machines.js needs
+// to write these two, so it goes through the setters just below instead of
+// assigning the identifiers directly.
+export let _activeMachineId = null;
+export function _setActiveMachineId(id) { _activeMachineId = id; }
+// An array's *contents* can be mutated in place (`.length = 0; .push(...)`)
+// without ever reassigning the binding, so this one stays a plain exported
+// `let` -- machines.js mutates it rather than replacing it.
+export let _machines = [];
+export let _machineEditing = null;
+export function _setMachineEditing(id) { _machineEditing = id; }
 let _currentTab = 'backends';
-let _modelOptions = [];
+export let _modelOptions = [];
 // Last GET /api/models payload: what the active machine reports it serves.
-let _servedModels = [];
+export let _servedModels = [];
 // model id -> turns in the current window. The map draws traffic, so it needs
 // the same numbers the Usage tab reports rather than a second source of truth.
-let _turnsByModel = new Map();
-let _modelsSource = null;
+export let _turnsByModel = new Map();
+export let _modelsSource = null;
 // Last payload from GET /api/settings. Save compares against it so a field
 // cleared to "" is recognised as a change and actually sent.
 let _loadedSettings = {};
@@ -41,7 +80,8 @@ let _skillFilter = '';
 let _skillDebounce = null;
 const _collapsedSkillGroups = new Set();
 
-function showToast(message, type = '') {
+// Exported for supervisor.js, which reports add-to-supervisor results with it.
+export function showToast(message, type = '') {
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   toast.textContent = message;
@@ -49,7 +89,9 @@ function showToast(message, type = '') {
   setTimeout(() => toast.remove(), 4500);
 }
 
-function formatTime(iso) {
+// Exported for usage.js, so both places a turn's time is rendered agree on
+// the same rule rather than growing a second implementation.
+export function formatTime(iso) {
   const date = parseTimestamp(iso);
   if (!date) return '';
   const diff = Math.max(0, (Date.now() - date.getTime()) / 1000);
@@ -60,7 +102,7 @@ function formatTime(iso) {
   return date.toLocaleDateString();
 }
 
-function formatAbsoluteTime(iso) {
+export function formatAbsoluteTime(iso) {
   return parseTimestamp(iso)?.toLocaleString() || '';
 }
 
@@ -78,7 +120,7 @@ function toggleTheme() {
 }
 
 function openSidebar() {
-  previousFocus = document.activeElement;
+  state.previousFocus = document.activeElement;
   byId('sidebar').inert = false;
   byId('sidebar').classList.add('open');
   byId('sidebar').setAttribute('aria-hidden', 'false');
@@ -100,7 +142,7 @@ function closeSidebar() {
   byId('sidebar').inert = true;
   byId('menuBtn').setAttribute('aria-expanded', 'false');
   byId('sidebarOverlay').style.display = 'none';
-  if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
+  if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
 function focusableIn(container) {
@@ -127,7 +169,7 @@ function trapDialogFocus(event) {
 function openChatDialog(mode, chat = state.currentChat) {
   dialogMode = mode;
   dialogChat = chat;
-  previousFocus = document.activeElement;
+  state.previousFocus = document.activeElement;
   const editing = mode === 'edit';
   const deleting = mode === 'delete';
   byId('dialogTitle').textContent = deleting ? 'Delete conversation' : editing ? 'Edit conversation' : 'New conversation';
@@ -150,11 +192,11 @@ function closeDialog() {
   if (!dialog.classList.contains('open')) return;
   dialog.classList.remove('open');
   dialogChat = null;
-  if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
+  if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
 function openSettingsDialog() {
-  previousFocus = document.activeElement;
+  state.previousFocus = document.activeElement;
   byId('settingsStatus').textContent = '';
   byId('settingsDialog').classList.add('open');
   settingsVisible = true;
@@ -169,7 +211,7 @@ function closeSettingsDialog() {
   _machineEditing = null;
   // The Server tab polls while it is open; closing the dialog is leaving it.
   stopServerPolling();
-  if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
+  if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
 function _switchTab(tab) {
@@ -218,263 +260,7 @@ function _switchTab(tab) {
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
-
-/** Compact a token count, keeping the exact value for the title attribute. */
-function _abbrev(n) {
-  const value = Number(n) || 0;
-  if (value >= 1e9) return `${(value / 1e9).toFixed(1)} B`;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(1)} M`;
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)} K`;
-  return String(value);
-}
-
-function _cell(text, className, title) {
-  const cell = document.createElement('span');
-  cell.className = className;
-  cell.textContent = text;
-  if (title) cell.title = title;
-  return cell;
-}
-
-function _buildOriginBreakdown(data) {
-  const rows = data.by_origin || [];
-  if (!rows.length) return null;
-  const section = document.createElement('section');
-  section.className = 'usage-origin';
-  const heading = document.createElement('h4');
-  heading.textContent = 'Where these turns came from';
-  section.appendChild(heading);
-
-  const LABELS = {
-    web: 'This website',
-    // Asked here, executed there. Neither plain label is true, so it gets its
-    // own: this is the case where a request on a conversation with a live
-    // terminal is typed into that terminal instead of run by the server.
-    'web-routed': 'Asked here, ran in its terminal',
-    terminal: 'Terminal sessions (including agents)',
-  };
-  rows.forEach(row => {
-    const total = (row.input_tokens || 0) + (row.output_tokens || 0);
-    const unsplit = row.unsplit_tokens || 0;
-    // The comparable number is what is left once re-counted context is removed.
-    const comparable = Math.max(0, total - unsplit);
-
-    const item = document.createElement('div');
-    item.className = 'usage-origin-row';
-    const name = document.createElement('span');
-    name.className = 'usage-origin-name';
-    name.textContent = LABELS[row.origin] || row.origin;
-    const figure = document.createElement('span');
-    figure.className = 'usage-origin-figure';
-    figure.textContent = `${row.requests} req · ${_abbrev(comparable)} tokens`;
-    figure.title = `${comparable.toLocaleString()} tokens`;
-    item.append(name, figure);
-    section.appendChild(item);
-
-    if (unsplit) {
-      const note = document.createElement('p');
-      note.className = 'usage-origin-note';
-      note.textContent =
-        `Plus ${_abbrev(unsplit)} tokens not counted above. ` +
-        (row.unsplit_note || '');
-      note.title = `${unsplit.toLocaleString()} tokens excluded`;
-      section.appendChild(note);
-    }
-  });
-  return section;
-}
-
-function _buildSessionBreakdown(data) {
-  const rows = data.by_session || [];
-  if (!rows.length) return null;
-  const section = document.createElement('section');
-  section.className = 'usage-origin';
-  const heading = document.createElement('h4');
-  heading.textContent = 'Terminal usage by session';
-  section.appendChild(heading);
-  const note = document.createElement('p');
-  note.className = 'usage-origin-note';
-  note.textContent =
-    'Named so a surprising total is explainable. An agent session working on ' +
-    'your behalf can spend orders of magnitude more than anything typed by hand.';
-  section.appendChild(note);
-
-  rows.forEach(row => {
-    const item = document.createElement('div');
-    item.className = 'usage-origin-row';
-    const name = document.createElement('span');
-    name.className = 'usage-origin-name';
-    // textContent: a conversation title is user-supplied.
-    name.textContent = row.title || `session ${String(row.session_id).slice(0, 8)}`;
-    name.title = row.session_id || '';
-    const figure = document.createElement('span');
-    figure.className = 'usage-origin-figure';
-    const total = (row.input_tokens || 0) + (row.output_tokens || 0);
-    figure.textContent = `${row.requests} req · ${_abbrev(total)}`;
-    figure.title = `${total.toLocaleString()} tokens`;
-    if (row.context_unsplit) {
-      const flag = document.createElement('span');
-      flag.className = 'usage-unsplit-flag';
-      flag.textContent = 'context not split';
-      flag.title =
-        'This model reports no cache breakdown, so each turn counts the whole ' +
-        'conversation again rather than new tokens.';
-      figure.appendChild(flag);
-    }
-    item.append(name, figure);
-    section.appendChild(item);
-  });
-  return section;
-}
-
-function _renderUsage() {
-  const body = byId('usageBody');
-  if (!body || !_usageData) return;
-  const totals = _usageData.totals || [];
-  const recent = _usageData.recent || [];
-  const overall = _usageData.overall || {};
-
-  const count = byId('usageCount');
-  count.textContent = overall.requests
-    ? `${overall.requests} requests · ${_abbrev(overall.input_tokens)} in · ${_abbrev(overall.output_tokens)} out`
-    : 'No requests yet';
-
-  if (!totals.length) {
-    // An empty range is not the same as zero usage; say which it is.
-    const notice = document.createElement('div');
-    notice.className = 'skills-notice';
-    notice.textContent = _usageData.days
-      ? `No turns recorded in the last ${_usageData.days} days.`
-      : 'No turns recorded yet. Usage is collected from now on.';
-    body.replaceChildren(notice);
-    return;
-  }
-
-  // Where the turns came from, and which session spent it. Without this the
-  // page reported one figure dominated by adopted agent sessions and presented
-  // it as the operator's own usage: a day spent working from a phone showed
-  // hundreds of millions of "terminal" tokens that belonged to the agents.
-  const originBlock = _buildOriginBreakdown(_usageData);
-  const sessionBlock = _buildSessionBreakdown(_usageData);
-
-  const frag = document.createDocumentFragment();
-
-  const table = document.createElement('div');
-  table.className = 'usage-table';
-  const head = document.createElement('div');
-  head.className = 'usage-row usage-head';
-  head.append(
-    _cell('Model', 'usage-model'), _cell('Reqs', 'usage-num'),
-    _cell('Input', 'usage-num'), _cell('Output', 'usage-num'),
-    _cell('Cost', 'usage-num'),
-  );
-  table.appendChild(head);
-
-  totals.forEach(row => {
-    const line = document.createElement('div');
-    line.className = 'usage-row';
-    // The badge is a sibling of the ellipsised name, not a child: nested in the
-    // clipped element it disappeared for any model with a long id.
-    const name = document.createElement('span');
-    name.className = 'usage-model';
-    name.appendChild(_cell(row.model, 'usage-name', row.model));
-    if (row.errors) {
-      name.appendChild(_cell(`${row.errors} failed`, 'usage-errors'));
-    }
-    // The dash carries its own explanation, preferring Claude Code's own
-    // verdict on the cost basis over anything we infer from the base URL.
-    const cost = row.cost_usd === null || row.cost_usd === undefined
-      ? _cell('—', 'usage-num usage-muted',
-              row.cost_note || 'Not available for this backend.')
-      : _cell(`$${Number(row.cost_usd).toFixed(2)}`, 'usage-num',
-              row.cost_basis_unknown
-                ? 'Claude Code reported the cost basis as unknown.'
-                : undefined);
-    line.append(
-      name,
-      _cell(String(row.requests), 'usage-num'),
-      _cell(_abbrev(row.input_tokens), 'usage-num', `${row.input_tokens} tokens`),
-      _cell(_abbrev(row.output_tokens), 'usage-num', `${row.output_tokens} tokens`),
-      cost,
-    );
-    table.appendChild(line);
-  });
-  frag.appendChild(table);
-
-  if (recent.length) {
-    const heading = document.createElement('div');
-    heading.className = 'chat-section-label';
-    heading.textContent = `Recent turns · ${recent.length}`;
-    frag.appendChild(heading);
-
-    const list = document.createElement('ul');
-    list.className = 'usage-recent';
-    recent.forEach(turn => {
-      const item = document.createElement('li');
-      item.className = turn.is_error ? 'usage-turn usage-turn-error' : 'usage-turn';
-      item.append(
-        _cell(formatTime(turn.created_at), 'usage-when',
-              formatAbsoluteTime(turn.created_at)),
-        _cell(turn.chat_title || 'deleted conversation', 'usage-chat',
-              turn.chat_title || 'The conversation has since been deleted.'),
-        _cell(turn.model, 'usage-turn-model', turn.model),
-        _cell(`${_abbrev(turn.input_tokens)} → ${_abbrev(turn.output_tokens)}`,
-              'usage-num', `${turn.input_tokens} in, ${turn.output_tokens} out`),
-      );
-      if (turn.is_error) item.appendChild(_cell('failed', 'usage-errors'));
-      list.appendChild(item);
-    });
-    frag.appendChild(list);
-  }
-
-  const foot = document.createElement('p');
-  foot.className = 'skills-session';
-  foot.textContent = _usageData.retention_days
-    ? `Kept for ${_usageData.retention_days} days.`
-    : 'Kept indefinitely.';
-  frag.appendChild(foot);
-
-  // Ahead of the per-model table: "who spent this" is the question a
-  // surprising total raises first, and the model breakdown cannot answer it.
-  if (originBlock) frag.insertBefore(originBlock, frag.firstChild);
-  if (sessionBlock) frag.appendChild(sessionBlock);
-
-  body.replaceChildren(frag);
-}
-
-async function loadUsage(force = false) {
-  const body = byId('usageBody');
-  if (!body) return;
-  const range = byId('usageRange')?.value || '30';
-  if (!force && _usageData && _usageFetchedFor === range) {
-    _renderUsage();
-    return;
-  }
-  const rows = Array.from({length: 4}, () => {
-    const row = document.createElement('div');
-    row.className = 'skill-skeleton';
-    return row;
-  });
-  body.replaceChildren(...rows);
-  byId('usageCount').textContent = 'Loading…';
-  try {
-    const resp = await apiFetch(`/api/usage?days=${encodeURIComponent(range)}`);
-    if (!resp.ok) throw new Error('Could not load usage');
-    _usageData = await resp.json();
-    _usageFetchedFor = range;
-    _renderUsage();
-  } catch (error) {
-    _usageData = null;
-    _usageFetchedFor = null;
-    byId('usageCount').textContent = '';
-    const notice = document.createElement('div');
-    notice.className = 'skills-notice';
-    notice.textContent = error.message;
-    body.replaceChildren(notice);
-  }
-}
-
-// ── Statistics ────────────────────────────────────────────────────────────────
+import { _renderUsage, loadUsage } from './usage.js';
 // The same rows the Usage tab sums, kept in time order. Rendered by stats.js,
 // which owns the SVG; this only fetches and reports failure.
 
@@ -529,822 +315,11 @@ async function loadStats(force = false) {
 
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
-// different questions and fail independently: the live snapshot is read
-// straight off /proc, while the history comes from the sampler's table and is
-// empty until the server has been up for a sampling interval.
+import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=1';
 
-// A live reading that never changes is worse than no reading: it looks current
-// and is not. The panel refreshes itself while it is on screen, at half the
-// sampler's interval so a new stored sample shows up promptly without the page
-// asking for data that cannot have changed yet.
-const SERVER_POLL_MS = 30000;
-let _serverTimer = null;
+import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js';
 
-function startServerPolling() {
-  if (_serverTimer) return;   // never stack intervals on repeated tab clicks
-  _serverTimer = setInterval(() => {
-    // A hidden tab is not being read, and /proc is not free.
-    if (document.visibilityState !== 'visible') return;
-    if (byId('panelServer')?.hidden !== false) return;
-    loadServer(true);
-  }, SERVER_POLL_MS);
-}
-
-function stopServerPolling() {
-  if (!_serverTimer) return;
-  clearInterval(_serverTimer);
-  _serverTimer = null;
-}
-
-/**
- * @param {boolean} quiet A background refresh: leave the current reading on
- *   screen while the new one is fetched. Skeletons on every tick would make a
- *   panel that updates itself look like a panel that keeps breaking.
- */
-async function loadServer(quiet = false) {
-  const body = byId('serverBody');
-  if (!body) return;
-  const range = byId('serverRange')?.value || '1';
-  const bucket = byId('serverBucket')?.value || 'halfhour';
-
-  const count = byId('serverCount');
-  if (!quiet) {
-    body.replaceChildren(...Array.from({length: 2}, () => {
-      const row = document.createElement('div');
-      row.className = 'skill-skeleton';
-      return row;
-    }));
-    if (count) count.textContent = 'Loading…';
-  }
-  try {
-    const [liveResp, histResp] = await Promise.all([
-      apiFetch('/api/system'),
-      apiFetch(`/api/system/series?days=${encodeURIComponent(range)}` +
-               `&bucket=${encodeURIComponent(bucket)}`),
-    ]);
-    if (!liveResp.ok) throw new Error('Could not read host statistics');
-    if (!histResp.ok) throw new Error('Could not load host history');
-    const live = await liveResp.json();
-    const history = await histResp.json();
-    // Lazily imported for the same reason as the statistics module: it is a
-    // rarely-opened tab and pure weight in every other page load.
-    const {renderServer} = await import('./server.js');
-    renderServer(body, {live, history});
-    if (count) {
-      const cpu = Math.round(live.cpu_pct || 0);
-      const mem = Math.round(live.mem_pct || 0);
-      count.textContent = `CPU ${cpu}% · memory ${mem}%`;
-    }
-  } catch (error) {
-    // A background refresh keeps what is on screen. One failed poll is not
-    // worth replacing a good reading with an error, and the next tick will
-    // either recover or the user will reopen the tab and see it properly.
-    if (quiet) return;
-    if (count) count.textContent = '';
-    const notice = document.createElement('div');
-    notice.className = 'skills-notice';
-    notice.textContent = error.message;
-    body.replaceChildren(notice);
-  }
-}
-
-// Report the outcome of an action inside whichever surface the user is looking
-// at. A toast renders in .toast-region (z-index 300) while the settings dialog
-// is .dialog-backdrop (z-index 400), so a toast raised from Settings is painted
-// underneath the modal overlay -- the result appeared to land on the page
-// behind. #settingsStatus is the dialog's own aria-live region, so it is both
-// visible and announced.
-function notifyResult(message, type = '') {
-  if (settingsVisible) setStatus(message, type === 'error' ? 'error' : 'success');
-  else showToast(message, type);
-}
-
-function setStatus(text, type) {
-  const el = byId('settingsStatus');
-  el.textContent = text;
-  el.className = type ? `toast ${type}` : '';
-  if (type === 'success') setTimeout(() => { el.textContent = ''; el.className = ''; }, 2000);
-}
-
-// ── Skills ────────────────────────────────────────────────────────────────────────
-
-function _skillsNotice(text) {
-  const notice = document.createElement('div');
-  notice.className = 'skills-notice';
-  notice.textContent = text;
-  return notice;
-}
-
-/** Placeholder rows so the panel does not flash empty while fetching. */
-function _renderSkillSkeleton() {
-  const list = byId('skillsList');
-  if (!list) return;
-  const rows = Array.from({length: 5}, () => {
-    const row = document.createElement('div');
-    row.className = 'skill-skeleton';
-    return row;
-  });
-  list.replaceChildren(...rows);
-  byId('skillsCount').textContent = 'Loading…';
-}
-
-function _skillMatches(skill, needle) {
-  if (!needle) return true;
-  return skill.name.toLowerCase().includes(needle)
-    || (skill.description || '').toLowerCase().includes(needle);
-}
-
-/** One collapsed/expandable card. Long descriptions stay behind a disclosure. */
-function _buildSkillCard(skill, isPlugin) {
-  const item = document.createElement('li');
-  item.className = skill.active ? 'skill-card skill-card-active' : 'skill-card';
-
-  const details = document.createElement('details');
-  const summary = document.createElement('summary');
-  summary.className = 'skill-summary-row';
-
-  const heading = document.createElement('span');
-  heading.className = 'skill-name';
-  // The group header already names the plugin, so drop the redundant prefix.
-  heading.textContent = isPlugin ? skill.name.split(':').slice(1).join(':') : skill.name;
-  summary.appendChild(heading);
-
-  if (skill.active) {
-    const badge = document.createElement('span');
-    badge.className = 'skill-badge skill-active';
-    badge.textContent = 'Active';
-    summary.appendChild(badge);
-  }
-
-  const line = document.createElement('span');
-  line.className = 'skill-summary';
-  line.textContent = skill.summary || 'No description provided.';
-  summary.appendChild(line);
-
-  const full = document.createElement('p');
-  full.className = 'skill-description';
-  full.textContent = skill.description || 'No description provided.';
-
-  details.append(summary, full);
-  item.appendChild(details);
-  return item;
-}
-
-function _renderSkills() {
-  const list = byId('skillsList');
-  if (!list || !_skillsData) return;
-  const needle = _skillFilter.trim().toLowerCase();
-  const all = _skillsData.skills || [];
-  const sources = _skillsData.sources || [];
-  const shown = all.filter(skill => _skillMatches(skill, needle));
-
-  // Count line: absolute totals when browsing, match count when filtering.
-  const count = byId('skillsCount');
-  if (needle) {
-    count.textContent = `${shown.length} of ${all.length} skills`;
-  } else {
-    const active = _skillsData.active_count || 0;
-    count.textContent = active
-      ? `${all.length} skills · ${active} active`
-      : `${all.length} skills`;
-  }
-
-  // Which conversation the "Active" badges refer to.
-  const session = byId('skillsSession');
-  if (_skillsData.session_id) {
-    const title = state.currentChat?.title;
-    session.textContent = title
-      ? `Activity shown for “${title}”.`
-      : 'Activity shown for the current conversation.';
-    session.hidden = false;
-  } else {
-    session.textContent = 'Open a conversation to see which skills it has used.';
-    session.hidden = false;
-  }
-
-  if (!all.length) {
-    list.replaceChildren(_skillsNotice('No skills found. Add one under ~/.claude/skills.'));
-    return;
-  }
-  if (!shown.length) {
-    list.replaceChildren(_skillsNotice(`No skills match “${_skillFilter.trim()}”.`));
-    return;
-  }
-
-  const groups = sources.map(source => {
-    const items = shown.filter(skill => skill.source === source.id);
-    if (!items.length) return null;
-
-    const section = document.createElement('section');
-    section.className = 'skill-group';
-
-    // Filtering always expands, so matches are never hidden behind a collapse.
-    const collapsed = !needle && _collapsedSkillGroups.has(source.id);
-    const head = document.createElement('button');
-    head.type = 'button';
-    head.className = 'skill-group-head';
-    head.setAttribute('aria-expanded', String(!collapsed));
-    head.addEventListener('click', () => {
-      if (_collapsedSkillGroups.has(source.id)) _collapsedSkillGroups.delete(source.id);
-      else _collapsedSkillGroups.add(source.id);
-      _renderSkills();
-    });
-
-    const caret = document.createElement('span');
-    caret.className = 'skill-group-caret';
-    caret.setAttribute('aria-hidden', 'true');
-    caret.textContent = '▸';
-    const label = document.createElement('span');
-    label.className = 'skill-group-label';
-    label.textContent = source.label;
-    const tally = document.createElement('span');
-    tally.className = 'skill-group-count';
-    tally.textContent = needle ? `${items.length} of ${source.count}` : String(source.count);
-    head.append(caret, label, tally);
-    section.appendChild(head);
-
-    if (!collapsed) {
-      const items_el = document.createElement('ul');
-      items_el.className = 'skill-group-items';
-      const isPlugin = source.id.startsWith('plugin:');
-      // Active skills first, so session activity is visible without scrolling.
-      const ordered = [...items].sort((a, b) => Number(b.active) - Number(a.active));
-      ordered.forEach(skill => items_el.appendChild(_buildSkillCard(skill, isPlugin)));
-      section.appendChild(items_el);
-    }
-    return section;
-  }).filter(Boolean);
-
-  list.replaceChildren(...groups);
-}
-
-async function loadSkills(force = false) {
-  const list = byId('skillsList');
-  if (!list) return;
-  const chatId = state.currentChat?.id || '';
-  // Reuse the payload unless the conversation changed -- activity is per session.
-  if (!force && _skillsData && _skillsFetchedFor === chatId) {
-    _renderSkills();
-    return;
-  }
-  _renderSkillSkeleton();
-  try {
-    const query = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : '';
-    const response = await apiFetch(`/api/skills${query}`);
-    if (!response.ok) throw new Error('Could not load skills');
-    _skillsData = await response.json();
-    _skillsFetchedFor = chatId;
-    _renderSkills();
-  } catch (error) {
-    _skillsData = null;
-    _skillsFetchedFor = null;
-    byId('skillsCount').textContent = '';
-    byId('skillsSession').hidden = true;
-    list.replaceChildren(_skillsNotice(error.message));
-  }
-}
-
-// ── Machines ──────────────────────────────────────────────────────────────────────
-
-async function loadMachines() {
-  try {
-    const resp = await apiFetch('/api/machines');
-    if (resp.ok) _machines = (await resp.json()).machines || [];
-  } catch { _machines = []; }
-  // Check for a stored active machine
-  const stored = storageGet('wc_active_machine');
-  if (stored && _machines.some(m => m.id === stored)) {
-    _activeMachineId = stored;
-  }
-}
-
-// 'anthropic' is the wire protocol, not the vendor: a gateway speaking the
-// Anthropic API at a custom base_url is still provider='anthropic'. The server
-// classifies this (app.backend_kind) and the Usage tab gates its cost column on
-// the same value, so read it rather than re-deriving it here -- two
-// implementations agreeing by coincidence is a latent disagreement.
-const _BACKEND_KIND_LABELS = {
-  'anthropic': 'Anthropic API',
-  'anthropic-compatible': 'Anthropic-compatible',
-  'proxy': 'Claude Code proxy',
-};
-
-function _providerLabel(machine) {
-  return _BACKEND_KIND_LABELS[machine.backend_kind]
-    || (machine.provider === 'anthropic' ? 'Anthropic API' : 'Claude Code proxy');
-}
-
-// Per-machine model state, keyed by machine id: {models, active, default,
-// source, reason, endpoint}. Fetched lazily so opening Settings does not
-// query every configured backend at once.
-const _modelsByMachine = new Map();
-
-function _buildModelSection(machine) {
-  const section = document.createElement('div');
-  section.className = 'machine-models';
-
-  if (machine.provider !== 'anthropic') {
-    const note = document.createElement('p');
-    note.className = 'machine-hint';
-    note.textContent = 'A Claude Code proxy does not publish a model list.';
-    section.appendChild(note);
-    return section;
-  }
-
-  const entry = _modelsByMachine.get(machine.id);
-  const toolbar = document.createElement('div');
-  toolbar.className = 'models-toolbar';
-
-  const status = document.createElement('span');
-  status.className = 'models-status';
-  if (!entry) {
-    status.textContent = 'Loading models…';
-  } else if (entry.source === 'endpoint') {
-    const count = entry.models.length;
-    status.textContent = `${count} model${count === 1 ? '' : 's'} from ${entry.endpoint}`;
-  } else if (entry.reason) {
-    // Never present a guess as the real list -- say why it is a guess.
-    status.classList.add('models-status-warn');
-    status.textContent = `${entry.reason} Showing built-in suggestions.`;
-  } else {
-    // No reason means the server called this fallback expected, not a fault --
-    // an anthropic machine with no stored key cannot be probed over HTTP, yet
-    // serves turns normally through the host login. Warning about it flagged a
-    // working backend as broken, so this stays a quiet label.
-    status.textContent = 'Built-in model list';
-  }
-  toolbar.appendChild(status);
-
-  const refresh = document.createElement('button');
-  refresh.type = 'button';
-  // Its own class: it sits above .machine-actions, so sharing that class made
-  // it the first .machine-action in the card and any selector reaching for
-  // "the first action" landed on Refresh instead of Activate.
-  refresh.className = 'machine-action models-refresh';
-  refresh.textContent = 'Refresh';
-  refresh.addEventListener('click', () => loadModelsFor(machine.id, true));
-  toolbar.appendChild(refresh);
-  section.appendChild(toolbar);
-
-  if (!entry) return section;
-
-  // An empty active list means every served model is offered. Rendering that
-  // as all-checked keeps the feature opt-in; rendering it as none-checked
-  // would imply the picker is empty, which it is not.
-  const offersAll = entry.active.length === 0;
-
-  // The rail is the point of this layout: it runs down the live backend and
-  // terminates on the default row, so "this backend, this model" is one thing
-  // to read rather than two facts to assemble.
-  const body = document.createElement('div');
-  body.className = 'models-body';
-  body.appendChild(document.createElement('div')).className = 'models-rail';
-
-  const grid = document.createElement('div');
-  grid.className = 'models-grid';
-
-  // The two controls were unlabelled, so nothing said which column offered a
-  // model and which made it the default.
-  const header = document.createElement('div');
-  header.className = 'models-head';
-  ['Offered', 'Default', 'Model', 'Turns', ''].forEach(label => {
-    const cell = document.createElement('span');
-    cell.textContent = label;
-    header.appendChild(cell);
-  });
-  grid.appendChild(header);
-
-  entry.models.forEach(model => {
-    grid.appendChild(_buildModelRow(machine, model, entry, offersAll));
-  });
-  body.appendChild(grid);
-  section.appendChild(body);
-
-  const hint = document.createElement('p');
-  hint.className = 'machine-hint';
-  // Both controls are explained in either state. The all-offered wording used
-  // to describe only the tickbox, so in the state every backend starts in, the
-  // radio column was never accounted for at all.
-  hint.textContent = offersAll
-    ? 'All models are offered — tick a subset to narrow the picker. The selected ● is this backend’s default for new chats.'
-    : 'Ticked models are offered when starting a turn; the selected ● is this backend’s default for new chats.';
-  section.appendChild(hint);
-  return section;
-}
-
-function _bareModel(id) {
-  return id.slice(id.lastIndexOf('/') + 1);
-}
-
-function _turnsFor(modelId) {
-  return _turnsByModel.get(_bareModel(modelId)) || 0;
-}
-
-function _peakTurns() {
-  let peak = 0;
-  for (const n of _turnsByModel.values()) peak = Math.max(peak, n);
-  return peak;
-}
-
-function _buildModelRow(machine, model, entry, offersAll) {
-  const row = document.createElement('div');
-  row.className = 'model-item';
-  // The rail's terminating node hangs off this class, so the default row is
-  // what visually closes the path from the LIVE chip.
-  if (entry.default === model.id) row.classList.add('model-item-default');
-
-  const offered = document.createElement('input');
-  offered.type = 'checkbox';
-  offered.checked = offersAll || entry.active.includes(model.id);
-  offered.setAttribute('aria-label', `Offer ${model.id}`);
-  // Also a tooltip: the two controls sit unlabelled side by side, so a mouse
-  // user had no way to tell the "offered" column from the "default" one.
-  offered.title = `Offer ${model.id} when starting a turn`;
-  offered.addEventListener('change', () => _toggleModelOffered(machine, model.id));
-  row.appendChild(offered);
-
-  const isDefault = document.createElement('input');
-  isDefault.type = 'radio';
-  isDefault.name = `default-model-${machine.id}`;
-  isDefault.checked = entry.default === model.id;
-  isDefault.setAttribute('aria-label', `Default to ${model.id}`);
-  isDefault.title = `Make ${model.id} this backend's default for new chats`;
-  isDefault.addEventListener('change', () => _setModelDefault(machine, model.id));
-  row.appendChild(isDefault);
-
-  const name = document.createElement('span');
-  name.className = 'model-item-id';
-  name.title = model.id;
-  // "azure_ai/" repeated down the column buries the part that differs, so the
-  // family is dimmed and the distinguishing name reads first.
-  const slash = model.id.indexOf('/');
-  if (slash > 0) {
-    const family = document.createElement('span');
-    family.className = 'model-item-family';
-    family.textContent = model.id.slice(0, slash + 1);
-    name.appendChild(family);
-    name.appendChild(document.createTextNode(model.id.slice(slash + 1)));
-  } else {
-    name.textContent = model.id;
-  }
-  row.appendChild(name);
-
-  // Traffic. Scaled against the busiest model anywhere, so the bars compare
-  // across backends and not only within one.
-  const turns = _turnsFor(model.id);
-  const peak = _peakTurns();
-  const bar = document.createElement('span');
-  bar.className = 'model-bar';
-  const fill = document.createElement('i');
-  fill.style.width = peak && turns ? `${Math.max(1, (turns / peak) * 100)}%` : '0';
-  bar.appendChild(fill);
-  bar.title = `${turns.toLocaleString()} turns in the last 30 days`;
-  row.appendChild(bar);
-
-  const count = document.createElement('span');
-  count.className = turns ? 'model-turns' : 'model-turns model-turns-zero';
-  count.textContent = turns ? turns.toLocaleString() : 'never';
-  row.appendChild(count);
-  return row;
-}
-
-// The wires are drawn rather than declared, because a wire has to end at
-// whichever backend is live and that position is only known once the cards
-// have been laid out. Measured after render and again on resize; if the
-// measurement fails the map still reads, since the LIVE chip carries the same
-// fact in words.
-function _drawMapWires() {
-  const wires = byId('mapWires');
-  const map = byId('backendMap');
-  const src = document.querySelector('.map-src');
-  if (!wires || !map || !src) return;
-  wires.replaceChildren();
-
-  const cards = Array.from(document.querySelectorAll('#machineList .machine-card'));
-  if (!cards.length) return;
-  const base = wires.getBoundingClientRect();
-  if (!base.height) return;   // panel is hidden; nothing to measure against
-  const from = src.getBoundingClientRect();
-  const startY = from.top + from.height / 2 - base.top;
-
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${base.width} ${base.height}`);
-  svg.setAttribute('preserveAspectRatio', 'none');
-  cards.forEach(card => {
-    const box = card.getBoundingClientRect();
-    const endY = box.top + 22 - base.top;      // the card's header row
-    const live = card.classList.contains('machine-active');
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const w = base.width;
-    path.setAttribute('d', `M0 ${startY} C${w * 0.55} ${startY} ${w * 0.45} ${endY} ${w} ${endY}`);
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', live ? 'var(--ok)' : 'var(--line)');
-    path.setAttribute('stroke-width', live ? '2.5' : '1.5');
-    // A standby route exists but carries nothing, which is what a dashed line
-    // says and a thin solid one does not.
-    if (!live) path.setAttribute('stroke-dasharray', '3 3');
-    svg.appendChild(path);
-  });
-  wires.appendChild(svg);
-}
-
-function _renderMachineList() {
-  const list = byId('machineList');
-  list.replaceChildren();
-  if (!_machines.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sidebar-empty';
-    empty.textContent = 'No machines yet. Add one below.';
-    list.appendChild(empty);
-    return;
-  }
-  _machines.forEach(m => {
-    const card = document.createElement('div');
-    card.className = 'machine-card';
-    if (m.active) card.classList.add('machine-active');
-
-    const top = document.createElement('div');
-    top.className = 'machine-card-top';
-
-    // Which backend is live was previously a 3px border. It is the single most
-    // important fact on this panel, so it is stated in words.
-    const state = document.createElement('span');
-    state.className = m.active ? 'machine-state machine-state-live' : 'machine-state';
-    state.textContent = m.active ? 'LIVE' : 'STANDBY';
-    top.appendChild(state);
-
-    const ident = document.createElement('div');
-    ident.className = 'machine-ident';
-
-    const name = document.createElement('span');
-    name.className = 'machine-name';
-    name.textContent = m.name;
-    name.title = m.name;
-    ident.appendChild(name);
-
-    const meta = document.createElement('div');
-    meta.className = 'machine-meta';
-    // Anthropic machines are identified by their endpoint; host/port only
-    // describe the transport and would read as noise on the card.
-    const where = m.provider === 'anthropic'
-      ? (m.base_url || 'https://api.anthropic.com')
-      : m.host;
-    meta.textContent = where;
-    meta.title = where;
-    ident.appendChild(meta);
-    top.appendChild(ident);
-
-    const provider = document.createElement('span');
-    provider.className = 'machine-provider';
-    provider.textContent = _providerLabel(m);
-    top.appendChild(provider);
-
-    card.appendChild(top);
-
-    // The models a backend serves belong to the backend, so they render inside
-    // its card rather than in a separate tab that silently described whichever
-    // machine happened to be active.
-    card.appendChild(_buildModelSection(m));
-
-    const actions = document.createElement('div');
-    actions.className = 'machine-actions';
-
-    if (!m.active) {
-      const activateBtn = document.createElement('button');
-      activateBtn.type = 'button';
-      activateBtn.className = 'machine-action';
-      activateBtn.textContent = 'Activate';
-      activateBtn.addEventListener('click', () => _activateMachine(m.id));
-      actions.appendChild(activateBtn);
-    }
-
-    const testBtn = document.createElement('button');
-    testBtn.type = 'button';
-    testBtn.className = 'machine-action';
-    testBtn.textContent = 'Test';
-    // Pass the button itself: an active machine has no Activate button, so any
-    // positional lookup lands on a different action for active vs inactive cards.
-    testBtn.addEventListener('click', () => _testMachine(m.id, testBtn));
-    actions.appendChild(testBtn);
-
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'machine-action';
-    editBtn.textContent = 'Edit';
-    editBtn.addEventListener('click', () => _editMachine(m.id));
-    actions.appendChild(editBtn);
-
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.className = 'machine-action machine-action-danger';
-    delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', () => _deleteMachine(m.id));
-    actions.appendChild(delBtn);
-
-    card.appendChild(actions);
-    list.appendChild(card);
-  });
-
-  const total = byId('mapTotal');
-  if (total) {
-    let sum = 0;
-    for (const n of _turnsByModel.values()) sum += n;
-    total.textContent = sum ? `${sum.toLocaleString()} turns` : 'no turns yet';
-  }
-  // Layout has to settle before the cards can be measured.
-  requestAnimationFrame(_drawMapWires);
-}
-
-async function _activateMachine(id) {
-  try {
-    const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/activate`, {method: 'POST'});
-    if (!resp.ok) throw new Error('Could not activate machine');
-    await loadMachines();
-    _activeMachineId = id;
-    storageSet('wc_active_machine', id);
-    // The model picker offers what the *active* machine serves, and
-    // _refreshServedModels() derives that from _machines -- so changing which
-    // machine is active invalidates it. Nothing re-derived it here, so
-    // _servedModels kept whatever it held from before activation. On a console
-    // whose machine starts inactive that is [], and populateModelPicker reads an
-    // empty served list as "no backend is active" and falls back to
-    // _modelOptions: a single id, the global default. The picker then offered
-    // one model no matter how many the backend served, and stayed that way
-    // until an unrelated model toggle happened to call the sync from
-    // _saveMachineModels and repair it.
-    //
-    // loadModelsFor first, because the newly active machine's list may never
-    // have been fetched; it returns early when cached, which is why the sync is
-    // called explicitly rather than left to it.
-    await loadModelsFor(id);
-    _refreshServedModels();
-    _renderMachineList();
-    notifyResult('Machine activated');
-  } catch (error) {
-    notifyResult(error.message, 'error');
-  }
-}
-
-async function _testMachine(id, btn) {
-  if (btn) { btn.textContent = 'Testing…'; btn.disabled = true; }
-  try {
-    const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/test`, {method: 'POST'});
-    const data = await resp.json().catch(() => ({}));
-    // The endpoint reports {ok, status, error} only — the address comes from
-    // the machine record we already hold, not from the response.
-    const machine = _machines.find(m => m.id === id);
-    const target = machine ? `${machine.host}:${machine.port}` : 'machine';
-    if (data.ok) {
-      notifyResult(`Connected to ${target}`);
-    } else {
-      notifyResult(`Could not reach ${target}: ${data.error || data.status || 'unreachable'}`, 'error');
-    }
-  } catch (error) {
-    notifyResult(`Test failed: ${error.message}`, 'error');
-  } finally {
-    if (btn) { btn.textContent = 'Test'; btn.disabled = false; }
-  }
-}
-
-async function _deleteMachine(id) {
-  try {
-    const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}`, {method: 'DELETE'});
-    if (!resp.ok) throw new Error('Could not delete machine');
-    if (_activeMachineId === id) _activeMachineId = null;
-    await loadMachines();
-    _renderMachineList();
-    notifyResult('Machine deleted');
-  } catch (error) {
-    notifyResult(error.message, 'error');
-  }
-}
-
-// Anthropic machines are configured by endpoint, proxy machines by host, so
-// only one of the two field groups is ever relevant.
-function _syncMachineProviderFields() {
-  const provider = byId('machineProvider').value;
-  const isAnthropic = provider === 'anthropic';
-  byId('machineProxyFields').hidden = isAnthropic;
-  byId('machineAnthropicFields').hidden = !isAnthropic;
-  // The whole api_key group, not just its hint. Only an anthropic backend
-  // carries its key to the CLI; a proxy machine's key is stored and then never
-  // read by any turn, so offering the field there asked for a credential that
-  // could not take effect.
-  byId('machineApiKeyFields').hidden = !isAnthropic;
-  byId('machineModel').placeholder = isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5';
-}
-
-function _editMachine(id) {
-  const m = _machines.find(x => x.id === id);
-  if (!m) return;
-  _machineEditing = id;
-  byId('machineFormTitle').textContent = 'Edit machine';
-  byId('machineName').value = m.name;
-  byId('machineProvider').value = m.provider === 'anthropic' ? 'anthropic' : 'proxy';
-  byId('machineHost').value = m.host;
-  byId('machineBaseUrl').value = m.base_url || '';
-  byId('machineModel').value = m.model;
-  byId('machineApiKey').value = '';
-  byId('machineApiKey').placeholder = 'Leave blank to keep current';
-  _syncMachineProviderFields();
-  byId('machineForm').hidden = false;
-  byId('addMachineBtn').hidden = true;
-  byId('machineName').focus();
-}
-
-async function _saveMachine() {
-  const name = byId('machineName').value.trim();
-  const provider = byId('machineProvider').value === 'anthropic' ? 'anthropic' : 'proxy';
-  const isAnthropic = provider === 'anthropic';
-  const host = byId('machineHost').value.trim();
-  const base_url = byId('machineBaseUrl').value.trim();
-  const model = (byId('machineModel').value || '').trim()
-    || (isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5');
-  const api_key = byId('machineApiKey').value.trim() || null;
-
-  if (!name) { byId('machineName').focus(); return; }
-  if (!isAnthropic && !host) { byId('machineHost').focus(); return; }
-
-  const save = byId('saveMachine');
-  save.disabled = true;
-  try {
-    let resp;
-    // Only send fields the form actually collects — the server rejects the
-    // whole request if the body carries any field outside its allowlist.
-    const body = { name, provider, model };
-    if (isAnthropic) {
-      // Blank means "the default endpoint"; the server fills it in.
-      if (base_url) body.base_url = base_url;
-      // Only an anthropic backend consumes the key, so only that provider
-      // sends one. Storing it for a proxy machine put a live credential in the
-      // database that no turn could ever use -- cost with no effect.
-      if (api_key !== null) body.api_key = api_key;
-    } else {
-      body.host = host;
-    }
-    if (_machineEditing) {
-      resp = await apiFetch(`/api/machines/${encodeURIComponent(_machineEditing)}`, {
-        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
-      });
-    } else {
-      resp = await apiFetch('/api/machines', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body),
-      });
-    }
-    if (!resp.ok) {
-      const ct = resp.headers.get('content-type') || '';
-      let detail = '';
-      if (ct.includes('application/json')) {
-        try {
-          const data = await resp.json();
-          // The API reports failures as {"error": ...}; detail/message are
-          // fallbacks for FastAPI's own validation responses.
-          detail = data.error || data.detail || data.message || '';
-        } catch { /* ignore */ }
-      }
-      if (!detail) {
-        try {
-          detail = await resp.text();
-        } catch {
-          detail = '';
-        }
-      }
-      throw new Error(detail
-        ? `Could not save machine: ${detail}`
-        : `Could not save machine (${resp.status} ${resp.statusText})`);
-    }
-    _machineEditing = null;
-    byId('machineForm').hidden = true;
-    byId('addMachineBtn').hidden = false;
-    await loadMachines();
-    _renderMachineList();
-    setStatus('Machine saved', 'success');
-  } catch (error) {
-    setStatus(error.message, 'error');
-  } finally {
-    save.disabled = false;
-  }
-}
-
-function _showAddMachine() {
-  _machineEditing = null;
-  byId('machineFormTitle').textContent = 'Add machine';
-  byId('machineName').value = '';
-  // Default to the API Claude Code itself uses, rather than the proxy.
-  byId('machineProvider').value = 'anthropic';
-  byId('machineHost').value = '';
-  byId('machineBaseUrl').value = '';
-  byId('machineModel').value = '';
-  byId('machineApiKey').value = '';
-  byId('machineApiKey').placeholder = 'Optional';
-  _syncMachineProviderFields();
-  byId('machineForm').hidden = false;
-  byId('addMachineBtn').hidden = true;
-  byId('machineName').focus();
-}
-
-// ── Settings save ───────────────────────────────────────────────────────────────────
+import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList } from './machines.js?v=3';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();
@@ -1485,6 +460,11 @@ function updateCurrentUi(chat) {
   byId('topbarTitle').textContent = 'WebConsole';
   byId('workspaceName').textContent = chat.title;
   byId('workspaceName').title = chat.title;
+  // Same name, repeated by the composer: the strip scrolls out of view on a
+  // long conversation and a phone keyboard covers the rest of the screen, so
+  // "which chat am I typing into" has nothing left to answer it up there.
+  byId('composerChatName').textContent = chat.title;
+  byId('composerChatName').title = chat.title;
   byId('workspaceStrip').style.display = 'flex';
   byId('workspacePath').textContent = chat.work_dir;
   byId('workspacePath').title = chat.work_dir;
@@ -1496,7 +476,12 @@ function updateCurrentUi(chat) {
   markSeen(chat.id, chat.updated_at);
   listController.setUnread(unreadChatIds(state.chats));
   listController.render(state.chats, chat.id);
-  updateModelDisplay(chat.model);
+  // chat.model is the routing PIN and empty for almost every conversation;
+  // last_model_used is what actually answered its last turn. Falling back to
+  // it is what stops this label staying hidden while a real model (Qwen,
+  // Opus, whatever) is running -- the pin still wins when a user set one,
+  // since that names what the NEXT turn will use rather than the last one.
+  updateModelDisplay(chat.model || chat.last_model_used);
   populateBackendPicker(chat);
   ensurePinnedModels(chat);
   refreshQuestion();
@@ -2153,6 +1138,7 @@ function showWelcome() {
   state.currentChat = null;
   byId('topbarTitle').textContent = 'WebConsole';
   byId('workspaceName').textContent = '';
+  byId('composerChatName').textContent = '';
   byId('workspaceStrip').style.display = 'none';
   const lastBar = byId('lastCommandBar');
   if (lastBar) lastBar.hidden = true;
@@ -2426,7 +1412,7 @@ async function loadTurnCounts() {
   }
 }
 
-async function loadModelsFor(machineId, force = false) {
+export async function loadModelsFor(machineId, force = false) {
   // The guard covers the fetch, which is the only expensive part. Callers that
   // need the derived state refreshed on a cache hit -- _activateMachine, where
   // the models are already loaded but which machine is active has changed --
@@ -2458,7 +1444,7 @@ async function loadModelsFor(machineId, force = false) {
 }
 
 // The picker follows the active machine, so that is the entry it reads.
-function _refreshServedModels() {
+export function _refreshServedModels() {
   const active = _machines.find(machine => machine.active);
   const entry = active ? _modelsByMachine.get(active.id) : null;
   _servedModels = entry ? entry.models : [];
@@ -2562,357 +1548,6 @@ async function updateModelDisplay(model) {
   } else {
     label.hidden = true;
   }
-}
-
-// ── Supervisor ────────────────────────────────────────────────────────────────
-// How often to ask which agents are waiting. Cheap on the server: unchanged
-// transcripts are skipped by an mtime check before anything is read.
-const SUPERVISOR_POLL_MS = 15000;
-let _supervisorTimer = null;
-
-// ── Supervisor pane ───────────────────────────────────────────────────────────
-// The supervisor is a full page of its own. Framing it in the conversation area
-// rather than navigating to it keeps the sidebar in view -- which is the point,
-// since that is where you see who is waiting -- and leaving does not cost a
-// reload of the whole console.
-// What the conversation area looked like before the pane took over.
-let _paneReturn = {messages: '', composer: ''};
-
-// ── Adding a conversation to a supervisor ────────────────────────────────────
-// Built in JS rather than as markup in index.html. It reuses the same
-// .dialog-backdrop / .dialog classes as the other dialogs so it looks and
-// behaves identically, but four sessions are editing that file at once and a
-// dialog nobody else needs is not worth a conflict in it.
-
-function _closeSupervisorPicker() {
-  document.getElementById('supervisorPickDialog')?.remove();
-  if (previousFocus && document.body.contains(previousFocus)) previousFocus.focus();
-}
-
-async function _addChatToSupervisor(supervisorId, chatId, title) {
-  try {
-    const response = await apiFetch(
-      `/api/supervisors/${encodeURIComponent(supervisorId)}/members`,
-      {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        // kind is sent even though every member ends up a chat: the same
-        // endpoint takes 'session' from the supervisor's own picker, and the
-        // server is what decides how to resolve it.
-        body: JSON.stringify({members: [{kind: 'chat', ref_id: chatId}]}),
-      },
-    );
-    // apiFetch resolves for 4xx as well as 2xx, so a rejected add would
-    // otherwise report success and silently do nothing -- which is exactly how
-    // conversation reordering appeared to save and did not.
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || data.detail || 'Could not add to the supervisor');
-    }
-    const result = await response.json();
-    if (result.added?.length) showToast(`Added to ${title}`);
-    else if (result.already_members?.length) showToast(`Already in ${title}`);
-    else showToast(result.failed?.[0]?.error || 'Nothing was added', 'error');
-  } catch (error) {
-    showToast(error.message, 'error');
-  } finally {
-    _closeSupervisorPicker();
-  }
-}
-
-async function openSupervisorPicker(chatId) {
-  previousFocus = document.activeElement;
-  _closeSupervisorPicker();
-
-  const backdrop = document.createElement('div');
-  backdrop.className = 'dialog-backdrop open';
-  backdrop.id = 'supervisorPickDialog';
-  backdrop.setAttribute('role', 'dialog');
-  backdrop.setAttribute('aria-modal', 'true');
-  backdrop.setAttribute('aria-label', 'Add this conversation to a supervisor');
-
-  const panel = document.createElement('div');
-  panel.className = 'dialog';
-  const heading = document.createElement('h2');
-  heading.textContent = 'Add to supervisor';
-  const help = document.createElement('p');
-  help.textContent = 'Loading supervisors…';
-  panel.append(heading, help);
-  backdrop.appendChild(panel);
-  document.body.appendChild(backdrop);
-
-  // Clicking the backdrop closes, matching every other dialog here. The check
-  // keeps a click inside the panel from closing it.
-  backdrop.addEventListener('click', event => {
-    if (event.target === backdrop) _closeSupervisorPicker();
-  });
-
-  let supervisors = [];
-  try {
-    const response = await apiFetch('/api/supervisors');
-    if (!response.ok) throw new Error('Could not load supervisors');
-    supervisors = (await response.json()).supervisors || [];
-  } catch (error) {
-    help.textContent = error.message;
-    return;
-  }
-
-  if (!supervisors.length) {
-    // Says what to do next rather than presenting an empty box, which reads
-    // as a failure when it is simply the first run.
-    help.textContent = 'No supervisors yet. Create one on the supervisor page first.';
-    return;
-  }
-
-  help.textContent = 'Pick the supervisor that should watch this conversation.';
-  const list = document.createElement('div');
-  list.className = 'chat-menu open';
-  list.style.position = 'static';
-  supervisors.forEach(supervisor => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = supervisor.title || 'Untitled supervisor';
-    button.setAttribute('role', 'menuitem');
-    button.addEventListener('click', () => _addChatToSupervisor(
-      supervisor.id, chatId, supervisor.title || 'the supervisor'));
-    list.appendChild(button);
-  });
-  panel.appendChild(list);
-  list.querySelector('button')?.focus();
-}
-
-function openSupervisorPane() {
-  const pane = byId('supervisorPane');
-  const frame = byId('supervisorFrame');
-  if (!pane || !frame) {
-    // No pane in this markup: fall back to the page rather than doing nothing.
-    window.location.href = 'supervisor.html';
-    return;
-  }
-  // Loaded on first open and left loaded afterwards, so reopening is instant
-  // and the supervisor keeps its state.
-  if (frame.getAttribute('src') !== 'supervisor.html') {
-    frame.setAttribute('src', 'supervisor.html');
-  }
-  // Hide all other .main children (via the hidden attribute) so the supervisor
-  // fills the entire right-side panel — full height, not squeezed into the
-  // bottom-right corner below the still-visible topbar / messages / composer.
-  _paneReturn = new Map();
-  const main = pane.parentElement;
-  for (const child of main?.children ?? []) {
-    if (child !== pane && !child.hidden) {
-      child.hidden = true;
-      _paneReturn.set(child.id, true);
-    }
-  }
-  pane.hidden = false;
-  pane.classList.add('open');
-  byId('supervisorPaneClose')?.focus();
-}
-
-function closeSupervisorPane() {
-  const pane = byId('supervisorPane');
-  if (!pane || pane.hidden) return;
-  pane.hidden = true;
-  pane.classList.remove('open');
-  // Restore the .main children that were hidden when the pane opened.
-  for (const child of pane.parentElement?.children ?? []) {
-    if (child !== pane && _paneReturn.has(child.id)) {
-      child.hidden = false;
-      _paneReturn.delete(child.id);
-    }
-  }
-}
-
-// ── Device alerts ─────────────────────────────────────────────────────────────
-// Three levels, because on a phone the page is usually not the thing in front
-// of you:
-//   1. the tab title, which always works and needs no permission;
-//   2. a system notification, which on Android reaches the notification
-//      shade and needs permission granted from a real tap;
-//   3. a short vibration, which is the only one you notice in a pocket.
-// Only a RISE in the count fires 2 and 3 -- the supervisor re-polls every few
-// seconds and re-alerting on the same unanswered question would be unusable.
-const BASE_TITLE = 'WebConsole';
-// null until the first poll: opening the page must not announce agents that
-// were already waiting before you arrived. The first result sets the baseline
-// silently, and only a later rise is worth interrupting for.
-let _lastWaitingCount = null;
-// Counted separately from the title's total, because a notification fires on a
-// rise in rows that need a person -- not on a rise in the feed. Sharing one
-// counter would let a completion arriving alongside an ask mask the ask, or a
-// completion on its own be mistaken for one.
-let _lastActionableCount = 0;
-
-function _alertsEnabled() {
-  return storageGet('wc_alerts') === 'on'
-    && typeof Notification !== 'undefined'
-    && Notification.permission === 'granted';
-}
-
-function _syncAlertToggle() {
-  const button = byId('alertToggle');
-  if (!button) return;
-  // Hidden entirely where the API does not exist rather than offering a
-  // control that cannot work.
-  const supported = typeof Notification !== 'undefined';
-  button.hidden = !supported;
-  if (!supported) return;
-  const on = _alertsEnabled();
-  button.setAttribute('aria-pressed', String(on));
-  button.textContent = on ? '🔔' : '🔕';
-  button.title = on
-    ? 'Alerts on — you will be notified when an agent needs you'
-    : 'Alerts off — tap to be notified when an agent needs you';
-}
-
-async function toggleAlerts() {
-  if (typeof Notification === 'undefined') return;
-  if (_alertsEnabled()) {
-    storageSet('wc_alerts', 'off');
-    _syncAlertToggle();
-    return;
-  }
-  // Must be called from the tap itself: Android refuses a permission prompt
-  // that is not tied to a user gesture.
-  let permission = Notification.permission;
-  if (permission === 'default') {
-    try {
-      permission = await Notification.requestPermission();
-    } catch {
-      permission = 'denied';
-    }
-  }
-  if (permission === 'granted') {
-    storageSet('wc_alerts', 'on');
-    notifyResult('Alerts on', 'success');
-  } else {
-    storageSet('wc_alerts', 'off');
-    notifyResult('Android blocked notifications for this site', 'error');
-  }
-  _syncAlertToggle();
-}
-
-function _applyDeviceAlert(waiting) {
-  // The tab title counts everything the attention feed holds, completions
-  // included: it is ambient, and reading it costs nothing.
-  const count = waiting.length;
-  document.title = count ? `(${count}) ${BASE_TITLE}` : BASE_TITLE;
-
-  // A desktop notification is a different instrument. It interrupts a person
-  // who is not looking at this machine, so it fires only for rows that need
-  // one: an ask, a blocker, a failure. A finished agent is worth *showing* --
-  // Pedro's rule is that an ended action is worth surfacing, and the badge and
-  // the row both do that -- but "surface it" and "interrupt them wherever they
-  // are" are not the same request, and the rule as given said highlight.
-  //
-  // Without this split, "Done. Suite is green" raised an OS notification on an
-  // unfocused machine. That is the case where the promotion does the most work
-  // and earns the least, and it is what this function's own contract already
-  // said: only when information is required or important.
-  const actionable = waiting.filter((entry) => entry.reason !== 'done');
-  const rose = _lastWaitingCount !== null && actionable.length > _lastActionableCount;
-  _lastWaitingCount = count;
-  _lastActionableCount = actionable.length;
-  if (!rose || !_alertsEnabled()) return;
-  // Looking at the page already counts as being told.
-  if (document.visibilityState === 'visible' && document.hasFocus()) return;
-
-  const newest = actionable[actionable.length - 1] || {};
-  const who = newest.title || 'An agent';
-  // "finished" is its own message. The feed now carries completions as well as
-  // asks, and telling someone their finished agent "needs an answer" sends them
-  // off to answer nothing -- the same complaint that made the failed-endpoint
-  // wording wrong.
-  const body = newest.reason === 'blocked'
-    ? `${who} is blocked`
-    : newest.reason === 'done'
-      ? `${who} has finished`
-      : `${who} needs an answer`;
-  try {
-    new Notification('WebConsole', {
-      body: newest.preview ? `${body} — ${newest.preview}` : body,
-      tag: 'wc-supervisor',   // replaces its predecessor instead of stacking
-      renotify: false,
-    });
-  } catch {
-    // Some Android builds only allow notifications from a service worker.
-    // The title badge above still carries the count.
-  }
-  if (navigator.vibrate) {
-    try { navigator.vibrate(200); } catch { /* not supported */ }
-  }
-}
-
-async function refreshSupervisor() {
-  try {
-    const response = await apiFetch('/api/supervisor');
-    if (!response.ok) return;
-    const data = await response.json();
-    listController.setSupervisor(data);
-    _applyDeviceAlert(data.waiting || []);
-  } catch {
-    // Supervision is supplementary; the sidebar must render without it.
-  }
-}
-
-function startSupervisorPolling() {
-  if (_supervisorTimer) return;
-  _supervisorTimer = setInterval(refreshSupervisor, SUPERVISOR_POLL_MS);
-}
-
-// Opening an agent is what clears its badge -- that is what keeps the count
-// meaningful rather than a number that only ever grows.
-// Clearing is deliberate, so it also silences unanswered questions -- which
-// opening one does not.
-/**
- * Take one agent out of the highlights, leaving the rest alone.
- *
- * `dismiss: true` is the same flag the heading's clear-all uses, so this
- * silences an unanswered question too -- which merely opening the conversation
- * deliberately does not. That asymmetry is the point of the control: the row
- * says an agent is waiting, and only the user knows they have dealt with it.
- */
-async function dismissAgent(kind, id) {
-  if (!kind || !id) return;
-  try {
-    await apiFetch('/api/supervisor/read', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({kind, id, dismiss: true}),
-    });
-  } catch {
-    notifyResult('Could not remove it from the highlights', 'error');
-    return;
-  }
-  await refreshSupervisor();
-}
-
-async function clearSupervisor() {
-  try {
-    await apiFetch('/api/supervisor/read', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({all: true}),
-    });
-  } catch {
-    notifyResult('Could not clear alerts', 'error');
-  }
-  await refreshSupervisor();
-}
-
-async function markAgentSeen(kind, id) {
-  if (!id) return;
-  try {
-    await apiFetch('/api/supervisor/read', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({kind, id}),
-    });
-  } catch {
-    // A failed mark just means it stays listed; nothing to tell the user.
-  }
-  await refreshSupervisor();
 }
 
 // Reload the CLI session list. Extracted from loadInitialData so removing a

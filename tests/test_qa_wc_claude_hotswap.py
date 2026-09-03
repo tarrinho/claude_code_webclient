@@ -9,6 +9,7 @@ and 3 build the poller and the supervised loop on top of these functions.
 from __future__ import annotations
 
 import os
+import signal
 import sqlite3
 import subprocess
 import tempfile
@@ -231,6 +232,53 @@ stop_poller
         self.assertFalse(Path(f"{self.state}.hit").exists(),
                          "poller signalled a transition to no active machine")
 
+    def test_a_transient_query_failure_does_not_kill_the_poller(self):
+        """query_backend can fail transiently -- the DB replaced or briefly
+        unreadable under a long session. A bare command substitution under
+        `set -e` would take the whole poller subshell down with it, going
+        silently dead for the rest of the session with nothing left to
+        notice a real change ever again."""
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        body = f'''
+export WC_CLAUDE_POLL_S=1
+resolve_backend
+write_backend_state "{self.state}"
+trap 'echo SIGNALLED > "{self.state}.hit"' USR1
+start_poller "{self.state}" "$$"
+sleep 1
+rm -f "{self.db}"
+sleep 2
+if kill -0 "$POLLER_PID" 2>/dev/null; then
+    echo ALIVE > "{self.state}.alive"
+fi
+python3 - <<'PY'
+import sqlite3
+con = sqlite3.connect("{self.db}")
+con.execute(
+    "CREATE TABLE ai_machines (name TEXT, provider TEXT, base_url TEXT, "
+    "api_key TEXT, model TEXT, active INTEGER)"
+)
+con.execute("CREATE TABLE settings (key TEXT, value TEXT)")
+con.execute(
+    "INSERT INTO ai_machines (name, provider, api_key, model, active) "
+    "VALUES ('one', 'anthropic', 'key-two', 'claude-opus-5', 1)")
+con.commit()
+con.close()
+PY
+sleep 3
+stop_poller
+'''
+        self._run_bash(body)
+        self.assertTrue(Path(f"{self.state}.alive").exists(),
+                        "poller died on a transient query_backend failure "
+                        "(missing DB) instead of surviving it")
+        self.assertTrue(Path(f"{self.state}.hit").exists(),
+                        "poller should still detect a real change once the "
+                        "DB comes back")
+
     def test_stop_poller_leaves_no_process_behind(self):
         _make_db(self.db, machines=[{
             "name": "one", "provider": "anthropic", "api_key": "key-one",
@@ -352,6 +400,8 @@ class HotswapLoopTests(unittest.TestCase):
                          "resume target must be identical across a hot-swap")
         self.assertEqual(first["ANTHROPIC_API_KEY"], "key-one")
         self.assertEqual(second["ANTHROPIC_API_KEY"], "key-two")
+        # The model follows the swap too, not just the environment.
+        self.assertIn("claude-sonnet-5", second["argv"])
 
     def test_no_change_means_no_restart(self):
         _make_db(self.db, machines=[{
@@ -457,6 +507,67 @@ sys.exit(0)
                                    msg=f"child {pid} survived the wrapper"):
                 subprocess.run(["kill", "-0", pid], check=True,
                               capture_output=True)
+
+    def test_a_mid_session_deactivation_hands_off_unmanaged(self):
+        """handoff_unmanaged's mid-loop call site (PROVIDER="-" after a
+        confirmed change) is unreachable via a single clean poll tick --
+        PollerTests::test_no_active_machine_does_not_signal already proves
+        the poller itself never signals a transition into "no active
+        machine". It is only reachable via a race: two DB writes landing
+        within roughly one poll interval (active -> a different active ->
+        deactivated), where the poller signals for the first, real change
+        but resolve_backend re-reads the second by the time this process
+        reacts. Sending the same signal the poller would have sent makes
+        that already-real branch reachable deterministically here, instead
+        of depending on hitting a microsecond window between two commits.
+        """
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--resume", "test-session"],
+            env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1))
+
+        # The poller and the first fake-claude child are both direct
+        # children of the wrapper at this point -- capture them before
+        # triggering the hand-off so we can prove neither survives it.
+        before_children = subprocess.run(
+            ["pgrep", "-P", str(proc.pid)], capture_output=True, text=True,
+        ).stdout.split()
+        self.assertEqual(len(before_children), 2,
+                         "expected exactly the poller and the fake-claude "
+                         "child as the wrapper's own direct children")
+
+        con = sqlite3.connect(self.db)
+        con.execute("UPDATE ai_machines SET active = 0")
+        con.commit()
+        con.close()
+        proc.send_signal(signal.SIGUSR1)
+
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 2),
+                        "no hand-off invocation after a confirmed deactivation")
+        second = self._invocations()[1]
+        self.assertEqual(second["ANTHROPIC_API_KEY"], "",
+                         "handoff_unmanaged must not leak the deactivated "
+                         "machine's key into the unmanaged child")
+        self.assertEqual(second["ANTHROPIC_BASE_URL"], "")
+
+        # exec replaces the wrapper's own process image (same pid, new
+        # program) -- its former children, the poller and the pre-hand-off
+        # claude child (already brought down inside the loop before
+        # handoff_unmanaged runs), must not still be around afterwards.
+        self.assertTrue(
+            self._wait_for(lambda: all(
+                subprocess.run(["kill", "-0", pid],
+                               capture_output=True).returncode != 0
+                for pid in before_children
+            )),
+            "poller or the pre-hand-off child survived handoff_unmanaged",
+        )
 
 
 if __name__ == "__main__":

@@ -11,8 +11,8 @@
 # one place the product offers, the web chats obey it, and six terminal sessions
 # keep spending Anthropic credit with nothing to say so.
 #
-# This resolves the same machine the proxy would, exports the same variables the
-# proxy would, and execs claude. Use it instead of `claude`:
+# This resolves the same machine the proxy would and exports the same variables
+# the proxy would. Use it instead of `claude`:
 #
 #     bin/wc-claude.sh --dangerously-skip-permissions --resume cweb2
 #
@@ -23,24 +23,65 @@
 # Flags are passed through untouched. --model is added only when you did not
 # give one, so an explicit --model always wins.
 #
-# WC_CLAUDE_HOTSWAP=1, combined with --resume <name>, keeps the session on the
-# active machine as it changes: see wc_claude_supervised_loop below.
+# By default this just execs claude once and gets out of the way (the "single
+# exec" path, near the bottom of this file). Set WC_CLAUDE_HOTSWAP=1 together
+# with --resume <name> and it instead runs a supervised loop: claude runs as a
+# child of this script rather than replacing it, a background poller (see
+# start_poller) checks the active machine every WC_CLAUDE_POLL_S seconds
+# (default 5) against the database, and a real change kills and relaunches the
+# child under the same --resume target with the new backend's environment --
+# all without this script itself ever exiting, so the screen/tmux window
+# stays alive across the swap (screen/tmux track the pty, not the pid inside
+# it, and exec'ing a replacement claude would leave nothing else in the
+# window if it needed to be killed to swap backends).
+#
+# Known limitation: under WC_CLAUDE_HOTSWAP=1, Ctrl-C currently ends the whole
+# supervised session rather than interrupting only the running turn.
+# Backgrounding a job in a script with no job control (`set -m` is not used
+# here) marks SIGINT/SIGQUIT as ignored for that child, so claude can never
+# see Ctrl-C; this script has no INT trap of its own, so Ctrl-C kills this
+# script instead, and its EXIT trap then tears the child down too. Hosting an
+# interactive TUI as a properly signal-transparent supervised child needs
+# process-group and controlling-terminal management this script does not do
+# (or a structural pivot to driving the restart through `screen -X`/`tmux
+# respawn-pane` instead of a bash child). Tracked as a known gap, not fixed
+# here.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${WC_DB_PATH:-$HERE/data/webconsole.db}"
 
-# Sets global RESUME_NAME to the value following --resume in "$@", or "".
-# Used both for the transcript-doctor mismatch check and to gate hot-swap.
+# Captured once, before apply_env ever runs, so apply_env's has-key branch can
+# restore the caller's own CLAUDE_CODE_SIMPLE rather than leaving it unset
+# forever after the first machine with no key -- see apply_env below.
+if [ -n "${CLAUDE_CODE_SIMPLE+x}" ]; then
+    CLAUDE_CODE_SIMPLE_WAS_SET=1
+    CLAUDE_CODE_SIMPLE_ORIG="$CLAUDE_CODE_SIMPLE"
+else
+    CLAUDE_CODE_SIMPLE_WAS_SET=0
+fi
+
+# Sets global RESUME_NAME to the value following --resume (or after the "="
+# in --resume=<name>) in "$@", or "". Used both for the transcript-doctor
+# mismatch check and to gate hot-swap -- build_model_args already handles
+# both forms for --model, so --resume=<name> silently getting no hot-swap
+# would be a real gap now that RESUME_NAME gates the whole feature.
 detect_resume_name() {
     RESUME_NAME=""
-    local i j
+    local i j arg
     for i in $(seq 1 $#); do
-        if [ "${!i}" = "--resume" ]; then
-            j=$((i + 1))
-            RESUME_NAME="${!j:-}"
-            return
-        fi
+        arg="${!i}"
+        case "$arg" in
+            --resume=*)
+                RESUME_NAME="${arg#--resume=}"
+                return
+                ;;
+            --resume)
+                j=$((i + 1))
+                RESUME_NAME="${!j:-}"
+                return
+                ;;
+        esac
     done
 }
 
@@ -49,8 +90,8 @@ detect_resume_name() {
 # server's connection could never upgrade its transaction.
 #
 # Pure: prints one tab-separated line, sets nothing. Called by resolve_backend
-# on startup and, from Task 2 onward, by the poller on a timer -- one query
-# definition, not two copies to keep in sync.
+# on startup and by the poller on a timer -- one query definition, not two
+# copies to keep in sync.
 query_backend() {
     python3 - "$DB" <<'PY'
 import sqlite3, sys
@@ -84,7 +125,11 @@ def last_field(value):
     return " ".join(text.split()) or "-"
 
 if row is None:
-    print("- - - - -")
+    # Tab-joined like the real-row case below, not space-joined -- a caller
+    # that blindly does `cut -f1` (tab-delimited by default) must get the
+    # same field shape whether or not a machine is active. This file has
+    # already been bitten twice by a space/tab mismatch here.
+    print("\t".join(["-"] * 5))
 else:
     # The machine's own model first, then the global default -- the same order
     # runner.get_default_model uses once a chat pins nothing.
@@ -117,6 +162,15 @@ apply_env() {
 
     if [ "$PROVIDER" = "anthropic" ] && [ "$API_KEY" != "-" ]; then
         export ANTHROPIC_API_KEY="$API_KEY"
+        # Restore whatever CLAUDE_CODE_SIMPLE the caller originally had (it
+        # may have been unset by an earlier call to this same function, on a
+        # previous hot-swap restart, for a different, keyless machine) rather
+        # than leaving it unset from here on. Without this, a hot-swap from a
+        # keyless anthropic machine to one with a key would land somewhere a
+        # fresh launch on that same backend never would.
+        if [ "$CLAUDE_CODE_SIMPLE_WAS_SET" = "1" ]; then
+            export CLAUDE_CODE_SIMPLE="$CLAUDE_CODE_SIMPLE_ORIG"
+        fi
     else
         # No key: the CLI must fall back to the host's own login, which it will
         # not do while CLAUDE_CODE_SIMPLE is set.
@@ -146,8 +200,8 @@ build_model_args() {
 # last turn ran on a different model, and say what to do about it.
 #
 # Uses the RESUME_NAME global (set by detect_resume_name) rather than
-# re-scanning "$@" -- from Task 3 onward this runs again on every hot-swap
-# restart, and the resume target never changes across those restarts.
+# re-scanning "$@" -- this runs again on every hot-swap restart, and the
+# resume target never changes across those restarts.
 check_transcript_doctor() {
     [ -z "$RESUME_NAME" ] && return
     local last
@@ -215,35 +269,51 @@ WARN
     fi
 }
 
-# Writes PROVIDER BASE_URL API_KEY MODEL (four fields; NAME is cosmetic and
-# excluded) to FILE, atomically. This is the single source the poller compares
-# against, written by the main script whenever it accepts a new resolution.
+# sha256 of a single, already-unambiguous string (typically a tab-joined
+# field list, where the tab guarantees no two distinct field combinations can
+# collide the way naive concatenation could). Used so that neither the state
+# file nor the poller's own working state ever needs to hold a live API key.
+backend_digest() {
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+}
+
+# Writes a digest of PROVIDER BASE_URL API_KEY MODEL (four fields; NAME is
+# cosmetic and excluded) to FILE, atomically. This is the single source the
+# poller compares against, written by the main script whenever it accepts a
+# new resolution. A digest, not the raw fields: this file only ever needs to
+# answer "did the backend change", never "to what", and the raw fields would
+# put a live API key on disk -- in a temp file created under the process
+# umask (more permissive than the 0600 mktemp itself would suggest, since
+# `mv` within one filesystem is a rename that keeps the written file's own
+# mode) and never cleaned up at all if the wrapper is ever SIGKILLed.
 write_backend_state() {
     local file="$1"
-    printf '%s\t%s\t%s\t%s\n' "$PROVIDER" "$BASE_URL" "$API_KEY" "$MODEL" \
-        > "${file}.tmp"
+    backend_digest "$(printf '%s\t%s\t%s\t%s' \
+        "$PROVIDER" "$BASE_URL" "$API_KEY" "$MODEL")" > "${file}.tmp"
     mv "${file}.tmp" "$file"
 }
 
-# Forks a background poller comparing query_backend's output against FILE
-# every WC_CLAUDE_POLL_S seconds (default 5), signalling TARGET_PID with
-# SIGUSR1 on a real, non-empty change. Sets global POLLER_PID.
+# Forks a background poller comparing a digest of query_backend's output
+# against FILE every WC_CLAUDE_POLL_S seconds (default 5), signalling
+# TARGET_PID with SIGUSR1 on a real, non-empty change. Sets global
+# POLLER_PID.
 start_poller() {
     local file="$1" target="$2"
     (
         while sleep "${WC_CLAUDE_POLL_S:-5}"; do
-            current="$(query_backend | cut -f1-4)"
+            # A transient query_backend failure (sqlite/python error, DB
+            # replaced under a long session) must not take the poller down
+            # with it under `set -e` -- it would go silently dead for the
+            # rest of the session, with nothing left to notice a real change
+            # ever again. Skip this tick and try again next time.
+            current="$(query_backend | cut -f1-4)" || continue
+            # query_backend's sentinel for "no active machine" is tab-joined
+            # the same as a real row, so the provider field is always at a
+            # fixed position -- no format-sniffing needed here.
+            provider="$(printf '%s' "$current" | cut -f1)"
+            digest="$(backend_digest "$current")"
             last="$(cat "$file" 2>/dev/null || true)"
-            # query_backend returns tab-separated when there's an active machine,
-            # but "- - - - -" (space-separated) when there isn't. Extract provider
-            # carefully to handle both formats.
-            if [[ "$current" == *$'\t'* ]]; then
-                provider="$(printf '%s' "$current" | cut -f1)"
-            else
-                # No tabs means "- - - - -" (no active machine), so provider is "-"
-                provider="-"
-            fi
-            if [ "$provider" != "-" ] && [ "$current" != "$last" ]; then
+            if [ "$provider" != "-" ] && [ "$digest" != "$last" ]; then
                 kill -USR1 "$target" 2>/dev/null || true
             fi
         done
@@ -253,6 +323,33 @@ start_poller() {
 
 stop_poller() {
     [ -n "${POLLER_PID:-}" ] && kill "$POLLER_PID" 2>/dev/null || true
+}
+
+# Stops supervising and hands off to a plain, unmanaged `claude` -- used both
+# at startup when there is no active machine to resolve, and mid-session when
+# a hot-swap restart resolves into that same state. The mid-session case is
+# reachable only via a race: two DB writes landing within roughly one poll
+# interval (active -> a different active -> deactivated) can leave
+# resolve_backend seeing "no active machine" by the time this process reacts
+# to a signal the poller sent for a perfectly real, different change.
+#
+# exec discards this process's background children -- the poller would
+# otherwise survive, reparented to pid 1, still polling and still holding
+# this pid as a signal target it no longer owns -- and discards this
+# process's own EXIT trap, so STATE_FILE would otherwise never be removed.
+# Both are cleaned up by hand here rather than left to exec. apply_env is
+# called once more so a machine that just went inactive does not leave its
+# own credentials exported into the child this hands off to.
+#
+# Only safe to call once PROVIDER has actually been resolved to "-" by
+# resolve_backend; the very first startup guard (no database file at all)
+# calls plain `exec claude "$@"` instead, for exactly that reason.
+handoff_unmanaged() {
+    stop_poller
+    rm -f "${STATE_FILE:-}"
+    apply_env
+    echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
+    exec claude "$@"
 }
 
 detect_resume_name "$@"
@@ -265,8 +362,7 @@ fi
 resolve_backend
 
 if [ "$PROVIDER" = "-" ]; then
-    echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
-    exec claude "$@"
+    handoff_unmanaged "$@"
 fi
 
 apply_env
@@ -282,6 +378,10 @@ if [ "${WC_CLAUDE_DRY_RUN:-}" = "1" ]; then
     echo "would exec: claude ${MODEL_ARGS[*]} $*"
     for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \
              CLAUDE_CODE_SIMPLE; do
+        # Indirect expansion into a variable first. `${#!v}` is not valid bash --
+        # it fails with "bad substitution" and, under `set -e`, took the rest of
+        # this report with it. Length and indirection cannot be combined in one
+        # expansion.
         val="${!v-}"
         if [ -n "$val" ]; then
             case "$v" in
@@ -337,10 +437,24 @@ write_backend_state "$STATE_FILE"
 
 RESTART=0
 trap 'RESTART=1' USR1
+# `wait`'s own exit status when it is interrupted by our trapped SIGUSR1 --
+# computed rather than hardcoded, though SIGUSR1 is signal 10 (status 138) on
+# every Linux this runs on. Used below to tell "the child is still alive and
+# we were woken by our own signal" apart from "the child actually exited"
+# without relying on `kill -0`, which cannot distinguish "still alive" from
+# "exited but not yet reaped by this shell" and could otherwise relaunch a
+# session right as the user's own /exit lands in the same wait interruption.
+USR1_WAIT_STATUS=$((128 + $(kill -l USR1)))
 start_poller "$STATE_FILE" "$$"
 
 while true; do
-    claude "${MODEL_ARGS[@]}" "$@" &
+    # Explicit stdin redirection is required here, not decorative: bash
+    # redirects a backgrounded command's stdin from /dev/null by default in a
+    # script with no job control (`set -m` is not used here), so without
+    # `<&0` claude would start with no terminal input at all and exit
+    # immediately -- silently, since nothing about that failure is distinct
+    # from a clean exit.
+    claude "${MODEL_ARGS[@]}" "$@" <&0 &
     CHILD=$!
 
     while true; do
@@ -355,21 +469,21 @@ while true; do
         else
             STATUS=$?
         fi
-        if kill -0 "$CHILD" 2>/dev/null; then
-            # The child is still alive: wait was interrupted by our own
-            # trapped SIGUSR1, not by the child exiting.
+        if [ "$STATUS" = "$USR1_WAIT_STATUS" ]; then
+            # wait was interrupted by our own trapped SIGUSR1, not by the
+            # child exiting.
             if [ "$RESTART" = "1" ]; then
                 resolve_backend
-                # Bare command substitutions under `set -e`: a query_backend
-                # failure (sqlite/python error, DB replaced under a long
-                # session) or a vanished state file must not kill the whole
-                # wrapper. The poller already reads the same two things
-                # defensively; match it here. An unreadable state counts as
-                # "no confirmed change yet" -- loop back and keep waiting on
-                # the current child.
-                if ! NEW_STATE="$(query_backend | cut -f1-4)"; then
+                # A transient query_backend failure (sqlite/python error, DB
+                # replaced under a long session) or a vanished state file
+                # must not take the whole wrapper down under `set -e`.
+                # Treat either as "no confirmed change yet" and keep waiting
+                # on the current child, the same as the poller does for the
+                # same failure.
+                if ! RAW_STATE="$(query_backend | cut -f1-4)"; then
                     continue
                 fi
+                NEW_STATE="$(backend_digest "$RAW_STATE")"
                 OLD_STATE="$(cat "$STATE_FILE" 2>/dev/null || true)"
                 if [ "$NEW_STATE" = "$OLD_STATE" ]; then
                     # False alarm (e.g. two rapid ticks collapsed into one
@@ -398,35 +512,17 @@ while true; do
     kill -0 "$CHILD" 2>/dev/null && kill -KILL "$CHILD" 2>/dev/null || true
     wait "$CHILD" 2>/dev/null || true
 
-    # CONTROLLER RULING (task-2 review found the underlying cause; this
-    # closes the matching gap in this loop): the poller's own guard refuses
-    # to signal a transition INTO "no active machine" -- see start_poller's
-    # `[ "$provider" != "-" ]` check -- so this branch is unreachable via a
-    # single clean tick. It remains reachable via a race: two DB writes
-    # landing within roughly one poll interval (active -> different active
-    # -> deactivated) can still resolve here with PROVIDER="-" once
-    # resolve_backend re-reads the row fresh, above. Restarting into that
-    # state with no ANTHROPIC_*/MODEL_ARGS would silently fall through to
-    # the CLI's own bare default -- exactly what the two startup guards
-    # above (no DB file / no active machine) exist to avoid announcing
-    # loudly instead of doing quietly. Same treatment here: stop supervising
-    # and hand off to a plain, unmodified exec, the same as those two
-    # existing fallbacks.
+    # The poller's own guard never signals a transition INTO "no active
+    # machine" (see the `[ "$provider" != "-" ]` check in start_poller), so
+    # this cannot happen from a single clean poll tick. It remains reachable
+    # via a race: two DB writes landing within roughly one poll interval
+    # (active -> a different active -> deactivated) can still resolve here
+    # with PROVIDER="-" once resolve_backend re-read the row fresh, above.
+    # Handling it exactly the way the startup guard for this same state
+    # handles it is what stops it from silently falling through to the CLI's
+    # own bare default with no ANTHROPIC_*/MODEL_ARGS at all.
     if [ "$PROVIDER" = "-" ]; then
-        # exec discards this process's background children (the poller would
-        # survive, reparented to pid 1, still polling and still holding this
-        # pid as a signal target it no longer owns) and its own EXIT trap
-        # (STATE_FILE would never be removed) -- clean both up by hand before
-        # handing off. apply_env is idempotent and already has the branch for
-        # PROVIDER="-" that unsets everything: without it, the previous
-        # active machine's ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY (exported by
-        # this same loop, earlier) would survive the exec and leak into the
-        # child that this banner claims is "unchanged".
-        stop_poller
-        rm -f "$STATE_FILE"
-        apply_env
-        echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
-        exec claude "$@"
+        handoff_unmanaged "$@"
     fi
 
     apply_env

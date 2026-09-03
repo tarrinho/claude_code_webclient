@@ -316,9 +316,18 @@ cleanup() {
     # Bash does not signal background jobs just because the shell itself was
     # signalled -- without this, killing the wrapper (e.g. closing the
     # screen/tmux window) orphans the running claude child instead of ending
-    # the session.
+    # the session. Same grace-then-kill sequence as the main loop's own
+    # restart path: a bare SIGTERM with no wait can cut the child off mid-
+    # flush of the transcript --resume depends on -- exactly the loss this
+    # discipline exists to prevent. A trap's EXIT handler can safely sleep
+    # here; it is not itself interrupted by the signal already in flight.
     if [ -n "${CHILD:-}" ]; then
         kill -TERM "$CHILD" 2>/dev/null || true
+        for _ in 1 2 3 4; do
+            kill -0 "$CHILD" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -0 "$CHILD" 2>/dev/null && kill -KILL "$CHILD" 2>/dev/null || true
     fi
     rm -f "$STATE_FILE"
 }
@@ -351,8 +360,17 @@ while true; do
             # trapped SIGUSR1, not by the child exiting.
             if [ "$RESTART" = "1" ]; then
                 resolve_backend
-                NEW_STATE="$(query_backend | cut -f1-4)"
-                OLD_STATE="$(cat "$STATE_FILE")"
+                # Bare command substitutions under `set -e`: a query_backend
+                # failure (sqlite/python error, DB replaced under a long
+                # session) or a vanished state file must not kill the whole
+                # wrapper. The poller already reads the same two things
+                # defensively; match it here. An unreadable state counts as
+                # "no confirmed change yet" -- loop back and keep waiting on
+                # the current child.
+                if ! NEW_STATE="$(query_backend | cut -f1-4)"; then
+                    continue
+                fi
+                OLD_STATE="$(cat "$STATE_FILE" 2>/dev/null || true)"
                 if [ "$NEW_STATE" = "$OLD_STATE" ]; then
                     # False alarm (e.g. two rapid ticks collapsed into one
                     # signal) -- the child is fine, keep waiting on it.
@@ -395,6 +413,18 @@ while true; do
     # and hand off to a plain, unmodified exec, the same as those two
     # existing fallbacks.
     if [ "$PROVIDER" = "-" ]; then
+        # exec discards this process's background children (the poller would
+        # survive, reparented to pid 1, still polling and still holding this
+        # pid as a signal target it no longer owns) and its own EXIT trap
+        # (STATE_FILE would never be removed) -- clean both up by hand before
+        # handing off. apply_env is idempotent and already has the branch for
+        # PROVIDER="-" that unsets everything: without it, the previous
+        # active machine's ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY (exported by
+        # this same loop, earlier) would survive the exec and leak into the
+        # child that this banner claims is "unchanged".
+        stop_poller
+        rm -f "$STATE_FILE"
+        apply_env
         echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
         exec claude "$@"
     fi

@@ -393,6 +393,8 @@ _USAGE_BUCKETS: dict[str, int] = {
     "day": 10,
     "month": 7,
 }
+# Public name for test / route code that reads from db.USAGE_BUCKETS.
+USAGE_BUCKETS = _USAGE_BUCKETS
 
 _LOCAL_TS: str = "replace(datetime(created_at, 'localtime'), ' ', 'T')"
 

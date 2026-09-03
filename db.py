@@ -90,6 +90,7 @@ def __getattr__(name: str):
         "bump_chat_updated_at": "routes.db_chats",
         "chat_set_model": "routes.db_chats",
         "chat_set_title": "routes.db_chats",
+        "_ALLOWED_CHAT_FIELDS": "routes.db_chats",
         "chat_search": "routes.db_chats",
         "messages_get": "routes.db_chats",
         "messages_last": "routes.db_chats",
@@ -164,6 +165,7 @@ def __getattr__(name: str):
         "_LOCAL_TS": "routes.db_usage",
         "_SPINE_MAX": "routes.db_usage",
         "_BUCKET_STEP_S": "routes.db_usage",
+        "USAGE_BUCKETS": "routes.db_usage",
         "_USAGE_BUCKETS": "routes.db_usage",
         # read marks
         "read_marks_get": "routes.db_read_marks",
@@ -528,6 +530,16 @@ async def init() -> None:
     await _ensure_usage_columns()
     await _ensure_supervisor_columns()
     await db_conn.commit()
+
+    # Retention pruning. Imported directly rather than via db.usage_prune /
+    # db.system_prune: __getattr__ resolves those by importing routes.db_usage,
+    # which itself does `import db` -- calling back through db's own
+    # __getattr__ while init() is still running is the circular path that
+    # broke this the first time it was extracted.
+    import routes.db_usage as _usage
+
+    await _usage.usage_prune(config.USAGE_RETENTION_DAYS)
+    await _usage.system_prune(config.SYSTEM_RETENTION_DAYS)
 
 
 async def close() -> None:

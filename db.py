@@ -466,8 +466,12 @@ async def init() -> None:
             -- list even if the DB row is later deleted.
             task_list    TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_tasks_sup
-            ON supervisor_tasks(supervisor_id, priority DESC);
+        -- idx_sup_tasks_sup is created after _ensure_supervisor_columns runs,
+        -- not here: CREATE TABLE IF NOT EXISTS is a no-op against a database
+        -- that already had this table before `priority` was added to it, so
+        -- an index referencing that column in the same script crashed
+        -- db.init() outright on any such database with "no such column:
+        -- priority" -- before the app ever got to serve a single request.
 
         CREATE TABLE IF NOT EXISTS supervisor_messages (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -522,6 +526,7 @@ async def init() -> None:
     """)
     await _ensure_chat_columns()
     await _ensure_usage_columns()
+    await _ensure_supervisor_columns()
     await db_conn.commit()
 
 
@@ -530,6 +535,31 @@ async def close() -> None:
     if db_conn:
         await db_conn.close()
         db_conn = None
+
+
+async def _ensure_supervisor_columns() -> None:
+    """Apply additive supervisor_tasks schema migrations for existing
+    databases, then create the index that depends on the result.
+
+    `priority` was added straight into the CREATE TABLE IF NOT EXISTS in the
+    same executescript as the index that reads it -- a no-op against a
+    database that already had this table, so the index creation right after
+    it crashed db.init() outright with "no such column: priority" on any
+    such database, before the app ever served a request. Same
+    check-then-ALTER pattern as _ensure_chat_columns for the same reason: it
+    is idempotent and safe to run on every startup.
+    """
+    cursor = await db_conn.execute("PRAGMA table_info(supervisor_tasks)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "priority" not in columns:
+        await db_conn.execute(
+            "ALTER TABLE supervisor_tasks ADD COLUMN priority "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    await db_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sup_tasks_sup "
+        "ON supervisor_tasks(supervisor_id, priority DESC)"
+    )
 
 
 async def _ensure_chat_columns() -> None:

@@ -231,12 +231,56 @@ def _record_skill(session_id: str | None, name: str | None) -> None:
 
 
 async def get_proxy_host() -> str:
-    """Return the proxy transport host, falling back to environment config."""
+    """Return the proxy transport host, falling back to environment config.
+
+    This is the global/legacy value -- what the Settings page shows
+    (routes/misc.py's GET /api/settings) -- not a per-turn resolution. A turn
+    itself must go through :func:`get_proxy_target`, which is scoped to the
+    chat's own pinned or active machine; this function predates that and
+    keeping it unscoped is what routes/misc.py's display still wants.
+    """
     import db
 
     if db.db_conn is None:
         return config.PROXY_HOST
     return await db.setting_get("ai_machine_host") or config.PROXY_HOST
+
+
+async def get_proxy_target(
+    chat_id: str, owner: str | None = None
+) -> tuple[str, int]:
+    """Return the (host, port) a turn should connect to, following the same
+    pin/active resolution as :func:`get_backend`.
+
+    Mirrors get_backend's shape deliberately: a "proxy"-provider machine is
+    the *other* half of the same routing table, and until this function
+    existed it was the half nothing consulted. get_proxy_host() reads a single
+    global setting with no per-machine awareness and _execute_proxy /
+    _do_proxy_stream both hardcoded config.PROXY_PORT, so activating a
+    "proxy" machine changed a database flag and nothing else -- no turn could
+    ever reach the machine a user had just activated. The port a proxy
+    machine's own row stores was written on creation and read by nothing.
+
+    Falls back to (get_proxy_host(), config.PROXY_PORT) when no "proxy"
+    machine is pinned or active, which is byte-for-byte today's behaviour for
+    every deployment that only uses the single global setting.
+    """
+    import db
+
+    if db.db_conn is None:
+        return config.PROXY_HOST, config.PROXY_PORT
+
+    routing = await db.chat_routing(chat_id)
+    if not routing["owner"]:
+        if not owner:
+            return await get_proxy_host(), config.PROXY_PORT
+        # Not a conversation -- same fallback get_backend uses for a caller
+        # (the supervisor) whose chat_id is a label rather than a row.
+        routing = {"machine": await db.ai_machine_backend(owner)}
+    machine = routing["machine"]
+    if not machine or machine.get("provider") != "proxy" or not machine.get("host"):
+        return await get_proxy_host(), config.PROXY_PORT
+    return machine["host"], int(machine.get("port") or config.PROXY_PORT)
 
 
 async def get_default_model(chat_id: str | None = None, owner: str | None = None) -> str:
@@ -407,21 +451,21 @@ async def _execute_proxy(
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
-    proxy_host = await get_proxy_host()
+    proxy_host, proxy_port = await get_proxy_target(chat_id, owner)
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(proxy_host, config.PROXY_PORT),
+            asyncio.open_connection(proxy_host, proxy_port),
             timeout=connect_timeout,
         )
     except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
         _log.error(
             "proxy connect failed host={} port={}: {}",
             proxy_host,
-            config.PROXY_PORT,
+            proxy_port,
             exc,
         )
         raise TurnError(
-            f"Cannot connect to proxy at {proxy_host}:{config.PROXY_PORT}", fatal=False
+            f"Cannot connect to proxy at {proxy_host}:{proxy_port}", fatal=False
         )
 
     try:
@@ -751,17 +795,17 @@ async def _do_proxy_stream(
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
-    proxy_host = await get_proxy_host()
+    proxy_host, proxy_port = await get_proxy_target(chat_id, owner)
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(proxy_host, config.PROXY_PORT),
+            asyncio.open_connection(proxy_host, proxy_port),
             timeout=config.PROXY_CONNECT_TIMEOUT_S,
         )
     except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as exc:
         _log.error("proxy connect failed: {}", exc)
         yield {
             "type": "error",
-            "error": f"Cannot connect to proxy at {proxy_host}:{config.PROXY_PORT}",
+            "error": f"Cannot connect to proxy at {proxy_host}:{proxy_port}",
         }
         return
 

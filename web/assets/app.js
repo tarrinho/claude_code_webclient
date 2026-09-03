@@ -442,6 +442,32 @@ function unreadChatIds(chats) {
     .map(chat => chat.id);
 }
 
+// "Ended" tracks a running -> not-running transition, not a snapshot: a chat
+// that has simply never run must not show it, only one that just stopped.
+// Both keys live in localStorage rather than a JS Set kept across polls, so
+// the transition still gets caught after a full reload -- close the tab while
+// a turn is running, reopen once it has finished, and the first poll still
+// compares against "it was running last time this browser looked".
+const wasRunningKey = id => `wc_was_running_${id}`;
+const endedKey = id => `wc_ended_${id}`;
+
+function updateEndedTracking(chats) {
+  for (const chat of chats) {
+    const wasRunning = storageGet(wasRunningKey(chat.id)) === '1';
+    if (wasRunning && !chat.running) storageSet(endedKey(chat.id), '1');
+    storageSet(wasRunningKey(chat.id), chat.running ? '1' : '0');
+  }
+  return chats.filter(chat => storageGet(endedKey(chat.id)) === '1').map(chat => chat.id);
+}
+
+// Sending into a chat answers "is it done" before the next poll would, so the
+// mark is dropped here rather than left to linger for up to CHAT_POLL_MS.
+function clearEndedFlag(chatId) {
+  if (!chatId) return;
+  storageRemove(endedKey(chatId));
+  listController.clearEnded(chatId);
+}
+
 async function refreshChats() {
   const response = await apiFetch('/api/chats');
   if (!response.ok) throw new Error('Could not load conversations');
@@ -450,6 +476,7 @@ async function refreshChats() {
   // that started it, so the open page cannot know on its own.
   listController.setActiveTurns(state.chats.filter(c => c.running).map(c => c.id));
   listController.setUnread(unreadChatIds(state.chats));
+  listController.setEnded(updateEndedTracking(state.chats));
   listController.render(state.chats, state.currentChat?.id);
 }
 
@@ -580,7 +607,22 @@ let _answering = false;
 const AUTO_ANSWER_POLL_MS = 5000;
 let _autoAnswerTimer = null;
 let _autoAnswerEnabled = false;
+let _autoAnswerRecommend = false;
 let _autoAnswerLog = [];
+
+// The icon's three states, cycled in this order by one click each. 'off' and
+// 'on' are the original two-state behaviour; 'recommend' is additive -- same
+// icon, same click gesture, a further click out past 'on'. Modelled as one
+// derived string rather than the two raw booleans everywhere else in this
+// file, so the cycle and the rendering both have one place that enumerates
+// the three states instead of four `if` branches each guessing which
+// combination of (enabled, recommend) is reachable.
+function _autoAnswerMode() {
+  if (!_autoAnswerEnabled) return 'off';
+  return _autoAnswerRecommend ? 'recommend' : 'on';
+}
+
+const _AUTO_ANSWER_NEXT_MODE = {off: 'on', on: 'recommend', recommend: 'off'};
 
 async function refreshAutoAnswer() {
   const chat = state.currentChat;
@@ -601,6 +643,7 @@ async function refreshAutoAnswer() {
     if (!response.ok) { if (toggle) toggle.hidden = true; if (info) info.hidden = true; return; }
     const data = await response.json();
     _autoAnswerEnabled = Boolean(data.enabled);
+    _autoAnswerRecommend = Boolean(data.accept_recommended);
     _autoAnswerLog = Array.isArray(data.log) ? data.log : [];
   } catch {
     if (toggle) toggle.hidden = true;
@@ -609,10 +652,19 @@ async function refreshAutoAnswer() {
   }
   if (toggle) {
     toggle.hidden = false;
-    toggle.setAttribute('aria-pressed', String(_autoAnswerEnabled));
-    toggle.title = _autoAnswerEnabled
-      ? 'Auto-approving permission prompts — click to turn off'
-      : 'Auto-approve permission prompts';
+    const mode = _autoAnswerMode();
+    toggle.dataset.mode = mode;
+    toggle.setAttribute('aria-pressed', String(mode !== 'off'));
+    // The glyph itself changes for 'recommend', not just its colour: this
+    // state also judges which answer is best, not only whether to approve,
+    // so it reads as a different capability rather than the same one in a
+    // different shade.
+    toggle.textContent = mode === 'recommend' ? '🧠' : '🤖';
+    toggle.title = {
+      off: 'Auto-approve permission prompts',
+      on: 'Auto-approving permission prompts — click to also accept recommended answers',
+      recommend: 'Auto-approving permission prompts and recommended answers — click to turn off',
+    }[mode];
   }
   if (info) info.hidden = false;
   if (!byId('autoAnswerMenu')?.hidden) renderAutoAnswerMenu();
@@ -628,7 +680,9 @@ async function toggleAutoAnswer() {
   const chat = state.currentChat;
   if (!chat) return;
   const toggle = byId('autoAnswerToggle');
-  const next = !_autoAnswerEnabled;
+  const nextMode = _AUTO_ANSWER_NEXT_MODE[_autoAnswerMode()];
+  const nextEnabled = nextMode !== 'off';
+  const nextRecommend = nextMode === 'recommend';
   if (toggle) toggle.disabled = true;
   try {
     const response = await apiFetch(
@@ -636,17 +690,20 @@ async function toggleAutoAnswer() {
       {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: next}),
+        body: JSON.stringify({enabled: nextEnabled, accept_recommended: nextRecommend}),
       },
     );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || 'Could not change auto-answer');
     }
-    _autoAnswerEnabled = next;
-    showToast(next
-      ? 'Auto-approving permission prompts for this conversation'
-      : 'Auto-approve turned off');
+    _autoAnswerEnabled = nextEnabled;
+    _autoAnswerRecommend = nextRecommend;
+    showToast({
+      off: 'Auto-approve turned off',
+      on: 'Auto-approving permission prompts for this conversation',
+      recommend: 'Also accepting recommended answers to questions in this conversation',
+    }[nextMode]);
     await refreshAutoAnswer();
   } catch (error) {
     showToast(error.message, 'error');
@@ -665,6 +722,8 @@ function closeAutoAnswerMenu() {
   menu.hidden = true;
   byId('autoAnswerInfo')?.setAttribute('aria-expanded', 'false');
   document.removeEventListener('click', _onDocumentClickForAutoAnswerMenu, true);
+  // A row's tooltip has no meaning once the row it points at is gone.
+  closeAutoAnswerTooltip();
 }
 
 function _onDocumentClickForAutoAnswerMenu(event) {
@@ -730,13 +789,98 @@ function renderAutoAnswerMenu() {
     prompt.className = 'auto-answer-row-prompt';
     // A skip's reason is the more useful line: it says why nothing was
     // pressed, which is what a skip entry exists to explain.
-    prompt.textContent = entry.outcome === 'skipped'
+    const full = entry.outcome === 'skipped'
       ? (entry.reason || '')
       : (entry.prompt || '');
+    prompt.textContent = full;
+    // CSS clips this to two lines; the full text is already the whole node's
+    // textContent regardless, so the click handler has nothing further to
+    // fetch -- it only has to stop reading it as clipped.
+    prompt.tabIndex = 0;
+    prompt.setAttribute('role', 'button');
+    prompt.setAttribute('aria-label', 'Show the full text');
+    prompt.addEventListener('click', event => {
+      event.stopPropagation();
+      _toggleAutoAnswerTooltip(prompt, full);
+    });
+    prompt.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      _toggleAutoAnswerTooltip(prompt, full);
+    });
     row.appendChild(prompt);
 
     menu.appendChild(row);
   });
+}
+
+// ── Full-text tooltip for a clipped log row ─────────────────────────────────
+// position:fixed and appended to <body>, not into #autoAnswerMenu: the menu
+// clips its own content with overflow-y:auto so its own children scroll,
+// which would also clip a tooltip nested inside it the moment the row it
+// belongs to scrolls near an edge.
+
+let _autoAnswerTooltipAnchor = null;
+
+function _autoAnswerTooltipEl() {
+  let el = byId('autoAnswerTooltip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'autoAnswerTooltip';
+    el.className = 'auto-answer-tooltip';
+    el.setAttribute('role', 'tooltip');
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function closeAutoAnswerTooltip() {
+  const el = byId('autoAnswerTooltip');
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  _autoAnswerTooltipAnchor = null;
+  document.removeEventListener('click', _onDocumentClickForAutoAnswerTooltip, true);
+}
+
+function _onDocumentClickForAutoAnswerTooltip(event) {
+  const el = byId('autoAnswerTooltip');
+  if (el?.contains(event.target)) return;
+  // Also leaves any row alone, current or not: this listener runs on the
+  // capture phase, ahead of a row's own bubble-phase click handler, so
+  // without this a click meant to close the open tooltip closed it here
+  // first and then _toggleAutoAnswerTooltip's own anchor check -- now seeing
+  // no anchor at all -- read that as "reopen" and undid the close in the same
+  // click.
+  if (event.target.closest?.('.auto-answer-row-prompt')) return;
+  closeAutoAnswerTooltip();
+}
+
+function _toggleAutoAnswerTooltip(anchor, text) {
+  // A second click on the same row closes it rather than re-showing it --
+  // otherwise there is no way to dismiss it without clicking elsewhere first.
+  if (_autoAnswerTooltipAnchor === anchor) {
+    closeAutoAnswerTooltip();
+    return;
+  }
+  const el = _autoAnswerTooltipEl();
+  el.textContent = text;
+  const width = Math.min(320, window.innerWidth - 16);
+  el.style.width = `${width}px`;
+  // Measured after unhiding rather than estimated from text length: a wrong
+  // guess at height picks the wrong side to flip to, which is worse than not
+  // flipping at all.
+  el.hidden = false;
+  _autoAnswerTooltipAnchor = anchor;
+  const rect = anchor.getBoundingClientRect();
+  const height = el.getBoundingClientRect().height;
+  el.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+  // Flips above the row when there is not enough room below, the same escape
+  // hatch stats.js's chart tooltip uses to stay inside the viewport.
+  el.style.top = rect.bottom + height + 6 > window.innerHeight
+    ? `${Math.max(8, rect.top - height - 6)}px`
+    : `${rect.bottom + 6}px`;
+  document.addEventListener('click', _onDocumentClickForAutoAnswerTooltip, true);
 }
 
 // Escape is handled by the single global keydown chain near the end of this
@@ -1389,6 +1533,16 @@ async function loadBackends() {
 // Traffic is what makes the map worth reading: without it the panel says where
 // a turn will go but never where turns have gone, which is the comparison that
 // exposes a default nobody actually uses.
+// Same helper as machines.js's own _bareModel -- duplicated rather than
+// imported, since it is pure string manipulation with no state to keep in
+// sync. Its absence here previously threw a ReferenceError on the first loop
+// iteration below, silently caught by loadTurnCounts's own catch block, which
+// reset _turnsByModel to empty on every call -- so the Turns column always
+// read "never" regardless of how much traffic a model actually had.
+function _bareModel(id) {
+  return id.slice(id.lastIndexOf('/') + 1);
+}
+
 async function loadTurnCounts() {
   try {
     const response = await apiFetch('/api/usage?days=30');
@@ -1821,6 +1975,7 @@ document.addEventListener('DOMContentLoaded', () => {
     apiFetch, storageGet, storageSet, storageRemove, showToast,
     onChatLoaded: updateCurrentUi,
     refreshChats,
+    onPromptSent: clearEndedFlag,
   });
 
   document.querySelectorAll('.new-chat-btn').forEach(button => button.addEventListener('click', () => openChatDialog('create')));
@@ -1833,6 +1988,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (document.getElementById('supervisorPickDialog')) _closeSupervisorPicker();
       else if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
       else if (byId('chatDialog').classList.contains('open')) closeDialog();
+      else if (!byId('autoAnswerTooltip')?.hidden) closeAutoAnswerTooltip();
       else if (!byId('autoAnswerMenu')?.hidden) {
         closeAutoAnswerMenu();
         byId('autoAnswerInfo')?.focus();

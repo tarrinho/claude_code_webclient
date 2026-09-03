@@ -401,6 +401,112 @@ class BackendsPanelBrowserTests(_BrowserFixture):
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class BackendsTurnCountBrowserTests(_BrowserFixture):
+    """The Turns column in the Backends model grid.
+
+    Reported: it always read "never", for every model, no matter how much
+    traffic actually ran. loadTurnCounts() -- app.js, populates _turnsByModel
+    from GET /api/usage -- called a helper, _bareModel(), that exists only in
+    machines.js and was never imported into app.js. The ReferenceError this
+    threw on the first loop iteration was swallowed by loadTurnCounts()'s own
+    catch block, which resets _turnsByModel to an empty Map on any failure --
+    so the fetch always succeeded, the response always carried the right
+    numbers, and the column always showed "never" anyway, with nothing in the
+    console to say why.
+
+    Own class rather than added to BackendsPanelBrowserTests: this seeds real
+    usage_events rows directly into the class's shared database once, in
+    setUpClass, and every other Backends test in that class asserts against
+    the traffic-free state a fresh account starts in. Sharing a class would
+    make this test's fixture data leak into theirs.
+    """
+
+    #: Matches the built-in fallback list every fresh Anthropic machine offers
+    #: (see BackendsPanelBrowserTests.test_status_line_says_the_list_is_a_fallback).
+    SEEDED_MODEL = "claude-opus-5"
+    SEEDED_TURNS = 5
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sqlite3
+        con = sqlite3.connect(str(Path(cls.tmp.name) / "wc.db"))
+        try:
+            chat_id = f"turns-{secrets.token_hex(4)}"
+            con.execute(
+                "INSERT INTO chats (id, title, description, work_dir, "
+                "owner_id, created_at, updated_at) VALUES (?,?,NULL,'/tmp',"
+                "'admin','2026-09-01T08:00:00Z','2026-09-01T08:00:00Z')",
+                (chat_id, f"Turns fixture {chat_id}"),
+            )
+            for _ in range(cls.SEEDED_TURNS):
+                con.execute(
+                    "INSERT INTO usage_events (chat_id, owner_id, model, "
+                    "provider, created_at) VALUES (?, 'admin', ?, 'anthropic', "
+                    "'2026-09-02T09:00:00Z')",
+                    (chat_id, cls.SEEDED_MODEL),
+                )
+            con.commit()
+        finally:
+            con.close()
+
+    def _turns_column(self) -> dict[str, str]:
+        """{model id -> the Turns cell's text}, in the order rendered."""
+        rows = self.page.query_selector_all(".machine-models .model-item")
+        return {
+            row.query_selector(".model-item-id").inner_text():
+                row.query_selector(".model-turns").inner_text()
+            for row in rows
+        }
+
+    def test_a_model_with_recorded_turns_shows_its_count(self):
+        self._open_backends()
+        turns = self._turns_column()
+        self.assertIn(self.SEEDED_MODEL, turns, "precondition: the seeded model is listed")
+        self.assertEqual(
+            turns[self.SEEDED_MODEL], str(self.SEEDED_TURNS),
+            "the fixture recorded 5 real usage_events rows for this model, "
+            "so the column showing anything else -- especially the "
+            "no-traffic placeholder -- means loadTurnCounts() failed and was "
+            "silently swallowed",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_a_model_with_no_turns_still_reads_never(self):
+        """The other half: a real zero must still say so in words, not '0'."""
+        self._open_backends()
+        turns = self._turns_column()
+        untouched = [m for m in turns if m != self.SEEDED_MODEL]
+        self.assertTrue(untouched, "precondition: more than one model is offered")
+        for model in untouched:
+            self.assertEqual(turns[model], "never")
+
+    def test_the_seeded_models_bar_is_the_longest(self):
+        """Traffic is rendered as a bar scaled against the busiest model
+        (_peakTurns in machines.js). With one model actually used, its bar
+        must be the only one with any width -- a bug that always used the
+        model's OWN count as the peak (rather than the max across all of
+        them) would make every non-zero bar read as 100% regardless of how
+        it compares to the others, which text alone cannot catch."""
+        import re
+        self._open_backends()
+        rows = self.page.query_selector_all(".machine-models .model-item")
+        widths = {}
+        for row in rows:
+            model_id = row.query_selector(".model-item-id").inner_text()
+            fill = row.query_selector(".model-bar i")
+            style = fill.get_attribute("style") or ""
+            widths[model_id] = float(re.search(r"([\d.]+)%", style).group(1)) if "%" in style else 0.0
+        self.assertEqual(
+            widths[self.SEEDED_MODEL], max(widths.values()),
+            f"widths were {widths}",
+        )
+        untouched_widths = [w for m, w in widths.items() if m != self.SEEDED_MODEL]
+        self.assertTrue(all(w == 0 for w in untouched_widths))
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorBrowserTests(_BrowserFixture):
     """The supervisor section, driven the way the user drives it.
 
@@ -1453,6 +1559,159 @@ class QuestionDismissBrowserTests(_BrowserFixture):
         self._wait_for_poll(calls)
         self.assertTrue(self.page.locator("#questionBar").is_hidden())
         self.assertNotIn("DELETE", calls)
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class AutoAnswerCycleBrowserTests(_BrowserFixture):
+    """The bot icon's three-state cycle and the full-text tooltip on its log
+    rows, driven against the real PUT/GET /api/chats/{id}/auto-answer route --
+    no interception. Only the chat row is seeded directly, the same way
+    QuestionDismissBrowserTests does: a genuine session_id needs a live claude
+    session nothing here spins up, but the auto-answer route itself does not
+    care whether the session is real.
+    """
+
+    DESKTOP = "#chatListDesktop"
+
+    def _seed_chat(self) -> str:
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"aa-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "session_id,created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',"
+            "?,?,?)",
+            (chat_id, f"Auto-answer {chat_id}", f"sess-{chat_id}", stamp, stamp),
+        )
+        con.commit()
+        con.close()
+        return chat_id
+
+    def _open_chat(self, chat_id, timeout=20_000):
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
+        self.page.wait_for_selector(row, timeout=timeout)
+        self.page.click(row)
+        self.page.wait_for_selector("#autoAnswerToggle", state="visible",
+                                    timeout=timeout)
+
+    def _wait_for_mode(self, mode, timeout=5000):
+        # Not wait_for_function: the app's own CSP is script-src 'self' with
+        # no 'unsafe-eval', which Playwright's string-evaluation path violates
+        # on this page specifically (most test pages have no CSP at all, which
+        # is why this is worth a comment). A CSS attribute selector needs no
+        # in-page eval.
+        self.page.wait_for_selector(
+            f'#autoAnswerToggle[data-mode="{mode}"]', timeout=timeout,
+        )
+
+    def test_clicking_cycles_off_on_recommend_off(self):
+        chat_id = self._seed_chat()
+        self._open_chat(chat_id)
+        toggle = self.page.locator("#autoAnswerToggle")
+        self.assertEqual(toggle.get_attribute("data-mode"), "off")
+
+        toggle.click()
+        self._wait_for_mode("on")
+        toggle.click()
+        self._wait_for_mode("recommend")
+        toggle.click()
+        self._wait_for_mode("off")
+        self.assertEqual(self.errors, [])
+
+    def test_the_recommend_state_persists_across_a_reload(self):
+        chat_id = self._seed_chat()
+        self._open_chat(chat_id)
+        toggle = self.page.locator("#autoAnswerToggle")
+        toggle.click()
+        self._wait_for_mode("on")
+        toggle.click()
+        self._wait_for_mode("recommend")
+
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.assertEqual(
+            self.page.locator("#autoAnswerToggle").get_attribute("data-mode"),
+            "recommend",
+        )
+
+    def test_the_recommend_state_has_a_distinct_colour_from_plain_on(self):
+        chat_id = self._seed_chat()
+        self._open_chat(chat_id)
+        toggle = self.page.locator("#autoAnswerToggle")
+        toggle.click()
+        self._wait_for_mode("on")
+        on_color = toggle.evaluate("el => getComputedStyle(el).color")
+        toggle.click()
+        self._wait_for_mode("recommend")
+        recommend_color = toggle.evaluate("el => getComputedStyle(el).color")
+        self.assertNotEqual(
+            on_color, recommend_color,
+            "the third state must not be visually indistinguishable from the "
+            "second -- colour is one of two signals a sighted user gets that "
+            "this is a further, more powerful state",
+        )
+
+    def test_the_recommend_state_swaps_the_glyph_too(self):
+        """Colour alone was judged not enough: this state also judges which
+        answer is best, not only whether to approve one, so the icon itself
+        changes to a brain rather than staying the same robot in a different
+        shade.
+        """
+        chat_id = self._seed_chat()
+        self._open_chat(chat_id)
+        toggle = self.page.locator("#autoAnswerToggle")
+        self.assertEqual(toggle.inner_text(), "🤖")
+        toggle.click()
+        self._wait_for_mode("on")
+        self.assertEqual(toggle.inner_text(), "🤖")
+        toggle.click()
+        self._wait_for_mode("recommend")
+        self.assertEqual(toggle.inner_text(), "🧠")
+
+    def test_the_info_badge_sits_on_the_icons_top_right_corner(self):
+        chat_id = self._seed_chat()
+        self._open_chat(chat_id)
+        icon = self.page.locator("#autoAnswerToggle").bounding_box()
+        badge = self.page.locator("#autoAnswerInfo").bounding_box()
+        # A corner badge, not a second inline button: it overlaps the icon's
+        # own top-right corner rather than sitting beside it.
+        self.assertGreater(badge["x"] + badge["width"], icon["x"] + icon["width"] - 4)
+        self.assertLess(badge["y"], icon["y"])
+
+    def test_clicking_a_log_row_reveals_the_full_text_in_a_tooltip(self):
+        import json
+        import sqlite3
+        long_reason = "Why does this matter? " * 10  # longer than the 2-line clamp
+        chat_id = self._seed_chat()
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "UPDATE chats SET auto_answer_log = ? WHERE id = ?",
+            (json.dumps([{"kind": "Question", "prompt": "short",
+                         "outcome": "skipped", "reason": long_reason,
+                         "at": "now"}]), chat_id),
+        )
+        con.commit()
+        con.close()
+
+        self._open_chat(chat_id)
+        self.page.click("#autoAnswerInfo")
+        self.page.wait_for_selector(".auto-answer-row-prompt", timeout=5000)
+        self.page.click(".auto-answer-row-prompt")
+        self.page.wait_for_selector("#autoAnswerTooltip:not([hidden])", timeout=5000)
+        self.assertEqual(
+            self.page.locator("#autoAnswerTooltip").inner_text(), long_reason,
+        )
+
+        # A second click closes it again.
+        self.page.click(".auto-answer-row-prompt")
+        # state="hidden" on the bare selector, not "[hidden]" appended to it:
+        # a hidden element can never satisfy the default state="visible" a
+        # selector match implies, so that combination times out for ever.
+        self.page.wait_for_selector("#autoAnswerTooltip", state="hidden", timeout=5000)
+        self.assertEqual(self.errors, [])
 
 
 if __name__ == "__main__":

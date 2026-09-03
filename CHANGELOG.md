@@ -22,6 +22,22 @@ churn.
 
 ## [Unreleased]
 
+### Changed
+
+- **db.py extracted into 8 focused modules.** The database module (2,824 lines)
+  is now `routes/db_chats.py` (chat CRUD, messages, FTS5, auto-answer),
+  `routes/db_usage.py` (usage events, bucket stats, system samples),
+  `routes/db_machines.py` (machine CRUD, routing, model management),
+  `routes/db_users.py` (users, settings, API tokens),
+  `routes/db_read_marks.py` (read marks and last activity),
+  `routes/db_backup.py` (backup and restore),
+  `routes/db_queue.py` (queued prompt persistence),
+  `routes/db_sessions.py` (Claude session file I/O).
+  `db.py` (274 lines) remains the core bootstrap: schema creation, migrations,
+  `init()`, `close()`, `_now()`, slug helpers, and `_reopen()`. A `__getattr__`
+  lazy dispatcher maps 138 symbols to their new homes, so every existing
+  `import db; db.function()` call site works unchanged. No schema changes.
+
 ## [0.10.4] — 2026-09-03
 
 ### Added

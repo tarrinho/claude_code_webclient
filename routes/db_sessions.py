@@ -89,7 +89,7 @@ def _extract_model_from_transcript(session_id: str) -> str | None:
                     fh.seek(size - _TRANSCRIPT_TAIL_BYTES)
                     chunk = fh.read()
                     newline = chunk.find(b"\n")
-                    chunk = chunk[newline + 1 :] if newline >= 0 else b""
+                    chunk = chunk[newline + 1 :] if newline >= 0 else b""  # noqa: E203
                 else:
                     chunk = fh.read()
             model = _model_from_lines(

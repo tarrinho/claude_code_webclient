@@ -215,6 +215,46 @@ WARN
     fi
 }
 
+# Writes PROVIDER BASE_URL API_KEY MODEL (four fields; NAME is cosmetic and
+# excluded) to FILE, atomically. This is the single source the poller compares
+# against, written by the main script whenever it accepts a new resolution.
+write_backend_state() {
+    local file="$1"
+    printf '%s\t%s\t%s\t%s\n' "$PROVIDER" "$BASE_URL" "$API_KEY" "$MODEL" \
+        > "${file}.tmp"
+    mv "${file}.tmp" "$file"
+}
+
+# Forks a background poller comparing query_backend's output against FILE
+# every WC_CLAUDE_POLL_S seconds (default 5), signalling TARGET_PID with
+# SIGUSR1 on a real, non-empty change. Sets global POLLER_PID.
+start_poller() {
+    local file="$1" target="$2"
+    (
+        while sleep "${WC_CLAUDE_POLL_S:-5}"; do
+            current="$(query_backend | cut -f1-4)"
+            last="$(cat "$file" 2>/dev/null || true)"
+            # query_backend returns tab-separated when there's an active machine,
+            # but "- - - - -" (space-separated) when there isn't. Extract provider
+            # carefully to handle both formats.
+            if [[ "$current" == *$'\t'* ]]; then
+                provider="$(printf '%s' "$current" | cut -f1)"
+            else
+                # No tabs means "- - - - -" (no active machine), so provider is "-"
+                provider="-"
+            fi
+            if [ "$provider" != "-" ] && [ "$current" != "$last" ]; then
+                kill -USR1 "$target" 2>/dev/null || true
+            fi
+        done
+    ) &
+    POLLER_PID=$!
+}
+
+stop_poller() {
+    [ -n "${POLLER_PID:-}" ] && kill "$POLLER_PID" 2>/dev/null || true
+}
+
 detect_resume_name "$@"
 
 if [ ! -f "$DB" ]; then

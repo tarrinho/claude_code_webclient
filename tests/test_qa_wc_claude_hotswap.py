@@ -129,5 +129,129 @@ class DryRunResolutionTests(unittest.TestCase):
         self.assertNotIn("--model claude-opus-5", result.stdout)
 
 
+class PollerTests(unittest.TestCase):
+    """The poller in isolation: no claude, no loop, just detect-and-signal."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = str(Path(self.tmp.name) / "db.sqlite")
+        self.state = str(Path(self.tmp.name) / "state")
+
+    def _script(self, body: str) -> str:
+        # Sources the functions from the real script (everything up to, but
+        # not including, its main body) so the poller under test is the real
+        # implementation, not a re-typed copy.
+        functions = SCRIPT.read_text(encoding="utf-8").split(
+            'detect_resume_name "$@"', 1)[0]
+        return (
+            f'export WC_DB_PATH="{self.db}"\n'
+            f'DB="{self.db}"\n'
+            f'{functions}\n{body}\n'
+        )
+
+    def _run_bash(self, body: str, timeout: float = 20) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", self._script(body)],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+
+    def test_a_real_change_signals_the_target(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        # write_backend_state needs PROVIDER/BASE_URL/API_KEY/MODEL set, as
+        # resolve_backend would set them at startup.
+        body = f'''
+export WC_CLAUDE_POLL_S=1
+resolve_backend
+write_backend_state "{self.state}"
+trap 'echo SIGNALLED > "{self.state}.hit"' USR1
+start_poller "{self.state}" "$$"
+sleep 2
+python3 - <<'PY'
+import sqlite3
+con = sqlite3.connect("{self.db}")
+con.execute("UPDATE ai_machines SET api_key = 'key-two' WHERE name = 'one'")
+con.commit()
+con.close()
+PY
+sleep 3
+stop_poller
+'''
+        self._run_bash(body)
+        self.assertTrue(Path(f"{self.state}.hit").exists(),
+                        "poller did not signal after a real backend change")
+
+    def test_no_change_does_not_signal(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        body = f'''
+export WC_CLAUDE_POLL_S=1
+resolve_backend
+write_backend_state "{self.state}"
+trap 'echo SIGNALLED > "{self.state}.hit"' USR1
+start_poller "{self.state}" "$$"
+sleep 4
+stop_poller
+'''
+        self._run_bash(body)
+        self.assertFalse(Path(f"{self.state}.hit").exists(),
+                         "poller signalled with no actual backend change")
+
+    def test_no_active_machine_does_not_signal(self):
+        """A machine being deactivated with nothing else active must not
+        trigger a restart into a broken state."""
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        body = f'''
+export WC_CLAUDE_POLL_S=1
+resolve_backend
+write_backend_state "{self.state}"
+trap 'echo SIGNALLED > "{self.state}.hit"' USR1
+start_poller "{self.state}" "$$"
+sleep 2
+python3 - <<'PY'
+import sqlite3
+con = sqlite3.connect("{self.db}")
+con.execute("UPDATE ai_machines SET active = 0")
+con.commit()
+con.close()
+PY
+sleep 3
+stop_poller
+'''
+        self._run_bash(body)
+        self.assertFalse(Path(f"{self.state}.hit").exists(),
+                         "poller signalled a transition to no active machine")
+
+    def test_stop_poller_leaves_no_process_behind(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        body = f'''
+export WC_CLAUDE_POLL_S=1
+resolve_backend
+write_backend_state "{self.state}"
+start_poller "{self.state}" "$$"
+echo "POLLER_PID=$POLLER_PID"
+stop_poller
+sleep 1
+if kill -0 "$POLLER_PID" 2>/dev/null; then
+    echo STILL_ALIVE
+else
+    echo GONE
+fi
+'''
+        result = self._run_bash(body)
+        self.assertIn("GONE", result.stdout, result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

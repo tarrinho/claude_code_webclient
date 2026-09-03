@@ -22,6 +22,53 @@ churn.
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-09-03
+
+### Added
+
+- **The top-of-conversation model label, and the sidebar's per-chat model
+  column, now fall back to the model that actually answered the last turn.**
+  Both previously read `chats.model`, which is a routing override that stays
+  empty until a user explicitly pins one -- so the label stayed hidden, and
+  the sidebar column blank, for nearly every conversation, even one actively
+  running on a real backend. `chats.model` could not simply be repurposed:
+  `runner.get_default_model` reads it first, ahead of the backend and global
+  defaults, so writing the served model back into it would have pinned every
+  chat to whatever answered its first turn and silently broken "follow the
+  current default" for every chat that never set one. Added `last_model_used`
+  instead, read from `usage_events` (already carries chat_id/model/created_at
+  per turn, no schema change): `db.last_models_used` for the chat list
+  (batched, one query for every conversation) and the new `db.last_model_used`
+  for `GET /api/chats/{id}` (the endpoint opening a conversation actually
+  calls, which had been missing the field even after the list endpoint
+  gained it).
+- **The composer now names the open conversation**, on the same line as
+  "Enter to send," so a long conversation that has scrolled the workspace
+  strip out of view -- or a phone keyboard covering the rest of the screen --
+  still answers "which chat am I typing into."
+
+### Fixed
+
+- **The chat list, the composer, and half of Settings were broken for every
+  user.** A concurrent split of `app.js` into `supervisor.js`,
+  `device-alerts.js`, `machines.js`, `usage.js`, `server-stats.js` left
+  several names disconnected from their new homes: a whole function
+  (`refreshSessions`) was deleted outright when two `import` statements
+  landed mid-function instead of at file top; `byId`, `apiFetch`, and other
+  small shared helpers were referenced in the new files without being
+  imported or locally defined; and `SUPERVISOR_POLL_MS`/`_supervisorTimer`/
+  `startSupervisorPolling`, `showToast`, `previousFocus`, and two entire
+  module-private state variables in each of `usage.js` and `skills.js`
+  (`_usageData`/`_usageFetchedFor`, `_skillsData`/`_skillsFetchedFor`) went
+  missing along the way. Restored by diffing each file's declarations against
+  `git show HEAD:web/assets/app.js` and converging live in a browser until
+  boot, opening a conversation, and every Settings tab (Backends, Usage,
+  Statistics, Server, Skills, App) ran with zero console errors.
+  `previousFocus` moved onto the already-shared `state` object rather than
+  staying a bare `let`, since it is written from both app.js and
+  supervisor.js and a plain `let` import is read-only from the importing
+  side.
+
 ## [0.10.3] — 2026-09-02
 
 

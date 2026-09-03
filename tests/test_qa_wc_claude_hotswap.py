@@ -94,6 +94,37 @@ class DryRunResolutionTests(unittest.TestCase):
         self.assertIn("FAKE-CLAUDE-RAN", result.stdout)
         self.assertIn("no active machine", result.stderr)
 
+    def test_no_active_machine_leaves_the_callers_own_credentials_alone(self):
+        """Regression guard: the startup "no active machine" guard is a bare
+        exec, not routed through handoff_unmanaged. handoff_unmanaged calls
+        apply_env, which is correct at its actual (mid-loop) call site --
+        stripping this same script's own earlier export for a machine that
+        just went inactive -- but there is nothing of this script's own to
+        strip here, at the very first thing the script does. Routing this
+        guard through it too would silently unset whatever ANTHROPIC_*/
+        CLAUDE_CODE_SIMPLE the caller's own shell had already set, while the
+        banner still (falsely) says "unchanged"."""
+        db = str(Path(self.tmp.name) / "db.sqlite")
+        _make_db(db, machines=[{"name": "idle", "provider": "anthropic",
+                                "active": False}])
+        env_reporter = Path(self.tmp.name) / "bin" / "claude"
+        env_reporter.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "print('ANTHROPIC_API_KEY=' + os.environ.get('ANTHROPIC_API_KEY', '<unset>'))\n"
+            "print('CLAUDE_CODE_SIMPLE=' + os.environ.get('CLAUDE_CODE_SIMPLE', '<unset>'))\n"
+        )
+        env_reporter.chmod(0o755)
+        env = dict(self.env)
+        env.pop("WC_CLAUDE_DRY_RUN", None)
+        env["WC_DB_PATH"] = db
+        env["ANTHROPIC_API_KEY"] = "callers-own-key"
+        env["CLAUDE_CODE_SIMPLE"] = "1"
+        result = subprocess.run([str(SCRIPT)], capture_output=True, text=True,
+                                env=env, check=False)
+        self.assertIn("ANTHROPIC_API_KEY=callers-own-key", result.stdout)
+        self.assertIn("CLAUDE_CODE_SIMPLE=1", result.stdout)
+
     def test_anthropic_machine_with_key_resolves(self):
         db = str(Path(self.tmp.name) / "db.sqlite")
         _make_db(db, machines=[{

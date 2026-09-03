@@ -325,25 +325,27 @@ stop_poller() {
     [ -n "${POLLER_PID:-}" ] && kill "$POLLER_PID" 2>/dev/null || true
 }
 
-# Stops supervising and hands off to a plain, unmanaged `claude` -- used both
-# at startup when there is no active machine to resolve, and mid-session when
-# a hot-swap restart resolves into that same state. The mid-session case is
-# reachable only via a race: two DB writes landing within roughly one poll
-# interval (active -> a different active -> deactivated) can leave
-# resolve_backend seeing "no active machine" by the time this process reacts
-# to a signal the poller sent for a perfectly real, different change.
+# Stops supervising and hands off to a plain, unmanaged `claude`. Used only
+# from inside the supervised loop, when a hot-swap restart resolves into "no
+# active machine" -- reachable only via a race: two DB writes landing within
+# roughly one poll interval (active -> a different active -> deactivated) can
+# leave resolve_backend seeing "no active machine" by the time this process
+# reacts to a signal the poller sent for a perfectly real, different change.
 #
 # exec discards this process's background children -- the poller would
 # otherwise survive, reparented to pid 1, still polling and still holding
 # this pid as a signal target it no longer owns -- and discards this
 # process's own EXIT trap, so STATE_FILE would otherwise never be removed.
 # Both are cleaned up by hand here rather than left to exec. apply_env is
-# called once more so a machine that just went inactive does not leave its
-# own credentials exported into the child this hands off to.
+# called once more so the machine that just went inactive does not leave its
+# own credentials -- exported by this same script, earlier in this loop --
+# in the child this hands off to.
 #
-# Only safe to call once PROVIDER has actually been resolved to "-" by
-# resolve_backend; the very first startup guard (no database file at all)
-# calls plain `exec claude "$@"` instead, for exactly that reason.
+# Not used by either startup guard, deliberately: at startup there is nothing
+# of this script's own to strip yet, so calling apply_env there would instead
+# unset whatever ANTHROPIC_*/CLAUDE_CODE_SIMPLE the caller's own shell had
+# already set -- the exact silent credential change this feature exists to
+# prevent.
 handoff_unmanaged() {
     stop_poller
     rm -f "${STATE_FILE:-}"
@@ -362,7 +364,17 @@ fi
 resolve_backend
 
 if [ "$PROVIDER" = "-" ]; then
-    handoff_unmanaged "$@"
+    # Not handoff_unmanaged: this is the very first thing the script does
+    # after resolve_backend, so there is nothing of this script's own to
+    # strip from the environment yet -- calling apply_env here would unset
+    # whatever ANTHROPIC_*/CLAUDE_CODE_SIMPLE the caller's own shell had
+    # already set, which is exactly the silent, undisclosed credential
+    # change this feature exists to prevent. handoff_unmanaged's apply_env
+    # call is only correct at its mid-loop call site, where it is undoing
+    # this same script's own earlier export for a machine that just went
+    # inactive.
+    echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
+    exec claude "$@"
 fi
 
 apply_env

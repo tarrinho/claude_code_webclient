@@ -126,7 +126,7 @@
       <textarea id="composerInput" rows="1" maxlength="8000" placeholder="Ask Claude to inspect, explain, or change something…" aria-label="Message"></textarea>
       <button class="btn-send" id="sendBtn" aria-label="Send message">➜</button>
     </div>
-    <div class="composer-meta"><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span><span><button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
+    <div class="composer-meta"><span class="composer-left"><span class="composer-hint" id="composerChatName"></span><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span></span><span><button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
   </section>
   <!-- The supervisor is its own page. Embedded rather than navigated to, so the
        conversation list stays put and you can leave again without a reload. -->

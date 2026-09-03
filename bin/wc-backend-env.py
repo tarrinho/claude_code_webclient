@@ -134,6 +134,39 @@ def served_models(machine: dict[str, object]) -> list[str]:
     return [m for m in parsed if isinstance(m, str)] if isinstance(parsed, list) else []
 
 
+def _resolve_model(db: Path, model: str) -> int:
+    """Print the slug of the one backend that serves *model*, or nothing.
+
+    This exists for shells that predate the wrapper alias. Their `c2`..`c6`
+    still expand to a bare `--model azure_ai/...` with no backend named, and a
+    shell's aliases cannot be rewritten from outside once it is running --
+    cweb2's parent bash has been up since Aug 31. So rather than refusing those
+    invocations, the model is allowed to select its own backend when that is
+    unambiguous.
+
+    Two sources, both declarations rather than guesses: a backend's
+    `active_models` list, and its own default `model`. Silence when nothing
+    declares it or more than one does -- picking one arbitrarily would send a
+    turn somewhere nobody chose, which is the failure this whole arrangement
+    exists to remove.
+    """
+    if not db.is_file():
+        return 0
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in con.execute("SELECT * FROM ai_machines")]
+    finally:
+        con.close()
+    matches = {
+        profile_slug(r) for r in rows
+        if model in served_models(r) or str(r.get("model") or "").strip() == model
+    }
+    if len(matches) == 1:
+        print(matches.pop())
+    return 0
+
+
 def _check_model(machine: dict[str, object], model: str) -> int:
     """Refuse a model the active backend does not serve.
 
@@ -186,12 +219,18 @@ def main() -> int:
     group.add_argument("--fields", action="store_true",
                        help="tab-separated provider/base_url/api_key/model/name, "
                             "for the shell wrapper's banner and poller")
+    group.add_argument("--resolve-model", metavar="MODEL",
+                       help="print the profile slug of the backend that serves "
+                            "MODEL, or nothing when it is not determinable")
     group.add_argument("--check-model", metavar="MODEL",
                        help="exit non-zero if the active backend does not serve "
                             "MODEL; prints what it does serve")
     args = parser.parse_args()
 
     machine = machine_for(_db_path(), args.profile)
+
+    if args.resolve_model:
+        return _resolve_model(_db_path(), args.resolve_model)
 
     if args.check_model:
         return _check_model(machine, args.check_model)

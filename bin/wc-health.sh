@@ -33,6 +33,23 @@ GAP="${WC_HEALTH_GAP:-3}"
 
 log() { printf '%s wc-health: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 
+# Keep ~/.local/bin/claude pointing at the routing shim.
+#
+# Placed before the server guards below, and that is deliberate: this concerns
+# terminal sessions, not the web service. Whether webconsole is enabled,
+# stopped on purpose, or mid-restart has no bearing on whether a shell about to
+# start claude should reach the configured backend.
+#
+# Needed on a timer rather than once because the CLI self-updates and rewrites
+# that path -- it moved 2.1.258 -> 2.1.259 at 00:00 on 2026-09-03 -- which would
+# silently put every terminal session back to unrouted. The installer is
+# idempotent and silent when the shim is already in place, so this costs one
+# grep per tick.
+if [ -x "$(dirname "${BASH_SOURCE[0]}")/wc-install-claude-shim.sh" ]; then
+    "$(dirname "${BASH_SOURCE[0]}")/wc-install-claude-shim.sh" || \
+        log "could not assert the claude shim; terminal sessions may be unrouted"
+fi
+
 # Deliberately silent when systemd is not managing the server: otherwise a
 # developer running launch.sh by hand gets their server restarted underneath
 # them by a timer they forgot was installed.

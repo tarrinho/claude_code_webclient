@@ -61,6 +61,46 @@ else
     CLAUDE_CODE_SIMPLE_WAS_SET=0
 fi
 
+# The real CLI binary, resolved by path rather than by name.
+#
+# Required because ~/.local/bin/claude is now a shim that execs this script:
+# invoking `claude` here would re-enter the shim and recurse until the process
+# limit. The shim exists so that shells started before the alias was added --
+# cweb2's parent bash has been running since Aug 31 -- still get routed, since
+# bash caches the resolved *path* of a command and that path is unchanged.
+#
+# Resolution order, most explicit first. Each candidate is checked for the shim
+# marker, so a mistake anywhere in this chain fails loudly instead of forking
+# forever.
+CLAUDE_SHIM_MARKER="wc-claude-shim-do-not-exec-from-wrapper"
+
+_is_shim() {
+    [ -f "$1" ] && grep -qF "$CLAUDE_SHIM_MARKER" "$1" 2>/dev/null
+}
+
+resolve_claude_bin() {
+    local candidate
+    for candidate in \
+        "${WC_CLAUDE_PATH:-}" \
+        "$HOME/.local/bin/claude-real" \
+        "$(ls -1d "$HOME"/.local/share/claude/versions/* 2>/dev/null | sort -V | tail -1)" \
+        "$(command -v claude 2>/dev/null || true)"
+    do
+        [ -n "$candidate" ] || continue
+        [ -x "$candidate" ] || continue
+        _is_shim "$candidate" && continue
+        CLAUDE_BIN="$candidate"
+        return 0
+    done
+    echo "wc-claude: cannot find the real claude binary." >&2
+    echo "  Looked at: \$WC_CLAUDE_PATH, ~/.local/bin/claude-real," >&2
+    echo "  the newest ~/.local/share/claude/versions/*, and PATH." >&2
+    echo "  Every candidate was missing, not executable, or was this wrapper's" >&2
+    echo "  own shim -- exec'ing that would recurse." >&2
+    exit 127
+}
+resolve_claude_bin
+
 # --wc-profile <name> pins this session to one backend for its whole life,
 # instead of following whatever the console is currently routing to. Consumed
 # here and removed from the arguments, because `claude` does not know the flag.
@@ -202,9 +242,45 @@ check_model() {
     [ "${WC_SKIP_MODEL_CHECK:-0}" = "1" ] && return 0
     detect_effective_model "$@"
     [ -z "$EFFECTIVE_MODEL" ] && return 0
-    if ! python3 "$HERE/bin/wc-backend-env.py" ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} --check-model "$EFFECTIVE_MODEL"; then
-        exit 1
+
+    if python3 "$HERE/bin/wc-backend-env.py" \
+            ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} \
+            --check-model "$EFFECTIVE_MODEL" 2>/dev/null; then
+        return 0
     fi
+
+    # Not served by the backend we were going to use. If the caller named no
+    # profile and exactly one backend declares this model, let the model choose
+    # its backend rather than refusing.
+    #
+    # This is for shells that predate the alias. Their c2..c6 still expand to a
+    # bare `--model azure_ai/...` with no backend named, and a running shell's
+    # aliases cannot be rewritten from outside -- cweb2's parent bash has been
+    # up since Aug 31. Refusing those would break a working habit to enforce a
+    # rule the shell has no way to have heard about yet.
+    #
+    # Only when unambiguous. One backend declaring it is a fact; two would make
+    # this a guess, and guessing sends a turn somewhere nobody chose.
+    if [ -z "$WC_PROFILE_REQUEST" ]; then
+        local inferred
+        inferred="$(python3 "$HERE/bin/wc-backend-env.py" \
+            --resolve-model "$EFFECTIVE_MODEL" 2>/dev/null || true)"
+        if [ -n "$inferred" ]; then
+            echo "wc-claude: $EFFECTIVE_MODEL is served by '$inferred', not by the" \
+                 "active backend -- switching this session to it." >&2
+            WC_PROFILE_REQUEST="$inferred"
+            WC_PROFILE_ARGS=(--profile "$inferred")
+            resolve_backend
+            apply_env
+            return 0
+        fi
+    fi
+
+    # Nothing declares it: refuse, with the list of what the backend does serve.
+    python3 "$HERE/bin/wc-backend-env.py" \
+        ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} \
+        --check-model "$EFFECTIVE_MODEL" || true
+    exit 1
 }
 
 # --model only if the caller did not pass one. Sets global array MODEL_ARGS.
@@ -379,14 +455,14 @@ handoff_unmanaged() {
     rm -f "${STATE_FILE:-}"
     apply_env
     echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
-    exec claude "$@"
+    exec "$CLAUDE_BIN" "$@"
 }
 
 detect_resume_name "$@"
 
 if [ ! -f "$DB" ]; then
     echo "wc-claude: no WebConsole database at $DB — starting claude unchanged" >&2
-    exec claude "$@"
+    exec "$CLAUDE_BIN" "$@"
 fi
 
 resolve_backend
@@ -402,7 +478,7 @@ if [ "$PROVIDER" = "-" ]; then
     # this same script's own earlier export for a machine that just went
     # inactive.
     echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
-    exec claude "$@"
+    exec "$CLAUDE_BIN" "$@"
 fi
 
 apply_env
@@ -416,7 +492,7 @@ echo "wc-claude: ${NAME} · ${MODEL} · ${BASE_URL}" >&2
 # be checked without starting a session or burning a turn. Secrets are reported
 # as set/unset and by length, never printed.
 if [ "${WC_CLAUDE_DRY_RUN:-}" = "1" ]; then
-    echo "would exec: claude ${MODEL_ARGS[*]} $*"
+    echo "would exec: $CLAUDE_BIN ${MODEL_ARGS[*]} $*"
     for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \
              CLAUDE_CODE_SIMPLE; do
         # Indirect expansion into a variable first. `${#!v}` is not valid bash --
@@ -442,7 +518,7 @@ if [ "${WC_CLAUDE_HOTSWAP:-}" = "1" ] && [ -n "$RESUME_NAME" ]; then
 fi
 
 if [ "$HOTSWAP" != "1" ]; then
-    exec claude "${MODEL_ARGS[@]}" "$@"
+    exec "$CLAUDE_BIN" "${MODEL_ARGS[@]}" "$@"
 fi
 
 # ---- Supervised loop: claude runs as a child, this process stays resident ----
@@ -495,7 +571,7 @@ while true; do
     # `<&0` claude would start with no terminal input at all and exit
     # immediately -- silently, since nothing about that failure is distinct
     # from a clean exit.
-    claude "${MODEL_ARGS[@]}" "$@" <&0 &
+    "$CLAUDE_BIN" "${MODEL_ARGS[@]}" "$@" <&0 &
     CHILD=$!
 
     while true; do

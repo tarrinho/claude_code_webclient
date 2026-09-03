@@ -27,6 +27,8 @@ import signal
 import sys
 import uuid
 
+import backend_env
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -238,60 +240,20 @@ def _backend_env(backend: object) -> dict[str, str]:
     the host's Claude credentials -- passing a bare dict would leave `claude`
     unable to start. The API key is applied as an environment variable and
     never as an argument: /proc/<pid>/cmdline is world-readable.
+
+    The rule itself is in :func:`backend_env.deltas`, which `runner._build_env`
+    and `bin/wc-claude.sh` also use. It used to live here and be mirrored by
+    hand in both of those -- the shell one said so in a comment, "Mirror
+    claude_proxy._backend_env exactly, including what it removes". Registry #68
+    is what the mirroring cost: this path inherited ANTHROPIC_BASE_URL from its
+    shell, so switching a machine off a gateway and back to Anthropic kept
+    sending turns to the gateway with nothing in the UI to say so.
+
+    What stays here is what is specific to this path: the environment is copied
+    wholesale, because a proxied child needs the host's login to be reachable.
     """
-    env = dict(os.environ)
-    # Opt out of experimental beta features for every spawned turn. Set before
-    # the provider branch below so it applies to proxy machines too, not only
-    # Anthropic ones.
-    env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
-    if not isinstance(backend, dict) or backend.get("provider") != "anthropic":
-        # Do not leak Anthropic env vars to non-anthropic backends: when the
-        # CLI talks to a proxy, `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`
-        # from the host shell must not reach the child process.
-        env.pop("ANTHROPIC_BASE_URL", None)
-        env.pop("ANTHROPIC_AUTH_TOKEN", None)
-        return env
-    # ANTHROPIC_AUTH_TOKEN is never something a machine record supplies -- it
-    # holds `api_key` -- and the CLI prefers the token over ANTHROPIC_API_KEY.
-    # So an inherited one silently outranks the key set below, and the turn goes
-    # out with the credentials of whatever the proxy's shell was pointed at.
-    # Dropped unconditionally, before the branch, so it cannot survive either
-    # path.
-    env.pop("ANTHROPIC_AUTH_TOKEN", None)
-    base_url = backend.get("base_url")
-    if isinstance(base_url, str) and base_url.strip():
-        env["ANTHROPIC_BASE_URL"] = base_url.strip()
-    else:
-        # No base_url means "the official API". This branch used to leave the
-        # variable alone, and since the child starts from a copy of this
-        # process's environment, an ANTHROPIC_BASE_URL inherited from the shell
-        # that launched the proxy survived -- so switching a machine off a
-        # gateway and back to Anthropic kept sending turns to the gateway, with
-        # nothing in the UI to say so. The documented workaround was to
-        # `unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN` by hand before
-        # starting the proxy, which is a fix that has to be remembered every
-        # time and is invisible when forgotten.
-        #
-        # The direct runner never had this: runner._build_env builds from an
-        # allowlist, so nothing is inherited. Only this path copies the
-        # environment wholesale, and only this path needed the workaround.
-        env.pop("ANTHROPIC_BASE_URL", None)
-    api_key = backend.get("api_key")
-    if isinstance(api_key, str) and api_key.strip():
-        env["ANTHROPIC_API_KEY"] = api_key.strip()
-    else:
-        # No key supplied: drop any inherited one so the CLI falls through to
-        # the host's own login instead of a stale key from the proxy's shell.
-        env.pop("ANTHROPIC_API_KEY", None)
-        # CLAUDE_CODE_SIMPLE makes the CLI ignore OAuth and the keychain, so an
-        # inherited one would leave the host login unreadable and the turn
-        # unauthenticated.
-        env.pop("CLAUDE_CODE_SIMPLE", None)
-    log.info(
-        "backend=anthropic base_url=%s api_key=%s",
-        env.get("ANTHROPIC_BASE_URL", "<default>"),
-        "set" if "ANTHROPIC_API_KEY" in env else "host login",
-    )
+    env = backend_env.deltas(backend).apply_to(dict(os.environ))
+    log.info("backend_env %s", backend_env.describe(backend))
     return env
 
 

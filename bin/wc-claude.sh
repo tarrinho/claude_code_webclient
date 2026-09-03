@@ -61,6 +61,40 @@ else
     CLAUDE_CODE_SIMPLE_WAS_SET=0
 fi
 
+# --wc-profile <name> pins this session to one backend for its whole life,
+# instead of following whatever the console is currently routing to. Consumed
+# here and removed from the arguments, because `claude` does not know the flag.
+#
+# Needed rather than nice: a model id is only meaningful against the backend
+# serving it. The shell aliases c2..c6 pin gateway model ids (`azure_ai/...`,
+# `vllm/...`) that exist on one backend only, so following the active machine
+# would send them wherever the console happened to point and fail with a 429
+# that reads as capacity rather than routing.
+WC_PROFILE_REQUEST=""
+_wc_args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --wc-profile=*) WC_PROFILE_REQUEST="${1#--wc-profile=}"; shift ;;
+        --wc-profile)
+            WC_PROFILE_REQUEST="${2:-}"
+            if [ -z "$WC_PROFILE_REQUEST" ]; then
+                echo "wc-claude: --wc-profile needs a name" >&2
+                exit 2
+            fi
+            shift 2
+            ;;
+        *) _wc_args+=("$1"); shift ;;
+    esac
+done
+set -- ${_wc_args[@]+"${_wc_args[@]}"}
+
+# The selector passed to bin/wc-backend-env.py, empty when following the active
+# machine. Kept as an array so an empty value expands to no arguments at all.
+WC_PROFILE_ARGS=()
+if [ -n "$WC_PROFILE_REQUEST" ]; then
+    WC_PROFILE_ARGS=(--profile "$WC_PROFILE_REQUEST")
+fi
+
 # Sets global RESUME_NAME to the value following --resume (or after the "="
 # in --resume=<name>) in "$@", or "". Used both for the transcript-doctor
 # mismatch check and to gate hot-swap -- build_model_args already handles
@@ -93,52 +127,8 @@ detect_resume_name() {
 # on startup and by the poller on a timer -- one query definition, not two
 # copies to keep in sync.
 query_backend() {
-    python3 - "$DB" <<'PY'
-import sqlite3, sys
-con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
-con.row_factory = sqlite3.Row
-try:
-    row = con.execute(
-        "SELECT name, provider, base_url, api_key, model FROM ai_machines "
-        "WHERE active = 1 LIMIT 1"
-    ).fetchone()
-    setting = con.execute(
-        "SELECT value FROM settings WHERE key = 'default_model'"
-    ).fetchone()
-finally:
-    con.close()
-
-def clean(value):
-    # Any whitespace would break the field split, and a newline in a value
-    # would let it forge a field. Empty becomes "-" so the positions hold.
-    text = "" if value is None else str(value).strip()
-    return "".join(text.split()) or "-"
-
-
-def last_field(value):
-    # The name is read last, and `read` puts everything remaining into the final
-    # variable -- so spaces are safe there and only newlines are not. Collapsing
-    # them like the others printed "CurrentAIMachine" in the banner, which is a
-    # small thing to get wrong in the one line that tells you which backend you
-    # are about to talk to.
-    text = "" if value is None else str(value).strip()
-    return " ".join(text.split()) or "-"
-
-if row is None:
-    # Tab-joined like the real-row case below, not space-joined -- a caller
-    # that blindly does `cut -f1` (tab-delimited by default) must get the
-    # same field shape whether or not a machine is active. This file has
-    # already been bitten twice by a space/tab mismatch here.
-    print("\t".join(["-"] * 5))
-else:
-    # The machine's own model first, then the global default -- the same order
-    # runner.get_default_model uses once a chat pins nothing.
-    model = (row["model"] or "").strip() or (
-        (setting["value"] if setting else "") or "").strip()
-    fields = [clean(x) for x in (
-        row["provider"], row["base_url"], row["api_key"], model)]
-    print("\t".join([*fields, last_field(row["name"])]))
-PY
+    python3 "$HERE/bin/wc-backend-env.py" \
+        ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} --fields
 }
 
 # Sets globals PROVIDER BASE_URL API_KEY MODEL NAME from query_backend's output.
@@ -146,36 +136,74 @@ resolve_backend() {
     read -r PROVIDER BASE_URL API_KEY MODEL NAME <<<"$(query_backend)"
 }
 
-# Mirror claude_proxy._backend_env exactly, including what it *removes*. A
-# non-anthropic backend must not inherit Anthropic variables from this shell,
-# and a machine with no base_url means "the official API" — leaving an inherited
-# one there is registry #68, the bug whose workaround was to unset these by hand.
+# The environment the active backend implies. One definition, shared with
+# claude_proxy and runner via backend_env.deltas and emitted for eval by
+# bin/wc-backend-env.py.
+#
+# This used to reimplement the rule in bash, under a comment reading "Mirror
+# claude_proxy._backend_env exactly, including what it removes" -- which is an
+# instruction to keep two files in step by hand, and they drifted. Putting the
+# same machine records through both implementations found the direct runner
+# exporting a whitespace-only key as the key, and crashing outright on a
+# non-string base_url, in cases this bash version handled correctly.
+#
+# The removals are why this is eval'd rather than handed over as a dict: a
+# wrapper cannot replace the interactive environment it was launched in, and an
+# inherited ANTHROPIC_AUTH_TOKEN outranks the key we set, an inherited
+# ANTHROPIC_BASE_URL sends turns to a gateway nobody selected (registry #68),
+# and an inherited CLAUDE_CODE_SIMPLE stops the CLI reading the host login it
+# has just been told to fall back to.
+#
+# The helper reads the database itself, so no credential passes through a
+# command line: /proc/<pid>/cmdline is world-readable.
 apply_env() {
-    unset ANTHROPIC_AUTH_TOKEN
-    if [ "$PROVIDER" != "anthropic" ]; then
-        unset ANTHROPIC_BASE_URL
-    elif [ "$BASE_URL" != "-" ]; then
-        export ANTHROPIC_BASE_URL="$BASE_URL"
-    else
-        unset ANTHROPIC_BASE_URL
-    fi
+    eval "$(python3 "$HERE/bin/wc-backend-env.py" ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} --sh)"
 
-    if [ "$PROVIDER" = "anthropic" ] && [ "$API_KEY" != "-" ]; then
-        export ANTHROPIC_API_KEY="$API_KEY"
-        # Restore whatever CLAUDE_CODE_SIMPLE the caller originally had (it
-        # may have been unset by an earlier call to this same function, on a
-        # previous hot-swap restart, for a different, keyless machine) rather
-        # than leaving it unset from here on. Without this, a hot-swap from a
-        # keyless anthropic machine to one with a key would land somewhere a
-        # fresh launch on that same backend never would.
-        if [ "$CLAUDE_CODE_SIMPLE_WAS_SET" = "1" ]; then
-            export CLAUDE_CODE_SIMPLE="$CLAUDE_CODE_SIMPLE_ORIG"
-        fi
-    else
-        # No key: the CLI must fall back to the host's own login, which it will
-        # not do while CLAUDE_CODE_SIMPLE is set.
-        unset ANTHROPIC_API_KEY
-        unset CLAUDE_CODE_SIMPLE
+    # The shared rule knows a keyless backend must not keep CLAUDE_CODE_SIMPLE;
+    # it cannot know what value this shell started with. On a hot-swap onto a
+    # backend that *does* have a key, restore the caller's original so the
+    # session lands where a fresh launch on that backend would.
+    if [ -n "${ANTHROPIC_API_KEY+x}" ] && [ "$CLAUDE_CODE_SIMPLE_WAS_SET" = "1" ]; then
+        export CLAUDE_CODE_SIMPLE="$CLAUDE_CODE_SIMPLE_ORIG"
+    fi
+}
+
+# The model the session will actually run with: the caller's --model if they
+# gave one, otherwise the backend's own default. Sets global EFFECTIVE_MODEL.
+detect_effective_model() {
+    EFFECTIVE_MODEL=""
+    local i j arg
+    for i in $(seq 1 $#); do
+        arg="${!i}"
+        case "$arg" in
+            --model=*) EFFECTIVE_MODEL="${arg#--model=}"; return ;;
+            --model)   j=$((i + 1)); EFFECTIVE_MODEL="${!j:-}"; return ;;
+        esac
+    done
+    [ "$MODEL" != "-" ] && EFFECTIVE_MODEL="$MODEL"
+    return 0
+}
+
+# Refuse a model the resolved backend does not serve.
+#
+# This is the mistake the wrapper exists to prevent, and it is invisible without
+# the check: a model id is only meaningful against the backend serving it.
+# `vllm/Qwen3.6-35B-A3B-NVFP4` is real on the gateway and nonsense against
+# api.anthropic.com; sent to the wrong one the gateway answers 429 "No
+# deployments available for selected model", which reads as a capacity problem
+# rather than a routing one. The shell aliases c2..c6 pinned exactly these
+# model ids with no backend attached, so which one they reached depended on
+# whichever machine happened to be active.
+#
+# Silent when the backend publishes no model list: guessing would block models
+# that work, and a check that cries wolf gets switched off. WC_SKIP_MODEL_CHECK=1
+# is the deliberate override, so this can never leave someone stuck.
+check_model() {
+    [ "${WC_SKIP_MODEL_CHECK:-0}" = "1" ] && return 0
+    detect_effective_model "$@"
+    [ -z "$EFFECTIVE_MODEL" ] && return 0
+    if ! python3 "$HERE/bin/wc-backend-env.py" ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} --check-model "$EFFECTIVE_MODEL"; then
+        exit 1
     fi
 }
 
@@ -379,6 +407,7 @@ fi
 
 apply_env
 build_model_args "$@"
+check_model "$@"
 check_transcript_doctor
 
 echo "wc-claude: ${NAME} · ${MODEL} · ${BASE_URL}" >&2
@@ -539,6 +568,7 @@ while true; do
 
     apply_env
     build_model_args "$@"
+    check_model "$@"
     check_transcript_doctor
     echo "wc-claude: ${NAME} · ${MODEL} · ${BASE_URL}" >&2
     write_backend_state "$STATE_FILE"

@@ -24,6 +24,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import backend_env
 import config
 
 _log: object = __import__("loguru").logger.bind(service="runner")
@@ -331,7 +332,14 @@ def normalise_base_url(base_url: str | None) -> str | None:
     * A trailing "/v1". The CLI appends /v1/messages itself, so a URL copied
       from an OpenAI-style config would resolve to /v1/v1/messages and 404.
     """
-    if not base_url:
+    # Type-checked, not just truthiness-checked. `if not base_url` lets a
+    # non-string through -- an int is truthy -- and the next line then raises
+    # AttributeError on .strip(). SQLite is dynamically typed, so a TEXT column
+    # returns whatever was written to it, and a machine record written with a
+    # numeric base_url took the whole turn down with a type error rather than
+    # falling back to the default endpoint. The proxy path never had this
+    # because it does not normalise at all.
+    if not isinstance(base_url, str):
         return None
     base_url = base_url.strip()
     if not base_url:
@@ -642,24 +650,22 @@ def _build_env(backend: dict[str, str] | None = None) -> dict[str, str]:
     safe = {"HOME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM"}
     env = {k: v for k, v in os.environ.items() if k in safe}
     env["PYTHONUNBUFFERED"] = "1"
+    # Set before the backend is applied, so `deltas` can take it away again:
+    # under CLAUDE_CODE_SIMPLE the CLI refuses to read the host's own login
+    # (`claude auth status` reports loggedIn:false, authMethod:none), so a
+    # keyless backend must not keep it or the subprocess has no credentials.
     env["CLAUDE_CODE_SIMPLE"] = "1"
-    # Opt out of experimental beta features, matching the proxy path. Set before
-    # the provider branch so it applies to both, and set explicitly rather than
-    # inherited because the allowlist above drops everything else.
-    env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
-    if backend and backend.get("provider") == "anthropic":
-        base_url = normalise_base_url(backend.get("base_url"))
-        if base_url:
-            env["ANTHROPIC_BASE_URL"] = base_url
-        if backend.get("api_key"):
-            env["ANTHROPIC_API_KEY"] = backend["api_key"]
-        else:
-            # No key: the CLI has to read the host's own login, and under
-            # CLAUDE_CODE_SIMPLE it refuses to -- `claude auth status` reports
-            # loggedIn:false, authMethod:none with that set. Leaving it on here
-            # would give the subprocess no credentials at all.
-            env.pop("CLAUDE_CODE_SIMPLE", None)
-        return env
+    if isinstance(backend, dict) and backend.get("provider") == "anthropic":
+        # normalise_base_url stays here rather than moving into backend_env:
+        # this path accepts a bare host ("api.anthropic.com") from databases
+        # written before the column was a URL, and the proxy path never did.
+        # Moving it would change the proxy's behaviour as a side effect of
+        # sharing the rule, which is not what sharing the rule is for.
+        normalised = dict(backend)
+        normalised["base_url"] = normalise_base_url(backend.get("base_url")) or ""
+        return backend_env.deltas(normalised).apply_to(env)
+    # Non-anthropic: the strips still apply, then the local shim's own config.
+    env = backend_env.deltas(backend).apply_to(env)
     if config.MODEL_BASE_URL:
         env["OPENAI_BASE_URL"] = config.MODEL_BASE_URL
     if config.MODEL_API_KEY:

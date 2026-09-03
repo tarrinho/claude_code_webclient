@@ -3,7 +3,6 @@
 # Extracted from db.py so that the queue-drain path does not need the full
 # database module.
 
-import json
 from typing import Any
 
 import db

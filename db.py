@@ -18,13 +18,14 @@ from pathlib import Path
 from typing import Any, Final
 
 import aiosqlite
+import sqlite3
 
 import config
 
 
 def __getattr__(name: str):
     """Resolve extracted-db symbols lazily (circular-import guard)."""
-    _SYMBOLS = {
+    _SYMBOLS: dict[str, str] = {
         # queue
         "QUEUE_MAX": "routes.db_queue",
         "last_models_used": "routes.db_queue",
@@ -65,6 +66,113 @@ def __getattr__(name: str):
         "_session_is_live": "routes.db_sessions",
         "_session_rank": "routes.db_sessions",
         "_session_transcript_paths": "routes.db_sessions",
+        # chats
+        "chat_list": "routes.db_chats",
+        "chat_get": "routes.db_chats",
+        "chat_create": "routes.db_chats",
+        "chat_update": "routes.db_chats",
+        "chats_reorder": "routes.db_chats",
+        "chats_clear_order": "routes.db_chats",
+        "chat_archive": "routes.db_chats",
+        "chat_delete": "routes.db_chats",
+        "chat_fork": "routes.db_chats",
+        "chat_set_session": "routes.db_chats",
+        "chat_set_transcript_offset": "routes.db_chats",
+        "chat_set_question_ids": "routes.db_chats",
+        "chat_get_question_ids": "routes.db_chats",
+        "chat_auto_answer_set": "routes.db_chats",
+        "chat_auto_answer_get": "routes.db_chats",
+        "chat_auto_answer_recommend_get": "routes.db_chats",
+        "chat_auto_answer_log_append": "routes.db_chats",
+        "chat_auto_answer_log_get": "routes.db_chats",
+        "chats_with_auto_answer": "routes.db_chats",
+        "bump_chat_updated_at": "routes.db_chats",
+        "chat_set_model": "routes.db_chats",
+        "chat_set_title": "routes.db_chats",
+        "chat_search": "routes.db_chats",
+        "messages_get": "routes.db_chats",
+        "messages_last": "routes.db_chats",
+        "messages_append": "routes.db_chats",
+        "messages_batch": "routes.db_chats",
+        "_fts_guard": "routes.db_chats",
+        "_fts_index_ids": "routes.db_chats",
+        "_fts_forget_ids": "routes.db_chats",
+        "_fts_rebuild": "routes.db_chats",
+        "_messages_batch_lock": "routes.db_chats",
+        # machines
+        "ai_machine_active": "routes.db_machines",
+        "ai_machines_list": "routes.db_machines",
+        "ai_machine_get": "routes.db_machines",
+        "ai_machine_create": "routes.db_machines",
+        "ai_machine_update": "routes.db_machines",
+        "ai_machine_activate": "routes.db_machines",
+        "ai_machine_delete": "routes.db_machines",
+        "ai_machine_set_models": "routes.db_machines",
+        "ai_machine_api_key": "routes.db_machines",
+        "ai_machine_seed_anthropic": "routes.db_machines",
+        "chat_owner": "routes.db_machines",
+        "ai_machine_backend": "routes.db_machines",
+        "ai_machine_backend_by_id": "routes.db_machines",
+        "chat_routing": "routes.db_machines",
+        "chat_set_machine": "routes.db_machines",
+        "parse_active_models": "routes.db_machines",
+        "_BACKEND_COLUMNS": "routes.db_machines",
+        # users
+        "user_get_by_name": "routes.db_users",
+        "user_create": "routes.db_users",
+        "setting_get": "routes.db_users",
+        "setting_set": "routes.db_users",
+        "api_token_create": "routes.db_users",
+        "api_token_by_hash": "routes.db_users",
+        "api_token_touch": "routes.db_users",
+        "api_token_list": "routes.db_users",
+        "api_token_revoke": "routes.db_users",
+        # usage
+        "_cutoff": "routes.db_usage",
+        "usage_record": "routes.db_usage",
+        "usage_cursor_get": "routes.db_usage",
+        "usage_import": "routes.db_usage",
+        "_ensure_usage_columns": "routes.db_usage",
+        "ROUTED_WINDOW_S": "routes.db_usage",
+        "normalise_prompt": "routes.db_usage",
+        "routed_request_add": "routes.db_usage",
+        "routed_markers": "routes.db_usage",
+        "routed_owner_of": "routes.db_usage",
+        "usage_by_origin": "routes.db_usage",
+        "usage_by_session": "routes.db_usage",
+        "usage_totals": "routes.db_usage",
+        "usage_overall": "routes.db_usage",
+        "usage_recent": "routes.db_usage",
+        "bucket_spine": "routes.db_usage",
+        "_epoch_of": "routes.db_usage",
+        "_floor_local": "routes.db_usage",
+        "_bucket_key": "routes.db_usage",
+        "_bucket_expr": "routes.db_usage",
+        "usage_series": "routes.db_usage",
+        "usage_model_series": "routes.db_usage",
+        "usage_prune": "routes.db_usage",
+        "usage_earliest": "routes.db_usage",
+        "_earliest": "routes.db_usage",
+        "_on_spine": "routes.db_usage",
+        "system_sample_insert": "routes.db_usage",
+        "system_latest": "routes.db_usage",
+        "system_series": "routes.db_usage",
+        "system_prune": "routes.db_usage",
+        "SYSTEM_FIELDS": "routes.db_usage",
+        "USAGE_IMPORT_BATCH": "routes.db_usage",
+        "_LOCAL_TS": "routes.db_usage",
+        "_SPINE_MAX": "routes.db_usage",
+        "_BUCKET_STEP_S": "routes.db_usage",
+        "_USAGE_BUCKETS": "routes.db_usage",
+        # read marks
+        "read_marks_get": "routes.db_read_marks",
+        "read_mark_set": "routes.db_read_marks",
+        "chat_last_activity": "routes.db_read_marks",
+        # backup / restore
+        "db_backup": "routes.db_backup",
+        "_db_backup_sync": "routes.db_backup",
+        "_validate_sqlite_file": "routes.db_backup",
+        "db_restore": "routes.db_backup",
     }
     if name in _SYMBOLS:
         import importlib
@@ -80,7 +188,6 @@ _CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"
 _log = logging.getLogger("wc.db")
 
 db_conn: aiosqlite.Connection | None = None
-_messages_batch_lock: asyncio.Lock | None = None
 
 # How long index maintenance waits for the SQLite writer lock before giving up.
 _FTS_BUSY_TIMEOUT_MS: Final[int] = 5000
@@ -99,8 +206,7 @@ _ANTHROPIC_HOST: Final[str] = "api.anthropic.com"
 
 async def init() -> None:
     """Create the database and tables. Idempotent."""
-    global db_conn, _messages_batch_lock
-    _messages_batch_lock = asyncio.Lock()
+    global db_conn
     root = Path(config.PROJECTS_ROOT).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
@@ -326,84 +432,74 @@ async def init() -> None:
             chat_id     TEXT NOT NULL,
             owner_id    TEXT NOT NULL,
             from_offset INTEGER NOT NULL,
-            -- What was asked. Attribution matches on this rather than on the
-            -- byte offset alone: input typed into a busy session is queued, so
-            -- the work can begin long afterwards, and everything the agent did
-            -- in between belongs to whatever it was already doing.
             prompt      TEXT NOT NULL DEFAULT '',
             created_at  TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_routed_session
-            ON routed_requests(session_id, from_offset);
+            ON routed_requests(session_id, from_offset DESC);
 
-        -- Supervisor orchestration tables (0.9.0).
+        -- Agent supervision: a supervisor is an autonomous worker with its own
+        -- conversation, task list, and message history.
         CREATE TABLE IF NOT EXISTS supervisors (
-            id               TEXT PRIMARY KEY,
-            title            TEXT NOT NULL DEFAULT 'New Supervisor',
-            description      TEXT,
-            config           TEXT NOT NULL DEFAULT '{}',  -- JSON: model routing rules, system prompt overrides
-            owner_id         TEXT NOT NULL DEFAULT 'admin',
-            status           TEXT NOT NULL DEFAULT 'idle',  -- idle|planning|running|paused|done|error
-            plan             TEXT,  -- structured plan extracted during planning phase
-            progress_pct     REAL NOT NULL DEFAULT 0.0,
-            created_at       TEXT NOT NULL,
-            updated_at       TEXT NOT NULL DEFAULT '',
-            completed_at     TEXT
+            id          TEXT PRIMARY KEY,
+            title       TEXT NOT NULL,
+            description TEXT,
+            owner_id    TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'idle',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS supervisor_tasks (
-            id              TEXT PRIMARY KEY,
-            supervisor_id   TEXT NOT NULL REFERENCES supervisors(id),
-            title           TEXT NOT NULL,
-            description     TEXT,
-            status          TEXT NOT NULL DEFAULT 'pending',  -- pending|ready|running|done|failed|blocked
-            model           TEXT,  -- assigned model (model routing result)
-            result          TEXT,  -- final output/result
-            progress_pct    REAL NOT NULL DEFAULT 0.0,
-            parent_task_id  TEXT REFERENCES supervisor_tasks(id),
-            depends_on      TEXT,  -- JSON array of task ids this task depends on
-            created_at      TEXT NOT NULL,
-            updated_at      TEXT NOT NULL DEFAULT ''
+            id           TEXT PRIMARY KEY,
+            supervisor_id TEXT NOT NULL,
+            title        TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            priority     INTEGER NOT NULL DEFAULT 0,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            started_at   TEXT,
+            finished_at  TEXT,
+            -- A JSON array of {id, title, status, priority} objects.  Written
+            -- once the user is notified about a task so the UI can show the
+            -- list even if the DB row is later deleted.
+            task_list    TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_tasks_super ON supervisor_tasks(supervisor_id);
+        CREATE INDEX IF NOT EXISTS idx_sup_tasks_sup
+            ON supervisor_tasks(supervisor_id, priority DESC);
 
         CREATE TABLE IF NOT EXISTS supervisor_messages (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
-            role          TEXT NOT NULL,  -- 'user'|'supervisor'|'agent'|'system'
+            supervisor_id TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'system',
             content       TEXT NOT NULL,
-            metadata      TEXT,  -- JSON: task_id, agent_name, etc.
             created_at    TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_msgs_super ON supervisor_messages(supervisor_id, id);
+        CREATE INDEX IF NOT EXISTS idx_sup_msgs_sup ON supervisor_messages(supervisor_id, id);
 
-        -- Conversations and agents a supervisor watches. Separate from
-        -- supervisor_tasks on purpose: a task is work the supervisor invented
-        -- and runs headless, a member is work that already existed and belongs
-        -- to someone. Coupling them would have made adding an agent imply
-        -- handing it a task.
-        --
-        -- chat_id, with no "kind" column, because a live CLI agent is adopted
-        -- into a conversation when it is added. That leaves one member type
-        -- rather than two, so prompt, stop, transcript sync and per-conversation
-        -- routing all apply to a supervised agent without a second code path.
-        --
-        -- The composite key is what makes adding an existing member a no-op
-        -- rather than a duplicate row, and the pair is deliberately many-to-many:
-        -- one agent can serve two supervisors at once.
         CREATE TABLE IF NOT EXISTS supervisor_members (
-            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            supervisor_id TEXT NOT NULL,
             chat_id       TEXT NOT NULL,
-            added_at      TEXT NOT NULL,
-            PRIMARY KEY (supervisor_id, chat_id)
+            added_at      TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_members_chat ON supervisor_members(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_sup_members_sup
+            ON supervisor_members(supervisor_id, chat_id);
 
-        -- Host resource samples for the Server statistics page. No owner_id:
-        -- these describe the machine, not a user, and there is exactly one
-        -- machine. An autoincrement key rather than the timestamp, because two
-        -- samples can share a second after a clock step and a PRIMARY KEY on
-        -- created_at would make the second one an error.
+        -- Supervisor progress: the latest state snapshot for each
+        -- supervisor.  A single row per supervisor, updated after each
+        -- step so the polling UI never needs to scan the full message
+        -- history.
+        CREATE TABLE IF NOT EXISTS supervisor_progress (
+            supervisor_id TEXT PRIMARY KEY,
+            step          TEXT NOT NULL DEFAULT '',
+            details       TEXT NOT NULL DEFAULT '{}',
+            updated_at    TEXT NOT NULL
+        );
+
+        -- Per-host statistics, sampled every 30 seconds by the background
+        -- sysstats worker.  The supervisor UI queries these on the stats
+        -- panel so the operator can see whether the machine is saturated.
         CREATE TABLE IF NOT EXISTS system_samples (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at    TEXT NOT NULL,
@@ -426,9 +522,13 @@ async def init() -> None:
     await _ensure_chat_columns()
     await _ensure_usage_columns()
     await db_conn.commit()
-    # Bounded growth without a scheduler: one indexed DELETE per startup.
-    await usage_prune(config.USAGE_RETENTION_DAYS)
-    await system_prune(config.SYSTEM_RETENTION_DAYS)
+
+
+async def close() -> None:
+    global db_conn
+    if db_conn:
+        await db_conn.close()
+        db_conn = None
 
 
 async def _ensure_chat_columns() -> None:
@@ -464,6 +564,16 @@ async def _ensure_chat_columns() -> None:
         # read with the chat, and a long-running conversation would otherwise
         # accumulate one entry per approval for ever.
         "auto_answer_log": "ALTER TABLE chats ADD COLUMN auto_answer_log TEXT",
+        # A second, independent authority beyond plain approval: with this on,
+        # a structured AskUserQuestion whose author marked exactly one option
+        # "(Recommended)" gets that option pressed too. Meaningless with
+        # auto_answer off, but stored separately rather than folded into a
+        # three-valued auto_answer column -- the existing column's 0/1
+        # semantics (every reader of it) stay exactly what they were.
+        "auto_answer_recommend": (
+            "ALTER TABLE chats ADD COLUMN auto_answer_recommend "
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
     }
     for name, sql in migrations.items():
         if name not in columns:
@@ -513,1394 +623,6 @@ async def _ensure_chat_columns() -> None:
         )
 
     await db_conn.commit()
-
-
-async def close() -> None:
-    global db_conn
-    if db_conn:
-        await db_conn.close()
-        db_conn = None
-
-
-# ── Chat CRUD ──────────────────────────────────────────────────────────────────────────
-
-
-_CHAT_COLUMNS = (
-    "id, title, description, session_id, work_dir, owner_id, created_at, "
-    "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
-    "transcript_offset"
-)
-_ALLOWED_CHAT_FIELDS = {
-    "title",
-    "description",
-    "archived",
-    "pinned",
-    "pinned_at",
-    "model",
-    "ai_machine_id",
-}
-
-
-async def chat_list(owner_id: str) -> list[dict[str, Any]]:
-    cur = await db_conn.execute(
-        f"SELECT {_CHAT_COLUMNS} FROM chats "  # nosec B608: columns are static
-        "WHERE owner_id = ? AND deleted_at IS NULL "
-        # A conversation the user has placed keeps its slot even when it
-        # gets new activity -- that is the point of placing it. Unplaced
-        # ones sort below by recency, exactly as before.
-        "ORDER BY archived ASC, "
-        "CASE WHEN archived = 0 THEN pinned ELSE 0 END DESC, "
-        "position IS NULL, position ASC, "
-        "CASE WHEN archived = 0 AND pinned = 1 THEN pinned_at END DESC, "
-        "updated_at DESC",
-        (owner_id,),
-    )
-    rows = await cur.fetchall()
-    return [dict(r) for r in rows]
-
-
-async def chat_get(
-    chat_id: str,
-    owner_id: str,
-    include_archived: bool = False,
-) -> dict[str, Any] | None:
-    archived_filter = "" if include_archived else " AND archived = 0"
-    cur = await db_conn.execute(
-        f"SELECT {_CHAT_COLUMNS} FROM chats "
-        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
-        + archived_filter,  # nosec B608: filter is static, values parameterized
-        (chat_id, owner_id),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def chat_create(
-    chat_id: str,
-    title: str,
-    description: str | None,
-    work_dir: str,
-    owner_id: str = "admin",
-) -> str:
-    now = _now()
-    await db_conn.execute(
-        "INSERT INTO chats (id, title, description, work_dir, owner_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (chat_id, title, description, work_dir, owner_id, now, now),
-    )
-    await db_conn.commit()
-    return now
-
-
-async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
-    if not fields or not set(fields).issubset(_ALLOWED_CHAT_FIELDS):
-        return False
-    if "pinned" in fields and "pinned_at" not in fields:
-        fields["pinned_at"] = _now() if fields["pinned"] else None
-    sets = ", ".join(k + " = ?" for k in fields)
-    sets += ", updated_at = ?"
-    sql = (
-        "UPDATE chats SET "
-        + sets
-        + " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
-    )  # nosec B608: fields are allowlisted
-    vals = list(fields.values()) + [_now(), chat_id, owner_id]
-    cur = await db_conn.execute(sql, vals)
-    await db_conn.commit()
-    updated = cur.rowcount > 0
-    # Each indexed row carries the chat title, so a rename makes every entry
-    # for this chat stale. Rebuild them.
-    if updated and "title" in fields:
-        await _fts_rebuild(chat_id)
-    return updated
-
-
-async def chats_reorder(owner_id: str, chat_ids: list[str]) -> int:
-    """Place *chat_ids* in the given order. Returns how many were placed.
-
-    Written as one transaction: a reorder is a single user action, and applying
-    half of it would leave the sidebar in an order the user never chose.
-
-    Only the listed conversations are placed. Anything omitted keeps its
-    existing position, so reordering one section cannot disturb another.
-    """
-    if not chat_ids:
-        return 0
-    try:
-        await db_conn.execute("BEGIN")
-        placed = 0
-        for index, chat_id in enumerate(chat_ids):
-            cur = await db_conn.execute(
-                "UPDATE chats SET position = ? "
-                "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-                    (index, chat_id, owner_id),
-            )
-            placed += cur.rowcount
-        await db_conn.commit()
-    except Exception:
-        await db_conn.rollback()
-        raise
-    return placed
-
-
-async def chats_clear_order(owner_id: str) -> int:
-    """Unplace every conversation, returning the list to pure recency order."""
-    cur = await db_conn.execute(
-        "UPDATE chats SET position = NULL "
-        "WHERE owner_id = ? AND position IS NOT NULL",
-        (owner_id,),
-    )
-    await db_conn.commit()
-    return cur.rowcount
-
-
-async def chat_archive(chat_id: str, owner_id: str, archived: int = 1) -> bool:
-    return await chat_update(chat_id, owner_id, archived=archived)
-
-
-async def chat_delete(chat_id: str, owner_id: str) -> bool:
-    """Delete an owned conversation and messages while preserving its workspace."""
-    cur = await db_conn.execute(
-        "SELECT id FROM chats WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-        (chat_id, owner_id),
-    )
-    if await cur.fetchone() is None:
-        return False
-    # Capture the message ids first: once the rows are gone, an id lookup via
-    # the messages table matches nothing and the index entries are orphaned.
-    cur = await db_conn.execute(
-        "SELECT id FROM messages WHERE chat_id = ?", (chat_id,)
-    )
-    msg_ids = [row["id"] for row in await cur.fetchall()]
-    try:
-        await db_conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
-        await db_conn.execute(
-            "DELETE FROM chats WHERE id = ? AND owner_id = ?",
-            (chat_id, owner_id),
-        )
-        await db_conn.commit()
-    except Exception:
-        await db_conn.rollback()
-        raise
-    await _fts_forget_ids(msg_ids)
-    return True
-
-
-async def chat_fork(
-    src_chat_id: str,
-    owner_id: str,
-) -> dict[str, Any] | None:
-    """Duplicate a chat's metadata and messages, returning the new chat dict.
-
-    The forked chat gets a fresh UUID, an appended title suffix, and
-    an empty work_dir under the same projects root.
-    """
-    src = await chat_get(src_chat_id, owner_id)
-    if not src:
-        return None
-
-    new_chat_id = uuid.uuid4().hex
-    now = _now()
-    new_title = src["title"] + " (fork)"
-
-    # Create a sibling workspace directory.
-    work_dir = Path(src["work_dir"]).parent / f"{new_chat_id}_workspace"
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    await db_conn.execute(
-        "INSERT INTO chats (id, title, description, work_dir, owner_id, "
-        "created_at, updated_at, pinned, pinned_at, model, ai_machine_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)",
-        (
-            new_chat_id,
-            new_title,
-            src.get("description"),
-            str(work_dir),
-            owner_id,
-            now,
-            now,
-            src.get("model"),
-            src.get("ai_machine_id"),
-        ),
-    )
-
-    # Copy messages in bulk.
-    rows: list[tuple[str, str]] = []
-    cur = await db_conn.execute(
-        "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id ASC",
-        (src_chat_id,),
-    )
-    for row in await cur.fetchall():
-        rows.append((row["role"], row["content"]))
-
-    if rows:
-        now2 = _now()
-        for role, content in rows:
-            await db_conn.execute(
-                "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (new_chat_id, role, content, now2),
-            )
-        await db_conn.commit()
-        # A fork is a bulk copy into a brand-new chat, so a per-chat rebuild
-        # indexes exactly the rows just inserted.
-        await _fts_rebuild(new_chat_id)
-
-    return await chat_get(new_chat_id, owner_id)
-
-
-async def chat_set_session(chat_id: str, session_id: str) -> None:
-    await db_conn.execute(
-        "UPDATE chats SET session_id = ?, updated_at = ? WHERE id = ?",
-        (session_id, _now(), chat_id),
-    )
-    await db_conn.commit()
-
-
-async def chat_set_transcript_offset(chat_id: str, offset: int) -> None:
-    """Record how far the linked transcript has been consumed.
-
-    Deliberately does not touch updated_at: advancing the read position is
-    bookkeeping, and letting it bump the timestamp would reorder the sidebar
-    every few seconds while a chat is merely being polled.
-    """
-    await db_conn.execute(
-        "UPDATE chats SET transcript_offset = ? WHERE id = ?",
-        (int(offset), chat_id),
-    )
-    await db_conn.commit()
-
-
-async def chat_set_question_ids(chat_id: str, question_ids: list[str]) -> None:
-    """Persist the set of question IDs already rendered for this chat.
-
-    The list is stored as a JSON-encoded string so it can be read back and
-    compared on the next poll without touching the message table.
-    """
-    await db_conn.execute(
-        "UPDATE chats SET question_ids = ? WHERE id = ?",
-        (json.dumps(question_ids), chat_id),
-    )
-    await db_conn.commit()
-
-
-async def chat_get_question_ids(chat_id: str) -> list[str]:
-    """Return the set of question IDs already rendered for this chat."""
-    cur = await db_conn.execute(
-        "SELECT question_ids FROM chats WHERE id = ?", (chat_id,)
-    )
-    data = await cur.fetchone()
-    # Indexing, not .get(): the row factory is sqlite3.Row, which supports
-    # subscripting and keys() but has no .get() at all -- so the defensive
-    # form raised AttributeError on every call, which is stricter than the
-    # thing it was defending against. The column is named in the SELECT above,
-    # so it is always present.
-    if not data or not data["question_ids"]:
-        return []
-    try:
-        return json.loads(data["question_ids"])
-    except (TypeError, ValueError):
-        # Our own column, so this should not happen -- but one corrupt value
-        # must not break the sync of every conversation, and it must not do so
-        # silently either.
-        _log.warning("chat %s has unreadable question_ids", chat_id)
-        return []
-
-
-# ── Auto-answer knob ────────────────────────────────────────────────────────
-#
-# Storage only. The watcher that consumes this, and the routes that set it, are
-# steps 2 and 3 of
-# docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
-#
-# Reads and writes of the knob are owner-scoped, unlike most of the per-chat
-# helpers above, and that is not incidental: switching it on arms an automatic
-# approver of permission prompts, so an unscoped write would let one user turn
-# on silent approval inside another user's conversation. The log is scoped for a
-# second reason -- it quotes prompt text out of somebody else's session.
-
-_AUTO_ANSWER_LOG_MAX: Final[int] = 10
-
-
-async def chat_auto_answer_set(chat_id: str, owner_id: str, enabled: bool) -> bool:
-    """Arm or disarm auto-approval for one conversation. True if it landed."""
-    cur = await db_conn.execute(
-        "UPDATE chats SET auto_answer = ?, updated_at = ? "
-        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-        (1 if enabled else 0, _now(), chat_id, owner_id),
-    )
-    await db_conn.commit()
-    return cur.rowcount > 0
-
-
-async def chat_auto_answer_get(chat_id: str, owner_id: str) -> bool:
-    """Whether auto-approval is on. False for a chat that is not the owner's,
-    which is the same answer as "off" on purpose: a caller that cannot set it
-    should not be told what it is.
-    """
-    cur = await db_conn.execute(
-        "SELECT auto_answer FROM chats "
-        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-        (chat_id, owner_id),
-    )
-    row = await cur.fetchone()
-    return bool(row and row["auto_answer"])
-
-
-async def chat_auto_answer_log_append(chat_id: str, entry: dict[str, Any]) -> None:
-    """Record one answer or skip, newest first, keeping at most ten.
-
-    Not owner-scoped, because the caller is the watcher rather than a request:
-    it already resolved the chat through :func:`chats_with_auto_answer`, and
-    there is no user to attribute the write to. Reading is scoped.
-
-    Stamps ``at`` here rather than trusting the caller, so every entry has one
-    and they are comparable.
-    """
-    cur = await db_conn.execute(
-        "SELECT auto_answer_log FROM chats WHERE id = ?", (chat_id,)
-    )
-    row = await cur.fetchone()
-    if not row:
-        return
-    existing = _auto_answer_log_decode(chat_id, row["auto_answer_log"])
-    record = {"at": _now(), **entry}
-    trimmed = [record, *existing][:_AUTO_ANSWER_LOG_MAX]
-    await db_conn.execute(
-        "UPDATE chats SET auto_answer_log = ? WHERE id = ?",
-        (json.dumps(trimmed), chat_id),
-    )
-    await db_conn.commit()
-
-
-async def chat_auto_answer_log_get(chat_id: str, owner_id: str) -> list[dict[str, Any]]:
-    """The last ten answers and skips for this chat, newest first."""
-    cur = await db_conn.execute(
-        "SELECT auto_answer_log FROM chats "
-        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-        (chat_id, owner_id),
-    )
-    row = await cur.fetchone()
-    if not row:
-        return []
-    return _auto_answer_log_decode(chat_id, row["auto_answer_log"])
-
-
-def _auto_answer_log_decode(chat_id: str, raw: object) -> list[dict[str, Any]]:
-    """Parse the stored log, treating anything unreadable as empty.
-
-    This is our own column, so a bad value should not happen -- but a crash
-    mid-write or a manual edit are both possible, and a tooltip is not worth
-    failing the whole chat view over. Logged rather than swallowed, because
-    silently showing no approvals for a chat that made some is the misleading
-    outcome.
-    """
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        _log.warning("chat %s has unreadable auto_answer_log", chat_id)
-        return []
-    if not isinstance(parsed, list):
-        _log.warning("chat %s auto_answer_log is not a list", chat_id)
-        return []
-    return [item for item in parsed if isinstance(item, dict)]
-
-
-async def chats_with_auto_answer() -> list[dict[str, Any]]:
-    """Every armed conversation the watcher should poll.
-
-    Filtered to chats that carry a ``session_id``: answering means locating the
-    session's terminal, so a chat without one can never be answered and polling
-    it every tick would be pure cost. Deleted chats are excluded for the same
-    reason.
-    """
-    cur = await db_conn.execute(
-        "SELECT id, owner_id, session_id, title FROM chats "
-        "WHERE auto_answer = 1 AND deleted_at IS NULL "
-        "AND session_id IS NOT NULL AND session_id != '' "
-        "ORDER BY id"
-    )
-    return [dict(row) for row in await cur.fetchall()]
-
-
-async def bump_chat_updated_at(chat_id: str) -> None:
-    """Update the conversation's ``updated_at`` timestamp.
-
-    Does not touch ``position``, so user-placed conversations keep their
-    slot while the recency timestamp becomes accurate for the list view.
-    """
-    await db_conn.execute(
-        "UPDATE chats SET updated_at = ? WHERE id = ?",
-        (_now(), chat_id),
-    )
-    await db_conn.commit()
-
-
-async def chat_set_model(chat_id: str, model: str) -> None:
-    await db_conn.execute(
-        "UPDATE chats SET model = ?, updated_at = ? WHERE id = ?",
-        (model, _now(), chat_id),
-    )
-    await db_conn.commit()
-
-
-async def chat_set_title(chat_id: str, title: str) -> None:
-    await db_conn.execute(
-        "UPDATE chats SET title = ?, updated_at = ? WHERE id = ?",
-        (title, _now(), chat_id),
-    )
-    await db_conn.commit()
-
-
-# ── Chat FTS5 Search ──────────────────────────────────────────────────────────────────
-
-async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
-    """Search message bodies using FTS5.
-
-    Returns a list of unique chats that match *query*, ordered by
-    FTS5 rank (best match first).  Each entry is a chat dict with an
-    added ``snippet`` key showing the matching fragment.
-    """
-    # FTS5 MATCH query — values are parameterized, the MATCH keyword is SQL.
-    rows: list[dict[str, Any]] = []
-    try:
-        cur = await db_conn.execute(
-            "SELECT rowid FROM messages_fts "  # nosec B608: MATCH is SQL keyword
-            "WHERE content MATCH ?",
-            (query,),
-        )
-        match_ids = [row["rowid"] for row in await cur.fetchall()]
-    except Exception:  # noqa: BLE001 -- FTS5 may not exist on fresh DBs
-        match_ids = []
-
-    if not match_ids:
-        return []
-
-    # Fetch full chat details for matching rows, deduplicate by chat_id.
-    _placeholders = ",".join("?" for _ in match_ids)
-    cur = await db_conn.execute(
-        f"SELECT c.id AS chat_id, c.title, c.description, c.session_id, "
-        f"c.work_dir, c.owner_id, c.created_at, c.updated_at, "
-        f"c.archived, c.pinned, c.pinned_at, c.deleted_at, c.model, "
-        f"c.ai_machine_id, m.id AS msg_id, m.content AS msg_snippet "  # nosec B608: static SQL
-        "FROM chats c "
-        f"JOIN messages m ON m.chat_id = c.id AND m.id IN ({_placeholders}) "
-        "WHERE c.owner_id = ? AND c.deleted_at IS NULL "
-        "ORDER BY c.updated_at DESC",
-        match_ids + [owner_id],
-    )
-    seen: set[str] = set()
-    for row in await cur.fetchall():
-        chat_id = row["chat_id"]
-        if chat_id in seen:
-            continue
-        seen.add(chat_id)
-        d = dict(row)
-        d["id"] = d.pop("chat_id")  # keep key name consistent with other endpoints
-        d["snippet"] = d.pop("msg_snippet", "") or ""
-        rows.append(d)
-
-    return rows
-
-
-# ── Messages ───────────────────────────────────────────────────────────────────────────
-
-
-async def messages_get(chat_id: str) -> list[dict[str, Any]]:
-    cur = await db_conn.execute(
-        "SELECT id, role, content, created_at FROM messages "
-        "WHERE chat_id = ? ORDER BY id ASC",
-        (chat_id,),
-    )
-    return [dict(r) for r in await cur.fetchall()]
-
-
-async def messages_last(chat_id: str, count: int = 1) -> list[dict[str, Any]]:
-    """Return the last *count* messages for a chat, ordered by insertion."""
-    cur = await db_conn.execute(
-        "SELECT id, role, content, created_at FROM messages "
-        "WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-        (chat_id, count),
-    )
-    rows = [dict(r) for r in await cur.fetchall()]
-    rows.reverse()  # return in insertion order so index 0 is the oldest
-    return rows
-
-
-# ── FTS5 index maintenance ──────────────────────────────────────────────────────────
-#
-# All of this runs on the shared connection. It used to open a fresh sqlite3
-# connection per call, inside a worker thread, which made index maintenance a
-# *second writer* against the same file: every message write was followed
-# immediately by an index write from a different connection. WAL permits one
-# writer at a time, so the two raced, and whichever lost waited out its busy
-# timeout and reported "database is locked". With the 30-second sync sweep
-# touching nine conversations, that was the single largest source of those
-# errors -- 492 of 660 in one day's log.
-#
-# The old arrangement failed worse than it looked, because the index write
-# swallowed its exception. A message whose index write lost the race was
-# committed and never indexed: it existed, and search could not find it, for
-# ever, with nothing logged.
-
-
-async def _fts_guard(coro_fn) -> None:
-    """Run index maintenance, tolerating a SQLite build without FTS5.
-
-    Failure here is not fatal -- search degrades, nothing else does -- but on a
-    shared connection it must still be rolled back. A statement that fails
-    inside an implicit transaction leaves that transaction open, and every
-    later write on the connection then fails too. Swallowing the error without
-    the rollback would convert a missing index entry into exactly the
-    site-wide "database is locked" this change exists to remove.
-    """
-    try:
-        await coro_fn()
-        await db_conn.commit()
-    except Exception:  # noqa: BLE001 -- FTS5 is optional; see above
-        with contextlib.suppress(Exception):
-            await db_conn.rollback()
-
-
-async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
-    """Index exactly *msg_ids*, replacing any existing entries for them.
-
-    Cost is proportional to len(msg_ids), not to the size of the conversation.
-    Each message is indexed with its chat title prefixed so that title-based
-    searches also surface through the index.
-    """
-    ids = [i for i in msg_ids if i is not None]
-    if not ids:
-        return
-    marks = ",".join("?" for _ in ids)
-
-    async def work() -> None:
-        await db_conn.execute(
-            f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
-            ids,
-        )
-        cursor = await db_conn.execute(
-            "SELECT m.id, m.content, c.title FROM messages m "
-            "JOIN chats c ON c.id = m.chat_id "
-            f"WHERE m.id IN ({marks})",  # nosec B608: generated placeholders
-            ids,
-        )
-        for msg_id, content, title in await cursor.fetchall():
-            if content:
-                text = f"{title} {content}" if title else content
-                await db_conn.execute(
-                    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
-                    (msg_id, text),
-                )
-
-    await _fts_guard(work)
-
-
-async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
-    """Drop *msg_ids* from the index.
-
-    Callers must capture the ids **before** deleting the message rows: a purge
-    that resolves ids via the messages table after the fact matches nothing and
-    leaves the entries orphaned.
-    """
-    ids = [i for i in msg_ids if i is not None]
-    if not ids:
-        return
-    marks = ",".join("?" for _ in ids)
-
-    async def work() -> None:
-        await db_conn.execute(
-            f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
-            ids,
-        )
-
-    await _fts_guard(work)
-
-
-async def _fts_rebuild(chat_id: str | None = None) -> None:
-    """Full rebuild of the index for one chat, or for every chat.
-
-    Used for backfill and after a chat title changes, since the title is baked
-    into each indexed row. Prefer :func:`_fts_index_ids` on the write path --
-    this walks every message of the chat.
-    """
-
-    async def work() -> None:
-        if chat_id:
-            await db_conn.execute(
-                "DELETE FROM messages_fts WHERE rowid IN "
-                "(SELECT id FROM messages WHERE chat_id = ?)",
-                (chat_id,),
-            )
-        else:
-            await db_conn.execute("DELETE FROM messages_fts")
-
-        cursor = await db_conn.execute(
-            "SELECT m.id, m.content, c.title FROM messages m "
-            "JOIN chats c ON c.id = m.chat_id"
-            + (" AND m.chat_id = ?" if chat_id else "")
-            + (" ORDER BY m.id ASC" if chat_id else ""),
-            (chat_id,) if chat_id else (),
-        )
-        for msg_id, content, title in await cursor.fetchall():
-            if content:
-                text = f"{title} {content}" if title else content
-                await db_conn.execute(
-                    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
-                    (msg_id, text),
-                )
-
-    await _fts_guard(work)
-
-
-async def messages_append(chat_id: str, role: str, content: str) -> int:
-    cur = await db_conn.execute(
-        "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (chat_id, role, content, _now()),
-    )
-    await db_conn.commit()
-    last_id = cur.lastrowid
-    await _fts_index_ids([last_id])
-    return last_id
-
-
-async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]:
-    """Insert multiple messages atomically and return their exact IDs."""
-    global _messages_batch_lock
-    if not rows:
-        return []
-    if _messages_batch_lock is None:
-        _messages_batch_lock = asyncio.Lock()
-    async with _messages_batch_lock:
-        ids = []
-        try:
-            await db_conn.execute("BEGIN")
-            now = _now()
-            for role, content in rows:
-                cur = await db_conn.execute(
-                    "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                    (chat_id, role, content, now),
-                )
-                ids.append(cur.lastrowid)
-            await db_conn.commit()
-        except Exception:
-            await db_conn.rollback()
-            raise
-        await _fts_index_ids(ids)
-        return ids
-
-
-# ── Users ──────────────────────────────────────────────────────────────────────────────
-
-
-async def user_get_by_name(name: str) -> dict[str, Any] | None:
-    cur = await db_conn.execute(
-        "SELECT id, email, name, password, role, created_at FROM users WHERE name = ?",
-        (name,),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def user_create(
-    name: str, email: str | None, password: str, role: str = "admin"
-) -> None:
-    user_id = uuid.uuid4().hex
-    now = _now()
-    await db_conn.execute(
-        "INSERT INTO users (id, name, email, password, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, name, email, password, role, now),
-    )
-    await db_conn.commit()
-
-
-# ── Application settings ────────────────────────────────────────────────────────────────
-
-
-async def setting_get(key: str) -> str | None:
-    cur = await db_conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
-    row = await cur.fetchone()
-    return row["value"] if row else None
-
-
-async def setting_set(key: str, value: str) -> None:
-    await db_conn.execute(
-        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        (key, value, _now()),
-    )
-    await db_conn.commit()
-
-
-# ── API tokens ─────────────────────────────────────────────────────────────────────────
-#
-# Writes go through the shared connection, like everything else here: a second
-# connection to this file is what caused the site-wide `database is locked`
-# (registry #47), and a credential check that runs on every request is the last
-# place to reintroduce one.
-
-
-async def api_token_create(
-    token_id: str,
-    name: str,
-    token_hash: str,
-    owner_id: str,
-    role: str,
-    expires_at: str | None = None,
-) -> None:
-    """Store a new token. The plaintext is the caller's to show once and drop."""
-    await db_conn.execute(
-        "INSERT INTO api_tokens "
-        "(id, name, token_hash, owner_id, role, created_at, expires_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (token_id, name, token_hash, owner_id, role, _now(), expires_at),
-    )
-    await db_conn.commit()
-
-
-async def api_token_by_hash(token_hash: str) -> dict[str, Any] | None:
-    """Look up a live token by hash, or None.
-
-    Revocation and expiry are filtered here rather than by the caller, so a
-    future second caller cannot accidentally accept a dead token. `expires_at`
-    is compared as text, which is sound because `_now()` writes a fixed-width
-    UTC ISO stamp -- the same assumption every other date comparison in this
-    file makes.
-    """
-    cur = await db_conn.execute(
-        "SELECT * FROM api_tokens "
-        "WHERE token_hash = ? AND revoked_at IS NULL "
-        "  AND (expires_at IS NULL OR expires_at > ?)",
-        (token_hash, _now()),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def api_token_touch(token_id: str) -> None:
-    """Record that a token was used. Called at most once a minute per token."""
-    await db_conn.execute(
-        "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (_now(), token_id)
-    )
-    await db_conn.commit()
-
-
-async def api_token_list(owner_id: str, include_revoked: bool = False) -> list[dict[str, Any]]:
-    """Every token this owner has, newest first and **without the hash**.
-
-    The hash is not a secret in the sense the token is, but publishing it turns
-    an authenticated read into an offline target, and no caller needs it.
-    """
-    clause = "" if include_revoked else " AND revoked_at IS NULL"
-    cur = await db_conn.execute(
-        "SELECT id, name, owner_id, role, created_at, expires_at, last_used_at, "
-        "       revoked_at "
-        f"FROM api_tokens WHERE owner_id = ?{clause} "  # nosec B608: clause is static
-        "ORDER BY created_at DESC",
-        (owner_id,),
-    )
-    return [dict(r) for r in await cur.fetchall()]
-
-
-async def api_token_revoke(token_id: str, owner_id: str) -> bool:
-    """Revoke one token. True if it was live and belonged to *owner_id*.
-
-    Scoped by owner for the same reason every chat query is: an id is guessable
-    and a token id is meant to be shown in a list, so the id alone must not be
-    authority to kill somebody else's credential.
-    """
-    cur = await db_conn.execute(
-        "UPDATE api_tokens SET revoked_at = ? "
-        "WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
-        (_now(), token_id, owner_id),
-    )
-    await db_conn.commit()
-    return cur.rowcount > 0
-
-
-# ── AI Machines ────────────────────────────────────────────────────────────────────────
-
-
-async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
-    """Return the owner's active machine without exposing its API key."""
-    if db_conn is None:
-        raise sqlite3.Error("database not connected")
-    cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, active_models, base_url, description, active "
-        "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
-        (owner_id,),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
-    cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
-        "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
-        "created_at, updated_at "
-        "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
-        (owner_id,),
-    )
-    return [dict(r) for r in await cur.fetchall()]
-
-
-async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
-    cur = await db_conn.execute(
-        "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
-        "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
-        # Derived in SQL so callers can report whether a key is configured
-        # without the value ever leaving this layer. Computing it from an
-        # api_key this query deliberately omits made it always false.
-        "CASE WHEN api_key IS NOT NULL AND TRIM(api_key) <> '' THEN 1 ELSE 0 END "
-        "AS has_api_key, "
-        "created_at, updated_at "
-        "FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (id, owner_id),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def ai_machine_create(
-    machine_id: str,
-    name: str,
-    host: str,
-    port: int,
-    api_key: str | None,
-    model: str,
-    base_url: str | None,
-    description: str | None,
-    owner_id: str,
-    provider: str = "proxy",
-) -> str:
-    now = _now()
-    await db_conn.execute(
-        "INSERT INTO ai_machines "
-        "(id, name, provider, host, port, api_key, model, base_url, description, active, owner_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
-        (
-            machine_id,
-            name,
-            provider,
-            host,
-            port,
-            api_key,
-            model,
-            base_url,
-            description,
-            owner_id,
-            now,
-            now,
-        ),
-    )
-    await db_conn.commit()
-    return now
-
-
-async def ai_machine_update(
-    machine_id: str,
-    owner_id: str,
-    name: str | None = None,
-    host: str | None = None,
-    port: int | None = None,
-    api_key: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
-    description: str | None = None,
-    provider: str | None = None,
-) -> bool:
-    pairs: list[tuple[str, Any]] = [
-        ("name", name),
-        ("provider", provider),
-        ("host", host),
-        ("port", port),
-        ("api_key", api_key),
-        ("model", model),
-        ("base_url", base_url),
-        ("description", description),
-    ]
-    sets: list[str] = []
-    vals: list[Any] = []
-    for field, value in pairs:
-        if value is not None:
-            sets.append(f"{field} = ?")
-            vals.append(value)
-    if not sets:
-        return False
-    sets.append("updated_at = ?")
-    vals.append(_now())
-    vals.extend([machine_id, owner_id])
-    sql = (
-        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
-    )  # nosec B608: fields are allowlisted
-    cur = await db_conn.execute(sql, vals)
-    await db_conn.commit()
-    return cur.rowcount > 0
-
-
-async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
-    """Deactivate all machines and activate the one requested."""
-    try:
-        await db_conn.execute("BEGIN")
-        await db_conn.execute(
-            "UPDATE ai_machines SET active = 0 WHERE owner_id = ?",
-            (owner_id,),
-        )
-        cur = await db_conn.execute(
-            "UPDATE ai_machines SET active = 1, updated_at = ? WHERE id = ? AND owner_id = ?",
-            (_now(), machine_id, owner_id),
-        )
-        await db_conn.commit()
-        return cur.rowcount > 0
-    except Exception:
-        await db_conn.rollback()
-        raise
-
-
-async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
-    cur = await db_conn.execute(
-        "DELETE FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (machine_id, owner_id),
-    )
-    await db_conn.commit()
-    return cur.rowcount > 0
-
-
-async def chat_owner(chat_id: str) -> str | None:
-    """Return the owner of *chat_id*, so the runner can resolve its backend."""
-    cur = await db_conn.execute("SELECT owner_id FROM chats WHERE id = ?", (chat_id,))
-    row = await cur.fetchone()
-    return row["owner_id"] if row else None
-
-
-_BACKEND_COLUMNS = (
-    "id, name, provider, host, port, model, base_url, api_key"
-)
-
-
-async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
-    """Return the active machine *including* its API key, for the runner only.
-
-    Every other reader goes through ``ai_machine_active``/``ai_machines_list``,
-    which omit ``api_key`` so it cannot reach an API response by accident.
-    """
-    cur = await db_conn.execute(
-        f"SELECT {_BACKEND_COLUMNS} "  # nosec B608: columns are static
-        "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
-        (owner_id,),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def ai_machine_backend_by_id(
-    machine_id: str, owner_id: str
-) -> dict[str, Any] | None:
-    """Return one specific machine including its API key, for the runner only.
-
-    Owner-scoped, so pinning a conversation to a machine id cannot reach another
-    user's backend or its credential.
-    """
-    if not machine_id:
-        return None
-    cur = await db_conn.execute(
-        f"SELECT {_BACKEND_COLUMNS} "  # nosec B608: columns are static
-        "FROM ai_machines WHERE id = ? AND owner_id = ? LIMIT 1",
-        (machine_id, owner_id),
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def chat_routing(chat_id: str) -> dict[str, Any]:
-    """Resolve where a conversation's next turn should go.
-
-    Returns ``{"owner", "model", "machine", "pinned"}``:
-
-    * ``machine`` -- the conversation's own machine when ``ai_machine_id`` is
-      set, otherwise the owner's active machine, which is what every
-      conversation followed before pinning existed. A pin to a machine that has
-      since been deleted falls back rather than failing the turn.
-    * ``model`` -- the conversation's model column. This doubles as the pin and
-      as the record of what actually ran: a turn writes back the model the CLI
-      reports, so if a gateway substitutes a different model the conversation
-      reflects the truth rather than a stale intention.
-    * ``pinned`` -- whether the machine came from the pin or the active fallback.
-    """
-    cur = await db_conn.execute(
-        "SELECT owner_id, model, ai_machine_id FROM chats WHERE id = ?", (chat_id,)
-    )
-    row = await cur.fetchone()
-    if not row:
-        return {"owner": None, "model": None, "machine": None, "pinned": False}
-    owner = row["owner_id"]
-    if row["ai_machine_id"]:
-        machine = await ai_machine_backend_by_id(row["ai_machine_id"], owner)
-        if machine:
-            return {"owner": owner, "model": row["model"],
-                    "machine": machine, "pinned": True}
-    return {
-        "owner": owner,
-        "model": row["model"],
-        "machine": await ai_machine_backend(owner),
-        "pinned": False,
-    }
-
-
-async def chat_set_machine(chat_id: str, owner_id: str, machine_id: str | None) -> bool:
-    """Pin a conversation to a machine, or clear the pin with None."""
-    cur = await db_conn.execute(
-        "UPDATE chats SET ai_machine_id = ?, updated_at = ? "
-        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-        (machine_id or None, _now(), chat_id, owner_id),
-    )
-    await db_conn.commit()
-    return cur.rowcount > 0
-
-
-async def read_marks_get(owner_id: str) -> dict[tuple[str, str], dict[str, str]]:
-    """Return {(kind, ref_id): {"read_at": ..., "dismissed_at": ...}}."""
-    cur = await db_conn.execute(
-        "SELECT kind, ref_id, read_at, dismissed_at FROM read_marks "
-        "WHERE owner_id = ?",
-        (owner_id,),
-    )
-    return {
-        (r["kind"], r["ref_id"]): {
-            "read_at": r["read_at"],
-            "dismissed_at": r["dismissed_at"] or "",
-        }
-        for r in await cur.fetchall()
-    }
-
-
-async def read_mark_set(
-    owner_id: str,
-    kind: str,
-    ref_id: str,
-    read_at: str | None = None,
-    dismiss: bool = False,
-) -> str:
-    """Record that *ref_id* has been looked at, and return the timestamp used.
-
-    With *dismiss* the same timestamp is also written to dismissed_at, which
-    additionally silences an unanswered question. Reading alone never does.
-    """
-    stamp = read_at or _now()
-    dismissed = stamp if dismiss else None
-    await db_conn.execute(
-        "INSERT INTO read_marks (owner_id, kind, ref_id, read_at, dismissed_at) "
-        "VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT(owner_id, kind, ref_id) DO UPDATE SET "
-        "  read_at = excluded.read_at, "
-        # Never unset an existing dismissal by merely reading it again.
-        "  dismissed_at = COALESCE(excluded.dismissed_at, read_marks.dismissed_at)",
-        (owner_id, kind, ref_id, stamp, dismissed),
-    )
-    await db_conn.commit()
-    return stamp
-
-
-async def chat_last_activity(owner_id: str) -> dict[str, dict[str, Any]]:
-    """Latest message per chat: {chat_id: {role, created_at, preview, tail}}.
-
-    One grouped query rather than a read per conversation -- the supervisor
-    polls, so this runs repeatedly.
-
-    *preview* is the opening of the message, which is what the list shows.
-    *tail* is its last 200 characters, which is where a question actually is:
-    an agent asks at the end, after the explanation, so the opening 200 chars
-    answered "does this end in a question?" with the wrong part of the message.
-    A second substr on a row already being read costs nothing measurable, and
-    the alternative -- rescanning transcripts per chat on every poll -- costs a
-    great deal.
-    """
-    cur = await db_conn.execute(
-        "SELECT m.chat_id, m.role, m.created_at, substr(m.content, 1, 200) AS preview, "
-        "       substr(m.content, -200) AS tail "
-        "FROM messages m "
-        "JOIN chats c ON c.id = m.chat_id "
-        "JOIN (SELECT chat_id, MAX(id) AS last_id FROM messages GROUP BY chat_id) t "
-        "  ON t.chat_id = m.chat_id AND t.last_id = m.id "
-        "WHERE c.owner_id = ? AND c.deleted_at IS NULL",
-        (owner_id,),
-    )
-    return {
-        r["chat_id"]: {
-            "role": r["role"],
-            "created_at": r["created_at"],
-            "preview": r["preview"],
-            "tail": r["tail"],
-        }
-        for r in await cur.fetchall()
-    }
-
-
-def parse_active_models(raw: Any) -> list[str]:
-    """Decode the active_models column into a list of ids.
-
-    Anything unreadable decodes to empty, which means "offer everything the
-    backend serves" -- the safe direction, because the alternative is a picker
-    with nothing in it.
-    """
-    if not raw:
-        return []
-    if isinstance(raw, list):
-        entries = raw
-    else:
-        try:
-            entries = json.loads(raw)
-        except (TypeError, ValueError):
-            return []
-    if not isinstance(entries, list):
-        return []
-    seen: set[str] = set()
-    models: list[str] = []
-    for entry in entries:
-        if isinstance(entry, str) and entry.strip() and entry.strip() not in seen:
-            seen.add(entry.strip())
-            models.append(entry.strip()[:200])
-    return models
-
-
-async def ai_machine_set_models(
-    machine_id: str, owner_id: str, active: list[str], default: str | None
-) -> bool:
-    """Set which models a machine offers, and which one it defaults to."""
-    sets = ["active_models = ?", "updated_at = ?"]
-    vals: list[Any] = [json.dumps(active), _now()]
-    if default:
-        sets.insert(1, "model = ?")
-        vals.insert(1, default)
-    cur = await db_conn.execute(
-        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?",
-        [*vals, machine_id, owner_id],
-    )  # nosec B608: column names are literals, values parameterised
-    await db_conn.commit()
-    return cur.rowcount > 0
-
-
-async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
-    """Return one machine's API key. Kept separate from ai_machine_get so the
-    key is only ever fetched where it is deliberately needed."""
-    cur = await db_conn.execute(
-        "SELECT api_key FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (machine_id, owner_id),
-    )
-    row = await cur.fetchone()
-    return row["api_key"] if row else None
-
-
-async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
-    """Ensure the owner has an Anthropic API machine, and return its id.
-
-    Claude Code's native backend is the official API, so every account gets an
-    entry for it. Seeded inactive and with no API key: an unset key makes the
-    CLI fall back to the host's own login, which is the normal setup.
-    """
-    cur = await db_conn.execute(
-        "SELECT id FROM ai_machines WHERE owner_id = ? AND provider = 'anthropic' "
-        "LIMIT 1",
-        (owner_id,),
-    )
-    row = await cur.fetchone()
-    if row:
-        return row["id"]
-    machine_id = uuid.uuid4().hex
-    await ai_machine_create(
-        machine_id,
-        "Anthropic API",
-        _ANTHROPIC_HOST,
-        443,
-        None,
-        config.ANTHROPIC_MODEL,
-        config.ANTHROPIC_BASE_URL,
-        "Official Anthropic API — Claude Code's default backend.",
-        owner_id,
-        provider="anthropic",
-    )
-    return machine_id
-
-
-# ── Usage accounting ───────────────────────────────────────────────────────────────────
-
-
-def _cutoff(days: int) -> str:
-    """Return the ISO timestamp *days* before now, matching _now()'s format."""
-    return time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - max(0, days) * 86400)
-    )
-
-
-async def usage_record(
-    chat_id: str,
-    owner_id: str,
-    model: str,
-    provider: str,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    cache_read_tokens: int = 0,
-    cache_creation_tokens: int = 0,
-    cost_usd: float | None = None,
-    cost_basis: str | None = None,
-    duration_ms: int | None = None,
-    is_error: bool = False,
-    origin: str = "web",
-) -> int | None:
-    """Record one model's usage for a completed turn.
-
-    Returns the row id, or None if the write failed. Accounting must never
-    break a turn that has already succeeded, so failures are swallowed.
-    """
-    if not chat_id or not owner_id or not model:
-        # Silent rejection here is how an empty Usage tab looks from the
-        # outside: the turn succeeds, nothing is written, nothing is said.
-        _log.warning(
-            "usage_record_rejected: chat_id=%r owner_id=%r model=%r "
-            "(all three are required to attribute a row)",
-            chat_id, owner_id, model,
-        )
-        return None
-    try:
-        cur = await db_conn.execute(
-            "INSERT INTO usage_events "
-            "(chat_id, owner_id, model, provider, input_tokens, output_tokens, "
-            " cache_read_tokens, cache_creation_tokens, cost_usd, cost_basis, "
-            " duration_ms, is_error, created_at, origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                chat_id,
-                owner_id,
-                model,
-                provider or "proxy",
-                int(input_tokens or 0),
-                int(output_tokens or 0),
-                int(cache_read_tokens or 0),
-                int(cache_creation_tokens or 0),
-                cost_usd,
-                cost_basis,
-                duration_ms,
-                1 if is_error else 0,
-                _now(),
-                origin or "web",
-            ),
-        )
-        await db_conn.commit()
-        _log.debug(
-            "usage_recorded chat_id=%s model=%s provider=%s in=%s out=%s",
-            chat_id, model, provider, input_tokens, output_tokens,
-        )
-        return cur.lastrowid
-    except Exception as exc:  # noqa: BLE001 -- never fail a turn that already succeeded
-        # Swallowed so accounting cannot break a completed turn, but a write
-        # that fails on every turn must not also be invisible.
-        _log.error(
-            "usage_record_failed: chat_id=%s model=%s provider=%s: %s",
-            chat_id, model, provider, exc,
-        )
-        return None
-
-
-# Rows per transaction when importing terminal usage.
-USAGE_IMPORT_BATCH = 500
-
-
-async def usage_cursor_get(session_id: str) -> int:
-    """How far a transcript has been consumed for usage accounting."""
-    cur = await db_conn.execute(
-        "SELECT offset FROM usage_cursors WHERE session_id = ?", (session_id,)
-    )
-    row = await cur.fetchone()
-    return int(row["offset"]) if row else 0
-
-
-async def usage_import(
-    owner_id: str, session_id: str, rows: list[dict[str, Any]], offset: int
-) -> int:
-    """Record usage read out of a terminal transcript. Returns rows written.
-
-    Written with the cursor in one transaction: if the insert succeeded and the
-    cursor did not, the next run would count the same turns again, and a usage
-    total that drifts upward on its own is worse than one that is late.
-
-    ``created_at`` comes from the record rather than the clock -- these turns
-    already happened, and stamping them "now" would pile months of history into
-    today and break every windowed query over this table.
-    """
-    if not rows:
-        if offset:
-            await db_conn.execute(
-                "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
-                (session_id, int(offset)),
-            )
-            await db_conn.commit()
-        return 0
-    # Committed in batches: a first import can be tens of thousands of rows, and
-    # holding SQLite's writer lock for all of them starves every other writer --
-    # db.py opens with a 5s busy timeout, so a long hold surfaces as a failed
-    # request somewhere else entirely.
-    # Read once, applied per row: a request the operator made in the website but
-    # which ran in this terminal must not be filed as the terminal's own work.
-    markers = await routed_markers(session_id)
-    written = 0
-    for start in range(0, len(rows), USAGE_IMPORT_BATCH):
-        batch = rows[start : start + USAGE_IMPORT_BATCH]
-        last = start + USAGE_IMPORT_BATCH >= len(rows)
-        # Each batch advances the cursor to its own last row, so an interruption
-        # leaves the cursor exactly at what was committed: the next run resumes
-        # from there, counting nothing twice and skipping nothing. Only the
-        # final batch may move it past the last usage row, up to the end of the
-        # data actually read.
-        checkpoint = int(offset) if last else int(batch[-1].get("offset") or offset)
-        try:
-            await db_conn.execute("BEGIN")
-            for row in batch:
-                routed = routed_owner_of(
-                    markers,
-                    int(row.get("offset") or 0),
-                    str(row.get("timestamp") or ""),
-                    str(row.get("after_prompt") or ""),
-                )
-                await db_conn.execute(
-                    "INSERT INTO usage_events "
-                    "(chat_id, session_id, owner_id, model, provider, input_tokens, "
-                    " output_tokens, cache_read_tokens, cache_creation_tokens, "
-                    " cost_usd, cost_basis, duration_ms, is_error, created_at, "
-                    " origin, context_unsplit) "
-                    "VALUES (?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
-                    " ?, ?)",
-                    (
-                        routed["chat_id"] if routed else "",
-                        session_id,
-                        owner_id,
-                        row["model"],
-                        int(row["input_tokens"]),
-                        int(row["output_tokens"]),
-                        int(row["cache_read_tokens"]),
-                        int(row["cache_creation_tokens"]),
-                        row.get("cost_usd"),
-                        "transcript" if row.get("cost_usd") is not None else "unknown",
-                        row.get("timestamp") or _now(),
-                        # Requested in the website, executed in a terminal.
-                        # Neither plain label is true, so it gets its own.
-                        "web-routed" if routed else "terminal",
-                        1 if row.get("context_unsplit") else 0,
-                    ),
-                )
-            await db_conn.execute(
-                "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
-                (session_id, checkpoint),
-            )
-            await db_conn.commit()
-            written += len(batch)
-        except Exception:
-            await db_conn.rollback()
-            raise
-    return written
 
 
 async def _ensure_usage_columns() -> None:
@@ -1958,688 +680,6 @@ async def _ensure_usage_columns() -> None:
     await db_conn.commit()
 
 
-# How long a routed request keeps claiming the turns that follow it. There is no
-# end marker in a transcript -- the terminal simply carries on -- so attribution
-# is bounded by time rather than left open, and work typed directly into that
-# terminal an hour later is not credited to a web request.
-# Backstop only, now that ownership is matched on the prompt itself: a
-# session that never receives another prompt cannot leave a marker
-# claiming turns indefinitely. Generous, because queued input can wait.
-ROUTED_WINDOW_S: Final[int] = 6 * 3600
-
-
-def normalise_prompt(text: str) -> str:
-    """A prompt reduced to something comparable across the two records of it.
-
-    The console holds what it sent; the transcript holds what the CLI received.
-    Whitespace and length differ, so both sides are folded the same way and
-    compared on a bounded prefix.
-    """
-    return " ".join((text or "").split())[:200].casefold()
-
-
-async def routed_request_add(
-    session_id: str, chat_id: str, owner_id: str, from_offset: int,
-    prompt: str = "",
-) -> int | None:
-    """Mark that a website request was typed into *session_id*'s terminal."""
-    if not session_id or not chat_id:
-        return None
-    try:
-        cur = await db_conn.execute(
-            "INSERT INTO routed_requests "
-            "(session_id, chat_id, owner_id, from_offset, prompt, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, chat_id, owner_id, int(from_offset or 0),
-             (prompt or "")[:4000], _now()),
-        )
-        await db_conn.commit()
-        return cur.lastrowid
-    except Exception:  # noqa: BLE001 -- attribution must never break a request
-        _log.warning("routed_request_not_recorded session_id=%s", session_id)
-        return None
-
-
-async def routed_markers(session_id: str) -> list[dict[str, Any]]:
-    """Routed-request marks for a session, newest offset first.
-
-    Read once per import rather than queried per row: a first import is tens of
-    thousands of rows and a lookup each would be the slowest thing in it.
-    """
-    try:
-        cur = await db_conn.execute(
-            "SELECT chat_id, from_offset, prompt, created_at FROM routed_requests "
-            "WHERE session_id = ? ORDER BY from_offset DESC",
-            (session_id,),
-        )
-        return [dict(row) for row in await cur.fetchall()]
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def routed_owner_of(
-    markers: list[dict[str, Any]], offset: int, when: str, after_prompt: str = ""
-) -> dict[str, Any] | None:
-    """The routed request a transcript row belongs to, if any.
-
-    Matched on the prompt the session was working on when the turn ran. That is
-    the only signal that survives queueing: a byte offset says a turn came after
-    the request was typed, which is not the same as being caused by it. Typing
-    into a busy session queues the input, and the first version of this credited
-    a routed request with whatever the agent happened to be doing in the
-    meantime -- observed, not theoretical.
-
-    The offset remains as a sanity check, so a marker cannot claim turns that
-    predate it. The time window is now only a backstop against a session that
-    never receives another prompt.
-    """
-    if not markers:
-        return None
-    wanted = normalise_prompt(after_prompt)
-    if not wanted:
-        return None
-    for marker in markers:
-        if offset and offset < marker["from_offset"]:
-            continue
-        if normalise_prompt(marker.get("prompt") or "") != wanted:
-            continue
-        try:
-            asked = datetime.datetime.fromisoformat(
-                str(marker["created_at"]).replace("Z", "+00:00")
-            )
-            wrote = datetime.datetime.fromisoformat(str(when).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            return marker
-        if -60 <= (wrote - asked).total_seconds() <= ROUTED_WINDOW_S:
-            return marker
-        return None
-    return None
-
-
-async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
-    """Totals split by where the turn came from: this website, or a terminal.
-
-    The distinction people actually want, and the one the page was getting
-    wrong. Terminal turns are dominated by agent sessions the console adopted
-    -- 175 million tokens for one of them on this machine against 271 thousand
-    typed into the website the same day -- so presenting a single figure, or
-    labelling the agents' work as the operator's, describes nobody's day.
-    """
-    where = "WHERE owner_id = ?"
-    params: list[Any] = [owner_id]
-    if days:
-        where += " AND created_at >= ?"
-        params.append(_cutoff(days))
-    cur = await db_conn.execute(
-        "SELECT COALESCE(NULLIF(origin, ''), 'web') AS origin, "
-        "COUNT(*) AS requests, "
-        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
-        "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
-        # Reported separately rather than folded in: these rows count the whole
-        # conversation on every turn, so adding them to the others produces a
-        # number that means nothing.
-        "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
-        "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens, "
-        "SUM(CASE WHEN context_unsplit = 1 THEN 1 ELSE 0 END) AS unsplit_requests "
-        f"FROM usage_events {where} GROUP BY origin ORDER BY origin",  # nosec B608
-        params,
-    )
-    return [dict(row) for row in await cur.fetchall()]
-
-
-async def usage_by_session(
-    owner_id: str, days: int | None = 30, limit: int = 15
-) -> list[dict[str, Any]]:
-    """Terminal usage per session, named by the conversation it belongs to.
-
-    This is what makes a surprising total explainable. One bar labelled
-    "terminal" hides which session spent it; named rows show at a glance that
-    the consumption belongs to an agent session rather than to anything the
-    operator typed.
-    """
-    where = "WHERE u.owner_id = ? AND u.origin = 'terminal'"
-    params: list[Any] = [owner_id]
-    if days:
-        where += " AND u.created_at >= ?"
-        params.append(_cutoff(days))
-    cur = await db_conn.execute(
-        "SELECT u.session_id, "
-        "(SELECT c.title FROM chats c WHERE c.session_id = u.session_id "
-        " AND c.deleted_at IS NULL LIMIT 1) AS title, "
-        "COUNT(*) AS requests, "
-        "COALESCE(SUM(u.input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(u.output_tokens), 0) AS output_tokens, "
-        "COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens, "
-        "MAX(u.context_unsplit) AS context_unsplit, "
-        "MAX(u.created_at) AS last_seen "
-        f"FROM usage_events u {where} "  # nosec B608
-        "GROUP BY u.session_id "
-        "ORDER BY SUM(u.input_tokens + u.output_tokens) DESC LIMIT ?",
-        [*params, max(1, min(int(limit), 100))],
-    )
-    return [dict(row) for row in await cur.fetchall()]
-
-
-async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
-    """Per-model aggregates for *owner_id*. ``days=None`` means all time."""
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
-    if days is not None:
-        where += " AND created_at >= ?"
-        params.append(_cutoff(days))
-    cur = await db_conn.execute(
-        "SELECT model, provider, COUNT(*) AS requests, "
-        "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
-        "SUM(cache_read_tokens) AS cache_read_tokens, "
-        "SUM(cache_creation_tokens) AS cache_creation_tokens, "
-        "SUM(COALESCE(cost_usd, 0)) AS cost_usd, "
-        "SUM(is_error) AS errors, MAX(created_at) AS last_used, "
-        "MAX(CASE WHEN cost_basis = 'unknown' THEN 1 ELSE 0 END) "
-        "AS cost_basis_unknown "
-        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY model, provider ORDER BY requests DESC, model ASC",
-        params,
-    )
-    return [dict(row) for row in await cur.fetchall()]
-
-
-async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
-    """Totals across every model, so the header does not re-sum in the client."""
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
-    if days is not None:
-        where += " AND created_at >= ?"
-        params.append(_cutoff(days))
-    cur = await db_conn.execute(
-        "SELECT COUNT(*) AS requests, "
-        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
-        "COALESCE(SUM(is_error), 0) AS errors, "
-        "COUNT(DISTINCT model) AS models "
-        f"FROM usage_events WHERE {where}",  # nosec B608: clause is static
-        params,
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else {}
-
-
-async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Most recent turns, with the conversation title joined in.
-
-    LEFT JOIN so a deleted conversation still appears in the log rather than
-    silently dropping the usage it accounted for.
-    """
-    cur = await db_conn.execute(
-        "SELECT u.created_at, u.chat_id, u.model, u.provider, u.input_tokens, "
-        "u.output_tokens, u.cost_usd, u.cost_basis, u.duration_ms, u.is_error, "
-        # A terminal turn has no chat to join, so fall back to its session.
-        "COALESCE(c.title, 'Terminal ' || substr(u.session_id, 1, 8)) AS chat_title "
-        "FROM usage_events u LEFT JOIN chats c ON c.id = u.chat_id "
-        "WHERE u.owner_id = ? ORDER BY u.id DESC LIMIT ?",
-        # `limit or 50` would read 0 as "use the default", disagreeing with the
-        # API layer which clamps 0 to 1. Only None means "unspecified".
-        (owner_id, max(1, min(50 if limit is None else int(limit), 500))),
-    )
-    return [dict(row) for row in await cur.fetchall()]
-
-
-# Buckets the statistics page offers, as (label, prefix length of the ISO
-# timestamp). Bucketing by string prefix rather than a date function is what
-# lets one query serve both timestamp shapes in this table: turns recorded by
-# the site are stored as "...:15Z" and turns read out of a CLI transcript keep
-# their original "...:55.776Z" milliseconds. substr() does not care; strftime()
-# would have to parse, and returns NULL on the millisecond form.
-USAGE_BUCKETS: Final[dict[str, int]] = {
-    # Prefix widths over an ISO timestamp: 2026-08-30T11:04:11Z
-    "halfhour": 16,  # not a prefix -- see _bucket_expr
-    "hour": 13,
-    "day": 10,
-    "month": 7,
-}
-
-
-# Timestamps are stored in UTC, but nobody reads a chart in UTC -- an hour of
-# work done at 21:00 in Lisbon was labelled 20:00, and the "today" column began
-# at 01:00. Bucketing therefore groups on the local rendering of the timestamp.
-#
-# SQLite's 'localtime' resolves the machine's zone per timestamp, so it follows
-# DST rather than baking in one offset: the same expression gives +01:00 for an
-# August row and +00:00 for a January one, which a fixed offset could not do.
-# It returns "2026-08-30 20:23:54"; the space becomes "T" so the keys keep the
-# shape the client and the existing bucket widths already expect.
-#
-# Deliberately not applied to the `created_at >= ?` range filters. "The last 24
-# hours" is a span measured back from now, and a span has no timezone -- only
-# the labels do.
-_LOCAL_TS: Final[str] = "replace(datetime(created_at, 'localtime'), ' ', 'T')"
-
-
-# A spine is one string per bucket, so a wide window at a narrow bucket is the
-# expensive case: 30 days of half hours is 1,440 keys, which is fine, and an
-# unbounded range at half hours is not. Past this the spine is dropped rather
-# than truncated, because half a spine silently mislabels the axis it is meant
-# to fix -- worse than the gap it replaces.
-_SPINE_MAX: Final[int] = 5000
-
-_BUCKET_STEP_S: Final[dict[str, int]] = {
-    "halfhour": 1800,
-    "hour": 3600,
-    "day": 86400,
-}
-
-
-def bucket_spine(
-    bucket: str, days: int | None, earliest: str | None = None
-) -> list[str]:
-    """Every bucket key across the window, in order, with none missing.
-
-    The series queries GROUP BY the bucket expression, so a bucket that no row
-    falls into is not in the result at all. The chart places points by index, so
-    an absent bucket is not drawn as a gap -- it is absent from the axis, and its
-    neighbours are rendered adjacent. Five idle hours overnight put midnight
-    one step from 06:00 and the time axis stops being a time axis.
-
-    Keys are built in *local* time because :func:`_bucket_expr` buckets in local
-    time. Generating them in UTC would produce an axis whose labels look right
-    and whose keys never match a row, so every real bucket would be treated as
-    an extra one and the series would double.
-
-    ``earliest`` bounds an unbounded window: with ``days=None`` the caller wants
-    everything, and everything has no start until the data supplies one. Passing
-    the oldest row keeps the spine to the range that can contain data.
-
-    Months are not generated. Their step is not a fixed number of seconds, and a
-    month bucket is already coarse enough that an empty one is legible as a gap.
-    """
-    step = _BUCKET_STEP_S.get(bucket)
-    if step is None:
-        return []
-    now = time.time()
-    if days is not None:
-        start = now - max(0, days) * 86400
-    elif earliest:
-        start = _epoch_of(earliest)
-        if start is None:
-            return []
-    else:
-        return []
-    # Floor to the bucket in local time, which is where the boundary is: an
-    # hour bucket starts on the local hour, and flooring in UTC would offset
-    # every key by the zone's fractional-hour part where one exists.
-    first = _floor_local(start, bucket)
-    keys: list[str] = []
-    cursor = first
-    while cursor <= now + step:
-        keys.append(_bucket_key(cursor, bucket))
-        if len(keys) > _SPINE_MAX:
-            return []
-        cursor += step
-    # The trailing key can overshoot into the future by up to one step.
-    cutoff = _bucket_key(now, bucket)
-    return [key for key in keys if key <= cutoff]
-
-
-def _epoch_of(stamp: str) -> float | None:
-    """Seconds since the epoch for a stored UTC timestamp, or None."""
-    text = (stamp or "").strip().rstrip("Z")
-    for shape in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            parsed = datetime.datetime.strptime(text[:19], shape).replace(
-                tzinfo=datetime.UTC)
-        except ValueError:
-            continue
-        return parsed.timestamp()
-    return None
-
-
-def _floor_local(epoch: float, bucket: str) -> float:
-    """*epoch* floored to the start of its local bucket."""
-    parts = time.localtime(epoch)
-    if bucket == "day":
-        floored = (*parts[:3], 0, 0, 0, *parts[6:])
-    elif bucket == "hour":
-        floored = (*parts[:4], 0, 0, *parts[6:])
-    else:  # halfhour
-        floored = (*parts[:4], 30 if parts.tm_min >= 30 else 0, 0, *parts[6:])
-    # mktime re-derives the offset, so a bucket spanning a DST change keeps its
-    # real local start rather than inheriting the offset in force at `epoch`.
-    return time.mktime(time.struct_time(floored))
-
-
-def _bucket_key(epoch: float, bucket: str) -> str:
-    """The key :func:`_bucket_expr` would produce for *epoch*, in local time."""
-    parts = time.localtime(epoch)
-    if bucket == "day":
-        return time.strftime("%Y-%m-%d", parts)
-    if bucket == "hour":
-        return time.strftime("%Y-%m-%dT%H", parts)
-    return time.strftime("%Y-%m-%dT%H:", parts) + (
-        "30" if parts.tm_min >= 30 else "00")
-
-
-def _bucket_expr(bucket: str) -> tuple[str, list[Any]]:
-    """SQL mapping ``created_at`` to a local-time bucket key, and its params.
-
-    Every other bucket is a prefix of the timestamp, which SQLite can take with
-    a single substr. A half hour is not a prefix -- it needs the minute floored
-    to 00 or 30 -- so it gets its own expression rather than bending the widths
-    to fit. The key stays lexicographically sortable like the others, which is
-    what lets the caller keep ``ORDER BY bucket``.
-
-    The prefix widths are unchanged by the conversion: local and UTC renderings
-    are the same length with the field boundaries in the same places.
-    """
-    if bucket == "halfhour":
-        halfhour = (
-            f"substr({_LOCAL_TS}, 1, 14) || "
-            f"CASE WHEN CAST(substr({_LOCAL_TS}, 15, 2) AS INTEGER) < 30 "
-            "THEN '00' ELSE '30' END"
-        )
-        return (halfhour, [])
-    return (
-        f"substr({_LOCAL_TS}, 1, ?)",
-        [USAGE_BUCKETS.get(bucket, USAGE_BUCKETS["day"])],
-    )
-
-
-async def usage_series(
-    owner_id: str, days: int | None = 30, bucket: str = "day"
-) -> list[dict[str, Any]]:
-    """Token totals per time bucket per provider, oldest first.
-
-    Split by provider rather than summed because the two populations differ by
-    three orders of magnitude on this machine -- 18,200 terminal turns against
-    23 from the website. Stacked into one series the website's traffic is a
-    flat line on the axis, which is worse than not charting it.
-    """
-    expr, expr_params = _bucket_expr(bucket)
-    params: list[Any] = [*expr_params, owner_id]
-    where = "owner_id = ?"
-    if days is not None:
-        where += " AND created_at >= ?"
-        params.append(_cutoff(days))
-    cur = await db_conn.execute(
-        # `origin` is carried alongside `provider` rather than replacing it, so
-        # the existing series keep working. provider='cli' had been standing in
-        # for "a terminal", which is true but coarse: it lumps adopted agent
-        # sessions in with anything hand-typed, and those differ by three orders
-        # of magnitude. `unsplit_tokens` is broken out for the same reason cost
-        # is suppressed elsewhere -- rows whose model reported no cache
-        # breakdown re-count the whole conversation every turn, so plotting them
-        # in the same stack as the rest is not a comparison.
-        f"SELECT {expr} AS bucket, provider, "  # nosec B608: expression is ours
-        "COALESCE(NULLIF(origin, ''), 'web') AS origin, "
-        "COUNT(*) AS requests, "
-        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
-        "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
-        "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
-        "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens, "
-        "COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS cost_usd, "
-        "COALESCE(SUM(is_error), 0) AS errors "
-        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY bucket, provider, origin ORDER BY bucket ASC",
-        params,
-    )
-    return [dict(row) for row in await cur.fetchall()]
-
-
-async def usage_model_series(
-    owner_id: str, days: int | None = 30, bucket: str = "day", top: int = 6
-) -> list[dict[str, Any]]:
-    """Token totals per time bucket per model, for the top *top* models.
-
-    Capped because a categorical palette is only defined for a fixed number of
-    slots; the rest is folded into one "Other" series by the caller rather than
-    given an invented colour.
-    """
-    expr, expr_params = _bucket_expr(bucket)
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
-    if days is not None:
-        where += " AND created_at >= ?"
-        params.append(_cutoff(days))
-    ranked = await db_conn.execute(
-        "SELECT model FROM usage_events "
-        f"WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY model ORDER BY SUM(input_tokens + output_tokens) DESC "
-        "LIMIT ?",
-        [*params, max(1, min(int(top), 12))],
-    )
-    keep = [row["model"] for row in await ranked.fetchall()]
-    if not keep:
-        return []
-    cur = await db_conn.execute(
-        f"SELECT {expr} AS bucket, model, "  # nosec B608: expression is ours
-        "COUNT(*) AS requests, "
-        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(output_tokens), 0) AS output_tokens "
-        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY bucket, model ORDER BY bucket ASC",
-        [*expr_params, *params],
-    )
-    kept = set(keep)
-    # Everything outside the top N collapses into one "Other" series. Merged
-    # rather than relabelled: two dropped models in the same bucket produce two
-    # rows, and leaving both as "Other" would draw that bucket twice and make
-    # the fold look like a spike.
-    merged: dict[tuple[str, str], dict[str, Any]] = {}
-    for raw in await cur.fetchall():
-        row = dict(raw)
-        if row["model"] not in kept:
-            row["model"] = "Other"
-        key = (row["bucket"], row["model"])
-        if key in merged:
-            for field in ("requests", "input_tokens", "output_tokens"):
-                merged[key][field] += row[field]
-        else:
-            merged[key] = row
-    return list(merged.values())
-
-
-async def usage_prune(days: int) -> int:
-    """Delete rows older than *days*. Returns the number removed."""
-    if not days or days <= 0:
-        return 0
-    try:
-        cur = await db_conn.execute(
-            "DELETE FROM usage_events WHERE created_at < ?", (_cutoff(days),)
-        )
-        await db_conn.commit()
-        return cur.rowcount or 0
-    except Exception:  # noqa: BLE001 -- pruning must never block startup
-        return 0
-
-
-# ── Host statistics ─────────────────────────────────────────────────────────────────────
-# Samples of the machine WebConsole runs on, written by the background sampler
-# in sysstats.py. Not owner-scoped: there is one host and it belongs to nobody.
-
-# Columns the sampler writes, in the order the INSERT expects them. Named once
-# so the insert, the aggregate and the tests cannot drift apart.
-SYSTEM_FIELDS: Final[tuple[str, ...]] = (
-    "cpu_pct",
-    "mem_pct",
-    "mem_used",
-    "mem_total",
-    "swap_pct",
-    "disk_pct",
-    "disk_used",
-    "disk_total",
-    "load1",
-    "load5",
-    "load15",
-    "proc_rss",
-    "proc_cpu_pct",
-)
-
-
-async def system_sample_insert(values: dict[str, Any]) -> None:
-    """Store one host sample. Missing fields default to 0."""
-    if db_conn is None:
-        return  # init not complete or connection lost; sampler must outlive a miss.
-    columns: str = ", ".join(("created_at", *SYSTEM_FIELDS))
-    placeholders: str = ", ".join("?" * (len(SYSTEM_FIELDS) + 1))
-    await db_conn.execute(
-        f"INSERT INTO system_samples ({columns}) "  # nosec B608: names are literals
-        f"VALUES ({placeholders})",
-        [_now(), *(values.get(field, 0) or 0 for field in SYSTEM_FIELDS)],
-    )
-    await db_conn.commit()
-
-
-async def system_latest() -> dict[str, Any] | None:
-    """The most recent stored sample, or None when nothing has been sampled."""
-    cur = await db_conn.execute(
-        "SELECT * FROM system_samples ORDER BY id DESC LIMIT 1"
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
-async def system_series(
-    days: int | None = 7, bucket: str = "hour", fill: bool = False
-) -> list[dict[str, Any]]:
-    """Host samples averaged per time bucket, oldest first.
-
-    Both the average and the peak are returned for the three figures where the
-    difference matters. A box that sat at 4% CPU and spiked to 100% for ninety
-    seconds averages out to nothing at an hour bucket -- the average says the
-    machine was idle, and the peak is the only column that remembers the spike
-    happened at all.
-
-    Bucketing goes through _bucket_expr() rather than USAGE_BUCKETS, because
-    'halfhour' is not a prefix width: its entry in that dict is a sentinel, and
-    reading it as a substr length silently buckets by the minute instead.
-
-    ``fill`` places the result on a continuous bucket spine, with the buckets no
-    sample fell into carried as nulls. Off by default, and the default is the
-    point: this is the storage read, and a continuous axis is a presentation
-    need. Filling here unconditionally changed what every caller gets -- two
-    stored samples came back as 2,437 rows -- and it obscured the questions the
-    storage tests ask, which are about the bucket expression itself and want to
-    see exactly the buckets the data produced. Only the chart endpoint asks for
-    the spine.
-    """
-    expr, expr_params = _bucket_expr(bucket)
-    params: list[Any] = [*expr_params]
-    where = "1=1"
-    if days is not None:
-        where += " AND created_at >= ?"
-        params.append(_cutoff(days))
-    cur = await db_conn.execute(
-        f"SELECT {expr} AS bucket, "  # nosec B608: expression is ours
-        "COUNT(*) AS samples, "
-        "ROUND(AVG(cpu_pct), 1) AS cpu_pct, "
-        "ROUND(MAX(cpu_pct), 1) AS cpu_max, "
-        "ROUND(AVG(mem_pct), 1) AS mem_pct, "
-        "ROUND(MAX(mem_pct), 1) AS mem_max, "
-        "ROUND(AVG(swap_pct), 1) AS swap_pct, "
-        "ROUND(AVG(disk_pct), 1) AS disk_pct, "
-        "ROUND(MAX(disk_pct), 1) AS disk_pct_max, "
-        "CAST(AVG(mem_used) AS INTEGER) AS mem_used, "
-        "CAST(MAX(mem_total) AS INTEGER) AS mem_total, "
-        "CAST(AVG(disk_used) AS INTEGER) AS disk_used, "
-        "CAST(MAX(disk_total) AS INTEGER) AS disk_total, "
-        "ROUND(AVG(load1), 2) AS load1, "
-        "ROUND(MAX(load1), 2) AS load1_max, "
-        "ROUND(AVG(load5), 2) AS load5, "
-        "ROUND(AVG(load15), 2) AS load15, "
-        "CAST(AVG(proc_rss) AS INTEGER) AS proc_rss, "
-        "CAST(MAX(proc_rss) AS INTEGER) AS proc_rss_max, "
-        "ROUND(AVG(proc_cpu_pct), 1) AS proc_cpu_pct "
-        f"FROM system_samples WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY bucket ORDER BY bucket ASC",
-        params,
-    )
-    rows = [dict(row) for row in await cur.fetchall()]
-    if not fill:
-        return rows
-    # An unbounded window has no start until the data supplies one.
-    earliest = await _earliest("system_samples") if days is None else None
-    return _on_spine(rows, bucket, days, earliest)
-
-
-async def usage_earliest(owner_id: str) -> str | None:
-    """The oldest usage timestamp for *owner_id*, or None.
-
-    Owner-scoped, like every other read of this table: the spine for an
-    unbounded window must start where *this* caller's data starts, not where
-    the busiest account on the machine happens to begin.
-    """
-    cur = await db_conn.execute(
-        "SELECT MIN(created_at) AS first FROM usage_events WHERE owner_id = ?",
-        (owner_id,),
-    )
-    row = await cur.fetchone()
-    return (row["first"] if row else None) or None
-
-
-async def _earliest(table: str) -> str | None:
-    """The oldest ``created_at`` in *table*, or None when it is empty."""
-    cur = await db_conn.execute(
-        f"SELECT MIN(created_at) AS first FROM {table}")  # nosec B608: fixed
-    row = await cur.fetchone()
-    return (row["first"] if row else None) or None
-
-
-def _on_spine(
-    rows: list[dict[str, Any]], bucket: str, days: int | None,
-    earliest: str | None = None,
-) -> list[dict[str, Any]]:
-    """Place *rows* on a continuous bucket spine, missing buckets as nulls.
-
-    A host sample that does not exist is not a reading of zero. Zero-filling
-    would draw the machine sitting at 0% CPU and 0% memory across exactly the
-    windows the sampler was not running -- asserting a measurement where none
-    was taken, and the more confident the chart looks the worse that is. The
-    metrics come back as None so the renderer can break the line instead.
-
-    ``samples: 0`` is the one honest number in a missing bucket, and it is what
-    tells a caller the row is a placeholder rather than a reading.
-    """
-    spine = bucket_spine(bucket, days, earliest)
-    if not spine:
-        # No spine available -- an unsupported bucket, or a window too wide to
-        # enumerate. The unfilled rows are still correct, just not continuous.
-        return rows
-    present = {row["bucket"]: row for row in rows}
-    if not present:
-        return rows
-    # Every column any real row carries, so a placeholder has the same shape.
-    fields = {key for row in rows for key in row}
-    blank = {key: None for key in fields if key not in ("bucket", "samples")}
-    filled: list[dict[str, Any]] = []
-    for key in spine:
-        row = present.get(key)
-        filled.append(row if row else {"bucket": key, "samples": 0, **blank})
-    # Rows outside the spine are kept rather than dropped: a bucket holding data
-    # is evidence, and a spine that disagrees with it is the thing to distrust.
-    extra = [row for key, row in present.items() if key not in set(spine)]
-    if extra:
-        filled.extend(extra)
-        filled.sort(key=lambda row: row["bucket"])
-    return filled
-
-
-async def system_prune(days: int) -> int:
-    """Delete samples older than *days*. Returns the number removed."""
-    if not days or days <= 0:
-        return 0
-    try:
-        cur = await db_conn.execute(
-            "DELETE FROM system_samples WHERE created_at < ?", (_cutoff(days),)
-        )
-        await db_conn.commit()
-        return cur.rowcount or 0
-    except Exception:  # noqa: BLE001 -- pruning must never block startup
-        return 0
-
-
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -2664,125 +704,6 @@ def slug_pattern(slug: str) -> str | None:
     return slug
 
 
-# ── Database backup / restore ────────────────────────────────────────────────────────
-
-
-def _db_backup_sync(backup_path: str) -> bytes:
-    """Copy the database and return it gzip-compressed. Blocking; call off-loop."""
-    import gzip as _gzip
-
-    sync_conn = sqlite3.connect(backup_path)
-    db_conn_sync = sqlite3.connect(str(config.DB_PATH))
-    try:
-        db_conn_sync.backup(sync_conn)
-    finally:
-        db_conn_sync.close()
-        sync_conn.close()
-    return _gzip.compress(Path(backup_path).read_bytes())
-
-
-async def db_backup() -> bytes:
-    """Return a gzip-compressed SQLite backup of the entire database.
-
-    sqlite3.backup(), the file read and the gzip pass are all blocking and
-    scale with database size, so they run in a worker thread. On the event
-    loop they would stall every other request, including live SSE streams.
-    """
-    backup_path = f"{config.DB_PATH}.backup.{int(time.time())}"
-    try:
-        return await asyncio.to_thread(_db_backup_sync, backup_path)
-    finally:
-        try:
-            Path(backup_path).unlink()
-        except OSError:
-            pass
-
-
-def _validate_sqlite_file(path: Path) -> bool:
-    """Return True if *path* is a sound SQLite database with our schema.
-
-    Runs before the live file is touched, so a corrupt or unrelated upload is
-    rejected rather than swapped in.
-    """
-    conn = None
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        row = conn.execute("PRAGMA integrity_check").fetchone()
-        if not row or row[0] != "ok":
-            return False
-        names = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        # A valid backup of *this* app, not just any SQLite file.
-        return {"chats", "messages", "users"}.issubset(names)
-    except sqlite3.DatabaseError:
-        return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except sqlite3.Error:
-                pass
-
-
 async def _reopen() -> None:
     """Reconnect and apply additive migrations. Never leaves db_conn as None."""
     await init()
-
-
-async def db_restore(data: bytes) -> bool:
-    """Replace the current database with the provided gzip-compressed data.
-
-    The candidate is validated before the swap (gzip, SQLite magic, integrity
-    check, expected tables), the swap itself is an atomic rename, and the
-    reconnect goes through :func:`init` so schema migrations are applied -- a
-    restored older backup would otherwise be missing columns the app expects.
-    """
-    import gzip as _gzip
-
-    try:
-        decompressed = _gzip.decompress(data)
-    except Exception:  # noqa: BLE001 -- silently reject bad input
-        return False
-
-    # Reject anything that is not a SQLite database outright.
-    if not decompressed.startswith(_SQLITE_MAGIC):
-        return False
-
-    db_path = Path(config.DB_PATH)
-    tmp_path = db_path.with_suffix(".restore.tmp")
-
-    try:
-        tmp_path.write_bytes(decompressed)
-        if not await asyncio.to_thread(_validate_sqlite_file, tmp_path):
-            tmp_path.unlink(missing_ok=True)
-            return False
-
-        # Close existing connection before swapping files.
-        await close()
-
-        # Drop the old write-ahead log and shared-memory sidecars. Left in
-        # place, SQLite can replay the previous database's WAL over the
-        # restored file and corrupt it.
-        for suffix in ("-wal", "-shm"):
-            Path(str(db_path) + suffix).unlink(missing_ok=True)
-
-        # Atomic rename.
-        tmp_path.replace(db_path)
-
-        await _reopen()
-        return True
-    except Exception:  # noqa: BLE001 -- recover best-effort on failure
-        tmp_path.unlink(missing_ok=True)
-        # Leaving db_conn as None would 500 every later request until restart.
-        try:
-            await _reopen()
-        except Exception:  # noqa: BLE001 -- final fallback, DB may be unusable
-            global db_conn
-            db_conn = None
-        return False
-
-

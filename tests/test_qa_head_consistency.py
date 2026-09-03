@@ -49,6 +49,38 @@ def head_file(path: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _merge_getattr_symbols(existing: set[str], source: str) -> set[str]:
+    """Merge names from a module's ``__getattr__`` ``_SYMBOLS`` dict.
+
+    The cross-module reference test only walks ``def``/``class``/``import``
+    nodes.  A lazy-``__getattr__`` mapping (nested inside a function body) is
+    not captured by that walk, so we read it separately.
+    """
+    merged = set(existing)
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return merged
+
+    # _SYMBOLS lives inside the __getattr__ function body, not at module level.
+    # Walk all statements (including those nested in function bodies).
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id != "_SYMBOLS":
+            continue
+        value = node.value if isinstance(node, ast.AnnAssign) else node.value
+        if not isinstance(value, ast.Dict):
+            continue
+        for key in value.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                merged.add(key.value)
+    return merged
+
+
 def module_names(source: str) -> set[str]:
     """Every name a module binds at module scope: def, class, assignment, import.
 
@@ -105,6 +137,15 @@ class CrossModuleReferencesResolveTests(unittest.TestCase):
                  if f.endswith(".py") and "/" not in f}
         defined = {stem: module_names(head_file(path) or "")
                    for stem, path in local.items()}
+
+        # ``__getattr__`` resolves names lazily.  Collect them so the
+        # static walk does not flag legitimate cross-module references as
+        # missing.  This keeps the test honest: a name removed from the
+        # mapping is still caught by the runtime.
+        db_defined = defined.get("db", set())
+        db_source = head_file(local.get("db")) or ""
+        db_defined = _merge_getattr_symbols(db_defined, db_source)
+        defined["db"] = db_defined
 
         missing: list[str] = []
         for path in local.values():

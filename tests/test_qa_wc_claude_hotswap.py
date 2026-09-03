@@ -601,5 +601,121 @@ sys.exit(0)
         )
 
 
+class ScreenSurvivalTests(unittest.TestCase):
+    """Automates as much of the plan's Task 3 Step 7 manual acceptance check
+    as a unit test can reach: a real `screen` session, real pty, the wrapper
+    supervising a hot-swap inside it. Fake claude + a throwaway WC_DB_PATH --
+    no production database, no live WebConsole Settings flip, no real
+    Anthropic spend. What this cannot cover is the one thing that needs a
+    human: the live WebConsole UI actually writing the `active` flag through
+    its own Settings page rather than a direct SQL UPDATE here.
+
+    Proves the two things Step 7 was written to check: the banner reprints
+    with the new machine's name inside the same window, and the screen
+    session's pid is unchanged across the restart -- the pty, not the
+    wrapper's own pid, is what must survive (see the design doc's core
+    insight)."""
+
+    def setUp(self):
+        if subprocess.run(["which", "screen"],
+                          capture_output=True).returncode != 0:
+            self.skipTest("screen not installed")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        claude = bindir / "claude"
+        claude.write_text(FAKE_CLAUDE)
+        claude.chmod(0o755)
+        self.db = str(Path(self.tmp.name) / "db.sqlite")
+        self.log = str(Path(self.tmp.name) / "claude.log")
+        Path(self.log).touch()
+        self.hardcopy = str(Path(self.tmp.name) / "hardcopy.txt")
+        self.session = f"wc-qa-{os.getpid()}-{id(self)}"
+        self.addCleanup(self._quit_session)
+        self.overrides = {
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "WC_DB_PATH": self.db,
+            "FAKE_CLAUDE_LOG": self.log,
+            "WC_CLAUDE_HOTSWAP": "1",
+            "WC_CLAUDE_POLL_S": "1",
+            "WC_CLAUDE_NO_REPAIR": "1",
+        }
+
+    def _quit_session(self):
+        subprocess.run(["screen", "-S", self.session, "-X", "quit"],
+                       capture_output=True)
+
+    def _screen_pid(self) -> str | None:
+        out = subprocess.run(["screen", "-list"],
+                             capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            token = line.strip().split()[:1]
+            if not token or "." not in token[0]:
+                continue
+            pid, _, name = token[0].partition(".")
+            if name == self.session:
+                return pid
+        return None
+
+    def _hardcopy_text(self) -> str:
+        subprocess.run(
+            ["screen", "-S", self.session, "-X", "hardcopy", self.hardcopy],
+            capture_output=True,
+        )
+        return Path(self.hardcopy).read_text(errors="replace") \
+            if Path(self.hardcopy).exists() else ""
+
+    def _wait_for(self, predicate, timeout=15):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.3)
+        return False
+
+    def test_the_banner_reprints_in_the_same_screen_session_on_a_hot_swap(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        env_pairs = [f"{k}={v}" for k, v in self.overrides.items()]
+        subprocess.run(
+            ["screen", "-dmS", self.session, "env", *env_pairs,
+             str(SCRIPT), "--resume", "test-session"],
+            check=True,
+        )
+        self.assertTrue(self._wait_for(lambda: self._screen_pid() is not None),
+                        "screen session never started")
+        pid_before = self._screen_pid()
+
+        self.assertTrue(
+            self._wait_for(lambda: "wc-claude: one" in self._hardcopy_text()),
+            "banner for the first machine never appeared in the screen "
+            f"session; last hardcopy:\n{self._hardcopy_text()}",
+        )
+
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "INSERT INTO ai_machines (name, provider, api_key, model, "
+            "active) VALUES ('two', 'anthropic', 'key-two', "
+            "'claude-sonnet-5', 1)")
+        con.execute("UPDATE ai_machines SET active = 0 WHERE name = 'one'")
+        con.commit()
+        con.close()
+
+        self.assertTrue(
+            self._wait_for(lambda: "wc-claude: two" in self._hardcopy_text()),
+            "banner did not reprint for the second machine within the "
+            f"same screen session; last hardcopy:\n{self._hardcopy_text()}",
+        )
+        self.assertEqual(
+            self._screen_pid(), pid_before,
+            "the screen session's pid changed across the hot-swap -- the "
+            "pty was not preserved, which is the one property this whole "
+            "feature exists to guarantee",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

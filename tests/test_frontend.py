@@ -249,8 +249,11 @@ class FrontendStructureTests(unittest.TestCase):
         a message was unreachable from the web UI by any route."""
         self.assertIn("export function openImageViewer", self.conversation)
         self.assertIn("image-chip", self.conversation)
+        self.assertIn("pdf-chip", self.conversation)
+        self.assertIn("openPdfViewer", self.conversation)
         self.assertIn("/file?path=", self.conversation)
         self.assertIn(".image-viewer{", self.css)
+        self.assertIn(".pdf-viewer iframe", self.css)
 
     def test_image_paths_resolve_against_the_open_chat(self):
         """A path means nothing without knowing whose workspace it is in."""

@@ -1,6 +1,6 @@
 import {apiFetch, downloadMarkdown} from './api.js';
 import {createChatListController} from './chat-list.js';
-import {createConversationController, parseTimestamp} from './conversation.js';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js';
 
 const state = {
   chats: [],
@@ -84,7 +84,13 @@ function openSidebar() {
   byId('sidebar').setAttribute('aria-hidden', 'false');
   byId('menuBtn').setAttribute('aria-expanded', 'true');
   byId('sidebarOverlay').style.display = 'block';
-  byId('chatSearch').focus();
+  // Same reasoning as prefersAutoFocus in conversation.js: focusing a text
+  // input opens the on-screen keyboard on Android, which then covers most of
+  // the sidebar the user just opened to browse -- on the one gesture (tapping
+  // the menu icon) that is unambiguously not a request to type. A pointer
+  // device keeps the focus, since there the keyboard costs nothing and typing
+  // straight into search is the point.
+  if (prefersAutoFocus()) byId('chatSearch').focus();
 }
 
 function closeSidebar() {

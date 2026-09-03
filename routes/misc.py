@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 import auth
 import config
@@ -40,6 +40,11 @@ _log = logging.getLogger("wc.app")
 router = APIRouter()
 
 
+_COMPARISON_PDF = (
+    Path(__file__).resolve().parent.parent / "Backend_Models_20260902.comparison.pdf"
+)
+
+
 # Skill discovery roots. Plain module attributes (not Final) so tests can patch
 # them and never touch the real ~/.claude tree.
 _USER_SKILLS_ROOT: Path = Path.home() / ".claude" / "skills"
@@ -58,6 +63,20 @@ _SKILL_LIMIT: Final[int] = 500
 
 # Longest one-line summary shown on a collapsed skill card.
 _SKILL_SUMMARY_MAX: Final[int] = 120
+
+
+@router.get("/api/reports/backend-model-comparison.pdf")
+async def _api_backend_model_comparison(request: Request):
+    """Serve the reviewed comparison PDF to authenticated WebConsole users."""
+    if not _COMPARISON_PDF.is_file():
+        raise HTTPException(status_code=404, detail="Comparison PDF not available")
+    return FileResponse(
+        _COMPARISON_PDF,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'inline; filename="backend-model-comparison.pdf"',
+        },
+    )
 
 
 @router.get("/api/admin/export")

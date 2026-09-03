@@ -584,6 +584,30 @@ class ChatPatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["ok"])
 
 
+class BackendComparisonReportTests(unittest.IsolatedAsyncioTestCase):
+    def _req(self):
+        request = _make_request(
+            method="GET",
+            path="/api/reports/backend-model-comparison.pdf",
+        )
+        request.state.session = _make_admin_session()
+        return request
+
+    async def test_missing_comparison_pdf_is_404(self):
+        with patch.object(misc_routes, "_COMPARISON_PDF", Path("/no/such/report.pdf")):
+            with self.assertRaises(HTTPException) as ctx:
+                await misc_routes._api_backend_model_comparison(self._req())
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_comparison_pdf_is_inline_pdf(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as report:
+            Path(report.name).write_bytes(b"%PDF-1.7\\n")
+            with patch.object(misc_routes, "_COMPARISON_PDF", Path(report.name)):
+                response = await misc_routes._api_backend_model_comparison(self._req())
+        self.assertEqual(response.media_type, "application/pdf")
+        self.assertIn("inline", response.headers["content-disposition"])
+
+
 class ChatExportTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):

@@ -412,6 +412,7 @@ entries transposed, and inverted the Auth/CSRF relationship.
 | `/api/chats/{id}` | PATCH | `handle_chat_patch` | Rename, desc, archive, pin |
 | `/api/chats/{id}` | DELETE | `handle_chat_delete` | Hard delete chat + messages |
 | `/api/chats/{id}/export` | GET | `handle_chat_export` | Download Markdown transcript |
+| `/api/reports/backend-model-comparison.pdf` | GET | `_api_backend_model_comparison` | Authenticated comparison PDF |
 | `/api/chats/{id}/messages` | POST | `handle_submit_message` | Blocking turn (wait for full response) |
 | `/api/chats/{id}/stream` | POST | `stream_handler` | Start a turn, then follow it over SSE |
 | `/api/chats/{id}/live` | GET | `handle_chat_live` | Attach to a turn already running (`?since=<seq>`) |
@@ -543,13 +544,13 @@ Key settings:
 
 | File | Size | Purpose |
 |------|------|---------|
-| `web/index.html` | ~9.6 KB | Main SPA shell (sidebar + chat area + settings/machines tabs) |
+| `web/index.html` | ~10 KB | Main SPA shell (sidebar + chat area + settings/machines tabs) |
 | `web/login.html` | ~5 KB | Login page with CSP nonce injection |
 | `web/assets/app.js` | ~28 KB | Core: auth flow, API layer, chat CRUD, SSE streaming, skills, settings, machine management |
 | `web/assets/chat-list.js` | ~8 KB | Sidebar chat list: create, pin, archive, resume CLI sessions, model selector |
-| `web/assets/conversation.js` | ~12 KB | Message rendering, markdown, export, model dropdown per-chat |
-| `web/assets/styles.css` | ~14 KB | Full stylesheet (light/dark theme variables, responsive layout) |
-| `web/assets/api.js` | ~1.6 KB | `escapeHtml()`, fetch wrapper with CSRF token injection |
+| `web/assets/conversation.js` | ~10 KB | Message rendering, markdown, export, model dropdown per-chat |
+| `web/assets/styles.css` | ~5.8 KB | Full stylesheet (light/dark theme variables, responsive layout) |
+| `web/assets/api.js` | ~61 B | `escapeHtml()`, fetch wrapper with CSRF token injection |
 | `web/assets/favicon.svg` | ~400 B | Favicon |
 
 **Security patterns in client JS:**
@@ -915,6 +916,7 @@ CREATE TABLE ai_machines (
 | PATCH | `/api/chats/{id}` | Yes | `{title?, description?, archived?, pinned?}` | `{ok: true}` |
 | DELETE | `/api/chats/{id}` | Yes | — | `{ok: true}` |
 | GET | `/api/chats/{id}/export` | Yes | — | Markdown file attachment |
+| GET | `/api/reports/backend-model-comparison.pdf` | Yes | — | Inline PDF report |
 | POST | `/api/chats/{id}/messages` | Yes | `{content, model?}` | `{response, chunks, model}` |
 | POST | `/api/chats/{id}/stream` | Yes | `{content, model?}` | SSE stream |
 
@@ -1093,21 +1095,20 @@ These persist across restarts and override config.py defaults:
 
 ```
 claude-code-webconsole/
-├── app.py                  4979  FastAPI app, routes, handlers
 ├── db.py                   3600  SQLite: schema, CRUD, migrations, CLI sync
-├── transcripts.py          1618  Read and parse Claude CLI transcripts
+├── app.py                  463   FastAPI app, entry point, middleware, route registration
+├── transcripts.py          1678  Read and parse Claude CLI transcripts
 ├── supervisor.py           1134  Orchestration: plan parsing, task graph, scheduler
 ├── runner.py               1031  Claude Code invocation (direct + proxy)
 ├── prompts.py               788  Detect and answer a CLI permission prompt
-├── classification.py        683  Attention: which conversations need a person, and
-│                                 why. Extracted from app.py in 0.10.0.
+├── classification.py        718  Attention: which conversations need a person, and why
 ├── claude_proxy.py          667  Host-side TCP proxy to Claude Code
-├── auth.py                  461  Auth: passwords, sessions, CSRF, rate-limit, tokens
+├── auth.py                  477  Auth: passwords, sessions, CSRF, rate-limit, tokens
 ├── sysstats.py              458  Host sampling from /proc + write-health probe
 ├── turns.py                 380  Turn lifecycle: a turn outlives its request
-├── net_validation.py        212  Outbound address validation (SSRF guard)
-├── middleware.py            197  The three middleware classes and the API-token
-│                                 session. Extracted from app.py in 0.10.0.
+├── routes/misc.py          1278  Settings, sessions, skills, health, supervisor feed
+├── net_validation.py        232  Outbound address validation (SSRF guard)
+├── middleware.py            207  The three middleware classes and the API-token session
 ├── config.py                185  Env-driven config with validation
 ├── launch.sh                203  Start with TLS on the tailnet address
 ├── start.sh                  31  Thin wrapper around launch.sh
@@ -1115,7 +1116,7 @@ claude-code-webconsole/
 ├── requirements.txt          13  Pinned runtime dependencies
 ├── requirements-dev.txt      15  Dev + security tooling
 ├── CHANGELOG.md            1862  Operator-facing record; see §15a of rules.md
-├── ARCHITECTURE.md        ~1359  This document
+├── ARCHITECTURE.md        ~1400  This document
 ├── rules.md                 943  Build/release pipeline (gitignored, not shipped)
 ├── docs/threat-model.md     841  Dated attacker analysis (see its currency note)
 ├── README.md                255  User documentation
@@ -1126,21 +1127,20 @@ claude-code-webconsole/
 ├── .gitignore  .bandit  .gitleaks.toml
 ├── .githooks/pre-push             gitleaks scan, runs on push
 ├── .github/workflows/             CI + dependabot
-├── bin/                    2134  14 operator scripts: release, health, proxy run,
-│                                 API tokens, chunked suite runner, transcript
-│                                 doctor, two model benchmarks, and wc-claude
-│                                 (run the CLI on the configured backend)
+├── bin/                    3280  18 scripts: release, health, proxy run, API tokens,
+│                                 chunked suite runner, transcript doctor, model benchmarks,
+│                                 livecheck, wc-claude, and others
 ├── systemd/                       --user units: app, proxy, health service + timer
 ├── docker/Dockerfile              Container image (non-root user)
 ├── docs/superpowers/              Design specs and implementation plans
 ├── .env                           Local secrets (gitignored)
 ├── .env.example              62   Config template (committed)
-├── web/                   10149  Vanilla-JS SPA; no framework, no build step
+├── web/                    8489  Vanilla-JS SPA; no framework, no build step
 │   ├── supervisor.html      1095  Supervisor page markup
-│   ├── index.html            297  Main SPA
+│   ├── index.html            304  Main SPA
 │   ├── login.html             81  Login page
 │   └── assets/
-│       ├── app.js           3010  Core: auth, API, chat, SSE, settings, machines
+│       ├── app.js           3021  Core: auth, API, chat, SSE, settings, machines
 │       ├── conversation.js  1019  Message render, drafts, stream lifecycle
 │       ├── chat-list.js      812  Sidebar: groups, highlights, dismiss, "?" mark
 │       ├── styles.css        583  Full stylesheet (light/dark theme)
@@ -1161,10 +1161,15 @@ claude-code-webconsole/
 │           ├── api.js         94
 │           ├── state.js       70
 │           └── dom.js         41
-├── tests/                 38312  105 files, 2388 collected cases
+├── routes/                4513  Four route modules extracted from app.py in 0.10.3
+│   ├── chats.py            1704  Chat CRUD, turns, questions, transcript, streaming
+│   ├── misc.py             1278  Settings, sessions, skills, health, supervisor feed
+│   ├── supervisors.py       860  Supervisor orchestration routes
+│   └── machines.py           665  AI machine CRUD and connectivity tests
+├── tests/                 39825  109 files, 2481 collected cases
 │   ├── conftest.py                Capability guard: aborts a partial or blind run
 │   ├── capabilities.py            quickjs + playwright driver detection
-│   └── test_qa_*.py               The QA layer, ~90 suites
+│   └── test_qa_*.py               The QA layer, ~94 suites
 ├── data/                          SQLite database, WAL/SHM, and the session-secret
 │                                  and proxy-token files launch.sh manages. All
 │                                  gitignored; none are ever committed.
@@ -1290,12 +1295,12 @@ chapter is the shape those numbers make.
 
 | Layer | Lines | Share of code |
 |---|---:|---:|
-| Tests (`tests/`, 105 files, 2,388 cases) | 38,312 | 56% |
-| Server (root `*.py`, 15 modules) | 16,495 | 24% |
-| Client (`web/`, 22 files) | 10,149 | 15% |
-| Tooling (`bin/`, 14 scripts) | 2,134 | 3% |
-| **Total code** | **67,090** | |
-| Documentation (Markdown) | 5,847 | — |
+| Tests (`tests/`, 109 files, 2,481 cases) | 39,825 | 59% |
+| Server (root `*.py` + `routes/`, 21 modules) | 15,864 | 24% |
+| Client (`web/`, 22 files) | 8,489 | 13% |
+| Tooling (`bin/`, 18 scripts) | 3,280 | 5% |
+| **Total code** | **67,458** | |
+| Documentation (Markdown) | 4,514 | — |
 
 Excluded: `.venv/` (281 MB), `.git/`, `data/`, `logs/`, and the `__pycache__` /
 `.*_cache` directories. Two counted files are absent from a clone — `rules.md`
@@ -1316,20 +1321,25 @@ larger than every server module except `app.py`, `db.py` and `transcripts.py`.
 ### The server split is under way
 
 `app.py` was 5,787 lines and 35% of the server when this chapter was written at
-0.10.1. It is now **4,979 and 30%**, with two modules lifted out of it in 0.10.0:
+0.10.1. It is now **463 and 2%** after route extraction in 0.10.3, and is no
+longer the dominant file:
 
 | Module | Lines | Extracted |
 |---|---:|---|
 | `classification.py` | 683 | Attention: which conversations need a person, and why |
 | `middleware.py` | 197 | The three middleware classes and the API-token session |
+| `routes/chats.py` | 1,704 | Chat CRUD, turns, questions, transcript, streaming |
+| `routes/misc.py` | 1,278 | Settings, sessions, skills, health, supervisor feed |
+| `routes/supervisors.py` | 860 | Supervisor orchestration routes |
+| `routes/machines.py` | 665 | AI machine CRUD and connectivity tests |
 
-Both docstrings record how the boundary was chosen — twenty names closed over for
-one, seven names and 165 contiguous lines for the other — which is the useful
-part: the cut followed the call graph rather than a line target.
+Both old and new docstrings record how the boundary was chosen — twenty names
+closed over for one, seven names and 165 contiguous lines for the other, and the
+route split followed the path prefix and domain rather than a line target.
 
-`app.py` remains the largest file in the repository and the obvious place to
-continue. `web/assets/app.js` (3,010, 30% of the client) has not been touched and
-is now the least-divided large file here.
+`db.py` (**3,600 lines, 23% of code**) is now the largest file in the
+repository. `web/assets/app.js` (**3,021, 43% of the client**) is the least-divided
+large file and the natural next split candidate.
 
 ### What a split costs, from the one already done
 

@@ -192,7 +192,10 @@ export function createChatListController(dependencies) {
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
       const metaParts = [formatTime(chat.updated_at)];
-      if (chat.model) metaParts.push(chat.model);
+      // last_model_used, not chat.model: the latter is the routing override
+      // and stays empty until a user sets one, so this line showed nothing
+      // for every conversation running on a default.
+      if (chat.last_model_used) metaParts.push(chat.last_model_used);
       meta.textContent = metaParts.join(' · ');
 
       // Display snippet with highlighting
@@ -277,10 +280,13 @@ export function createChatListController(dependencies) {
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
       const metaParts = [formatTime(chat.updated_at)];
-      metaParts.push(chat.model || '—');
+      // Same fix as the other render path above: last_model_used reflects
+      // what actually answered, chat.model is a routing override that is
+      // usually unset.
+      metaParts.push(chat.last_model_used || '—');
       if (chat.archived) metaParts.push('archived');
       meta.textContent = metaParts.join(' · ');
-      meta.title = `Last model: ${chat.model || '—'}`;
+      meta.title = `Last model: ${chat.last_model_used || '—'}`;
       open.append(title, meta);
 
       const actions = document.createElement('div');

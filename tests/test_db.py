@@ -48,6 +48,71 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         chats = await db.chat_list("admin")
         self.assertEqual([c["id"] for c in chats], ["pinned-new", "pinned-old", "recent", "archived"])
 
+    async def test_last_models_used_is_the_newest_row_per_chat(self):
+        await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
+        await db.chat_create("c2", "C2", None, f"{self.tmp.name}/c2", "admin")
+        # c1 switches model mid-conversation; the newest row must win, not the
+        # first or an arbitrary one -- this is the whole point of the query.
+        await db.usage_record("c1", "admin", "claude-sonnet-5", "anthropic")
+        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic")
+        await db.usage_record("c2", "admin", "vllm/Qwen3.6-35B-A3B-NVFP4", "anthropic-compatible")
+        last = await db.last_models_used("admin")
+        self.assertEqual(last["c1"], "claude-opus-5")
+        self.assertEqual(last["c2"], "vllm/Qwen3.6-35B-A3B-NVFP4")
+
+    async def test_last_models_used_ties_break_on_row_id_not_timestamp(self):
+        # Two rows landing in the same turn (multi-model usage, or two writes
+        # in the same clock tick) must not make "newest" ambiguous. MAX(id) is
+        # exact where MAX(created_at) is not.
+        await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
+        await db.db_conn.execute(
+            "INSERT INTO usage_events (chat_id, owner_id, model, provider, "
+            "created_at) VALUES (?, ?, ?, ?, ?)",
+            ("c1", "admin", "claude-sonnet-5", "anthropic", "2026-01-01T00:00:00Z"),
+        )
+        await db.db_conn.execute(
+            "INSERT INTO usage_events (chat_id, owner_id, model, provider, "
+            "created_at) VALUES (?, ?, ?, ?, ?)",
+            ("c1", "admin", "claude-opus-5", "anthropic", "2026-01-01T00:00:00Z"),
+        )
+        await db.db_conn.commit()
+        last = await db.last_models_used("admin")
+        self.assertEqual(last["c1"], "claude-opus-5")
+
+    async def test_last_models_used_is_owner_scoped_and_excludes_terminal_rows(self):
+        await db.chat_create("mine", "Mine", None, f"{self.tmp.name}/mine", "admin")
+        await db.usage_record("mine", "admin", "claude-opus-5", "anthropic")
+        # A row from a different owner must not leak into admin's view.
+        await db.usage_record("theirs", "someone-else", "claude-opus-5", "anthropic")
+        # chat_id='' is how a terminal-origin turn is recorded (db.py comment
+        # on usage_events.session_id) and must not surface as a "chat".
+        await db.usage_record("terminal-session-id", "admin", "claude-opus-5",
+                              "anthropic", origin="terminal")
+        await db.db_conn.execute(
+            "UPDATE usage_events SET chat_id = '' WHERE origin = 'terminal'"
+        )
+        await db.db_conn.commit()
+        last = await db.last_models_used("admin")
+        self.assertEqual(set(last), {"mine"})
+
+    async def test_last_model_used_is_independent_of_the_routing_override(self):
+        """`chats.model` and last-used must never collide.
+
+        `chats.model` is the user's routing override (runner.get_default_model
+        reads it before the backend/global default); it is set explicitly, not
+        derived from usage. The two must be able to disagree -- that disagreement
+        is exactly what lets a chat serve on model A while still being pinned to
+        model B for its next turn.
+        """
+        await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
+        await db.chat_set_model("c1", "claude-opus-5")
+        await db.usage_record("c1", "admin", "vllm/Qwen3.6-35B-A3B-NVFP4",
+                              "anthropic-compatible")
+        chat = await db.chat_get("c1", "admin")
+        last = await db.last_models_used("admin")
+        self.assertEqual(chat["model"], "claude-opus-5")
+        self.assertEqual(last["c1"], "vllm/Qwen3.6-35B-A3B-NVFP4")
+
     async def test_archived_chat_requires_explicit_lookup(self):
         await db.chat_create("archived", "Archived", None, f"{self.tmp.name}/archived", "admin")
         await db.chat_update("archived", "admin", archived=1)

@@ -4,11 +4,14 @@ Pedro, on a phone: changing chat popped the keyboard every time. It covers most
 of the conversation, so the first thing you see after choosing what to read is
 the thing that stops you reading it -- and you did not ask to type.
 
-Two sites called ``elements.composerInput.focus()`` unconditionally:
-``loadChat`` after every open, and the ``finally`` of the streaming send after
-every completed turn. On a pointer device that focus is a genuine convenience;
-on a touch device it is a keyboard nobody asked for. So it is now conditional on
-``(hover: hover) and (pointer: fine)`` rather than removed for everybody.
+Three sites called ``.focus()`` on a text input unconditionally:
+``loadChat`` after every open, the ``finally`` of the streaming send after
+every completed turn, and ``openSidebar`` focusing the chat-search box on the
+one gesture -- tapping the menu icon -- that is unambiguously a request to
+browse, not to type. On a pointer device that focus is a genuine convenience;
+on a touch device it is a keyboard nobody asked for. All three are now
+conditional on ``(hover: hover) and (pointer: fine)`` rather than removed for
+everybody.
 
 Matched on pointer capability, **not** on touch support. A laptop with a
 touchscreen reports touch and still wants the focus, so ``'ontouchstart' in
@@ -354,6 +357,34 @@ class ComposerAutoFocusTests(unittest.TestCase):
         self.assertTrue(
             self._composer_focused(page),
             "a pointer device lost the type-straight-away behaviour")
+
+    # ── the sidebar search box ──────────────────────────────────────────────
+
+    @staticmethod
+    def _search_focused(page) -> bool:
+        return page.evaluate(
+            "() => document.activeElement === document.getElementById('chatSearch')")
+
+    def test_opening_the_sidebar_on_a_phone_does_not_focus_search(self):
+        """Tapping the menu icon is a request to browse, not to type."""
+        page = self._phone()
+        page.click("#menuBtn")
+        page.wait_for_timeout(300)
+        self.assertFalse(
+            self._search_focused(page),
+            "opening the sidebar on a phone focused search, which raises the "
+            "on-screen keyboard over the list the user just opened")
+
+    def test_tapping_sidebar_search_on_a_phone_does_focus_it(self):
+        """The other half: *only* if the user taps the box themselves."""
+        page = self._phone()
+        page.click("#menuBtn")
+        page.wait_for_timeout(300)
+        page.tap("#chatSearch")
+        page.wait_for_timeout(200)
+        self.assertTrue(
+            self._search_focused(page),
+            "tapping the sidebar search box did not focus it")
 
     def test_no_script_errors_in_either_context(self):
         """A guard on the rest: an exception before the focus call would make

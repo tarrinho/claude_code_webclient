@@ -286,12 +286,13 @@ button{touch-action:manipulation}
 /* An image reference in a message becomes a chip rather than an inline
    <img>: a message can name several files, most of which the reader does not
    want expanded, and an inline image would also fetch on render. */
-.image-chip{display:inline-flex;align-items:center;gap:5px;vertical-align:baseline;
+.file-chip,.image-chip{display:inline-flex;align-items:center;gap:5px;vertical-align:baseline;
   font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--accent);
   background:rgba(88,166,255,.09);border:1px solid rgba(88,166,255,.35);
   border-radius:5px;padding:1px 7px;margin:0 2px;cursor:pointer}
 .image-chip::before{content:"\25f0";font-size:10px;opacity:.8}
-.image-chip:hover,.image-chip:focus-visible{background:rgba(88,166,255,.18)}
+.pdf-chip::before{content:"PDF";font-size:9px;font-weight:700;opacity:.8}
+.file-chip:hover,.file-chip:focus-visible{background:rgba(88,166,255,.18)}
 /* The viewer sits above the settings dialog (400) and the toast region (500),
    because it is opened from within a conversation that may itself be behind
    one of those. */
@@ -300,12 +301,13 @@ button{touch-action:manipulation}
   background:rgba(1,4,9,.86);backdrop-filter:blur(2px)}
 .image-viewer img{max-width:100%;max-height:calc(100% - 44px);object-fit:contain;
   border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.pdf-viewer iframe{width:min(100%,1000px);height:calc(100dvh - 110px);border:1px solid var(--line);border-radius:8px;background:white}
 .image-viewer-cap{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .image-viewer-x{position:absolute;top:14px;right:16px;min-width:34px;min-height:34px;
   border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);
   font-size:19px;line-height:1;cursor:pointer}
-@media(pointer:coarse){.image-chip{min-height:28px}.image-viewer-x{min-width:44px;min-height:44px}}
+@media(pointer:coarse){.file-chip,.image-chip{min-height:28px}.image-viewer-x{min-width:44px;min-height:44px}}
 .toast-region{position:fixed;right:16px;bottom:90px;z-index:500;display:grid;gap:8px;width:min(360px,calc(100vw - 32px))}
 .toast{padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:7px;background:var(--panel);box-shadow:0 8px 28px rgba(0,0,0,.25)}
 .toast.error{border-left-color:var(--bad)}

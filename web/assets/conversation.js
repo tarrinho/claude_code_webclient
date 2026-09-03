@@ -31,7 +31,7 @@ const POINTER_KEYBOARD =
     ? window.matchMedia('(hover: hover) and (pointer: fine)')
     : null;
 
-function prefersAutoFocus() {
+export function prefersAutoFocus() {
   // No matchMedia means a non-browser context (a test harness stub); keep the
   // old behaviour there rather than silently changing what tests observe.
   return POINTER_KEYBOARD ? POINTER_KEYBOARD.matches : true;
@@ -44,29 +44,67 @@ export function parseTimestamp(iso) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-// Markdown ![alt](path) and bare paths ending in an image extension. Kept
-// deliberately narrow: anything matched here becomes a request for a file, so
-// a loose pattern would turn ordinary prose into fetches.
+// Markdown image links, PDF links, and bare paths ending in a supported file
+// extension. Kept deliberately narrow: anything matched here becomes a request
+// for a file, so a loose pattern would turn ordinary prose into fetches.
 //
 // The bare-path branch lists the characters a path may contain rather than
-// using \S+. \S+ also matches the punctuation around a path, so a filename
-// written in prose as `shot.png` was requested with the backtick attached and
-// could never be found.
+// using \S+. \S+ also matches punctuation around a path, so `shot.png` would
+// be requested with the backtick attached and could never be found.
 const IMAGE_REF =
-  /!\[([^\]]*)\]\(([^)\s]+)\)|([A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\.(?:png|jpe?g|gif|webp|svg))\b/gi;
+  /!\[([^\]]*)\]\(([^)\s]+)\)|([A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\.(?:png|jpe?g|gif|webp|svg|pdf))\b/gi;
 
 /** The chat whose workspace image paths resolve against. Set by the controller. */
 let _imageChatId = null;
 export function setImageContext(chatId) { _imageChatId = chatId; }
 
 function imageChip(label, path) {
+  const isPdf = path.toLowerCase().endsWith('.pdf');
   const chip = document.createElement('button');
   chip.type = 'button';
-  chip.className = 'image-chip';
+  chip.className = isPdf ? 'file-chip pdf-chip' : 'image-chip';
   chip.textContent = label || path.split('/').pop();
-  chip.title = `Show ${path}`;
-  chip.addEventListener('click', () => openImageViewer(path, label));
+  chip.title = isPdf ? `Open ${path}` : `Show ${path}`;
+  chip.addEventListener('click', () => (
+    isPdf ? openPdfViewer(path, label) : openImageViewer(path, label)
+  ));
   return chip;
+}
+
+export function openPdfViewer(path, label) {
+  if (!_imageChatId) return;
+  const back = document.createElement('div');
+  back.className = 'image-viewer pdf-viewer';
+  back.setAttribute('role', 'dialog');
+  back.setAttribute('aria-modal', 'true');
+  back.setAttribute('aria-label', label || path);
+
+  const frame = document.createElement('iframe');
+  frame.title = label || path;
+  frame.src = `/api/chats/${encodeURIComponent(_imageChatId)}/file?path=${encodeURIComponent(path)}`;
+
+  const cap = document.createElement('div');
+  cap.className = 'image-viewer-cap';
+  cap.textContent = path;
+
+  const shut = () => {
+    back.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  function onKey(event) { if (event.key === 'Escape') shut(); }
+  back.addEventListener('click', event => { if (event.target === back) shut(); });
+  document.addEventListener('keydown', onKey);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'image-viewer-x';
+  close.textContent = '×';
+  close.setAttribute('aria-label', 'Close PDF');
+  close.addEventListener('click', shut);
+
+  back.append(frame, cap, close);
+  document.body.appendChild(back);
+  close.focus();
 }
 
 /** Full-size viewer. A CSS tooltip cannot be dismissed, zoomed or scrolled,

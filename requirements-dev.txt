@@ -13,3 +13,6 @@ pytest-cov>=5.0,<7
 # ship green. QuickJS rather than esprima: esprima's grammar predates optional
 # catch binding (ES2019), which this codebase uses, so it rejects valid source.
 quickjs>=1.19,<2
+# Build dependency for the reviewed comparison PDF artifact.
+Markdown>=3.7,<4
+WeasyPrint>=68,<69

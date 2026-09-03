@@ -47,7 +47,8 @@ class ChatFileTests(unittest.IsolatedAsyncioTestCase):
         self.work = self.root / "p" / "chat"
         self.work.mkdir(parents=True, exist_ok=True)
         (self.work / "shot.png").write_bytes(_PNG)
-        (self.work / "notes.txt").write_text("not an image")
+        (self.work / "notes.txt").write_text("not a shared file")
+        (self.work / "report.pdf").write_bytes(b"%PDF-1.7\\n")
         # A file the workspace must never reach, one level up.
         (self.root / "p" / "outside.png").write_bytes(_PNG)
         await db.chat_create("c1", "Chat", None, str(self.work), "admin")
@@ -69,6 +70,11 @@ class ChatFileTests(unittest.IsolatedAsyncioTestCase):
     async def test_renders_inline_rather_than_downloading(self):
         resp = await self._get("shot.png")
         self.assertIn("inline", resp.headers["content-disposition"])
+
+    async def test_serves_a_pdf_from_the_workspace(self):
+        resp = await self._get("report.pdf")
+        self.assertEqual(resp.media_type, "application/pdf")
+        self.assertEqual(Path(resp.path).read_bytes(), b"%PDF-1.7\\n")
 
     async def test_traversal_is_refused(self):
         for path in (

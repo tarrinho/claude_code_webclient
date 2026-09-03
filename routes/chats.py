@@ -125,6 +125,7 @@ async def handle_chats_list(request: Request):
     running = turns.running_ids(session["user"])
     queued = await db.queue_counts(session["user"])
     busy_sessions = await _busy_terminal_sessions()
+    last_models = await db.last_models_used(session["user"])
     return JSONResponse(
         {
             "chats": [
@@ -140,6 +141,11 @@ async def handle_chats_list(request: Request):
                     "pinned_at": c.get("pinned_at"),
                     "session_id": c.get("session_id"),
                     "model": c.get("model") or "",
+                    # What actually answered the last turn -- distinct from
+                    # `model` above, which is the routing override and stays
+                    # empty until a user sets one. This is what the sidebar's
+                    # "Last model" line and tooltip should read.
+                    "last_model_used": last_models.get(c["id"], ""),
                     # The sidebar populates the workspace pickers before the
                     # detail request lands, so the pin has to travel here too.
                     "ai_machine_id": c.get("ai_machine_id"),
@@ -421,14 +427,18 @@ def render_chat_markdown(chat: dict, messages: list[dict]) -> str:
 # --dangerously-skip-permissions. The boundary is therefore the narrowest one
 # that still works -- a chat may read files inside its own work_dir and
 # nowhere else, checked the same way runner.py checks a launch directory.
-_IMAGE_TYPES: Final[dict[str, str]] = {
+_CHAT_FILE_TYPES: Final[dict[str, str]] = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
 }
+# Kept as a named alias for the image-specific size and route tests. The file
+# boundary now serves PDFs as well, but the same containment and size rules apply.
+_IMAGE_TYPES = _CHAT_FILE_TYPES
 
 
 # Large enough for a screenshot, small enough that a stray path cannot stream
@@ -437,7 +447,7 @@ _IMAGE_MAX_BYTES: Final[int] = 12 * 1024 * 1024
 
 
 async def handle_chat_file(request: Request, chat_id: str):
-    """GET /api/chats/{id}/file?path=... -- read an image from the workspace."""
+    """GET /api/chats/{id}/file?path=... -- share an image or PDF in workspace."""
     session = request.state.session
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
@@ -463,11 +473,11 @@ async def handle_chat_file(request: Request, chat_id: str):
 
     media_type = _IMAGE_TYPES.get(candidate.suffix.lower())
     if media_type is None:
-        raise HTTPException(status_code=415, detail="Not an image this app serves")
+        raise HTTPException(status_code=415, detail="File type is not shared here")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     if candidate.stat().st_size > _IMAGE_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="Image is too large to display")
+        raise HTTPException(status_code=413, detail="Shared file is too large to display")
 
     _log.info("chat_file_served chat_id=%s path=%s", chat_id, candidate.name)
     return FileResponse(

@@ -444,54 +444,93 @@ async def init() -> None:
         -- Agent supervision: a supervisor is an autonomous worker with its own
         -- conversation, task list, and message history.
         CREATE TABLE IF NOT EXISTS supervisors (
-            id          TEXT PRIMARY KEY,
-            title       TEXT NOT NULL,
-            description TEXT,
-            owner_id    TEXT NOT NULL,
-            status      TEXT NOT NULL DEFAULT 'idle',
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS supervisor_tasks (
             id           TEXT PRIMARY KEY,
-            supervisor_id TEXT NOT NULL,
             title        TEXT NOT NULL,
-            status       TEXT NOT NULL DEFAULT 'pending',
-            priority     INTEGER NOT NULL DEFAULT 0,
+            description  TEXT,
+            -- JSON blob of orchestration settings (model, launcher options).
+            -- Read and written by routes/db_supervisors.py, which this table
+            -- definition had fallen out of sync with -- along with plan,
+            -- progress_pct and completed_at below -- so a fresh database
+            -- (a new install, or any test's own throwaway one) crashed on
+            -- the first supervisor ever created with "no such column:
+            -- config". The production database this shipped alongside
+            -- already had all four from an earlier, richer schema and so
+            -- never showed the bug; a fresh one has no such history to fall
+            -- back on.
+            config       TEXT NOT NULL DEFAULT '{}',
+            owner_id     TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'idle',
+            plan         TEXT,
+            progress_pct REAL NOT NULL DEFAULT 0.0,
             created_at   TEXT NOT NULL,
             updated_at   TEXT NOT NULL,
-            started_at   TEXT,
-            finished_at  TEXT,
-            -- A JSON array of {id, title, status, priority} objects.  Written
-            -- once the user is notified about a task so the UI can show the
-            -- list even if the DB row is later deleted.
-            task_list    TEXT
+            completed_at TEXT
         );
-        -- idx_sup_tasks_sup is created after _ensure_supervisor_columns runs,
-        -- not here: CREATE TABLE IF NOT EXISTS is a no-op against a database
-        -- that already had this table before `priority` was added to it, so
-        -- an index referencing that column in the same script crashed
-        -- db.init() outright on any such database with "no such column:
-        -- priority" -- before the app ever got to serve a single request.
 
+        -- description, model, result, parent_task_id and depends_on are all
+        -- read and written by routes/db_supervisors.py (task_get/task_create/
+        -- task_update) and were entirely absent here -- this table definition
+        -- had drifted from what the code actually uses in the same way
+        -- supervisors' did. started_at, finished_at and task_list, conversely,
+        -- are not referenced anywhere in the codebase and are not part of the
+        -- production schema either; dropped rather than carried forward as
+        -- unused columns nothing ever reads.
+        CREATE TABLE IF NOT EXISTS supervisor_tasks (
+            id             TEXT PRIMARY KEY,
+            supervisor_id  TEXT NOT NULL REFERENCES supervisors(id),
+            title          TEXT NOT NULL,
+            description    TEXT,
+            status         TEXT NOT NULL DEFAULT 'pending',
+            model          TEXT,
+            result         TEXT,
+            progress_pct   REAL NOT NULL DEFAULT 0.0,
+            parent_task_id TEXT REFERENCES supervisor_tasks(id),
+            depends_on     TEXT,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_sup_tasks_super
+            ON supervisor_tasks(supervisor_id);
+        -- idx_sup_tasks_sup (on priority) is created after
+        -- _ensure_supervisor_columns runs, not here: CREATE TABLE IF NOT
+        -- EXISTS is a no-op against a database that already had this table
+        -- before `priority` was added to it, so an index referencing that
+        -- column in the same script crashed db.init() outright on any such
+        -- database with "no such column: priority" -- before the app ever
+        -- got to serve a single request.
+
+        -- metadata was missing entirely -- same drift shape as supervisors
+        -- and supervisor_tasks above, and this table's own version of the
+        -- crash: "table supervisor_messages has no column named metadata"
+        -- on the first message ever inserted into a fresh database.
         CREATE TABLE IF NOT EXISTS supervisor_messages (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            supervisor_id TEXT NOT NULL,
+            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
             role          TEXT NOT NULL DEFAULT 'system',
             content       TEXT NOT NULL,
+            metadata      TEXT,
             created_at    TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_sup_msgs_sup ON supervisor_messages(supervisor_id, id);
 
+        -- No surrogate id: the composite primary key IS the uniqueness
+        -- constraint routes/db_supervisors.py's supervisor_member_add
+        -- depends on (INSERT ... ON CONFLICT(supervisor_id, chat_id) DO
+        -- NOTHING). A version of this table with a plain, non-unique index
+        -- in place of the primary key shipped briefly and made every
+        -- ON CONFLICT crash with "does not match any PRIMARY KEY or UNIQUE
+        -- constraint" -- this production database was never actually
+        -- created from that version, which is why it kept working.
         CREATE TABLE IF NOT EXISTS supervisor_members (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            supervisor_id TEXT NOT NULL,
+            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
             chat_id       TEXT NOT NULL,
-            added_at      TEXT NOT NULL
+            added_at      TEXT NOT NULL,
+            PRIMARY KEY (supervisor_id, chat_id)
         );
         CREATE INDEX IF NOT EXISTS idx_sup_members_sup
             ON supervisor_members(supervisor_id, chat_id);
+        CREATE INDEX IF NOT EXISTS idx_sup_members_chat
+            ON supervisor_members(chat_id);
 
         -- Supervisor progress: the latest state snapshot for each
         -- supervisor.  A single row per supervisor, updated after each
@@ -550,28 +589,79 @@ async def close() -> None:
 
 
 async def _ensure_supervisor_columns() -> None:
-    """Apply additive supervisor_tasks schema migrations for existing
-    databases, then create the index that depends on the result.
+    """Apply additive supervisor/supervisor_tasks schema migrations for
+    existing databases, then create the indexes that depend on them.
 
-    `priority` was added straight into the CREATE TABLE IF NOT EXISTS in the
-    same executescript as the index that reads it -- a no-op against a
-    database that already had this table, so the index creation right after
-    it crashed db.init() outright with "no such column: priority" on any
-    such database, before the app ever served a request. Same
-    check-then-ALTER pattern as _ensure_chat_columns for the same reason: it
-    is idempotent and safe to run on every startup.
+    Covers columns used by routes/db_supervisors.py that the CREATE TABLE
+    text had drifted out of sync with:
+
+    * `supervisor_tasks.priority` was added straight into the CREATE TABLE
+      IF NOT EXISTS in the same executescript as the index that reads it --
+      a no-op against a database that already had this table, so the index
+      creation right after it crashed db.init() outright with "no such
+      column: priority" on any such database, before the app ever served a
+      request.
+    * `supervisors.config`/`plan`/`progress_pct`/`completed_at` and
+      `supervisor_tasks.description`/`model`/`result`/`progress_pct`/
+      `parent_task_id`/`depends_on` were absent from the CREATE TABLE text
+      entirely, so even a brand new database crashed on the first
+      supervisor or task ever created. This deployment's own database
+      survived only because it already had all of them from an earlier,
+      richer schema -- an existing database that predates that schema
+      still needs the ALTERs below.
+
+    Same check-then-ALTER pattern as _ensure_chat_columns for the same
+    reason: it is idempotent and safe to run on every startup.
     """
+    cursor = await db_conn.execute("PRAGMA table_info(supervisors)")
+    sup_columns = {row["name"] for row in await cursor.fetchall()}
+    sup_migrations = {
+        "config": "ALTER TABLE supervisors ADD COLUMN config TEXT NOT NULL DEFAULT '{}'",
+        "plan": "ALTER TABLE supervisors ADD COLUMN plan TEXT",
+        "progress_pct": (
+            "ALTER TABLE supervisors ADD COLUMN progress_pct "
+            "REAL NOT NULL DEFAULT 0.0"
+        ),
+        "completed_at": "ALTER TABLE supervisors ADD COLUMN completed_at TEXT",
+    }
+    for name, sql in sup_migrations.items():
+        if name not in sup_columns:
+            await db_conn.execute(sql)
+
     cursor = await db_conn.execute("PRAGMA table_info(supervisor_tasks)")
     columns = {row["name"] for row in await cursor.fetchall()}
-    if "priority" not in columns:
-        await db_conn.execute(
+    task_migrations = {
+        "description": "ALTER TABLE supervisor_tasks ADD COLUMN description TEXT",
+        "model": "ALTER TABLE supervisor_tasks ADD COLUMN model TEXT",
+        "result": "ALTER TABLE supervisor_tasks ADD COLUMN result TEXT",
+        "progress_pct": (
+            "ALTER TABLE supervisor_tasks ADD COLUMN progress_pct "
+            "REAL NOT NULL DEFAULT 0.0"
+        ),
+        "parent_task_id": (
+            "ALTER TABLE supervisor_tasks ADD COLUMN parent_task_id TEXT "
+            "REFERENCES supervisor_tasks(id)"
+        ),
+        "depends_on": "ALTER TABLE supervisor_tasks ADD COLUMN depends_on TEXT",
+        "priority": (
             "ALTER TABLE supervisor_tasks ADD COLUMN priority "
             "INTEGER NOT NULL DEFAULT 0"
-        )
+        ),
+    }
+    for name, sql in task_migrations.items():
+        if name not in columns:
+            await db_conn.execute(sql)
     await db_conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sup_tasks_sup "
         "ON supervisor_tasks(supervisor_id, priority DESC)"
     )
+
+    cursor = await db_conn.execute("PRAGMA table_info(supervisor_messages)")
+    msg_columns = {row["name"] for row in await cursor.fetchall()}
+    if "metadata" not in msg_columns:
+        await db_conn.execute(
+            "ALTER TABLE supervisor_messages ADD COLUMN metadata TEXT"
+        )
 
 
 async def _ensure_chat_columns() -> None:

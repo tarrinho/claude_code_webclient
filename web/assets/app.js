@@ -7,7 +7,7 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=1';
 import {createChatListController} from './chat-list.js?v=2';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=2';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=3';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './supervisor.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=1';
 
@@ -260,7 +260,7 @@ function _switchTab(tab) {
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
-import { _renderUsage, loadUsage } from './usage.js';
+import { _renderUsage, loadUsage } from './usage.js?v=1';
 // The same rows the Usage tab sums, kept in time order. Rendered by stats.js,
 // which owns the SVG; this only fetches and reports failure.
 
@@ -317,7 +317,7 @@ async function loadStats(force = false) {
 // Host health rather than model spend. Two requests because they answer
 import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=1';
 
-import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js';
+import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1';
 
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList } from './machines.js?v=4';
 

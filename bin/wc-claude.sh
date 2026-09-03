@@ -295,4 +295,113 @@ if [ "${WC_CLAUDE_DRY_RUN:-}" = "1" ]; then
     exit 0
 fi
 
-exec claude "${MODEL_ARGS[@]}" "$@"
+HOTSWAP=0
+if [ "${WC_CLAUDE_HOTSWAP:-}" = "1" ] && [ -n "$RESUME_NAME" ]; then
+    HOTSWAP=1
+fi
+
+if [ "$HOTSWAP" != "1" ]; then
+    exec claude "${MODEL_ARGS[@]}" "$@"
+fi
+
+# ---- Supervised loop: claude runs as a child, this process stays resident ----
+#
+# Never exec here. screen/tmux track the pty, not the pid inside it; whatever
+# is exec'd becomes the pty's only foreground process, and killing it to swap
+# backends would leave nothing in the window. Running claude as a child keeps
+# this script itself resident in the pty for the whole session.
+STATE_FILE="$(mktemp)"
+cleanup() {
+    stop_poller
+    # Bash does not signal background jobs just because the shell itself was
+    # signalled -- without this, killing the wrapper (e.g. closing the
+    # screen/tmux window) orphans the running claude child instead of ending
+    # the session.
+    if [ -n "${CHILD:-}" ]; then
+        kill -TERM "$CHILD" 2>/dev/null || true
+    fi
+    rm -f "$STATE_FILE"
+}
+trap cleanup EXIT
+
+write_backend_state "$STATE_FILE"
+
+RESTART=0
+trap 'RESTART=1' USR1
+start_poller "$STATE_FILE" "$$"
+
+while true; do
+    claude "${MODEL_ARGS[@]}" "$@" &
+    CHILD=$!
+
+    while true; do
+        RESTART=0
+        # `wait` returns 128+signum when it is interrupted by our own trapped
+        # SIGUSR1, and that non-zero status would trip `set -e` and abort the
+        # whole wrapper right here -- before RESTART is ever checked -- if it
+        # were a bare statement. Using it as an `if` condition is the
+        # standard way to read $? without tripping errexit.
+        if wait "$CHILD"; then
+            STATUS=0
+        else
+            STATUS=$?
+        fi
+        if kill -0 "$CHILD" 2>/dev/null; then
+            # The child is still alive: wait was interrupted by our own
+            # trapped SIGUSR1, not by the child exiting.
+            if [ "$RESTART" = "1" ]; then
+                resolve_backend
+                NEW_STATE="$(query_backend | cut -f1-4)"
+                OLD_STATE="$(cat "$STATE_FILE")"
+                if [ "$NEW_STATE" = "$OLD_STATE" ]; then
+                    # False alarm (e.g. two rapid ticks collapsed into one
+                    # signal) -- the child is fine, keep waiting on it.
+                    continue
+                fi
+                break
+            fi
+            continue
+        else
+            # The child exited on its own (user ran /exit, Ctrl-D, or it
+            # crashed). That is not ours to override.
+            exit "$STATUS"
+        fi
+    done
+
+    # A real change was confirmed above: bring the child down cleanly.
+    # --resume <name> is already in "$@" and does not change across a
+    # hot-swap, only the environment does -- UNLESS the confirmed change was
+    # a deactivation to no active machine at all, handled below.
+    kill -TERM "$CHILD" 2>/dev/null || true
+    for _ in 1 2 3 4; do
+        kill -0 "$CHILD" 2>/dev/null || break
+        sleep 0.5
+    done
+    kill -0 "$CHILD" 2>/dev/null && kill -KILL "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+
+    # CONTROLLER RULING (task-2 review found the underlying cause; this
+    # closes the matching gap in this loop): the poller's own guard refuses
+    # to signal a transition INTO "no active machine" -- see start_poller's
+    # `[ "$provider" != "-" ]` check -- so this branch is unreachable via a
+    # single clean tick. It remains reachable via a race: two DB writes
+    # landing within roughly one poll interval (active -> different active
+    # -> deactivated) can still resolve here with PROVIDER="-" once
+    # resolve_backend re-reads the row fresh, above. Restarting into that
+    # state with no ANTHROPIC_*/MODEL_ARGS would silently fall through to
+    # the CLI's own bare default -- exactly what the two startup guards
+    # above (no DB file / no active machine) exist to avoid announcing
+    # loudly instead of doing quietly. Same treatment here: stop supervising
+    # and hand off to a plain, unmodified exec, the same as those two
+    # existing fallbacks.
+    if [ "$PROVIDER" = "-" ]; then
+        echo "wc-claude: no active machine in WebConsole — starting claude unchanged" >&2
+        exec claude "$@"
+    fi
+
+    apply_env
+    build_model_args "$@"
+    check_transcript_doctor
+    echo "wc-claude: ${NAME} · ${MODEL} · ${BASE_URL}" >&2
+    write_backend_state "$STATE_FILE"
+done

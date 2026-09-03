@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -251,6 +252,211 @@ fi
 '''
         result = self._run_bash(body)
         self.assertIn("GONE", result.stdout, result.stdout)
+
+
+FAKE_CLAUDE = '''#!/usr/bin/env python3
+"""Fake claude for hot-swap integration tests.
+
+Logs one line per invocation (its env + argv) to LOG, then sleeps until
+SIGTERM, at which point it exits 0 -- mimicking a real claude session
+shutting down cleanly on the signal the loop sends it.
+"""
+import json, os, signal, sys, time
+
+LOG = os.environ["FAKE_CLAUDE_LOG"]
+
+def _term(signum, frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _term)
+
+with open(LOG, "a") as f:
+    f.write(json.dumps({
+        "argv": sys.argv[1:],
+        "ANTHROPIC_BASE_URL": os.environ.get("ANTHROPIC_BASE_URL", ""),
+        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+    }) + "\\n")
+
+time.sleep(60)
+'''
+
+
+class HotswapLoopTests(unittest.TestCase):
+    """End to end: real script, fake claude, real throwaway DB."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        claude = bindir / "claude"
+        claude.write_text(FAKE_CLAUDE)
+        claude.chmod(0o755)
+        self.db = str(Path(self.tmp.name) / "db.sqlite")
+        self.log = str(Path(self.tmp.name) / "claude.log")
+        Path(self.log).touch()
+        self.env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "WC_DB_PATH": self.db,
+            "FAKE_CLAUDE_LOG": self.log,
+            "WC_CLAUDE_HOTSWAP": "1",
+            "WC_CLAUDE_POLL_S": "1",
+            "WC_CLAUDE_NO_REPAIR": "1",
+        }
+
+    def _invocations(self) -> list[dict]:
+        import json
+        lines = [ln for ln in Path(self.log).read_text().splitlines() if ln]
+        return [json.loads(ln) for ln in lines]
+
+    def _wait_for(self, predicate, timeout=15):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.2)
+        return False
+
+    def test_a_backend_change_restarts_with_the_same_resume_name(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--resume", "test-session"],
+            env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1),
+                        "first claude invocation never happened")
+
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "INSERT INTO ai_machines (name, provider, api_key, model, active) "
+            "VALUES ('two', 'anthropic', 'key-two', 'claude-sonnet-5', 1)")
+        con.execute("UPDATE ai_machines SET active = 0 WHERE name = 'one'")
+        con.commit()
+        con.close()
+
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 2),
+                        "no second invocation after the active machine changed")
+        first, second = self._invocations()[:2]
+        # Both machines set a `model`, so build_model_args (Task 1, already
+        # covered by DryRunResolutionTests) injects `--model <name>` ahead of
+        # the passed-through args -- that is correct, established behaviour,
+        # not something this test is about. What this test asserts is the
+        # resume target itself: it must survive the hot-swap unchanged.
+        self.assertEqual(first["argv"][-2:], ["--resume", "test-session"])
+        self.assertEqual(second["argv"][-2:], ["--resume", "test-session"],
+                         "resume target must be identical across a hot-swap")
+        self.assertEqual(first["ANTHROPIC_API_KEY"], "key-one")
+        self.assertEqual(second["ANTHROPIC_API_KEY"], "key-two")
+
+    def test_no_change_means_no_restart(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--resume", "test-session"],
+            env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1))
+        time.sleep(4)  # several poll ticks at WC_CLAUDE_POLL_S=1
+        self.assertEqual(len(self._invocations()), 1,
+                         "an unrelated poll tick caused a restart")
+
+    def test_without_the_flag_behaves_like_a_single_exec(self):
+        env = dict(self.env)
+        env.pop("WC_CLAUDE_HOTSWAP")
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--resume", "test-session"],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1))
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "INSERT INTO ai_machines (name, provider, api_key, model, active) "
+            "VALUES ('two', 'anthropic', 'key-two', 'claude-sonnet-5', 1)")
+        con.execute("UPDATE ai_machines SET active = 0 WHERE name = 'one'")
+        con.commit()
+        con.close()
+        time.sleep(3)
+        self.assertEqual(len(self._invocations()), 1,
+                         "a change restarted the session with WC_CLAUDE_HOTSWAP unset")
+
+    def test_without_resume_behaves_like_a_single_exec(self):
+        env = dict(self.env)
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        proc = subprocess.Popen(
+            [str(SCRIPT)], env=env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1))
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "INSERT INTO ai_machines (name, provider, api_key, model, active) "
+            "VALUES ('two', 'anthropic', 'key-two', 'claude-sonnet-5', 1)")
+        con.execute("UPDATE ai_machines SET active = 0 WHERE name = 'one'")
+        con.commit()
+        con.close()
+        time.sleep(3)
+        self.assertEqual(len(self._invocations()), 1,
+                         "a change restarted a session with no --resume name")
+
+    def test_the_child_exiting_on_its_own_ends_the_wrapper(self):
+        """The everyday case: the user runs /exit or Ctrl-D. The wrapper must
+        not treat that as something to restart from."""
+        exiting_claude = '''#!/usr/bin/env python3
+import sys
+sys.exit(0)
+'''
+        bindir = Path(self.tmp.name) / "bin"
+        (bindir / "claude").write_text(exiting_claude)
+        (bindir / "claude").chmod(0o755)
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        result = subprocess.run(
+            [str(SCRIPT), "--resume", "test-session"],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0)
+
+    def test_the_poller_and_child_are_cleaned_up_on_exit(self):
+        _make_db(self.db, machines=[{
+            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "model": "claude-opus-5", "active": True,
+        }])
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--resume", "test-session"],
+            env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1))
+        # Find the fake-claude child before killing the wrapper.
+        children = subprocess.run(
+            ["pgrep", "-P", str(proc.pid)], capture_output=True, text=True,
+        ).stdout.split()
+        proc.terminate()
+        proc.wait(timeout=10)
+        time.sleep(1)
+        for pid in children:
+            with self.assertRaises(subprocess.CalledProcessError,
+                                   msg=f"child {pid} survived the wrapper"):
+                subprocess.run(["kill", "-0", pid], check=True,
+                              capture_output=True)
 
 
 if __name__ == "__main__":

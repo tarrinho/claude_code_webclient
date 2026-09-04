@@ -130,10 +130,12 @@ import { addChatMessage } from "./list.js";
         ? { kind: "member", member: waitingMember }
         : null;
     if (!gate) {
+      badge.classList.remove("visible");
       badge.hidden = true;
       badge.onclick = null;
       return;
     }
+    badge.classList.add("visible");
     badge.hidden = false;
     badge.textContent = "!";
     badge.title = gate.kind === "paused"

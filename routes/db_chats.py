@@ -783,8 +783,16 @@ async def chat_mark_degraded(chat_id: str, kind: str, detail: str) -> None:
 async def chat_clear_degraded(chat_id: str, kind: str) -> None:
     """Clear *chat_id*'s degraded flag, but only if it names this same *kind*.
 
-    A chat degraded for kind A must not be silently cleared by an unrelated
-    successful write of kind B -- that would hide a problem that is still real.
+    A clear for kind B never touches a flag currently showing kind A -- a
+    clear only ever matches the reason text sitting in the column right now.
+
+    That does not protect an EARLIER kind-A failure once kind B has also
+    marked the chat: `degraded_reason` is a single free-text column, not an
+    accumulating fault log, so it can only hold the most recent mark. If A
+    marks, then B marks (overwriting A's text), then B clears, the flag
+    clears even though A was never resolved. Accepted tradeoff -- this is a
+    diagnostic signal telling an operator to go check logs, not a durable
+    record of every failure that ever touched the chat.
     """
     try:
         await db.db_conn.execute(

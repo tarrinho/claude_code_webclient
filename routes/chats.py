@@ -140,6 +140,8 @@ async def handle_chats_list(request: Request):
                     "archived": bool(c["archived"]),
                     "pinned": bool(c["pinned"]),
                     "pinned_at": c.get("pinned_at"),
+                    "degraded": bool(c.get("degraded")),
+                    "degraded_reason": c.get("degraded_reason"),
                     "session_id": c.get("session_id"),
                     "model": c.get("model") or "",
                     # What actually answered the last turn -- distinct from
@@ -266,6 +268,8 @@ async def handle_chat_get(request: Request, chat_id: str):
                 "running": turns.is_running(chat_id),
                 "turn_seq": (turns.get(chat_id).seq if turns.get(chat_id) else 0),
                 "queued": len(await db.queue_list(chat_id, session["user"])),
+                "degraded": bool(chat.get("degraded")),
+                "degraded_reason": chat.get("degraded_reason"),
             },
             # `question` marks the rows that asked the user something, so the
             # conversation can show which ones are still owed an answer.

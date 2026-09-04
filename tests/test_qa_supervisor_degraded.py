@@ -66,6 +66,19 @@ class SupervisorDegradedTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db.db_conn, "execute", AsyncMock(side_effect=RuntimeError("disk"))):
             await db.supervisor_mark_degraded("sup-1", "status", "boom")  # must not raise
 
+    async def test_a_later_kind_clearing_itself_also_clears_an_earlier_unresolved_kind(self):
+        """Pins the accepted tradeoff (see supervisor_clear_degraded's
+        docstring): a single `degraded_reason` column holds only the most
+        recent mark, so kind A's failure is invisible again once kind B marks
+        and then clears itself. Documented, intentional -- not a bug.
+        """
+        await db.supervisor_mark_degraded("sup-1", "status", "boom-a")
+        await db.supervisor_mark_degraded("sup-1", "progress", "boom-b")
+        await db.supervisor_clear_degraded("sup-1", "progress")
+        sup = await db.supervisor_get("sup-1", "admin")
+        self.assertEqual(sup["degraded"], 0)
+        self.assertIsNone(sup["degraded_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

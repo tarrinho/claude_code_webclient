@@ -1008,6 +1008,11 @@
             cursor: pointer;
             border: none;
             background: #ef4444;
+            /* #topbar .notif-badge sets pointer-events: none for the plain
+               unread-count badge, which is never clicked. This one is a
+               button, so it must override that back to auto or it stays
+               visually present but unclickable by mouse. */
+            pointer-events: auto;
         }
         .gate-badge:hover { background: #dc2626; }
     </style>

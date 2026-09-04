@@ -75,6 +75,36 @@ class ChatDegradedTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(db.db_conn, "execute", AsyncMock(side_effect=RuntimeError("disk"))):
             await db.chat_mark_degraded("c1", "usage", "boom")  # must not raise
 
+    async def test_a_later_kind_clearing_itself_also_clears_an_earlier_unresolved_kind(self):
+        """Pins the accepted tradeoff (see chat_clear_degraded's docstring):
+
+        a single `degraded_reason` column can only hold the most recent mark.
+        If kind A marks, then kind B also marks (overwriting A's text), then
+        B clears, the flag clears even though A was never resolved -- there
+        is nothing left recording that A ever happened. This is documented,
+        intentional behaviour, not a bug.
+        """
+        await db.chat_mark_degraded("c1", "usage", "boom-a")
+        await db.chat_mark_degraded("c1", "some_other_kind", "boom-b")
+        await db.chat_clear_degraded("c1", "some_other_kind")
+        chat = await db.chat_get("c1", "admin")
+        self.assertEqual(chat["degraded"], 0)
+        self.assertIsNone(chat["degraded_reason"])
+
+
+class ChatDegradedNotPatchableTests(unittest.TestCase):
+    """`degraded` is a read-only observability signal set only by
+    chat_mark_degraded/chat_clear_degraded -- a PATCH /api/chats/{id} caller
+    must never be able to set it directly. No DB needed: this is a static
+    check of the two column allowlists in routes/db_chats.py.
+    """
+
+    def test_degraded_is_a_known_column_but_never_a_patchable_field(self):
+        import routes.db_chats as db_chats
+
+        self.assertIn("degraded", db_chats._CHAT_COLUMNS)
+        self.assertNotIn("degraded", db_chats._ALLOWED_CHAT_FIELDS)
+
 
 if __name__ == "__main__":
     unittest.main()

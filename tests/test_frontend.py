@@ -568,6 +568,34 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("loadMembers(", self.list_js)
         self.assertIn("loadMembers", self.main_js_supervisor)
 
+    def test_human_gate_marker_toggles_the_visible_class(self):
+        """`#topbar .notif-badge` starts at opacity:0/pointer-events:none and
+        only `.visible` turns it on -- see updateNotificationBadge, the
+        sibling function that already does this correctly for #topbar-badge.
+        Toggling only `hidden` (without `.visible`) leaves the marker
+        invisible even when un-hidden."""
+        body = self.banners_js.split(
+            "export function updateGateMarker(supervisorStatus, members)"
+        )[1].split("\n\n")[0]
+        self.assertIn('classList.add("visible")', body)
+        self.assertIn('classList.remove("visible")', body)
+
+    def test_gate_badge_overrides_pointer_events_back_to_auto(self):
+        """.gate-badge inherits `#topbar .notif-badge { pointer-events: none }`
+        -- without an override the marker would be visible but unclickable."""
+        gate_rule = self.supervisor_html.split(".gate-badge {")[1].split("}")[0]
+        self.assertIn("pointer-events: auto", gate_rule)
+
+    def test_esc_escapes_both_quote_characters(self):
+        """degraded_reason is interpolated into a `title="..."` HTML attribute
+        inside a template string assigned via innerHTML (web/assets/supervisor
+        /list.js). That is only safe because esc() also escapes quotes, not
+        just angle brackets -- pin it so an unrelated future edit to esc()
+        cannot silently reopen that attribute-breakout."""
+        body = self.main_js_supervisor.split("export function esc(str)")[1].split("\n\n")[0]
+        self.assertIn('.replace(/"/g,', body)
+        self.assertIn(".replace(/'/g,", body)
+
 
 if __name__ == "__main__":
     unittest.main()

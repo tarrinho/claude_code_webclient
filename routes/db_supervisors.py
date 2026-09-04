@@ -405,7 +405,16 @@ async def supervisor_mark_degraded(supervisor_id: str, kind: str, detail: str) -
 
 
 async def supervisor_clear_degraded(supervisor_id: str, kind: str) -> None:
-    """Clear the flag, but only if it currently names this same *kind*."""
+    """Clear the flag, but only if it currently names this same *kind*.
+
+    A clear for kind B never touches a flag currently showing kind A. But
+    `degraded_reason` is a single column, not an accumulating fault log: if A
+    marks, then B also marks (overwriting A's text), then B clears, the flag
+    clears even though A was never resolved -- there is nothing left recording
+    that A happened. Accepted tradeoff, same as chat_clear_degraded in
+    routes/db_chats.py -- this is a diagnostic signal to go check logs, not a
+    durable record of every failure.
+    """
     try:
         await db.db_conn.execute(
             "UPDATE supervisors SET degraded = 0, degraded_reason = NULL "

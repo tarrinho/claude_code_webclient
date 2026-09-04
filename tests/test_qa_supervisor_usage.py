@@ -23,7 +23,7 @@ Two cases here matter more than the happy path:
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import config
 import runner
@@ -123,6 +123,58 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(config, "PROXY_ENABLED", True):
             rows = await self._record(self._frame())
         self.assertEqual(rows[0]["provider"], "proxy")
+
+    async def test_a_write_failure_marks_the_supervisor_degraded(self):
+        async def failing_usage_record(**kwargs):
+            return None  # simulates db.usage_record's own swallowed failure
+
+        marks = []
+        with (
+            patch.object(runner, "take_last_usage", return_value=self._frame()),
+            patch("db.usage_record", failing_usage_record),
+            patch("db.supervisor_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
+        ):
+            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+        self.assertEqual(len(marks), 1)
+        self.assertEqual(marks[0][0], "sup-1")
+        self.assertEqual(marks[0][1], "usage")
+
+    async def test_a_raised_write_also_marks_the_supervisor_degraded(self):
+        async def exploding_record(**kwargs):
+            raise RuntimeError("database is locked")
+
+        marks = []
+        with (
+            patch.object(runner, "take_last_usage", return_value=self._frame()),
+            patch("db.usage_record", exploding_record),
+            patch("db.supervisor_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
+        ):
+            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+        self.assertEqual(len(marks), 1)
+
+    async def test_an_empty_frame_neither_marks_nor_clears(self):
+        """No usage reported is not a failure of the write -- see the
+        pre-existing test_an_empty_frame_writes_nothing above."""
+        calls = []
+        with (
+            patch.object(runner, "take_last_usage", return_value={}),
+            patch("db.usage_record", AsyncMock()),
+            patch("db.supervisor_mark_degraded", AsyncMock(side_effect=lambda *a: calls.append(("mark", a)))),
+            patch("db.supervisor_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(("clear", a)))),
+        ):
+            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+        self.assertEqual(calls, [])
+
+    async def test_a_successful_write_clears_a_prior_degraded_flag(self):
+        calls = []
+        with (
+            patch.object(runner, "take_last_usage", return_value=self._frame()),
+            patch("db.usage_record", AsyncMock(return_value=1)),
+            patch("db.supervisor_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(a))),
+        ):
+            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], ("sup-1", "usage"))
 
 
 class CallSiteTests(unittest.TestCase):

@@ -544,16 +544,20 @@ class SupervisorEngine:
             # tokens against the backend (CLAUDE.md rule 5: record failures
             # too) and arrives separately via `take_retried_usage`.
             frames = [runner.take_last_usage(chat_id), *runner.take_retried_usage(chat_id)]
+            any_written = False
+            any_failed = False
             for frame in frames:
                 if not frame:
                     continue
                 models = frame.get("models") or {}
+                if not models:
+                    continue
                 # The CLI reports cost for the whole turn, not per model, so it
                 # is attached to the first row only -- the same rule app.py
                 # applies, or a two-model turn would be billed twice.
                 cost = frame.get("cost_usd")
                 for name, stats in models.items():
-                    await db.usage_record(
+                    row_id = await db.usage_record(
                         chat_id=chat_id,
                         owner_id=self.owner_id,
                         model=name or (model or ""),
@@ -569,11 +573,28 @@ class SupervisorEngine:
                         origin="supervisor",
                     )
                     cost = None
+                    if row_id is None:
+                        any_failed = True
+                    else:
+                        any_written = True
+            if any_failed:
+                await db.supervisor_mark_degraded(
+                    self.supervisor_id, "usage",
+                    f"usage_record returned no row id for chat_id={chat_id}",
+                )
+            elif any_written:
+                await db.supervisor_clear_degraded(self.supervisor_id, "usage")
         except Exception:  # noqa: BLE001 -- accounting must not fail a turn
             _log.exception(
                 "supervisor_usage_not_recorded supervisor_id=%s chat_id=%s",
                 self.supervisor_id, chat_id,
             )
+            try:
+                await db.supervisor_mark_degraded(
+                    self.supervisor_id, "usage", f"usage recording raised for chat_id={chat_id}",
+                )
+            except Exception:  # noqa: BLE001 -- must not compound the failure
+                pass
 
     async def _persist_progress(self) -> None:
         """Write the graph's overall progress onto the supervisor row.
@@ -589,8 +610,13 @@ class SupervisorEngine:
                 self.supervisor_id, self.owner_id,
                 progress_pct=self.graph.overall_progress(),
             )
-        except Exception:  # noqa: BLE001 -- reporting must not stop the run
+            await db.supervisor_clear_degraded(self.supervisor_id, "progress")
+        except Exception as exc:  # noqa: BLE001 -- reporting must not stop the run
             _log.exception("could not persist progress for %s", self.supervisor_id)
+            try:
+                await db.supervisor_mark_degraded(self.supervisor_id, "progress", str(exc))
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _set_status(self, status: str) -> None:
         """Record the run's overall status where the UI actually reads it.
@@ -611,11 +637,16 @@ class SupervisorEngine:
             import db  # local import: db imports this module at load time
             await db.supervisor_update(self.supervisor_id, self.owner_id,
                                        status=status)
-        except Exception:  # noqa: BLE001 -- a status write must not end the run
+            await db.supervisor_clear_degraded(self.supervisor_id, "status")
+        except Exception as exc:  # noqa: BLE001 -- a status write must not end the run
             _log.exception(
                 "supervisor_status_not_persisted supervisor_id=%s status=%s",
                 self.supervisor_id, status,
             )
+            try:
+                await db.supervisor_mark_degraded(self.supervisor_id, "status", str(exc))
+            except Exception:  # noqa: BLE001
+                pass
 
     def _report_task_failure(self, task: asyncio.Task[Any]) -> None:
         if task.cancelled():
@@ -692,6 +723,7 @@ class SupervisorEngine:
         def _row_id(plan_id: str) -> str:
             return f"{self.supervisor_id[:8]}_{plan_id}"
 
+        any_task_create_failed = False
         for parsed_task in tasks:
             node = TaskNode(
                 id=_row_id(parsed_task.id),
@@ -723,13 +755,27 @@ class SupervisorEngine:
                         "model": parsed_task.model,
                     },
                 ))
-            except Exception:  # noqa: BLE001 -- one bad row, not the whole plan
+            except Exception as exc:  # noqa: BLE001 -- one bad row, not the whole plan
                 # `exception`, not `warning`: this was a bare warning with no
                 # reason attached, which is why a task list that stayed empty
                 # while the work ran took a live run to notice at all.
                 _log.exception(
                     "supervisor_task_create failed for %s", parsed_task.id,
                 )
+                any_task_create_failed = True
+                try:
+                    await db.supervisor_mark_degraded(self.supervisor_id, "task_create",
+                                                       f"{node.id}: {exc}")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Cleared only once, for the whole plan -- an earlier plan's missing
+        # row is not fixed by a later plan's success, so this is not per-task.
+        if not any_task_create_failed:
+            try:
+                await db.supervisor_clear_degraded(self.supervisor_id, "task_create")
+            except Exception:  # noqa: BLE001
+                pass
 
         self.config["parsed_tasks"] = [
             {"id": t.id, "title": t.title, "status": t.status}
@@ -965,8 +1011,15 @@ class SupervisorEngine:
                     body,
                     {"kind": "task_result", "task_id": task_id},
                 )
-            except Exception:  # noqa: BLE001 -- task success must not fail silently
+                await db.supervisor_clear_degraded(self.supervisor_id, "task_message")
+            except Exception as msg_exc:  # noqa: BLE001 -- task success must not fail silently
                 _log.exception("could not record task result message for %s", task_id)
+                try:
+                    import db
+                    await db.supervisor_mark_degraded(self.supervisor_id, "task_message",
+                                                       f"{task_id}: {msg_exc}")
+                except Exception:  # noqa: BLE001
+                    pass
 
             # Also update DB task row
             try:
@@ -979,8 +1032,14 @@ class SupervisorEngine:
                     result=result,
                     progress_pct=100.0,
                 )
-            except Exception:  # noqa: BLE001
+                await db.supervisor_clear_degraded(self.supervisor_id, "task_status_done")
+            except Exception as status_exc:  # noqa: BLE001
                 _log.exception("could not record task %s as done", task_id)
+                try:
+                    await db.supervisor_mark_degraded(self.supervisor_id, "task_status_done",
+                                                       f"{task_id}: {status_exc}")
+                except Exception:  # noqa: BLE001
+                    pass
 
             return result
 
@@ -1008,8 +1067,14 @@ class SupervisorEngine:
                     status="failed",
                     progress_pct=0.0,
                 )
-            except Exception:  # noqa: BLE001
+                await db.supervisor_clear_degraded(self.supervisor_id, "task_status_failed")
+            except Exception as write_exc:  # noqa: BLE001
                 _log.exception("could not record task %s as failed", task_id)
+                try:
+                    await db.supervisor_mark_degraded(self.supervisor_id, "task_status_failed",
+                                                       f"{task_id}: {write_exc}")
+                except Exception:  # noqa: BLE001
+                    pass
 
             return ""
 

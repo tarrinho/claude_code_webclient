@@ -18,7 +18,7 @@ _log = logging.getLogger("wc.db.chats")
 _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
     "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
-    "transcript_offset"
+    "transcript_offset, degraded, degraded_reason, degraded_at"
 )
 _ALLOWED_CHAT_FIELDS = {
     "title",
@@ -761,3 +761,37 @@ async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]
 # resolve it via __getattr__.  The variable itself lives here so the extraction
 # is self-contained; db.py's __getattr__ proxies to it.
 _messages_batch_lock: asyncio.Lock | None = None
+
+
+async def chat_mark_degraded(chat_id: str, kind: str, detail: str) -> None:
+    """Flag *chat_id* as carrying a known write failure of *kind*.
+
+    Never raises: marking degradation must not become a second thing that
+    fails a turn, the same rule db.usage_record already states for itself.
+    """
+    try:
+        await db.db_conn.execute(
+            "UPDATE chats SET degraded = 1, degraded_reason = ?, degraded_at = ? "
+            "WHERE id = ?",
+            (f"{kind}: {detail}", db._now(), chat_id),
+        )
+        await db.db_conn.commit()
+    except Exception:  # noqa: BLE001 -- marking degraded must not itself fail a turn
+        _log.exception("chat_mark_degraded failed chat_id=%s kind=%s", chat_id, kind)
+
+
+async def chat_clear_degraded(chat_id: str, kind: str) -> None:
+    """Clear *chat_id*'s degraded flag, but only if it names this same *kind*.
+
+    A chat degraded for kind A must not be silently cleared by an unrelated
+    successful write of kind B -- that would hide a problem that is still real.
+    """
+    try:
+        await db.db_conn.execute(
+            "UPDATE chats SET degraded = 0, degraded_reason = NULL, degraded_at = NULL "
+            "WHERE id = ? AND degraded_reason LIKE ?",
+            (chat_id, f"{kind}:%"),
+        )
+        await db.db_conn.commit()
+    except Exception:  # noqa: BLE001
+        _log.exception("chat_clear_degraded failed chat_id=%s kind=%s", chat_id, kind)

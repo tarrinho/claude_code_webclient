@@ -83,6 +83,8 @@ def __getattr__(name: str):
         "bump_chat_updated_at": "routes.db_chats",
         "chat_set_model": "routes.db_chats",
         "chat_set_title": "routes.db_chats",
+        "chat_mark_degraded": "routes.db_chats",
+        "chat_clear_degraded": "routes.db_chats",
         "_ALLOWED_CHAT_FIELDS": "routes.db_chats",
         "chat_search": "routes.db_chats",
         "messages_get": "routes.db_chats",
@@ -735,6 +737,9 @@ async def _ensure_chat_columns() -> None:
             "ALTER TABLE chats ADD COLUMN auto_answer_recommend "
             "INTEGER NOT NULL DEFAULT 0"
         ),
+        "degraded": "ALTER TABLE chats ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
+        "degraded_reason": "ALTER TABLE chats ADD COLUMN degraded_reason TEXT",
+        "degraded_at": "ALTER TABLE chats ADD COLUMN degraded_at TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:

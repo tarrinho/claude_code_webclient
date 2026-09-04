@@ -92,6 +92,17 @@ DIRTY = {
 # delegates to deltas, comparing the two only proves the new code agrees with
 # itself. This table is the only thing in the suite that still remembers the
 # behaviour that shipped, so a rewrite that changes it fails here.
+#
+# Updated 2026-09-04 (rules.md registry #81): the four non-anthropic/no-backend
+# cases used to leave an inherited ANTHROPIC_API_KEY in place, unset only in the
+# anthropic-with-empty-key branch. `bin/wc-claude.sh`'s hot-swap loop is a single
+# long-lived process that calls `apply_env` repeatedly as the active machine
+# changes, so a key exported for an earlier machine survived a switch to no
+# machine or a non-anthropic one -- caught by
+# `test_qa_wc_claude_hotswap.py::HotswapLoopTests::test_a_mid_session_deactivation_hands_off_unmanaged`.
+# `deltas()` now unsets it unconditionally whenever the backend is not an
+# anthropic machine with a key, and this table's four affected rows were
+# deliberately updated to match, not just re-frozen around the old bug.
 GOLDEN = {
     "anthropic default url": {
         "ANTHROPIC_API_KEY": "k",
@@ -122,21 +133,21 @@ GOLDEN = {
         "CLAUDE_CODE_SIMPLE": "1"
     },
     "empty dict": {
-        "ANTHROPIC_API_KEY": "inherited-key",
+        "ANTHROPIC_API_KEY": None,
         "ANTHROPIC_AUTH_TOKEN": None,
         "ANTHROPIC_BASE_URL": None,
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_SIMPLE": "1"
     },
     "no backend": {
-        "ANTHROPIC_API_KEY": "inherited-key",
+        "ANTHROPIC_API_KEY": None,
         "ANTHROPIC_AUTH_TOKEN": None,
         "ANTHROPIC_BASE_URL": None,
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_SIMPLE": "1"
     },
     "non-anthropic": {
-        "ANTHROPIC_API_KEY": "inherited-key",
+        "ANTHROPIC_API_KEY": None,
         "ANTHROPIC_AUTH_TOKEN": None,
         "ANTHROPIC_BASE_URL": None,
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
@@ -150,7 +161,7 @@ GOLDEN = {
         "CLAUDE_CODE_SIMPLE": None
     },
     "provider missing": {
-        "ANTHROPIC_API_KEY": "inherited-key",
+        "ANTHROPIC_API_KEY": None,
         "ANTHROPIC_AUTH_TOKEN": None,
         "ANTHROPIC_BASE_URL": None,
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",

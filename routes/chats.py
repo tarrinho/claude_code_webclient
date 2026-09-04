@@ -1375,7 +1375,7 @@ async def handle_chat_search(request: Request):
 
     POST /api/chats/search with {query: "..."}.
     """
-    from db_chats import _fts_validate_query
+    from routes.db_chats import _fts_validate_query
 
     session = request.state.session
     try:

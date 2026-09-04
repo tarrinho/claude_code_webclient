@@ -127,6 +127,7 @@ def __getattr__(name: str):
         "api_token_touch": "routes.db_users",
         "api_token_list": "routes.db_users",
         "api_token_revoke": "routes.db_users",
+        "admin_action_record": "routes.db_users",
         # usage
         "_cutoff": "routes.db_usage",
         "usage_record": "routes.db_usage",

@@ -218,6 +218,18 @@ export function createConversationController(dependencies) {
   // -- the abort looks identical from the catch block.
   let detaching = false;
 
+  // Only the newest MESSAGE_PAGE_SIZE messages load by default -- a chat with
+  // thousands of turns used to fetch, send, and render every one of them on
+  // every open and every post-turn refresh. `oldestLoadedId` is the cursor for
+  // "load more" (the server's `before_id`); `hasOlderMessages` says whether
+  // that control has anything left to show. Both reset on every full render,
+  // since a fresh render (opening a chat, a post-turn refresh) always starts
+  // back at the newest page.
+  const MESSAGE_PAGE_SIZE = 50;
+  let oldestLoadedId = null;
+  let hasOlderMessages = false;
+  let loadingOlderMessages = false;
+
   function draftKey(chatId) { return `wc_draft_${chatId}`; }
 
   function formatTime(iso) {
@@ -319,6 +331,7 @@ export function createConversationController(dependencies) {
   // false until the turn ends and refreshCurrent() reloads from the server. The
   // mark is for finding a question later, which is exactly the case where the
   // reload has already happened.
+
   function createMessage(role, content, time, asks = false) {
     const row = document.createElement('article');
     row.className = `message ${role}`;
@@ -372,8 +385,65 @@ export function createConversationController(dependencies) {
     return row;
   }
 
-  function renderMessages(messages) {
+  function createLoadMoreButton() {
+    const wrap = document.createElement('div');
+    wrap.className = 'load-more-wrap';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'load-more-btn';
+    btn.textContent = `Load ${MESSAGE_PAGE_SIZE} more`;
+    btn.addEventListener('click', loadOlderMessages);
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  // Prepends the previous page of history above what is currently shown,
+  // without disturbing the messages already on screen or the user's place
+  // among them.
+  async function loadOlderMessages() {
+    if (loadingOlderMessages || !hasOlderMessages) return;
+    const chatId = state.currentChat?.id;
+    if (!chatId || oldestLoadedId == null) return;
+    loadingOlderMessages = true;
+    const oldBtn = elements.messages.querySelector('.load-more-btn');
+    if (oldBtn) { oldBtn.disabled = true; oldBtn.textContent = 'Loading…'; }
+    try {
+      const response = await apiFetch(
+        `/api/chats/${encodeURIComponent(chatId)}?before_id=${oldestLoadedId}` +
+        `&limit=${MESSAGE_PAGE_SIZE}`
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      // The conversation may have switched while this was in flight.
+      if (viewingChatId !== chatId) return;
+      const older = data.messages || [];
+      const container = elements.messages;
+      const oldWrap = container.querySelector('.load-more-wrap');
+      const previousScrollTop = container.scrollTop;
+      const previousScrollHeight = container.scrollHeight;
+      if (oldWrap) oldWrap.remove();
+      hasOlderMessages = Boolean(data.has_more);
+      if (older.length) oldestLoadedId = older[0].id;
+      const fragment = document.createDocumentFragment();
+      if (hasOlderMessages) fragment.appendChild(createLoadMoreButton());
+      older.forEach(message => fragment.appendChild(
+        createMessage(message.role, message.content, message.created_at,
+                      message.question)
+      ));
+      container.insertBefore(fragment, container.firstChild);
+      // A prepend leaves the browser's own scroll position pointed at
+      // whatever is now in the middle of the conversation; hold the same
+      // content under the viewport instead of jumping the user around.
+      container.scrollTop = previousScrollTop + (container.scrollHeight - previousScrollHeight);
+    } finally {
+      loadingOlderMessages = false;
+    }
+  }
+
+  function renderMessages(messages, hasMore = false) {
     elements.messages.replaceChildren();
+    oldestLoadedId = messages.length ? messages[0].id : null;
+    hasOlderMessages = Boolean(hasMore);
     if (!messages.length) {
       const empty = document.createElement('div');
       empty.className = 'empty-state';
@@ -384,6 +454,7 @@ export function createConversationController(dependencies) {
       empty.append(strong, text);
       elements.messages.appendChild(empty);
     } else {
+      if (hasOlderMessages) elements.messages.appendChild(createLoadMoreButton());
       messages.forEach(message => elements.messages.appendChild(
         createMessage(message.role, message.content, message.created_at,
                       message.question)
@@ -649,7 +720,7 @@ export function createConversationController(dependencies) {
     state.currentChat = data.chat;
     viewingChatId = data.chat.id;
     setRequestHistory(data.messages || []);
-    renderMessages(data.messages || []);
+    renderMessages(data.messages || [], data.has_more);
     restoreDraft(chat.id);
     setStreamState('ready');
     onChatLoaded(data.chat);
@@ -856,7 +927,7 @@ export function createConversationController(dependencies) {
     // keepPin: this runs after every completed turn, and a pin the user set is
     // theirs to clear.
     setRequestHistory(data.messages || [], {keepPin: true});
-    renderMessages(data.messages || []);
+    renderMessages(data.messages || [], data.has_more);
     onChatLoaded(data.chat);
   }
 

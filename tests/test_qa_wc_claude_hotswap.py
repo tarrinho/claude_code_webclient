@@ -64,6 +64,13 @@ class DryRunResolutionTests(unittest.TestCase):
         self.env = {
             **os.environ,
             "PATH": f"{fake_claude}:{os.environ.get('PATH', '')}",
+            # Registry #81: resolve_claude_bin checks $WC_CLAUDE_PATH before it
+            # ever falls back to PATH, and tries the newest installed
+            # ~/.local/share/claude/versions/* ahead of PATH too -- so on a
+            # host with a real CLI installed (every dev box), the fake claude
+            # on PATH was never actually reached. Pin it through the seam the
+            # script already provides for exactly this.
+            "WC_CLAUDE_PATH": str(fake_claude / "claude"),
             "WC_CLAUDE_DRY_RUN": "1",
         }
 
@@ -157,8 +164,14 @@ class DryRunResolutionTests(unittest.TestCase):
             "api_key": "sk-test", "model": "claude-opus-5", "active": True,
         }])
         result = self._run(db, "--resume", "test1", "--model", "claude-haiku-4-5")
-        self.assertIn("would exec: claude  --resume test1 --model claude-haiku-4-5",
+        # Registry #81: "would exec:" always names the fully-resolved binary
+        # path (resolve_claude_bin never execs a bare name), and that path is
+        # a property of the box -- here it is the fake claude's tempdir, on a
+        # real machine it is whichever ~/.local/share/claude/versions/* is
+        # newest. Assert on the argument shape, not the resolved executable.
+        self.assertIn("--resume test1 --model claude-haiku-4-5",
                      result.stdout.replace("\n", " "))
+        self.assertIn("would exec:", result.stdout)
         self.assertNotIn("--model claude-opus-5", result.stdout)
 
 
@@ -180,7 +193,15 @@ class PollerTests(unittest.TestCase):
         return (
             f'export WC_DB_PATH="{self.db}"\n'
             f'DB="{self.db}"\n'
-            f'{functions}\n{body}\n'
+            f'{functions}\n'
+            # The spliced text above re-derives HERE from ${BASH_SOURCE[0]},
+            # which names this bash -c string itself when run this way, not
+            # the real wc-claude.sh -- so query_backend's `$HERE/bin/...`
+            # resolved to a path under "/" and every poll tick failed to find
+            # the file, silently (the poller swallows a transient failure by
+            # design). Re-pin it to the real repo root after sourcing.
+            f'HERE="{ROOT}"\n'
+            f'{body}\n'
         )
 
     def _run_bash(self, body: str, timeout: float = 20) -> subprocess.CompletedProcess:
@@ -377,6 +398,11 @@ class HotswapLoopTests(unittest.TestCase):
         self.env = {
             **os.environ,
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            # Registry #81: same as DryRunResolutionTests -- the real installed
+            # CLI wins over PATH in resolve_claude_bin's order, so the fake
+            # claude must be pinned through $WC_CLAUDE_PATH, its documented
+            # override seam, not injected via PATH alone.
+            "WC_CLAUDE_PATH": str(claude),
             "WC_DB_PATH": self.db,
             "FAKE_CLAUDE_LOG": self.log,
             "WC_CLAUDE_HOTSWAP": "1",
@@ -512,7 +538,7 @@ sys.exit(0)
         }])
         result = subprocess.run(
             [str(SCRIPT), "--resume", "test-session"],
-            env=self.env, capture_output=True, text=True, timeout=15,
+            env=self.env, capture_output=True, text=True, timeout=15, check=False,
         )
         self.assertEqual(result.returncode, 0)
 
@@ -528,7 +554,7 @@ sys.exit(0)
         self.assertTrue(self._wait_for(lambda: len(self._invocations()) >= 1))
         # Find the fake-claude child before killing the wrapper.
         children = subprocess.run(
-            ["pgrep", "-P", str(proc.pid)], capture_output=True, text=True,
+            ["pgrep", "-P", str(proc.pid)], capture_output=True, text=True, check=False,
         ).stdout.split()
         proc.terminate()
         proc.wait(timeout=10)
@@ -567,7 +593,7 @@ sys.exit(0)
         # children of the wrapper at this point -- capture them before
         # triggering the hand-off so we can prove neither survives it.
         before_children = subprocess.run(
-            ["pgrep", "-P", str(proc.pid)], capture_output=True, text=True,
+            ["pgrep", "-P", str(proc.pid)], capture_output=True, text=True, check=False,
         ).stdout.split()
         self.assertEqual(len(before_children), 2,
                          "expected exactly the poller and the fake-claude "
@@ -594,7 +620,7 @@ sys.exit(0)
         self.assertTrue(
             self._wait_for(lambda: all(
                 subprocess.run(["kill", "-0", pid],
-                               capture_output=True).returncode != 0
+                               capture_output=True, check=False).returncode != 0
                 for pid in before_children
             )),
             "poller or the pre-hand-off child survived handoff_unmanaged",
@@ -618,7 +644,7 @@ class ScreenSurvivalTests(unittest.TestCase):
 
     def setUp(self):
         if subprocess.run(["which", "screen"],
-                          capture_output=True).returncode != 0:
+                          capture_output=True, check=False).returncode != 0:
             self.skipTest("screen not installed")
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -635,6 +661,8 @@ class ScreenSurvivalTests(unittest.TestCase):
         self.addCleanup(self._quit_session)
         self.overrides = {
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            # Registry #81: same seam as the other two fixtures above.
+            "WC_CLAUDE_PATH": str(claude),
             "WC_DB_PATH": self.db,
             "FAKE_CLAUDE_LOG": self.log,
             "WC_CLAUDE_HOTSWAP": "1",
@@ -644,11 +672,11 @@ class ScreenSurvivalTests(unittest.TestCase):
 
     def _quit_session(self):
         subprocess.run(["screen", "-S", self.session, "-X", "quit"],
-                       capture_output=True)
+                       capture_output=True, check=False)
 
     def _screen_pid(self) -> str | None:
         out = subprocess.run(["screen", "-list"],
-                             capture_output=True, text=True).stdout
+                             capture_output=True, text=True, check=False).stdout
         for line in out.splitlines():
             token = line.strip().split()[:1]
             if not token or "." not in token[0]:
@@ -661,7 +689,7 @@ class ScreenSurvivalTests(unittest.TestCase):
     def _hardcopy_text(self) -> str:
         subprocess.run(
             ["screen", "-S", self.session, "-X", "hardcopy", self.hardcopy],
-            capture_output=True,
+            capture_output=True, check=False,
         )
         return Path(self.hardcopy).read_text(errors="replace") \
             if Path(self.hardcopy).exists() else ""

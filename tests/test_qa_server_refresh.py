@@ -16,7 +16,16 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "web" / "assets" / "app.js").read_text()
+# startServerPolling/stopServerPolling/loadServer moved to server-stats.js in
+# a later module split; concatenated here rather than moving the tests'
+# lookups to a second fixture, since _body()'s "find the next function
+# declaration" search works the same regardless of which file a name's own
+# declaration happens to sit in. closeSettingsDialog and the tab-switch wiring
+# stayed in app.js, so both still need to be searchable from one string.
+APP_JS = (
+    (ROOT / "web" / "assets" / "app.js").read_text()
+    + (ROOT / "web" / "assets" / "server-stats.js").read_text()
+)
 INDEX = (ROOT / "web" / "index.html").read_text()
 
 

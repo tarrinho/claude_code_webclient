@@ -2,7 +2,7 @@
 
 import {apiFetch} from './api.js?v=1';
 import {notifyResult} from './server-stats.js?v=1';
-import {listController} from './app.js?v=32';
+import {listController} from './app.js?v=34';
 // Three levels, because on a phone the page is usually not the thing in front
 // of you:
 //   1. the tab title, which always works and needs no permission;
@@ -152,6 +152,10 @@ export async function refreshSupervisor() {
 // device-alert concern by itself. supervisor.js only owns the pane/picker UI.
 export function startSupervisorPolling() {
   if (_supervisorTimer) return;
+  // Deliberately NOT skipped while hidden, unlike the other pollers: the OS
+  // notification a few lines up in _applyDeviceAlert exists specifically for
+  // an agent finishing or asking something while this tab is not being
+  // watched. Pausing the poll here would silence the one case it is for.
   _supervisorTimer = setInterval(refreshSupervisor, SUPERVISOR_POLL_MS);
 }
 

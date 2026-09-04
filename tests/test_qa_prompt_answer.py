@@ -267,6 +267,50 @@ class SessionPidTrustQA(unittest.TestCase):
         self.assertIsNone(self._resolve(
             {"501.json": {"sessionId": "other", "pid": 501}}, {501}))
 
+    def test_is_claude_survives_a_bare_version_number_as_comm(self):
+        """Real process, real /proc -- every other case here mocks `_is_claude`
+        itself, which is exactly how this bug shipped unnoticed.
+
+        The CLI installs each version as
+        ~/.local/share/claude/versions/<version> and is exec'd from that path
+        directly, so the kernel's `comm` for a live session is the bare
+        version string ("2.1.260"), containing no "claude" at all. Every
+        session on the host failed the old comm-only check at once, silently:
+        a failed identity check here reads as "no pending prompt", not an
+        error. `cmdline`'s first argument is still the launch path, which does
+        contain it.
+        """
+        import shutil
+        import subprocess
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil_rmtree, tmp)
+        fake_install = pathlib.Path(tmp) / "claude" / "versions"
+        fake_install.mkdir(parents=True)
+        fake_binary = fake_install / "9.9.9"
+        shutil.copy("/bin/sleep", fake_binary)
+        proc = subprocess.Popen([str(fake_binary), "30"])
+        self.addCleanup(proc.kill)
+        try:
+            self.assertEqual(
+                pathlib.Path(f"/proc/{proc.pid}/comm").read_text().strip(),
+                "9.9.9",
+                "the fixture's own premise -- comm must not contain 'claude'",
+            )
+            self.assertTrue(prompts._is_claude(proc.pid))
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_is_claude_still_refuses_an_unrelated_process(self):
+        """The fallback must not turn into "anything alive counts"."""
+        import subprocess
+        proc = subprocess.Popen(["/bin/sleep", "30"])
+        self.addCleanup(proc.kill)
+        try:
+            self.assertFalse(prompts._is_claude(proc.pid))
+        finally:
+            proc.kill()
+            proc.wait()
 
     def test_a_window_that_is_not_prompting_is_not_a_target(self):
         # Identity alone is not enough: navigation keys sent to a window that

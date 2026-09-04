@@ -7,9 +7,9 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=1';
 import {createChatListController} from './chat-list.js?v=2';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=3';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=4';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './supervisor.js?v=1';
-import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=1';
+import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
 
 // Exported for supervisor.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -690,7 +690,12 @@ async function refreshAutoAnswer() {
 
 function startAutoAnswerPolling() {
   if (_autoAnswerTimer) return;
-  _autoAnswerTimer = setInterval(refreshAutoAnswer, AUTO_ANSWER_POLL_MS);
+  // A hidden tab is not being read, and this is one of several pollers a
+  // single open tab runs; skipping the fetch (not the timer) while hidden
+  // costs nothing and the next visible tick catches up immediately.
+  _autoAnswerTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') refreshAutoAnswer();
+  }, AUTO_ANSWER_POLL_MS);
   refreshAutoAnswer();
 }
 
@@ -1171,7 +1176,11 @@ async function refreshQuestion() {
 
 function startQuestionPolling() {
   if (_questionTimer) return;
-  _questionTimer = setInterval(refreshQuestion, QUESTION_POLL_MS);
+  // Same reasoning as startAutoAnswerPolling: a hidden tab skips the fetch,
+  // not the timer, so it is caught up the moment the tab is visible again.
+  _questionTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') refreshQuestion();
+  }, QUESTION_POLL_MS);
   refreshQuestion();
 }
 
@@ -1215,7 +1224,12 @@ function startTranscriptSync() {
   // Only linked chats have a transcript to follow; polling anything else would
   // be a request every five seconds that can never return a message.
   if (!state.currentChat?.session_id) return;
-  _syncTimer = setInterval(() => { syncTranscript(); }, SYNC_INTERVAL_MS);
+  _syncTimer = setInterval(() => {
+    // A hidden tab is not watching this conversation update live; the next
+    // visible tick, or the reload that opening the tab back up triggers,
+    // catches it up.
+    if (document.visibilityState === 'visible') syncTranscript();
+  }, SYNC_INTERVAL_MS);
 }
 
 // How often every OTHER conversation is followed. The five-second sync above
@@ -1269,7 +1283,11 @@ async function syncAllConversations() {
 
 function startBackgroundSync() {
   stopBackgroundSync();
-  _syncAllTimer = setInterval(() => { syncAllConversations(); }, SYNC_ALL_MS);
+  _syncAllTimer = setInterval(() => {
+    // Same reasoning as startTranscriptSync: nobody is reading a hidden
+    // tab's sidebar, so the sweep waits for the tab to be visible again.
+    if (document.visibilityState === 'visible') syncAllConversations();
+  }, SYNC_ALL_MS);
 }
 
 async function syncTranscript({announce = false} = {}) {
@@ -1969,7 +1987,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // would clear every other conversation's dot the moment this one settled.
   // A poll keeps the dots honest for turns nobody is watching.
   if (!_chatPollTimer) {
-    _chatPollTimer = setInterval(() => { refreshChats().catch(() => {}); }, CHAT_POLL_MS);
+    _chatPollTimer = setInterval(() => {
+      // Same reasoning as the other pollers below: a hidden tab's sidebar
+      // dots are not being looked at, so the fetch waits for visibility.
+      if (document.visibilityState === 'visible') refreshChats().catch(() => {});
+    }, CHAT_POLL_MS);
   }
 
   // That poll re-reads the list; this one makes the list worth re-reading, by

@@ -31,8 +31,10 @@ class SupervisorRouteQA(unittest.IsolatedAsyncioTestCase):
     def test_the_long_form_is_kept_because_the_app_asks_for_it(self):
         # index.html's iframe and its standalone fallback both use the long
         # form; removing it in favour of the short one would break the button.
-        app_js = (WEB / "assets" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("supervisor.html", app_js)
+        # openSupervisorPane's navigation moved from app.js to supervisor.js
+        # in a later module split.
+        supervisor_js = (WEB / "assets" / "supervisor.js").read_text(encoding="utf-8")
+        self.assertIn("supervisor.html", supervisor_js)
 
     async def test_both_serve_the_same_page(self):
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}))

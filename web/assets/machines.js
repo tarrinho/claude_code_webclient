@@ -17,7 +17,7 @@ import {
   // split left these as bare references across the module boundary, so every
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
-} from './app.js?v=32';
+} from './app.js?v=34';
 import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
 

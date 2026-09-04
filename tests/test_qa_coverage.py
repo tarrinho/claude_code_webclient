@@ -522,11 +522,12 @@ class ChatGetTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await _teardown_db(self)
 
-    def _req(self, chat_id="nonexistent"):
+    def _req(self, chat_id="nonexistent", query=None):
         r = _make_request(
             method="GET",
             path=f"/api/chats/{chat_id}",
             cookies={"wc_session": self.sid},
+            query=query,
         )
         r.state.session = self.session
         return r
@@ -545,6 +546,41 @@ class ChatGetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("chat", data)
         self.assertIn("messages", data)
         self.assertEqual(data["chat"]["title"], "Get Schema")
+        self.assertIn("id", data["messages"][0])
+        self.assertIn("has_more", data)
+
+    async def test_chat_get_defaults_to_the_last_50_messages(self):
+        chat_id = "get-paginated"
+        await db.chat_create(chat_id, "Paginated", None, f"{self.tmpdir.name}/p", "admin")
+        for i in range(60):
+            await db.messages_append(chat_id, "user", f"msg{i}")
+        resp = await chat_routes.handle_chat_get(self._req(chat_id), chat_id)
+        data = json.loads(resp.body)
+        self.assertEqual(len(data["messages"]), 50)
+        self.assertEqual(data["messages"][0]["content"], "msg10")
+        self.assertEqual(data["messages"][-1]["content"], "msg59")
+        self.assertTrue(data["has_more"])
+
+    async def test_chat_get_before_id_pages_backward(self):
+        chat_id = "get-before-id"
+        await db.chat_create(chat_id, "Before Id", None, f"{self.tmpdir.name}/p", "admin")
+        for i in range(60):
+            await db.messages_append(chat_id, "user", f"msg{i}")
+        first_page = json.loads(
+            (await chat_routes.handle_chat_get(self._req(chat_id), chat_id)).body
+        )
+        oldest_id = first_page["messages"][0]["id"]
+        older = json.loads(
+            (
+                await chat_routes.handle_chat_get(
+                    self._req(chat_id, query={"before_id": str(oldest_id)}), chat_id
+                )
+            ).body
+        )
+        self.assertEqual(len(older["messages"]), 10)
+        self.assertEqual(older["messages"][0]["content"], "msg0")
+        self.assertEqual(older["messages"][-1]["content"], "msg9")
+        self.assertFalse(older["has_more"])
 
 
 class ChatPatchTests(unittest.IsolatedAsyncioTestCase):
@@ -582,30 +618,6 @@ class ChatPatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
-
-
-class BackendComparisonReportTests(unittest.IsolatedAsyncioTestCase):
-    def _req(self):
-        request = _make_request(
-            method="GET",
-            path="/api/reports/backend-model-comparison.pdf",
-        )
-        request.state.session = _make_admin_session()
-        return request
-
-    async def test_missing_comparison_pdf_is_404(self):
-        with patch.object(misc_routes, "_COMPARISON_PDF", Path("/no/such/report.pdf")):
-            with self.assertRaises(HTTPException) as ctx:
-                await misc_routes._api_backend_model_comparison(self._req())
-        self.assertEqual(ctx.exception.status_code, 404)
-
-    async def test_comparison_pdf_is_inline_pdf(self):
-        with tempfile.NamedTemporaryFile(suffix=".pdf") as report:
-            Path(report.name).write_bytes(b"%PDF-1.7\\n")
-            with patch.object(misc_routes, "_COMPARISON_PDF", Path(report.name)):
-                response = await misc_routes._api_backend_model_comparison(self._req())
-        self.assertEqual(response.media_type, "application/pdf")
-        self.assertIn("inline", response.headers["content-disposition"])
 
 
 class ChatExportTests(unittest.IsolatedAsyncioTestCase):

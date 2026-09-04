@@ -27,6 +27,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 APP_JS = REPO / "web" / "assets" / "app.js"
 CHAT_LIST_JS = REPO / "web" / "assets" / "chat-list.js"
+SUPERVISOR_JS = REPO / "web" / "assets" / "supervisor.js"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
 
@@ -77,7 +78,14 @@ class MenuEntrySourceTests(unittest.TestCase):
 class PickerSourceTests(unittest.TestCase):
 
     def setUp(self):
-        self.source = APP_JS.read_text(encoding="utf-8")
+        # _addChatToSupervisor moved to supervisor.js in a later module split;
+        # appended rather than replacing APP_JS, since the other two tests in
+        # this class still find their targets (the app.js-side wiring line,
+        # the Escape handler chain) in app.js itself.
+        self.source = (
+            APP_JS.read_text(encoding="utf-8")
+            + SUPERVISOR_JS.read_text(encoding="utf-8")
+        )
 
     def test_the_menu_callback_is_wired_to_the_picker(self):
         self.assertIn("onAddToSupervisor: openSupervisorPicker", self.source)
@@ -102,15 +110,29 @@ class PickerBehaviourTests(unittest.TestCase):
     """Drive the real functions; assert what was actually requested."""
 
     def _harness(self, supervisors, add_status=200, add_body=None):
-        """Lift the picker out of app.js and run it against a stubbed fetch."""
-        source = APP_JS.read_text(encoding="utf-8")
+        """Lift the picker out of supervisor.js and run it against a stubbed
+        fetch.
+
+        Moved here in a later module split (was app.js). Two adjustments the
+        move requires, beyond just reading a different file:
+
+        * `export ` prefixes: legal on a real <script type="module">, a
+          SyntaxError on the plain classic <script> this harness injects the
+          slice into.
+        * `state.previousFocus`, not a bare `previousFocus`: supervisor.js
+          reads and writes it through the `state` object app.js exports (the
+          same object machines.js and device-alerts.js share it through),
+          since a bare imported `let` cannot be reassigned by the importer --
+          only a shared object's own property can be.
+        """
+        source = SUPERVISOR_JS.read_text(encoding="utf-8")
         start = source.index("function _closeSupervisorPicker()")
         end = source.index("function openSupervisorPane()")
-        picker = source[start:end]
+        picker = re.sub(r"^export ", "", source[start:end], flags=re.MULTILINE)
         import json as _json
         return f"""
         <body><script>
-        let previousFocus = null, lastToast = null, addRequest = null;
+        let state = {{previousFocus: null}}, lastToast = null, addRequest = null;
         function showToast(msg, type) {{ lastToast = (type || 'ok') + ':' + msg; }}
         async function apiFetch(url, opts) {{
           if (url === '/api/supervisors') {{

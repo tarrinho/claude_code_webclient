@@ -1346,6 +1346,82 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class SupervisorListEscapingBrowserTests(_BrowserFixture):
+    """Registry #79: `renderSupervisorList()` interpolated a supervisor's id
+    (into `data-id="..."`) and its status (into a badge's class and text)
+    without `esc()`, unlike every other value the same file writes.
+
+    Neither is reachable through the create API today -- `id` is a
+    server-generated UUID, `status` is set only by the engine's own control
+    flow -- which is exactly why a passing test here matters: it is the only
+    thing standing between "looks redundant, remove it" and the gap
+    reopening the moment either field ever carries anything else. Seeded
+    directly into the database for that reason, and proved by absence of
+    execution (a global the payload would have set), not by reading the
+    source -- the shape of bug #75/#78 both name: a check that only greps
+    for `esc(` cannot tell "escaped" from "escaped the wrong thing".
+    """
+
+    def _seed_supervisor(self, sup_id: str, status: str, title: str = "S") -> None:
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO supervisors (id,title,description,owner_id,status,"
+            "created_at,updated_at) VALUES (?,?,NULL,'admin',?,?,?)",
+            (sup_id, title, status, stamp, stamp),
+        )
+        con.commit()
+        con.close()
+
+    def test_a_crafted_id_cannot_break_out_of_the_attribute(self):
+        """`data-id="${...}"` is an *attribute* position: a `<script>` payload
+        proves nothing there, since a `<script>` tag typed inside an
+        attribute's quotes is just characters to the HTML parser, not markup,
+        with or without escaping. Only a bare `"` can break out -- which is
+        also why wrapping `s.id` in `esc()` alone would not have been enough;
+        `esc()` had to start escaping quotes too (this fix's other half).
+
+        Asserted on the DOM structure itself, not on script execution:
+        `script-src 'self'` already blocks every inline-handler payload this
+        page could plant, which would make an execution-based assertion pass
+        whether or not the quote is escaped, for a reason that has nothing to
+        do with this fix. A broken-out `onmouseover` is a real, separate
+        attribute on the element whether or not CSP ever lets it fire; an
+        escaped one is inert text sitting inside `data-id`'s own value, and
+        `getAttribute` tells the two apart directly.
+        """
+        payload_id = 'x" onmouseover="window.__wc_pwned_id=1" data-y="'
+        self._seed_supervisor(payload_id, "idle")
+        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.assertIsNone(self.page.eval_on_selector(
+            ".supervisor-list-item", 'el => el.getAttribute("onmouseover")'))
+
+    def test_a_crafted_status_is_not_parsed_as_an_element(self):
+        """Text-node position: a `<img onerror>` typed here *is* real markup
+        once rendered, unlike a `<script>` tag (which the HTML parser never
+        executes when inserted via `innerHTML`, escaped or not -- not a
+        meaningful proof either direction).
+
+        Asserted on the DOM, not on the handler firing: `script-src 'self'`
+        already blocks every inline `on*` attribute regardless of escaping,
+        which would make an execution-based assertion pass for a reason that
+        has nothing to do with this fix. Whether a real `<img>` element
+        exists at all is the fact `esc()` actually controls.
+        """
+        sup_id = f"sup-{secrets.token_hex(4)}"
+        self._seed_supervisor(
+            sup_id, '<img src=x onerror="window.__wc_pwned_status=1">')
+        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.assertEqual(
+            self.page.locator(".supervisor-list-item img").count(), 0)
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class QuestionDismissBrowserTests(_BrowserFixture):
     """Declining a question instead of answering it.
 
@@ -1711,6 +1787,75 @@ class AutoAnswerCycleBrowserTests(_BrowserFixture):
         # a hidden element can never satisfy the default state="visible" a
         # selector match implies, so that combination times out for ever.
         self.page.wait_for_selector("#autoAnswerTooltip", state="hidden", timeout=5000)
+        self.assertEqual(self.errors, [])
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class LoadMoreMessagesBrowserTests(_BrowserFixture):
+    """A long conversation loads its newest page, not its whole history.
+
+    Source inspection cannot tell "renders 50 rows" from "renders all of
+    them and the 51st is merely off-screen" -- both look identical in the
+    file. Only a real render, counted, proves the paginated GET this test
+    seeds actually reached the DOM instead of the old whole-history fetch.
+    """
+
+    DESKTOP = "#chatListDesktop"
+
+    def _seed_chat(self, message_count: int) -> str:
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"lm-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (chat_id, f"Long chat {chat_id}", stamp, stamp),
+        )
+        con.executemany(
+            "INSERT INTO messages (chat_id,role,content,created_at) "
+            "VALUES (?,?,?,?)",
+            [(chat_id, "user" if i % 2 == 0 else "assistant", f"msg{i}", stamp)
+             for i in range(message_count)],
+        )
+        con.commit()
+        con.close()
+        return chat_id
+
+    def _open_chat(self, chat_id, timeout=20_000):
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
+        self.page.wait_for_selector(row, timeout=timeout)
+        self.page.click(row)
+
+    def test_only_the_newest_fifty_render_and_more_can_be_loaded(self):
+        chat_id = self._seed_chat(60)
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.page.wait_for_selector("#messagesArea .message", timeout=10_000)
+        self.assertEqual(self.page.locator("#messagesArea .message").count(), 50)
+        # The oldest 10 (msg0..msg9) have not loaded yet -- msg10 has, as the
+        # new oldest row on screen.
+        body_text = self.page.locator("#messagesArea").inner_text()
+        self.assertNotIn("msg0\n", body_text)
+        self.assertIn("msg10", body_text)
+
+        self.page.click("#messagesArea .load-more-btn")
+        self.page.wait_for_selector("#messagesArea .message", timeout=10_000)
+        # Give the fetch a moment; the button removes itself once the older
+        # page (all 10 remaining messages) is in and nothing is left to load.
+        self.page.wait_for_selector(".load-more-wrap", state="detached", timeout=10_000)
+        self.assertEqual(self.page.locator("#messagesArea .message").count(), 60)
+        self.assertEqual(self.errors, [])
+
+    def test_a_short_conversation_shows_no_load_more_control(self):
+        chat_id = self._seed_chat(5)
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.page.wait_for_selector("#messagesArea .message", timeout=10_000)
+        self.assertEqual(self.page.locator("#messagesArea .message").count(), 5)
+        self.assertEqual(self.page.locator(".load-more-btn").count(), 0)
         self.assertEqual(self.errors, [])
 
 

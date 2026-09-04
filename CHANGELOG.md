@@ -22,6 +22,69 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`POST /api/chats/search` 500'd on every request**: `handle_chat_search`
+  imported `from db_chats import _fts_validate_query`, a bare module name
+  left over from adding that check inside `routes/db_chats.py` without
+  updating the importer — the module is `routes.db_chats`. Caught by a full
+  test run (`SearchAPITests`, `ChatSearchApiTests`, `CrossForkSearchTests`,
+  11 cases), not by anyone hitting search live. Registry #87.
+- **`POST /api/tokens` 500'd on every creation**, and the backup and
+  settings-patch endpoints with it: `db.admin_action_record(...)` was never
+  added to `db.py`'s `__getattr__` dispatch table after being written in
+  `routes/db_users.py` — the same extraction-completeness gap as registry
+  #76/#77. A token was created and logged before the 500, so it existed with
+  no audit record of having been issued. Added to the dispatch table; 11
+  already-existing tests across three files caught it the same run.
+  Registry #88.
+
+## [0.11.0] — 2026-09-04
+
+### Added
+
+- **A `degraded` flag on `chats` and `supervisors`, kind-scoped mark/clear,
+  surfaced in the UI.** A handful of database writes (usage recording,
+  progress/status persistence, task bookkeeping) were already wrapped in
+  `except Exception: log and move on` for good reason — accounting or
+  reporting must never break a turn that already succeeded — but when one of
+  those writes actually failed, nothing observable was left behind besides a
+  log line. `chat_mark_degraded`/`chat_clear_degraded` and
+  `supervisor_mark_degraded`/`supervisor_clear_degraded` give each known
+  failure kind (`usage`, `progress`, `status`, `task_create`,
+  `task_message`, `task_status_done`, `task_status_failed`) a visible,
+  kind-scoped flag: a success of one kind never silently clears a
+  still-unresolved failure of another (a single `degraded_reason` column
+  still means a later kind's mark-then-clear can lose an earlier kind's
+  record — documented as an accepted tradeoff, not a bug). Wired into all 9
+  known-silent failure sites (3 in usage recording, 6 in the supervisor
+  engine). Surfaced as a small warning badge in both the chat sidebar and
+  the supervisor list, with the failure reason on hover. See
+  `docs/superpowers/specs/2026-09-04-supervisor-observability-design.md`.
+- **A dependency-ordered task rail above the supervisor pane's task list.**
+  Shows a supervisor's subtasks laid out by what depends on what — one
+  status dot per task, grouped into columns by dependency layer — as an
+  overview strip above the existing flat, click-to-expand task list, which
+  is unchanged.
+- **A topbar marker for whatever a supervisor is actually gated on.** One
+  always-visible indicator (survives every panel-maximize layout) that lights
+  up only when the supervisor is genuinely blocked on a person — paused, or
+  a watched member conversation whose own status is "waiting" — rather than
+  requiring a scan of the task list or the members panel to notice.
+
+### Fixed
+
+- **The machine Test button failed on every backend with "Could not reach
+  api.anthropic.com:443: Could not start claude".** The button runs a real
+  `claude -p` turn from inside the main app process to verify a backend, but
+  nothing had ever resolved `WC_CLAUDE_PATH` for that process — only the
+  separate proxy process had it, via `bin/wc-proxy-run.sh`. Under systemd's
+  minimal `PATH` (no `~/.local/bin`), the bare `claude` fallback couldn't
+  resolve. Extracted the already-tested resolution logic into
+  `bin/wc-resolve-claude-path.sh`, sourced by both launchers now instead of
+  risking a second copy drifting out of sync — this exact bug class has
+  already recurred twice before under the proxy alone.
+
 ## [0.10.5] — 2026-09-04
 
 ### Added
@@ -44,6 +107,22 @@ churn.
 
 ### Fixed
 
+- **Every terminal-permission-prompt detection silently stopped working**:
+  auto-answer, and answering a prompt from the browser, both went through
+  `prompts._is_claude`/`_is_claude_process`, which trust `/proc/<pid>/comm`
+  alone. The CLI installs each version as
+  `~/.local/share/claude/versions/<version>` and now execs that path
+  directly, so `comm` for a live session is the bare version string
+  (`2.1.260`) — containing no "claude" at all. Every armed chat on the host
+  failed the identity check at once, and failed silently: a rejected pid
+  reads as "no pending prompt", not an error, so nothing logged, nothing
+  alerted, and a permission prompt could sit waiting for minutes with the
+  console reporting nothing pending. Falls back to checking `cmdline`'s
+  first argument, which is still the full launch path and does contain
+  "claude". Every prior test for this exercised a mocked `_is_claude`, which
+  is exactly how the regression shipped unnoticed — the new tests spawn a
+  real process with a bare-version-number binary name and assert against the
+  real `/proc` entry.
 - **The sidebar's "agent is working" dot read as flashing.** Bumped bigger
   and glowing to be visible at a glance, then reported live as flashing:
   the sidebar list is fully rebuilt on every 6s poll, which restarts the
@@ -109,7 +188,11 @@ churn.
   supervisor — the sibling `renderChatMessages()` in the same file escapes
   every value it writes. Not exploitable today: both are server-controlled
   UUID/enum values, the same currently-inert shape as the `task.status` fix
-  below. Wrapped in `esc()`. Registry #79.
+  below. Wrapped in `esc()`. Registry #79 — and #86: wrapping `s.id` in
+  `esc()` alone turned out not to be enough for the position it is used in
+  (a `data-id="..."` attribute), because `esc()` never escaped quotes, only
+  `&`/`<`/`>`. Writing a real regression test for this found it: `esc()` now
+  escapes `"`/`'` too, a no-op everywhere else it is already used.
 
 - **`supervisor.py`'s header comment still read "WebConsole 0.9.0"** against
   a current `config.VERSION` of `0.10.4`. Cosmetic only; corrected.
@@ -158,6 +241,19 @@ churn.
   updated for the four rows affected by the `ANTHROPIC_API_KEY` fix above —
   it exists to catch the proxy diverging from `backend_env.deltas()`, not to
   pin the old, leaking value as correct.
+- **`tests/test_qa_prompt_answer.py`: two new cases spawn a real process**
+  with a bare-version-number binary name to exercise `prompts._is_claude`
+  directly, rather than mocking `_is_claude` the way every existing case in
+  that file does — the only way this class of bug (registry #85) can be
+  caught, since a mock of the function under test cannot fail alongside it.
+  Mutation-verified.
+- **`tests/test_frontend_browser.py::SupervisorListEscapingBrowserTests`**,
+  new: seeds a supervisor directly into the database with a crafted id and
+  status, and asserts on DOM structure rather than script execution —
+  `Content-Security-Policy: script-src 'self'` blocks every inline handler
+  regardless of escaping, so an execution-based assertion would have passed
+  whether or not the fix worked. Registry #86, both halves; each
+  mutation-verified against the specific line it protects.
 
 ### Changed
 

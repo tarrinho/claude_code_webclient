@@ -117,10 +117,16 @@ def deltas(backend: Any) -> Deltas:
     unset.append("ANTHROPIC_AUTH_TOKEN")
 
     if not isinstance(backend, dict) or backend.get("provider") != "anthropic":
-        # A non-anthropic backend must not inherit Anthropic variables. When the
-        # CLI is talking to a gateway, a base URL from the host shell reaching
-        # the child would route the turn somewhere nobody selected.
+        # A non-anthropic backend -- or no backend at all -- must not inherit
+        # Anthropic variables. When the CLI is talking to a gateway, a base URL
+        # or key from the host shell reaching the child would route the turn,
+        # or authenticate it, somewhere nobody selected. Missing ANTHROPIC_API_KEY
+        # here left a key exported by an *earlier* call in the same long-lived
+        # process (the shell wrapper's hot-swap, mid-session) reaching a child
+        # that should have had none: switching off an Anthropic machine did not
+        # clear its key, only switching to a different Anthropic machine did.
         unset.append("ANTHROPIC_BASE_URL")
+        unset.append("ANTHROPIC_API_KEY")
         return Deltas(set_, unset)
 
     base_url = _text(backend.get("base_url"))

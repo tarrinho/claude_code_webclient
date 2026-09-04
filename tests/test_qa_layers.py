@@ -517,7 +517,9 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await self.init_temp_db()
         self.owner = "e2e-user"
-        self.request = SimpleNamespace(state=SimpleNamespace(session={"user": self.owner}))
+        self.request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": self.owner}), query_params={}
+        )
 
     async def asyncTearDown(self):
         await self.close_temp_db()
@@ -593,7 +595,9 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await self.init_temp_db()
-        self.request = SimpleNamespace(state=SimpleNamespace(session={"user": "uat-user"}))
+        self.request = SimpleNamespace(
+            state=SimpleNamespace(session={"user": "uat-user"}), query_params={}
+        )
 
     async def asyncTearDown(self):
         await self.close_temp_db()

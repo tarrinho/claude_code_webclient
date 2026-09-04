@@ -28,6 +28,7 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "bin" / "wc-claude.sh"
+BACKEND_ENV = ROOT / "bin" / "wc-backend-env.py"
 
 GATEWAY_URL = "https://gateway.invalid"
 GATEWAY_MODEL = "vendor/some-model"
@@ -187,8 +188,13 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.db.read_bytes(), before)
 
     def test_it_opens_the_database_read_only(self):
-        """Asserted on the source too: mode=ro is the guarantee, not the effect."""
-        self.assertIn("mode=ro", WRAPPER.read_text(encoding="utf-8"))
+        """Asserted on the source too: mode=ro is the guarantee, not the effect.
+
+        Registry #80: the wrapper delegates its DB read to wc-backend-env.py,
+        which is where the guarantee actually lives now -- this used to check
+        wc-claude.sh itself, before that read moved out of it.
+        """
+        self.assertIn("mode=ro", BACKEND_ENV.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

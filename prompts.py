@@ -77,18 +77,37 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
         return None
 
 
+def _cmdline_argv0(pid: int) -> str:
+    """The first argument of *pid*'s command line, or "" if unreadable."""
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return cmdline.split("\0", 1)[0]
+
+
 def _is_claude(pid: int) -> bool:
     """Whether *pid* is a Claude Code process.
 
     The session file only claims a pid; this is the kernel's opinion of what
     that pid actually is. Without it a file naming any live pid would be enough
     to aim keystrokes at that process's terminal.
+
+    ``comm`` alone stopped being enough once the CLI started installing each
+    version as ``~/.local/share/claude/versions/<version>`` and running that
+    path directly: the kernel's short name for the process is then the bare
+    version string (``2.1.260``), which contains no "claude" at all, and every
+    live session on this host failed this check at once -- silently, since a
+    failure here reads as "no pending prompt" rather than an error. `cmdline`'s
+    first argument is still the full launch path, which does contain it.
     """
     try:
         comm = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
     except OSError:
         return False
-    return "claude" in comm.lower()
+    if "claude" in comm.lower():
+        return True
+    return "claude" in _cmdline_argv0(pid).lower()
 
 
 def _self_and_ancestors() -> set[int]:
@@ -463,9 +482,12 @@ def _is_claude_process(pid: int | None) -> bool:
         if _ancestor_pid == pid:
             return False
     name = _process_name(pid)
-    if not name:
-        return False
-    return "claude" in name.lower()
+    if name and "claude" in name.lower():
+        return True
+    # Same fallback as _is_claude: the CLI's own binary is installed and run
+    # as ~/.local/share/claude/versions/<version>, whose `comm` is the bare
+    # version string once that path is what actually gets exec'd.
+    return "claude" in _cmdline_argv0(pid).lower()
 
 
 def deliver_request(session_id: str, text: str) -> dict[str, Any]:

@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 import auth
+import backend_env
 import claude_proxy
 import config
 import db
@@ -329,8 +330,49 @@ class BaseUrlNormaliseTests(unittest.TestCase):
         )
 
 
+class _FakeStdout:
+    """An async-iterable stdout that yields canned lines, then ends."""
+
+    def __init__(self, lines: list[bytes]):
+        self._lines = list(lines)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+
+class _FakeProc:
+    """Enough of ``asyncio.subprocess.Process`` for ``_test_anthropic_endpoint``."""
+
+    def __init__(self, lines: list[bytes]):
+        self.stdout = _FakeStdout(lines)
+        self.returncode: int | None = None
+        self.killed = False
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        return self.returncode or 0
+
+
 class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
-    """Test reports what the endpoint actually says, not just that it accepts TCP."""
+    """Test goes through the CLI, not a raw HTTP client (CLAUDE.md rule 0).
+
+    ``_test_anthropic_endpoint`` used to call a real endpoint with urllib. That
+    was the one place in this codebase that talked to a model API directly --
+    and it gave a wrong answer for a host-login backend (no stored key), which
+    always got 401 from a probe carrying no credential at all even though every
+    real turn on that backend succeeds through the CLI's own OAuth login.
+
+    So the boundary to mock is ``asyncio.create_subprocess_exec``, not a probe
+    function -- there is no HTTP call left to intercept.
+    """
 
     async def asyncSetUp(self):
         await _setup_db(self)
@@ -346,61 +388,116 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         self._resolve.stop()
         await _teardown_db(self)
 
-    async def _run_test(self, probe):
+    async def _run_test(self, lines: list[str]) -> tuple[object, _FakeProc]:
+        """Run the handler with ``lines`` (text, newline-free) as the CLI's stdout."""
+        proc = _FakeProc([line.encode() for line in lines])
+        spawn = AsyncMock(return_value=proc)
         request = _make_request()
-        with patch.object(machine_routes, "_probe_anthropic", probe):
-            return await machine_routes.handle_machine_test(request, "m1")
+        with patch("asyncio.create_subprocess_exec", spawn):
+            response = await machine_routes.handle_machine_test(request, "m1")
+        return response, proc, spawn
 
     async def test_success(self):
         import json as _json
 
-        response = await self._run_test(lambda url, key: (200, b''))
+        response, _proc, _spawn = await self._run_test(
+            ['{"type": "result", "is_error": false}']
+        )
         body = _json.loads(response.body)
         self.assertTrue(body["ok"])
         self.assertEqual(body["status"], "reachable")
 
-    async def test_probes_the_models_endpoint_with_the_key(self):
-        seen = {}
+    async def test_uses_the_machines_own_credential_and_model(self):
+        """The CLI is spawned with *this* machine's backend, not the active one.
 
-        def _probe(url, key):
-            seen["url"] = url
-            seen["key"] = key
-            return 200, b""
+        Verified through ``backend_env.deltas`` -- the same function every real
+        turn goes through -- rather than by re-deriving the expected env by
+        hand, so this fails if that shared rule ever changes what it sets.
+        """
+        _response, _proc, spawn = await self._run_test(
+            ['{"type": "result", "is_error": false}']
+        )
+        spawn.assert_awaited_once()
+        args, kwargs = spawn.call_args
+        self.assertIn("--model", args)
+        self.assertEqual(args[args.index("--model") + 1], "claude-opus-5")
+        expected = backend_env.deltas(
+            {"provider": "anthropic", "base_url": "https://api.anthropic.com",
+             "api_key": "sk-test"}
+        ).apply_to({})
+        for name, value in expected.items():
+            self.assertEqual(kwargs["env"].get(name), value)
 
-        await self._run_test(_probe)
-        self.assertEqual(seen["url"], "https://api.anthropic.com/v1/models")
-        self.assertEqual(seen["key"], "sk-test")
+    _AUTH_RETRY_LINE = (
+        '{"type": "system", "subtype": "api_retry", "attempt": 1, '
+        '"error_status": 401, "error": "authentication_failed"}'
+    )
 
     async def test_rejected_key_is_not_reported_as_reachable(self):
         """A bare TCP connect called this 'reachable' while every turn failed."""
         import json as _json
 
-        response = await self._run_test(lambda url, key: (401, b''))
+        response, _proc, _spawn = await self._run_test([self._AUTH_RETRY_LINE])
         body = _json.loads(response.body)
         self.assertFalse(body["ok"])
         self.assertEqual(body["status"], "auth_failed")
         self.assertEqual(response.status_code, 502)
 
-    async def test_unexpected_status_surfaces_the_code(self):
+    async def test_a_non_auth_error_is_reported_as_error_not_auth_failed(self):
         import json as _json
 
-        response = await self._run_test(lambda url, key: (404, b''))
+        response, _proc, _spawn = await self._run_test([
+            '{"type": "result", "is_error": true, "result": "model not found"}',
+        ])
         body = _json.loads(response.body)
         self.assertEqual(body["status"], "error")
-        self.assertIn("404", body["error"])
+        self.assertIn("model not found", body["error"])
 
-    async def test_connection_failure_is_unreachable(self):
+    async def test_a_connection_failure_is_unreachable(self):
+        """Distinguished from auth_failed and error: the CLI never got a
+        response to classify, same distinction the old URLError branch made."""
         import json as _json
 
-        def _boom(url, key):
-            raise OSError("no route to host")
-
-        response = await self._run_test(_boom)
+        line = ('{"type": "system", "subtype": "api_retry", "attempt": 1, '
+                '"error_status": null, "error": "connect ECONNREFUSED 10.0.0.5:443"}')
+        response, _proc, _spawn = await self._run_test([line])
         body = _json.loads(response.body)
         self.assertEqual(body["status"], "unreachable")
 
+    async def test_no_decisive_frame_is_reported_rather_than_hanging(self):
+        """The CLI exiting with no result frame at all (killed, crashed) must
+        not be silently treated as success."""
+        import json as _json
+
+        response, _proc, _spawn = await self._run_test([])
+        body = _json.loads(response.body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(response.status_code, 502)
+
+    async def test_the_process_is_killed_once_the_verdict_is_known(self):
+        """A bad key makes the CLI retry with backoff past 16s; the probe must
+        not wait through that once the first retry frame already answers it."""
+        _response, proc, _spawn = await self._run_test([self._AUTH_RETRY_LINE])
+        self.assertTrue(proc.killed)
+
+    async def test_hook_and_non_json_noise_is_skipped(self):
+        """SessionStart hooks and stray warning lines are not JSON; they must
+        not abort the read or be mistaken for the verdict."""
+        import json as _json
+
+        response, _proc, _spawn = await self._run_test([
+            "⚠ claude.ai connectors are disabled because ...",
+            '{"type": "system", "subtype": "hook_started", "hook_id": "x"}',
+            "[claude-code:unrecognized_model] {\"model\": \"x\"}",
+            '{"type": "result", "is_error": false}',
+        ])
+        body = _json.loads(response.body)
+        self.assertTrue(body["ok"])
+
     async def test_private_endpoint_blocked(self):
-        """The probe goes out from the server, so it keeps the SSRF blocklist."""
+        """The probe still reaches out from the server via the configured
+        base_url, so it keeps the SSRF blocklist -- now checked before the CLI
+        is ever spawned rather than before an HTTP connection."""
         self._resolve.stop()
         try:
             with patch.object(machine_routes, "_resolve_host",
@@ -412,8 +509,11 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
             self._resolve.start()
 
     async def test_key_never_appears_in_the_response(self):
-        response = await self._run_test(lambda url, key: (401, b''))
+        import json as _json
+
+        response, _proc, _spawn = await self._run_test([self._AUTH_RETRY_LINE])
         self.assertNotIn(b"sk-test", response.body)
+        _json.loads(response.body)  # also: still valid JSON
 
 
 class GetBackendTests(unittest.IsolatedAsyncioTestCase):

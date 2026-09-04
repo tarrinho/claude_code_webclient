@@ -14,8 +14,10 @@ order they are added, so that order has to be readable in one place.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import time
 import urllib.request
 import uuid
@@ -23,6 +25,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+import backend_env
 import config
 import db
 import runner
@@ -304,51 +307,140 @@ def _probe_anthropic(url: str, api_key: str | None) -> tuple[int, bytes]:
         return exc.code, b""
 
 
-async def _test_anthropic_endpoint(machine: dict, api_key: str | None):
-    """Probe the API itself, rather than only opening a TCP socket.
+_PROBE_PROMPT = "Reply with exactly: ok"
+_PROBE_TIMEOUT_S = 20.0
 
-    A bare connect reports "reachable" for an endpoint that rejects every turn
-    -- wrong key, wrong URL -- which reads as "this machine works". Asking
-    /v1/models separates reachable, unauthenticated and broken.
+
+def _classify_cli_error(status: int | None, message: str) -> str:
+    """"auth_failed", "unreachable" or plain "error", from a frame's status/text.
+
+    ``status`` is the HTTP-shaped ``error_status`` a retry frame carries when
+    the backend answered at all. Its absence, paired with connection-shaped
+    wording, is what a DNS failure or a refused connection looks like -- the
+    CLI never got a response to classify, same as the old raw probe's
+    ``URLError``/timeout branch.
     """
-    base_url = runner.normalise_base_url(machine.get("base_url")) or (
-        config.ANTHROPIC_BASE_URL
-    )
-    host = _base_url_host(base_url)
-    # Same SSRF blocklist the transport path applies before connecting out.
-    _resolve_host(host)
-    url = f"{base_url}/v1/models"
-    try:
-        status, _body = await asyncio.wait_for(
-            asyncio.to_thread(_probe_anthropic, url, api_key), timeout=10.0
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        _log.warning("anthropic probe timeout %s", host)
-        return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection timed out"},
-            status_code=502,
-        )
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        _log.warning("anthropic probe failed %s: %s", host, exc)
-        return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection failed"},
-            status_code=502,
-        )
-    if status == 200:
-        return JSONResponse({"ok": True, "status": "reachable"})
+    text = (message or "").lower()
     if status in (401, 403):
-        detail = (
-            "Endpoint rejected the API key"
-            if api_key
-            else "Endpoint requires an API key"
+        return "auth_failed"
+    if any(w in text for w in ("api key", "authentic", "permissiondenied", "unauthorized")):
+        return "auth_failed"
+    if status is None and any(
+        w in text for w in
+        ("connect", "refused", "unreachable", "resolve", "enotfound", "timed out")
+    ):
+        return "unreachable"
+    return "error"
+
+
+async def _test_anthropic_endpoint(machine: dict, api_key: str | None):
+    """Probe the backend through the Claude Code CLI, not a raw HTTP client.
+
+    This used to open its own connection straight to the provider and send
+    ``x-api-key`` by hand -- the one place in this codebase that talked to a
+    model API directly, against CLAUDE.md's governing rule: the console never
+    calls a model API, it spawns ``claude``. It also gave a wrong answer for a
+    *host-login* backend (no stored key -- credentials come from the CLI's own
+    OAuth login instead): with no key to send, the raw probe always got 401 and
+    reported "Endpoint requires an API key", even though every real turn on
+    that exact backend succeeds through the CLI's login. Reported live:
+    clicking Test on the official Anthropic API machine, which runs on the
+    host's OAuth login.
+
+    So this runs one real turn with the environment ``backend_env.deltas``
+    builds for *this* machine -- the same function ``claude_proxy`` and
+    ``runner`` use for a real turn -- and reads the CLI's own stream for the
+    verdict, rather than asking the provider anything ourselves.
+
+    The process is killed on the first decisive frame rather than let run to
+    completion. A bad key makes the CLI retry with exponential backoff --
+    measured: 10 attempts, delays growing past 16s -- and waiting for that
+    would turn a connectivity check into a two-minute one. The first
+    ``api_retry`` frame carries the same status and reason as the last, so
+    nothing is lost by stopping there.
+    """
+    # A test is still an admin pointing this host's own network position at a
+    # base_url they configured -- same SSRF exposure the old raw probe had, so
+    # the same blocklist applies before the CLI is ever started.
+    base_url = runner.normalise_base_url(machine.get("base_url")) or config.ANTHROPIC_BASE_URL
+    _resolve_host(_base_url_host(base_url))
+
+    model = (machine.get("model") or "").strip() or config.MODEL_NAME
+    backend = {**machine, "api_key": api_key}
+    env = backend_env.deltas(backend).apply_to(os.environ.copy())
+    claude_bin = os.environ.get("WC_CLAUDE_PATH", "claude")
+    cmd = [
+        claude_bin, "-p", _PROBE_PROMPT,
+        "--output-format", "stream-json", "--verbose",
+        "--model", model, "--dangerously-skip-permissions",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
         )
+    except OSError as exc:
+        _log.error("cli_probe_spawn_failed: %s", exc)
         return JSONResponse(
-            {"ok": False, "status": "auth_failed", "error": detail}, status_code=502
+            {"ok": False, "status": "error", "error": "Could not start claude"},
+            status_code=502,
         )
-    return JSONResponse(
-        {"ok": False, "status": "error", "error": f"Endpoint returned HTTP {status}"},
-        status_code=502,
-    )
+
+    verdict: dict | None = None
+
+    async def read_frames() -> None:
+        nonlocal verdict
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            try:
+                frame = json.loads(raw)
+            except ValueError:
+                continue  # hook noise and stray warning lines are not JSON
+            ftype, subtype = frame.get("type"), frame.get("subtype")
+            if ftype == "system" and subtype == "api_retry":
+                error = frame.get("error") or "Request failed"
+                verdict = {
+                    "ok": False,
+                    "status": _classify_cli_error(frame.get("error_status"), error),
+                    "error": error,
+                }
+                return
+            if ftype == "system" and subtype == "error":
+                error = frame.get("message") or frame.get("error") or "CLI error"
+                verdict = {"ok": False, "status": "error", "error": error}
+                return
+            if ftype == "result":
+                if frame.get("is_error"):
+                    text = str(frame.get("result") or frame.get("error") or "")
+                    verdict = {
+                        "ok": False,
+                        "status": _classify_cli_error(None, text),
+                        "error": text[:300] or "Turn failed",
+                    }
+                else:
+                    verdict = {"ok": True, "status": "reachable"}
+                return
+
+    try:
+        await asyncio.wait_for(read_frames(), timeout=_PROBE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        verdict = {
+            "ok": False,
+            "status": "unreachable",
+            "error": f"No response from claude within {int(_PROBE_TIMEOUT_S)}s",
+        }
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+
+    if verdict is None:
+        verdict = {"ok": False, "status": "error", "error": "claude exited with no result"}
+    return JSONResponse(verdict, status_code=200 if verdict["ok"] else 502)
 
 
 async def handle_machine_test(request: Request, machine_id: str):

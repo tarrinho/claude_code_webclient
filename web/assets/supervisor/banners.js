@@ -111,3 +111,44 @@ import { addChatMessage } from "./list.js";
     el.completionBanner.hidden = true;
   }
 
+  // ── Human-gate marker ────────────────────────────────────────────────
+  // The one topbar element every body.max-* state leaves visible, so this is
+  // the only reliable place to say "something needs you" regardless of which
+  // panel is currently maximized. Two things actually gate a supervisor on a
+  // person -- the engine paused, or a watched member whose own status is
+  // "waiting" -- see docs/superpowers/specs/2026-09-04-supervisor-observability-design.md
+  // for why the task DAG itself never does (subtasks run one-shot,
+  // non-interactive turns and never wait on anyone).
+
+  export function updateGateMarker(supervisorStatus, members) {
+    const badge = el.topbarGate;
+    if (!badge) return;
+    const waitingMember = (members || []).find((m) => m.status === "waiting");
+    const gate = supervisorStatus === "paused"
+      ? { kind: "paused" }
+      : waitingMember
+        ? { kind: "member", member: waitingMember }
+        : null;
+    if (!gate) {
+      badge.hidden = true;
+      badge.onclick = null;
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = "!";
+    badge.title = gate.kind === "paused"
+      ? "Paused — resume when ready"
+      : `Waiting on you: ${gate.member.title || gate.member.id}`;
+    badge.onclick = () => {
+      document.body.classList.remove("max-left", "max-right", "max-center", "max-bottom");
+      if (gate.kind === "paused") {
+        el.pauseResumeBtn?.focus();
+      } else {
+        const row = document.querySelector(
+          `.member-row[data-chat-id="${CSS.escape(gate.member.id)}"]`
+        ) || document.getElementById("membersPanel");
+        row?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    };
+  }
+

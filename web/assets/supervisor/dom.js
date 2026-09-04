@@ -35,6 +35,7 @@
     completionSummary: $("#completion-summary"),
     goalDismissBtn: $(".goal-banner-dismiss"),
     topbarBadge: $("#topbar-badge"),
+    topbarGate: $("#topbar-gate"),
     goalRestoreBtn: $(".goal-banner-restore"),
     completionCloseBtn: $(".completion-close"),
     pauseResumeBtn: $("#pauseResumeBtn"),

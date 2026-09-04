@@ -2,6 +2,8 @@
 
 import { apiFetch, formatTime } from "./api.js";
 import { $ } from "./dom.js";
+import { state } from "./state.js";
+import { updateGateMarker } from "./banners.js";
 
   // ── Members ──────────────────────────────────────────────────────────
   // The conversations and agents a supervisor watches. Deliberately separate
@@ -57,6 +59,8 @@ import { $ } from "./dom.js";
       if (!panel.children.length) panel.replaceChildren(membersEmpty(err.message));
       return;
     }
+    state.members = members;
+    updateGateMarker(state.activeSupervisor?.status, state.members);
     panel.replaceChildren();
     if (!members.length) {
       panel.appendChild(membersEmpty("No members yet. Use + to add one."));
@@ -65,6 +69,7 @@ import { $ } from "./dom.js";
     members.forEach((m) => {
       const row = document.createElement("div");
       row.className = "member-row";
+      row.dataset.chatId = m.id;
       const name = document.createElement("span");
       name.className = "member-title";
       name.textContent = m.title || "Untitled";

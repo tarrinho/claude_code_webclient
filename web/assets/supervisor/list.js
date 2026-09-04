@@ -6,6 +6,7 @@ import { clearBadge } from "./banners.js";
 import { $, el } from "./dom.js";
 import { esc, showScrollBtn } from "./main.js";
 import { connectSSE } from "./stream.js";
+import { loadMembers } from "./members.js";
 import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./tasks.js";
 
   // ── Supervisor list ──────────────────────────────────────────────────
@@ -292,6 +293,15 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
 
     // Start SSE stream
     connectSSE();
+
+    // Members were previously only loaded as a side effect of the
+    // add/remove picker (members.js's own two call sites) -- opening a
+    // supervisor never populated the panel, so the human-gate marker
+    // (banners.js:updateGateMarker) had nothing to read until someone
+    // happened to touch that dialog. This is the fix, not a new feature:
+    // the panel already exists and is meant to reflect membership from the
+    // moment a supervisor is opened.
+    loadMembers(state.activeSupervisorId);
   }
 
   export function renderChatMessages() {

@@ -2,7 +2,7 @@
 
 import { state } from "./state.js";
 import { formatTime } from "./api.js";
-import { incrementBadge, showCompletionBanner, shrinkGoalBanner } from "./banners.js";
+import { incrementBadge, showCompletionBanner, shrinkGoalBanner, updateGateMarker } from "./banners.js";
 import { $, el } from "./dom.js";
 import { addChatMessage, renderChatMessages, renderSupervisorList } from "./list.js";
 import { esc, showScrollBtn } from "./main.js";
@@ -101,6 +101,7 @@ import { loadTasks, renderTaskTree, updateOverallProgress, updatePauseResumeBtn 
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
       updateOverallProgress();
+      updateGateMarker(data.status, state.members);
     }
   }
 
@@ -129,6 +130,7 @@ import { loadTasks, renderTaskTree, updateOverallProgress, updatePauseResumeBtn 
       if (sup) sup.status = data.status;
       renderSupervisorList();
       updatePauseResumeBtn(data.status);
+      updateGateMarker(data.status, state.members);
     }
   }
 

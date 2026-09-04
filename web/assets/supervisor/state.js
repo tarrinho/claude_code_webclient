@@ -19,6 +19,7 @@ export const state = {
   activeTaskId: null,
   chatMessages: [],
   eventLog: [],
+  members: [],
 
   // The live EventSource, held so it can be closed. It used to be an
   // AbortController, which EventSource ignores -- see connectSSE().
@@ -33,6 +34,14 @@ export const state = {
   // the one client script that lived directly in `web/`. Moving it under
   // assets/ in 0.10.0 is what closed that blind spot.
   _refreshTimer: null,
+
+  // A 1s ticker that re-renders the task tree while a task is running, so its
+  // elapsed time counts up between the 30s polls above. Held the same way and
+  // for the same reason as `_refreshTimer`: a bare setInterval cannot be
+  // stopped and doubles if its setup runs twice. Started/stopped by
+  // renderTaskTree itself rather than kept running always, since there is
+  // nothing to tick while every task is pending, done, or failed.
+  _tickTimer: null,
 
   // Smart-scroll state for chat and event log: follow along only when the
   // user is at the bottom (within 20px), otherwise let them read freely.

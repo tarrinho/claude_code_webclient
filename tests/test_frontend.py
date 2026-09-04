@@ -25,6 +25,14 @@ class FrontendStructureTests(unittest.TestCase):
         cls.tasks_js = (ASSETS / "supervisor" / "tasks.js").read_text()
         cls.dom_js = (ASSETS / "supervisor" / "dom.js").read_text()
         cls.supervisor_html = (WEB / "supervisor.html").read_text()
+        cls.banners_js = (ASSETS / "supervisor" / "banners.js").read_text()
+        cls.members_js = (ASSETS / "supervisor" / "members.js").read_text()
+        cls.list_js = (ASSETS / "supervisor" / "list.js").read_text()
+        cls.main_js_supervisor = (ASSETS / "supervisor" / "main.js").read_text()
+        # Not named in the plan's fixture list, but the new test below reads
+        # self.stream_js and no prior test had loaded it -- without this the
+        # test errors with AttributeError rather than failing its assertions.
+        cls.stream_js = (ASSETS / "supervisor" / "stream.js").read_text()
 
     def test_html_uses_external_assets(self):
         # Trailing quote omitted so a cache-busting ?v=N query stays valid. The
@@ -546,6 +554,19 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn('id="task-rail"', self.supervisor_html)
         self.assertIn("renderRail(state.tasks)", self.tasks_js)
         self.assertIn("taskRail", self.dom_js)
+
+    def test_human_gate_marker_exists_and_is_wired(self):
+        self.assertIn("export function updateGateMarker(supervisorStatus, members)", self.banners_js)
+        self.assertIn('id="topbar-gate"', self.supervisor_html)
+        self.assertIn("updateGateMarker(", self.members_js)
+        self.assertIn("updateGateMarker(", self.stream_js)
+        self.assertIn("topbarGate", self.dom_js)
+        self.assertIn("state.members", self.members_js)
+        # Members must load when a supervisor is opened, not only after using
+        # the add/remove picker -- otherwise the gate marker is blind until
+        # someone happens to touch that dialog.
+        self.assertIn("loadMembers(", self.list_js)
+        self.assertIn("loadMembers", self.main_js_supervisor)
 
 
 if __name__ == "__main__":

@@ -1002,6 +1002,14 @@
             opacity: 1;
             transform: scale(1);
         }
+
+        /* ── Human-gate marker: the one thing actually blocked on a person ── */
+        .gate-badge {
+            cursor: pointer;
+            border: none;
+            background: #ef4444;
+        }
+        .gate-badge:hover { background: #dc2626; }
     </style>
 </head>
 <body>
@@ -1010,6 +1018,10 @@
         <span>&#8212;</span>
         <span>Supervisor</span>
         <span id="topbar-badge" class="notif-badge" hidden>0</span>
+        <!-- A button, not a span like #topbar-badge: this one is clickable
+             (it un-maximizes every panel and jumps to whatever is actually
+             gating on a person), so it must be reachable by keyboard. -->
+        <button type="button" id="topbar-gate" class="notif-badge gate-badge" hidden title=""></button>
         <button id="new-supervisor-btn">+ New</button>
         <span class="spacer"></span>
         <span class="top-info" id="topbar-info">0.11.0</span>

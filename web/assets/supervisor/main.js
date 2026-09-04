@@ -60,7 +60,7 @@ import { clearBadge, dismissCompletionBanner, dismissGoalBanner, restoreGoalBann
 import { $, el } from "./dom.js";
 import { initResizeHandles } from "./layout.js";
 import { createSupervisor, loadSupervisors, setSupervisorSort } from "./list.js";
-import { membersNotice, openMembersPicker } from "./members.js";
+import { loadMembers, membersNotice, openMembersPicker } from "./members.js";
 import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
 
   // ── State ────────────────────────────────────────────────────────────
@@ -91,17 +91,23 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
   // Track previous supervisor statuses so we can flash badges on change.
 
   // ── Escape HTML ─────────────────────────────────────────────────────
+  // The div.textContent round-trip escapes &, < and > -- enough for a text
+  // node, not for an attribute value: `data-id="${esc(s.id)}"` still breaks
+  // out on a bare `"`, since nothing here touches quotes. Every other call
+  // site interpolates into text, where quote-escaping is a harmless no-op
+  // (a literal " or ' displays the same whether or not it is entity-coded),
+  // so extending this one definition is safe everywhere it is already used.
   export function esc(str) {
     if (!str) return "";
     const d = document.createElement("div");
     d.textContent = String(str);
-    return d.innerHTML;
+    return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
   // ── Init ─────────────────────────────────────────────────────────────
   export function init() {
     // Version display
-    if (el.topbarInfo) el.topbarInfo.textContent = "0.10.4";
+    if (el.topbarInfo) el.topbarInfo.textContent = "0.11.0";
 
     // Event listeners
     el.newSupervisorBtn.addEventListener("click", createSupervisor);
@@ -211,6 +217,11 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
         loadSupervisors();
         if (state.activeSupervisorId) {
           loadTasks();
+          // Members have no SSE push of their own (unlike tasks, which
+          // arrive over the stream) -- without this the gate marker's view
+          // of who is "waiting" would only ever refresh when a supervisor is
+          // first opened or the add/remove picker is used.
+          loadMembers(state.activeSupervisorId);
         }
       }, 30000);
     }
@@ -223,6 +234,10 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
       if (state._refreshTimer) {
         clearInterval(state._refreshTimer);
         state._refreshTimer = null;
+      }
+      if (state._tickTimer) {
+        clearInterval(state._tickTimer);
+        state._tickTimer = null;
       }
     });
 

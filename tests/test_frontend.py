@@ -20,6 +20,7 @@ class FrontendStructureTests(unittest.TestCase):
         # supervisor.html navigation moved here, in a later module split.
         cls.machines = (ASSETS / "machines.js").read_text()
         cls.supervisor = (ASSETS / "supervisor.js").read_text()
+        cls.supervisor_list_js = (ASSETS / "supervisor" / "list.js").read_text()
 
     def test_html_uses_external_assets(self):
         # Trailing quote omitted so a cache-busting ?v=N query stays valid. The
@@ -531,6 +532,10 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("chat.degraded", self.chat_list)
         self.assertIn("chat-degraded", self.chat_list)
         self.assertIn(".chat-degraded{", self.css)
+
+    def test_degraded_supervisors_are_marked_on_their_status_badge(self):
+        self.assertIn("s.degraded", self.supervisor_list_js)
+        self.assertIn("degraded_reason", self.supervisor_list_js)
 
 
 if __name__ == "__main__":

@@ -75,12 +75,16 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
         if (s.updated_at && s.created_at && s.updated_at !== s.created_at) {
           timeLabel = `&middot; ${formatTime(s.updated_at)}`;
         }
+        const degradedTitle = s.degraded
+          ? ` title="${esc(s.degraded_reason || 'Some state may be stale')}"`
+          : "";
+        const degradedGlyph = s.degraded ? " ⚠" : "";
         return `<div class="supervisor-list-item ${
           s.id === state.activeSupervisorId ? "active" : ""
-        }" data-id="${s.id}">
+        }" data-id="${esc(s.id)}">
           <div class="sl-title">${esc(s.title || "Untitled")}</div>
           <div class="sl-status">
-            <span class="status-badge ${statusClass}">${statusClass}</span>
+            <span class="status-badge ${esc(statusClass)}"${degradedTitle}>${esc(statusClass)}${degradedGlyph}</span>
             ${s.progress_pct != null ? `<span>${Math.round(s.progress_pct)}%</span>` : ""}
             ${timeLabel ? `<span style="margin-left:4px">${timeLabel}</span>` : ""}
           </div>

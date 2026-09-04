@@ -227,6 +227,12 @@ button{touch-action:manipulation}
 /* Armed state reads as a live control, not a static icon: colour plus
    aria-pressed, so the state survives a monochrome display. */
 .auto-answer-toggle[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}
+/* Third state of the same click-cycle, so it needs its own colour distinct
+   from plain "on" -- reuses a chart series colour already defined for both
+   themes rather than inventing a new one. Declared after the aria-pressed
+   rule on purpose: this state also carries aria-pressed="true", and the later
+   rule of two equal-specificity selectors is what wins the tie. */
+.auto-answer-toggle[data-mode="recommend"]{color:var(--series-7);border-color:var(--series-7)}
 .auto-answer-menu{position:absolute;z-index:40;top:calc(100% + 6px);right:0;left:auto;width:min(360px,calc(100vw - 32px));max-height:min(60vh,320px);overflow-y:auto;display:flex;flex-direction:column;gap:2px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:8px}
 .auto-answer-menu[hidden]{display:none}
 .auto-answer-menu h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:2px 4px 6px}
@@ -236,15 +242,31 @@ button{touch-action:manipulation}
 .auto-answer-row-outcome{font-weight:600}
 .auto-answer-row-outcome.answered{color:var(--accent)}
 .auto-answer-row-outcome.skipped{color:var(--warn,var(--muted))}
-.auto-answer-row-prompt{font-size:12px;color:var(--fg);overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;word-break:break-word}
+/* cursor:pointer is the only hint a row is clickable -- the click reveals the
+   same text already sitting in the DOM, just past where the 2-line clamp
+   below cuts it off, in the tooltip defined further down. */
+.auto-answer-row-prompt{font-size:12px;color:var(--fg);overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;word-break:break-word;cursor:pointer}
+.auto-answer-row-prompt:hover,.auto-answer-row-prompt:focus-visible{color:var(--accent)}
 .auto-answer-empty{padding:6px 8px;color:var(--muted)}
+/* position:fixed, so it escapes .auto-answer-menu's own overflow-y:auto clip
+   instead of being cut off along with whichever row it points at. */
+.auto-answer-tooltip{position:fixed;z-index:70;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:8px 10px;font-size:12px;line-height:1.4;color:var(--fg);white-space:pre-wrap;word-break:break-word}
+.auto-answer-tooltip[hidden]{display:none}
 /* The auto margin lives on the group so the edit/refresh pair rides right
    with the status, instead of being stranded beside the model selects. */
 .strip-right{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
 /* Own positioning context, not .strip-right: that group also holds #runState
    after this one, so a menu anchored to .strip-right's right edge landed past
    the status dot instead of under the info button. */
-.auto-answer-group{position:relative;display:inline-flex;align-items:center;gap:6px}
+.auto-answer-group{position:relative;display:inline-flex;align-items:center}
+/* A badge on the toggle's own corner, not a second inline button: taken out
+   of flow so the group's box is just the toggle's, which is also what keeps
+   .auto-answer-menu's right:0 anchored to the icon rather than to a wider
+   group that used to include this button inline. By id, not just
+   .auto-answer-info: .strip-action's own min-width/min-height/padding are
+   declared later in this file and would otherwise win the tie against an
+   equal-specificity class selector and force this back up to 24px. */
+#autoAnswerInfo.auto-answer-info{position:absolute;top:-6px;right:-6px;width:14px;height:14px;min-width:0;min-height:0;font-size:9px;line-height:1;padding:0;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--panel)}
 .run-state{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 /* The conversation name is a title, not a path: normal UI font and colour so
    it does not read as one long monospace run with the directory. */
@@ -284,6 +306,10 @@ button{touch-action:manipulation}
 .message-tools button:hover{color:var(--fg)}
 .empty-state{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:var(--muted);text-align:center;padding:32px}
 .empty-state .icon{font-size:38px;opacity:.45}.empty-state strong{color:var(--fg);font-size:15px}.empty-state p{font-size:12px}
+.conversation-resource{display:flex;align-items:center;justify-content:space-between;gap:12px;align-self:stretch;margin-top:auto;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:12px}
+.conversation-resource-label{color:var(--muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em}
+.conversation-resource a{color:var(--accent);font-size:12px;text-decoration:none}
+.conversation-resource a:hover,.conversation-resource a:focus-visible{text-decoration:underline}
 
 /* Composer */
 .composer{display:none;border-top:1px solid var(--line);background:var(--panel);padding:10px 16px 12px}

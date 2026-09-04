@@ -17,7 +17,14 @@ import { addLogEntry } from "./stream.js";
     }
     el.taskTree.innerHTML = state.tasks
       .map((t) => {
-        const statusClass = t.status || "pending";
+        // Escaped even though every value written to this field today is one
+        // of a handful of literals the supervisor engine's own control flow
+        // assigns (never raw model output) -- rules.md's audit found it
+        // interpolated unescaped and flagged it as a silent invariant gap: not
+        // exploitable while that stays true, but nothing here enforces it, and
+        // a future change that lets a task carry a freeform status would turn
+        // this into a stored XSS with no visible signal at the change site.
+        const statusClass = esc(t.status || "pending");
         const progress = Math.min(100, Math.round(t.progress_pct || 0));
         const progressClass = progress >= 100 ? "complete" : "";
         const isActive = t.id === state.activeTaskId;
@@ -96,7 +103,7 @@ import { addLogEntry } from "./stream.js";
       </div>
       <div class="detail-section">
         <h3>Status</h3>
-        <div><span class="status-badge ${task.status}">${task.status}</span> &mdash; ${progress}%</div>
+        <div><span class="status-badge ${esc(task.status)}">${esc(task.status)}</span> &mdash; ${progress}%</div>
       </div>
       <div class="detail-section">
         <h3>Model</h3>

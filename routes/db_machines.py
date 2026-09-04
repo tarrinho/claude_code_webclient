@@ -4,6 +4,7 @@
 # database module.
 
 import logging
+import sqlite3
 from typing import Any
 
 import db

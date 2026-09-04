@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Final
 
 import aiosqlite
-import sqlite3
 
 import config
 

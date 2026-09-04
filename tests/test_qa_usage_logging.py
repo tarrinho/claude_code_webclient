@@ -79,6 +79,22 @@ class UsageRecordDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 class RecordTurnUsageDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     """_record_turn_usage's two bare returns are the empty-tab symptom."""
 
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        Path(f"{self.tmp.name}/p").mkdir(parents=True, exist_ok=True)
+        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/p", "admin")
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
     async def test_absent_frame_names_the_stale_proxy_as_a_cause(self):
         with self.assertLogs("wc.app", level="WARNING") as caught:
             await chat_routes._record_turn_usage("c1", "admin", {})
@@ -100,6 +116,39 @@ class RecordTurnUsageDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         ):
             await chat_routes._record_turn_usage("c1", "admin", frame)
         self.assertIn("usage_recorded", "\n".join(caught.output))
+
+    async def test_absent_frame_marks_the_chat_degraded(self):
+        await chat_routes._record_turn_usage("c1", "admin", {})
+        chat = await db.chat_get("c1", "admin")
+        self.assertEqual(chat["degraded"], 1)
+        self.assertIn("usage:", chat["degraded_reason"])
+
+    async def test_frame_without_models_marks_the_chat_degraded(self):
+        await chat_routes._record_turn_usage("c1", "admin", {"models": {}, "cost_usd": 1})
+        chat = await db.chat_get("c1", "admin")
+        self.assertEqual(chat["degraded"], 1)
+
+    async def test_a_failed_db_write_marks_the_chat_degraded(self):
+        frame = {"models": {"m": {"input_tokens": 1, "output_tokens": 2}}}
+        with (
+            patch.object(db, "ai_machine_active", AsyncMock(return_value=None)),
+            patch.object(db, "usage_record", AsyncMock(return_value=None)),
+        ):
+            await chat_routes._record_turn_usage("c1", "admin", frame)
+        chat = await db.chat_get("c1", "admin")
+        self.assertEqual(chat["degraded"], 1)
+        self.assertIn("usage:", chat["degraded_reason"])
+
+    async def test_a_successful_record_clears_a_prior_degraded_flag(self):
+        await db.chat_mark_degraded("c1", "usage", "earlier failure")
+        frame = {"models": {"m": {"input_tokens": 1, "output_tokens": 2}}}
+        with (
+            patch.object(db, "ai_machine_active", AsyncMock(return_value=None)),
+            patch.object(db, "usage_record", AsyncMock(return_value=1)),
+        ):
+            await chat_routes._record_turn_usage("c1", "admin", frame)
+        chat = await db.chat_get("c1", "admin")
+        self.assertEqual(chat["degraded"], 0)
 
 
 class ProxyStalenessTests(unittest.TestCase):

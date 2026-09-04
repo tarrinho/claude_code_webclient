@@ -568,6 +568,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             "code older than its source and never emitted one)",
             chat_id,
         )
+        await db.chat_mark_degraded(chat_id, "usage", "no frame reached the handler")
         return
     models = frame.get("models") or {}
     if not models:
@@ -577,6 +578,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             "attributed)",
             chat_id, sorted(frame),
         )
+        await db.chat_mark_degraded(chat_id, "usage", "frame carried no models")
         return
     try:
         machine = await db.ai_machine_active(owner)
@@ -588,10 +590,12 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
         machine = None
     provider = backend_kind(machine)
     cost = frame.get("cost_usd")
+    any_written = False
+    any_failed = False
     for index, (model, stats) in enumerate(models.items()):
         if not isinstance(stats, dict):
             continue
-        await db.usage_record(
+        row_id = await db.usage_record(
             chat_id,
             owner,
             model or "unknown",
@@ -608,6 +612,14 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             # conversation, so "has a session id" never distinguished the two.
             origin="web",
         )
+        if row_id is None:
+            any_failed = True
+        else:
+            any_written = True
+    if any_failed:
+        await db.chat_mark_degraded(chat_id, "usage", "usage_record returned no row id")
+    elif any_written:
+        await db.chat_clear_degraded(chat_id, "usage")
     _log.info(
         "usage_recorded chat_id=%s provider=%s models=%s",
         chat_id, provider, list(models),

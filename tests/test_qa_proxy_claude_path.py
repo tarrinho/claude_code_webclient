@@ -29,7 +29,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LAUNCHER = ROOT / "bin" / "wc-proxy-run.sh"
+LAUNCHER = ROOT / "bin" / "wc-resolve-claude-path.sh"
+PROXY_RUNNER = ROOT / "bin" / "wc-proxy-run.sh"
+APP_LAUNCHER = ROOT / "launch.sh"
 
 # A PATH like the one systemd --user actually supplies: no ~/.local/bin.
 SYSTEMD_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -75,6 +77,39 @@ class LauncherWiringTests(unittest.TestCase):
         fix that silently does nothing -- the same shape as the bug it fixes.
         """
         source = (ROOT / "claude_proxy.py").read_text(encoding="utf-8")
+        self.assertIn('os.environ.get("WC_CLAUDE_PATH"', source)
+
+    def test_both_launchers_source_the_shared_resolution(self):
+        """Both processes that spawn `claude` directly must resolve it the
+        same way, from the same file.
+
+        This is what a third occurrence of this exact bug class looked like:
+        the main app process started spawning `claude` too (the machine Test
+        button), but only the separate proxy launcher had ever been taught to
+        resolve the binary explicitly -- so the button failed with "Could not
+        start claude" under systemd's PATH, on every backend. A second inline
+        copy of the resolution block in launch.sh would have "fixed" this
+        while creating a second place for the fix to silently rot; sourcing
+        the same file from both is what a caller losing this cannot do
+        quietly.
+        """
+        for launcher, name in ((PROXY_RUNNER, "wc-proxy-run.sh"), (APP_LAUNCHER, "launch.sh")):
+            with self.subTest(launcher=name):
+                source = launcher.read_text(encoding="utf-8")
+                self.assertIn(
+                    "wc-resolve-claude-path.sh", source,
+                    f"{name} no longer sources the shared Claude-path resolution",
+                )
+
+    def test_routes_machines_also_reads_the_resolved_path(self):
+        """The Test button's own probe must consult the same variable name.
+
+        `routes/machines.py` runs inside the main app process, which now
+        sources wc-resolve-claude-path.sh via launch.sh -- but that value
+        only reaches this code if it reads the same environment variable
+        name every other caller does.
+        """
+        source = (ROOT / "routes" / "machines.py").read_text(encoding="utf-8")
         self.assertIn('os.environ.get("WC_CLAUDE_PATH"', source)
 
 

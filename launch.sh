@@ -167,6 +167,17 @@ for _retry in 1 2 3 4 5 6 7 8 9 10; do
 done
 # <<< reclaim-block
 
+# ── Resolve the Claude binary ──────────────────────────────────────────
+# The main app process now spawns `claude` directly too (the machine Test
+# button in routes/machines.py), not only the separate proxy process -- and
+# systemd --user starts this with the same PATH that does not include
+# ~/.local/bin. Without this, the Test button fails with "Could not start
+# claude" on every backend, since a bare "claude" is unresolvable here. See
+# bin/wc-resolve-claude-path.sh for the full history (this exact failure has
+# already broken the proxy twice under a different caller).
+# shellcheck source=bin/wc-resolve-claude-path.sh
+. bin/wc-resolve-claude-path.sh
+
 # ── Launch WebConsole with HTTPS ──────────────────────────────────────
 # Application records go to logs/webconsole.log through logging.conf's rotating
 # handler. Uvicorn's own access lines only ever reach stdout, so without this

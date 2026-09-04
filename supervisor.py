@@ -959,6 +959,28 @@ class SupervisorEngine:
         # message the block existed to record.
         task_chat_id = f"subtask_{task_id}"
 
+        # Persisted, not only held in-memory, and deliberately still before the
+        # main try below (not inside it): a telemetry write failing here must
+        # not be reported as the turn itself having failed.
+        # handle_supervisor_tasks_get reads the DB row, not this graph, so
+        # without this write a task sat as "pending" for its entire run and
+        # only ever became visible at the very end as "done"/"failed" -- there
+        # was no way to see one was in flight, let alone how long it had been.
+        # updated_at is stamped by this call (supervisor_task_update always
+        # sets it), which is what lets the UI show elapsed time for a running
+        # task.
+        try:
+            import db
+
+            await db.supervisor_task_update(
+                supervisor_id=self.supervisor_id,
+                task_id=task_id,
+                owner_id=self.owner_id,
+                status="running",
+            )
+        except Exception:  # noqa: BLE001 -- telemetry must not block the task
+            _log.exception("could not record task %s as running", task_id)
+
         try:
             dep_context = self._build_dep_context(task_id)
             full_prompt = (

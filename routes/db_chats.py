@@ -116,7 +116,12 @@ async def chats_reorder(owner_id: str, chat_ids: list[str]) -> int:
     if not chat_ids:
         return 0
     try:
-        await db.db_conn.execute("BEGIN")
+        # No explicit BEGIN: db_conn is shared across every writer in the
+        # process, and a literal "BEGIN" raises "cannot start a transaction
+        # within a transaction" if another coroutine's write already opened
+        # one implicitly and has not committed yet (registry #48). The first
+        # UPDATE below opens its own implicit transaction, which already
+        # covers atomicity up to the commit/rollback below.
         placed = 0
         for index, chat_id in enumerate(chat_ids):
             cur = await db.db_conn.execute(
@@ -690,7 +695,9 @@ async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]
     async with _messages_batch_lock:
         ids = []
         try:
-            await db.db_conn.execute("BEGIN")
+            # No explicit BEGIN here either -- see the comment in
+            # chats_reorder (registry #48). The first INSERT below opens the
+            # implicit transaction this loop needs.
             now = db._now()
             for role, content in rows:
                 cur = await db.db_conn.execute(

@@ -21,6 +21,10 @@ class FrontendStructureTests(unittest.TestCase):
         cls.machines = (ASSETS / "machines.js").read_text()
         cls.supervisor = (ASSETS / "supervisor.js").read_text()
         cls.supervisor_list_js = (ASSETS / "supervisor" / "list.js").read_text()
+        cls.rail = (ASSETS / "supervisor" / "rail.js").read_text()
+        cls.tasks_js = (ASSETS / "supervisor" / "tasks.js").read_text()
+        cls.dom_js = (ASSETS / "supervisor" / "dom.js").read_text()
+        cls.supervisor_html = (WEB / "supervisor.html").read_text()
 
     def test_html_uses_external_assets(self):
         # Trailing quote omitted so a cache-busting ?v=N query stays valid. The
@@ -536,6 +540,12 @@ class FrontendStructureTests(unittest.TestCase):
     def test_degraded_supervisors_are_marked_on_their_status_badge(self):
         self.assertIn("s.degraded", self.supervisor_list_js)
         self.assertIn("degraded_reason", self.supervisor_list_js)
+
+    def test_rail_is_rendered_and_wired_into_the_pane(self):
+        self.assertIn("export function renderRail(tasks)", self.rail)
+        self.assertIn('id="task-rail"', self.supervisor_html)
+        self.assertIn("renderRail(state.tasks)", self.tasks_js)
+        self.assertIn("taskRail", self.dom_js)
 
 
 if __name__ == "__main__":

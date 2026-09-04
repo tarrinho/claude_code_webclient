@@ -16,6 +16,7 @@
   export const el = {
     supervisorList: $("#supervisor-list"),
     taskTree: $("#task-tree"),
+    taskRail: $("#task-rail"),
     chatMessages: $("#chat-messages"),
     eventLog: $("#event-log"),
     composer: $("#composer"),

@@ -7,12 +7,115 @@ import { $, el } from "./dom.js";
 import { addChatMessage, loadSupervisors, showActiveSupervisor } from "./list.js";
 import { esc, init } from "./main.js";
 import { addLogEntry } from "./stream.js";
+import { renderRail } from "./rail.js";
+
+  // `depends_on` arrives from the API as a JSON-encoded string, not an array:
+  // db_supervisors.supervisor_task_create stores it via json.dumps(deps or []),
+  // and loadTasks assigns the API response straight into state.tasks with no
+  // transform. Confirmed against the real database -- every existing task's
+  // column is literally the four-character string "[]". So `t.depends_on.map`
+  // threw for every task, on every render, before this was ever an array here;
+  // found while double-checking this file's own progress feature, since that
+  // code sits in the same per-task callback and never ran either -- the whole
+  // task tree render throws before reaching it.
+  function _dependsOnList(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== "string" || !value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // Seconds since `iso`, or null if `iso` does not parse. The one real,
+  // observed number a running task has: the moment its DB row was last
+  // written to "running" (updated_at, stamped by supervisor_task_update).
+  function _elapsedSeconds(iso) {
+    const started = Date.parse(iso);
+    if (Number.isNaN(started)) return null;
+    return Math.max(0, Math.floor((Date.now() - started) / 1000));
+  }
+
+  function _formatSeconds(secs) {
+    if (secs < 60) return `${secs}s`;
+    return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  }
+
+  // Elapsed time since `iso`, as "Ns" or "MmSs".
+  function _elapsedLabel(iso) {
+    const secs = _elapsedSeconds(iso);
+    return secs === null ? "" : _formatSeconds(secs);
+  }
+
+  // An *estimated* completion percentage for the task currently running,
+  // clamped so it never claims 100 -- that number is reserved for a task the
+  // engine has actually marked done.
+  //
+  // Pedro asked to see the percentage moving, not just elapsed time. There is
+  // still no CLI signal for "40% through this turn" -- a single claude -p call
+  // reports nothing until it finishes -- so this is not a measurement, it is
+  // elapsed time divided by how long this supervisor's own finished tasks
+  // typically took, which is the only basis available that is not invented
+  // outright. Labelled "(est.)" everywhere it is shown for that reason: this
+  // codebase's own rule is to never report what was not observed, and an
+  // estimate presented as a measurement is exactly that.
+  //
+  // Returns null -- not a guessed number -- when there is no history yet to
+  // estimate from, so the caller falls back to the honest elapsed-time label
+  // instead of a percentage with nothing behind it.
+  function _estimatedProgressPct(task) {
+    if (task.status !== "running") return null;
+    const elapsed = _elapsedSeconds(task.updated_at);
+    if (elapsed === null) return null;
+    const durations = state.tasks
+      .filter((t) => t.status === "done" && t.created_at && t.updated_at)
+      .map((t) => (Date.parse(t.updated_at) - Date.parse(t.created_at)) / 1000)
+      .filter((d) => Number.isFinite(d) && d > 0);
+    if (!durations.length) return null;
+    const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+    return Math.min(99, Math.round((elapsed / avg) * 100));
+  }
+
+  // The label and bar-fill percentage for one task, in one place so the tree
+  // row and the detail panel can never disagree about what a task is showing.
+  function _progressView(task) {
+    const measured = Math.min(100, Math.round(task.progress_pct || 0));
+    if (task.status !== "running") {
+      return {pct: measured, label: `${measured}%`};
+    }
+    const estimate = _estimatedProgressPct(task);
+    if (estimate === null) {
+      return {pct: 0, label: _elapsedLabel(task.updated_at) || "running"};
+    }
+    return {pct: estimate, label: `${estimate}% (est.)`};
+  }
+
+  // Re-renders every second while a task is running, so the elapsed label
+  // above actually counts up between the 30s poll in main.js. Self-stopping:
+  // idle the moment nothing is running, rather than ticking forever against
+  // a plan that finished.
+  function _manageTicker() {
+    const anyRunning = state.tasks.some((t) => t.status === "running");
+    if (anyRunning && !state._tickTimer) {
+      state._tickTimer = setInterval(renderTaskTree, 1000);
+    } else if (!anyRunning && state._tickTimer) {
+      clearInterval(state._tickTimer);
+      state._tickTimer = null;
+    }
+  }
 
   // ── Task tree ────────────────────────────────────────────────────────
   export function renderTaskTree() {
+    renderRail(state.tasks);
     if (!state.tasks.length) {
       el.taskTree.innerHTML = '<div class="empty-state">No tasks yet. Wait for the supervisor to create a plan.</div>';
       state._expandedTaskId = null;
+      if (state._tickTimer) {
+        clearInterval(state._tickTimer);
+        state._tickTimer = null;
+      }
       return;
     }
     el.taskTree.innerHTML = state.tasks
@@ -25,15 +128,18 @@ import { addLogEntry } from "./stream.js";
         // a future change that lets a task carry a freeform status would turn
         // this into a stored XSS with no visible signal at the change site.
         const statusClass = esc(t.status || "pending");
-        const progress = Math.min(100, Math.round(t.progress_pct || 0));
+        const view = _progressView(t);
+        const progress = view.pct;
         const progressClass = progress >= 100 ? "complete" : "";
+        const progressLabel = esc(view.label);
         const isActive = t.id === state.activeTaskId;
         const isExpanded = t.id === state._expandedTaskId;
         const expandClass = isExpanded ? "expanded" : "";
         const expandIcon = isExpanded ? "▼" : "▶";
         const expandLabel = isExpanded ? "Collapse" : "Expand";
-        const depsHtml = t.depends_on && t.depends_on.length
-          ? `<div class="task-deps">depends on: ${t.depends_on.map(d => esc(d)).join(", ")}</div>` : "";
+        const deps = _dependsOnList(t.depends_on);
+        const depsHtml = deps.length
+          ? `<div class="task-deps">depends on: ${deps.map(d => esc(d)).join(", ")}</div>` : "";
         const descHtml = t.description
           ? `<div class="task-meta" style="color:#64748b;font-size:11px;padding-left:16px;margin-top:1px;">${esc(t.description.substring(0, 80))}${t.description.length > 80 ? "..." : ""}</div>` : "";
         const resultHtml = (t.status === "done" && t.result)
@@ -50,8 +156,11 @@ import { addLogEntry } from "./stream.js";
             <span class="status-badge ${statusClass}">${statusClass}</span>
             ${modelHtml ? `<span>${modelHtml}</span>` : ""}
           </div>
-          <div class="task-progress-bar">
-            <div class="task-progress-fill ${progressClass}" style="width:${progress}%"></div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <div class="task-progress-bar" style="flex:1;">
+              <div class="task-progress-fill ${progressClass}" style="width:${progress}%"></div>
+            </div>
+            <span style="font-size:10px;color:#64748b;min-width:30px;text-align:right;">${progressLabel}</span>
           </div>
         </div>
         <div class="task-detail-row ${expandClass}" data-detail="${t.id}">
@@ -81,6 +190,8 @@ import { addLogEntry } from "./stream.js";
         renderTaskTree();
       });
     });
+
+    _manageTicker();
   }
 
   export function selectTask(taskId) {
@@ -95,7 +206,7 @@ import { addLogEntry } from "./stream.js";
       el.detailContent.innerHTML = '<div class="empty-state">Task not found</div>';
       return;
     }
-    const progress = Math.min(100, Math.round(task.progress_pct || 0));
+    const progressLabel = esc(_progressView(task).label);
     el.detailContent.innerHTML = `
       <div class="detail-section">
         <h3>Task ${esc(task.id)}</h3>
@@ -103,7 +214,7 @@ import { addLogEntry } from "./stream.js";
       </div>
       <div class="detail-section">
         <h3>Status</h3>
-        <div><span class="status-badge ${esc(task.status)}">${esc(task.status)}</span> &mdash; ${progress}%</div>
+        <div><span class="status-badge ${esc(task.status)}">${esc(task.status)}</span> &mdash; ${progressLabel}</div>
       </div>
       <div class="detail-section">
         <h3>Model</h3>
@@ -114,10 +225,13 @@ import { addLogEntry } from "./stream.js";
         <h3>Description</h3>
         <div class="detail-value">${esc(task.description)}</div>
       </div>` : ""}
-      ${task.depends_on ? `
+      ${task.depends_on != null ? `
       <div class="detail-section">
         <h3>Dependencies</h3>
-        <div class="detail-value">${task.depends_on.length ? esc(task.depends_on.join(", ")) : "None"}</div>
+        <div class="detail-value">${(() => {
+          const deps = _dependsOnList(task.depends_on);
+          return deps.length ? esc(deps.join(", ")) : "None";
+        })()}</div>
       </div>` : ""}
       ${task.result ? `
       <div class="detail-section">

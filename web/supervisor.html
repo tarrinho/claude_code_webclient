@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Supervisor — WebConsole 0.10.6</title>
+    <title>Supervisor — WebConsole 0.11.0</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; }
@@ -187,6 +187,29 @@
         .task-status-dot.blocked { background: #a78bfa; }
         @keyframes pulse-blue { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
         @keyframes pulse-amber { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.3); } }
+        /* ── Task rail: dependency-ordered overview above #task-tree ──── */
+        #task-rail {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 12px;
+            border-bottom: 1px solid #e2e8f0;
+            overflow-x: auto;
+            flex-shrink: 0;
+        }
+        #task-rail[hidden] { display: none; }
+        .rail-layer {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .rail-connector {
+            width: 16px;
+            height: 2px;
+            background: #e2e8f0;
+            flex-shrink: 0;
+        }
         .task-title { font-size: 13px; font-weight: 500; color: #2d3748; flex: 1; }
         .task-meta {
             font-size: 11px;
@@ -989,7 +1012,7 @@
         <span id="topbar-badge" class="notif-badge" hidden>0</span>
         <button id="new-supervisor-btn">+ New</button>
         <span class="spacer"></span>
-        <span class="top-info" id="topbar-info">0.10.6</span>
+        <span class="top-info" id="topbar-info">0.11.0</span>
     </div>
 
     <div id="shell">
@@ -1003,6 +1026,12 @@
                 <button class="panel-btn" data-max="left" title="Maximize">&#9633;</button>
             </div>
             <div id="supervisor-list"></div>
+            <!-- Dependency-ordered overview of the current plan's tasks.
+                 Additive to #task-tree below, not a replacement: this shows
+                 shape (what depends on what, and each one's status at a
+                 glance); #task-tree keeps the per-task detail and
+                 click-to-expand. Hidden when there are no tasks yet. -->
+            <div id="task-rail" hidden></div>
             <!-- tabindex="-1" so the 1-4 shortcuts can focus these panels.
                  A div is not focusable without it, so .focus() was silently
                  doing nothing. -1 keeps them out of the tab order while still
@@ -1091,6 +1120,6 @@
             </div>
     </div>
 
-    <script type="module" src="/assets/supervisor/main.js?v=6"></script>
+    <script type="module" src="/assets/supervisor/main.js?v=7"></script>
 </body>
 </html>

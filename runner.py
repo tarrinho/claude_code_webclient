@@ -21,13 +21,55 @@ import json
 import os
 import re
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import TypeVar
 
 import backend_env
 import config
 
 _log: object = __import__("loguru").logger.bind(service="runner")
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+class _BoundedDict(OrderedDict[_K, _V]):
+    """A dict capped at *maxsize*, evicting the least-recently-set entry.
+
+    ``_models_by_chat``, ``_usage_by_chat`` and ``_retried_usage_by_chat`` are
+    hand-off buffers: written once per turn and popped once by whichever
+    caller consumes them. That pop never happens when the caller crashes or
+    forgets before reaching it, and ``_skills_by_session`` is never popped at
+    all -- it accumulates for the life of the process, one entry per Claude
+    Code session that ever ran a turn. Both are unbounded growth under
+    sustained use with no cap in the original ``dict``.
+
+    dict.setdefault is implemented in C and does not route through a
+    subclass's ``__setitem__``, so it is overridden explicitly below --
+    without that, ``_skills_by_session.setdefault(...)`` (the only write site
+    for that dict) would silently bypass the eviction this class exists to
+    provide.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key: _K, value: _V) -> None:
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self._maxsize:
+            self.popitem(last=False)
+
+    def setdefault(self, key: _K, default: _V) -> _V:  # type: ignore[override]
+        if key in self:
+            self.move_to_end(key)
+            return self[key]
+        self[key] = default
+        return default
 
 
 class TurnError(Exception):
@@ -183,9 +225,15 @@ def _normalise_cli_frame(obj: dict) -> list[dict]:
 # ── Concurrency gate (singleton, lazy init) ──────────────────────────────────
 
 _sem: object = None
-_models_by_chat: dict[str, str] = {}
-_usage_by_chat: dict[str, dict] = {}
-_skills_by_session: dict[str, set[str]] = {}
+# Capped rather than plain dicts -- see _BoundedDict's docstring. 10,000 chats'
+# worth of hand-off state, or session skill-sets, is generous for any single
+# process's uptime and small in memory (a model name or a token-count dict per
+# entry), while still bounding a leak from unlimited chat/session creation.
+_MAX_RUNNER_STATE_ENTRIES = 10_000
+_models_by_chat: dict[str, str] = _BoundedDict(_MAX_RUNNER_STATE_ENTRIES)
+_usage_by_chat: dict[str, dict] = _BoundedDict(_MAX_RUNNER_STATE_ENTRIES)
+_retried_usage_by_chat: dict[str, list[dict]] = _BoundedDict(_MAX_RUNNER_STATE_ENTRIES)
+_skills_by_session: dict[str, set[str]] = _BoundedDict(_MAX_RUNNER_STATE_ENTRIES)
 
 
 def take_last_model(chat_id: str) -> str:
@@ -202,6 +250,37 @@ def take_last_usage(chat_id: str) -> dict:
     the event arrives.
     """
     return _usage_by_chat.pop(chat_id, {})
+
+
+def take_retried_usage(chat_id: str) -> list[dict]:
+    """Return and clear usage frames spent on attempts a retry discarded.
+
+    A discarded attempt still cost real tokens against the backend, so its
+    frame must reach the same accounting path as a kept turn -- see CLAUDE.md
+    rule 5, "record failures too". It does not go through take_last_usage /
+    the live 'usage' event because those carry only the kept attempt; callers
+    must drain this separately and record each frame themselves (with their
+    own ``origin``), same as take_last_usage.
+    """
+    return _retried_usage_by_chat.pop(chat_id, [])
+
+
+def _is_non_answer(chunks: list[str], usage_frame: dict) -> bool:
+    """Whether a completed, error-free turn's output is worth retrying.
+
+    Both must hold: no real text content, and the reported output tokens
+    (summed across models, 0 when usage is missing) below the configured
+    floor. Text-empty is the primary signal -- observed on small gateway
+    models asked to self-identify, which return an empty text block with a
+    handful of tokens spent entirely on internal reasoning. A turn that
+    produced any real text is never retried by this check, no matter its
+    token count.
+    """
+    if "".join(chunks).strip():
+        return False
+    models = usage_frame.get("models") or {}
+    output_tokens = sum(m.get("output_tokens", 0) for m in models.values())
+    return output_tokens < config.TURN_RETRY_MIN_TOKENS
 
 
 def record_usage_frame(chat_id: str, frame: dict) -> None:
@@ -1021,11 +1100,31 @@ async def run_turn(
     if not resolved.is_dir():
         raise TurnError(f"Work directory does not exist: {work_dir}", fatal=True)
 
-    if config.PROXY_ENABLED:
-        return await _proxy_turn(prompt, session_id, str(resolved), chat_id, model,
-                                 owner)
-    return await _execute_direct(prompt, session_id, str(resolved), chat_id, model,
-                                 owner)
+    _retried_usage_by_chat.pop(chat_id, None)
+    max_attempts = config.TURN_RETRY_MAX + 1
+    for attempt in range(1, max_attempts + 1):
+        if config.PROXY_ENABLED:
+            chunks, sid = await _proxy_turn(
+                prompt, session_id, str(resolved), chat_id, model, owner
+            )
+        else:
+            chunks, sid = await _execute_direct(
+                prompt, session_id, str(resolved), chat_id, model, owner
+            )
+
+        if attempt == max_attempts or not _is_non_answer(
+            chunks, _usage_by_chat.get(chat_id) or {}
+        ):
+            return chunks, sid
+
+        frame = take_last_usage(chat_id)
+        if frame:
+            _retried_usage_by_chat.setdefault(chat_id, []).append(frame)
+        _log.warning(
+            "turn_retry chat_id=%s attempt=%d/%d reason=non_answer",
+            chat_id, attempt, max_attempts,
+        )
+    return chunks, sid  # unreachable: loop always returns on its last iteration
 
 
 async def stream_turn(
@@ -1069,13 +1168,67 @@ async def stream_turn(
     if not resolved.is_dir():
         raise TurnError(f"Work directory does not exist: {work_dir}", fatal=True)
 
-    if config.PROXY_ENABLED:
-        async for event in _proxy_stream_turn(
-            prompt, session_id, str(resolved), chat_id, model, owner
-        ):
+    _retried_usage_by_chat.pop(chat_id, None)
+    max_attempts = config.TURN_RETRY_MAX + 1
+    for attempt in range(1, max_attempts + 1):
+        if config.PROXY_ENABLED:
+            inner = _proxy_stream_turn(
+                prompt, session_id, str(resolved), chat_id, model, owner
+            )
+        else:
+            inner = _execute_direct_stream(
+                prompt, session_id, str(resolved), chat_id, model, owner
+            )
+
+        text_parts: list[str] = []
+        usage_event: dict | None = None
+        should_retry = False
+        async for event in inner:
+            etype = event.get("type")
+            if etype == "usage":
+                # Held back until 'done'/'error' decides whether this attempt
+                # is kept -- a retried attempt's usage goes through
+                # take_retried_usage instead of the live event, so a
+                # streaming handler recording usage as it arrives never sees
+                # a discarded attempt's frame.
+                usage_event = event
+                continue
+            if etype == "text":
+                text_parts.append(event.get("content") or "")
+                yield event
+                continue
+            if etype == "error":
+                if usage_event is not None:
+                    yield usage_event
+                yield event
+                return
+            if etype == "done":
+                if attempt < max_attempts and _is_non_answer(
+                    text_parts, usage_event or {}
+                ):
+                    should_retry = True
+                    if usage_event is not None:
+                        _retried_usage_by_chat.setdefault(chat_id, []).append(
+                            usage_event
+                        )
+                    break
+                if usage_event is not None:
+                    yield usage_event
+                yield event
+                return
             yield event
-    else:
-        async for event in _execute_direct_stream(
-            prompt, session_id, str(resolved), chat_id, model, owner
-        ):
-            yield event
+
+        if not should_retry:
+            return
+
+        _log.warning(
+            "turn_retry chat_id=%s attempt=%d/%d reason=non_answer",
+            chat_id, attempt, max_attempts,
+        )
+        yield {
+            "type": "status",
+            "status": "api_retry",
+            "attempt": attempt + 1,
+            "max_retries": max_attempts - 1,
+            "error": "Empty response, retrying",
+        }

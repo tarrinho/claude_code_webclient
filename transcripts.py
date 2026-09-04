@@ -663,6 +663,16 @@ def transcript_size(session_id: str) -> int:
         return 0
 
 
+
+# Keyed by the string path, so two sessions never collide even though a
+# transcript filename is a UUID with no realistic clash. Value is
+# (size_at_last_scan, result). A transcript's unanswered questions cannot
+# change without the file growing -- a new question or an answer are both
+# appended records -- so a size match is a sound proxy for "nothing to find
+# here that wasn't already found", not an approximation of one.
+_question_scan_cache: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+
+
 def _scan_questions_sync(path: Path) -> list[dict[str, Any]]:
     """Quick-scan the full transcript for AskUserQuestion blocks.
 
@@ -672,7 +682,26 @@ def _scan_questions_sync(path: Path) -> list[dict[str, Any]]:
     message body.  Answered questions are skipped so the import stays
     idempotent (questions that have a ``tool_result`` will render as
     "Answered in the terminal" via the normal turn import of the tail).
+
+    Every caller here polls: once per open conversation on a 5s timer, and
+    again for every linked conversation on a 30s sweep. Without the cache
+    below this read the whole file -- unbounded by the offset the rest of
+    the import already respects, tens of megabytes on the transcripts this
+    host actually has -- on every single one of those polls, whether or not
+    a byte had changed since the last one. Measured on 2026-09-03: 8
+    transcripts over 16 MB each, ~195 MB combined, rescanned in full by
+    every open tab's sweep every 30 seconds. That is disk and CPU spent
+    finding the same answer as a moment ago, not new information.
     """
+    key = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    cached = _question_scan_cache.get(key)
+    if cached is not None and cached[0] == size:
+        return list(cached[1])
+
     try:
         raw = path.read_bytes()
     except OSError:
@@ -714,6 +743,11 @@ def _scan_questions_sync(path: Path) -> list[dict[str, Any]]:
     for qid in reversed(list(asked.keys())):
         if qid not in answered:
             questions.append(asked[qid])
+    # Cached under the size actually read, not the earlier stat() -- the file
+    # can grow between the two, and keying on what was really parsed is what
+    # keeps the next call's comparison honest rather than trusting a number
+    # that may already be stale by the time it is stored.
+    _question_scan_cache[key] = (len(raw), list(questions))
     return questions
 
 

@@ -22,10 +22,57 @@ from __future__ import annotations
 import re
 from typing import Final
 
+from fastapi import HTTPException
+
 import config
 import turns
 
 _QUESTION_PENDING_NOTE = "(answer this in the terminal)"
+
+# Concurrent-SSE-connection cap, shared by every stream endpoint: chat
+# /stream and /live, supervisor /stream and task /stream, transcript
+# /stream. Each open connection holds a Python generator, an event buffer,
+# and -- for the chat /stream endpoint specifically -- a turn slot, for as
+# long as the client keeps it open, which an authenticated caller fully
+# controls. Without a cap, one account opening many connections costs file
+# descriptors and memory with no other action required.
+_sse_slots: dict[str, int] = {}
+_MAX_SSE_PER_OWNER: Final[int] = 8
+
+
+def acquire_sse_slot(owner: str) -> None:
+    """Reserve one of *owner*'s limited concurrent-SSE-connection slots.
+
+    Call before constructing the ``StreamingResponse``, not from inside its
+    generator. A ``StreamingResponse`` commits to its 200 status the moment
+    the generator first yields, so raising the 429 here -- before that point
+    -- is what makes an over-cap request actually observable as a 429 rather
+    than a stream that opens and then breaks with no diagnosable status.
+    """
+    current = _sse_slots.get(owner, 0)
+    if current >= _MAX_SSE_PER_OWNER:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many open streams for this account "
+                   f"(max {_MAX_SSE_PER_OWNER}) — close one and retry",
+        )
+    _sse_slots[owner] = current + 1
+
+
+def release_sse_slot(owner: str) -> None:
+    """Release a slot reserved by :func:`acquire_sse_slot`.
+
+    Called from the generator's own ``finally``, so it runs whether the
+    stream ended normally, raised, or was torn down by the client
+    disconnecting (``GeneratorExit``). Floors at zero rather than going
+    negative, so a call with no matching acquire -- which should not happen,
+    but a release is not the place to raise over it -- is harmless.
+    """
+    left = _sse_slots.get(owner, 0) - 1
+    if left <= 0:
+        _sse_slots.pop(owner, None)
+    else:
+        _sse_slots[owner] = left
 
 
 def backend_kind(machine: dict | None) -> str:

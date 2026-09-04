@@ -7,8 +7,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Final
 
 import db
 
@@ -475,6 +476,17 @@ async def chat_set_title(chat_id: str, title: str) -> None:
 
 # ── Chat FTS5 Search ──────────────────────────────────────────────────────────────────
 
+# FTS5 query characters allowed in a bare query (no operators).
+# Blocks NEAR(), phrase("..."), *, boolean operators etc. while still
+# letting users search for ordinary words and spaces.
+_FTSGOOD_RE: Final[re.Pattern[str]] = re.compile(r"^[a-zA-Z0-9 _\-\.]+$")
+
+
+def _fts_validate_query(query: str) -> bool:
+    """Return True if *query* is a safe FTS5 bare query."""
+    return bool(query) and bool(_FTSGOOD_RE.fullmatch(query))
+
+
 async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
     """Search message bodies using FTS5.
 
@@ -546,6 +558,38 @@ async def messages_last(chat_id: str, count: int = 1) -> list[dict[str, Any]]:
     rows = [dict(r) for r in await cur.fetchall()]
     rows.reverse()  # return in insertion order so index 0 is the oldest
     return rows
+
+
+async def messages_page(
+    chat_id: str, limit: int = 50, before_id: int | None = None
+) -> tuple[list[dict[str, Any]], bool]:
+    """One page of messages, newest-first internally, returned oldest-first.
+
+    Opening a chat used to call `messages_get` -- every message the
+    conversation has ever had, every time, with no LIMIT at all. Fine for a
+    ten-turn chat, expensive for a thousand-turn one: the whole row set is
+    read, sent, and rendered into the DOM on every open and every poll-driven
+    refresh. `before_id` pages backward (older messages, for "load more");
+    omitted, this returns the newest `limit`. `limit + 1` is fetched so
+    "more remain" is a fact about this page, not a guess from `limit` itself.
+    """
+    if before_id is None:
+        cur = await db.db_conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            "WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit + 1),
+        )
+    else:
+        cur = await db.db_conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            "WHERE chat_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+            (chat_id, before_id, limit + 1),
+        )
+    rows = [dict(r) for r in await cur.fetchall()]
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    rows.reverse()  # oldest first, matching messages_get's ordering
+    return rows, has_more
 
 
 # ── FTS5 index maintenance ──────────────────────────────────────────────────────────

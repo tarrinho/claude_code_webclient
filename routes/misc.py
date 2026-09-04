@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import auth
 import config
@@ -40,11 +40,6 @@ _log = logging.getLogger("wc.app")
 router = APIRouter()
 
 
-_COMPARISON_PDF = (
-    Path(__file__).resolve().parent.parent / "Backend_Models_20260902.comparison.pdf"
-)
-
-
 # Skill discovery roots. Plain module attributes (not Final) so tests can patch
 # them and never touch the real ~/.claude tree.
 _USER_SKILLS_ROOT: Path = Path.home() / ".claude" / "skills"
@@ -63,20 +58,6 @@ _SKILL_LIMIT: Final[int] = 500
 
 # Longest one-line summary shown on a collapsed skill card.
 _SKILL_SUMMARY_MAX: Final[int] = 120
-
-
-@router.get("/api/reports/backend-model-comparison.pdf")
-async def _api_backend_model_comparison(request: Request):
-    """Serve the reviewed comparison PDF to authenticated WebConsole users."""
-    if not _COMPARISON_PDF.is_file():
-        raise HTTPException(status_code=404, detail="Comparison PDF not available")
-    return FileResponse(
-        _COMPARISON_PDF,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": 'inline; filename="backend-model-comparison.pdf"',
-        },
-    )
 
 
 @router.get("/api/admin/export")
@@ -299,6 +280,7 @@ async def handle_db_backup(request: Request):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     data = await db.db_backup()
+    await db.admin_action_record(session["user"], "db_backup", "backup downloaded")
     date_str = (
         datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     )
@@ -337,6 +319,7 @@ async def handle_db_restore(request: Request):
     success = await db.db_restore(data)
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed — invalid or corrupted backup")
+    await db.admin_action_record(session["user"], "db_restore", "database restored")
 
     return JSONResponse({"ok": True, "message": "Database restored successfully"})
 
@@ -638,6 +621,9 @@ async def handle_settings_patch(request: Request):
         _validate_host(host)
         await db.setting_set("ai_machine_host", host)
         _log.info("AI machine host updated by user=%s host=%s", session["user"], host)
+        await db.admin_action_record(
+            session["user"], "settings_ai_machine_host", f"host={host}",
+        )
 
     # Boot secrets – these live in the DB so the app can run without .env.
     boot_secrets = {
@@ -661,11 +647,32 @@ async def handle_settings_patch(request: Request):
                 if not value:
                     raise HTTPException(status_code=400, detail=error)
                 value = _validate_projects_root(value)
+                # Reject if any existing chat work_dir would be stranded.
+                rows = await db.db_conn.execute(
+                    "SELECT work_dir FROM chats WHERE deleted_at IS NULL"
+                )
+                for row in await rows.fetchall():
+                    wd = row["work_dir"]
+                    try:
+                        resolved = Path(wd).resolve()
+                    except (OSError, RuntimeError):
+                        continue
+                    if resolved.is_relative_to(Path(value).resolve()):
+                        # Still inside the new root — fine.
+                        continue
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Existing chat workspace {wd} is outside the new projects root",
+                    )
             elif key == "model_base_url" and value is not None:
                 value = value.strip()
                 if not value:
                     raise HTTPException(status_code=400, detail=error)
             await db.setting_set(db_key, value.strip() if value is not None else None)
+            # Log the change (value omitted to avoid writing secrets).
+            await db.admin_action_record(
+                session["user"], "settings_change", f"{db_key}=*",
+            )
 
     # fallback_model was accepted and stored here but never read by anything --
     # a settings control implying a retry behaviour that did not exist. Removed
@@ -748,19 +755,33 @@ async def handle_tokens_create(request: Request):
 
     name = str(data.get("name") or "").strip()[:_TOKEN_NAME_MAX] or "unnamed"
     expires_at = None
-    if data.get("expires_in_days") is not None:
-        try:
-            days = int(data["expires_in_days"])
-        except (TypeError, ValueError):
+    # L6 fix: default to a configurable TTL so tokens don't live forever.
+    # Explicit "never" (0 or the string) disables expiry; a positive int
+    # sets a custom TTL; anything else uses _TOKEN_DEFAULT_TTL_DAYS.
+    _days_cfg = config.TOKEN_DEFAULT_TTL_DAYS
+    if "expires_in_days" in data:
+        val = data["expires_in_days"]
+        if isinstance(val, str) and val.lower() == "never":
+            expires_at = None  # explicit never
+        elif isinstance(val, (int, float)):
+            days = int(val)
+            if days == 0:
+                expires_at = None  # 0 = explicit never
+            elif 1 <= days <= _TOKEN_MAX_TTL_DAYS:
+                expiry = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days)
+                expires_at = expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"expires_in_days must be 1-{_TOKEN_MAX_TTL_DAYS}, or 0 for no expiry",
+                )
+        else:
             raise HTTPException(
                 status_code=400, detail="expires_in_days must be a number"
-            ) from None
-        if not 1 <= days <= _TOKEN_MAX_TTL_DAYS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"expires_in_days must be 1-{_TOKEN_MAX_TTL_DAYS}",
             )
-        expiry = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days)
+    elif _days_cfg > 0:
+        # Apply configurable default TTL.
+        expiry = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=_days_cfg)
         expires_at = expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     token_id, secret, token_hash = auth.new_api_token()
@@ -773,6 +794,9 @@ async def handle_tokens_create(request: Request):
     _log.info(
         "api_token_created id=%s user=%s name=%s expires=%s",
         token_id, session["user"], name, expires_at or "never",
+    )
+    await db.admin_action_record(
+        session["user"], "api_token_created", f"id={token_id} name={name} expires={expires_at or 'never'}",
     )
     return JSONResponse({
         "id": token_id,
@@ -801,6 +825,9 @@ async def handle_tokens_revoke(request: Request):
         raise HTTPException(status_code=404, detail="Token not found")
     _token_touched.pop(token_id, None)
     _log.info("api_token_revoked id=%s user=%s", token_id, session["user"])
+    await db.admin_action_record(
+        session["user"], "api_token_revoked", f"id={token_id}",
+    )
     return JSONResponse({"ok": True, "revoked": token_id})
 
 

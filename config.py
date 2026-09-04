@@ -76,6 +76,7 @@ SESSION_MAX = _int("WC_SESSION_MAX", 50)  # hard cap on concurrent sessions
 LOGIN_RATE_MAX = _int("WC_LOGIN_RATE_MAX", 10)  # max attempts per window
 LOGIN_RATE_WIN = _int("WC_LOGIN_RATE_WIN", 300)  # window in seconds (5 min)
 LOGIN_BACKOFF = _int("WC_LOGIN_BACKOFF", 30)  # base backoff seconds on lockout
+TOKEN_DEFAULT_TTL_DAYS = _int("WC_TOKEN_DEFAULT_TTL_DAYS", 90)  # 90d default expiry; 0 = no expiry
 
 # Allow plain-HTTP cookies (for Tailscale without TLS). DO NOT enable on public
 # interfaces. Defaults to False so a deployment that forgets to set it still
@@ -174,7 +175,7 @@ TURN_RETRY_MAX = _int("WC_TURN_RETRY_MAX", 2)
 TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.10.5"
+VERSION = "WebConsole_0.10.6"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

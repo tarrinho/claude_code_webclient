@@ -1,4 +1,4 @@
-# supervisor.py -- AI supervisor orchestration engine for WebConsole 0.9.0
+# supervisor.py -- AI supervisor orchestration engine for WebConsole 0.10.4
 #
 # Provides the PlanParser, ModelRouter, TaskGraph, ProgressTracker,
 # and SupervisorEngine that coordinate multi-agent task decomposition,
@@ -536,35 +536,39 @@ class SupervisorEngine:
         succeeded -- the same rule `db.usage_record` states for itself.
         """
         try:
+            import db
             import runner  # circular import at module level
 
-            frame = runner.take_last_usage(chat_id)
-            if not frame:
-                return
-            import db
-
-            models = frame.get("models") or {}
-            # The CLI reports cost for the whole turn, not per model, so it is
-            # attached to the first row only -- the same rule app.py applies, or
-            # a two-model turn would be billed twice.
-            cost = frame.get("cost_usd")
-            for name, stats in models.items():
-                await db.usage_record(
-                    chat_id=chat_id,
-                    owner_id=self.owner_id,
-                    model=name or (model or ""),
-                    provider="proxy" if config.PROXY_ENABLED else "anthropic",
-                    input_tokens=stats.get("input_tokens", 0),
-                    output_tokens=stats.get("output_tokens", 0),
-                    cache_read_tokens=stats.get("cache_read_tokens", 0),
-                    cache_creation_tokens=stats.get("cache_creation_tokens", 0),
-                    cost_usd=cost,
-                    cost_basis=stats.get("cost_basis"),
-                    duration_ms=frame.get("duration_ms"),
-                    is_error=bool(frame.get("is_error")),
-                    origin="supervisor",
-                )
-                cost = None
+            # `take_last_usage` carries only the attempt runner.run_turn kept.
+            # An attempt a content-quality retry discarded still spent real
+            # tokens against the backend (CLAUDE.md rule 5: record failures
+            # too) and arrives separately via `take_retried_usage`.
+            frames = [runner.take_last_usage(chat_id), *runner.take_retried_usage(chat_id)]
+            for frame in frames:
+                if not frame:
+                    continue
+                models = frame.get("models") or {}
+                # The CLI reports cost for the whole turn, not per model, so it
+                # is attached to the first row only -- the same rule app.py
+                # applies, or a two-model turn would be billed twice.
+                cost = frame.get("cost_usd")
+                for name, stats in models.items():
+                    await db.usage_record(
+                        chat_id=chat_id,
+                        owner_id=self.owner_id,
+                        model=name or (model or ""),
+                        provider="proxy" if config.PROXY_ENABLED else "anthropic",
+                        input_tokens=stats.get("input_tokens", 0),
+                        output_tokens=stats.get("output_tokens", 0),
+                        cache_read_tokens=stats.get("cache_read_tokens", 0),
+                        cache_creation_tokens=stats.get("cache_creation_tokens", 0),
+                        cost_usd=cost,
+                        cost_basis=stats.get("cost_basis"),
+                        duration_ms=frame.get("duration_ms"),
+                        is_error=bool(frame.get("is_error")),
+                        origin="supervisor",
+                    )
+                    cost = None
         except Exception:  # noqa: BLE001 -- accounting must not fail a turn
             _log.exception(
                 "supervisor_usage_not_recorded supervisor_id=%s chat_id=%s",

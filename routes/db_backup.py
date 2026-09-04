@@ -45,20 +45,39 @@ async def db_backup() -> bytes:
 
 
 def _validate_sqlite_file(path: Path) -> bool:
-    """Return True if *path* is a sound SQLite database with our schema."""
+    """Return True if *path* is a sound SQLite database with our schema.
+
+    ``PRAGMA integrity_check`` and the table-name check confirm the file is a
+    coherent database with our tables, but neither rejects a file that is
+    *also* a coherent database carrying something our own schema never
+    creates: a trigger or a view. Our schema (see db.py's init()) has none of
+    either, so their presence at all means the upload added them -- and a
+    ``CREATE TRIGGER ... AFTER INSERT ON messages`` fires on the app's very
+    next ordinary write, running whatever SQL the file's author wrote with the
+    app's own database permissions. Rejected outright rather than inspected:
+    there is no legitimate reason for one to be present, so distinguishing a
+    "safe" trigger from a malicious one is a problem this file need not solve.
+    """
     conn = None
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         row = conn.execute("PRAGMA integrity_check").fetchone()
         if not row or row[0] != "ok":
             return False
-        names = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+        rows = conn.execute(
+            "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'trigger', 'view')"
+        ).fetchall()
+        names = {r[0] for r in rows if r[1] == "table"}
+        if not {"chats", "messages", "users"}.issubset(names):
+            return False
+        unexpected = [r[0] for r in rows if r[1] in ("trigger", "view")]
+        if unexpected:
+            _log.warning(
+                "db_restore_rejected: file carries trigger/view objects our "
+                "schema never creates: %s", unexpected,
             )
-        }
-        return {"chats", "messages", "users"}.issubset(names)
+            return False
+        return True
     except sqlite3.DatabaseError:
         return False
     finally:

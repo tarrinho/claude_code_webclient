@@ -4,18 +4,12 @@
 # All paths are resolved and validated against PROJECTS_ROOT before any filesystem op.
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import datetime
-import json
 import logging
 import re
-import sqlite3
 import time
-import uuid
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import aiosqlite
 
@@ -93,6 +87,7 @@ def __getattr__(name: str):
         "chat_search": "routes.db_chats",
         "messages_get": "routes.db_chats",
         "messages_last": "routes.db_chats",
+        "messages_page": "routes.db_chats",
         "messages_append": "routes.db_chats",
         "messages_batch": "routes.db_chats",
         "_fts_guard": "routes.db_chats",
@@ -184,6 +179,8 @@ def __getattr__(name: str):
 
 # Defined here so that test patches of db._CLAUDE_SESSIONS_DIR /
 # db._CLAUDE_PROJECTS_DIR propagate into the extracted module.
+
+
 _CLAUDE_SESSIONS_DIR: Final[Path] = Path.home() / ".claude" / "sessions"
 _CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"
 
@@ -357,6 +354,19 @@ async def init() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_api_tokens_owner
             ON api_tokens(owner_id, revoked_at);
+
+        -- Administrative action audit trail: each write performed by a logged-in
+        -- admin is recorded here so a single-operator can review who changed what
+        -- and when.  Retained for 90 days; see _admin_actions_prune().
+        CREATE TABLE IF NOT EXISTS admin_actions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       TEXT NOT NULL,
+            action        TEXT NOT NULL,   -- 'settings_patch', 'token_create', etc.
+            detail        TEXT,           -- free-form, not security-sensitive
+            created_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_actions_user_time
+            ON admin_actions(user_id, created_at DESC);
 
         -- When the user last looked at an agent, so the supervisor can tell
         -- "produced output you have not seen" from "finished a while ago".
@@ -578,6 +588,8 @@ async def init() -> None:
 
     await _usage.usage_prune(config.USAGE_RETENTION_DAYS)
     await _usage.system_prune(config.SYSTEM_RETENTION_DAYS)
+    # Admin actions: keep 90 days of audit trail.
+    await _admin_actions_prune(config.USAGE_RETENTION_DAYS)
 
 
 async def close() -> None:
@@ -585,6 +597,23 @@ async def close() -> None:
     if db_conn:
         await db_conn.close()
         db_conn = None
+
+
+async def _admin_actions_prune(keep_days: int) -> None:
+    """Delete admin audit entries older than *keep_days*.
+
+    Mirrors the pattern used by usage_prune / system_prune: a simple
+    DELETE driven by a retention setting so the audit trail doesn't
+    grow unbounded.
+    """
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=keep_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    await db_conn.execute(
+        "DELETE FROM admin_actions WHERE created_at < ?", (cutoff,)
+    )
+    await db_conn.commit()
 
 
 async def _ensure_supervisor_columns() -> None:

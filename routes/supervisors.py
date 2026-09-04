@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections import OrderedDict
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
@@ -374,7 +375,36 @@ async def handle_supervisor_read(request: Request):
 # ── Supervisor orchestration ──────────────────────────────────────────────────────
 # Registry of live engine instances, keyed by supervisor_id. Engines are
 # started on first use and cleaned up when their supervisor is deleted.
-_supervisor_engines: dict[str, supervisor.SupervisorEngine] = {}
+#
+# Capped at _MAX_SUPERVISOR_ENGINES: without a bound, an account that only
+# ever creates supervisors and never deletes them grows this dict forever --
+# each entry holds a TaskGraph, a ProgressTracker and a set of background
+# asyncio.Task references, so the memory is not trivial. An OrderedDict lets
+# eviction take the least-recently-touched entry rather than an arbitrary one;
+# "touched" means created or looked up, via _touch_engine below. A supervisor
+# whose engine is evicted still has its state in the database -- eviction only
+# drops the live scheduler, the same as if the process had just restarted.
+_supervisor_engines: OrderedDict[str, supervisor.SupervisorEngine] = OrderedDict()
+_MAX_SUPERVISOR_ENGINES: Final[int] = 200
+
+
+def _touch_engine(supervisor_id: str) -> None:
+    """Mark an engine as recently used, for LRU ordering."""
+    if supervisor_id in _supervisor_engines:
+        _supervisor_engines.move_to_end(supervisor_id)
+
+
+def _register_engine(supervisor_id: str, eng: supervisor.SupervisorEngine) -> None:
+    """Insert a new engine, evicting the least-recently-touched one if full."""
+    _supervisor_engines[supervisor_id] = eng
+    _supervisor_engines.move_to_end(supervisor_id)
+    while len(_supervisor_engines) > _MAX_SUPERVISOR_ENGINES:
+        evicted_id, evicted = _supervisor_engines.popitem(last=False)
+        evicted.stop()
+        _log.warning(
+            "supervisor_engine_evicted supervisor_id=%s (registry at cap %d)",
+            evicted_id, _MAX_SUPERVISOR_ENGINES,
+        )
 
 
 # handle_supervisor_crud and handle_supervisor_send_prompt lived here: 169
@@ -660,11 +690,11 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
 
     # Get or create engine
     if supervisor_id not in _supervisor_engines:
-        _supervisor_engines[supervisor_id] = eng_new = supervisor.SupervisorEngine(
-            supervisor_id, session["user"],
-        )
+        eng_new = supervisor.SupervisorEngine(supervisor_id, session["user"])
+        _register_engine(supervisor_id, eng_new)
     else:
         eng_new = _supervisor_engines[supervisor_id]
+        _touch_engine(supervisor_id)
 
     eng = eng_new
     await eng.start_from_user_prompt(user_prompt)
@@ -737,6 +767,12 @@ async def _api_supervisors_list(request: Request):
 # inside the DB layer and surfaces as a 500 rather than the 400 it is.
 _SUPERVISOR_CONFIG_MAX: Final[int] = 64 * 1024
 
+# Per-owner cap on live supervisor rows. Without one, a single authenticated
+# account can create supervisors without limit -- each row is small on its
+# own, but every one also seeds an engine in the process-wide registry above,
+# so unbounded creation is unbounded memory, not just unbounded rows.
+_MAX_SUPERVISORS_PER_OWNER: Final[int] = 50
+
 
 def _validated_supervisor_config(raw: Any) -> Any:
     """Return *raw* if it is storable, else raise 400 with the reason."""
@@ -756,6 +792,13 @@ def _validated_supervisor_config(raw: Any) -> Any:
 @router.post("/api/supervisors")
 async def _api_supervisors_create(request: Request):
     session = request.state.session
+    existing = await db.supervisor_list(session["user"])
+    if len(existing) >= _MAX_SUPERVISORS_PER_OWNER:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Limit of {_MAX_SUPERVISORS_PER_OWNER} supervisors reached "
+                   f"— delete one before creating another",
+        )
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -768,7 +811,7 @@ async def _api_supervisors_create(request: Request):
     sid = uuid.uuid4().hex
     await db.supervisor_create(sid, title, description, session["user"], config_data)
     eng = supervisor.SupervisorEngine(sid, session["user"])
-    _supervisor_engines[sid] = eng
+    _register_engine(sid, eng)
     return JSONResponse({"ok": True, "id": sid, "title": title, "status": "idle"})
 
 

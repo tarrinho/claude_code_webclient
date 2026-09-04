@@ -18,7 +18,6 @@ from typing import Any, Final
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-import auth
 import config
 import db
 import prompts
@@ -31,7 +30,9 @@ from shared import (
     _SSE_INTERNAL,
     _question_to_text,
     _turn_to_message,
+    acquire_sse_slot,
     backend_kind,
+    release_sse_slot,
 )
 
 _log = logging.getLogger("wc.app")
@@ -213,7 +214,20 @@ async def handle_chat_get(request: Request, chat_id: str):
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    messages = await db.messages_get(chat_id)
+    # Paginated: a chat with thousands of turns used to send, and render,
+    # every one of them on every open and every poll-driven refresh. `limit`
+    # defaults to the newest 50; `before_id` (a message id, oldest one already
+    # loaded) pages backward for "load more". `has_more` tells the client
+    # whether that control has anything left to show.
+    limit_raw = request.query_params.get("limit")
+    limit = 50
+    if limit_raw and limit_raw.isdigit():
+        limit = min(max(int(limit_raw), 1), 200)
+    before_id_raw = request.query_params.get("before_id")
+    before_id = int(before_id_raw) if before_id_raw and before_id_raw.isdigit() else None
+    messages, has_more = await db.messages_page(
+        chat_id, limit=limit, before_id=before_id
+    )
     return JSONResponse(
         {
             "chat": {
@@ -272,6 +286,7 @@ async def handle_chat_get(request: Request, chat_id: str):
             # asking Claude, which needs nothing from the user.
             "messages": [
                 {
+                    "id": m["id"],
                     "role": m["role"],
                     "content": m["content"],
                     "created_at": m["created_at"],
@@ -282,6 +297,7 @@ async def handle_chat_get(request: Request, chat_id: str):
                 }
                 for m in messages
             ],
+            "has_more": has_more,
         }
     )
 
@@ -487,11 +503,19 @@ async def handle_chat_file(request: Request, chat_id: str):
         raise HTTPException(status_code=413, detail="Shared file is too large to display")
 
     _log.info("chat_file_served chat_id=%s path=%s", chat_id, candidate.name)
+    # PDFs are served as attachment (download) rather than inline: the workspace
+    # is writable by a prompt-injected Claude, so a malicious PDF with JS or form
+    # actions would be the lowest-effort exploit path. Inline PDF rendering gives
+    # the browser a sandbox, but the browser's sandbox is only as good as the
+    # reader — attachment is a belt-and-suspenders guarantee that no PDF code
+    # ever executes in the page context.
+    disposition = "attachment" if candidate.suffix.lower() == ".pdf" else "inline"
     return FileResponse(
         candidate,
         media_type=media_type,
-        # inline so the browser renders it; nosniff is applied globally.
-        headers={"Content-Disposition": f'inline; filename="{candidate.name}"'},
+        # nosniff is applied globally by SecurityMiddleware; the disposition
+        # above is the extra layer for PDFs.
+        headers={"Content-Disposition": f'{disposition}; filename="{candidate.name}"'},
     )
 
 
@@ -754,6 +778,11 @@ async def handle_submit_message(request: Request, chat_id: str):
     # in `usage_events`, it is returned in the response below, and the UI has
     # its own label for it that is not the picker.
     await _record_turn_usage(chat_id, session["user"], runner.take_last_usage(chat_id))
+    # Attempts a retry discarded still spent real tokens (CLAUDE.md rule 5:
+    # record failures too), and take_last_usage above only carries the kept
+    # attempt.
+    for frame in runner.take_retried_usage(chat_id):
+        await _record_turn_usage(chat_id, session["user"], frame)
     return JSONResponse(
         {"response": full_response, "chunks": len(chunks), "model": model}
     )
@@ -824,6 +853,12 @@ async def _start_turn(
             prompt, chat["session_id"], chat["work_dir"], chat_id, model
         ):
             yield event
+        # Attempts a retry discarded still spent real tokens against the
+        # backend (CLAUDE.md rule 5: record failures too). They never arrived
+        # as a live 'usage' event -- see runner.stream_turn -- so on_event
+        # above never saw them; drain them here instead.
+        for frame in runner.take_retried_usage(chat_id):
+            await _record_turn_usage(chat_id, owner, frame)
 
     async def on_event(event: dict) -> None:
         if event.get("type") == "usage":
@@ -902,9 +937,17 @@ async def _launch_queued(
 
 
 async def stream_handler(request: Request, chat_id: str):
-    """POST /api/chats/{id}/stream -- SSE token stream with prompt in body."""
-    sid = request.cookies.get("wc_session")
-    session = auth.session_get(sid) if sid else None
+    """POST /api/chats/{id}/stream -- SSE token stream with prompt in body.
+
+    Reads ``request.state.session``, the same as every other handler in this
+    file. This used to open its own cookie check instead -- a second,
+    unmaintained auth path that quietly dropped the API-token login
+    AuthMiddleware also supports (via ``_session_from_api_token``), so a
+    caller authenticated with a bearer token could use every other endpoint
+    but not this one. It also meant a change to how auth works would need to
+    be made twice to actually apply everywhere.
+    """
+    session = request.state.session
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -940,90 +983,99 @@ async def stream_handler(request: Request, chat_id: str):
             )
         model = model.strip() or None
 
+    # Checked (and reserved) here, before the StreamingResponse is built: the
+    # response commits to a 200 status the moment its generator first yields,
+    # so an over-cap rejection has to raise before that point to reach the
+    # client as the 429 it is, rather than as a stream that opens then dies.
+    acquire_sse_slot(session["user"])
+
     async def event_generator():
-        yield f"data: {json.dumps({'type': 'start', 'chat_id': chat_id})}\n\n"
-
-        # If a live terminal is running this conversation, the request belongs
-        # there: the user watches it and every step of the answer in the window
-        # they already have open, instead of a second headless process doing the
-        # work invisibly against the same transcript. The reply reaches this
-        # page through the existing transcript sync.
-        routed = await _route_to_live_terminal(chat, prompt)
-        if routed:
-            session_id = chat.get("session_id")
-            await _mark_routed(chat, session["user"], prompt)
-            await db.messages_batch(chat_id, [("user", prompt)])
-            # This turn was just stored in messages and is also written to the
-            # CLI transcript, so advance the sync past it or the next poll
-            # would import the same turn again.
-            if session_id:
-                await _skip_transcript_to_end(chat_id, session_id)
-            # Sent as `text`, which the client already renders: inventing a
-            # new event type would have shown the user nothing at all, since
-            # conversation.js ignores types it does not know.
-            yield (
-                "data: "
-                + json.dumps({
-                    "type": "text",
-                    "content": "Sent to the terminal session running this "
-                               "conversation — the request and its steps appear "
-                               "there, and sync back here when the turn ends.",
-                })
-                + "\n\n"
-            )
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
         try:
-            # The turn is started as a background task and then followed, so
-            # this response is a viewer rather than the turn's owner. Closing it
-            # -- by switching conversations, reloading, or locking a phone --
-            # no longer shortens the turn or discards its answer.
-            try:
-                await _start_turn(chat, session["user"], prompt, model)
-            except turns.AlreadyRunning:
-                position = await db.queue_add(
-                    chat_id, session["user"], prompt, model
+            yield f"data: {json.dumps({'type': 'start', 'chat_id': chat_id})}\n\n"
+
+            # If a live terminal is running this conversation, the request belongs
+            # there: the user watches it and every step of the answer in the window
+            # they already have open, instead of a second headless process doing the
+            # work invisibly against the same transcript. The reply reaches this
+            # page through the existing transcript sync.
+            routed = await _route_to_live_terminal(chat, prompt)
+            if routed:
+                session_id = chat.get("session_id")
+                await _mark_routed(chat, session["user"], prompt)
+                await db.messages_batch(chat_id, [("user", prompt)])
+                # This turn was just stored in messages and is also written to the
+                # CLI transcript, so advance the sync past it or the next poll
+                # would import the same turn again.
+                if session_id:
+                    await _skip_transcript_to_end(chat_id, session_id)
+                # Sent as `text`, which the client already renders: inventing a
+                # new event type would have shown the user nothing at all, since
+                # conversation.js ignores types it does not know.
+                yield (
+                    "data: "
+                    + json.dumps({
+                        "type": "text",
+                        "content": "Sent to the terminal session running this "
+                                   "conversation — the request and its steps appear "
+                                   "there, and sync back here when the turn ends.",
+                    })
+                    + "\n\n"
                 )
-                if position:
-                    yield (
-                        "data: "
-                        + json.dumps({"type": "queued", "position": position})
-                        + "\n\n"
-                    )
-                else:
-                    yield (
-                        "data: "
-                        + json.dumps({
-                            "type": "error",
-                            "error": f"This conversation already has "
-                                     f"{db.QUEUE_MAX} prompts waiting.",
-                        })
-                        + "\n\n"
-                    )
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
-            async for event in turns.follow(chat_id):
-                if event.get("type") == "keepalive":
-                    # Comment frame: keeps an intermediary from dropping a
-                    # stream that is legitimately waiting on a slow model.
-                    yield ": keep-alive\n\n"
-                    continue
-                yield f"data: {json.dumps(event)}\n\n"
-                await asyncio.sleep(0)
+            try:
+                # The turn is started as a background task and then followed, so
+                # this response is a viewer rather than the turn's owner. Closing it
+                # -- by switching conversations, reloading, or locking a phone --
+                # no longer shortens the turn or discards its answer.
+                try:
+                    await _start_turn(chat, session["user"], prompt, model)
+                except turns.AlreadyRunning:
+                    position = await db.queue_add(
+                        chat_id, session["user"], prompt, model
+                    )
+                    if position:
+                        yield (
+                            "data: "
+                            + json.dumps({"type": "queued", "position": position})
+                            + "\n\n"
+                        )
+                    else:
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "type": "error",
+                                "error": f"This conversation already has "
+                                         f"{db.QUEUE_MAX} prompts waiting.",
+                            })
+                            + "\n\n"
+                        )
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
 
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            _log.exception("stream_handler timeout on %s", chat_id)
-            yield f"data: {json.dumps({'type': 'error', 'error': _SSE_TIMEOUT})}\n\n"
-        except (OSError, asyncio.IncompleteReadError):
-            _log.exception("stream_handler I/O error on %s", chat_id)
-            yield f"data: {json.dumps({'type': 'error', 'error': _SSE_UNKNOWN})}\n\n"
-        except Exception:  # noqa: BLE001 -- convert stream failures to SSE errors
-            _log.exception("stream_handler unexpected error on %s", chat_id)
-            yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
+                async for event in turns.follow(chat_id):
+                    if event.get("type") == "keepalive":
+                        # Comment frame: keeps an intermediary from dropping a
+                        # stream that is legitimately waiting on a slow model.
+                        yield ": keep-alive\n\n"
+                        continue
+                    yield f"data: {json.dumps(event)}\n\n"
+                    await asyncio.sleep(0)
+
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                _log.exception("stream_handler timeout on %s", chat_id)
+                yield f"data: {json.dumps({'type': 'error', 'error': _SSE_TIMEOUT})}\n\n"
+            except (OSError, asyncio.IncompleteReadError):
+                _log.exception("stream_handler I/O error on %s", chat_id)
+                yield f"data: {json.dumps({'type': 'error', 'error': _SSE_UNKNOWN})}\n\n"
+            except Exception:  # noqa: BLE001 -- convert stream failures to SSE errors
+                _log.exception("stream_handler unexpected error on %s", chat_id)
+                yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
+        finally:
+            release_sse_slot(session["user"])
 
     return StreamingResponse(
         event_generator(),
@@ -1059,31 +1111,36 @@ async def handle_chat_live(request: Request, chat_id: str):
         # answer to this question, and the client uses it to settle its UI.
         return JSONResponse({"running": False, "state": "idle"})
 
+    acquire_sse_slot(session["user"])
+
     async def event_generator():
-        yield (
-            "data: "
-            + json.dumps({
-                "type": "start",
-                "chat_id": chat_id,
-                "since": since,
-                "state": turn.state,
-            })
-            + "\n\n"
-        )
         try:
-            async for event in turns.follow(chat_id, since):
-                if await request.is_disconnected():
-                    return
-                if event.get("type") == "keepalive":
-                    yield ": keep-alive\n\n"
-                    continue
-                yield f"data: {json.dumps(event)}\n\n"
-                await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 -- convert follow failures to SSE errors
-            _log.exception("live stream failed chat_id=%s", chat_id)
-            yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
+            yield (
+                "data: "
+                + json.dumps({
+                    "type": "start",
+                    "chat_id": chat_id,
+                    "since": since,
+                    "state": turn.state,
+                })
+                + "\n\n"
+            )
+            try:
+                async for event in turns.follow(chat_id, since):
+                    if await request.is_disconnected():
+                        return
+                    if event.get("type") == "keepalive":
+                        yield ": keep-alive\n\n"
+                        continue
+                    yield f"data: {json.dumps(event)}\n\n"
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- convert follow failures to SSE errors
+                _log.exception("live stream failed chat_id=%s", chat_id)
+                yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
+        finally:
+            release_sse_slot(session["user"])
 
     return StreamingResponse(
         event_generator(),
@@ -1302,6 +1359,8 @@ async def handle_chat_search(request: Request):
 
     POST /api/chats/search with {query: "..."}.
     """
+    from db_chats import _fts_validate_query
+
     session = request.state.session
     try:
         body = await request.json()
@@ -1313,6 +1372,11 @@ async def handle_chat_search(request: Request):
         raise HTTPException(status_code=400, detail="Search query is required")
     if len(query) > 200:
         query = query[:200]
+    if not _fts_validate_query(query):
+        raise HTTPException(
+            status_code=400,
+            detail="Search query contains invalid characters",
+        )
 
     results = await db.chat_search(session["user"], query)
     return JSONResponse({"results": results, "count": len(results)})

@@ -108,3 +108,15 @@ async def api_token_revoke(token_id: str, owner_id: str) -> bool:
     )
     await db.db_conn.commit()
     return cur.rowcount > 0
+
+
+async def admin_action_record(
+    user_id: str, action: str, detail: str | None = None,
+) -> None:
+    """Log an admin action to the persistent audit trail."""
+    await db.db_conn.execute(
+        "INSERT INTO admin_actions (user_id, action, detail, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, action, detail, db._now()),
+    )
+    await db.db_conn.commit()

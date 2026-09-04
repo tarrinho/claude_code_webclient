@@ -35,7 +35,16 @@ def _parse(source: str) -> None:
     top level of a module, and the wrapper is a function expression: QuickJS
     parses the whole body, and nothing calls it.
     """
-    src = re.sub(r"^\s*import\s.*?;\s*$", "", source, flags=re.MULTILINE)
+    # DOTALL alongside MULTILINE: a long named-import list wraps onto several
+    # lines (app.js's and machines.js's both do), and `.` matching only
+    # within one line left the wrapped continuation -- starting with a bare
+    # `{` or a name list -- in the QuickJS input, which choked on it as a
+    # script-mode syntax error while the file itself was perfectly valid
+    # module syntax. Non-greedy `.*?` still stops at this statement's own
+    # `;` rather than swallowing everything up to the last import in the file.
+    src = re.sub(
+        r"^\s*import\s.*?;\s*$", "", source, flags=re.MULTILINE | re.DOTALL
+    )
     src = re.sub(
         r"^\s*export\s+(?=(?:async\s+)?(?:function|class|const|let|var)\b)",
         "",

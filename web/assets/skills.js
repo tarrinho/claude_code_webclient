@@ -8,6 +8,22 @@ import {state} from './app.js?v=31';
 // top-level scope across files), so it needs its own -- same pattern as
 // supervisor.js/device-alerts.js/usage.js/server-stats.js.
 const byId = id => document.getElementById(id);
+// The filter text lives in the input element, not in a variable shared with
+// app.js. app.js declares its own `_skillFilter` and assigns it on every
+// keystroke, but ES modules do not share top-level scope -- so reading that
+// name here was a ReferenceError and the whole panel died on its first render,
+// with no request ever leaving the browser. Reading the DOM removes the shared
+// mutable state rather than exporting it: the input is the source of truth, and
+// app.js's copy was write-only in any case.
+const skillFilter = () => byId('skillSearch')?.value ?? '';
+
+// Which source groups are collapsed. Also left behind by the app.js split:
+// app.js declares `const _collapsedSkillGroups` and never touches it again,
+// while every read and write is here -- so `_renderSkills` threw on it too,
+// one line after the filter. Two dangling references in the same render path,
+// which is why fixing only the first changed nothing a user could see.
+const _collapsedSkillGroups = new Set();
+
 let _skillsData = null;          // last successful /api/skills payload
 let _skillsFetchedFor = null;    // chat id the payload was fetched for
 
@@ -76,7 +92,7 @@ function _buildSkillCard(skill, isPlugin) {
 export function _renderSkills() {
   const list = byId('skillsList');
   if (!list || !_skillsData) return;
-  const needle = _skillFilter.trim().toLowerCase();
+  const needle = skillFilter().trim().toLowerCase();
   const all = _skillsData.skills || [];
   const sources = _skillsData.sources || [];
   const shown = all.filter(skill => _skillMatches(skill, needle));
@@ -110,7 +126,7 @@ export function _renderSkills() {
     return;
   }
   if (!shown.length) {
-    list.replaceChildren(_skillsNotice(`No skills match "${_skillFilter.trim()}".`));
+    list.replaceChildren(_skillsNotice(`No skills match "${skillFilter().trim()}".`));
     return;
   }
 

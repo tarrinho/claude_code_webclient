@@ -13,6 +13,10 @@ import {
   byId, storageGet, storageSet, _machines, _activeMachineId, _setActiveMachineId,
   _machineEditing, _setMachineEditing, _servedModels, _modelOptions, _modelsSource,
   _turnsByModel, loadModelsFor, _refreshServedModels,
+  // Defined in app.js and called from the model rows built here. The app.js
+  // split left these as bare references across the module boundary, so every
+  // "offered"/"default" checkbox threw ReferenceError on change.
+  _toggleModelOffered, _setModelDefault,
 } from './app.js?v=31';
 import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
@@ -271,7 +275,7 @@ function _buildModelRow(machine, model, entry, offersAll) {
 // have been laid out. Measured after render and again on resize; if the
 // measurement fails the map still reads, since the LIVE chip carries the same
 // fact in words.
-function _drawMapWires() {
+export function _drawMapWires() {
   const wires = byId('mapWires');
   const map = byId('backendMap');
   const src = document.querySelector('.map-src');

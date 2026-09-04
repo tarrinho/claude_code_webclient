@@ -76,9 +76,7 @@ let _usageData = null;          // last GET /api/usage payload
 let _usageFetchedFor = null;    // range the payload was fetched for
 let _skillsData = null;          // last successful /api/skills payload
 let _skillsFetchedFor = null;    // chat id the payload was fetched for
-let _skillFilter = '';
 let _skillDebounce = null;
-const _collapsedSkillGroups = new Set();
 
 // Exported for supervisor.js, which reports add-to-supervisor results with it.
 export function showToast(message, type = '') {
@@ -319,7 +317,10 @@ import { startServerPolling, stopServerPolling, loadServer, notifyResult, setSta
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1';
 
-import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList } from './machines.js?v=4';
+import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
+  // Lives in machines.js, which owns the canvas; called from here when the
+  // Backends tab becomes visible. Was a bare cross-module reference.
+  _drawMapWires } from './machines.js?v=4';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();
@@ -1631,7 +1632,7 @@ export function _refreshServedModels() {
   populateModelPicker();
 }
 
-async function _toggleModelOffered(machine, modelId) {
+export async function _toggleModelOffered(machine, modelId) {
   const entry = _modelsByMachine.get(machine.id);
   if (!entry) return;
   const offersAll = entry.active.length === 0;
@@ -1655,7 +1656,7 @@ async function _toggleModelOffered(machine, modelId) {
   await _saveMachineModels(machine, next, nextDefault);
 }
 
-async function _setModelDefault(machine, modelId) {
+export async function _setModelDefault(machine, modelId) {
   const entry = _modelsByMachine.get(machine.id);
   if (!entry) return;
   // Choosing a default implies offering it.
@@ -1901,7 +1902,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   byId('serverBucket')?.addEventListener('change', () => loadServer());
   byId('skillSearch')?.addEventListener('input', event => {
-    _skillFilter = event.target.value;
     clearTimeout(_skillDebounce);
     _skillDebounce = setTimeout(_renderSkills, 120);
   });

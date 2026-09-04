@@ -164,8 +164,17 @@ MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn
 PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000)  # cap on user prompt length
 
+# A turn that ends cleanly (no CLI/network error) but produces near-empty
+# output -- observed on small gateway models asked to self-identify, see
+# CLAUDE.md's Qwen3.5 note -- is retried up to this many times before the
+# last attempt is delivered as-is. 0 disables the retry.
+TURN_RETRY_MAX = _int("WC_TURN_RETRY_MAX", 2)
+# Below this many output tokens, with no text content, a turn counts as a
+# non-answer for retry purposes.
+TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
+
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.10.4"
+VERSION = "WebConsole_0.10.5"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

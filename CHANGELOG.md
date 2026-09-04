@@ -22,6 +22,143 @@ churn.
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-09-04
+
+### Added
+
+- **Auto-answer can also accept a recommended answer to a structured
+  question.** The 🤖 icon now click-cycles three states instead of two:
+  off → auto-approve permission prompts (unchanged) → also accept a
+  structured `AskUserQuestion` when exactly one visible option's label ends
+  in "(Recommended)" (icon turns 🧠, distinct colour). Same conservative,
+  by-label-never-by-position rule as the existing approval logic; ambiguous
+  or unmarked prompts are still left for the user. History rows in the icon's
+  popover are now clickable — reveals the full, untruncated text in a
+  tooltip.
+- **A "nothing outstanding" indicator (○) for idle chats.** A chat with no
+  running turn, no busy linked terminal, and nothing queued now shows a
+  quiet marker in the sidebar, using fields `GET /api/chats` already
+  computes — no added per-poll cost. Deliberately does not check for an
+  unanswered question, which would mean reading every chat's transcript or
+  terminal on every poll; a chat with one is the accepted, rare gap.
+
+### Fixed
+
+- **The sidebar's "agent is working" dot read as flashing.** Bumped bigger
+  and glowing to be visible at a glance, then reported live as flashing:
+  the sidebar list is fully rebuilt on every 6s poll, which restarts the
+  dot's pulse animation on a fresh element each time, and a wide opacity
+  swing made a rebuild landing mid-dip snap back to full brightness. Swing
+  narrowed so a restart is no longer perceptible as a jump.
+- **Settings could show a stale or emptied machine list.** Two related
+  races in `machines.js`: (a) the boot-time load and the Settings-triggered
+  load raced independently, and a slow, later-failing boot call could wipe
+  a list the Settings tab had already rendered correctly, with no error
+  anywhere; (b) even after deduping those calls, Activate/Delete/Save could
+  still coalesce onto an in-flight read that predated their own write,
+  re-rendering a just-deleted machine as still present. Concurrent readers
+  now share one in-flight fetch and never clear good data on a failed
+  refresh; Activate/Delete/Save force a fresh read afterwards.
+- **A fresh database crashed on the first supervisor, task or message it
+  ever tried to create.** The 8-module `db.py` extraction's own changelog
+  entry above says "no schema changes" — true of intent, not of execution:
+  `supervisors` was missing `config`/`plan`/`progress_pct`/`completed_at`
+  entirely, `supervisor_tasks` was missing `description`/`model`/`result`/
+  `parent_task_id`/`depends_on` (and carried three dead, unused columns
+  instead), `supervisor_members` had a surrogate autoincrement key where
+  `supervisor_member_add`'s `ON CONFLICT(supervisor_id, chat_id)` needs the
+  composite primary key it now has, and `supervisor_messages` was missing
+  `metadata`. This production database never showed it — it already had
+  the real, correct schema from before the drift — which is exactly why a
+  fresh install or the test suite's own throwaway databases are what
+  caught it. `_ensure_supervisor_columns` now migrates each one.
+- **`ai_machine_active()` could raise `NameError` instead of the intended
+  error.** Its disconnected-database guard read `raise sqlite3.Error(...)`
+  in a module that never imported `sqlite3` — found by flake8's F821 during
+  a full rules.md pass, not by any test, since the guard only runs on the
+  one path that is already failing.
+- **The "sync every conversation" sweep intermittently failed with
+  `sqlite3.OperationalError: cannot start a transaction within a
+  transaction`** — 114 times in production over roughly 10 hours.
+  `messages_batch` and `chats_reorder` each issued a literal `BEGIN` before
+  their write loop, which collides with an *implicit* transaction another
+  writer on the same shared database connection may still have open across
+  an `await`. Removed the literal `BEGIN` from both — SQLite already opens
+  an implicit transaction on the first write of each function's loop, which
+  was already enough for their own atomicity.
+
+### Security
+
+- **A hot-swap mid-session could hand a deactivated machine's API key to the
+  next, unmanaged `claude` process.** `backend_env.deltas()` — the single
+  shared definition of "what environment does a backend imply", used by the
+  proxy, the direct runner and `bin/wc-claude.sh`'s `apply_env` alike —
+  cleared `ANTHROPIC_API_KEY` only inside its anthropic-with-empty-key
+  branch. Switching to no active machine at all, or to a non-anthropic one,
+  took the other branch, which cleared `ANTHROPIC_BASE_URL` but never the
+  key. Harmless for the proxy and runner, which build each turn's child
+  environment fresh; live for the shell wrapper, the one caller that
+  incrementally re-exports into its own long-lived process across a
+  hot-swap, so a key set for an earlier machine survived a call meant to
+  strip it. `deltas()` now unsets `ANTHROPIC_API_KEY` unconditionally
+  whenever the backend is not an anthropic machine with a key. See rules.md
+  registry #82.
+
+- **`web/assets/supervisor/list.js` interpolated a supervisor's id and status
+  into the DOM unescaped**, in the one card-list template rendering every
+  supervisor — the sibling `renderChatMessages()` in the same file escapes
+  every value it writes. Not exploitable today: both are server-controlled
+  UUID/enum values, the same currently-inert shape as the `task.status` fix
+  below. Wrapped in `esc()`. Registry #79.
+
+- **`supervisor.py`'s header comment still read "WebConsole 0.9.0"** against
+  a current `config.VERSION` of `0.10.4`. Cosmetic only; corrected.
+
+- **`task.status` reached the supervisor page's DOM unescaped**, twice, in
+  both a CSS class and visible text. Not exploitable today — every value
+  written to it is one of a handful of literals the supervisor engine's own
+  control flow assigns, never raw model output — but it violated this
+  project's own "every interpolated value is escaped" rule with nothing
+  enforcing it, found during the same rules.md pass above. Wrapped in the
+  existing `esc()`.
+
+- **Automatic retry on a clean-but-empty turn.** A turn that ends without a
+  CLI/network error but answers with no real text — observed on small gateway
+  models asked to self-identify, see CLAUDE.md's Qwen3.5 note — is now retried
+  up to `WC_TURN_RETRY_MAX` times (default 2) before the last attempt is
+  delivered as-is. A real error is never retried by this: only a completion
+  whose text is empty and whose output tokens fall below
+  `WC_TURN_RETRY_MIN_TOKENS` (default 5) counts. The streaming path reuses the
+  existing `retrying` UI state, so no frontend change was needed. Discarded
+  attempts still spent real tokens, so their usage is recorded too, via
+  `runner.take_retried_usage`, in both `routes/chats.py` handlers and
+  `supervisor.py`'s `_record_usage`.
+
+### Testing
+
+- **`tests/test_qa_wc_claude_hotswap.py`, 13 of 16 cases**: two of the
+  fixtures' own fake-`claude`-on-`$PATH` injection technique had stopped
+  reaching the fake binary at all, because `resolve_claude_bin` checks
+  `$WC_CLAUDE_PATH` and the newest installed CLI version ahead of `$PATH` —
+  every dev box now has a real CLI installed, so the real binary always won.
+  Pinned through `$WC_CLAUDE_PATH`, the override seam the script already
+  provides. One more (`test_explicit_model_flag_always_wins`) hardcoded a
+  bare `claude` where the wrapper always prints the fully resolved binary
+  path; now asserts on argument shape instead. `PollerTests` (2 cases) failed
+  separately: its fixture reconstructs the poller by splicing function text
+  into `bash -c`, which breaks `${BASH_SOURCE[0]}`-based self-location, so
+  `$HERE` resolved wrong and every poll tick silently failed to find
+  `wc-backend-env.py`. `$HERE` is now re-pinned after the splice. Registry
+  #81, #83.
+- **`tests/test_qa_wc_claude_wrapper.py::test_it_opens_the_database_read_only`**
+  asserted `mode=ro` against `bin/wc-claude.sh`, but that connection string
+  lives in `bin/wc-backend-env.py` since the DB read moved there. Re-pointed.
+  Registry #80.
+- **`tests/test_qa_backend_env.py`'s frozen `GOLDEN` equivalence table**
+  updated for the four rows affected by the `ANTHROPIC_API_KEY` fix above —
+  it exists to catch the proxy diverging from `backend_env.deltas()`, not to
+  pin the old, leaking value as correct.
+
 ### Changed
 
 - **db.py extracted into 8 focused modules.** The database module (2,824 lines)

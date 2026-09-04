@@ -4,16 +4,19 @@
 # can import these helpers without pulling the full database module.
 
 import json
+import logging
 from typing import Any
 
 import db
+
+_log = logging.getLogger("wc.db.supervisors")
 
 
 async def supervisor_list(owner_id: str) -> list[dict[str, Any]]:
     """All supervisors for *owner_id*, newest first."""
     cur = await db.db_conn.execute(
         "SELECT id, title, description, config, status, progress_pct, "
-        "created_at, updated_at, completed_at "
+        "created_at, updated_at, completed_at, degraded, degraded_reason "
         "FROM supervisors WHERE owner_id = ? ORDER BY id DESC",
         (owner_id,),
     )
@@ -24,7 +27,7 @@ async def supervisor_get(supervisor_id: str, owner_id: str) -> dict[str, Any] | 
     """Fetch one supervisor, owner-scoped."""
     cur = await db.db_conn.execute(
         "SELECT id, title, description, config, status, plan, progress_pct, "
-        "created_at, updated_at, completed_at "
+        "created_at, updated_at, completed_at, degraded, degraded_reason "
         "FROM supervisors WHERE id = ? AND owner_id = ?",
         (supervisor_id, owner_id),
     )
@@ -379,3 +382,38 @@ async def supervisor_progress(supervisor_id: str, owner_id: str) -> float:
     if not total:
         return 0.0
     return round(float(row["sum_pct"] or 0) / total, 1)
+
+
+async def supervisor_mark_degraded(supervisor_id: str, kind: str, detail: str) -> None:
+    """Flag *supervisor_id* as carrying a known write failure of *kind*.
+
+    Never raises -- see chat_mark_degraded in routes/db_chats.py for the same
+    reasoning; the two exist in parallel rather than as one shared function
+    because there is no third caller and the two tables differ (chats also
+    stamps degraded_at).
+    """
+    try:
+        await db.db_conn.execute(
+            "UPDATE supervisors SET degraded = 1, degraded_reason = ? WHERE id = ?",
+            (f"{kind}: {detail}", supervisor_id),
+        )
+        await db.db_conn.commit()
+    except Exception:  # noqa: BLE001 -- marking degraded must not itself fail a run
+        _log.exception(
+            "supervisor_mark_degraded failed id=%s kind=%s", supervisor_id, kind,
+        )
+
+
+async def supervisor_clear_degraded(supervisor_id: str, kind: str) -> None:
+    """Clear the flag, but only if it currently names this same *kind*."""
+    try:
+        await db.db_conn.execute(
+            "UPDATE supervisors SET degraded = 0, degraded_reason = NULL "
+            "WHERE id = ? AND degraded_reason LIKE ?",
+            (supervisor_id, f"{kind}:%"),
+        )
+        await db.db_conn.commit()
+    except Exception:  # noqa: BLE001
+        _log.exception(
+            "supervisor_clear_degraded failed id=%s kind=%s", supervisor_id, kind,
+        )

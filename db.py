@@ -35,6 +35,8 @@ def __getattr__(name: str):
         "supervisor_delete": "routes.db_supervisors",
         "supervisor_get": "routes.db_supervisors",
         "supervisor_list": "routes.db_supervisors",
+        "supervisor_mark_degraded": "routes.db_supervisors",
+        "supervisor_clear_degraded": "routes.db_supervisors",
         "supervisor_member_add": "routes.db_supervisors",
         "supervisor_member_remove": "routes.db_supervisors",
         "supervisor_members_list": "routes.db_supervisors",
@@ -653,6 +655,8 @@ async def _ensure_supervisor_columns() -> None:
             "REAL NOT NULL DEFAULT 0.0"
         ),
         "completed_at": "ALTER TABLE supervisors ADD COLUMN completed_at TEXT",
+        "degraded": "ALTER TABLE supervisors ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
+        "degraded_reason": "ALTER TABLE supervisors ADD COLUMN degraded_reason TEXT",
     }
     for name, sql in sup_migrations.items():
         if name not in sup_columns:

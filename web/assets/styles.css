@@ -184,6 +184,7 @@ button{touch-action:manipulation}
 /* Count of prompts waiting to send. Trails the title rather than leading it:
    it is a property of the queue, not an alert. */
 .chat-queued{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:.7rem;line-height:1.35;background:var(--surface-2,rgba(127,127,127,.18));color:var(--text-muted,inherit);vertical-align:middle}
+.chat-degraded{display:inline-block;margin-left:6px;color:var(--warn);font-size:11px;vertical-align:middle;cursor:help}
 @media (prefers-reduced-motion:reduce){.chat-running{animation:none}.chat-group>summary::before{transition:none}}
 
 /* Main */
@@ -306,10 +307,10 @@ button{touch-action:manipulation}
 .message-tools button:hover{color:var(--fg)}
 .empty-state{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:var(--muted);text-align:center;padding:32px}
 .empty-state .icon{font-size:38px;opacity:.45}.empty-state strong{color:var(--fg);font-size:15px}.empty-state p{font-size:12px}
-.conversation-resource{display:flex;align-items:center;justify-content:space-between;gap:12px;align-self:stretch;margin-top:auto;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:12px}
-.conversation-resource-label{color:var(--muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em}
-.conversation-resource a{color:var(--accent);font-size:12px;text-decoration:none}
-.conversation-resource a:hover,.conversation-resource a:focus-visible{text-decoration:underline}
+.load-more-wrap{display:flex;justify-content:center;padding:8px 0 14px}
+.load-more-btn{min-height:32px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--fg);padding:6px 14px;font-size:12px;cursor:pointer}
+.load-more-btn:hover{border-color:var(--accent);color:var(--accent)}
+.load-more-btn:disabled{opacity:.6;cursor:default}
 
 /* Composer */
 .composer{display:none;border-top:1px solid var(--line);background:var(--panel);padding:10px 16px 12px}

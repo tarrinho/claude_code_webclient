@@ -16,6 +16,10 @@ class FrontendStructureTests(unittest.TestCase):
         cls.app = (ASSETS / "app.js").read_text()
         cls.chat_list = (ASSETS / "chat-list.js").read_text()
         cls.conversation = (ASSETS / "conversation.js").read_text()
+        # Backends/models markup-building code moved here, and the pane's
+        # supervisor.html navigation moved here, in a later module split.
+        cls.machines = (ASSETS / "machines.js").read_text()
+        cls.supervisor = (ASSETS / "supervisor.js").read_text()
 
     def test_html_uses_external_assets(self):
         # Trailing quote omitted so a cache-busting ?v=N query stays valid. The
@@ -38,11 +42,15 @@ class FrontendStructureTests(unittest.TestCase):
         machineBaseUrl is collected by the Anthropic provider form and must
         appear in both files.
         """
+        # machineBaseUrl's collection code moved to machines.js in a later
+        # module split; the negative checks still cover both files, since the
+        # invariant is that neither one references a field the markup dropped.
         for element_id in ("machinePort", "machineDescription"):
             self.assertNotIn(element_id, self.html)
             self.assertNotIn(element_id, self.app)
+            self.assertNotIn(element_id, self.machines)
         self.assertIn("machineBaseUrl", self.html)
-        self.assertIn("machineBaseUrl", self.app)
+        self.assertIn("machineBaseUrl", self.machines)
 
     def test_test_machine_receives_its_own_button(self):
         """_testMachine takes the button as an argument, never re-finds it.
@@ -52,10 +60,10 @@ class FrontendStructureTests(unittest.TestCase):
         Test on inactive cards and Edit on active ones, and clicking Test
         relabelled Edit.
         """
-        self.assertIn("async function _testMachine(id, btn)", self.app)
-        self.assertIn("_testMachine(m.id, testBtn)", self.app)
-        self.assertNotIn(".machine-action:nth-child(", self.app)
-        self.assertNotIn(".machine-card:nth-child(", self.app)
+        self.assertIn("async function _testMachine(id, btn)", self.machines)
+        self.assertIn("_testMachine(m.id, testBtn)", self.machines)
+        self.assertNotIn(".machine-action:nth-child(", self.machines)
+        self.assertNotIn(".machine-card:nth-child(", self.machines)
 
     def test_machine_test_toast_uses_fields_the_api_returns(self):
         """POST /api/machines/{id}/test returns {ok,status,error} only.
@@ -65,6 +73,8 @@ class FrontendStructureTests(unittest.TestCase):
         """
         self.assertNotIn("data.host", self.app)
         self.assertNotIn("data.port", self.app)
+        self.assertNotIn("data.host", self.machines)
+        self.assertNotIn("data.port", self.machines)
 
     def test_settings_save_button_scoped_to_tabs_it_writes(self):
         """The footer Save writes only the App tab's fields.
@@ -197,23 +207,27 @@ class FrontendStructureTests(unittest.TestCase):
         That is the state every backend starts in, so the radio column went
         unexplained exactly when a reader most needed it.
         """
-        self.assertIn("this backend\u2019s default for new chats", self.app)
-        self.assertIn("offered.title", self.app)
-        self.assertIn("isDefault.title", self.app)
+        # The four tests below all check machines.js, not app.js: the
+        # backend-cards/model-picker markup-building code moved there in a
+        # later module split. The CSS checks are unaffected -- styles.css
+        # was not split.
+        self.assertIn("this backend\u2019s default for new chats", self.machines)
+        self.assertIn("offered.title", self.machines)
+        self.assertIn("isDefault.title", self.machines)
 
     def test_backend_state_is_worded_not_only_a_border(self):
         """Which backend is live was a 3px border — the panel's most important
         fact encoded as its least visible element."""
-        self.assertIn("machine-state-live", self.app)
-        self.assertIn("'LIVE'", self.app)
-        self.assertIn("'STANDBY'", self.app)
+        self.assertIn("machine-state-live", self.machines)
+        self.assertIn("'LIVE'", self.machines)
+        self.assertIn("'STANDBY'", self.machines)
         self.assertIn(".machine-state-live{", self.css)
 
     def test_model_columns_are_labelled(self):
         """The checkbox and radio sat unlabelled; nothing said which was which."""
-        self.assertIn("models-head", self.app)
+        self.assertIn("models-head", self.machines)
         for label in ("'Offered'", "'Default'", "'Model'"):
-            self.assertIn(label, self.app)
+            self.assertIn(label, self.machines)
         self.assertIn(".models-head", self.css)
 
     def test_rail_terminates_on_the_default_row(self):
@@ -223,7 +237,7 @@ class FrontendStructureTests(unittest.TestCase):
         container must be .models-body — clipping on .models-grid would cut it
         off exactly when a backend serves enough models to scroll.
         """
-        self.assertIn("model-item-default", self.app)
+        self.assertIn("model-item-default", self.machines)
         self.assertIn(".machine-active .models-rail::before", self.css)
         self.assertIn(".machine-active .model-item-default::after", self.css)
         # Anchored to a line start: ".machine-models .models-body{" also
@@ -236,12 +250,12 @@ class FrontendStructureTests(unittest.TestCase):
     def test_backend_name_is_not_truncated_by_its_endpoint(self):
         """The name shared a flex row with the endpoint and was cut to
         "Current AI...". They are now stacked in one identity block."""
-        self.assertIn("machine-ident", self.app)
+        self.assertIn("machine-ident", self.machines)
         self.assertIn(".machine-ident{", self.css)
 
     def test_model_family_prefix_is_dimmed(self):
         """"azure_ai/" repeated down the column buries the part that differs."""
-        self.assertIn("model-item-family", self.app)
+        self.assertIn("model-item-family", self.machines)
         self.assertIn(".model-item-family{", self.css)
 
     def test_messages_can_show_images(self):
@@ -254,6 +268,10 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("/file?path=", self.conversation)
         self.assertIn(".image-viewer{", self.css)
         self.assertIn(".pdf-viewer iframe", self.css)
+        self.assertNotIn("buildComparisonPdf", self.html)
+        self.assertNotIn("/api/reports/backend-model-comparison/build", self.app)
+        self.assertNotIn("backend-model-comparison.download", self.html)
+        self.assertNotIn("createComparisonPdfResource", self.conversation)
 
     def test_image_paths_resolve_against_the_open_chat(self):
         """A path means nothing without knowing whose workspace it is in."""
@@ -406,8 +424,11 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertNotIn("panelModels", self.app)
 
     def test_models_render_inside_the_backend_that_serves_them(self):
-        self.assertIn("_buildModelSection", self.app)
-        self.assertIn("machine-models", self.app)
+        # _buildModelSection/machine-models moved to machines.js in a later
+        # module split; loadModelsFor and the API call it makes stayed in
+        # app.js, which machines.js imports it from.
+        self.assertIn("_buildModelSection", self.machines)
+        self.assertIn("machine-models", self.machines)
         self.assertIn("loadModelsFor", self.app)
         self.assertIn("machine_id=", self.app)
 
@@ -482,7 +503,9 @@ class FrontendStructureTests(unittest.TestCase):
         """
         self.assertIn("open-supervisor", self.chat_list)
         self.assertIn("onOpenSupervisor", self.chat_list)
-        self.assertIn("supervisor.html", self.app)
+        # openSupervisorPane's navigation moved to supervisor.js in a later
+        # module split.
+        self.assertIn("supervisor.html", self.supervisor)
 
     def test_the_supervisor_heading_survives_an_empty_queue(self):
         """The link has to be reachable when nothing is waiting -- that is
@@ -501,6 +524,13 @@ class FrontendStructureTests(unittest.TestCase):
         """A live CLI session appears in its own section; showing it again
         under History listed the same conversation twice."""
         self.assertIn("alreadyShown", self.chat_list)
+
+    def test_degraded_chats_show_a_badge(self):
+        """chat.degraded rides along on GET /api/chats once Task 1 lands;
+        the sidebar must read it rather than silently ignoring the field."""
+        self.assertIn("chat.degraded", self.chat_list)
+        self.assertIn("chat-degraded", self.chat_list)
+        self.assertIn(".chat-degraded{", self.css)
 
 
 if __name__ == "__main__":

@@ -314,6 +314,20 @@ export function createChatListController(dependencies) {
         queued.title = `${chat.queued} prompt${chat.queued > 1 ? 's' : ''} waiting to send`;
         title.append(queued);
       }
+      // Independent of the leading-dot chain above (running/terminal-busy/
+      // unread/ended/free): a chat can be actively running right now and
+      // still carry a degraded flag from an earlier turn's silent write
+      // failure -- the two facts do not exclude each other, so this is a
+      // second, trailing marker rather than another tier in that chain.
+      if (chat.degraded) {
+        const warn = document.createElement('span');
+        warn.className = 'chat-degraded';
+        warn.textContent = '⚠';
+        warn.setAttribute('aria-label', 'Some state for this conversation may be stale');
+        warn.title = chat.degraded_reason
+          || 'A background write failed for this conversation; check the server logs.';
+        title.append(warn);
+      }
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
       const metaParts = [formatTime(chat.updated_at)];

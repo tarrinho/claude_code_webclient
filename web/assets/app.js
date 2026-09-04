@@ -401,14 +401,15 @@ async function saveChatDialog(event) {
       await refreshChats();
       await selectChat(data.id);
     } else {
-      const response = await apiFetch(`/api/chats/${encodeURIComponent(dialogChat.id)}`, {
+      const editedId = dialogChat.id;
+      const response = await apiFetch(`/api/chats/${encodeURIComponent(editedId)}`, {
         method: 'PATCH', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({title, description}),
       });
       if (!response.ok) throw new Error('Could not save conversation');
       closeDialog();
       await refreshChats();
-      if (state.currentChat?.id === dialogChat.id) await selectChat(dialogChat.id);
+      if (state.currentChat?.id === editedId) await selectChat(editedId);
     }
   } catch (error) {
     showToast(error.message, 'error');

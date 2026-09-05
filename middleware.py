@@ -93,8 +93,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.session = auth.session_get(sid) if sid else None
         if request.state.session is None:
             request.state.session = await _session_from_api_token(request)
-        public_route = request.url.path == "/login" or request.url.path.startswith(
-            "/assets/"
+        # /api/version is the one deliberate exception: the login page has no
+        # session yet and still needs to show the running version. It returns
+        # only the bare version string -- never the full changelog, which
+        # stays behind auth like everything else under /api/.
+        public_route = (
+            request.url.path == "/login"
+            or request.url.path == "/api/version"
+            or request.url.path.startswith("/assets/")
         )
         if not public_route and request.state.session is None:
             if request.url.path.startswith("/api/"):

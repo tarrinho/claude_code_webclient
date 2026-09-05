@@ -5,18 +5,19 @@ document.addEventListener('DOMContentLoaded', function() {
   if (form) form.addEventListener('submit', handleLogin);
   var toggle = document.getElementById('themeToggle');
   if (toggle) toggle.addEventListener('click', toggleTheme);
-  // Version number at the bottom — fetched from changelog API
-  fetch('/api/changelog')
+  // Version number at the bottom — /api/version is the one deliberate public
+  // exception in middleware.py; the login page has no session yet, and the
+  // full changelog (/api/changelog) stays behind auth like everything else.
+  fetch('/api/version')
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var el = document.getElementById('loginVer');
-      if (el && Array.isArray(data) && data.length) {
-        el.textContent = data[0].version;
-      } else {
-        el.textContent = '—';
-      }
+      if (el) el.textContent = (data && data.version) || '—';
     })
-    .catch(function() { document.getElementById('loginVer').textContent = '—'; });
+    .catch(function() {
+      var el = document.getElementById('loginVer');
+      if (el) el.textContent = '—';
+    });
 });
 
 function toggleTheme() {

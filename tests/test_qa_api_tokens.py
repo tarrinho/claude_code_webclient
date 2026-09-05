@@ -149,9 +149,15 @@ class DevExemptionIsGoneTests(ApiTokenBase):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertNotIn('startswith("/dev/")', source)
 
-    def test_only_login_and_assets_are_public(self):
+    def test_only_login_assets_and_version_are_public(self):
         """Pins the whole public set, not just the prefix that was removed.
-        A future addition to this list should have to change a test."""
+        A future addition to this list should have to change a test.
+
+        `/api/version` joined the set deliberately (the login page has no
+        session yet and still needs a version number to show) -- pinned here
+        by name, same as `/login`, rather than left to a wildcard that could
+        later cover more than intended.
+        """
         # middleware.py, not app.py: AuthMiddleware moved there in 0.10.0. The
         # split on a missing marker raised IndexError rather than failing an
         # assertion, so the test crashed instead of saying the public set had
@@ -161,10 +167,37 @@ class DevExemptionIsGoneTests(ApiTokenBase):
                       "the public-path decision is not where this test looks")
         block = source.split("public_route = ")[1].split("if not public_route")[0]
         self.assertIn('== "/login"', block)
-        self.assertIn('startswith(\n            "/assets/"', block)
+        self.assertIn('== "/api/version"', block)
+        self.assertIn('startswith("/assets/")', block)
         # Nothing else: any other startswith in that expression is a new
         # exemption and should be read by a person.
         self.assertEqual(block.count("startswith"), 1, block)
+        # And no other `==` path check either -- same reasoning, for the two
+        # exact-match exemptions rather than the one prefix-match one.
+        self.assertEqual(block.count(' == "'), 2, block)
+
+
+class PublicVersionEndpointTests(ApiTokenBase):
+    """/api/version exists so the login page can show a version number with
+    no session yet -- it must work unauthenticated, and nothing broader than
+    the bare string should leak out through it. /api/changelog is the
+    regression guard: it must stay exactly as gated as every other /api/
+    route, since the whole point of adding a narrower endpoint was not to
+    widen that one instead.
+    """
+
+    def test_version_is_reachable_with_no_session(self):
+        response = _client().get("/api/version")
+        self.assertEqual(response.status_code, 200)
+
+    def test_version_returns_only_the_bare_string(self):
+        response = _client().get("/api/version")
+        self.assertEqual(set(response.json()), {"version"})
+        self.assertRegex(response.json()["version"], r"^\d+\.\d+(?:\.\d+)?$")
+
+    def test_changelog_still_requires_a_session(self):
+        response = _client(follow_redirects=False).get("/api/changelog")
+        self.assertEqual(response.status_code, 401)
 
 
 class TokenAuthenticationTests(ApiTokenBase):

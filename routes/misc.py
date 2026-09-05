@@ -1247,6 +1247,18 @@ async def _api_changelog_get(request: Request):
     return await handle_changelog_get(request)
 
 
+@router.get("/api/version")
+async def _api_version_get(request: Request):
+    """Public: the bare running version, nothing else.
+
+    middleware.AuthMiddleware exempts this one path deliberately, because the
+    login page needs to show a version number and has no session to show it
+    with. Everything else this app knows about the release -- the full
+    changelog -- stays behind auth like the rest of /api/.
+    """
+    return JSONResponse({"version": config.VERSION.removeprefix("WebConsole_")})
+
+
 @router.get("/api/skills")
 async def _api_skills_get(request: Request):
     return await handle_skills_get(request)

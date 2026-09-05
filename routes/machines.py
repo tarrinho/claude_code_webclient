@@ -165,6 +165,14 @@ async def handle_machine_create(request: Request):
             raise HTTPException(
                 status_code=400, detail="Enter a valid hostname or IP address"
             )
+        # Same SSRF/private-IP blocklist the `else` branch below already
+        # applies to `host` -- this branch checked ssh_host's format but
+        # never ran it through the blocklist at all, so 169.254.169.254
+        # (cloud metadata) and the other addresses that list exists to keep
+        # unreachable were accepted here unchecked. The tailnet/LAN ranges
+        # this feature actually targets stay allowed either way --
+        # _validate_host's default allowlist already covers them.
+        _validate_host(ssh_host)
         # Use 9000 as the default proxy port the tunnel will expose.
         data.setdefault("port", 9000)
     else:

@@ -120,17 +120,46 @@ def test_init_ssh_test_bad_key(client):
 
 
 def _create_ssh_proxy_machine(client, name="Test SSH Box"):
-    """POST /api/machines with provider=ssh_proxy. Returns the new machine id."""
+    """POST /api/machines with provider=ssh_proxy. Returns the new machine id.
+
+    ssh_host must actually resolve now: creation runs it through
+    net_validation._validate_host (see
+    test_ssh_host_is_ssrf_checked_like_every_other_host_field), which needs
+    a real DNS answer to classify the address at all. "localhost" resolves
+    to 127.0.0.1, in the SSRF check's own default allowlist (loopback is
+    where a real ssh_proxy machine legitimately points during dev/test), so
+    this exercises the real validation path rather than bypassing it.
+    example.invalid (RFC 2606 -- guaranteed never to resolve) was used here
+    before that check existed and started failing "DNS resolution failed"
+    the moment it did.
+    """
     resp = client.post("/api/machines", json={
         "name": name,
         "provider": "ssh_proxy",
-        "ssh_host": "example.invalid",
+        "ssh_host": "localhost",
         "ssh_user": "kali",
         "ssh_key_path": "~/.ssh/id_ed25519",
         "model": "claude-sonnet-5",
     })
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
+
+
+def test_ssh_host_is_ssrf_checked_like_every_other_host_field(client):
+    """POST /api/machines validated ssh_host's *format* (a real hostname or
+    IP shape) for provider=ssh_proxy, but never ran it through
+    net_validation._validate_host -- the SSRF/private-IP blocklist every
+    other host field on this same endpoint (the `host` field, for
+    anthropic/proxy machines) already goes through. 169.254.169.254 is the
+    canonical cloud-metadata SSRF target that blocklist exists to stop, and
+    it has a perfectly valid hostname *shape*, so the format check alone
+    let it straight through for an ssh_proxy machine."""
+    resp = client.post("/api/machines", json={
+        "name": "Metadata Probe", "provider": "ssh_proxy",
+        "ssh_host": "169.254.169.254", "ssh_key_path": "~/.ssh/id_ed25519",
+        "model": "claude-sonnet-5",
+    })
+    assert resp.status_code == 403, resp.text
 
 
 def test_creating_a_non_ssh_machine_does_not_violate_not_null(client):

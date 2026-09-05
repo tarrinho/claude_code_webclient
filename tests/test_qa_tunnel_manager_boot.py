@@ -62,6 +62,45 @@ class StartupCallSiteTests(unittest.TestCase):
         )
 
 
+class SshTunnelListActiveQA(unittest.IsolatedAsyncioTestCase):
+    """db.ssh_tunnel_list_active has no callers anywhere in the codebase
+    today -- checked with a repo-wide grep before writing this -- but it is
+    a real function with the exact same bug as ssh_tunnel_get right next
+    to it (`return cursor.fetchall()`, a coroutine, never awaited), and
+    deserves its own regression guard independent of whether anything
+    calls it yet."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(
+            config, "PROJECTS_ROOT", f"{self.tmp.name}/projects"
+        )
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_returns_a_real_list_not_a_coroutine(self):
+        m1, m2 = "a" * 32, "b" * 32
+        await db.ssh_tunnel_create(machine_id=m1, local_port=19010)
+        await db.ssh_tunnel_create(machine_id=m2, local_port=19011)
+        await db.ssh_tunnel_update(m1, tunnel_up=1, state="connected")
+        # m2 stays tunnel_up=0 -- proves the WHERE clause, not just that
+        # something is returned.
+
+        result = await db.ssh_tunnel_list_active()
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["machine_id"], m1)
+
+
 class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()

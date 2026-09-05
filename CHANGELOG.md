@@ -20,6 +20,25 @@ churn.
 
 ---
 
+## [0.12.1] — 2026-09-05
+
+### Added
+
+- **A live progress estimate on chat turns**, in the composer status line.
+  Same honest-fallback pattern already built for the supervisor pane's task
+  list: elapsed time (`"· 12s"`) until this conversation has at least one
+  finished turn to estimate an average duration from, then a clamped
+  `"· N% (est.)"` after that — labelled as an estimate because there is no
+  real "N% done" signal from the CLI mid-turn, only elapsed time divided by
+  how long this chat's own past turns typically took. In-memory only, per
+  chat id, reset on page reload.
+
+### Changed
+
+- **The workspace strip no longer shows the conversation's directory path**,
+  only its name. The path added width without adding anything a reader of
+  the strip needed day to day.
+
 ## [0.12.0] — 2026-09-04
 
 ### Fixed

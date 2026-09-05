@@ -253,6 +253,13 @@ class PersistenceQA(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(self.chat_id, "Bg", None, str(work_dir), "admin")
         self.request = SimpleNamespace(
             cookies={"wc_session": "valid"},
+            # stream_handler now reads request.state.session (AuthMiddleware's
+            # own auth path) instead of calling auth.session_get itself -- see
+            # its docstring. This fixture predates that change and was left
+            # calling the old path, which no longer runs at all, so both
+            # tests below failed with AttributeError on request.state before
+            # ever reaching the behaviour they test.
+            state=SimpleNamespace(session={"user": "admin"}),
             json=AsyncMock(return_value={"content": "hello"}),
         )
 

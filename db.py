@@ -1032,33 +1032,20 @@ async def ssh_tunnel_delete(machine_id: int) -> None:
     await db_conn.commit()
 
 
-# ── system_samples (remote) ─────────────────────────────────────────
-
-
-async def system_sample_insert(
-    host_type: str = "local",
-    host_id: str = "",
-    data: str = "{}",
-) -> int:
-    """Insert one row into system_samples for remote stats collection."""
-    now = _now()
-    cursor = await db_conn.execute(
-        """INSERT INTO system_samples
-               (host_type, host_id, data, created_at)
-            VALUES (?, ?, ?, ?)""",
-        (host_type, host_id, data, now),
-    )
-    await db_conn.commit()
-    return cursor.lastrowid
-
-
-async def system_sample_list(
-    host_type: str = "local",
-    limit: int = 20,
-) -> list[dict]:
-    """Return the last *limit* system_samples rows for *host_type*."""
-    cursor = await db_conn.execute(
-        "SELECT * FROM system_samples WHERE host_type = ? ORDER BY created_at DESC LIMIT ?",
-        (host_type, limit),
-    )
-    return cursor.fetchall()
+# system_sample_insert/system_latest/system_series/system_prune now live in
+# routes.db_usage (see __getattr__ above) against the current flat-column
+# schema (SYSTEM_FIELDS). A stale (host_type, host_id, data) duplicate of
+# system_sample_insert used to be defined here too -- left over from the
+# module split -- and it shadowed the __getattr__ forward for anyone calling
+# db.system_sample_insert, since a real module-level name always wins over
+# __getattr__. sysstats.py's background loop is exactly such a caller
+# (`sysstats.start(db.system_sample_insert)`), so every local-host sample hit
+# this dead function's 4-column INSERT with a single flattened dict where it
+# expected three scalar args, and crashed on every interval:
+# `sqlite3.ProgrammingError: Error binding parameter 1: type 'dict' is not
+# supported`. Local system_samples rows have not been written since -- the
+# stats-graph gaps this session started with (`bucket_spine`/`fill=True`)
+# were the rendering half of the problem; this was the collection half.
+# system_sample_list (host_type, limit) was the read-side twin, also stale,
+# also unreachable through __getattr__ for the same shadowing reason, and
+# had zero callers left anywhere in the codebase.

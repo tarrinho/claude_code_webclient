@@ -474,10 +474,29 @@ function clearEndedFlag(chatId) {
   listController.clearEnded(chatId);
 }
 
+// Bumped on every call, and used to drop a response that resolves after a
+// later call's already has. Nothing here awaited a prior refreshChats()
+// before starting another -- the 6s poll (CHAT_POLL_MS), a handful of
+// post-action calls, and this poll racing the tab regaining visibility can
+// all have two in flight at once, and this host runs under enough real
+// concurrent load (several agent sessions, background turns, sysstats) that
+// request latency genuinely varies request to request. Without this, a
+// slower *older* response landing after a faster *newer* one silently wins
+// -- observed live: a chat's marker correctly went running -> ended, then
+// reverted to running two polls later, with the server (checked in
+// logs/webconsole.log) having recorded only the one turn the whole time.
+// The state never went backward there -- an earlier, slower response just
+// arrived last and overwrote the newer one that had already rendered it
+// correctly, reading as a highlight appearing and then disappearing.
+let _refreshSeq = 0;
+
 async function refreshChats() {
+  const mySeq = ++_refreshSeq;
   const response = await apiFetch('/api/chats');
   if (!response.ok) throw new Error('Could not load conversations');
-  state.chats = (await response.json()).chats || [];
+  const data = await response.json();
+  if (mySeq !== _refreshSeq) return; // superseded by a later call; drop it
+  state.chats = data.chats || [];
   // Which conversations are busy is server state now -- a turn outlives the tab
   // that started it, so the open page cannot know on its own.
   listController.setActiveTurns(state.chats.filter(c => c.running).map(c => c.id));
@@ -1782,6 +1801,8 @@ async function refreshHistory() {
 
 async function loadInitialData() {
   try {
+    const runState = byId('runState');
+    if (runState) { runState.dataset.state = 'loading'; runState.textContent = 'Loading…'; }
     const settings = await loadSettings();
     await refreshChats();
     await refreshSessions();
@@ -1798,6 +1819,9 @@ async function loadInitialData() {
     else showWelcome();
   } catch (error) {
     if (error.message !== 'Session expired') showToast(error.message, 'error');
+  } finally {
+    const runState = byId('runState');
+    if (runState) { runState.dataset.state = 'ready'; runState.textContent = 'Ready'; }
   }
 }
 
@@ -2043,7 +2067,7 @@ document.addEventListener('DOMContentLoaded', () => {
         closeAutoAnswerMenu();
         byId('autoAnswerInfo')?.focus();
       }
-      else if (!_changelogPopoverClosed()) closeChangelogPopover();
+      else if (_changelogPopoverEl) _changelogPopoverEl.hidePopover();
       else closeSidebar();
     }
   });
@@ -2062,38 +2086,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Changelog popover ────────────────────────────────────────────────────
 var _changelogData = null;
-var _changelogPopover = null;
-var _changelogBackdrop = null;
-var _changelogVerEl = null;
-
-function _changelogPopoverClosed() { return !_changelogPopover; }
+var _changelogPopoverEl = null;
 
 function toggleChangelogPopover(anchorEl) {
-  _changelogVerEl = anchorEl;
-  if (_changelogPopover) { closeChangelogPopover(); return; }
+  if (_changelogPopoverEl) { _changelogPopoverEl.hidePopover(); return; }
   if (!_changelogData) {
     apiFetch('/api/changelog')
       .then(function(r) { return r.json(); })
       .then(function(data) {
         _changelogData = Array.isArray(data) ? data : [];
-        _buildChangelogPopover(anchorEl);
+        _showChangelogPopover(anchorEl);
       })
       .catch(function() { /* silent */ });
   } else {
-    _buildChangelogPopover(anchorEl);
+    _showChangelogPopover(anchorEl);
   }
 }
 
-function _buildChangelogPopover(anchorEl) {
+function _showChangelogPopover(anchorEl) {
   if (!_changelogData) return;
-  _changelogPopover = document.createElement('div');
-  _changelogPopover.className = 'changelog-popover';
-  _changelogPopover.setAttribute('role', 'dialog');
-  _changelogPopover.setAttribute('aria-label', 'Changelog');
+
+  if (_changelogPopoverEl) {
+    _changelogPopoverEl.remove();
+    _changelogPopoverEl = null;
+  }
+
+  var dialog = document.createElement('div');
+  dialog.className = 'changelog-popover';
+  dialog.setAttribute('popover', 'manual');
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-label', 'Changelog');
 
   var heading = document.createElement('h3');
   heading.textContent = 'Changelog';
-  _changelogPopover.appendChild(heading);
+  dialog.appendChild(heading);
 
   _changelogData.forEach(function(entry) {
     var chapter = document.createElement('div');
@@ -2126,27 +2152,31 @@ function _buildChangelogPopover(anchorEl) {
       chapter.appendChild(ul);
     });
 
-    _changelogPopover.appendChild(chapter);
+    dialog.appendChild(chapter);
   });
 
-  // Backdrop
-  _changelogBackdrop = document.createElement('div');
-  _changelogBackdrop.className = 'changelog-changelog-backdrop';
-  _changelogBackdrop.addEventListener('click', function() { closeChangelogPopover(); });
-  document.body.appendChild(_changelogBackdrop);
-  document.body.appendChild(_changelogPopover);
+  // Click outside to close
+  var backdrop = document.createElement('div');
+  backdrop.className = 'changelog-changelog-backdrop';
+  backdrop.addEventListener('click', function() { dialog.hidePopover(); });
+  document.body.appendChild(backdrop);
 
-  // Position under the version element
-  var rect = anchorEl.getBoundingClientRect();
-  var w = Math.min(420, window.innerWidth - 20);
-  _changelogPopover.style.width = w + 'px';
-  _changelogPopover.style.top = (rect.bottom + 4) + 'px';
-  _changelogPopover.style.right = (window.innerWidth - rect.right) + 'px';
-}
+  // Open and clean up
+  document.body.appendChild(dialog);
+  dialog.showPopover();
+  _changelogPopoverEl = dialog;
 
-function closeChangelogPopover() {
-  if (_changelogPopover) { _changelogPopover.remove(); _changelogPopover = null; }
-  if (_changelogBackdrop) { _changelogBackdrop.remove(); _changelogBackdrop = null; }
-  _changelogData = null; // re-fetch next time
-  _changelogVerEl = null;
+  // Remove backdrop on close
+  var checkClose = setInterval(function() {
+    if (!document.body.contains(backdrop)) {
+      clearInterval(checkClose);
+      return;
+    }
+    if (!dialog.getPopoverState() || dialog.getPopoverState() === 'closed') {
+      dialog.remove();
+      backdrop.remove();
+      clearInterval(checkClose);
+      _changelogPopoverEl = null;
+    }
+  }, 200);
 }

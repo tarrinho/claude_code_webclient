@@ -117,13 +117,24 @@ async def _busy_terminal_sessions() -> set[str]:
 async def handle_chats_list(request: Request):
     """GET /api/chats -- list chats scoped to owner."""
     session = request.state.session
+    # Snapshotted first, and synchronously (an in-memory dict read, no await),
+    # so the two awaits below cannot land in between it and the DB read they
+    # used to follow it. They used to run first: chat_list's `updated_at` was
+    # captured, then two awaits (this and queue_counts) gave a turn time to
+    # finish and persist, then running_ids read *after* that already saw it
+    # as no longer running -- one response reporting running=False with the
+    # stale pre-turn updated_at still attached. The sidebar (chat-list.js)
+    # reacts to the two independently: that combination reads as "finished"
+    # for a poll or two, then "unread" once a later poll's updated_at catches
+    # up -- one highlight visibly replaced by another within a few seconds.
+    # Ordering this first cannot remove the race, only bite the safe side of
+    # it: if a turn finishes during the awaits below, the worst case is now
+    # running=True alongside an already-current updated_at, which every
+    # consumer already treats as normal (still-running chats update their
+    # timestamp too), not a state combination nothing was built to expect.
+    running = turns.running_ids(session["user"])
     chats = await db.chat_list(session["user"])
     live_updated = await _live_updated_at(chats)
-    # A turn now outlives the request that started it, so "is this conversation
-    # busy?" is server state rather than something the open tab knows. The
-    # sidebar reads it from here instead of watching its own stream, which only
-    # ever saw the conversation being looked at.
-    running = turns.running_ids(session["user"])
     queued = await db.queue_counts(session["user"])
     busy_sessions = await _busy_terminal_sessions()
     last_models = await db.last_models_used(session["user"])
@@ -386,7 +397,7 @@ async def handle_chats_reorder(request: Request):
     session = request.state.session
     try:
         data = await request.json()
-    except Exception:  # noqa: BLE001 -- a malformed body is a client error
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     order = data.get("order")
@@ -586,7 +597,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
         return
     try:
         machine = await db.ai_machine_active(owner)
-    except Exception as exc:  # noqa: BLE001 -- accounting must not break a live turn
+    except Exception as exc:
         _log.warning(
             "usage_provider_unresolved: chat_id=%s (%s) — rows fall back to the "
             "default provider label", chat_id, exc,
@@ -821,7 +832,7 @@ async def _prepare_transcript_for_backend(chat: dict) -> None:
         return
     try:
         backend = await runner.get_backend(chat["id"])
-    except Exception:  # noqa: BLE001 -- routing must never block a turn
+    except Exception:
         return
     if backend.get("provider") != "anthropic":
         return
@@ -1087,7 +1098,7 @@ async def stream_handler(request: Request, chat_id: str):
             except (OSError, asyncio.IncompleteReadError):
                 _log.exception("stream_handler I/O error on %s", chat_id)
                 yield f"data: {json.dumps({'type': 'error', 'error': _SSE_UNKNOWN})}\n\n"
-            except Exception:  # noqa: BLE001 -- convert stream failures to SSE errors
+            except Exception:
                 _log.exception("stream_handler unexpected error on %s", chat_id)
                 yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
         finally:
@@ -1152,7 +1163,7 @@ async def handle_chat_live(request: Request, chat_id: str):
                     await asyncio.sleep(0)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 -- convert follow failures to SSE errors
+            except Exception:
                 _log.exception("live stream failed chat_id=%s", chat_id)
                 yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
         finally:
@@ -1380,7 +1391,7 @@ async def handle_chat_search(request: Request):
     session = request.state.session
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     query = (body.get("query") or "").strip()
@@ -1544,7 +1555,7 @@ async def handle_chat_question_answer(request: Request):
         raise HTTPException(status_code=400, detail="Chat is not linked to a session")
     try:
         data = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON") from None
     try:
         want = int(data.get("index"))
@@ -1664,7 +1675,7 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
     session = request.state.session
     try:
         data = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON") from None
     enabled = data.get("enabled")
     if not isinstance(enabled, bool):
@@ -1743,7 +1754,7 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
             transcripts._scan_questions_sync,
             transcripts.transcript_path(session_id),
         )
-    except Exception:  # noqa: BLE001,S110
+    except Exception:
         pass
 
     # Filter questions by IDs we already rendered for this chat.  This is the
@@ -1751,7 +1762,7 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
     # questions on every poll, so we must not re-insert them.
     try:
         seen_ids: set[str] = await db.chat_get_question_ids(chat_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         seen_ids = set()
     new_ids: list[str] = []
     filtered_questions: list[dict[str, Any]] = []
@@ -1817,7 +1828,7 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
     # the whole block is a duplicate).
     try:
         tail = await db.messages_last(chat_id, 1)
-    except Exception:  # noqa: BLE001
+    except Exception:
         tail = []
     if tail and tail[0]["role"] == rows[0][0] and tail[0]["content"] == rows[0][1]:
         _log.info("transcript_sync_deduped chat_id=%s count=%d", chat_id, len(rows))
@@ -1880,7 +1891,7 @@ async def handle_chats_sync_all(request: Request):
         scanned += 1
         try:
             rows = await _sync_linked_chat(chat)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # One unreadable transcript must not cost the whole sweep; the
             # single-chat route still reports its own failures loudly.
             _log.warning("sync_all_failed chat_id=%s: %s", chat["id"], exc)

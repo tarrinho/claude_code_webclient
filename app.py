@@ -349,7 +349,19 @@ async def lifespan(app: FastAPI):
     sysstats.start(db.system_sample_insert)
     # Tunnel manager: background SSH tunnel lifecycle for ssh_proxy machines.
     import tunnel_manager
-    tunnel_manager.start(db.system_sample_insert)
+    # Unlike sysstats.start() just above (a sync function), tunnel_manager's
+    # is `async def` -- called without await here, this only ever created a
+    # coroutine object and discarded it. Its body, including the
+    # `asyncio.create_task(_loop(...))` that makes the manager exist at all,
+    # never ran: no reconnect scan at boot, no consumer for queue_command(),
+    # nothing. Every other bug fixed in this same investigation (the request
+    # body never being read, the machine_id int() cast, the un-awaited
+    # ssh_tunnel_get/list_active reads) still left this as the reason a
+    # queued START_TUNNEL command was accepted and then simply sat in the
+    # queue forever -- confirmed live: `wc.tunnel_manager` never logged a
+    # single line, and /api/tunnel/status/<id> stayed {"state": "none"}
+    # indefinitely after a real start request.
+    await tunnel_manager.start(db.system_sample_insert)
     # Answers permission and plan-approval prompts for chats whose owner armed
     # this. The lookups are injected from routes.chats rather than imported by
     # auto_answer, so that module carries no routes dependency and no cycle --
@@ -371,8 +383,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="WebConsole", version=config.VERSION, lifespan=lifespan)
 # Routes for /api/machines and /api/models. FastAPI matches in the order
 # routers are included, so this line's position is the registration order.
-app.include_router(machines_router)
 app.include_router(machines_tunnel_router)
+app.include_router(machines_router)
 app.include_router(chats_router)
 app.include_router(supervisors_router)
 app.include_router(misc_router)

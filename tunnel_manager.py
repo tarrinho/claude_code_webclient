@@ -48,10 +48,18 @@ async def start(store_fn, _now_fn=None) -> None:
     _running = True
     # Auto-activate: read active ssh_proxy machines, attempt reconnect.
     try:
-        rows = await db.db_conn.execute(
+        cursor = await db.db_conn.execute(
             "SELECT id, machine_id, state FROM ssh_tunnels "
             "WHERE tunnel_up = 1 ORDER BY id"
         )
+        # aiosqlite.Cursor has __aiter__ but not __iter__ -- a plain `for`
+        # over the cursor itself raises TypeError immediately, silently
+        # caught by the except below (same shape as db.ssh_tunnel_get's
+        # missing-await bug found alongside this one). Harmless while
+        # ssh_tunnels has no tunnel_up=1 rows yet, since nothing was there
+        # to reconnect either way, but would have blocked every reconnect
+        # attempt after a restart once one existed.
+        rows = await cursor.fetchall()
         for row in rows:
             _queue.put_nowait(("RECONNECT", str(row["machine_id"])))
     except Exception:
@@ -61,19 +69,27 @@ async def start(store_fn, _now_fn=None) -> None:
 
 async def stop() -> None:
     """Set _running=False, drain queue, close all SSH clients."""
-    global _running, _task
+    global _running, _task, _queue
     _running = False
-    # Drain pending commands (reconnect).
-    while not _queue.empty():
-        try:
-            _queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
     if _task and not _task.done():
         _task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _task
         _task = None
+    for machine_id in list(_STATE):
+        _release_machine(machine_id)
+    # A fresh Queue, not a drain of the old one. asyncio.Queue binds to
+    # whichever event loop first awaits get()/put() on it, and this module
+    # holds it at module scope -- every test file that starts the manager,
+    # each under its own event loop (unittest.IsolatedAsyncioTestCase makes
+    # a new one per test), left the *old* loop's binding on the queue after
+    # a drain, so the next test to touch it hit
+    # "RuntimeError: <Queue...> is bound to a different event loop" even
+    # though it never held a live task at that point. Only surfaced once
+    # tunnel_manager.start() actually ran for the first time anywhere (see
+    # app.py's missing-await fix) -- before that nothing had ever awaited
+    # the queue at all, so it had never bound to anything.
+    _queue = asyncio.Queue()
 
 
 async def queue_command(machine_id: str, action: str) -> None:

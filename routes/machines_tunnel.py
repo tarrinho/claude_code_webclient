@@ -17,10 +17,22 @@ _log = logging.getLogger("wc.tunnel.api")
 router = APIRouter()
 
 
-def _body(req: Request) -> dict:
-    """Parse JSON body or return empty dict."""
+async def _body(req: Request) -> dict:
+    """Parse JSON body or return empty dict.
+
+    Request.body() is a coroutine -- every caller here called it bare,
+    passing the coroutine object itself to json.loads(), which raised
+    TypeError on every single request and was swallowed by the except
+    clause below. Every endpoint in this file read machine_id (or
+    ssh_host/ssh_key_path, for the init-wizard routes) as empty no matter
+    what the client actually sent: starting or stopping a tunnel, or
+    running the SSH-test/probe steps of the init wizard, always failed
+    with "machine_id required" before ever reaching real logic. Live since
+    this file shipped (c5d131d) -- not a regression from today's other
+    fixes.
+    """
     try:
-        return json.loads(req.body())
+        return json.loads(await req.body())
     except (json.JSONDecodeError, ValueError, TypeError):
         return {}
 
@@ -38,7 +50,7 @@ async def tunnel_start(req: Request):
     import tunnel_manager
 
     user = _user(req)
-    data = _body(req)
+    data = await _body(req)
     machine_id = data.get("machine_id", "")
     if not machine_id:
         raise HTTPException(status_code=400, detail="machine_id required")
@@ -53,8 +65,17 @@ async def tunnel_start(req: Request):
     try:
         existing = await db.ssh_tunnel_get(machine_id)
         if not existing:
+            # ai_machines.id is a hex UUID string, never a small integer --
+            # int(machine_id) raised ValueError on every real machine id,
+            # silently swallowed by the except below, so this row was never
+            # actually created and no ssh_proxy tunnel has ever connected
+            # since the feature shipped. ssh_tunnels.machine_id is declared
+            # INTEGER, but SQLite's dynamic typing stores a non-numeric TEXT
+            # value in an INTEGER column as-is (verified directly against a
+            # throwaway connection) -- passing the string through needs no
+            # schema change, only removing the cast that was crashing this.
             await db.ssh_tunnel_create(
-                machine_id=int(machine_id),
+                machine_id=machine_id,
                 local_port=config.TUNNEL_PORT_RANGE_LOW,
             )
     except Exception:  # tunnel creation is idempotent; skip errors here
@@ -70,7 +91,7 @@ async def tunnel_stop(req: Request):
     import tunnel_manager
 
     user = _user(req)
-    data = _body(req)
+    data = await _body(req)
     machine_id = data.get("machine_id", "")
     if not machine_id:
         raise HTTPException(status_code=400, detail="machine_id required")
@@ -91,7 +112,7 @@ async def tunnel_toggle(req: Request):
     import tunnel_manager
 
     user = _user(req)
-    data = _body(req)
+    data = await _body(req)
     machine_id = data.get("machine_id", "")
     if not machine_id:
         raise HTTPException(status_code=400, detail="machine_id required")
@@ -168,8 +189,7 @@ async def init_ssh_test(req: Request):
     """Test SSH connection to a remote host."""
     from tunnel_manager_ssh import test_ssh_connection
 
-    _body(req)  # validate body
-    data = _body(req)
+    data = await _body(req)
     ssh_host = (data.get("ssh_host") or "").strip()
     ssh_user = (data.get("ssh_user") or "kali").strip()
     ssh_key_path = (data.get("ssh_key_path") or "").strip()
@@ -189,7 +209,7 @@ async def init_probe_remote(req: Request):
     from tunnel_manager_ssh import probe_remote as _probe
 
     user = _user(req)
-    data = _body(req)
+    data = await _body(req)
     machine_id = data.get("machine_id", "")
     if not machine_id:
         raise HTTPException(status_code=400, detail="machine_id required")

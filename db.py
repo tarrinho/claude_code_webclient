@@ -963,13 +963,20 @@ async def _reopen() -> None:
 # ── SSH tunnel CRUD ──────────────────────────────────────────────────
 
 
-async def ssh_tunnel_get(machine_id: int) -> dict | None:
+async def ssh_tunnel_get(machine_id: str) -> dict | None:
     """Return one ssh_tunnels row by machine_id or None."""
     cursor = await db_conn.execute(
         "SELECT * FROM ssh_tunnels WHERE machine_id = ?",
         (machine_id,),
     )
-    rows = cursor.fetchall()
+    # fetchall() is a coroutine too -- missing this await meant `rows` was
+    # the coroutine object itself, always truthy (`not rows` never True), so
+    # every call fell through to `rows[0]` and raised
+    # `TypeError: 'coroutine' object is not subscriptable`. Caught by
+    # tunnel_start's broad `except Exception` and logged as "will use
+    # existing" -- so the ssh_tunnels row was never created, on top of (and
+    # independently of) the int(machine_id) bug in the same call chain.
+    rows = await cursor.fetchall()
     if not rows:
         return None
     return rows[0]
@@ -980,11 +987,13 @@ async def ssh_tunnel_list_active() -> list[dict]:
     cursor = await db_conn.execute(
         "SELECT * FROM ssh_tunnels WHERE tunnel_up = 1"
     )
-    return cursor.fetchall()
+    # Same missing-await as ssh_tunnel_get: fetchall() is a coroutine, so
+    # this returned the coroutine object itself instead of a list of rows.
+    return await cursor.fetchall()
 
 
 async def ssh_tunnel_create(
-    machine_id: int,
+    machine_id: str,
     local_port: int,
     ssh_port: int = 22,
 ) -> int:
@@ -1004,7 +1013,7 @@ async def ssh_tunnel_create(
 
 
 async def ssh_tunnel_update(
-    machine_id: int,
+    machine_id: str,
     **fields,
 ) -> None:
     """Update ssh_tunnels row for *machine_id* with any subset of keys.
@@ -1023,7 +1032,7 @@ async def ssh_tunnel_update(
     await db_conn.commit()
 
 
-async def ssh_tunnel_delete(machine_id: int) -> None:
+async def ssh_tunnel_delete(machine_id: str) -> None:
     """Delete the ssh_tunnels row for *machine_id*."""
     await db_conn.execute(
         "DELETE FROM ssh_tunnels WHERE machine_id = ?",

@@ -363,6 +363,12 @@ class StreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create(self.chat_id, "Stream", None, str(self.work_dir), "admin")
         self.request = SimpleNamespace(
             cookies={"wc_session": "valid"},
+            # stream_handler reads request.state.session (AuthMiddleware's own
+            # auth path) rather than calling auth.session_get itself -- see its
+            # docstring. This fixture predated that change, so every test below
+            # failed with AttributeError on request.state before ever reaching
+            # the behaviour it tests.
+            state=SimpleNamespace(session={"user": "admin"}),
             json=AsyncMock(return_value={"content": "hello"}),
         )
 

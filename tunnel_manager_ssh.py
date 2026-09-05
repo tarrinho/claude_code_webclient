@@ -29,18 +29,37 @@ async def connect(machine_id: str):
 
     import db
 
+    # ssh_tunnels only carries tunnel bookkeeping (state, ports, owner_id) --
+    # ssh_host/ssh_user/ssh_key_path live on ai_machines, the table the
+    # Settings form actually writes them to. Reading them from the tunnel
+    # row (a sqlite3.Row, whose .get() doesn't exist either -- indexing or
+    # dict() is what it supports) meant every field defaulted to "" and
+    # connect() always failed with "ssh_host is empty" -- when it managed
+    # to run at all, which needed the four other bugs found alongside this
+    # one already fixed first (the tunnel row wasn't even being created
+    # until then). ai_machine_get needs owner_id for its own scoping check,
+    # which the tunnel row does carry (ssh_tunnels.owner_id, set at
+    # creation from the authenticated request that started the tunnel).
     try:
-        row = await db.ssh_tunnel_get(machine_id)
+        tunnel_row = await db.ssh_tunnel_get(machine_id)
     except Exception:
         return _fail(machine_id, "no tunnel row")
 
-    if not row:
+    if not tunnel_row:
         return _fail(machine_id, "no tunnel row")
 
-    ssh_host = row.get("ssh_host", "")
-    ssh_user = row.get("ssh_user", "kali")
-    ssh_key_path = row.get("ssh_key_path", "")
-    ssh_port = row.get("ssh_port", 22)
+    try:
+        machine = await db.ai_machine_get(machine_id, tunnel_row["owner_id"])
+    except Exception:
+        return _fail(machine_id, "no machine row")
+
+    if not machine:
+        return _fail(machine_id, "no machine row")
+
+    ssh_host = machine.get("ssh_host", "")
+    ssh_user = machine.get("ssh_user", "kali")
+    ssh_key_path = machine.get("ssh_key_path", "")
+    ssh_port = tunnel_row["ssh_port"] if "ssh_port" in tunnel_row.keys() else 22
 
     if not ssh_host:
         return _fail(machine_id, "ssh_host is empty")
@@ -48,7 +67,7 @@ async def connect(machine_id: str):
         return _fail(machine_id, "ssh_key_path is empty")
 
     try:
-        _check_key_permissions(ssh_key_path)
+        ssh_key_path = _check_key_permissions(ssh_key_path)
     except Exception as exc:
         return _fail(machine_id, str(exc))
 
@@ -85,10 +104,20 @@ async def connect(machine_id: str):
     return (True, ssh_client, transport, local_port, ssh_port)
 
 
-def _check_key_permissions(key_path: str) -> None:
-    """Verify SSH key file permissions (must be <= 0o600)."""
+def _check_key_permissions(key_path: str) -> str:
+    """Verify SSH key file permissions (must be <= 0o600). Returns the
+    expanded path, since a `~` a user typed into the Settings form (the
+    natural way to write it, and what the init wizard's own placeholder
+    text -- `~/.ssh/id_ed25519` -- suggests) was never expanded before
+    reaching os.stat(): it looked for a literal file named `~` relative to
+    the service's cwd, not the real key, and failed "not found" even when
+    the key existed with correct permissions. Every caller must use this
+    return value for the actual paramiko connection too, not the original
+    string, or the check and the connection attempt look at two different
+    paths."""
+    expanded = os.path.expanduser(key_path)
     try:
-        st = os.stat(key_path)
+        st = os.stat(expanded)
     except OSError as exc:
         raise FileNotFoundError(f"SSH key not found: {key_path}") from exc
     mode = st.st_mode & 0o777
@@ -97,8 +126,9 @@ def _check_key_permissions(key_path: str) -> None:
             f"SSH key {key_path} mode {oct(mode)} "
             f"(expected 0o600 or stricter)"
         )
-    if not os.access(key_path, os.R_OK):
+    if not os.access(expanded, os.R_OK):
         raise PermissionError(f"SSH key {key_path} is not readable")
+    return expanded
 
 
 async def _find_available_port(low: int = 9000, high: int = 10000) -> int:
@@ -165,7 +195,7 @@ async def test_ssh_connection(ssh_host: str, ssh_user: str, ssh_key_path: str):
         return {"ok": False, "error": "SSH key path is required"}
 
     try:
-        _check_key_permissions(ssh_key_path)
+        ssh_key_path = _check_key_permissions(ssh_key_path)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 

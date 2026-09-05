@@ -11,10 +11,30 @@ import pytest
 pytest.importorskip("paramiko")
 
 
+def _get_or_create_loop():
+    """asyncio.get_event_loop() alone, used to work here because Python
+    auto-created a loop the first time nothing existed. Newer Python raises
+    instead, and this file is the first thing after this repo's
+    IsolatedAsyncioTestCase-based tests to want a "current" loop rather than
+    always making its own -- those explicitly clear the current loop after
+    each test (unittest's own cleanup), so by the time a test here runs
+    there may genuinely be none set for this thread. This keeps the original
+    behaviour (reuse across the several await_async calls one test makes,
+    so tunnel_manager.start()'s task and the later tunnel_manager.stop()
+    that awaits it stay on the same loop) while tolerating "none exists yet".
+    """
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 def _ensure_admin():
     """Bootstrap admin if needed."""
     from auth import bootstrap_admin
-    loop = asyncio.get_event_loop()
+    loop = _get_or_create_loop()
     loop.run_until_complete(bootstrap_admin())
 
 
@@ -105,5 +125,5 @@ def test_backoff_grows():
 
 def await_async(coro):
     """Run a coroutine on the currently running loop."""
-    loop = asyncio.get_event_loop()
+    loop = _get_or_create_loop()
     return loop.run_until_complete(coro)

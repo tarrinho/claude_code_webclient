@@ -52,6 +52,9 @@ _MACHINE_ALLOWED_FIELDS = {
     "model",
     "base_url",
     "description",
+    "ssh_host",
+    "ssh_user",
+    "ssh_key_path",
 }
 
 
@@ -64,6 +67,9 @@ _MACHINE_TEXT_FIELDS = (
     "model",
     "base_url",
     "description",
+    "ssh_host",
+    "ssh_user",
+    "ssh_key_path",
 )
 
 
@@ -135,9 +141,10 @@ async def handle_machine_create(request: Request):
         raise HTTPException(status_code=400, detail="Unknown provider")
     base_url = (data.get("base_url") or "").strip() or None
     host = (data.get("host") or "").strip()
+    ssh_host = (data.get("ssh_host") or "").strip()
+    ssh_user = (data.get("ssh_user") or "kali").strip()
+    ssh_key_path = (data.get("ssh_key_path") or "").strip() or None
     if provider == "anthropic":
-        # The endpoint is the transport, so derive host/port from it rather
-        # than asking for them twice and letting the two disagree.
         base_url = base_url or config.ANTHROPIC_BASE_URL
         host = host or _base_url_host(base_url)
         data.setdefault("port", _ANTHROPIC_PORT)
@@ -149,14 +156,26 @@ async def handle_machine_create(request: Request):
         raise HTTPException(status_code=400, detail="Port must be 1-65535")
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
-    if not host:
-        raise HTTPException(status_code=400, detail="Host is required")
-    if not _HOST_PATTERN_LOCAL.fullmatch(host):
-        raise HTTPException(
-            status_code=400, detail="Enter a valid hostname or IP address"
-        )
-    # SSRF: block internal IPs on creation.
-    _validate_host(host)
+    if provider == "ssh_proxy":
+        if not ssh_host:
+            raise HTTPException(status_code=400, detail="SSH host is required")
+        if not ssh_key_path:
+            raise HTTPException(status_code=400, detail="SSH key path is required")
+        if not _HOST_PATTERN_LOCAL.fullmatch(ssh_host):
+            raise HTTPException(
+                status_code=400, detail="Enter a valid hostname or IP address"
+            )
+        # Use 9000 as the default proxy port the tunnel will expose.
+        data.setdefault("port", 9000)
+    else:
+        if not host:
+            raise HTTPException(status_code=400, detail="Host is required")
+        if not _HOST_PATTERN_LOCAL.fullmatch(host):
+            raise HTTPException(
+                status_code=400, detail="Enter a valid hostname or IP address"
+            )
+        _validate_host(host)
+        data.setdefault("port", port)
     default_model = (
         config.ANTHROPIC_MODEL if provider == "anthropic" else config.MODEL_NAME
     )
@@ -181,6 +200,9 @@ async def handle_machine_create(request: Request):
         description,
         session["user"],
         provider=provider,
+        ssh_host=ssh_host if provider == "ssh_proxy" else None,
+        ssh_user=ssh_user,
+        ssh_key_path=ssh_key_path,
     )
     _log.info(
         "ai_machine created by user=%s name=%s provider=%s",

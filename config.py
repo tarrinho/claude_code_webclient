@@ -83,6 +83,22 @@ TOKEN_DEFAULT_TTL_DAYS = _int("WC_TOKEN_DEFAULT_TTL_DAYS", 90)  # 90d default ex
 # marks the session cookie Secure; opt in explicitly for plain-HTTP setups.
 COOKIE_ALLOW_INSECURE = _bool("WC_COOKIE_ALLOW_INSECURE", False)
 
+# --- SSH proxy -------------------------------------------------------------
+# Max concurrent SSH tunnels per deployment. Each tunnel holds one TCP
+# connection to a remote host and a local port forward.
+MAX_TUNNELS = _int("WC_MAX_TUNNELS", 5)
+# Seconds between tunnel health probes (keepalive + proxy ping).
+TUNNEL_HEALTH_INTERVAL_S = _int("WC_TUNNEL_HEALTH_INTERVAL_S", 30)
+# Seconds between remote stats collection (CPU, mem, disk via SSH exec).
+TUNNEL_STATS_INTERVAL_S = _int("WC_TUNNEL_STATS_INTERVAL_S", 120)
+# Seconds before an unreachable remote proxy probe times out.
+TUNNEL_PROBE_TIMEOUT_S = _int("WC_TUNNEL_PROBE_TIMEOUT_S", 2)
+# Local port range for tunnel binds.
+TUNNEL_PORT_RANGE_LOW = _int("WC_TUNNEL_PORT_RANGE_LOW", 9000)
+TUNNEL_PORT_RANGE_HIGH = _int("WC_TUNNEL_PORT_RANGE_HIGH", 10000)
+# Seconds of consecutive failed reconnects before auto-disconnect.
+TUNNEL_DISCONNECT_TIMEOUT = _int("WC_TUNNEL_DISCONNECT_TIMEOUT", 300)
+
 # --- Claude Code proxy (host-side) ----------------------------------------
 # When PROXY_ENABLED=True the runner connects to the host-side proxy instead
 # of spawning `claude` directly inside the container.
@@ -175,7 +191,7 @@ TURN_RETRY_MAX = _int("WC_TURN_RETRY_MAX", 2)
 TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.10.6"
+VERSION = "WebConsole_0.12.0"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 
@@ -188,6 +204,9 @@ def validate() -> None:
         )
     if not PROJECTS_ROOT:
         raise RuntimeError("WC_PROJECTS_ROOT must be set to a project directory root")
+    if MAX_TUNNELS < 1:
+        raise RuntimeError("WC_MAX_TUNNELS must be >= 1")
+
     if PROXY_ENABLED and (not PROXY_TOKEN or len(PROXY_TOKEN) < 32):
         raise RuntimeError(
             "WC_PROXY_TOKEN is unset or too short while proxy mode is enabled. "

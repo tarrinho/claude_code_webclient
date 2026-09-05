@@ -44,6 +44,7 @@ from routes.chats import _deliver_answer, _launch_queued, _pending_options
 from routes.chats import _pending_prompt as _auto_answer_pending
 from routes.chats import router as chats_router
 from routes.machines import router as machines_router
+from routes.machines_tunnel import router as machines_tunnel_router
 
 # _resolve_member (a supervisors helper) adopts a session by calling the
 # sessions route's handler, so this crosses prefixes. It travels to
@@ -308,7 +309,7 @@ async def _load_settings_from_db() -> None:
         val: str | None = None
         try:
             val = await db.setting_get(db_key)
-        except Exception:  # noqa: BLE001,S110 -- settings DB may not be ready at import time
+        except Exception:
             pass
         if val is not None:
             if typ == "int":
@@ -346,6 +347,9 @@ async def lifespan(app: FastAPI):
     # History has to accumulate while nobody is watching, or the Server page
     # can only ever chart the moments someone had the tab open.
     sysstats.start(db.system_sample_insert)
+    # Tunnel manager: background SSH tunnel lifecycle for ssh_proxy machines.
+    import tunnel_manager
+    tunnel_manager.start(db.system_sample_insert)
     # Answers permission and plan-approval prompts for chats whose owner armed
     # this. The lookups are injected from routes.chats rather than imported by
     # auto_answer, so that module carries no routes dependency and no cycle --
@@ -355,6 +359,7 @@ async def lifespan(app: FastAPI):
     # Stopped before db.close(): the sampler writes through the connection.
     await sysstats.stop()
     await auto_answer.stop()
+    await tunnel_manager.stop()
     # Before db.close(): a turn cancelled here still runs its `finish`, which
     # needs the connection. Leaving them to be torn down with the loop instead
     # abandoned tasks mid-write.
@@ -367,6 +372,7 @@ app = FastAPI(title="WebConsole", version=config.VERSION, lifespan=lifespan)
 # Routes for /api/machines and /api/models. FastAPI matches in the order
 # routers are included, so this line's position is the registration order.
 app.include_router(machines_router)
+app.include_router(machines_tunnel_router)
 app.include_router(chats_router)
 app.include_router(supervisors_router)
 app.include_router(misc_router)
@@ -395,7 +401,7 @@ async def handle_http_exception(request: Request, exc: HTTPException):
             getattr(getattr(request, "client", None), "host", "?") or "?",
             session.get("user", "anonymous") if isinstance(session, dict) else "anonymous",
         )
-    except Exception:  # noqa: BLE001,S110 -- logging must never mask the real error
+    except Exception:
         pass
     if "text/html" in (getattr(request, "headers", None) or {}).get("accept", ""):
         return HTMLResponse(

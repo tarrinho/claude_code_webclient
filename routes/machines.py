@@ -69,7 +69,7 @@ _MACHINE_TEXT_FIELDS = (
 
 # How a machine is reached. 'anthropic' is the official API -- what Claude Code
 # talks to out of the box; 'proxy' is a host running claude_proxy.py.
-_MACHINE_PROVIDERS = {"anthropic", "proxy"}
+_MACHINE_PROVIDERS = {"anthropic", "proxy", "ssh_proxy"}
 
 
 _ANTHROPIC_PORT = 443

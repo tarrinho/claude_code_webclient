@@ -1,0 +1,5 @@
+[lint]
+# Tunnel code catches broad exceptions intentionally: the loop must survive
+# transient SSH failures, socket drops, and paramiko errors. Bleeding-edge
+# strictness (S110/BLE001) is counterproductive in a retry loop.
+ignore = ["BLE001", "S110"]

@@ -2,7 +2,7 @@
 
 A self-hosted web interface for a local Claude Code CLI. It provides mobile-friendly conversations, SSE token streaming, SQLite persistence, resumable CLI sessions, multi-machine AI routing, and skills inventory.
 
-**Version:** 0.10.4
+**Version:** 0.12.0
 **License:** Proprietary
 
 ---
@@ -412,7 +412,6 @@ entries transposed, and inverted the Auth/CSRF relationship.
 | `/api/chats/{id}` | PATCH | `handle_chat_patch` | Rename, desc, archive, pin |
 | `/api/chats/{id}` | DELETE | `handle_chat_delete` | Hard delete chat + messages |
 | `/api/chats/{id}/export` | GET | `handle_chat_export` | Download Markdown transcript |
-| `/api/reports/backend-model-comparison.pdf` | GET | `_api_backend_model_comparison` | Authenticated comparison PDF |
 | `/api/chats/{id}/messages` | POST | `handle_submit_message` | Blocking turn (wait for full response) |
 | `/api/chats/{id}/stream` | POST | `stream_handler` | Start a turn, then follow it over SSE |
 | `/api/chats/{id}/live` | GET | `handle_chat_live` | Attach to a turn already running (`?since=<seq>`) |
@@ -916,7 +915,6 @@ CREATE TABLE ai_machines (
 | PATCH | `/api/chats/{id}` | Yes | `{title?, description?, archived?, pinned?}` | `{ok: true}` |
 | DELETE | `/api/chats/{id}` | Yes | — | `{ok: true}` |
 | GET | `/api/chats/{id}/export` | Yes | — | Markdown file attachment |
-| GET | `/api/reports/backend-model-comparison.pdf` | Yes | — | Inline PDF report |
 | POST | `/api/chats/{id}/messages` | Yes | `{content, model?}` | `{response, chunks, model}` |
 | POST | `/api/chats/{id}/stream` | Yes | `{content, model?}` | SSE stream |
 

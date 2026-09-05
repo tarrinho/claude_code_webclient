@@ -85,7 +85,12 @@ def backend_kind(machine: dict | None) -> str:
     whether the CLI's cost figure is trustworthy) and the machine API, so the
     two surfaces cannot drift apart.
     """
-    if not machine or machine.get("provider") != "anthropic":
+    if not machine:
+        return "proxy"
+    prov = machine.get("provider")
+    if prov == "ssh_proxy":
+        return "ssh-proxy"
+    if prov != "anthropic":
         return "proxy"
     base_url = (machine.get("base_url") or "").strip()
     if not base_url:

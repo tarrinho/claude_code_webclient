@@ -358,7 +358,25 @@ async def get_proxy_target(
         # (the supervisor) whose chat_id is a label rather than a row.
         routing = {"machine": await db.ai_machine_backend(owner)}
     machine = routing["machine"]
-    if not machine or machine.get("provider") != "proxy" or not machine.get("host"):
+    if not machine:
+        return await get_proxy_host(), config.PROXY_PORT
+
+    provider = machine.get("provider", "")
+
+    # ssh_proxy: route through the tunnel to 127.0.0.1:<local_port>.
+    if provider == "ssh_proxy":
+        from tunnel_manager import tunnel_status
+
+        status = await tunnel_status(machine["id"])
+        if status and status.get("tunnel_up") and status.get("proxy_ok"):
+            return "127.0.0.1", int(status["local_port"])
+        # Tunnel down or proxy not OK — still route there so _execute_proxy
+        # can report "waiting_remote" to the SSE client.
+        if status and status.get("local_port"):
+            return "127.0.0.1", int(status["local_port"])
+        # No tunnel info yet; fall through to DB fallback.
+
+    if provider != "proxy" or not machine.get("host"):
         return await get_proxy_host(), config.PROXY_PORT
     return machine["host"], int(machine.get("port") or config.PROXY_PORT)
 
@@ -523,8 +541,8 @@ async def _execute_proxy(
     work_dir: str,
     chat_id: str,
     model: str | None = None,
-
-    owner: str | None = None,) -> tuple[list[str], str | None]:
+    owner: str | None = None,
+) -> tuple[list[str], str | None]:
     """Core proxy turn: connect → send turn → read NDJSON → disconnect."""
     connect_timeout = config.PROXY_CONNECT_TIMEOUT_S
     turn_timeout = config.PROXY_TURN_TIMEOUT_S
@@ -1066,7 +1084,7 @@ async def _do_direct_stream(
     except asyncio.CancelledError:
         await _kill_process(proc)
         raise
-    except Exception as e:  # noqa: BLE001 -- relay subprocess failures as stream errors
+    except Exception as e:
         await _kill_process(proc)
         yield {"type": "error", "error": str(e)}
 

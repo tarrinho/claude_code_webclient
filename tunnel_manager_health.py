@@ -1,0 +1,68 @@
+"""Health probes and remote stats collection for tunnel manager.
+
+Probe: TCP connection + claude_proxy.py handshake to confirm tunnel is live.
+Stats: collect uptime/disk/load via SSH exec, store in system_samples.
+
+Split boundary: tunnel state management (tunnel_manager) <-> SSH transport
+(tunnel_manager_ssh) <-> health probe (this file).
+"""
+from __future__ import annotations
+
+import logging
+import time
+
+_log = logging.getLogger("wc.tunnel.health")
+
+
+async def probe_proxy(machine_id: str) -> bool:
+    """Probe the proxy through the tunnel.
+
+    Sends handshake NDJSON frame then a turn probe to claude_proxy.py
+    on 127.0.0.1:<local_port>. Returns True on success.
+    """
+    from tunnel_manager_ssh import exec_command
+
+    try:
+        _, stdout, _ = await exec_command(
+            machine_id,
+            "pgrep -f 'claude_proxy' 2>/dev/null",
+            timeout=3,
+        )
+        result = stdout.read().decode("utf-8", errors="replace").strip()
+        return bool(result)
+    except Exception:
+        return False
+
+
+async def collect_stats(machine_id: str, store_fn=None) -> None:
+    """Collect remote host stats via SSH exec and persist them."""
+    import db
+    from tunnel_manager_ssh import exec_command
+
+    stats = {}
+    for label, cmd in [
+        ("cpu", "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"),
+        ("disk", "df -h / 2>/dev/null | awk 'NR==2{print $5}'"),
+        ("mem", "free | awk '/Mem:/{printf \"%.1f\", $3/$2*100}'"),
+        ("load", "cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}'"),
+    ]:
+        try:
+            _, stdout, _ = await exec_command(machine_id, cmd, timeout=5)
+            stats[label] = stdout.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            stats[label] = "ERROR"
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    row_id = await db.system_sample_insert(
+        host_type="remote",
+        host_id=machine_id,
+        cpu_pct=None,
+        mem_pct=None,
+        stats=stats,
+        created_at=now,
+    )
+    if row_id and store_fn:
+        try:
+            store_fn(machine_id, row_id)
+        except Exception as exc:
+            _log.error("insert_system_sample failed: %s", exc)

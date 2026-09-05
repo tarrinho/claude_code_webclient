@@ -656,3 +656,25 @@ button{touch-action:manipulation}
 /* A failing agent reads as a failure, not as a question waiting on you. */
 .supervisor-item.failed{box-shadow:inset 2px 0 var(--bad)}
 .supervisor-item.failed .supervisor-dot{background:var(--bad)}
+
+/* ── SSH Proxy badge ───────────────────────────────────────────── */
+.machine-badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700;letter-spacing:.5px;cursor:pointer;user-select:none}
+.machine-badge-ssh{background:rgba(88,166,255,.15);color:var(--accent);border:1px solid var(--accent)}
+.machine-badge-ssh:hover{background:rgba(88,166,255,.25)}
+.machine-badge-connected .machine-badge-ssh{background:rgba(63,185,80,.15);color:var(--ok);border-color:var(--ok)}
+.machine-badge-error .machine-badge-ssh{background:rgba(248,81,73,.15);color:var(--bad);border-color:var(--bad)}
+
+/* ── SSH Wizard ────────────────────────────────────────────────── */
+.wizard-steps{display:flex;flex-direction:column;gap:12px;margin:12px 0}
+.wizard-step{padding:12px;background:var(--panel2);border-radius:6px}
+.wizard-step .ok{color:var(--ok);font-weight:600}
+.wizard-step .error{color:var(--bad);font-weight:600}
+.wizard-step .warning{color:var(--warn);font-weight:600}
+
+/* ── Remote Stats ──────────────────────────────────────────────── */
+.remote-stat-card{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:12px;margin:8px 0}
+.remote-stat-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.remote-stat-body{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.remote-stat-item{display:flex;justify-content:space-between}
+.remote-stat-time{font-size:11px;color:var(--muted)}
+

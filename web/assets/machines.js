@@ -94,6 +94,48 @@ function _providerLabel(machine) {
     || (machine.provider === 'anthropic' ? 'Anthropic API' : 'Claude Code proxy');
 }
 
+// ── SSH Tunnel toggle ──────────────────────────────────────────────
+let _tunnelStatusCache = {};
+
+export function _setTunnelStatus(status) {
+  _tunnelStatusCache = status || {};
+  _renderMachineList(); // refresh badges
+}
+
+async function _toggleSshTunnel(machineId, badge) {
+  const current = _tunnelStatusCache[machineId];
+  try {
+    const action = current && current.tunnel_up ? 'stop' : 'start';
+    await apiFetch(`/api/tunnel/${action}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({machine_id: machineId}),
+    });
+  } catch (err) {
+    // Non-fatal; badge will update on next poll.
+  }
+}
+
+// Poll tunnel status every 5s when any ssh_proxy machine exists.
+let _tunnelPollId = null;
+
+export function _pollTunnelStatus(active) {
+  if (active && !_tunnelPollId) {
+    _tunnelPollId = setInterval(async () => {
+      try {
+        const resp = await apiFetch('/api/tunnel/status');
+        if (resp.ok) {
+          _tunnelStatusCache = await resp.json();
+          _renderMachineList();
+        }
+      } catch (_) { /* ignore */ }
+    }, 5000);
+  } else if (!active && _tunnelPollId) {
+    clearInterval(_tunnelPollId);
+    _tunnelPollId = null;
+  }
+}
+
 // Per-machine model state, keyed by machine id: {models, active, default,
 // source, reason, endpoint}. Fetched lazily so opening Settings does not
 // query every configured backend at once. Exported: app.js's own model-picker
@@ -368,6 +410,17 @@ export function _renderMachineList() {
     // machine happened to be active.
     card.appendChild(_buildModelSection(m));
 
+    // SSH proxy badge and tunnel toggle.
+    if (m.provider === 'ssh_proxy') {
+      const badge = document.createElement('span');
+      badge.className = 'machine-badge machine-badge-ssh';
+      badge.id = `ssh-badge-${m.id}`;
+      badge.title = 'Click to start tunnel';
+      badge.textContent = 'SSH';
+      badge.addEventListener('click', () => _toggleSshTunnel(m.id, badge));
+      card.appendChild(badge);
+    }
+
     const actions = document.createElement('div');
     actions.className = 'machine-actions';
 
@@ -452,9 +505,18 @@ async function _testMachine(id, btn) {
   try {
     const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/test`, {method: 'POST'});
     const data = await resp.json().catch(() => ({}));
-    // The endpoint reports {ok, status, error} only — the address comes from
-    // the machine record we already hold, not from the response.
     const machine = _machines.find(m => m.id === id);
+    if (machine && machine.provider === 'ssh_proxy') {
+      if (data.ok || data.tunnel_up) {
+        notifyResult(`SSH tunnel connected on port ${data.local_port || '?'}`);
+      } else {
+        notifyResult(
+          `SSH tunnel: ${data.error || data.status || 'disconnected'}`,
+          'error'
+        );
+      }
+      return;
+    }
     const target = machine ? `${machine.host}:${machine.port}` : 'machine';
     if (data.ok) {
       notifyResult(`Connected to ${target}`);
@@ -487,12 +549,10 @@ async function _deleteMachine(id) {
 export function _syncMachineProviderFields() {
   const provider = byId('machineProvider').value;
   const isAnthropic = provider === 'anthropic';
-  byId('machineProxyFields').hidden = isAnthropic;
-  byId('machineAnthropicFields').hidden = !isAnthropic;
-  // The whole api_key group, not just its hint. Only an anthropic backend
-  // carries its key to the CLI; a proxy machine's key is stored and then never
-  // read by any turn, so offering the field there asked for a credential that
-  // could not take effect.
+  const isSsh = provider === 'ssh_proxy';
+  byId('machineProxyFields').hidden = !(provider === 'proxy');
+  byId('machineAnthropicFields').hidden = isAnthropic;
+  byId('machineSshFields').hidden = !isSsh;
   byId('machineApiKeyFields').hidden = !isAnthropic;
   byId('machineModel').placeholder = isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5';
 }
@@ -503,9 +563,12 @@ export function _editMachine(id) {
   _setMachineEditing(id);
   byId('machineFormTitle').textContent = 'Edit machine';
   byId('machineName').value = m.name;
-  byId('machineProvider').value = m.provider === 'anthropic' ? 'anthropic' : 'proxy';
-  byId('machineHost').value = m.host;
+  byId('machineProvider').value = m.provider || 'proxy';
+  byId('machineHost').value = m.host || '';
   byId('machineBaseUrl').value = m.base_url || '';
+  byId('machineSshHost').value = m.ssh_host || '';
+  byId('machineSshUser').value = m.ssh_user || 'kali';
+  byId('machineSshKeyPath').value = m.ssh_key_path || '';
   byId('machineModel').value = m.model;
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Leave blank to keep current';
@@ -517,16 +580,24 @@ export function _editMachine(id) {
 
 export async function _saveMachine() {
   const name = byId('machineName').value.trim();
-  const provider = byId('machineProvider').value === 'anthropic' ? 'anthropic' : 'proxy';
+  const provider = byId('machineProvider').value;
   const isAnthropic = provider === 'anthropic';
+  const isSsh = provider === 'ssh_proxy';
   const host = byId('machineHost').value.trim();
   const base_url = byId('machineBaseUrl').value.trim();
   const model = (byId('machineModel').value || '').trim()
     || (isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5');
   const api_key = byId('machineApiKey').value.trim() || null;
+  const ssh_host = byId('machineSshHost').value.trim();
+  const ssh_user = byId('machineSshUser').value.trim() || 'kali';
+  const ssh_key_path = byId('machineSshKeyPath').value.trim();
 
   if (!name) { byId('machineName').focus(); return; }
-  if (!isAnthropic && !host) { byId('machineHost').focus(); return; }
+  if (!isAnthropic && !host && !isSsh) { byId('machineHost').focus(); return; }
+  if (isSsh && (!ssh_host || !ssh_key_path)) {
+    if (!ssh_host) byId('machineSshHost').focus();
+    return;
+  }
 
   const save = byId('saveMachine');
   save.disabled = true;
@@ -542,6 +613,10 @@ export async function _saveMachine() {
       // sends one. Storing it for a proxy machine put a live credential in the
       // database that no turn could ever use -- cost with no effect.
       if (api_key !== null) body.api_key = api_key;
+    } else if (isSsh) {
+      body.ssh_host = ssh_host;
+      body.ssh_user = ssh_user;
+      body.ssh_key_path = ssh_key_path;
     } else {
       body.host = host;
     }
@@ -598,6 +673,9 @@ export function _showAddMachine() {
   byId('machineProvider').value = 'anthropic';
   byId('machineHost').value = '';
   byId('machineBaseUrl').value = '';
+  byId('machineSshHost').value = '';
+  byId('machineSshUser').value = 'kali';
+  byId('machineSshKeyPath').value = '';
   byId('machineModel').value = '';
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Optional';

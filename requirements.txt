@@ -12,3 +12,5 @@ python-multipart==0.0.32
 argon2-cffi==25.1.0
 python-dotenv==1.2.3
 loguru==0.7.3
+# Required by tunnel_manager for SSH tunnel lifecycle management.
+paramiko==4.0.0

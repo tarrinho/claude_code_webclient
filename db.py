@@ -754,7 +754,7 @@ async def _ensure_chat_columns() -> None:
     try:
         ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
         ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
-    except Exception:  # noqa: BLE001 -- PRAGMA can fail on new tables
+    except Exception:
         ma_columns = set()
     if "owner_id" not in ma_columns:
         await db_conn.execute(
@@ -764,7 +764,7 @@ async def _ensure_chat_columns() -> None:
     try:
         ue_cursor = await db_conn.execute("PRAGMA table_info(usage_events)")
         ue_columns = {row["name"] for row in await ue_cursor.fetchall()}
-    except Exception:  # noqa: BLE001 -- PRAGMA can fail on new tables
+    except Exception:
         ue_columns = set()
     if ue_columns and "cost_basis" not in ue_columns:
         await db_conn.execute("ALTER TABLE usage_events ADD COLUMN cost_basis TEXT")
@@ -782,7 +782,7 @@ async def _ensure_chat_columns() -> None:
     try:
         rm_cursor = await db_conn.execute("PRAGMA table_info(read_marks)")
         rm_columns = {row["name"] for row in await rm_cursor.fetchall()}
-    except Exception:  # noqa: BLE001 -- PRAGMA can fail on a new table
+    except Exception:
         rm_columns = set()
     if rm_columns and "dismissed_at" not in rm_columns:
         await db_conn.execute("ALTER TABLE read_marks ADD COLUMN dismissed_at TEXT")
@@ -792,6 +792,85 @@ async def _ensure_chat_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN active_models TEXT NOT NULL DEFAULT '[]'"
         )
+
+    # SSH proxy: per-machine columns on ai_machines.
+    if ma_columns and "ssh_host" not in ma_columns:
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN ssh_host TEXT NOT NULL DEFAULT ''"
+        )
+    if ma_columns and "ssh_user" not in ma_columns:
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN ssh_user TEXT NOT NULL DEFAULT 'kali'"
+        )
+    if ma_columns and "ssh_key_path" not in ma_columns:
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN ssh_key_path TEXT NOT NULL DEFAULT ''"
+        )
+
+    # ssh_tunnels: one row per active ssh_proxy machine.
+    try:
+        st_cursor = await db_conn.execute("PRAGMA table_info(ssh_tunnels)")
+        st_columns = {row["name"] for row in await st_cursor.fetchall()}
+    except Exception:
+        st_columns = set()
+
+    if not st_columns:
+        await db_conn.execute("""
+            CREATE TABLE ssh_tunnels (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id      TEXT NOT NULL DEFAULT 'admin',
+                machine_id    INTEGER NOT NULL,
+                local_port    INTEGER NOT NULL,
+                ssh_port      INTEGER NOT NULL DEFAULT 9000,
+                tunnel_up     INTEGER NOT NULL DEFAULT 0,
+                proxy_ok      INTEGER NOT NULL DEFAULT 0,
+                state         TEXT NOT NULL DEFAULT 'disconnected',
+                concurrent_conns INTEGER NOT NULL DEFAULT 0,
+                connected_at  TEXT,
+                last_check    TEXT,
+                error_msg     TEXT,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                UNIQUE(machine_id)
+            )
+        """)
+    else:
+        _st_fields = (
+            "owner_id", "local_port", "ssh_port", "tunnel_up",
+            "proxy_ok", "state", "concurrent_conns", "connected_at",
+            "last_check", "error_msg", "created_at", "updated_at",
+        )
+        for col in _st_fields:
+            if col not in st_columns:
+                await db_conn.execute(
+                    f"ALTER TABLE ssh_tunnels ADD COLUMN {col} TEXT"
+                )  # nosec B608: column names are static literals
+        # Patch non-text columns that PRAGMA defaults to TEXT.
+        _int_cols = [
+            ("local_port", "INTEGER"), ("ssh_port", "INTEGER"),
+            ("tunnel_up", "INTEGER"), ("proxy_ok", "INTEGER"),
+            ("concurrent_conns", "INTEGER"),
+        ]
+        for col, ctype in _int_cols:
+            if col in st_columns:
+                try:
+                    await db_conn.execute(
+                        f"ALTER TABLE ssh_tunnels MODIFY COLUMN {col} {ctype}"
+                    )
+                except Exception:
+                    pass
+
+    # system_samples: add host_type and host_id for remote stats.
+    try:
+        ss_cursor = await db_conn.execute("PRAGMA table_info(system_samples)")
+        ss_columns = {row["name"] for row in await ss_cursor.fetchall()}
+    except Exception:
+        ss_columns = set()
+    for col in ("host_type", "host_id"):
+        if col not in ss_columns:
+            await db_conn.execute(
+                f"ALTER TABLE system_samples ADD COLUMN {col} TEXT DEFAULT 'local'"
+            )  # nosec B608: column names are static literals
 
     await db_conn.commit()
 
@@ -878,3 +957,107 @@ def slug_pattern(slug: str) -> str | None:
 async def _reopen() -> None:
     """Reconnect and apply additive migrations. Never leaves db_conn as None."""
     await init()
+
+
+# ── SSH tunnel CRUD ──────────────────────────────────────────────────
+
+
+async def ssh_tunnel_get(machine_id: int) -> dict | None:
+    """Return one ssh_tunnels row by machine_id or None."""
+    cursor = await db_conn.execute(
+        "SELECT * FROM ssh_tunnels WHERE machine_id = ?",
+        (machine_id,),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return None
+    return rows[0]
+
+
+async def ssh_tunnel_list_active() -> list[dict]:
+    """Return all ssh_tunnels rows with tunnel_up=1."""
+    cursor = await db_conn.execute(
+        "SELECT * FROM ssh_tunnels WHERE tunnel_up = 1"
+    )
+    return cursor.fetchall()
+
+
+async def ssh_tunnel_create(
+    machine_id: int,
+    local_port: int,
+    ssh_port: int = 22,
+) -> int:
+    """Insert a new ssh_tunnels row. Returns row id."""
+    now = _now()
+    cursor = await db_conn.execute(
+        """INSERT INTO ssh_tunnels
+               (machine_id, local_port, ssh_port, tunnel_up, proxy_ok,
+                state, concurrent_conns, connected_at, last_check, error_msg,
+                created_at, updated_at)
+            VALUES (?, ?, ?, 0, 0, 'disconnected', 0, NULL, NULL, NULL, ?, ?)
+        """,
+        (machine_id, local_port, ssh_port, now, now),
+    )
+    await db_conn.commit()
+    return cursor.lastrowid
+
+
+async def ssh_tunnel_update(
+    machine_id: int,
+    **fields,
+) -> None:
+    """Update ssh_tunnels row for *machine_id* with any subset of keys.
+
+    Supported keys: local_port, ssh_port, tunnel_up, proxy_ok, state,
+    concurrent_conns, connected_at, last_check, error_msg.
+    Sets updated_at automatically.
+    """
+    fields["updated_at"] = _now()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [machine_id]
+    await db_conn.execute(
+        f"UPDATE ssh_tunnels SET {set_clause} WHERE machine_id = ?",
+        values,
+    )
+    await db_conn.commit()
+
+
+async def ssh_tunnel_delete(machine_id: int) -> None:
+    """Delete the ssh_tunnels row for *machine_id*."""
+    await db_conn.execute(
+        "DELETE FROM ssh_tunnels WHERE machine_id = ?",
+        (machine_id,),
+    )
+    await db_conn.commit()
+
+
+# ── system_samples (remote) ─────────────────────────────────────────
+
+
+async def system_sample_insert(
+    host_type: str = "local",
+    host_id: str = "",
+    data: str = "{}",
+) -> int:
+    """Insert one row into system_samples for remote stats collection."""
+    now = _now()
+    cursor = await db_conn.execute(
+        """INSERT INTO system_samples
+               (host_type, host_id, data, created_at)
+            VALUES (?, ?, ?, ?)""",
+        (host_type, host_id, data, now),
+    )
+    await db_conn.commit()
+    return cursor.lastrowid
+
+
+async def system_sample_list(
+    host_type: str = "local",
+    limit: int = 20,
+) -> list[dict]:
+    """Return the last *limit* system_samples rows for *host_type*."""
+    cursor = await db_conn.execute(
+        "SELECT * FROM system_samples WHERE host_type = ? ORDER BY created_at DESC LIMIT ?",
+        (host_type, limit),
+    )
+    return cursor.fetchall()

@@ -2101,8 +2101,13 @@ function _buildChangelogPopover(anchorEl) {
 
     var top = document.createElement('div');
     top.style.cssText = 'margin-bottom:6px';
-    top.innerHTML = '<span class="cl-ver">' + escHtml(entry.version) + '</span>' +
-                    '<span class="cl-date">' + escHtml(entry.date) + '</span>';
+    var verSpan = document.createElement('span');
+    verSpan.className = 'cl-ver';
+    verSpan.textContent = entry.version;
+    var dateSpan = document.createElement('span');
+    dateSpan.className = 'cl-date';
+    dateSpan.textContent = entry.date;
+    top.append(verSpan, dateSpan);
     chapter.appendChild(top);
 
     entry.sections.forEach(function(sec) {

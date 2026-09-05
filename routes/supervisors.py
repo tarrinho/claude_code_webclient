@@ -53,7 +53,7 @@ async def handle_supervisor(request: Request):
     live_ids = turns.running_ids(owner)
     try:
         queued = await db.queue_counts(owner)
-    except Exception:  # noqa: BLE001 -- the view must render without the queue
+    except Exception:
         queued = {}
     waiting: list[dict] = []   # asked for something, or reported a blocker
     working: list[dict] = []   # mid-turn
@@ -90,7 +90,7 @@ async def handle_supervisor(request: Request):
     # ── CLI / terminal sessions ─────────────────────────────────────────
     try:
         cli_sessions = await db.read_claude_sessions()
-    except Exception:  # noqa: BLE001 -- the sidebar must render without them
+    except Exception:
         cli_sessions = []
     transcripts_by_id = {t["session_id"]: t for t in await transcripts.list_recent(200)}
 
@@ -178,7 +178,7 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
     live_ids = turns.running_ids(owner)
     try:
         queued = await db.queue_counts(owner)
-    except Exception:  # noqa: BLE001 -- the panel must render without the queue
+    except Exception:
         queued = {}
     activity = await db.chat_last_activity(owner)
     by_id = {c["id"]: c for c in await db.chat_list(owner)}
@@ -258,7 +258,7 @@ async def handle_supervisor_members_add(request: Request, supervisor_id: str):
         raise HTTPException(status_code=404, detail="Supervisor not found")
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001 -- any malformed body is one 400
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON") from None
     requested = body.get("members")
     if not isinstance(requested, list) or not requested:
@@ -517,7 +517,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             _log.exception("supervisor stream failed id=%s", supervisor_id)
             yield f"data: {json.dumps({'type': 'error', 'error': 'Stream error'})}\n\n"
 
@@ -604,7 +604,7 @@ async def handle_supervisor_task_stream(request: Request, supervisor_id: str, ta
 
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             _log.exception("supervisor task stream failed id=%s", task_id)
             yield f"data: {json.dumps({'type': 'error', 'error': 'Stream error'})}\n\n"
 
@@ -669,7 +669,7 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
     session = request.state.session
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     user_prompt = (body.get("prompt") or "").strip()
@@ -801,7 +801,7 @@ async def _api_supervisors_create(request: Request):
         )
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     title = (body.get("title") or "New Supervisor").strip()[:200]
     description = (body.get("description") or "").strip()[:500] or None
@@ -829,7 +829,7 @@ async def _api_supervisor_patch(request: Request, supervisor_id: str):
     session = request.state.session
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not body:
         raise HTTPException(status_code=400, detail="No fields to update")

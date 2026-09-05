@@ -292,7 +292,7 @@ async def _loop(store, interval_s: int) -> None:
                 await store(to_row(snapshot))
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 -- a sampler must outlive one bad read
+        except Exception:
             _log_sampler_error()
 
 

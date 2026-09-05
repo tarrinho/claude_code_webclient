@@ -398,7 +398,7 @@ async def supervisor_mark_degraded(supervisor_id: str, kind: str, detail: str) -
             (f"{kind}: {detail}", supervisor_id),
         )
         await db.db_conn.commit()
-    except Exception:  # noqa: BLE001 -- marking degraded must not itself fail a run
+    except Exception:
         _log.exception(
             "supervisor_mark_degraded failed id=%s kind=%s", supervisor_id, kind,
         )
@@ -422,7 +422,7 @@ async def supervisor_clear_degraded(supervisor_id: str, kind: str) -> None:
             (supervisor_id, f"{kind}:%"),
         )
         await db.db_conn.commit()
-    except Exception:  # noqa: BLE001
+    except Exception:
         _log.exception(
             "supervisor_clear_degraded failed id=%s kind=%s", supervisor_id, kind,
         )

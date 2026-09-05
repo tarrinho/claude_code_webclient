@@ -227,7 +227,7 @@ async def _session_failure(session_id: str, file_touched: str) -> str | None:
         return cached[1]
     try:
         failure = await transcripts.last_error(session_id)
-    except Exception:  # noqa: BLE001 -- the view must render without it
+    except Exception:
         # exc_info because this catches both a malformed transcript, which is
         # expected and benign, and a programming error, which is neither. A
         # NameError from a misspelled callee produces the same line as an empty
@@ -268,7 +268,7 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict, dict]:
     """
     try:
         sessions = await db.read_claude_sessions()
-    except Exception:  # noqa: BLE001 -- a surface must render without them
+    except Exception:
         return {}, {}, {}, {}
     status: dict[str, str] = {}
     dismissed: dict[str, str] = {}

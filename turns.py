@@ -198,7 +198,7 @@ async def _run(
             if on_event is not None:
                 try:
                     await on_event(event)
-                except Exception:  # noqa: BLE001 -- accounting must not kill a turn
+                except Exception:
                     _log.exception("turn_on_event_failed chat_id=%s", turn.chat_id)
             if kind == "done" and failed:
                 # An error frame already went out. The inline loop this replaced
@@ -240,7 +240,7 @@ async def _run(
         turn.error = TIMEOUT_MESSAGE
         _log.warning("turn_timed_out chat_id=%s", turn.chat_id)
         turn.emit({"type": "error", "error": turn.error})
-    except Exception as exc:  # noqa: BLE001 -- a broken turn must still settle
+    except Exception as exc:
         final_state = "error"
         turn.error = INTERNAL_MESSAGE
         _log.exception("turn_crashed chat_id=%s: %s", turn.chat_id, exc)
@@ -258,7 +258,7 @@ async def _run(
             failed=final_state != "done",
             cancelled=cancelled,
         )
-    except Exception:  # noqa: BLE001 -- report, but never lose turn state
+    except Exception:
         _log.exception("turn_finish_failed chat_id=%s", turn.chat_id)
 
     turn.state = final_state
@@ -275,7 +275,7 @@ async def _run(
 
     try:
         await _drain(turn)
-    except Exception:  # noqa: BLE001 -- the queue must not sink a finished turn
+    except Exception:
         _log.exception("turn_drain_failed chat_id=%s", turn.chat_id)
 
 
@@ -308,7 +308,7 @@ async def _drain(turn: LiveTurn) -> None:
         # Something started a turn between the finish and here. Put it back
         # rather than dropping the user's prompt on the floor.
         await db.queue_add(turn.chat_id, turn.owner, row["prompt"], row["model"])
-    except Exception:  # noqa: BLE001
+    except Exception:
         _log.exception("turn_queue_launch_failed chat_id=%s", turn.chat_id)
 
 
@@ -360,7 +360,7 @@ async def cancel(chat_id: str) -> bool:
         # Expected: we asked for it. The task's own handler has already marked
         # the turn cancelled and emitted the error frame to its followers.
         pass
-    except Exception:  # noqa: BLE001 -- a stop must succeed even on a bad turn
+    except Exception:
         _log.exception("turn_cancel_raised chat_id=%s", chat_id)
     return True
 

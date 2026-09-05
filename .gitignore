@@ -28,11 +28,22 @@ htmlcov/
 
 # Local build/review instructions
 /rules.md
+
+# Pedro's running request log + the hook/settings that populate it. Private,
+# same reasoning as CLAUDE.md/rules.md below: operational log of this
+# deployment's owner, not something a reader of the source needs.
+/PT_request.md
+/.claude/settings.local.json
 # Agent instructions for this checkout. Deliberately not published: it describes
 # how turns reach the model backends on *this* deployment -- the proxy hop, the
 # credential variables, the routing table -- which is operational detail about a
 # running host rather than something a reader of the source needs.
 /CLAUDE.md
+
+# Pedro's own running log of requests made to this project and their outcomes.
+# Personal/operational, not project documentation -- same reasoning as
+# CLAUDE.md/rules.md above.
+/requests-log.md
 
 # Security scan output
 .gitleaks-report.json

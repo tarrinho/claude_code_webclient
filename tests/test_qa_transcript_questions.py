@@ -262,6 +262,110 @@ class PendingQuestionShapeQA(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+class QuestionScanCachingQA(unittest.TestCase):
+    """A poll on an unchanged transcript must not re-read the whole file.
+
+    Every open conversation re-runs this scan every 5s, and every linked
+    conversation again every 30s in the sweep -- against transcripts this
+    host has seen run past 45 MB. Re-reading and re-parsing the full file on
+    every one of those polls, whether or not a byte had changed, was
+    measured driving real CPU and disk load. The cache exists to make an
+    unchanged transcript cost a stat() instead of a full read -- these tests
+    exist to make sure that shortcut never returns a stale answer.
+    """
+
+    def setUp(self):
+        # The cache is module-level and would otherwise carry a stale entry
+        # from an earlier test into this one if either reused a path -- they
+        # do not (tempfile paths are unique per directory), but clearing it
+        # is what makes that a guarantee instead of a coincidence.
+        transcripts._question_scan_cache.clear()
+
+    def _write(self, tmp, records):
+        from pathlib import Path
+        path = Path(tmp) / "t.jsonl"
+        path.write_bytes(b"\n".join(json.dumps(r).encode() for r in records))
+        return path
+
+    def _ask(self, qid, question):
+        return {"type": "tool_use", "id": qid, "name": "AskUserQuestion",
+                "input": {"questions": [{
+                    "question": question, "header": "H", "multiSelect": False,
+                    "options": [{"label": "Yes", "description": ""}],
+                }]}}
+
+    def test_a_second_call_on_an_unchanged_file_does_not_read_it_again(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, [_record("assistant", [self._ask("q1", "First?")])])
+            first = transcripts._scan_questions_sync(path)
+            self.assertEqual(len(first), 1)
+            with mock.patch.object(type(path), "read_bytes",
+                                    side_effect=AssertionError(
+                                        "read_bytes must not be called on a cache hit")):
+                second = transcripts._scan_questions_sync(path)
+            self.assertEqual(second, first)
+
+    def test_result_is_a_copy_not_a_shared_reference(self):
+        # A caller mutating what it got back must not corrupt the cache for
+        # the next caller -- the cache stores results, it does not hand out
+        # its own internal list.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, [_record("assistant", [self._ask("q1", "First?")])])
+            first = transcripts._scan_questions_sync(path)
+            first.append({"kind": "question", "id": "planted", "questions": []})
+            second = transcripts._scan_questions_sync(path)
+            self.assertEqual(len(second), 1)
+
+    def test_a_grown_file_is_rescanned_not_served_stale(self):
+        # The correctness half of the guarantee: appending a real question
+        # must be seen on the very next poll, cache or no cache.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, [_record("assistant", [self._ask("q1", "First?")])])
+            first = transcripts._scan_questions_sync(path)
+            self.assertEqual(len(first), 1)
+
+            with path.open("ab") as fh:
+                fh.write(b"\n" + json.dumps(
+                    _record("assistant", [self._ask("q2", "Second?")])
+                ).encode())
+
+            second = transcripts._scan_questions_sync(path)
+            self.assertEqual(len(second), 2)
+
+    def test_an_answer_appended_later_clears_the_stale_pending_entry(self):
+        # A file that only grows by an answer, not a new question, still has
+        # to invalidate -- the size changed, so the cache must not serve the
+        # pre-answer result back.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, [_record("assistant", [self._ask("q1", "First?")])])
+            first = transcripts._scan_questions_sync(path)
+            self.assertEqual(len(first), 1)
+
+            with path.open("ab") as fh:
+                fh.write(b"\n" + json.dumps(
+                    _record("user", [_result("q1")])
+                ).encode())
+
+            second = transcripts._scan_questions_sync(path)
+            self.assertEqual(second, [])
+
+    def test_distinct_transcripts_do_not_share_a_cache_slot(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_a, \
+             tempfile.TemporaryDirectory() as tmp_b:
+            path_a = self._write(tmp_a, [_record("assistant", [self._ask("qa", "A?")])])
+            path_b = self._write(tmp_b, [_record("assistant", [self._ask("qb", "B?")])])
+            result_a = transcripts._scan_questions_sync(path_a)
+            result_b = transcripts._scan_questions_sync(path_b)
+            self.assertEqual(result_a[0]["questions"][0]["question"], "A?")
+            self.assertEqual(result_b[0]["questions"][0]["question"], "B?")
+
+
 class AnswerPairingQA(unittest.TestCase):
     def test_an_answer_is_kept_and_paired_by_id(self):
         blocks = _blocks([

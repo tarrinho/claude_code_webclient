@@ -77,7 +77,7 @@ async def usage_record(
             chat_id, model, provider, input_tokens, output_tokens,
         )
         return cur.lastrowid
-    except Exception as exc:  # noqa: BLE001 -- never fail a turn that already succeeded
+    except Exception as exc:
         _log.error(
             "usage_record_failed: chat_id=%s model=%s provider=%s: %s",
             chat_id, model, provider, exc,
@@ -235,7 +235,7 @@ async def routed_request_add(
         )
         await db.db_conn.commit()
         return cur.lastrowid
-    except Exception:  # noqa: BLE001 -- attribution must never break a request
+    except Exception:
         _log.warning("routed_request_not_recorded session_id=%s", session_id)
         return None
 
@@ -249,7 +249,7 @@ async def routed_markers(session_id: str) -> list[dict[str, Any]]:
             (session_id,),
         )
         return [dict(row) for row in await cur.fetchall()]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -569,7 +569,7 @@ async def usage_prune(days: int) -> int:
         )
         await db.db_conn.commit()
         return cur.rowcount or 0
-    except Exception:  # noqa: BLE001 -- pruning must never block startup
+    except Exception:
         return 0
 
 
@@ -709,5 +709,5 @@ async def system_prune(days: int) -> int:
         )
         await db.db_conn.commit()
         return cur.rowcount or 0
-    except Exception:  # noqa: BLE001 -- pruning must never block startup
+    except Exception:
         return 0

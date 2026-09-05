@@ -55,6 +55,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import Any, Final
 
@@ -195,6 +196,21 @@ async def consider(
     if not pending:
         return None
 
+    # Apply cooldown: same (chat, question) answered within COOLDOWN_S → skip.
+    import hashlib
+    now = time.monotonic()
+    text = _prompt_text(pending)
+    kind = _prompt_kind(pending)
+    raw = f"{kind}|{text}"
+    cooldown_key = (str(chat.get("id", "")), hashlib.md5(raw.encode()).hexdigest()[:12])
+    last = _auto_answer_cooldown.get(cooldown_key)
+    if last and now - last < _COOLDOWN_S:
+        _log.info(
+            "auto_answer_skipped: cooldown chat_id=%s elapsed=%.0fs",
+            str(chat.get("id")), now - last,
+        )
+        return None
+
     if is_answerable(pending):
         chooser = choose_affirmative
         skip_reason = "no single unambiguously affirmative option; left for you"
@@ -253,7 +269,7 @@ async def _record(chat: dict[str, Any], entry: dict[str, Any]) -> None:
     """
     try:
         await db.chat_auto_answer_log_append(str(chat.get("id")), entry)
-    except Exception:  # noqa: BLE001 -- recording must not break the watcher
+    except Exception:
         _log.exception("could not record auto-answer for chat %s", chat.get("id"))
 
 
@@ -274,6 +290,85 @@ def start(
     _task = asyncio.create_task(
         _loop(resolve_pending, read_options, deliver, every)
     )
+
+
+# ── Cooldown tracker ──────────────────────────────────────────────────────────
+
+# Prevents auto-answer from hammering the same unresolved question.
+# key: (chat_id, prompt_hash) → last_answer_time (monotonic)
+_auto_answer_cooldown: dict[tuple[str, str], float] = {}
+# After answering, skip this (chat, question) pair for COOLDOWN_S seconds.
+_COOLDOWN_S: Final[float] = 300.0  # 5 minutes
+
+
+def _cooldown_key(chat: dict[str, Any], pending: dict[str, Any]) -> tuple[str, str] | None:
+    """Return a (chat_id, question_hash) pair, or None if unhashable."""
+    chat_id = str(chat.get("id", ""))
+    if not chat_id:
+        return None
+    text = _prompt_text(pending)
+    kind = _prompt_kind(pending)
+    import hashlib
+    raw = f"{kind}|{text}"
+    return (chat_id, hashlib.md5(raw.encode()).hexdigest()[:12])
+
+
+async def _cooldown_check(key: tuple[str, str] | None) -> bool:
+    """Return True if it's safe to answer (not in cooldown)."""
+    if not key:
+        return True
+    now = time.monotonic()
+    last = _auto_answer_cooldown.get(key)
+    if last and now - last < _COOLDOWN_S:
+        _log.info(
+            "auto_answer_skipped: cooldown chat_id=%s key=%s elapsed=%.0fs",
+            key[0], key[1], now - last,
+        )
+        return False
+    _auto_answer_cooldown[key] = now
+    return True
+
+
+def _cooldown_cleanup() -> None:
+    """Remove stale cooldown entries (older than 2x COOLDOWN_S)."""
+    now = time.monotonic()
+    cutoff = now - _COOLDOWN_S * 2
+    stale = [k for k, v in _auto_answer_cooldown.items() if v < cutoff]
+    for k in stale:
+        del _auto_answer_cooldown[k]
+
+
+# Periodic cleanup every 10 minutes
+_cooldown_cleanup_task: asyncio.Task | None = None
+
+
+async def _cooldown_loop() -> None:
+    while True:
+        try:
+            await asyncio.sleep(600)  # 10 min
+            _cooldown_cleanup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("auto_answer cooldown cleanup failed")
+
+
+async def _start_cooldown_cleanup() -> None:
+    global _cooldown_cleanup_task
+    if _cooldown_cleanup_task and not _cooldown_cleanup_task.done():
+        return
+    _cooldown_cleanup_task = asyncio.create_task(_cooldown_loop())
+
+
+async def _stop_cooldown_cleanup() -> None:
+    global _cooldown_cleanup_task
+    if _cooldown_cleanup_task and not _cooldown_cleanup_task.done():
+        _cooldown_cleanup_task.cancel()
+        try:
+            await _cooldown_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        _cooldown_cleanup_task = None
 
 
 async def stop() -> None:
@@ -309,7 +404,7 @@ async def _loop(
             await _pass(resolve_pending, read_options, deliver)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 -- outlive one unreadable chat
+        except Exception:
             _log.exception("auto-answer pass failed")
 
 
@@ -335,5 +430,5 @@ async def _pass(
             )
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             _log.exception("auto-answer failed for chat %s", chat.get("id"))

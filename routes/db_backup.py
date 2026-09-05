@@ -92,7 +92,7 @@ async def db_restore(data: bytes) -> bool:
     """Replace the current database with the provided gzip-compressed data."""
     try:
         decompressed = _gzip.decompress(data)
-    except Exception:  # noqa: BLE001 -- silently reject bad input
+    except Exception:
         return False
 
     if not decompressed.startswith(db._SQLITE_MAGIC):
@@ -116,11 +116,11 @@ async def db_restore(data: bytes) -> bool:
 
         await db._reopen()
         return True
-    except Exception:  # noqa: BLE001 -- recover best-effort on failure
+    except Exception:
         tmp_path.unlink(missing_ok=True)
         try:
             await db._reopen()
-        except Exception:  # noqa: BLE001 -- final fallback, DB may be unusable
+        except Exception:
             global db_conn
             db_conn = None
         return False

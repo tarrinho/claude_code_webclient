@@ -503,7 +503,7 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
             (query,),
         )
         match_ids = [row["rowid"] for row in await cur.fetchall()]
-    except Exception:  # noqa: BLE001 -- FTS5 may not exist on fresh DBs
+    except Exception:
         match_ids = []
 
     if not match_ids:
@@ -622,7 +622,7 @@ async def _fts_guard(coro_fn) -> None:
     try:
         await coro_fn()
         await db.db_conn.commit()
-    except Exception:  # noqa: BLE001 -- FTS5 is optional; see above
+    except Exception:
         with contextlib.suppress(Exception):
             await db.db_conn.rollback()
 
@@ -776,7 +776,7 @@ async def chat_mark_degraded(chat_id: str, kind: str, detail: str) -> None:
             (f"{kind}: {detail}", db._now(), chat_id),
         )
         await db.db_conn.commit()
-    except Exception:  # noqa: BLE001 -- marking degraded must not itself fail a turn
+    except Exception:
         _log.exception("chat_mark_degraded failed chat_id=%s kind=%s", chat_id, kind)
 
 
@@ -801,5 +801,5 @@ async def chat_clear_degraded(chat_id: str, kind: str) -> None:
             (chat_id, f"{kind}:%"),
         )
         await db.db_conn.commit()
-    except Exception:  # noqa: BLE001
+    except Exception:
         _log.exception("chat_clear_degraded failed chat_id=%s kind=%s", chat_id, kind)

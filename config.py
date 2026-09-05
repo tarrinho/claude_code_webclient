@@ -83,6 +83,15 @@ TOKEN_DEFAULT_TTL_DAYS = _int("WC_TOKEN_DEFAULT_TTL_DAYS", 90)  # 90d default ex
 # marks the session cookie Secure; opt in explicitly for plain-HTTP setups.
 COOKIE_ALLOW_INSECURE = _bool("WC_COOKIE_ALLOW_INSECURE", False)
 
+# --- rate limiting ---------------------------------------------------------
+RATE_LIMIT_MAX = _int("WC_RATE_LIMIT_MAX", 120)  # default: 120 req per window
+RATE_LIMIT_WINDOW = _int("WC_RATE_LIMIT_WINDOW", 60)  # window in seconds
+# Per-endpoint limits: endpoint → (capacity, rate).
+RATE_LIMIT_ENDPOINTS: dict[str, tuple[int, float]] = {
+    "/api/chats/": (10, 0.167),  # 10 req/min for chat prompts
+    "/api/machines": (20, 0.333),  # 20 req/min for machine ops
+}
+
 # --- SSH proxy -------------------------------------------------------------
 # Max concurrent SSH tunnels per deployment. Each tunnel holds one TCP
 # connection to a remote host and a local port forward.
@@ -189,6 +198,14 @@ TURN_RETRY_MAX = _int("WC_TURN_RETRY_MAX", 2)
 # Below this many output tokens, with no text content, a turn counts as a
 # non-answer for retry purposes.
 TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
+
+# --- web console address ---------------------------------------------------
+# The public-facing URL of this WebConsole instance. Users can edit this in
+# the App tab of Settings so the UI can build shareable links (comparison
+# reports, PDFs, etc.) that point back to the site rather than the proxy
+# port or internal hostname.  Environment default is unset so the admin
+# must opt in rather than leaking a guess.
+WC_WEBCONSOLE_URL = _str("WC_WEBCONSOLE_URL")
 
 # --- misc ----------------------------------------------------------------
 VERSION = "WebConsole_0.12.2"

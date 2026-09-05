@@ -157,9 +157,16 @@ async def ai_machine_update(
 
 
 async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
-    """Deactivate all machines and activate the one requested."""
+    """Deactivate all machines and activate the one requested.
+
+    No explicit BEGIN: db_conn is shared across every writer in the
+    process, and a literal "BEGIN" raises "cannot start a transaction
+    within a transaction" if another coroutine's write already opened
+    one implicitly and has not committed yet (registry #48). The first
+    UPDATE below opens its own implicit transaction, which already
+    covers atomicity up to the commit/rollback below.
+    """
     try:
-        await db.db_conn.execute("BEGIN")
         await db.db_conn.execute(
             "UPDATE ai_machines SET active = 0 WHERE owner_id = ?",
             (owner_id,),

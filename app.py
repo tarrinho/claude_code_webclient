@@ -26,6 +26,7 @@ import auth
 import auto_answer
 import config
 import db
+import rate_limit
 import sysstats
 import turns
 from middleware import (  # registered below; the order of add_middleware
@@ -367,8 +368,14 @@ async def lifespan(app: FastAPI):
     # auto_answer, so that module carries no routes dependency and no cycle --
     # see docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
     auto_answer.start(_auto_answer_pending, _pending_options, _deliver_answer)
+    # Rate limiter cleanup background task.
+    rate_limit.start_cleanup(interval_s=300.0)
+    # Auto-answer cooldown cleanup background task.
+    await auto_answer._start_cooldown_cleanup()
     yield
     # Stopped before db.close(): the sampler writes through the connection.
+    await rate_limit.stop_cleanup()
+    await auto_answer._stop_cooldown_cleanup()
     await sysstats.stop()
     await auto_answer.stop()
     await tunnel_manager.stop()
@@ -395,6 +402,7 @@ app.add_middleware(
 app.add_middleware(CsrfMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(SecurityMiddleware)
+app.add_middleware(rate_limit.RateLimitMiddleware)
 
 
 @app.exception_handler(HTTPException)

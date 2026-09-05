@@ -710,7 +710,7 @@ def has_prompt(session_id: str, ttl_s: float = _PROMPT_CACHE_TTL_S) -> bool:
         return cached[1]
     try:
         found = read_prompt(session_id) is not None
-    except Exception:  # noqa: BLE001 -- a surface must render without this
+    except Exception:
         return False
     # Bounded so a long-lived server does not accumulate an entry per session
     # id it has ever seen. Cleared wholesale rather than by age: the entries are

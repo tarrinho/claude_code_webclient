@@ -191,7 +191,23 @@ button{touch-action:manipulation}
 .main{height:100dvh;display:flex;flex-direction:column;overflow:hidden;position:relative}
 .topbar{min-height:52px;padding:8px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--panel)}
 .topbar h1{font-size:15px;font-weight:650;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ver{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
+.ver{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);cursor:pointer;user-select:none;transition:color .15s}
+.ver:hover{color:var(--fg)}
+/* Changelog popover */
+.changelog-popover{position:absolute;top:100%;right:0;width:420px;max-height:60vh;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.3);z-index:200;padding:16px;font-size:12px;line-height:1.5}
+.changelog-popover h3{font-size:13px;font-weight:600;margin:0 0 8px}
+.changelog-chapter{margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.changelog-chapter:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
+.changelog-chapter .cl-ver{font-weight:600;font-size:13px;color:var(--accent)}
+.changelog-chapter .cl-date{color:var(--muted);font-size:11px;margin-left:8px}
+.changelog-chapter .cl-section{font-weight:600;font-size:11px;margin:8px 0 4px;text-transform:uppercase;color:var(--muted)}
+.changelog-chapter .cl-section:first-child{margin-top:0}
+.changelog-chapter .cl-items{list-style:none;padding-left:0}
+.changelog-chapter .cl-items li{padding:2px 0 2px 12px;position:relative;color:var(--fg)}
+.changelog-changelog-backdrop{position:fixed;inset:0;z-index:199}
+/* Login version */
+.login-ver{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);text-align:center;margin-top:20px;cursor:pointer;user-select:none;transition:color .15s}
+.login-ver:hover{color:var(--fg)}
 #menuBtn{display:inline-flex;align-items:center;justify-content:center}
 .workspace-strip{min-height:34px;padding:6px 16px;display:none;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 /* The last request, directly under the strip and visually part of it: the strip

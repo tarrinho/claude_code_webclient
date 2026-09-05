@@ -317,6 +317,11 @@
           <input id="promptMax" type="number" min="100" max="500000">
           <span class="setting-hint">Maximum prompt length in characters.</span>
         </div>
+        <div class="app-setting-row">
+          <label for="webconsoleUrl">WebConsole URL</label>
+          <input id="webconsoleUrl" type="url" placeholder="https://example.com">
+          <span class="setting-hint" id="webconsoleHint">The public-facing URL of this WebConsole instance. Used to build shareable report links.</span>
+        </div>
       </div>
     </div>
     <div class="settings-footer">
@@ -334,7 +339,7 @@
 <script type="module" src="/assets/machines.js?v=4"></script>
 <script type="module" src="/assets/supervisor.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
-<script type="module" src="/assets/app.js?v=34"></script>
+<script type="module" src="/assets/app.js?v=35"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

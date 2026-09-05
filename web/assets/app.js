@@ -336,6 +336,10 @@ async function saveSettings(event) {
     if (turnTimeout) body.turn_timeout = turnTimeout;
     const promptMax = parseInt(byId('promptMax')?.value);
     if (promptMax) body.prompt_max = promptMax;
+    const webconsoleUrl = (byId('webconsoleUrl')?.value || '').trim();
+    if (webconsoleUrl !== _loadedSettings?.webconsole_url) {
+      body.webconsole_url = webconsoleUrl || '';
+    }
     if (!Object.keys(body).length) {
       setStatus('No changes to save', 'success');
       save.disabled = false;
@@ -1484,6 +1488,7 @@ async function loadSettings() {
       if (data.session_ttl_s) byId('sessionTtl').value = data.session_ttl_s;
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
+      if (data.webconsole_url) byId('webconsoleUrl').value = data.webconsole_url;
       // The global default is only a fallback for when no backend is active;
       // it is still worth offering in the picker.
       _modelOptions = [data.default_model];
@@ -2038,9 +2043,105 @@ document.addEventListener('DOMContentLoaded', () => {
         closeAutoAnswerMenu();
         byId('autoAnswerInfo')?.focus();
       }
+      else if (!_changelogPopoverClosed()) closeChangelogPopover();
       else closeSidebar();
     }
   });
 
+  // Version click — open changelog popover
+  var verEl = byId('ver');
+  if (verEl) {
+    verEl.addEventListener('click', function(e) { e.stopPropagation(); toggleChangelogPopover(verEl); });
+    verEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleChangelogPopover(verEl); }
+    });
+  }
+
   loadInitialData();
 });
+
+// ── Changelog popover ────────────────────────────────────────────────────
+var _changelogData = null;
+var _changelogPopover = null;
+var _changelogBackdrop = null;
+var _changelogVerEl = null;
+
+function _changelogPopoverClosed() { return !_changelogPopover; }
+
+function toggleChangelogPopover(anchorEl) {
+  _changelogVerEl = anchorEl;
+  if (_changelogPopover) { closeChangelogPopover(); return; }
+  if (!_changelogData) {
+    apiFetch('/api/changelog')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        _changelogData = Array.isArray(data) ? data : [];
+        _buildChangelogPopover(anchorEl);
+      })
+      .catch(function() { /* silent */ });
+  } else {
+    _buildChangelogPopover(anchorEl);
+  }
+}
+
+function _buildChangelogPopover(anchorEl) {
+  if (!_changelogData) return;
+  _changelogPopover = document.createElement('div');
+  _changelogPopover.className = 'changelog-popover';
+  _changelogPopover.setAttribute('role', 'dialog');
+  _changelogPopover.setAttribute('aria-label', 'Changelog');
+
+  var heading = document.createElement('h3');
+  heading.textContent = 'Changelog';
+  _changelogPopover.appendChild(heading);
+
+  _changelogData.forEach(function(entry) {
+    var chapter = document.createElement('div');
+    chapter.className = 'changelog-chapter';
+
+    var top = document.createElement('div');
+    top.style.cssText = 'margin-bottom:6px';
+    top.innerHTML = '<span class="cl-ver">' + escHtml(entry.version) + '</span>' +
+                    '<span class="cl-date">' + escHtml(entry.date) + '</span>';
+    chapter.appendChild(top);
+
+    entry.sections.forEach(function(sec) {
+      var secHead = document.createElement('div');
+      secHead.className = 'cl-section';
+      secHead.textContent = sec.type;
+      chapter.appendChild(secHead);
+
+      var ul = document.createElement('ul');
+      ul.className = 'cl-items';
+      sec.items.forEach(function(item) {
+        var li = document.createElement('li');
+        li.textContent = item;
+        ul.appendChild(li);
+      });
+      chapter.appendChild(ul);
+    });
+
+    _changelogPopover.appendChild(chapter);
+  });
+
+  // Backdrop
+  _changelogBackdrop = document.createElement('div');
+  _changelogBackdrop.className = 'changelog-changelog-backdrop';
+  _changelogBackdrop.addEventListener('click', function() { closeChangelogPopover(); });
+  document.body.appendChild(_changelogBackdrop);
+  document.body.appendChild(_changelogPopover);
+
+  // Position under the version element
+  var rect = anchorEl.getBoundingClientRect();
+  var w = Math.min(420, window.innerWidth - 20);
+  _changelogPopover.style.width = w + 'px';
+  _changelogPopover.style.top = (rect.bottom + 4) + 'px';
+  _changelogPopover.style.right = (window.innerWidth - rect.right) + 'px';
+}
+
+function closeChangelogPopover() {
+  if (_changelogPopover) { _changelogPopover.remove(); _changelogPopover = null; }
+  if (_changelogBackdrop) { _changelogBackdrop.remove(); _changelogBackdrop = null; }
+  _changelogData = null; // re-fetch next time
+  _changelogVerEl = null;
+}

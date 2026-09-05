@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 import auth
 import config
@@ -54,6 +54,13 @@ _SKILL_DIR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9_
 
 # Upper bound on skills returned, so a pathological tree cannot blow up the response.
 _SKILL_LIMIT: Final[int] = 500
+
+
+# WebConsole URL — full URL with scheme + host, optional port and path.
+# Accepts trailing slash, port, and a short path segment (e.g. trailing slash).
+_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^https?://[A-Za-z0-9][A-Za-z0-9._-]*(?::\d{1,5})?(?:/[^\s]?)?$"
+)
 
 
 # Longest one-line summary shown on a collapsed skill card.
@@ -559,6 +566,79 @@ async def handle_system_series_get(request: Request):
     )
 
 
+def _parse_changelog(path: str) -> list[dict]:
+    """Parse CHANGELOG.md into [{version, date, sections: [{type, items}]}].
+
+    Splits the file on ``## [`] boundaries, then within each version block
+    splits on ``### `` headings.  This avoids tricky multi-line regexes and
+    stays readable.
+    """
+    try:
+        text = Path(path).read_text()
+    except Exception:
+        return []
+    rows: list[dict] = []
+
+    for ver_match in re.finditer(r'^## \[(\d+\.\d+(?:\.\d+)?)\] — ([\d-]+)', text, re.MULTILINE):
+        start = ver_match.start()
+        # Find the next ## [ or end of file
+        next_ver = re.search(r'^## \[', text[start + len(ver_match.group(0)):], re.MULTILINE)
+        end = (start + len(ver_match.group(0)) + next_ver.start()) if next_ver else len(text)
+        block = text[start:end]
+        # Skip lines after version heading until first ### or content
+        lines = block.split('\n')
+        body_lines: list[str] = []
+        found_section = False
+        for line in lines[1:]:
+            if re.match(r'^### ', line):
+                body_lines.append(line)
+                found_section = True
+            elif not found_section and line.startswith('>'):
+                # Blockquote intro — skip
+                continue
+            elif not found_section and not line.strip():
+                # Blanks before first section — skip
+                continue
+            else:
+                body_lines.append(line)
+                found_section = True
+        if not found_section:
+            body_lines = lines[1:]  # fallback: everything after heading
+
+        sections: list[dict] = []
+        _current_section: dict | None = None
+        for line in body_lines:
+            sm = re.match(r'^### (Added|Fixed|Changed|Security|Removed|Testing|Documentation)\n?', line)
+            if sm:
+                if _current_section and _current_section['items']:
+                    sections.append(_current_section)
+                _current_section = {'type': sm.group(1), 'items': []}
+                continue
+            if _current_section is None:
+                continue
+            bm = re.match(r'^- (.+)', line)
+            if bm:
+                _current_section['items'].append(bm.group(1).strip())
+            elif line.strip():
+                # Continuation of previous item
+                if _current_section['items']:
+                    _current_section['items'][-1] += ' ' + line.strip()
+            # blanks/--- end of section, nothing to do
+
+        if _current_section and _current_section['items']:
+            sections.append(_current_section)
+
+        rows.append({'version': ver_match.group(1), 'date': ver_match.group(2), 'sections': sections})
+
+    return rows
+
+
+async def handle_changelog_get(request: Request):
+    """GET /api/changelog — return parsed changelog sections as JSON."""
+    changelog_path = Path(__file__).resolve().parent.parent / 'CHANGELOG.md'
+    return JSONResponse(_parse_changelog(str(changelog_path)))
+
+
 async def handle_settings_get(request: Request):
     """GET /api/settings -- return non-secret runtime and app settings.
 
@@ -582,12 +662,16 @@ async def handle_settings_get(request: Request):
         prompt_max = int(await db.setting_get("prompt_max") or config.PROMPT_MAX_CHARS)
     except (TypeError, ValueError):
         prompt_max = config.PROMPT_MAX_CHARS
+    webconsole_url = await db.setting_get("webconsole_url")
+    if not webconsole_url and config.WC_WEBCONSOLE_URL:
+        webconsole_url = config.WC_WEBCONSOLE_URL
     return JSONResponse(
         {
             "ai_machine_host": host,
             "ai_machine_port": config.PROXY_PORT,
             "proxy_enabled": config.PROXY_ENABLED,
             "default_model": await db.setting_get("default_model") or config.MODEL_NAME,
+            "webconsole_url": webconsole_url,
             "version": config.VERSION.removeprefix("WebConsole_"),
             "session_ttl_s": session_ttl,
             "turn_timeout_s": turn_timeout,
@@ -700,6 +784,29 @@ async def handle_settings_patch(request: Request):
             if not isinstance(val, int) or val < 30 or val > 86400:
                 raise HTTPException(status_code=400, detail=f"{key} must be 30-86400")
             await db.setting_set(key, str(val))
+    # WebConsole URL — the public-facing site address used to build
+    # shareable links for comparison reports and exported files.
+    if "webconsole_url" in data:
+        value = data["webconsole_url"]
+        if value is not None and not isinstance(value, str):
+            raise HTTPException(status_code=400, detail="webconsole_url must be text")
+        value = (value or "").strip()
+        value = value.rstrip("/")  # trailing slash is cosmetic, strip before host extraction
+        if value and not _URL_RE.fullmatch(value):
+            raise HTTPException(
+                status_code=400, detail="Enter a valid URL (http:// or https:// with a host)"
+            )
+        if value:
+            _validate_host(value.split("://", 1)[1].split(":", 1)[0])
+            await db.setting_set("webconsole_url", value)
+            await db.admin_action_record(
+                session["user"], "settings_webconsole_url", f"url=*",
+            )
+            _log.info("WebConsole URL updated by user=%s", session["user"])
+        else:
+            # Empty string clears the stored value.
+            await db.setting_set("webconsole_url", "")
+            _log.info("WebConsole URL cleared by user=%s", session["user"])
     return JSONResponse(
         {"ok": True, "ai_machine_host": await db.setting_get("ai_machine_host")}
     )
@@ -748,7 +855,7 @@ async def handle_tokens_create(request: Request):
         )
     try:
         data = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         data = {}
     if not isinstance(data, dict):
         data = {}
@@ -1068,7 +1175,7 @@ async def _import_transcript(chat_id: str, session_id: str) -> int:
             transcripts._scan_questions_sync,
             scan_path,
         ) if scan_path is not None else []
-    except Exception:  # noqa: BLE001 -- a malformed transcript must not break the page
+    except Exception:
         # Logged, not silent. The call above was unqualified until now, so it
         # raised NameError on every request and this handler turned that into
         # "no questions found" -- meaning the older unanswered questions the
@@ -1132,6 +1239,12 @@ async def handle_session_delete(request: Request, session_id: str):
         raise HTTPException(status_code=404, detail="Session entry not found")
     _log.info("session_entry_removed session_id=%s user=%s", session_id, session["user"])
     return JSONResponse({"ok": True})
+
+
+@router.get("/api/changelog")
+async def _api_changelog_get(request: Request):
+    """Return parsed changelog sections for the popover."""
+    return await handle_changelog_get(request)
 
 
 @router.get("/api/skills")
@@ -1274,7 +1387,7 @@ async def handle_transcript_stream(request: Request, session_id: str):
                 await asyncio.sleep(transcripts.TAIL_POLL_S)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 -- convert tail failures to SSE errors
+        except Exception:
             _log.exception("transcript stream failed session_id=%s", session_id)
             yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
 
@@ -1322,3 +1435,36 @@ async def _api_sessions_resume(request: Request, session_id: str):
 @router.delete("/api/sessions/{session_id}")
 async def _api_sessions_delete(request: Request, session_id: str):
     return await handle_session_delete(request, session_id)
+
+
+# ── Comparison report share ──────────────────────────────────────────────────
+# A non-secret report that an admin may want to email or paste to a colleague.
+# Served from the project root, not from a chat workspace, so it is not
+# subject to per-conversation work_dir containment.
+
+_ROOT: Path = Path(__file__).resolve().parent.parent
+_SHARED_FILES: Final[dict[str, tuple[str, str]]] = {
+    "comparison.html": ("Backend_Models_20260902.comparison.html", "text/html"),
+    "comparison.pdf": ("Backend_Models_20260902.comparison.pdf", "application/pdf"),
+    "comparison.md": ("Backend_Models_20260902.comparison.md", "text/plain; charset=utf-8"),
+}
+
+
+@router.get("/api/share/{filename}")
+async def _api_share_file(request: Request, filename: str):
+    """GET /api/share/{filename} — serve an admin-shared file.
+
+    Read-only, no auth required — the file carries no secret.
+    """
+    pair = _SHARED_FILES.get(filename)
+    if pair is None:
+        raise HTTPException(status_code=404, detail="Shared file not found")
+    path, media_type = pair
+    candidate = _ROOT / path
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Shared file not found")
+    return FileResponse(
+        candidate,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=3600"},
+    )

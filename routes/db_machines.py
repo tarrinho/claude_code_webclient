@@ -47,7 +47,7 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     # regardless of what was saved in Settings.
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
-        "ssh_host, ssh_user, ssh_key_path, "
+        "ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         "CASE WHEN api_key IS NOT NULL AND TRIM(api_key) <> '' THEN 1 ELSE 0 END "
         "AS has_api_key, "
@@ -57,6 +57,23 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     )
     row = await cur.fetchone()
     return dict(row) if row else None
+
+
+async def ai_machine_set_ssh_host_key_fingerprint(
+    machine_id: str, fingerprint: str
+) -> None:
+    """Pin the SSH host key fingerprint accepted on first connect.
+
+    No owner_id scoping: called from tunnel_manager_ssh.connect(), the
+    background loop, not a per-request handler -- there is no session to
+    scope it to, and the fingerprint is not secret (it identifies the
+    *server*, not a credential).
+    """
+    await db.db_conn.execute(
+        "UPDATE ai_machines SET ssh_host_key_fingerprint = ? WHERE id = ?",
+        (fingerprint, machine_id),
+    )
+    await db.db_conn.commit()
 
 
 async def ai_machine_create(

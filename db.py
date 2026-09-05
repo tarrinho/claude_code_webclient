@@ -103,6 +103,7 @@ def __getattr__(name: str):
         "ai_machine_active": "routes.db_machines",
         "ai_machines_list": "routes.db_machines",
         "ai_machine_get": "routes.db_machines",
+        "ai_machine_set_ssh_host_key_fingerprint": "routes.db_machines",
         "ai_machine_create": "routes.db_machines",
         "ai_machine_update": "routes.db_machines",
         "ai_machine_activate": "routes.db_machines",
@@ -805,6 +806,24 @@ async def _ensure_chat_columns() -> None:
     if ma_columns and "ssh_key_path" not in ma_columns:
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN ssh_key_path TEXT NOT NULL DEFAULT ''"
+        )
+    if ma_columns and "ssh_host_key_fingerprint" not in ma_columns:
+        # Trust-on-first-use pin for the remote SSH host key. paramiko's
+        # AutoAddPolicy (bandit B507, CWE-295) accepted *any* host key
+        # silently on every connection -- no verification at all, so a
+        # MITM sitting between this host and the configured ssh_host was
+        # undetectable. Blank means "not yet pinned"; connect() fills it in
+        # on the first successful connection and rejects any *later*
+        # connection whose key doesn't match, which is what actually
+        # catches a MITM or a reinstalled host -- not blocking the first
+        # connection outright, which strict verification against this
+        # host's own ~/.ssh/known_hosts would have done here: nothing in
+        # it mentions any of this deployment's configured ssh_proxy hosts
+        # yet (checked directly), so requiring a pre-existing known_hosts
+        # entry would have re-broken the very connection this session's
+        # other fixes just got working.
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN ssh_host_key_fingerprint TEXT NOT NULL DEFAULT ''"
         )
 
     # ssh_tunnels: one row per active ssh_proxy machine.

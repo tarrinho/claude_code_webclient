@@ -376,13 +376,27 @@ class TokenManagementApiTests(ApiTokenBase):
                          headers=headers)
         self.assertEqual(ok.status_code, 200)
         self.assertIsNotNone(ok.json()["expires_at"])
-        for bad in (0, -1, 4000, "soon"):
+        for bad in (-1, 4000, "soon"):
             with self.subTest(days=bad):
                 response = client.post(
                     "/api/tokens", json={"name": "x", "expires_in_days": bad},
                     headers=headers,
                 )
                 self.assertEqual(response.status_code, 400)
+
+    def test_zero_is_an_explicit_never_expire_request_not_an_error(self):
+        """0 predates the "never" string as the explicit opt-in for a
+        non-expiring token (see routes/misc.py's own "L6 fix" comment) --
+        confirmed intentional, not left over from before that carve-out
+        existed, so this asserts the request succeeds with no expires_at
+        rather than 400 alongside the genuinely invalid values above."""
+        client, headers = self._login("alice")
+        response = client.post(
+            "/api/tokens", json={"name": "forever", "expires_in_days": 0},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["expires_at"])
 
     async def test_a_token_cannot_mint_another_token(self):
         """Otherwise one leaked credential becomes an unrevocable supply: revoke

@@ -20,6 +20,62 @@ import tunnel_manager
 _log = logging.getLogger("wc.tunnel.ssh")
 
 
+def _fingerprint(key) -> str:
+    """SHA256 fingerprint in the same format `ssh-keygen -lf` prints, so a
+    value stored here is directly comparable to what a human checks by
+    hand."""
+    import base64
+    import hashlib
+
+    digest = hashlib.sha256(key.asbytes()).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+class _PinnedHostKeyPolicy:
+    """Trust-on-first-use, not blanket trust. paramiko.AutoAddPolicy (bandit
+    B507, CWE-295) accepted any host key on every connection with no
+    verification at all -- a MITM between this host and ssh_host was
+    undetectable. This pins the key on the first successful connection and
+    rejects any later connection whose key has changed, which is what
+    actually catches a MITM or a reinstalled host. Deliberately not
+    RejectPolicy against the account's own ~/.ssh/known_hosts: that would
+    require every configured ssh_proxy host to already be manually
+    SSH'd-to once from this account, which none of them are yet, and would
+    re-break the connection this session's other fixes just got working.
+
+    Runs inside paramiko's synchronous connect() (itself run via
+    asyncio.to_thread), so it cannot await the DB write that persists a new
+    fingerprint -- it only records what happened onto itself, in
+    `new_fingerprint` / `mismatch`, for the async caller to act on once the
+    (still synchronous) connect() call returns.
+    """
+
+    def __init__(self, stored_fingerprint: str):
+        self.stored_fingerprint = stored_fingerprint or None
+        self.new_fingerprint: str | None = None
+        self.mismatch: tuple[str, str] | None = None
+
+    def missing_host_key(self, client, hostname, key):
+        fp = _fingerprint(key)
+        if self.stored_fingerprint is None:
+            self.new_fingerprint = fp
+            return
+        if fp != self.stored_fingerprint:
+            self.mismatch = (self.stored_fingerprint, fp)
+            # Not paramiko.SSHException: this class deliberately does not
+            # import paramiko at module scope (this whole file defers that
+            # import into the functions that need it, so the rest of it
+            # stays usable without paramiko installed). Any exception here
+            # aborts ssh_client.connect() the same way; ConnectionError
+            # reads correctly to whatever catches it either way.
+            raise ConnectionError(
+                f"host key for {hostname} changed: expected "
+                f"{self.stored_fingerprint}, got {fp} -- possible MITM, or "
+                f"the host was reinstalled"
+            )
+        # Matches the pinned value: accepting means doing nothing here.
+
+
 async def connect(machine_id: str):
     """Attempt SSH connect + port forward for *machine_id*.
 
@@ -77,8 +133,10 @@ async def connect(machine_id: str):
         _fail(machine_id, str(exc))
         return (False, None, None, 0, 0)
 
+    stored_fingerprint = machine.get("ssh_host_key_fingerprint", "")
+    policy = _PinnedHostKeyPolicy(stored_fingerprint)
     ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.set_missing_host_key_policy(policy)
     try:
         await asyncio.to_thread(
             ssh_client.connect,
@@ -89,7 +147,27 @@ async def connect(machine_id: str):
         )
     except Exception as exc:
         ssh_client.close()
+        if policy.mismatch:
+            _log.warning(
+                "ssh_host_key_mismatch machine=%s expected=%s got=%s",
+                machine_id, policy.mismatch[0], policy.mismatch[1],
+            )
         return _fail(machine_id, str(exc)[:200])
+
+    if policy.new_fingerprint:
+        # First-ever connection to this machine: pin what we just accepted
+        # so the *next* connection has something to compare against. A
+        # write failure here must not fail an otherwise-successful
+        # connect -- it only means TOFU has to happen again next time,
+        # not that anything is actually wrong right now.
+        try:
+            await db.ai_machine_set_ssh_host_key_fingerprint(
+                machine_id, policy.new_fingerprint
+            )
+        except Exception:
+            _log.exception(
+                "could not persist ssh host key fingerprint for %s", machine_id
+            )
 
     try:
         transport = ssh_client.get_transport()
@@ -200,7 +278,16 @@ async def test_ssh_connection(ssh_host: str, ssh_user: str, ssh_key_path: str):
         return {"ok": False, "error": str(exc)}
 
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # AutoAddPolicy here, unlike connect()'s _PinnedHostKeyPolicy above: this
+    # runs before a machine even exists (the init wizard's connectivity
+    # check, called with raw form fields, no machine_id), so there is
+    # nowhere yet to persist a pinned fingerprint against. The connection is
+    # torn down immediately after and nothing sensitive flows over it --
+    # only the health-of-connectivity boolean this returns. The real,
+    # standing SSH session (connect(), above) is what actually needs and
+    # gets the pin; this one-shot check is a narrower, lower-value target,
+    # and pinning starts from its very first real connection either way.
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # nosec B507
     try:
         await asyncio.to_thread(
             ssh.connect,

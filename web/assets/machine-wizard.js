@@ -1,6 +1,6 @@
 // SSH init wizard — three-step flow: SSH test → proxy detection → tunnel.
 import {apiFetch} from './api.js?v=1';
-import {byId, setStatus, notifyResult} from './app.js?v=34';
+import {byId, setStatus, notifyResult} from './app.js?v=36';
 
 let _wizardMachineId = null;
 let _wizardStep = 0;

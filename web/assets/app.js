@@ -1540,6 +1540,63 @@ async function loadSettings() {
   return {};
 }
 
+// Session heartbeat: call POST /api/ping every 5 minutes to keep the
+// cookie alive. Warn the user 3 minutes before expiry so they can
+// save their work before being redirected.
+let _pingTimer = null;
+const PING_INTERVAL = 5 * 60 * 1000;  // 5 min
+const WARN_THRESHOLD = 3 * 60 * 1000;  // 3 min remaining
+
+async function _pingLoop() {
+  try {
+    const resp = await apiFetch('/api/ping', { method: 'POST' });
+    if (resp.ok) {
+      const data = await resp.json();
+      const remaining = data.session_ttl_remaining || 0;
+      if (remaining < 180) {
+        // < 3 min: show a banner
+        _showExpiryWarning(remaining);
+      } else if (_expiryBanner && _expiryBanner.style.display !== 'none') {
+        // Re-appeared above threshold: hide banner
+        _expiryBanner.style.display = 'none';
+      }
+    }
+  } catch {
+    /* ping failure is non-fatal — session may just be expired */
+  }
+}
+
+let _expiryBanner = null;
+
+function _showExpiryWarning(remaining) {
+  if (!_expiryBanner) {
+    _expiryBanner = document.createElement('div');
+    _expiryBanner.id = 'sessionWarningBanner';
+    _expiryBanner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#b91c1c;color:#fff;text-align:center;padding:8px;z-index:9999;font-size:14px;cursor:pointer;';
+    _expiryBanner.textContent = `Session expires in ${remaining}s — click or wait to stay.`;
+    _expiryBanner.addEventListener('click', async () => {
+      try {
+        await apiFetch('/api/ping', { method: 'POST' });
+        _expiryBanner.style.display = 'none';
+      } catch { /* ignore */ }
+    });
+    document.body.appendChild(_expiryBanner);
+  }
+  _expiryBanner.textContent = `Session expires in ${remaining}s — click to stay.`;
+  _expiryBanner.style.display = 'block';
+}
+
+function _startPingLoop() {
+  _pingTimer = setInterval(_pingLoop, PING_INTERVAL);
+}
+
+function _stopPingLoop() {
+  if (_pingTimer) {
+    clearInterval(_pingTimer);
+    _pingTimer = null;
+  }
+}
+
 function populateModelPicker(chat = state.currentChat) {
   const picker = byId('conversationModel');
   if (!picker) return;
@@ -2094,6 +2151,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   loadInitialData();
+  // Start session heartbeat after everything is loaded.
+  _startPingLoop();
 });
 
 // ── Changelog popover ────────────────────────────────────────────────────

@@ -11,7 +11,9 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Final
@@ -54,6 +56,66 @@ _SKILL_DIR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9_
 
 # Upper bound on skills returned, so a pathological tree cannot blow up the response.
 _SKILL_LIMIT: Final[int] = 500
+
+# ── Asset version endpoint ──────────────────────────────────────────────────
+# Serves a version hash so the frontend can bust caches by appending ?v=<hash>
+# to any static asset URL. Bypasses any browser/CDN cache that ignores query
+# strings (they are only ignored when no query string is present).
+#
+# Reads the git commit short hash at request time so deploys to the same host
+# always get a fresh value without build-time injection.  Falls back to the
+# VERSION string if git is unavailable.
+
+
+def _asset_version() -> str:
+    """Return a short version string for cache busting."""
+    try:
+        out = os.popen(
+            "git -C /home/kali/projects/claude-code-webconsole "
+            "rev-parse --short HEAD 2>/dev/null"
+        ).read().strip()
+        if out:
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    return config.VERSION.removeprefix("WebConsole_")
+
+
+@router.get("/api/version/hash")
+async def _api_version_hash(request: Request):
+    """GET /api/version/hash -- opaque version for cache busting."""
+    return JSONResponse({"version": _asset_version()})
+
+
+@router.post("/api/ping")
+async def _api_ping(request: Request):
+    """POST /api/ping -- refresh session TTL without side effects.
+
+    Frontend calls this every 5 minutes to keep the cookie alive.
+    Returns session_ttl_remaining so the UI can show a warning.
+    No auth check needed beyond what AuthMiddleware already enforces.
+    """
+    session = request.state.session
+    if not session:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Session expired", "redirect": "/login"},
+        )
+    sid = request.cookies.get("wc_session", "")
+    ttl = int(
+        await db.setting_get("session_ttl") or config.SESSION_TTL_S
+    )
+    try:
+        info = auth.session_info(sid)
+        if info and "created_at" in info:
+            created = float(info["created_at"])
+            elapsed = time.time() - created
+            remaining = max(0, int(ttl - elapsed))
+        else:
+            remaining = ttl
+    except Exception:  # noqa: BLE001
+        remaining = ttl
+    return JSONResponse({"session_ttl_remaining": remaining, "ttl": ttl})
 
 
 # WebConsole URL — full URL with scheme + host, optional port and path.

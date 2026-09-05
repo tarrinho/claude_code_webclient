@@ -5,114 +5,19 @@ document.addEventListener('DOMContentLoaded', function() {
   if (form) form.addEventListener('submit', handleLogin);
   var toggle = document.getElementById('themeToggle');
   if (toggle) toggle.addEventListener('click', toggleTheme);
-  _initChangelogVersion();
-});
-
-var _changelogEl = null;
-var _changelogData = null;
-var _changelogPopover = null;
-
-function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-
-function _initChangelogVersion() {
-  var verEl = _changelogEl || document.getElementById('loginVer');
-  if (!verEl || _changelogPopover) return;
-  _changelogEl = verEl;
-  verEl.textContent = 'loading…';
-  // Fetch once, cache for both surfaces
-  _fetchChangelogData(function(data) {
-    if (data) {
-      _changelogData = data;
-      verEl.textContent = 'WebConsole · changelog';
-    } else {
-      verEl.textContent = 'WebConsole';
-    }
-  });
-  verEl.addEventListener('click', function(e) { e.stopPropagation(); _toggleChangelogPopover(verEl); });
-  verEl.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _toggleChangelogPopover(verEl); }
-  });
-  var escFn = function(e) {
-    if (e.key === 'Escape') { _closeChangelogPopover(); }
-  };
-  verEl.addEventListener('keydown', escFn);
-  verEl._changelogEscFn = escFn;
-}
-
-function _fetchChangelogData(cb) {
-  if (_changelogData) { cb(_changelogData); return; }
+  // Just show the version number at the bottom
   fetch('/api/changelog')
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      _changelogData = Array.isArray(data) ? data : [];
-      if (cb) cb(_changelogData.length ? _changelogData : null);
+      var el = document.getElementById('loginVer');
+      if (el && Array.isArray(data) && data.length) {
+        el.textContent = data[0].version;
+      } else {
+        el.textContent = 'WebConsole';
+      }
     })
-    .catch(function() { if (cb) cb(null); });
-}
-
-function _toggleChangelogPopover(anchorEl) {
-  if (_changelogPopover) { _closeChangelogPopover(); return; }
-  if (!_changelogData) { _fetchChangelogData(function() { _buildChangelogPopover(anchorEl); }); }
-  else { _buildChangelogPopover(anchorEl); }
-}
-
-function _buildChangelogPopover(anchorEl) {
-  if (!_changelogData) return;
-  _changelogPopover = document.createElement('div');
-  _changelogPopover.className = 'changelog-popover';
-  _changelogPopover.setAttribute('role', 'dialog');
-  _changelogPopover.setAttribute('aria-label', 'Changelog');
-  var heading = document.createElement('h3');
-  heading.textContent = 'Changelog';
-  _changelogPopover.appendChild(heading);
-  _changelogData.forEach(function(entry) {
-    var chapter = document.createElement('div');
-    chapter.className = 'changelog-chapter';
-    var top = document.createElement('div');
-    top.style.cssText = 'margin-bottom:6px';
-    top.innerHTML = '<span class="cl-ver">' + esc(entry.version) + '</span><span class="cl-date">' + esc(entry.date) + '</span>';
-    chapter.appendChild(top);
-    entry.sections.forEach(function(sec) {
-      var secHead = document.createElement('div');
-      secHead.className = 'cl-section';
-      secHead.textContent = sec.type;
-      chapter.appendChild(secHead);
-      var ul = document.createElement('ul');
-      ul.className = 'cl-items';
-      sec.items.forEach(function(item) {
-        var li = document.createElement('li');
-        li.textContent = item;
-        ul.appendChild(li);
-      });
-      chapter.appendChild(ul);
-    });
-    _changelogPopover.appendChild(chapter);
-  });
-  // Backdrop
-  var backdrop = document.createElement('div');
-  backdrop.className = 'changelog-changelog-backdrop';
-  backdrop.addEventListener('click', function() { _closeChangelogPopover(); });
-  document.body.appendChild(backdrop);
-  document.body.appendChild(_changelogPopover);
-  // Position under anchor
-  var rect = anchorEl.getBoundingClientRect();
-  var w = Math.min(420, window.innerWidth - 20);
-  _changelogPopover.style.width = w + 'px';
-  _changelogPopover.style.top = (rect.bottom + 4) + 'px';
-  _changelogPopover.style.right = (window.innerWidth - rect.right) + 'px';
-  _changelogPopover._backdrop = backdrop;
-}
-
-function _closeChangelogPopover() {
-  if (_changelogPopover) {
-    if (_changelogPopover._backdrop) _changelogPopover._backdrop.remove();
-    _changelogPopover.remove();
-    _changelogPopover = null;
-  }
-  if (_changelogEl && _changelogEl._changelogEscFn) {
-    _changelogEl.removeEventListener('keydown', _changelogEl._changelogEscFn);
-  }
-}
+    .catch(function() { document.getElementById('loginVer').textContent = 'WebConsole'; });
+});
 
 function toggleTheme() {
   const html = document.documentElement;

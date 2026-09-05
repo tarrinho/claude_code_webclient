@@ -542,12 +542,24 @@ function updateCurrentUi(chat) {
   populateModelPicker(chat);
 }
 
-function _machineLabel(machine) {
-  const kind = {
+// The one place backend_kind maps to display text. Used to live here *and*
+// as a second, separately-maintained copy in machines.js (_BACKEND_KIND_LABELS)
+// -- neither one got updated when ssh_proxy shipped, so an ssh_proxy machine
+// showed as "Claude Code proxy" in Settings (machines.js's copy fell through
+// to its anthropic/else guess) and as the raw string "ssh-proxy" in the
+// per-chat Backend picker (this copy's `|| machine.backend_kind` fallback).
+// machines.js now imports this instead of keeping its own table.
+export function backendKindLabel(kind) {
+  return {
     'anthropic': 'Anthropic API',
     'anthropic-compatible': 'Anthropic-compatible',
     'proxy': 'Claude Code proxy',
-  }[machine.backend_kind] || machine.backend_kind || '';
+    'ssh-proxy': 'SSH proxy',
+  }[kind] || kind || '';
+}
+
+function _machineLabel(machine) {
+  const kind = backendKindLabel(machine.backend_kind);
   // Don't repeat yourself: a machine literally named "Anthropic API" would
   // otherwise render as "Anthropic API · Anthropic API".
   return kind && kind !== machine.name ? `${machine.name} · ${kind}` : machine.name;

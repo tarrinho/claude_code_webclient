@@ -1,7 +1,7 @@
 // Remote host stats for the Server page — renders latest system_samples.
 import {apiFetch} from './api.js?v=1';
-import {byId} from './app.js?v=36';
-import {esc} from './app.js?v=36';
+import {byId} from './app.js?v=37';
+import {esc} from './app.js?v=37';
 
 const _REMOTE_HOSTS = new Map();
 

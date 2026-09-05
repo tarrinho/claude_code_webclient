@@ -17,7 +17,8 @@ import {
   // split left these as bare references across the module boundary, so every
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
-} from './app.js?v=36';
+  backendKindLabel,
+} from './app.js?v=37';
 import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
 
@@ -83,15 +84,16 @@ export async function loadMachines(force = false) {
 // classifies this (app.backend_kind) and the Usage tab gates its cost column on
 // the same value, so read it rather than re-deriving it here -- two
 // implementations agreeing by coincidence is a latent disagreement.
-const _BACKEND_KIND_LABELS = {
-  'anthropic': 'Anthropic API',
-  'anthropic-compatible': 'Anthropic-compatible',
-  'proxy': 'Claude Code proxy',
-};
-
+//
+// The label text itself used to be a second, separately-maintained copy of
+// app.js's own kind->label table (backendKindLabel) -- neither copy got the
+// ssh_proxy entry added when that provider shipped, so this one fell through
+// to the anthropic/else guess and showed "Claude Code proxy" for an ssh_proxy
+// machine. Imported from app.js now instead, the same file this already reads
+// _machines, byId, etc. from, so there is exactly one table to update the
+// next time a provider type is added.
 function _providerLabel(machine) {
-  return _BACKEND_KIND_LABELS[machine.backend_kind]
-    || (machine.provider === 'anthropic' ? 'Anthropic API' : 'Claude Code proxy');
+  return backendKindLabel(machine.backend_kind);
 }
 
 // ── SSH Tunnel toggle ──────────────────────────────────────────────

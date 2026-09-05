@@ -154,12 +154,12 @@ button{touch-action:manipulation}
 .queue-tag{font:600 10px system-ui,-apple-system,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);flex:0 0 auto}
 .queue-bar[data-held="yes"] .queue-tag{color:var(--warn,var(--accent))}
 .queue-note{font-size:.75rem;color:var(--muted);min-width:0}
-.queue-list{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.queue-list{list-style:none;margin:0;padding:0;display:grid;gap:4px;max-height:min(40vh,220px);overflow-y:auto}
 .queue-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;font-size:.82rem}
 .queue-pos{font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);flex:0 0 auto}
 /* minmax(0,1fr) above plus this is what keeps a long prompt from widening the
    pane instead of ellipsising -- the same trap fixed in the Skills panel. */
-.queue-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.queue-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;cursor:pointer}
 .queue-actions{display:flex;gap:4px;flex:0 0 auto}
 .queue-btn{font-size:.72rem;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);cursor:pointer;min-height:26px}
 .queue-btn:hover{border-color:var(--accent)}
@@ -265,6 +265,8 @@ button{touch-action:manipulation}
    instead of being cut off along with whichever row it points at. */
 .auto-answer-tooltip{position:fixed;z-index:70;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:8px 10px;font-size:12px;line-height:1.4;color:var(--fg);white-space:pre-wrap;word-break:break-word}
 .auto-answer-tooltip[hidden]{display:none}
+.queue-tooltip{position:fixed;z-index:70;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.32);padding:8px 10px;font-size:12px;line-height:1.4;color:var(--fg);white-space:pre-wrap;word-break:break-word}
+.queue-tooltip[hidden]{display:none}
 /* The auto margin lives on the group so the edit/refresh pair rides right
    with the status, instead of being stranded beside the model selects. */
 .strip-right{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
@@ -293,6 +295,8 @@ button{touch-action:manipulation}
 .run-state[data-state="working"]::before{background:var(--accent);animation:pulse 1.2s infinite}
 .run-state[data-state="retrying"]::before{background:var(--warn);animation:pulse 1.2s infinite}
 .run-state[data-state="failed"]::before{background:var(--bad)}
+.run-state[data-state="loading"]::before{background:var(--warn);animation:loading-flash 1s infinite}
+@keyframes loading-flash{0%,100%{opacity:1;background:var(--warn)}50%{opacity:.15;background:var(--fg-subtle,var(--fg))}}
 .model-label{font:10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--accent);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
 .conversation-model-wrap{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);white-space:nowrap}
 .conversation-model{max-width:180px;border:1px solid var(--line);border-radius:5px;padding:3px 5px;background:var(--input-bg);color:var(--fg);font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -589,7 +593,7 @@ button{touch-action:manipulation}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 @media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
 /* Reclaim chrome on small screens so the scrolling panel gets usable height. */
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(max-width:480px){.usage-row{grid-template-columns:minmax(0,1fr) 2.6rem 3.6rem 3.6rem}.usage-row>:nth-child(5){display:none}.usage-turn{grid-template-columns:minmax(0,1fr) 5.5rem auto}.usage-turn>.usage-when,.usage-turn>.usage-turn-model{display:none}}

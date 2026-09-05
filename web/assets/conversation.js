@@ -231,6 +231,74 @@ function _estimatedTurnPct(chatId, elapsedSeconds) {
 // would double if this factory ever ran twice.
 let _turnTicker = null;
 
+// ── Queued-prompt full-text tooltip ──────────────────────────────────────
+// A queue row's own text is a single ellipsised line (`.queue-text`), and
+// `title` -- the only way to read the rest of it before this -- does not
+// exist on a touch device at all. Same pattern as app.js's
+// auto-answer-tooltip (position:fixed, appended to <body>, tap the same row
+// again to close), reused here rather than invented fresh: this file cannot
+// import app.js's version (app.js imports from here, not the other way
+// round), and the interaction is small enough that duplicating it is
+// cheaper and clearer than threading a shared module through both for one
+// function.
+let _queueTooltipAnchor = null;
+
+function _queueTooltipEl() {
+  let el = document.getElementById('queueTooltip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'queueTooltip';
+    el.className = 'queue-tooltip';
+    el.setAttribute('role', 'tooltip');
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function closeQueueTooltip() {
+  const el = document.getElementById('queueTooltip');
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  _queueTooltipAnchor = null;
+  document.removeEventListener('click', _onDocumentClickForQueueTooltip, true);
+}
+
+function _onDocumentClickForQueueTooltip(event) {
+  const el = document.getElementById('queueTooltip');
+  if (el?.contains(event.target)) return;
+  // Capture phase, ahead of a row's own bubble-phase click -- without this
+  // exclusion a click meant to close the tooltip would close it here first,
+  // and the toggle below (seeing no anchor left) would read that as "open"
+  // and undo the close in the same click.
+  if (event.target.closest?.('.queue-text')) return;
+  closeQueueTooltip();
+}
+
+function _toggleQueueTooltip(anchor, text) {
+  // A second tap on the same row closes it rather than re-showing it --
+  // otherwise there is no way to dismiss it without tapping elsewhere first.
+  if (_queueTooltipAnchor === anchor) {
+    closeQueueTooltip();
+    return;
+  }
+  const el = _queueTooltipEl();
+  el.textContent = text;
+  const width = Math.min(320, window.innerWidth - 16);
+  el.style.width = `${width}px`;
+  el.hidden = false;
+  _queueTooltipAnchor = anchor;
+  const rect = anchor.getBoundingClientRect();
+  const height = el.getBoundingClientRect().height;
+  el.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+  // Flips above the row when there is not enough room below, same escape
+  // hatch the auto-answer tooltip and stats.js's chart tooltip both use.
+  el.style.top = rect.bottom + height + 6 > window.innerHeight
+    ? `${Math.max(8, rect.top - height - 6)}px`
+    : `${rect.bottom + 6}px`;
+  document.addEventListener('click', _onDocumentClickForQueueTooltip, true);
+}
+
 export function createConversationController(dependencies) {
   const {
     state,
@@ -847,11 +915,17 @@ export function createConversationController(dependencies) {
     if (!elements.queueBar) return;
     elements.queueBar.hidden = true;
     if (elements.queueList) elements.queueList.textContent = '';
+    // A row's tooltip has no meaning once the row it points at is gone.
+    closeQueueTooltip();
   }
 
   function renderQueue(chatId, payload) {
     const rows = payload.queue || [];
     if (!rows.length) return hideQueue();
+    // The 5-6s poll calls this again while a tooltip may still be open --
+    // replacing the list below would leave it pointing at a detached node,
+    // the same hazard renderAutoAnswerMenu already guards against.
+    closeQueueTooltip();
     const held = rows.filter(row => row.state === 'held').length;
     elements.queueBar.hidden = false;
     elements.queueBar.dataset.held = held ? 'yes' : 'no';
@@ -874,7 +948,22 @@ export function createConversationController(dependencies) {
       // textContent, never innerHTML: this is the user's own prompt coming back
       // from the database and must not be interpreted as markup.
       text.textContent = row.prompt;
+      // The full prompt on hover, since the line is a single ellipsised row --
+      // kept for desktop, but hover does not exist on touch, so the row is
+      // also tappable: same tooltip pattern as the auto-answer log's rows.
       text.title = row.prompt;
+      text.tabIndex = 0;
+      text.setAttribute('role', 'button');
+      text.setAttribute('aria-label', 'Show the full queued prompt');
+      text.addEventListener('click', event => {
+        event.stopPropagation();
+        _toggleQueueTooltip(text, row.prompt);
+      });
+      text.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        _toggleQueueTooltip(text, row.prompt);
+      });
 
       const position = document.createElement('span');
       position.className = 'queue-pos';

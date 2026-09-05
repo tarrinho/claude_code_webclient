@@ -411,6 +411,25 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("let _turnTicker = null;", self.conversation)
         self.assertIn("clearInterval(_turnTicker)", self.conversation)
 
+    def test_queue_rows_are_tappable_and_the_list_is_capped(self):
+        """The queue bar had three mobile complaints: a row's full prompt was
+        readable only via desktop-only `title` hover, its Send/Discard buttons
+        were too small to tap, and an unbounded list of rows could grow past
+        the viewport. Same tap-to-reveal tooltip pattern as the auto-answer
+        log, a capped scrollable list like `.lastcmd-menu`/`.auto-answer-menu`,
+        and `.queue-btn` in the touch-target media query."""
+        self.assertIn("_toggleQueueTooltip", self.conversation)
+        self.assertIn("closeQueueTooltip", self.conversation)
+        self.assertIn("text.tabIndex = 0;", self.conversation)
+        self.assertIn("role", self.conversation)
+        self.assertIn(".queue-list{", self.css)
+        self.assertIn("max-height:min(40vh,220px);overflow-y:auto", self.css)
+        self.assertIn(".queue-tooltip{", self.css)
+        self.assertRegex(
+            self.css,
+            r"@media\(pointer:coarse\)\{[^}]*\.queue-btn",
+        )
+
     def test_safe_rendering_and_mobile_css(self):
         self.assertIn("document.createTextNode", self.conversation)
         self.assertIn("code.textContent", self.conversation)

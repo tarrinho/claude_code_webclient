@@ -866,10 +866,11 @@ async def _ensure_chat_columns() -> None:
         ss_columns = {row["name"] for row in await ss_cursor.fetchall()}
     except Exception:
         ss_columns = set()
-    for col in ("host_type", "host_id"):
+    for col in ("host_type", "host_id", "data"):
         if col not in ss_columns:
+            default = "'local'" if col in ("host_type", "host_id") else "'{}'"
             await db_conn.execute(
-                f"ALTER TABLE system_samples ADD COLUMN {col} TEXT DEFAULT 'local'"
+                f"ALTER TABLE system_samples ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
             )  # nosec B608: column names are static literals
 
     await db_conn.commit()

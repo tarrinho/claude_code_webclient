@@ -47,21 +47,23 @@ async def start(store_fn, _now_fn=None) -> None:
         return  # idempotent
     _running = True
     # Auto-activate: read active ssh_proxy machines, attempt reconnect.
+    # Use a plain sqlite3.Connection (not the shared async db.db_conn)
+    # because db.db_conn is already checked out by the lifespan coroutine
+    # that calls start(), so awaiting it here would deadlock.
     try:
-        cursor = await db.db_conn.execute(
-            "SELECT id, machine_id, state FROM ssh_tunnels "
+        import sqlite3
+        import db as _db
+        db_path = str(_db.db_path) if _db.db_path else "/dev/null"
+        scan_conn = sqlite3.connect(":memory:")
+        scan_conn.execute("ATTACH DATABASE ? AS target", (db_path,))
+        cursor = scan_conn.execute(
+            "SELECT id, machine_id, state FROM target.ssh_tunnels "
             "WHERE tunnel_up = 1 ORDER BY id"
         )
-        # aiosqlite.Cursor has __aiter__ but not __iter__ -- a plain `for`
-        # over the cursor itself raises TypeError immediately, silently
-        # caught by the except below (same shape as db.ssh_tunnel_get's
-        # missing-await bug found alongside this one). Harmless while
-        # ssh_tunnels has no tunnel_up=1 rows yet, since nothing was there
-        # to reconnect either way, but would have blocked every reconnect
-        # attempt after a restart once one existed.
-        rows = await cursor.fetchall()
+        rows = cursor.fetchall()
+        scan_conn.close()
         for row in rows:
-            _queue.put_nowait(("RECONNECT", str(row["machine_id"])))
+            _queue.put_nowait(("RECONNECT", str(row[1])))
     except Exception:
         _log.exception("tunnel scan failed")
     _task = asyncio.create_task(_loop(store_fn, _now_fn or _default_now))
@@ -175,8 +177,16 @@ def _release_machine(machine_id: str) -> None:
     state = _STATE.pop(machine_id, None)
     if not state:
         return
+    forward_server = state.get("forward_server")
     ssh_client = state.get("ssh_client")
     transport = state.get("transport")
+    if forward_server:
+        # Before the transport it forwards over: closing the transport
+        # first would just make every in-flight forwarded connection error
+        # out through the transport instead of a clean local shutdown.
+        import tunnel_manager_forward
+        with contextlib.suppress(Exception):
+            tunnel_manager_forward.stop_forward(forward_server)
     if transport:
         with contextlib.suppress(Exception):
             transport.close()
@@ -230,8 +240,8 @@ def _try_connect(machine_id: str) -> None:
         from tunnel_manager_ssh import connect as _connect
 
         try:
-            ok, client, transport, local_port, ssh_port = await _connect(
-                machine_id
+            ok, client, transport, local_port, ssh_port, forward_server = (
+                await _connect(machine_id)
             )
             if ok:
                 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -243,6 +253,7 @@ def _try_connect(machine_id: str) -> None:
                     "transport": transport,
                     "local_port": local_port,
                     "ssh_port": ssh_port,
+                    "forward_server": forward_server,
                     "connected_at": now,
                     "last_check": now,
                     "error_msg": None,

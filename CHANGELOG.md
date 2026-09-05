@@ -20,6 +20,50 @@ churn.
 
 ---
 
+## [0.12.2] — 2026-09-05
+
+### Fixed
+
+- **Sidebar highlights appeared then reverted within a few seconds** —
+  reported live, then reproduced with a real browser watching the sidebar
+  DOM against a real background turn. Two independent races, both needed
+  fixing:
+  - `GET /api/chats` (`handle_chats_list`) read each chat's `updated_at`
+    from the DB, awaited two more things, and only then checked
+    `turns.running_ids()`. A turn finishing and persisting during those
+    awaits could make one response report `running: False` next to the
+    *pre-turn* `updated_at` — the sidebar showed that as "just finished"
+    (`.chat-ended`), then swapped to "new reply" (`.chat-unread`) once a
+    later poll's timestamp caught up. Fixed by capturing `running_ids()`
+    first, synchronously, before either await. Registry #89.
+  - `refreshChats()` (the sidebar's 6s poll) had no guard against
+    overlapping or out-of-order responses. Under this host's real
+    concurrent load, an older, slower response landing after a newer,
+    faster one silently overwrote it — a correctly-settled "ended" state
+    reverting back to "running" a few seconds later, even though the data
+    was never wrong at any single instant, only applied out of order.
+    Fixed with a monotonic sequence number that drops a call's own result
+    once a later call has started. Registry #90.
+- **`db.system_sample_insert` silently crashed on every local-host sample**
+  (`sqlite3.ProgrammingError: type 'dict' is not supported`, hundreds of
+  times a day; no local system stats were being recorded at all). A stale
+  three-argument duplicate of the function, left behind by the
+  `db.py` → `routes/db_usage.py` split, shadowed the correct
+  one-dict-argument version for any caller going through `db.` rather than
+  `routes.db_usage.` directly — including `sysstats.py`'s background loop.
+  It also intermittently broke unrelated concurrent requests sharing the
+  same aiosqlite worker thread. Removed the dead duplicate (and its
+  unused read-side twin, `system_sample_list`). Registry #91.
+- **`app.js` was loaded as three disconnected module instances at once**
+  (`?v=35` from `index.html`, `?v=34` from six panel modules, `?v=32` from
+  `supervisor.js`) — a version drift a dedicated test exists to catch
+  (`test_qa_asset_module_versions.py`), already failing before this
+  release. The browser keys an ES module by its resolved URL including the
+  query string, so Skills, Machines, Supervisor, Usage and the other
+  affected panels were reading and writing an inert, disconnected copy of
+  `app.js`'s shared `state`, not the one actually driving the page. Every
+  reference now points at the same version. Registry #92.
+
 ## [0.12.1] — 2026-09-05
 
 ### Added

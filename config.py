@@ -191,7 +191,7 @@ TURN_RETRY_MAX = _int("WC_TURN_RETRY_MAX", 2)
 TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.12.1"
+VERSION = "WebConsole_0.12.2"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

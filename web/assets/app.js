@@ -495,8 +495,6 @@ function updateCurrentUi(chat) {
   byId('composerChatName').textContent = chat.title;
   byId('composerChatName').title = chat.title;
   byId('workspaceStrip').style.display = 'flex';
-  byId('workspacePath').textContent = chat.work_dir;
-  byId('workspacePath').title = chat.work_dir;
   byId('editChatBtn').hidden = false;
   // Only a chat linked to a CLI session has a transcript to refresh from.
   byId('syncBtn').hidden = !chat.session_id;

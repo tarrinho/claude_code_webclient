@@ -194,7 +194,6 @@ button{touch-action:manipulation}
 .ver{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 #menuBtn{display:inline-flex;align-items:center;justify-content:center}
 .workspace-strip{min-height:34px;padding:6px 16px;display:none;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
-.workspace-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* The last request, directly under the strip and visually part of it: the strip
    loses its own bottom border while this is showing, so the two read as one bar
    rather than two stacked ones. minmax(0,1fr) plus the ellipsis is what keeps a

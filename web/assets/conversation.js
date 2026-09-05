@@ -190,6 +190,47 @@ export function renderSafeText(container, text) {
 // than of the code.
 let _lastCommandTimer = null;
 
+// ── Turn-duration estimate, per chat ─────────────────────────────────────
+// A running turn has no signal for "N% done" from the CLI itself -- a single
+// `claude -p` call reports nothing until it finishes. So this is elapsed
+// time divided by how long this chat's own past turns typically took, the
+// only basis available that is not invented outright. Shown as elapsed time
+// alone until there is at least one finished turn in this chat to estimate
+// from, and always labelled "(est.)" once it is -- never presented as a
+// measurement. Same reasoning and shape as the supervisor pane's identical
+// feature (web/assets/supervisor/tasks.js's _progressView).
+//
+// Kept in memory only, per chat id, for this page load -- there is no
+// server-side average to fall back on without a new query, and matching the
+// supervisor version's own choice keeps the two consistent.
+const _TURN_HISTORY_MAX = 20;
+const _turnDurationsByChat = new Map(); // chatId -> number[] (seconds)
+
+function _recordTurnDuration(chatId, seconds) {
+  if (!chatId || !(seconds > 0)) return;
+  const list = _turnDurationsByChat.get(chatId) || [];
+  list.push(seconds);
+  if (list.length > _TURN_HISTORY_MAX) list.shift();
+  _turnDurationsByChat.set(chatId, list);
+}
+
+function _estimatedTurnPct(chatId, elapsedSeconds) {
+  const list = _turnDurationsByChat.get(chatId);
+  if (!list || !list.length) return null;
+  const avg = list.reduce((a, b) => a + b, 0) / list.length;
+  if (!(avg > 0)) return null;
+  // Clamped so it never claims 100 -- that is reserved for a turn the
+  // server has actually finished.
+  return Math.min(99, Math.round((elapsedSeconds / avg) * 100));
+}
+
+// Ticks the composer status once a second while a turn is active, so the
+// elapsed/estimate suffix counts up between renders instead of only
+// updating on the next stream event. Module scope and guarded like
+// `_lastCommandTimer` above, for the same reason: a bare `setInterval` here
+// would double if this factory ever ran twice.
+let _turnTicker = null;
+
 export function createConversationController(dependencies) {
   const {
     state,
@@ -261,6 +302,37 @@ export function createConversationController(dependencies) {
     return `Finished · ${minutes}m ${seconds % 60}s`;
   }
 
+  // " · 12s" while there is no history for this chat yet, or " · 43% (est.)"
+  // once there is. Empty once the turn has no start time or no chat is open.
+  function _turnProgressSuffix() {
+    const chatId = state.currentChat?.id;
+    if (!turnStartedAt || !chatId) return '';
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - turnStartedAt) / 1000));
+    const pct = _estimatedTurnPct(chatId, elapsedSeconds);
+    if (pct !== null) return ` · ${pct}% (est.)`;
+    if (elapsedSeconds < 60) return ` · ${elapsedSeconds}s`;
+    const minutes = Math.floor(elapsedSeconds / 60);
+    return ` · ${minutes}m ${elapsedSeconds % 60}s`;
+  }
+
+  // The base label (e.g. "Responding…", or a retry's custom detail) without
+  // the progress suffix, so the ticker below can re-append a fresh suffix
+  // every second without losing whatever the last real status event said.
+  let _lastActiveLabel = '';
+
+  function _renderComposerStatusWithProgress() {
+    elements.composerStatus.textContent = _lastActiveLabel + _turnProgressSuffix();
+  }
+
+  function _manageTurnTicker(active) {
+    if (active && !_turnTicker) {
+      _turnTicker = setInterval(_renderComposerStatusWithProgress, 1000);
+    } else if (!active && _turnTicker) {
+      clearInterval(_turnTicker);
+      _turnTicker = null;
+    }
+  }
+
   function setStreamState(next, detail = '') {
     const previous = state.streamState;
     state.streamState = next;
@@ -274,10 +346,24 @@ export function createConversationController(dependencies) {
     // how long it ran -- but only on the way DOWN from an active state, or
     // merely opening a conversation would claim something had just completed.
     if (next === 'ready') {
+      // Recorded here, not only where the turn's own success path already
+      // knows it succeeded: `attach()`'s reattach-and-follow path also lands
+      // on 'ready' from an active state, with no separate "it succeeded" hook
+      // of its own -- and a genuinely finished turn is exactly what a real
+      // duration sample should come from, wherever the transition is driven
+      // from. `stopped`/`failed` are different next-states, so they never
+      // reach here.
+      if (ACTIVE_STATES.has(previous) && turnStartedAt && state.currentChat?.id) {
+        _recordTurnDuration(
+          state.currentChat.id,
+          Math.round((Date.now() - turnStartedAt) / 1000),
+        );
+      }
       elements.composerStatus.textContent =
         ACTIVE_STATES.has(previous) ? finishedLabel() : '';
     } else {
-      elements.composerStatus.textContent = label;
+      _lastActiveLabel = label;
+      elements.composerStatus.textContent = label + _turnProgressSuffix();
     }
     const active = ACTIVE_STATES.has(next);
     // Stamped only on the transition INTO activity, so a turn that moves
@@ -287,6 +373,7 @@ export function createConversationController(dependencies) {
     // a clearing line would be code no test could ever justify -- mutation
     // testing removed one and nothing failed.
     if (active && !ACTIVE_STATES.has(previous)) turnStartedAt = Date.now();
+    _manageTurnTicker(active);
     elements.sendButton.classList.toggle('stop', active);
     elements.sendButton.textContent = active ? '■' : '➜';
     elements.sendButton.setAttribute('aria-label', active ? 'Stop response' : 'Send message');

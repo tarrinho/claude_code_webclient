@@ -161,18 +161,17 @@ class FrontendStructureTests(unittest.TestCase):
         # Hidden unless the open chat actually has a transcript behind it.
         self.assertIn("byId('syncBtn').hidden = !chat.session_id", self.app)
 
-    def test_conversation_name_precedes_its_directory(self):
-        """Name then location, on one line, in that order.
+    def test_conversation_name_shows_in_the_strip(self):
+        """The name used to be the topbar <h1>; it now lives in the strip.
 
-        The name used to be the topbar <h1> while the directory sat in the
-        strip below, so the two were never read together.
+        The directory used to be shown right after it (workspacePath), so the
+        two would be read together -- removed at the user's request, since
+        the workspace path is not something a reader of the strip needs.
         """
         self.assertIn('id="workspaceName"', self.html)
-        self.assertLess(
-            self.html.index('id="workspaceName"'),
-            self.html.index('id="workspacePath"'),
-        )
+        self.assertNotIn('id="workspacePath"', self.html)
         self.assertIn("byId('workspaceName').textContent = chat.title", self.app)
+        self.assertNotIn("workspacePath", self.app)
 
     def test_topbar_keeps_the_product_name(self):
         """It no longer swaps to the conversation title, which moved down."""
@@ -393,6 +392,24 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("lastAttempt", self.conversation)
         self.assertIn("Jump to latest", self.html)
         self.assertIn("area.scrollHeight - area.scrollTop - area.clientHeight", self.conversation)
+
+    def test_turn_progress_estimate_matches_the_supervisor_pattern(self):
+        """Elapsed time until this chat has history, an estimated % after --
+        same honest-fallback shape as the supervisor pane's per-task version,
+        never presented as a real measurement."""
+        self.assertIn("_estimatedTurnPct", self.conversation)
+        self.assertIn("_recordTurnDuration", self.conversation)
+        self.assertIn("(est.)", self.conversation)
+        # Clamped so it never claims a turn is 100% done before the server
+        # has actually said so.
+        self.assertIn("Math.min(99,", self.conversation)
+        # Per chat id, not global -- a different conversation's history must
+        # not leak into this one's estimate.
+        self.assertIn("_turnDurationsByChat", self.conversation)
+        # Guarded like the file's other module-scope timer, so a second call
+        # to the factory cannot double it.
+        self.assertIn("let _turnTicker = null;", self.conversation)
+        self.assertIn("clearInterval(_turnTicker)", self.conversation)
 
     def test_safe_rendering_and_mobile_css(self):
         self.assertIn("document.createTextNode", self.conversation)

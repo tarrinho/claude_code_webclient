@@ -205,9 +205,6 @@ button{touch-action:manipulation}
 .changelog-chapter .cl-items{list-style:none;padding-left:0}
 .changelog-chapter .cl-items li{padding:2px 0 2px 12px;position:relative;color:var(--fg)}
 .changelog-changelog-backdrop{position:fixed;inset:0;z-index:199}
-/* Login version */
-.login-ver{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);text-align:center;margin-top:20px;cursor:pointer;user-select:none;transition:color .15s}
-.login-ver:hover{color:var(--fg)}
 #menuBtn{display:inline-flex;align-items:center;justify-content:center}
 .workspace-strip{min-height:34px;padding:6px 16px;display:none;align-items:center;gap:8px;border-bottom:1px solid var(--line);background:var(--bg);color:var(--muted);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 /* The last request, directly under the strip and visually part of it: the strip

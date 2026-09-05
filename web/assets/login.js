@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', function() {
   if (form) form.addEventListener('submit', handleLogin);
   var toggle = document.getElementById('themeToggle');
   if (toggle) toggle.addEventListener('click', toggleTheme);
-  // Just show the version number at the bottom
+  // Version number at the bottom — fetched from changelog API
   fetch('/api/changelog')
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -13,10 +13,10 @@ document.addEventListener('DOMContentLoaded', function() {
       if (el && Array.isArray(data) && data.length) {
         el.textContent = data[0].version;
       } else {
-        el.textContent = 'WebConsole';
+        el.textContent = '—';
       }
     })
-    .catch(function() { document.getElementById('loginVer').textContent = 'WebConsole'; });
+    .catch(function() { document.getElementById('loginVer').textContent = '—'; });
 });
 
 function toggleTheme() {

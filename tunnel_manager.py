@@ -52,8 +52,8 @@ async def start(store_fn, _now_fn=None) -> None:
     # that calls start(), so awaiting it here would deadlock.
     try:
         import sqlite3
-        import db as _db
-        db_path = str(_db.db_path) if _db.db_path else "/dev/null"
+        import config
+        db_path = config.DB_PATH if config.DB_PATH else "/dev/null"
         scan_conn = sqlite3.connect(":memory:")
         scan_conn.execute("ATTACH DATABASE ? AS target", (db_path,))
         cursor = scan_conn.execute(

@@ -374,6 +374,106 @@ Port reclaim matches on the listening pid's command line, never on a pattern.
 `pkill -f "uvicorn app:app"` matches every test server on the machine, and since
 `launch.sh` runs on each restart, one restart swept them all.
 
+### 2.8 Model Backend Routing — every path to `claude`
+
+There is exactly one mechanism that reaches a model: spawn the `claude` CLI
+with different arguments and environment. There is no second transport, no
+SDK call, no direct HTTP client to a model provider anywhere in this codebase
+— every route below ends at the same binary, configured differently. The
+console reaches it through two competing spawn points; a terminal reaches it
+through a third. All three resolve environment through the same pure function,
+`backend_env.deltas`, so "which backend" is answered once and consumed three
+times rather than reimplemented three times.
+
+```mermaid
+flowchart TB
+    subgraph Console["WebConsole turn (browser-initiated)"]
+        Runner["runner.py<br/>PROXY_ENABLED?"]
+        ProxySpawn["claude_proxy.py<br/>_backend_env()"]
+        DirectSpawn["runner._build_cmd_direct<br/>_build_env()"]
+    end
+
+    subgraph Terminal["Terminal session (typed by hand)"]
+        PathLookup["shell resolves `claude`<br/>on PATH"]
+        Alias["~/.bashrc alias<br/>(shells started after setup)"]
+        Shim["~/.local/bin/claude<br/>= bin/claude-shim.sh<br/>(shells started before setup —<br/>bash cached this path)"]
+        Wrapper["bin/wc-claude.sh<br/>resolve_claude_bin + resolve_backend"]
+    end
+
+    subgraph Truth["Single source of routing truth"]
+        Deltas["backend_env.deltas(machine)<br/>pure — no env read, no DB, no I/O"]
+        DB[("ai_machines table<br/>owner_id · provider · base_url<br/>api_key · model · active_models")]
+    end
+
+    subgraph Backends["Where a turn actually lands"]
+        Anthropic["api.anthropic.com<br/>ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY"]
+        Gateway["AI Machine gateway<br/>OPENAI_BASE_URL + OPENAI_API_KEY + OPENAI_MODEL_NAME"]
+    end
+
+    CLI(["claude CLI<br/>-p --output-format stream-json<br/>--dangerously-skip-permissions<br/>--model … --resume &lt;uuid&gt; -- &lt;prompt&gt;"])
+
+    Runner -->|PROXY_ENABLED=True, deployed default| ProxySpawn
+    Runner -->|PROXY_ENABLED=False, legacy| DirectSpawn
+    ProxySpawn --> CLI
+    DirectSpawn --> CLI
+
+    PathLookup --> Alias
+    PathLookup --> Shim
+    Alias --> Wrapper
+    Shim -->|"-p/--print/--version/--help/subcommands:<br/>pass straight through, already routed"| CLI
+    Shim -->|"plain interactive session"| Wrapper
+    Shim -.->|"wrapper file missing"| CLI
+    Wrapper --> CLI
+
+    ProxySpawn -.->|get_backend chat_id, owner| DB
+    DirectSpawn -.->|get_backend chat_id, owner| DB
+    Wrapper -.->|"sqlite3, read-only —<br/>never opened read-write from a 2nd process"| DB
+
+    ProxySpawn --> Deltas
+    DirectSpawn --> Deltas
+    Wrapper -->|"eval \$(wc-backend-env.py --sh)"| Deltas
+
+    Deltas -->|provider == anthropic| Anthropic
+    Deltas -->|otherwise| Gateway
+    CLI -.->|env set by whichever spawn point ran| Anthropic
+    CLI -.->|env set by whichever spawn point ran| Gateway
+
+    style Console fill:#4A90D9,stroke:#2C5F8A,color:#fff
+    style Terminal fill:#E8F4FD,stroke:#4A90D9,color:#000
+    style Truth fill:#FFF3E0,stroke:#D97A2C,color:#000
+    style Backends fill:#FDE8E8,stroke:#8A2C2C,color:#000
+    style CLI fill:#2C5F8A,stroke:#16324a,color:#fff
+```
+
+**Why the shim exists at all.** `~/.local/bin/claude` is not the CLI — it is
+`bin/claude-shim.sh`. A shell's own alias table cannot be edited from outside
+it, and a shell that was already running when the wrapper was installed keeps
+whatever `claude` meant when it started. But bash caches the *resolved path*
+of a command, not the alias, and `~/.local/bin` is first on `PATH` — so an
+old shell picks up routing on its next invocation of `claude` without
+re-reading anything. The shim passes non-interactive invocations (`-p`,
+`--version`, subcommands) straight to the real binary, because those are
+already configured by whichever spawn point launched them; routing them
+through the wrapper too would add a database read to the turn hot path for no
+benefit.
+
+**Why the environment is deltas, not a finished dict.** Three callers need
+the same answer in three different shapes — the proxy copies the whole
+parent environment and applies deltas to it, the direct runner builds from an
+allowlist and applies the same deltas, and the shell wrapper cannot replace
+an interactive environment at all, only `export`/`unset` onto it. Only the
+*removals* — dropping an inherited `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+or `CLAUDE_CODE_SIMPLE` left over from a previous backend — survive being
+expressed all three ways, which is why `backend_env.deltas` exists as one
+function instead of a rule copied by hand into three files (registry #68:
+the copies disagreed, and a turn silently reached the wrong account).
+
+**Credentials never appear on a command line.** `/proc/<pid>/cmdline` is
+world-readable, so every environment-resolution path reads the API key from
+the `ai_machines` table itself — `get_backend()` for the two console spawn
+points, a direct `sqlite3` read (read-only, always) for the terminal wrapper
+— rather than accepting it as an argument.
+
 ---
 
 ## 3. Component Breakdown

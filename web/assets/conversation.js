@@ -478,7 +478,7 @@ export function createConversationController(dependencies) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'load-more-btn';
-    btn.textContent = `Load ${MESSAGE_PAGE_SIZE} more`;
+    btn.textContent = `Load Previous ${MESSAGE_PAGE_SIZE}`;
     btn.addEventListener('click', loadOlderMessages);
     wrap.appendChild(btn);
     return wrap;

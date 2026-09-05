@@ -31,7 +31,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import config
 import db
@@ -205,7 +205,7 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
             "error_msg": None, "connected_at": None, "last_check": None,
         }
 
-        ok, ssh_client, transport, local_port, ssh_port = (
+        ok, ssh_client, transport, local_port, ssh_port, forward_server = (
             await tunnel_manager_ssh.connect(machine_id)
         )
         self.assertFalse(ok)
@@ -215,6 +215,78 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
             f"expected a key-not-found failure (proving ssh_host/"
             f"ssh_key_path were read correctly), got: {state.get('error_msg')!r}",
         )
+
+    async def test_connect_success_path_returns_a_live_forward_server(self):
+        """The failure-path test above never exercises the code after a
+        successful ssh_client.connect() -- it deliberately points at a key
+        that does not exist so it fails before reaching that far. That left
+        the whole success path -- get_transport(), start_forward(), and the
+        5-vs-6-element return tuple -- with no unit coverage at all: a sed
+        that reverted the tuple to 5 elements and dropped start_forward()
+        entirely still passed every test in this file, caught only by
+        test_ssh_tunnel_forward.py (which tests tunnel_manager_forward.py in
+        isolation, never through connect()) and by a real live SSH session.
+
+        No real SSH server is reachable from a test, so paramiko.SSHClient
+        itself is faked -- connect() and get_transport() only, nothing else
+        about paramiko's behaviour -- while everything from get_transport()
+        onward (start_forward, the returned tuple shape) runs for real.
+        """
+        import tunnel_manager_forward
+        import tunnel_manager_ssh
+
+        key_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(key_dir.cleanup)
+        key_path = Path(key_dir.name) / "id_ed25519"
+        key_path.write_text("not a real key -- connect() is faked below\n")
+        key_path.chmod(0o600)
+
+        machine_id = "o" * 32
+        await db.ai_machine_create(
+            machine_id, "Fake Success Test", "", 0, None,
+            "claude-sonnet-5", None, None, "admin",
+            provider="ssh_proxy",
+            ssh_host="host.invalid",
+            ssh_user="kali",
+            ssh_key_path=str(key_path),
+        )
+        await db.ssh_tunnel_create(machine_id=machine_id, local_port=19002)
+
+        # Plain Mock, not AsyncMock: ssh_client.connect/get_transport/close
+        # are all called synchronously here (connect() itself only reaches
+        # them via asyncio.to_thread, which runs a sync callable in a
+        # worker thread -- an AsyncMock's __call__ is sync but *returns* an
+        # unawaited coroutine object, which is the wrong shape entirely).
+        fake_transport = MagicMock()  # only .close() is ever called on it here
+        fake_client = MagicMock()
+        fake_client.get_transport = lambda: fake_transport
+
+        forward_server = None
+        try:
+            with patch("paramiko.SSHClient", return_value=fake_client):
+                ok, ssh_client, transport, local_port, ssh_port, forward_server = (
+                    await tunnel_manager_ssh.connect(machine_id)
+                )
+
+            self.assertTrue(ok, "connect() reported failure against a faked "
+                             "successful paramiko session")
+            self.assertIs(ssh_client, fake_client)
+            self.assertIs(transport, fake_transport)
+            self.assertIsNotNone(
+                forward_server,
+                "start_forward() was not called (or its result was not "
+                "returned) on the success path",
+            )
+            # Proves it is a real, running forwarder -- not just a non-None
+            # placeholder -- by connecting to the port it actually bound.
+            import socket
+            with socket.create_connection(
+                ("127.0.0.1", local_port), timeout=2
+            ):
+                pass
+        finally:
+            if forward_server is not None:
+                tunnel_manager_forward.stop_forward(forward_server)
 
 
 if __name__ == "__main__":

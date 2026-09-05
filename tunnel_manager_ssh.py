@@ -16,6 +16,7 @@ import socket
 import time
 
 import tunnel_manager
+import tunnel_manager_forward
 
 _log = logging.getLogger("wc.tunnel.ssh")
 
@@ -79,7 +80,11 @@ class _PinnedHostKeyPolicy:
 async def connect(machine_id: str):
     """Attempt SSH connect + port forward for *machine_id*.
 
-    Returns (ok, ssh_client, transport, local_port, ssh_port).
+    Returns (ok, ssh_client, transport, local_port, ssh_port, forward_server).
+    forward_server is the tunnel_manager_forward server actually bridging
+    127.0.0.1:local_port to claude_proxy.py on the remote side; the caller
+    must hold onto it and pass it to tunnel_manager_forward.stop_forward()
+    on disconnect, or the forwarding thread and its bound port both leak.
     """
     import paramiko
 
@@ -131,7 +136,7 @@ async def connect(machine_id: str):
         local_port = await _find_available_port()
     except Exception as exc:
         _fail(machine_id, str(exc))
-        return (False, None, None, 0, 0)
+        return (False, None, None, 0, 0, None)
 
     stored_fingerprint = machine.get("ssh_host_key_fingerprint", "")
     policy = _PinnedHostKeyPolicy(stored_fingerprint)
@@ -174,12 +179,34 @@ async def connect(machine_id: str):
         if not transport:
             ssh_client.close()
             return _fail(machine_id, "no transport after connect")
-        transport.request_port_forward("127.0.0.1", local_port)
+        # This is `-L <local_port>:127.0.0.1:<config.PROXY_PORT>` -- forward
+        # a local port to claude_proxy.py's own default bind address on the
+        # *remote* side. Assumes the remote machine's claude_proxy.py binds
+        # the same default port this codebase does everywhere else, since
+        # there is no per-machine "remote proxy port" setting to read
+        # instead (confirmed live against the one ssh_proxy machine
+        # configured today: claude_proxy.py was already running there,
+        # `127.0.0.1:9000`, matching config.PROXY_PORT's own default).
+        #
+        # transport.request_port_forward(...) used to sit here instead --
+        # paramiko's *remote* forwarding request (`-R`), the wrong
+        # direction, and never given a handler either, so it did nothing
+        # at all: nothing was ever bound to listen on 127.0.0.1:local_port
+        # on this host, which is what runner.get_proxy_target() actually
+        # connects to. A real turn through a real, fully-connected tunnel
+        # failed immediately with "Cannot connect to proxy at
+        # 127.0.0.1:<port>" -- confirmed live, tunnel state="connected"
+        # the whole time.
+        import config
+
+        forward_server = tunnel_manager_forward.start_forward(
+            transport, local_port, "127.0.0.1", config.PROXY_PORT,
+        )
     except Exception as exc:
         ssh_client.close()
         return _fail(machine_id, str(exc)[:200])
 
-    return (True, ssh_client, transport, local_port, ssh_port)
+    return (True, ssh_client, transport, local_port, ssh_port, forward_server)
 
 
 def _check_key_permissions(key_path: str) -> str:
@@ -256,7 +283,7 @@ def _fail(machine_id: str, error_msg: str):
         state["state"] = "error"
         state["error_msg"] = error_msg
         state["last_check"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    return (False, None, None, 0, 0)
+    return (False, None, None, 0, 0, None)
 
 
 async def test_ssh_connection(ssh_host: str, ssh_user: str, ssh_key_path: str):

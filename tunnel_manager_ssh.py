@@ -80,32 +80,30 @@ class _PinnedHostKeyPolicy:
 async def connect(machine_id: str):
     """Attempt SSH connect + port forward for *machine_id*.
 
-    Returns (ok, ssh_client, transport, local_port, ssh_port, forward_server).
-    forward_server is the tunnel_manager_forward server actually bridging
-    127.0.0.1:local_port to claude_proxy.py on the remote side; the caller
-    must hold onto it and pass it to tunnel_manager_forward.stop_forward()
-    on disconnect, or the forwarding thread and its bound port both leak.
+    Returns (ok, ssh_client, transport, local_port, ssh_port, forward_server,
+    transport_id). forward_server is the tunnel_manager_forward server
+    actually bridging 127.0.0.1:local_port to claude_proxy.py on the remote
+    side; the caller must hold onto it and pass it to
+    tunnel_manager_forward.stop_forward() on disconnect, or the forwarding
+    thread and its bound port both leak.
+
+    Several machines can share one *transport_id* -- reach the same remote
+    host once, offer multiple backends over it. The second (and later)
+    machine to connect on an already-live transport skips the SSH handshake
+    entirely and only opens its own local port forward over the existing
+    connection; ssh_client/transport returned are the *same objects* every
+    sharing machine gets, so tunnel_manager._release_machine's refcounting
+    (not this function) decides when the underlying connection actually
+    closes.
     """
     import paramiko
 
     import db
 
-    # ssh_tunnels only carries tunnel bookkeeping (state, ports, owner_id) --
-    # ssh_host/ssh_user/ssh_key_path live on ai_machines, the table the
-    # Settings form actually writes them to. Reading them from the tunnel
-    # row (a sqlite3.Row, whose .get() doesn't exist either -- indexing or
-    # dict() is what it supports) meant every field defaulted to "" and
-    # connect() always failed with "ssh_host is empty" -- when it managed
-    # to run at all, which needed the four other bugs found alongside this
-    # one already fixed first (the tunnel row wasn't even being created
-    # until then). ai_machine_get needs owner_id for its own scoping check,
-    # which the tunnel row does carry (ssh_tunnels.owner_id, set at
-    # creation from the authenticated request that started the tunnel).
     try:
         tunnel_row = await db.ssh_tunnel_get(machine_id)
     except Exception:
         return _fail(machine_id, "no tunnel row")
-
     if not tunnel_row:
         return _fail(machine_id, "no tunnel row")
 
@@ -113,15 +111,51 @@ async def connect(machine_id: str):
         machine = await db.ai_machine_get(machine_id, tunnel_row["owner_id"])
     except Exception:
         return _fail(machine_id, "no machine row")
-
     if not machine:
         return _fail(machine_id, "no machine row")
 
-    ssh_host = machine.get("ssh_host", "")
-    ssh_user = machine.get("ssh_user", "kali")
-    ssh_key_path = machine.get("ssh_key_path", "")
+    transport_id = machine.get("transport_id")
+    if not transport_id:
+        return _fail(machine_id, "machine has no transport_id")
+
+    try:
+        transport_row = await db.ssh_transport_get(transport_id, tunnel_row["owner_id"])
+    except Exception:
+        return _fail(machine_id, "no transport row")
+    if not transport_row:
+        return _fail(machine_id, "no transport row")
+
     ssh_port = tunnel_row["ssh_port"] if "ssh_port" in tunnel_row.keys() else 22
 
+    try:
+        local_port = await _find_available_port()
+    except Exception as exc:
+        _fail(machine_id, str(exc))
+        return (False, None, None, 0, 0, None, None)
+
+    import tunnel_manager
+    import config
+
+    shared = tunnel_manager._TRANSPORT_CONNECTIONS.get(transport_id)
+    if shared:
+        # Reuse: no new SSH handshake, just another forward channel over the
+        # already-live transport.
+        try:
+            forward_server = tunnel_manager_forward.start_forward(
+                shared["transport"], local_port, "127.0.0.1", config.PROXY_PORT,
+            )
+        except Exception as exc:
+            return _fail(machine_id, str(exc)[:200])
+        shared["refcount"] += 1
+        return (
+            True, shared["ssh_client"], shared["transport"], local_port,
+            ssh_port, forward_server, transport_id,
+        )
+
+    # No live connection for this transport yet: connect for real.
+    ssh_host = transport_row["ssh_host"]
+    ssh_user = transport_row["ssh_user"]
+    ssh_key_path = transport_row["ssh_key_path"]
     if not ssh_host:
         return _fail(machine_id, "ssh_host is empty")
     if not ssh_key_path:
@@ -132,13 +166,7 @@ async def connect(machine_id: str):
     except Exception as exc:
         return _fail(machine_id, str(exc))
 
-    try:
-        local_port = await _find_available_port()
-    except Exception as exc:
-        _fail(machine_id, str(exc))
-        return (False, None, None, 0, 0, None)
-
-    stored_fingerprint = machine.get("ssh_host_key_fingerprint", "")
+    stored_fingerprint = transport_row.get("ssh_host_key_fingerprint", "")
     policy = _PinnedHostKeyPolicy(stored_fingerprint)
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(policy)
@@ -154,24 +182,20 @@ async def connect(machine_id: str):
         ssh_client.close()
         if policy.mismatch:
             _log.warning(
-                "ssh_host_key_mismatch machine=%s expected=%s got=%s",
-                machine_id, policy.mismatch[0], policy.mismatch[1],
+                "ssh_host_key_mismatch transport=%s expected=%s got=%s",
+                transport_id, policy.mismatch[0], policy.mismatch[1],
             )
         return _fail(machine_id, str(exc)[:200])
 
     if policy.new_fingerprint:
-        # First-ever connection to this machine: pin what we just accepted
-        # so the *next* connection has something to compare against. A
-        # write failure here must not fail an otherwise-successful
-        # connect -- it only means TOFU has to happen again next time,
-        # not that anything is actually wrong right now.
         try:
-            await db.ai_machine_set_ssh_host_key_fingerprint(
-                machine_id, policy.new_fingerprint
+            await db.ssh_transport_set_host_key_fingerprint(
+                transport_id, policy.new_fingerprint
             )
         except Exception:
             _log.exception(
-                "could not persist ssh host key fingerprint for %s", machine_id
+                "could not persist ssh host key fingerprint for transport %s",
+                transport_id,
             )
 
     try:
@@ -179,26 +203,6 @@ async def connect(machine_id: str):
         if not transport:
             ssh_client.close()
             return _fail(machine_id, "no transport after connect")
-        # This is `-L <local_port>:127.0.0.1:<config.PROXY_PORT>` -- forward
-        # a local port to claude_proxy.py's own default bind address on the
-        # *remote* side. Assumes the remote machine's claude_proxy.py binds
-        # the same default port this codebase does everywhere else, since
-        # there is no per-machine "remote proxy port" setting to read
-        # instead (confirmed live against the one ssh_proxy machine
-        # configured today: claude_proxy.py was already running there,
-        # `127.0.0.1:9000`, matching config.PROXY_PORT's own default).
-        #
-        # transport.request_port_forward(...) used to sit here instead --
-        # paramiko's *remote* forwarding request (`-R`), the wrong
-        # direction, and never given a handler either, so it did nothing
-        # at all: nothing was ever bound to listen on 127.0.0.1:local_port
-        # on this host, which is what runner.get_proxy_target() actually
-        # connects to. A real turn through a real, fully-connected tunnel
-        # failed immediately with "Cannot connect to proxy at
-        # 127.0.0.1:<port>" -- confirmed live, tunnel state="connected"
-        # the whole time.
-        import config
-
         forward_server = tunnel_manager_forward.start_forward(
             transport, local_port, "127.0.0.1", config.PROXY_PORT,
         )
@@ -206,7 +210,10 @@ async def connect(machine_id: str):
         ssh_client.close()
         return _fail(machine_id, str(exc)[:200])
 
-    return (True, ssh_client, transport, local_port, ssh_port, forward_server)
+    tunnel_manager._TRANSPORT_CONNECTIONS[transport_id] = {
+        "ssh_client": ssh_client, "transport": transport, "refcount": 1,
+    }
+    return (True, ssh_client, transport, local_port, ssh_port, forward_server, transport_id)
 
 
 def _check_key_permissions(key_path: str) -> str:
@@ -283,7 +290,7 @@ def _fail(machine_id: str, error_msg: str):
         state["state"] = "error"
         state["error_msg"] = error_msg
         state["last_check"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    return (False, None, None, 0, 0, None)
+    return (False, None, None, 0, 0, None, None)
 
 
 async def test_ssh_connection(ssh_host: str, ssh_user: str, ssh_key_path: str):

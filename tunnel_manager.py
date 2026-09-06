@@ -22,6 +22,11 @@ import config
 _log = logging.getLogger("wc.tunnel_manager")
 
 _STATE: dict[str, dict] = {}
+# transport_id -> {"ssh_client", "transport", "refcount"}. Several machines
+# can share one live SSH connection when they reference the same
+# ai_machines.transport_id; this is the registry that makes the second (and
+# later) connect() calls reuse it instead of opening a new handshake.
+_TRANSPORT_CONNECTIONS: dict[str, dict] = {}
 _queue: asyncio.Queue = asyncio.Queue()
 _task: asyncio.Task | None = None
 _running: bool = False
@@ -173,13 +178,17 @@ def _handle_command(action: str, machine_id: str, now_fn=None) -> None:
 
 
 def _release_machine(machine_id: str) -> None:
-    """Release tunnel state dict entry and local port forward."""
+    """Release tunnel state dict entry and local port forward.
+
+    The forward server is always this machine's own -- always stopped. The
+    underlying SSH client/transport may be shared with other machines on the
+    same transport_id; only actually closed when this was the last one still
+    using it (refcount reaches zero).
+    """
     state = _STATE.pop(machine_id, None)
     if not state:
         return
     forward_server = state.get("forward_server")
-    ssh_client = state.get("ssh_client")
-    transport = state.get("transport")
     if forward_server:
         # Before the transport it forwards over: closing the transport
         # first would just make every in-flight forwarded connection error
@@ -187,6 +196,25 @@ def _release_machine(machine_id: str) -> None:
         import tunnel_manager_forward
         with contextlib.suppress(Exception):
             tunnel_manager_forward.stop_forward(forward_server)
+
+    transport_id = state.get("transport_id")
+    if not transport_id:
+        # No shared registry entry (e.g. a machine with no transport_id at
+        # all never went through it) -- close directly, same as before.
+        _close_ssh(state.get("transport"), state.get("ssh_client"))
+        return
+
+    shared = _TRANSPORT_CONNECTIONS.get(transport_id)
+    if not shared:
+        _close_ssh(state.get("transport"), state.get("ssh_client"))
+        return
+    shared["refcount"] -= 1
+    if shared["refcount"] <= 0:
+        _close_ssh(shared.get("transport"), shared.get("ssh_client"))
+        _TRANSPORT_CONNECTIONS.pop(transport_id, None)
+
+
+def _close_ssh(transport, ssh_client) -> None:
     if transport:
         with contextlib.suppress(Exception):
             transport.close()
@@ -240,7 +268,7 @@ def _try_connect(machine_id: str) -> None:
         from tunnel_manager_ssh import connect as _connect
 
         try:
-            ok, client, transport, local_port, ssh_port, forward_server = (
+            ok, client, transport, local_port, ssh_port, forward_server, transport_id = (
                 await _connect(machine_id)
             )
             if ok:
@@ -254,6 +282,7 @@ def _try_connect(machine_id: str) -> None:
                     "local_port": local_port,
                     "ssh_port": ssh_port,
                     "forward_server": forward_server,
+                    "transport_id": transport_id,
                     "connected_at": now,
                     "last_check": now,
                     "error_msg": None,

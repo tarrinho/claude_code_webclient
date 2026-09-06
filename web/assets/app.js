@@ -10,6 +10,7 @@ import {createChatListController} from './chat-list.js?v=3';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=5';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './supervisor.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
+import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=1';
 
 // Exported for supervisor.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -340,6 +341,7 @@ async function saveSettings(event) {
     if (webconsoleUrl !== _loadedSettings?.webconsole_url) {
       body.webconsole_url = webconsoleUrl || '';
     }
+    collectVoiceSettingsFields(body, _loadedSettings);
     if (!Object.keys(body).length) {
       setStatus('No changes to save', 'success');
       save.disabled = false;
@@ -1520,6 +1522,7 @@ async function loadSettings() {
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
       if (data.webconsole_url) byId('webconsoleUrl').value = data.webconsole_url;
+      renderVoiceSettingsFields(data);
       // The global default is only a fallback for when no backend is active;
       // it is still worth offering in the picker.
       _modelOptions = [data.default_model];

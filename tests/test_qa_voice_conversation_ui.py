@@ -1,0 +1,32 @@
+"""tests/test_qa_voice_conversation_ui.py — markup/wiring for the voice
+conversation feature. Source-inspection style, matching
+tests/test_qa_auto_answer_ui.py exactly -- no browser needed for markup
+assertions (see tests/test_qa_voice_conversation_browser.py, Task 12, for
+the live-browser counterpart).
+"""
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB = ROOT / "web"
+ASSETS = WEB / "assets"
+
+
+class VoiceConversationUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (WEB / "index.html").read_text()
+
+    def test_voice_settings_rows_exist_in_app_tab(self):
+        panel = self.html.split('id="panelApp"')[1].split('</div>\n    </div>')[0]
+        self.assertIn('id="voiceModelSelect"', panel)
+        self.assertIn('id="voiceSpeechRate"', panel)
+
+    def test_voice_settings_js_is_loaded(self):
+        self.assertIn('voice-settings.js', self.html)
+
+    def test_voice_settings_js_file_stays_under_300_lines(self):
+        content = (ASSETS / "voice-settings.js").read_text()
+        self.assertLess(len(content.splitlines()), 300)

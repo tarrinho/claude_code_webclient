@@ -224,32 +224,41 @@ async def init_probe_remote(req: Request):
 
 # ── Machine test extension ──────────────────────────────────────────────
 
-@router.post("/api/machines/{machine_id}/test")
-async def machine_test(machine_id: str, req: Request):
-    """Test machine connectivity, extended for ssh_proxy."""
-    user = _user(req)
+async def ssh_proxy_test_result(machine_id: str, provider: str) -> dict:
+    """The tunnel half of POST /api/machines/{id}/test, for an ssh_proxy.
+
+    Deliberately not a route. It used to carry its own
+    ``@router.post("/api/machines/{machine_id}/test")``, which is the same
+    path routes/machines.py registers, and app.py includes this router first.
+    Starlette matches the first route whose path and method fit and never
+    consults a second, so the duplicate did not conflict, warn, or fail at
+    startup -- it silently won, and routes.machines.handle_machine_test was
+    unreachable code that still looked live in its own module.
+
+    What that cost: the Test button never tested anything except an ssh_proxy.
+    Every other provider fell through to a branch that returned
+    ``{"status": "configured"}`` -- a description of the database row, not a
+    probe of the endpoint -- with no ``ok`` key at all. The frontend keys on
+    ``ok`` and falls back to ``status`` for the reason, so a healthy gateway
+    reported "Could not reach llm.ai-machine.cfappsecurity.com:443:
+    configured", which reads as a network failure and is not one.
+
+    Now there is one route, in routes/machines.py, which calls this for the
+    provider it applies to. The tunnel logic stays in the module that owns
+    tunnels; the routing decision stays in the module that owns the endpoint.
+    """
     from tunnel_manager import tunnel_status
 
-    machine = await db.ai_machine_get(machine_id, user)
-    if not machine:
-        raise HTTPException(status_code=404, detail="machine not found")
-
-    provider = machine.get("provider", "")
     result = {"provider": provider}
-
-    if provider == "ssh_proxy":
-        status = await tunnel_status(machine_id)
-        result["tunnel_up"] = bool(status.get("tunnel_up", 0)) if status else False
-        result["proxy_ok"] = bool(status.get("proxy_ok", 0)) if status else False
-        if status and status.get("tunnel_up"):
-            result["local_port"] = status.get("local_port", 0)
-            result["status"] = "connected" if status.get("proxy_ok") else "connecting"
-        else:
-            result["status"] = "no_tunnel"
-            error = status.get("error_msg") if status else None
-            if error:
-                result["error"] = error
+    status = await tunnel_status(machine_id)
+    result["tunnel_up"] = bool(status.get("tunnel_up", 0)) if status else False
+    result["proxy_ok"] = bool(status.get("proxy_ok", 0)) if status else False
+    if status and status.get("tunnel_up"):
+        result["local_port"] = status.get("local_port", 0)
+        result["status"] = "connected" if status.get("proxy_ok") else "connecting"
     else:
-        result["status"] = "configured"
-
+        result["status"] = "no_tunnel"
+        error = status.get("error_msg") if status else None
+        if error:
+            result["error"] = error
     return result

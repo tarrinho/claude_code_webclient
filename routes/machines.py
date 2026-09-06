@@ -75,7 +75,7 @@ _MACHINE_TEXT_FIELDS = (
 
 # How a machine is reached. 'anthropic' is the official API -- what Claude Code
 # talks to out of the box; 'proxy' is a host running claude_proxy.py.
-_MACHINE_PROVIDERS = {"anthropic", "proxy", "ssh_proxy"}
+_MACHINE_PROVIDERS = {"claude_code", "direct", "ssh_proxy"}
 
 
 _ANTHROPIC_PORT = 443
@@ -136,7 +136,7 @@ async def handle_machine_create(request: Request):
     session = request.state.session
     data = await request.json()
     name = (data.get("name") or "").strip()[:100]
-    provider = (data.get("provider") or "proxy").strip()
+    provider = (data.get("provider") or "claude_code").strip()
     if provider not in _MACHINE_PROVIDERS:
         raise HTTPException(status_code=400, detail="Unknown provider")
     base_url = (data.get("base_url") or "").strip() or None
@@ -144,9 +144,14 @@ async def handle_machine_create(request: Request):
     ssh_host = (data.get("ssh_host") or "").strip()
     ssh_user = (data.get("ssh_user") or "kali").strip()
     ssh_key_path = (data.get("ssh_key_path") or "").strip() or None
-    if provider == "anthropic":
+    if provider == "claude_code":
         base_url = base_url or config.ANTHROPIC_BASE_URL
         host = host or _base_url_host(base_url)
+        data.setdefault("port", _ANTHROPIC_PORT)
+    elif provider == "direct":
+        if not host:
+            raise HTTPException(status_code=400, detail="Host is required")
+        base_url = base_url or ("https://" + host)
         data.setdefault("port", _ANTHROPIC_PORT)
     try:
         port = int(data.get("port", 9000))
@@ -185,7 +190,7 @@ async def handle_machine_create(request: Request):
         _validate_host(host)
         data.setdefault("port", port)
     default_model = (
-        config.ANTHROPIC_MODEL if provider == "anthropic" else config.MODEL_NAME
+        config.ANTHROPIC_MODEL if provider == "claude_code" else config.MODEL_NAME
     )
     model = (data.get("model") or default_model).strip()
     if not _MODEL_RE.fullmatch(model):
@@ -479,7 +484,18 @@ async def handle_machine_test(request: Request, machine_id: str):
     machine = await db.ai_machine_get(machine_id, session["user"])
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
-    if machine.get("provider") == "anthropic":
+    provider = machine.get("provider")
+    if provider == "ssh_proxy":
+        # An ssh_proxy has no endpoint of its own to open a socket to: what
+        # "reachable" means for it is whether the tunnel is up and the proxy
+        # on the far side is answering. That lives in routes/machines_tunnel,
+        # which used to register this same path on its own router and, being
+        # included first, answered every machine test for every provider --
+        # see ssh_proxy_test_result for what that cost.
+        from routes.machines_tunnel import ssh_proxy_test_result
+
+        return JSONResponse(await ssh_proxy_test_result(machine_id, provider))
+    if provider == "claude_code":
         api_key = await db.ai_machine_api_key(machine_id, session["user"])
         return await _test_anthropic_endpoint(machine, api_key)
     host = machine["host"]
@@ -606,7 +622,7 @@ async def handle_models_list(request: Request):
         machine = await db.ai_machine_active(session["user"])
     if not machine:
         return _builtin_models("No machine is active.")
-    if machine.get("provider") != "anthropic":
+    if machine.get("provider") != "claude_code":
         return _builtin_models(
             "This is a Claude Code proxy, which does not publish a model list.",
             None,

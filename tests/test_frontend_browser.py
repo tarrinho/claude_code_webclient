@@ -1859,5 +1859,114 @@ class LoadMoreMessagesBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class QueuePanelBrowserTests(_BrowserFixture):
+    """The queue panel's held/pending badge, and its close/toggle controls.
+
+    Before this, the panel only ever showed itself automatically (rows.length
+    > 0) and had no way back out of sight without discarding a prompt or
+    leaving the conversation -- and the sidebar's count summed pending and
+    held into one number, so a chat with 3 held prompts (needing a Send/
+    Discard decision) looked identical to one with 3 healthy ones. Source
+    inspection cannot tell "the badge takes data-held from the API" from "it
+    is hardcoded no" -- both read the same in the file; only a seeded row and
+    a real render prove it.
+    """
+
+    DESKTOP = "#chatListDesktop"
+
+    def _seed_chat_with_queue(self, rows: list[tuple[str, str]]) -> str:
+        """rows: (prompt, state) pairs, state one of 'pending'/'held'."""
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"qp-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (chat_id, f"Queue {chat_id}", stamp, stamp),
+        )
+        con.executemany(
+            "INSERT INTO turn_queue (chat_id,owner_id,prompt,model,state,"
+            "created_at) VALUES (?,'admin',?,NULL,?,?)",
+            [(chat_id, prompt, state, stamp) for prompt, state in rows],
+        )
+        con.commit()
+        con.close()
+        return chat_id
+
+    def _open_chat(self, chat_id: str, timeout: int = 20_000):
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
+        self.page.wait_for_selector(row, timeout=timeout)
+        self.page.click(row)
+        self.page.wait_for_selector("#queueBar", state="visible", timeout=timeout)
+
+    def test_sidebar_badge_takes_the_held_colour_when_any_row_is_held(self):
+        chat_id = self._seed_chat_with_queue(
+            [("healthy", "pending"), ("broken", "held")]
+        )
+        self.page.reload(wait_until="domcontentloaded")
+        badge = self.page.wait_for_selector(
+            f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-queued',
+            timeout=20_000,
+        )
+        self.assertEqual(
+            badge.get_attribute("data-held"), "yes",
+            "a chat with one held row must render the held colour, not the "
+            "plain 'something is queued' one -- summed together they look "
+            "identical, which is the bug this exists to fix",
+        )
+        self.assertEqual(badge.inner_text(), "2")
+        self.assertEqual(self.errors, [])
+
+    def test_a_purely_pending_queue_does_not_get_the_held_colour(self):
+        chat_id = self._seed_chat_with_queue([("a", "pending"), ("b", "pending")])
+        self.page.reload(wait_until="domcontentloaded")
+        badge = self.page.wait_for_selector(
+            f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-queued',
+            timeout=20_000,
+        )
+        self.assertEqual(badge.get_attribute("data-held"), "no")
+        self.assertEqual(self.errors, [])
+
+    def test_close_hides_the_panel_but_the_toggle_survives_and_reopens_it(self):
+        chat_id = self._seed_chat_with_queue([("held one", "held")])
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.assertEqual(self.page.inner_text("#queueToggle"), "Queue (1)")
+        self.assertEqual(
+            self.page.get_attribute("#queueToggle", "data-held"), "yes",
+        )
+
+        self.page.click("#queueClose")
+        self.page.wait_for_selector("#queueBar", state="hidden", timeout=5_000)
+        # The whole point of adding the toggle: it must not disappear along
+        # with the panel it exists to reopen, or closing becomes one-way.
+        self.assertTrue(
+            self.page.is_visible("#queueToggle"),
+            "the toggle button hid itself along with the panel -- there is "
+            "now no way back in without reloading or leaving the chat",
+        )
+
+        self.page.click("#queueToggle")
+        self.page.wait_for_selector("#queueBar", state="visible", timeout=5_000)
+        self.assertEqual(self.errors, [])
+
+    def test_discarding_the_only_row_hides_both_the_panel_and_the_toggle(self):
+        chat_id = self._seed_chat_with_queue([("drop me", "held")])
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.page.click(".queue-btn-drop")
+        self.page.wait_for_selector("#queueBar", state="hidden", timeout=10_000)
+        self.assertFalse(
+            self.page.is_visible("#queueToggle"),
+            "nothing left queued, so the toggle has nothing to reopen -- it "
+            "must go away with the panel, not linger showing 'Queue (0)'",
+        )
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

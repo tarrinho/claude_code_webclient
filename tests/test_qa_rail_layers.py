@@ -14,7 +14,7 @@ ASSETS = Path(__file__).resolve().parents[1] / "web" / "assets"
 class RailLayersTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ASSETS / "supervisor" / "rail.js").read_text()
+        cls.source = (ASSETS / "orchestrator" / "rail.js").read_text()
 
     def test_compute_layers_is_exported_and_pure(self):
         self.assertIn("export function computeLayers(tasks)", self.source)

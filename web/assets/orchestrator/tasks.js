@@ -1,4 +1,4 @@
-// supervisor/tasks.js — the task tree, sending prompts, pause/resume.
+// orchestrator/tasks.js — the task tree, sending prompts, pause/resume.
 
 import { state } from "./state.js";
 import { apiFetch, formatTime } from "./api.js";
@@ -10,7 +10,7 @@ import { addLogEntry } from "./stream.js";
 import { renderRail } from "./rail.js";
 
   // `depends_on` arrives from the API as a JSON-encoded string, not an array:
-  // db_supervisors.supervisor_task_create stores it via json.dumps(deps or []),
+  // db_supervisors.orchestrator_task_create stores it via json.dumps(deps or []),
   // and loadTasks assigns the API response straight into state.tasks with no
   // transform. Confirmed against the real database -- every existing task's
   // column is literally the four-character string "[]". So `t.depends_on.map`
@@ -31,7 +31,7 @@ import { renderRail } from "./rail.js";
 
   // Seconds since `iso`, or null if `iso` does not parse. The one real,
   // observed number a running task has: the moment its DB row was last
-  // written to "running" (updated_at, stamped by supervisor_task_update).
+  // written to "running" (updated_at, stamped by orchestrator_task_update).
   function _elapsedSeconds(iso) {
     const started = Date.parse(iso);
     if (Number.isNaN(started)) return null;
@@ -56,7 +56,7 @@ import { renderRail } from "./rail.js";
   // Pedro asked to see the percentage moving, not just elapsed time. There is
   // still no CLI signal for "40% through this turn" -- a single claude -p call
   // reports nothing until it finishes -- so this is not a measurement, it is
-  // elapsed time divided by how long this supervisor's own finished tasks
+  // elapsed time divided by how long this orchestrator's own finished tasks
   // typically took, which is the only basis available that is not invented
   // outright. Labelled "(est.)" everywhere it is shown for that reason: this
   // codebase's own rule is to never report what was not observed, and an
@@ -110,7 +110,7 @@ import { renderRail } from "./rail.js";
   export function renderTaskTree() {
     renderRail(state.tasks);
     if (!state.tasks.length) {
-      el.taskTree.innerHTML = '<div class="empty-state">No tasks yet. Wait for the supervisor to create a plan.</div>';
+      el.taskTree.innerHTML = '<div class="empty-state">No tasks yet. Wait for the orchestrator to create a plan.</div>';
       state._expandedTaskId = null;
       if (state._tickTimer) {
         clearInterval(state._tickTimer);
@@ -121,7 +121,7 @@ import { renderRail } from "./rail.js";
     el.taskTree.innerHTML = state.tasks
       .map((t) => {
         // Escaped even though every value written to this field today is one
-        // of a handful of literals the supervisor engine's own control flow
+        // of a handful of literals the orchestrator engine's own control flow
         // assigns (never raw model output) -- rules.md's audit found it
         // interpolated unescaped and flagged it as a silent invariant gap: not
         // exploitable while that stays true, but nothing here enforces it, and
@@ -271,13 +271,13 @@ import { renderRail } from "./rail.js";
     showGoalBanner(text);
 
     try {
-      const data = await apiFetch("/api/supervisors/" + state.activeSupervisorId + "/send", {
+      const data = await apiFetch("/api/orchestrators/" + state.activeSupervisorId + "/send", {
         method: "POST",
         body: { prompt: text },
       });
 
       if (data.status === "planning") {
-        addLogEntry("plan", "Supervisor is planning...");
+        addLogEntry("plan", "Orchestrator is planning...");
         addChatMessage("system", "Analyzing your request and creating a plan...");
       }
 
@@ -286,7 +286,7 @@ import { renderRail } from "./rail.js";
         loadTasks();
       }, 1000);
 
-      // Also reload supervisor list to update status
+      // Also reload orchestrator list to update status
       loadSupervisors();
     } catch (e) {
       addChatMessage("system", "Error: " + e.message);
@@ -302,7 +302,7 @@ import { renderRail } from "./rail.js";
     if (!state.activeSupervisorId) return;
     try {
       const data = await apiFetch(
-        "/api/supervisors/" + state.activeSupervisorId + "/tasks"
+        "/api/orchestrators/" + state.activeSupervisorId + "/tasks"
       );
       state.tasks = data.tasks || [];
       renderTaskTree();
@@ -317,9 +317,9 @@ import { renderRail } from "./rail.js";
   }
 
   // ── Pause / Resume ──────────────────────────────────────────────────
-  // A supervisor that is planning or running can be put on hold and resumed
+  // A orchestrator that is planning or running can be put on hold and resumed
   // later. The button sits in the chat panel header because that is the
-  // place you look at while a supervisor is working; it shows the pause
+  // place you look at while a orchestrator is working; it shows the pause
   // symbol when paused so you know the opposite action is available.
   export function updatePauseResumeBtn(status) {
     if (!el.pauseResumeBtn) return;
@@ -347,7 +347,7 @@ import { renderRail } from "./rail.js";
       await apiFetch(`/api/supervisors/${encodeURIComponent(state.activeSupervisorId)}/${action}`, {
         method: "POST",
       });
-      // Refresh the supervisor so status and list update in one call.
+      // Refresh the orchestrator so status and list update in one call.
       await showActiveSupervisor();
     } catch (err) {
       alert(`Could not ${action}: ${err.message}`);

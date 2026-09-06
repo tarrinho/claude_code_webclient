@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple HTTPS server serving the supervisor mockup."""
+"""Simple HTTPS server serving the orchestrator mockup."""
 import http.server
 import os
 import ssl
@@ -15,7 +15,7 @@ ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
 print(f"Serving at https://kali-2.tail850c40.ts.net:{port}/")
-print(f"Browse the mockup: https://kali-2.tail850c40.ts.net:{port}/supervisor-layout-c-resizable.html")
+print(f"Browse the mockup: https://kali-2.tail850c40.ts.net:{port}/orchestrator-layout-c-resizable.html")
 print("Press Ctrl+C to stop.")
 httpd.ssl_context = ctx
 httpd.serve_forever()

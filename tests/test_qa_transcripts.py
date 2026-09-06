@@ -1222,8 +1222,8 @@ class FailedTurnDetectionTests(TranscriptRootMixin, unittest.TestCase):
     """A session retrying a dead endpoint reports busy and raised no alert.
 
     Pedro hit this: cweb5 sat on "API Error: 500 ... Retrying in 11s - attempt
-    9/10" and the supervisor showed nothing. Claude Code's status field said
-    busy the whole time -- correctly, it was retrying -- and the supervisor
+    9/10" and the orchestrator showed nothing. Claude Code's status field said
+    busy the whole time -- correctly, it was retrying -- and the orchestrator
     short-circuits on busy without reading the transcript at all, which is what
     keeps polling cheap. So a run going nowhere looked exactly like one doing
     work.

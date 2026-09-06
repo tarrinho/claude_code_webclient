@@ -11,7 +11,7 @@ So "bump the version everywhere it is required" is enforced here rather than
 remembered. `config.VERSION` is the source; everything below must match it.
 
 Deliberately **not** covered: statements of when something was introduced --
-``-- Supervisor orchestration tables (0.9.0)`` in db.py, and the module headers
+``-- Orchestrator orchestration tables (0.9.0)`` in db.py, and the module headers
 that say which release a file arrived in. Those are provenance and are correct
 as written; rewriting them on every bump would destroy the only record of when
 the code appeared.
@@ -32,9 +32,9 @@ ROOT = Path(__file__).resolve().parent.parent
 STATED = (
     ("ARCHITECTURE.md", r"^\*\*Version:\*\*\s*(\S+)"),
     ("web/index.html", r'<span class="ver" id="ver">([^<]+)</span>'),
-    ("web/supervisor.html", r"<title>Supervisor — WebConsole ([^<]+)</title>"),
-    ("web/supervisor.html", r'id="topbar-info">([^<]+)</span>'),
-    ("web/assets/supervisor/main.js", r'topbarInfo\.textContent\s*=\s*"([^"]+)"'),
+    ("web/orchestrator.html", r"<title>Orchestrator — WebConsole ([^<]+)</title>"),
+    ("web/orchestrator.html", r'id="topbar-info">([^<]+)</span>'),
+    ("web/assets/orchestrator/main.js", r'topbarInfo\.textContent\s*=\s*"([^"]+)"'),
 )
 
 

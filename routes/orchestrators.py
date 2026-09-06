@@ -1,4 +1,4 @@
-"""Routes for /api/supervisors: the supervisor list, its tasks, members and streams.
+"""Routes for /api/supervisors: the orchestrator list, its tasks, members and streams.
 
 Part of the 0.10.0 routes split. The cluster was measured: every function
 reached from a route with this prefix, closed over its private helpers.
@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import config
 import db
-import supervisor
+import orchestrator
 import transcripts
 import turns
 from classification import _classify_cli_session, _cli_maps, classify_chat
@@ -32,7 +32,7 @@ router = APIRouter()
 
 
 async def handle_supervisor(request: Request):
-    """GET /api/supervisor -- which agents are waiting on the user.
+    """GET /api/orchestrator -- which agents are waiting on the user.
 
     "Waiting" is unread: the agent produced output after the last time the user
     looked at it, and is not mid-turn. Defining it that way is what makes the
@@ -141,7 +141,7 @@ async def handle_supervisor(request: Request):
     )
 
 
-# Ordered so the panel reads worst-first. A supervisor is opened to find out
+# Ordered so the panel reads worst-first. A orchestrator is opened to find out
 # what needs attention, and a failed agent buried under six healthy ones is the
 # one thing the view must not do.
 _MEMBER_ORDER: Final[dict[str, int]] = {
@@ -149,7 +149,7 @@ _MEMBER_ORDER: Final[dict[str, int]] = {
 }
 
 
-async def handle_supervisor_members_get(request: Request, supervisor_id: str):
+async def handle_orchestrator_members_get(request: Request, supervisor_id: str):
     """GET /api/supervisors/{id}/members -- member status, worst first.
 
     Status is not defined here. classify_chat is the one function that decides
@@ -162,13 +162,13 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
 
     A member with nothing to say is reported "idle" rather than dropped.
     chat_last_activity only carries conversations that have some, so a quiet
-    member would otherwise vanish -- and a supervisor that hides the agents you
+    member would otherwise vanish -- and a orchestrator that hides the agents you
     added to it is worse than one that says nothing.
     """
     session = request.state.session
     owner = session["user"]
     if not await db.supervisor_get(supervisor_id, owner):
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
 
     rows = await db.supervisor_members_list(supervisor_id)
     if not rows:
@@ -223,14 +223,14 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
             # only carries conversations that have some, so this branch is the
             # normal case for a freshly added agent -- and it used to call .get()
             # on that None, which is the one path that reaches this fallback at
-            # all. The panel raised AttributeError and 500d for every supervisor
+            # all. The panel raised AttributeError and 500d for every orchestrator
             # with a quiet member, while the docstring above described the
             # behaviour that was intended and never written.
             "last_seen": last.get("created_at") if last else None,
             "status": "idle",
         })
     members.sort(key=lambda e: (
-        # A failure outranks every other reason to be waiting: a supervisor is
+        # A failure outranks every other reason to be waiting: a orchestrator is
         # opened to find what needs attention, and a broken agent buried under
         # six healthy ones is the one thing this view must not do.
         0 if e.get("reason") == "failed" else 1,
@@ -240,7 +240,7 @@ async def handle_supervisor_members_get(request: Request, supervisor_id: str):
     return JSONResponse({"members": members, "count": len(members)})
 
 
-async def handle_supervisor_members_add(request: Request, supervisor_id: str):
+async def handle_orchestrator_members_add(request: Request, supervisor_id: str):
     """POST /api/supervisors/{id}/members -- add conversations or agents.
 
     Bulk, because the picker adds several at once and a request per item would
@@ -255,7 +255,7 @@ async def handle_supervisor_members_add(request: Request, supervisor_id: str):
     session = request.state.session
     owner = session["user"]
     if not await db.supervisor_get(supervisor_id, owner):
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
     try:
         body = await request.json()
     except Exception:
@@ -288,7 +288,7 @@ async def handle_supervisor_members_add(request: Request, supervisor_id: str):
             skipped.append(chat_id)
 
     _log.info(
-        "supervisor_members_added supervisor=%s added=%d already=%d failed=%d",
+        "supervisor_members_added orchestrator=%s added=%d already=%d failed=%d",
         supervisor_id, len(added), len(skipped), len(failed),
     )
     return JSONResponse(
@@ -303,7 +303,7 @@ async def _resolve_member(
     """Turn a picker selection into a chat id this owner is allowed to add.
 
     Owner-scoped on every path. Without it a crafted ref_id would pull another
-    account's conversation into a supervisor the caller owns, exposing its
+    account's conversation into a orchestrator the caller owns, exposing its
     title, preview and status through the members feed -- the same rule
     chat_routing applies to a pinned machine.
     """
@@ -323,27 +323,27 @@ async def _resolve_member(
     raise HTTPException(status_code=400, detail="kind must be 'chat' or 'session'")
 
 
-async def handle_supervisor_member_remove(
+async def handle_orchestrator_member_remove(
     request: Request, supervisor_id: str, chat_id: str
 ):
     """DELETE /api/supervisors/{id}/members/{chat_id} -- stop watching it.
 
-    Membership only. The conversation is left exactly as it was: a supervisor
+    Membership only. The conversation is left exactly as it was: a orchestrator
     is a view over work, not its owner, and removing a member must never be a
     way to lose one.
     """
     session = request.state.session
     if not await db.supervisor_get(supervisor_id, session["user"]):
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
     removed = await db.supervisor_member_remove(supervisor_id, chat_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Not a member")
-    _log.info("supervisor_member_removed supervisor=%s chat=%s", supervisor_id, chat_id)
+    _log.info("supervisor_member_removed orchestrator=%s chat=%s", supervisor_id, chat_id)
     return JSONResponse({"ok": True, "removed": chat_id})
 
 
-async def handle_supervisor_read(request: Request):
-    """POST /api/supervisor/read -- mark an agent as seen, clearing its badge."""
+async def handle_orchestrator_read(request: Request):
+    """POST /api/orchestrator/read -- mark an agent as seen, clearing its badge."""
     session = request.state.session
     data = await request.json()
     if data.get("all"):
@@ -356,7 +356,7 @@ async def handle_supervisor_read(request: Request):
                 session["user"], entry["kind"], entry["id"], dismiss=True
             )
             cleared += 1
-        _log.info("supervisor cleared by user=%s entries=%d", session["user"], cleared)
+        _log.info("orchestrator cleared by user=%s entries=%d", session["user"], cleared)
         return JSONResponse({"ok": True, "cleared": cleared})
     kind = (data.get("kind") or "").strip()
     ref_id = (data.get("id") or "").strip()
@@ -372,20 +372,20 @@ async def handle_supervisor_read(request: Request):
     return JSONResponse({"ok": True, "read_at": read_at})
 
 
-# ── Supervisor orchestration ──────────────────────────────────────────────────────
+# ── Orchestrator orchestration ──────────────────────────────────────────────────────
 # Registry of live engine instances, keyed by supervisor_id. Engines are
-# started on first use and cleaned up when their supervisor is deleted.
+# started on first use and cleaned up when their orchestrator is deleted.
 #
-# Capped at _MAX_SUPERVISOR_ENGINES: without a bound, an account that only
+# Capped at _MAX_ORCHESTRATOR_ENGINES: without a bound, an account that only
 # ever creates supervisors and never deletes them grows this dict forever --
 # each entry holds a TaskGraph, a ProgressTracker and a set of background
 # asyncio.Task references, so the memory is not trivial. An OrderedDict lets
 # eviction take the least-recently-touched entry rather than an arbitrary one;
-# "touched" means created or looked up, via _touch_engine below. A supervisor
+# "touched" means created or looked up, via _touch_engine below. A orchestrator
 # whose engine is evicted still has its state in the database -- eviction only
 # drops the live scheduler, the same as if the process had just restarted.
-_supervisor_engines: OrderedDict[str, supervisor.SupervisorEngine] = OrderedDict()
-_MAX_SUPERVISOR_ENGINES: Final[int] = 200
+_supervisor_engines: OrderedDict[str, orchestrator.OrchestratorEngine] = OrderedDict()
+_MAX_ORCHESTRATOR_ENGINES: Final[int] = 200
 
 
 def _touch_engine(supervisor_id: str) -> None:
@@ -394,34 +394,34 @@ def _touch_engine(supervisor_id: str) -> None:
         _supervisor_engines.move_to_end(supervisor_id)
 
 
-def _register_engine(supervisor_id: str, eng: supervisor.SupervisorEngine) -> None:
+def _register_engine(supervisor_id: str, eng: orchestrator.OrchestratorEngine) -> None:
     """Insert a new engine, evicting the least-recently-touched one if full."""
     _supervisor_engines[supervisor_id] = eng
     _supervisor_engines.move_to_end(supervisor_id)
-    while len(_supervisor_engines) > _MAX_SUPERVISOR_ENGINES:
+    while len(_supervisor_engines) > _MAX_ORCHESTRATOR_ENGINES:
         evicted_id, evicted = _supervisor_engines.popitem(last=False)
         evicted.stop()
         _log.warning(
             "supervisor_engine_evicted supervisor_id=%s (registry at cap %d)",
-            evicted_id, _MAX_SUPERVISOR_ENGINES,
+            evicted_id, _MAX_ORCHESTRATOR_ENGINES,
         )
 
 
-# handle_supervisor_crud and handle_supervisor_send_prompt lived here: 169
-# lines implementing supervisor CRUD and prompt-send on /api/supervisor
+# handle_orchestrator_crud and handle_orchestrator_send_prompt lived here: 169
+# lines implementing orchestrator CRUD and prompt-send on /api/orchestrator
 # (singular). Neither was decorated and neither was called -- the live
-# routes are /api/supervisors (plural) below, and _api_supervisor_send
+# routes are /api/supervisors (plural) below, and _api_orchestrator_send
 # reimplements the send inline. Removed rather than wired up: two
 # implementations of the same endpoints, one of them unreachable, is a
 # standing invitation to fix the copy that does not run.
-async def handle_supervisor_stream(request: Request, supervisor_id: str):
-    """GET /api/supervisors/{id}/stream — SSE stream of supervisor progress."""
+async def handle_orchestrator_stream(request: Request, supervisor_id: str):
+    """GET /api/supervisors/{id}/stream — SSE stream of orchestrator progress."""
     session = request.state.session
     owner = session["user"]
 
     existing = await db.supervisor_get(supervisor_id, owner)
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
 
     async def event_generator():
         try:
@@ -437,10 +437,10 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                 if await request.is_disconnected():
                     return
 
-                # Read current supervisor state from DB
+                # Read current orchestrator state from DB
                 current = await db.supervisor_get(supervisor_id, owner)
                 if not current:
-                    yield f"data: {json.dumps({'type': 'error', 'error': 'Supervisor deleted'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Orchestrator deleted'})}\n\n"
                     return
 
                 progress = float(current.get("progress_pct") or 0)
@@ -479,7 +479,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
                 # Through db.supervisor_messages_get, not inline SQL. There were
                 # two copies here -- one per branch, differing only in the
                 # `id > ?` clause -- and neither filtered by owner, which made
-                # three copies of "read a supervisor's messages" in the
+                # three copies of "read a orchestrator's messages" in the
                 # repository, only one of them scoped. That is the shape F-21
                 # came in: this path is safe because of the ownership check
                 # above, and would stop being safe the moment somebody moved
@@ -518,7 +518,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
         except asyncio.CancelledError:
             raise
         except Exception:
-            _log.exception("supervisor stream failed id=%s", supervisor_id)
+            _log.exception("orchestrator stream failed id=%s", supervisor_id)
             yield f"data: {json.dumps({'type': 'error', 'error': 'Stream error'})}\n\n"
 
     return StreamingResponse(
@@ -532,7 +532,7 @@ async def handle_supervisor_stream(request: Request, supervisor_id: str):
     )
 
 
-async def handle_supervisor_task_stream(request: Request, supervisor_id: str, task_id: str):
+async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, task_id: str):
     """GET /api/supervisors/{id}/tasks/{taskId}/stream — SSE stream for one task."""
     session = request.state.session
     owner = session["user"]
@@ -540,7 +540,7 @@ async def handle_supervisor_task_stream(request: Request, supervisor_id: str, ta
     # Verify ownership
     existing = await db.supervisor_get(supervisor_id, owner)
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
 
     # Verify task exists
     task = await db.supervisor_task_get(supervisor_id, task_id, owner)
@@ -605,7 +605,7 @@ async def handle_supervisor_task_stream(request: Request, supervisor_id: str, ta
         except asyncio.CancelledError:
             raise
         except Exception:
-            _log.exception("supervisor task stream failed id=%s", task_id)
+            _log.exception("orchestrator task stream failed id=%s", task_id)
             yield f"data: {json.dumps({'type': 'error', 'error': 'Stream error'})}\n\n"
 
     return StreamingResponse(
@@ -619,14 +619,14 @@ async def handle_supervisor_task_stream(request: Request, supervisor_id: str, ta
     )
 
 
-async def handle_supervisor_tasks_get(supervisor_id: str, owner_id: str):
-    """GET /api/supervisors/{id}/tasks — list tasks for a supervisor."""
+async def handle_orchestrator_tasks_get(supervisor_id: str, owner_id: str):
+    """GET /api/supervisors/{id}/tasks — list tasks for a orchestrator."""
     tasks = await db.supervisor_tasks_get(supervisor_id, owner_id)
     return JSONResponse({"tasks": tasks, "count": len(tasks)})
 
 
-async def handle_supervisor_messages_get(request: Request, supervisor_id: str):
-    """GET /api/supervisors/{id}/messages — list messages for a supervisor."""
+async def handle_orchestrator_messages_get(request: Request, supervisor_id: str):
+    """GET /api/supervisors/{id}/messages — list messages for a orchestrator."""
     session = request.state.session
     owner_id = session["user"]
     try:
@@ -637,35 +637,35 @@ async def handle_supervisor_messages_get(request: Request, supervisor_id: str):
     return JSONResponse({"messages": messages, "count": len(messages)})
 
 
-@router.get("/api/supervisor")
+@router.get("/api/orchestrator")
 async def _api_supervisor(request: Request):
     return await handle_supervisor(request)
 
 
-@router.get("/api/supervisors/{supervisor_id}/members")
-async def _api_supervisor_members_get(request: Request, supervisor_id: str):
-    return await handle_supervisor_members_get(request, supervisor_id)
+@router.get("/api/orchestrators/{supervisor_id}/members")
+async def _api_orchestrator_members_get(request: Request, supervisor_id: str):
+    return await handle_orchestrator_members_get(request, supervisor_id)
 
 
-@router.post("/api/supervisors/{supervisor_id}/members")
-async def _api_supervisor_members_add(request: Request, supervisor_id: str):
-    return await handle_supervisor_members_add(request, supervisor_id)
+@router.post("/api/orchestrators/{supervisor_id}/members")
+async def _api_orchestrator_members_add(request: Request, supervisor_id: str):
+    return await handle_orchestrator_members_add(request, supervisor_id)
 
 
-@router.delete("/api/supervisors/{supervisor_id}/members/{chat_id}")
-async def _api_supervisor_member_remove(
+@router.delete("/api/orchestrators/{supervisor_id}/members/{chat_id}")
+async def _api_orchestrator_member_remove(
     request: Request, supervisor_id: str, chat_id: str
 ):
-    return await handle_supervisor_member_remove(request, supervisor_id, chat_id)
+    return await handle_orchestrator_member_remove(request, supervisor_id, chat_id)
 
 
-@router.post("/api/supervisor/read")
-async def _api_supervisor_read(request: Request):
-    return await handle_supervisor_read(request)
+@router.post("/api/orchestrator/read")
+async def _api_orchestrator_read(request: Request):
+    return await handle_orchestrator_read(request)
 
 
-@router.post("/api/supervisors/{supervisor_id}/send")
-async def _api_supervisor_send(request: Request, supervisor_id: str):
+@router.post("/api/orchestrators/{supervisor_id}/send")
+async def _api_orchestrator_send(request: Request, supervisor_id: str):
     session = request.state.session
     try:
         body = await request.json()
@@ -686,11 +686,11 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
 
     existing = await db.supervisor_get(supervisor_id, session["user"])
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
 
     # Get or create engine
     if supervisor_id not in _supervisor_engines:
-        eng_new = supervisor.SupervisorEngine(supervisor_id, session["user"])
+        eng_new = orchestrator.OrchestratorEngine(supervisor_id, session["user"])
         _register_engine(supervisor_id, eng_new)
     else:
         eng_new = _supervisor_engines[supervisor_id]
@@ -712,15 +712,15 @@ async def _api_supervisor_send(request: Request, supervisor_id: str):
     })
 
 
-@router.post("/api/supervisors/{supervisor_id}/pause")
-async def _api_supervisor_pause(request: Request, supervisor_id: str):
-    """POST /api/supervisors/{id}/pause -- pause a running supervisor."""
+@router.post("/api/orchestrators/{supervisor_id}/pause")
+async def _api_orchestrator_pause(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/pause -- pause a running orchestrator."""
     session = request.state.session
     existing = await db.supervisor_get(supervisor_id, session["user"])
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
     if existing.get("status") not in ("planning", "running"):
-        raise HTTPException(status_code=409, detail="Supervisor is not running")
+        raise HTTPException(status_code=409, detail="Orchestrator is not running")
     eng = _supervisor_engines.get(supervisor_id)
     if eng and eng.pause():
         # Remember what we were doing before the pause so resume can restore it.
@@ -728,36 +728,36 @@ async def _api_supervisor_pause(request: Request, supervisor_id: str):
             eng.set_status_for_pause(existing.get("status"))
         await db.supervisor_update(supervisor_id, session["user"], status="paused")
         return JSONResponse({"ok": True, "status": "paused"})
-    raise HTTPException(status_code=409, detail="Supervisor is already paused")
+    raise HTTPException(status_code=409, detail="Orchestrator is already paused")
 
 
-@router.post("/api/supervisors/{supervisor_id}/resume")
-async def _api_supervisor_resume(request: Request, supervisor_id: str):
-    """POST /api/supervisors/{id}/resume -- resume a paused supervisor."""
+@router.post("/api/orchestrators/{supervisor_id}/resume")
+async def _api_orchestrator_resume(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/resume -- resume a paused orchestrator."""
     session = request.state.session
     existing = await db.supervisor_get(supervisor_id, session["user"])
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
     if existing.get("status") != "paused":
-        raise HTTPException(status_code=409, detail="Supervisor is not paused")
+        raise HTTPException(status_code=409, detail="Orchestrator is not paused")
     eng = _supervisor_engines.get(supervisor_id)
     if eng and eng.resume():
         # Restore the status the engine had before it was paused.
         restore = eng._pre_pause_status or "running"
         await db.supervisor_update(supervisor_id, session["user"], status=restore)
         return JSONResponse({"ok": True, "status": restore})
-    raise HTTPException(status_code=409, detail="Supervisor is not paused")
+    raise HTTPException(status_code=409, detail="Orchestrator is not paused")
 
 
-# Supervisor routes — these match the pattern from the design spec.
-@router.get("/api/supervisors")
+# Orchestrator routes — these match the pattern from the design spec.
+@router.get("/api/orchestrators")
 async def _api_supervisors_list(request: Request):
     session = request.state.session
     list_ = await db.supervisor_list(session["user"])
     return JSONResponse({"supervisors": list_, "count": len(list_)})
 
 
-# Serialised size ceiling for a supervisor's config blob.
+# Serialised size ceiling for a orchestrator's config blob.
 #
 # Unlike the prompt cap next door this is not the §2 subprocess boundary --
 # config is stored and read back, never passed to the CLI -- so the concern is
@@ -767,7 +767,7 @@ async def _api_supervisors_list(request: Request):
 # inside the DB layer and surfaces as a 500 rather than the 400 it is.
 _SUPERVISOR_CONFIG_MAX: Final[int] = 64 * 1024
 
-# Per-owner cap on live supervisor rows. Without one, a single authenticated
+# Per-owner cap on live orchestrator rows. Without one, a single authenticated
 # account can create supervisors without limit -- each row is small on its
 # own, but every one also seeds an engine in the process-wide registry above,
 # so unbounded creation is unbounded memory, not just unbounded rows.
@@ -789,7 +789,7 @@ def _validated_supervisor_config(raw: Any) -> Any:
     return raw
 
 
-@router.post("/api/supervisors")
+@router.post("/api/orchestrators")
 async def _api_supervisors_create(request: Request):
     session = request.state.session
     existing = await db.supervisor_list(session["user"])
@@ -803,29 +803,29 @@ async def _api_supervisors_create(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-    title = (body.get("title") or "New Supervisor").strip()[:200]
+    title = (body.get("title") or "New Orchestrator").strip()[:200]
     description = (body.get("description") or "").strip()[:500] or None
     config_data = _validated_supervisor_config(
         body.get("config") if body.get("config") else None
     )
     sid = uuid.uuid4().hex
     await db.supervisor_create(sid, title, description, session["user"], config_data)
-    eng = supervisor.SupervisorEngine(sid, session["user"])
+    eng = orchestrator.OrchestratorEngine(sid, session["user"])
     _register_engine(sid, eng)
     return JSONResponse({"ok": True, "id": sid, "title": title, "status": "idle"})
 
 
-@router.get("/api/supervisors/{supervisor_id}")
-async def _api_supervisor_get(request: Request, supervisor_id: str):
+@router.get("/api/orchestrators/{supervisor_id}")
+async def _api_orchestrator_get(request: Request, supervisor_id: str):
     session = request.state.session
     existing = await db.supervisor_get(supervisor_id, session["user"])
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
-    return JSONResponse({"supervisor": existing})
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
+    return JSONResponse({"orchestrator": existing})
 
 
-@router.patch("/api/supervisors/{supervisor_id}")
-async def _api_supervisor_patch(request: Request, supervisor_id: str):
+@router.patch("/api/orchestrators/{supervisor_id}")
+async def _api_orchestrator_patch(request: Request, supervisor_id: str):
     session = request.state.session
     try:
         body = await request.json()
@@ -835,7 +835,7 @@ async def _api_supervisor_patch(request: Request, supervisor_id: str):
         raise HTTPException(status_code=400, detail="No fields to update")
     existing = await db.supervisor_get(supervisor_id, session["user"])
     if not existing:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
     updates: dict[str, Any] = {}
     if "title" in body:
         val = str(body["title"]).strip()[:200]
@@ -867,37 +867,37 @@ async def _api_supervisor_patch(request: Request, supervisor_id: str):
                 eng = _supervisor_engines.get(supervisor_id)
                 if eng:
                     eng.config = updates["config"]
-                    eng.router = supervisor.ModelRouter(updates["config"])
+                    eng.router = orchestrator.ModelRouter(updates["config"])
     existing = await db.supervisor_get(supervisor_id, session["user"])
-    return JSONResponse({"ok": True, "supervisor": existing})
+    return JSONResponse({"ok": True, "orchestrator": existing})
 
 
-@router.delete("/api/supervisors/{supervisor_id}")
-async def _api_supervisor_delete(request: Request, supervisor_id: str):
+@router.delete("/api/orchestrators/{supervisor_id}")
+async def _api_orchestrator_delete(request: Request, supervisor_id: str):
     session = request.state.session
     deleted = await db.supervisor_delete(supervisor_id, session["user"])
     if not deleted:
-        raise HTTPException(status_code=404, detail="Supervisor not found")
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
     _supervisor_engines.pop(supervisor_id, None)
     return JSONResponse({"ok": True})
 
 
-@router.get("/api/supervisors/{supervisor_id}/stream")
-async def _api_supervisor_stream(request: Request, supervisor_id: str):
-    return await handle_supervisor_stream(request, supervisor_id)
+@router.get("/api/orchestrators/{supervisor_id}/stream")
+async def _api_orchestrator_stream(request: Request, supervisor_id: str):
+    return await handle_orchestrator_stream(request, supervisor_id)
 
 
-@router.get("/api/supervisors/{supervisor_id}/tasks")
-async def _api_supervisor_tasks_get(request: Request, supervisor_id: str):
+@router.get("/api/orchestrators/{supervisor_id}/tasks")
+async def _api_orchestrator_tasks_get(request: Request, supervisor_id: str):
     session = request.state.session
-    return await handle_supervisor_tasks_get(supervisor_id, session["user"])
+    return await handle_orchestrator_tasks_get(supervisor_id, session["user"])
 
 
-@router.get("/api/supervisors/{supervisor_id}/tasks/{task_id}/stream")
-async def _api_supervisor_task_stream(request: Request, supervisor_id: str, task_id: str):
-    return await handle_supervisor_task_stream(request, supervisor_id, task_id)
+@router.get("/api/orchestrators/{supervisor_id}/tasks/{task_id}/stream")
+async def _api_orchestrator_task_stream(request: Request, supervisor_id: str, task_id: str):
+    return await handle_orchestrator_task_stream(request, supervisor_id, task_id)
 
 
-@router.get("/api/supervisors/{supervisor_id}/messages")
-async def _api_supervisor_messages(request: Request, supervisor_id: str):
-    return await handle_supervisor_messages_get(request, supervisor_id)
+@router.get("/api/orchestrators/{supervisor_id}/messages")
+async def _api_orchestrator_messages(request: Request, supervisor_id: str):
+    return await handle_orchestrator_messages_get(request, supervisor_id)

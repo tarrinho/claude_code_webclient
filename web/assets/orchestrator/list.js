@@ -1,4 +1,4 @@
-// supervisor/list.js — the supervisor list, its ordering, and rename.
+// orchestrator/list.js — the orchestrator list, its ordering, and rename.
 
 import { state } from "./state.js";
 import { apiFetch, formatTime } from "./api.js";
@@ -9,8 +9,8 @@ import { connectSSE } from "./stream.js";
 import { loadMembers } from "./members.js";
 import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./tasks.js";
 
-  // ── Supervisor list ──────────────────────────────────────────────────
-  // Sort order for the supervisor list. Default "newest first" (by id,
+  // ── Orchestrator list ──────────────────────────────────────────────────
+  // Sort order for the orchestrator list. Default "newest first" (by id,
   // which is a UUID, so it approximates creation time), but a toggle
   // makes "last active" the order so recently-used supervisors stay visible.
   let supervisorSortMode = "newest"; // "newest" | "updated"
@@ -28,7 +28,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
 
   export async function loadSupervisors() {
     try {
-      const data = await apiFetch("/api/supervisors");
+      const data = await apiFetch("/api/orchestrators");
       state.supervisors = data.supervisors || [];
       renderSupervisorList();
       restoreOpen();
@@ -38,7 +38,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
   }
 
   // ── Rename ────────────────────────────────────────────────────────────────
-  // A supervisor's name appears only in this list, so the control lives on the
+  // A orchestrator's name appears only in this list, so the control lives on the
   // row rather than in a detail header the page does not have.
   //
   // renamingId suppresses the refresh below. setInterval calls
@@ -71,7 +71,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
       .map((s) => {
         const statusClass = s.status || "idle";
         // Show relative time if updated_at differs from created_at —
-        // a freshly-created supervisor shows only the status badge.
+        // a freshly-created orchestrator shows only the status badge.
         let timeLabel = "";
         if (s.updated_at && s.created_at && s.updated_at !== s.created_at) {
           timeLabel = `&middot; ${formatTime(s.updated_at)}`;
@@ -80,7 +80,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
           ? ` title="${esc(s.degraded_reason || 'Some state may be stale')}"`
           : "";
         const degradedGlyph = s.degraded ? " ⚠" : "";
-        return `<div class="supervisor-list-item ${
+        return `<div class="orchestrator-list-item ${
           s.id === state.activeSupervisorId ? "active" : ""
         }" data-id="${esc(s.id)}">
           <div class="sl-title">${esc(s.title || "Untitled")}</div>
@@ -93,10 +93,10 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
       })
       .join("");
 
-    el.supervisorList.querySelectorAll(".supervisor-list-item").forEach((row) => {
+    el.supervisorList.querySelectorAll(".orchestrator-list-item").forEach((row) => {
       row.addEventListener("click", () => selectSupervisor(row.dataset.id));
 
-      // Status pulse: flash badge when the supervisor's status changed.
+      // Status pulse: flash badge when the orchestrator's status changed.
       const rowId = row.dataset.id;
       const sup = state.supervisors.find((s) => s.id === rowId);
       if (sup && state._prevStatuses[rowId] && state._prevStatuses[rowId] !== (sup.status || "idle")) {
@@ -118,9 +118,9 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
       btn.className = "sl-rename";
       btn.textContent = "\u270E";
       btn.setAttribute(
-        "aria-label", `Rename ${titleEl.textContent || "this supervisor"}`);
+        "aria-label", `Rename ${titleEl.textContent || "this orchestrator"}`);
       btn.addEventListener("click", (event) => {
-        // The row's own click selects the supervisor. Without this, renaming
+        // The row's own click selects the orchestrator. Without this, renaming
         // one you are not looking at also switches to it.
         event.stopPropagation();
         startRename(row.dataset.id, titleEl);
@@ -142,7 +142,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
     // types past the limit and is truncated with no indication, so the rename
     // reads as having half worked.
     input.maxLength = 200;
-    input.setAttribute("aria-label", "Supervisor name");
+    input.setAttribute("aria-label", "Orchestrator name");
     titleEl.replaceWith(input);
     input.focus();
     input.select();
@@ -188,20 +188,20 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
 
   export async function createSupervisor() {
     try {
-      const data = await apiFetch("/api/supervisors", {
+      const data = await apiFetch("/api/orchestrators", {
         method: "POST",
-        body: { title: "New Supervisor" },
+        body: { title: "New Orchestrator" },
       });
       await loadSupervisors();
       selectSupervisor(data.id);
     } catch (e) {
-      alert("Failed to create supervisor: " + e.message);
+      alert("Failed to create orchestrator: " + e.message);
     }
   }
 
-  // Which supervisor was last open, so a reload returns to it. The page had no
+  // Which orchestrator was last open, so a reload returns to it. The page had no
   // notion of this: selectSupervisor was reachable only from a click on a list
-  // row or immediately after creating one, so opening /supervisor.html always
+  // row or immediately after creating one, so opening /orchestrator.html always
   // showed the start screen and left an existing conversation invisible --
   // messages were never even fetched, because showActiveSupervisor is what
   // fetches them. The main app has done this with wc_last_chat all along.
@@ -211,9 +211,9 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
     try {
       localStorage.setItem(LAST_OPEN_KEY, id);
     } catch (e) {
-      // Private mode or a full quota. Losing the memory of which supervisor was
+      // Private mode or a full quota. Losing the memory of which orchestrator was
       // open must not stop it being opened.
-      console.warn("could not remember the open supervisor:", e);
+      console.warn("could not remember the open orchestrator:", e);
     }
   }
 
@@ -223,7 +223,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
     try {
       wanted = localStorage.getItem(LAST_OPEN_KEY);
     } catch (e) {
-      console.warn("could not read the last open supervisor:", e);
+      console.warn("could not read the last open orchestrator:", e);
     }
     // The remembered one if it still exists, otherwise the most recent, because
     // an empty centre panel next to a populated list reads as a broken page.
@@ -239,7 +239,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
     rememberOpen(id);
     renderSupervisorList();
     // Same for the event log. addLogEntry only ever appends to the DOM, so
-    // without this the previous supervisor's events stayed on screen and
+    // without this the previous orchestrator's events stayed on screen and
     // interleaved with the new one's, undivided -- two runs presented as one.
     // Immediately before showActiveSupervisor, which reconnects SSE and
     // starts filling it again.
@@ -251,13 +251,13 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
   export async function showActiveSupervisor() {
     if (!state.activeSupervisorId) return;
     try {
-      const data = await apiFetch("/api/supervisors/" + state.activeSupervisorId);
-      state.activeSupervisor = data.supervisor;
+      const data = await apiFetch("/api/orchestrators/" + state.activeSupervisorId);
+      state.activeSupervisor = data.orchestrator;
       // The pause button reflects what the server says, not what the engine
       // had last time — the engine may have been restarted between page loads.
       updatePauseResumeBtn(state.activeSupervisor.status);
     } catch (e) {
-      console.error("Failed to load supervisor:", e);
+      console.error("Failed to load orchestrator:", e);
       return;
     }
 
@@ -269,8 +269,8 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
 
     // Load messages and tasks in parallel — neither blocks the other.
     const [msgData, taskData] = await Promise.allSettled([
-      apiFetch("/api/supervisors/" + state.activeSupervisorId + "/messages"),
-      apiFetch("/api/supervisors/" + state.activeSupervisorId + "/tasks"),
+      apiFetch("/api/orchestrators/" + state.activeSupervisorId + "/messages"),
+      apiFetch("/api/orchestrators/" + state.activeSupervisorId + "/tasks"),
     ]);
 
     if (msgData.status === "fulfilled") {
@@ -296,11 +296,11 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
 
     // Members were previously only loaded as a side effect of the
     // add/remove picker (members.js's own two call sites) -- opening a
-    // supervisor never populated the panel, so the human-gate marker
+    // orchestrator never populated the panel, so the human-gate marker
     // (banners.js:updateGateMarker) had nothing to read until someone
     // happened to touch that dialog. This is the fix, not a new feature:
     // the panel already exists and is meant to reflect membership from the
-    // moment a supervisor is opened.
+    // moment a orchestrator is opened.
     loadMembers(state.activeSupervisorId);
   }
 
@@ -314,12 +314,12 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
       .map((m) => {
         if (m.role === "user") {
           return `<div class="chat-message user"><strong>You:</strong><br>${esc(m.content || "")}</div>`;
-        } else if (m.role === "supervisor") {
+        } else if (m.role === "orchestrator") {
           const content = m.content || "";
           if (content.includes("<<PLAN")) {
-            return `<div class="chat-message supervisor"><strong>Supervisor:</strong><br><div class="plan-block">${esc(content)}</div></div>`;
+            return `<div class="chat-message orchestrator"><strong>Orchestrator:</strong><br><div class="plan-block">${esc(content)}</div></div>`;
           }
-          return `<div class="chat-message supervisor"><strong>Supervisor:</strong><br>${esc(content)}</div>`;
+          return `<div class="chat-message orchestrator"><strong>Orchestrator:</strong><br>${esc(content)}</div>`;
         }
         return `<div class="chat-message system">${esc(m.content || "")}</div>`;
       })

@@ -1,22 +1,25 @@
 """Simple in-memory rate limiter (token-bucket) for the WebConsole.
 
 Placed before Auth/CSRF so it can short-circuit before credential work.
-Uses a dict keyed by IP; entries expire after their window so the map
+Uses a dict keyed by (ip, path); entries expire after 2× window so the map
 never grows unbounded.
 
 Default: 60 requests per minute for any authenticated endpoint.
 Chat prompt submissions get a tighter 10 per minute to curb flooding.
+
+IMPORTANT: This is pure ASGI middleware (not BaseHTTPMiddleware). BaseHTTPMiddleware
+consumes the request body before the handler can read it, which turns every
+POST with a JSON body (login, chat prompts) into a 500 with JSONDecodeError.
 """
 from __future__ import annotations
 
 import logging
 import time
 from collections import defaultdict
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 import config
 
@@ -100,52 +103,82 @@ _limiter = _Ratelimiter(
 )
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Apply per-IP rate limits before hitting the handler.
+class RateLimitMiddleware:
+    """Pure ASGI rate-limit middleware.
+
+    Uses __call__(scope, receive, send) instead of BaseHTTPMiddleware so the
+    request body is never consumed before the handler sees it.
 
     Skips: unauthenticated /api/* endpoints that require a session (these
     already fail fast with 401), health-check endpoints, and static assets.
     Authenticated requests get rate-limited.
     """
 
-    _HEALTH: ClassVar[set] = {"/api/version", "/api/health"}
+    _HEALTH: ClassVar[set[str]] = {"/api/version", "/api/health"}
 
-    async def dispatch(self, request: Request, handler):
-        # Skip health and asset routes; they are called by many clients.
-        if request.url.path in self._HEALTH or request.url.path.startswith("/assets/"):
-            return await handler(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        # Only rate-limit authenticated API calls and known routes.
-        session = getattr(request.state, "session", None)
-        is_public_login = request.method == "POST" and request.url.path == "/login"
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        path = scope.get("path", "/")
+
+        # Skip health and asset routes.
+        if path in self._HEALTH or path.startswith("/assets/"):
+            return await self.app(scope, receive, send)
+
+        # Extract session from query param or cookie in the ASGI scope.
+        session = None
+        headers = scope.get("headers", [])
+        for name, value in headers:
+            if isinstance(name, bytes):
+                name = name.decode()
+            if name.lower() == "cookie":
+                for cookie in value.decode().split(";"):
+                    cookie = cookie.strip()
+                    if cookie.startswith("wc_session="):
+                        session = cookie.split("=", 1)[1]
+                        break
+
+        is_public_login = scope.get("method", "GET") == "POST" and path == "/login"
 
         if not session and not is_public_login:
-            # Unauthenticated requests that are not login or public routes
-            # are already going to 401/303; skip rate limit to avoid
-            # compounding the error.
-            return await handler(request)
+            return await self.app(scope, receive, send)
 
         ip = "?"
-        if hasattr(request, "client") and request.client:
-            ip = getattr(request.client, "host", "?") or "?"
+        client = scope.get("client")
+        if client:
+            ip = client[0] if isinstance(client, tuple) else "?"
 
-        allowed = _limiter.check(ip, request.url.path)
+        allowed = _limiter.check(ip, path)
         if not allowed:
             _log.warning(
                 "rate_limited ip=%s path=%s",
-                ip, request.url.path,
+                ip, path,
             )
-            return JSONResponse(
-                status_code=429,
-                content={"error": "Too many requests. Try again later."},
-                headers={"Retry-After": str(int(config.RATE_LIMIT_WINDOW))},
-            )
+            body = b'{"error":"Too many requests. Try again later."}'
+            headers = [
+                (b"content-type", b"application/json"),
+                (b"retry-after", str(int(config.RATE_LIMIT_WINDOW)).encode()),
+            ]
+            await send({
+                "type": "http.response.start",
+                "status": 429,
+                "headers": headers,
+            })
+            await send({
+                "type": "http.response.body",
+                "body": body,
+            })
+            return
 
-        return await handler(request)
+        return await self.app(scope, receive, send)
 
 
 # Periodic cleanup task (called from lifespan)
-_cleanup_task: ClassVar[_Ratelimiter | None] = None
+_cleanup_task: ClassVar[Any] = None
 
 
 def start_cleanup(interval_s: float = 300.0) -> None:

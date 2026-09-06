@@ -10,7 +10,7 @@ import {showToast, settingsVisible} from './app.js?v=38';
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
 // top-level scope across files), so it needs its own -- same pattern as
-// supervisor.js/device-alerts.js/usage.js/skills.js.
+// orchestrator.js/device-alerts.js/usage.js/skills.js.
 const byId = id => document.getElementById(id);
 
 // A live reading that never changes is worse than no reading: it looks current

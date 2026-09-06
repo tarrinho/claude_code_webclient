@@ -2,7 +2,7 @@
 
 Both fixes here are small; both were reachable from a normal request.
 
-The supervisor config blob had no ceiling at all, while the prompt beside it
+The orchestrator config blob had no ceiling at all, while the prompt beside it
 was capped at 8000 and title and description were sliced to 200 and 500. It is
 not the §2 subprocess boundary -- config is stored and read back, never passed
 to the CLI -- so this is unbounded input rather than execution. The reason it

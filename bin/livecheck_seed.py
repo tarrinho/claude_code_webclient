@@ -1,7 +1,7 @@
 """Seed an isolated WebConsole instance for a manual layout check.
 
-Creates one user, one supervisor and four tasks in whatever database
-WC_DB_PATH points at, so the supervisor page has something to render and a
+Creates one user, one orchestrator and four tasks in whatever database
+WC_DB_PATH points at, so the orchestrator page has something to render and a
 task with a long result to click. Intended for a throwaway instance on
 loopback; it is not part of the test suite and touches nothing in the real
 deployment.
@@ -39,7 +39,7 @@ async def main() -> None:
     await db.init()
 
     # owner_id is the user NAME, not the users.id. app.py builds the session
-    # with auth.session_new(user["name"], ...) and every supervisor endpoint
+    # with auth.session_new(user["name"], ...) and every orchestrator endpoint
     # scopes on session["user"], so seeding the uuid here makes the rows
     # invisible to the API while looking perfectly correct in the database.
     cur = await db.db_conn.execute("SELECT name FROM users WHERE name = ?", (USER,))
@@ -59,7 +59,7 @@ async def main() -> None:
     await db.supervisor_create(
         sup_id, "Layout live check", "Seeded for the manual panel check", owner_id
     )
-    print(f"created supervisor id={sup_id}")
+    print(f"created orchestrator id={sup_id}")
 
     tasks = [
         ("t001", "Reattach the detail panel", "done", 100.0, LONG_RESULT),
@@ -78,22 +78,22 @@ async def main() -> None:
     print(f"created {len(tasks)} tasks")
 
     await db.supervisor_messages_append(
-        sup_id, "user", "Check the supervisor page layout.", {"kind": "goal"}
+        sup_id, "user", "Check the orchestrator page layout.", {"kind": "goal"}
     )
     await db.supervisor_messages_append(
-        sup_id, "supervisor",
+        sup_id, "orchestrator",
         "Task 'Reattach the detail panel' completed "
         f"({len(LONG_RESULT)} chars)\n\n{LONG_RESULT[:3000]}",
         {"kind": "task_result", "task_id": "t001"},
     )
 
-    # A second supervisor, so the log-clearing behaviour has somewhere to
+    # A second orchestrator, so the log-clearing behaviour has somewhere to
     # switch to.
     other = "livecheck11111111111111111111111"
     await db.db_conn.execute("DELETE FROM supervisors WHERE id = ?", (other,))
     await db.db_conn.commit()
-    await db.supervisor_create(other, "Second supervisor", None, owner_id)
-    print(f"created supervisor id={other}")
+    await db.supervisor_create(other, "Second orchestrator", None, owner_id)
+    print(f"created orchestrator id={other}")
 
     # Without this the aiosqlite worker thread keeps the loop alive and the
     # script never exits, even though every write above has committed.

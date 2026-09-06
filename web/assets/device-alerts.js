@@ -9,7 +9,7 @@ import {listController} from './app.js?v=38';
 //   2. a system notification, which on Android reaches the notification
 //      shade and needs permission granted from a real tap;
 //   3. a short vibration, which is the only one you notice in a pocket.
-// Only a RISE in the count fires 2 and 3 -- the supervisor re-polls every few
+// Only a RISE in the count fires 2 and 3 -- the orchestrator re-polls every few
 // seconds and re-alerting on the same unanswered question would be unusable.
 // This file is loaded two ways at once: as its own <script type="module"> in
 // index.html, and via `import` from app.js for refreshSupervisor and friends.
@@ -123,7 +123,7 @@ export function _applyDeviceAlert(waiting) {
   try {
     new Notification('WebConsole', {
       body: newest.preview ? `${body} — ${newest.preview}` : body,
-      tag: 'wc-supervisor',   // replaces its predecessor instead of stacking
+      tag: 'wc-orchestrator',   // replaces its predecessor instead of stacking
       renotify: false,
     });
   } catch {
@@ -137,7 +137,7 @@ export function _applyDeviceAlert(waiting) {
 
 export async function refreshSupervisor() {
   try {
-    const response = await apiFetch('/api/supervisor');
+    const response = await apiFetch('/api/orchestrator');
     if (!response.ok) return;
     const data = await response.json();
     listController.setSupervisor(data);
@@ -147,9 +147,9 @@ export async function refreshSupervisor() {
   }
 }
 
-// The other half of the note in supervisor.js: this owns the poller because
+// The other half of the note in orchestrator.js: this owns the poller because
 // it owns _supervisorTimer and SUPERVISOR_POLL_MS, not because polling is a
-// device-alert concern by itself. supervisor.js only owns the pane/picker UI.
+// device-alert concern by itself. orchestrator.js only owns the pane/picker UI.
 export function startSupervisorPolling() {
   if (_supervisorTimer) return;
   // Deliberately NOT skipped while hidden, unlike the other pollers: the OS
@@ -162,7 +162,7 @@ export function startSupervisorPolling() {
 export async function dismissAgent(kind, id) {
   if (!kind || !id) return;
   try {
-    await apiFetch('/api/supervisor/read', {
+    await apiFetch('/api/orchestrator/read', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({kind, id, dismiss: true}),
@@ -176,7 +176,7 @@ export async function dismissAgent(kind, id) {
 
 export async function clearSupervisor() {
   try {
-    await apiFetch('/api/supervisor/read', {
+    await apiFetch('/api/orchestrator/read', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({all: true}),
@@ -190,7 +190,7 @@ export async function clearSupervisor() {
 export async function markAgentSeen(kind, id) {
   if (!id) return;
   try {
-    await apiFetch('/api/supervisor/read', {
+    await apiFetch('/api/orchestrator/read', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({kind, id}),

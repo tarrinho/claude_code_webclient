@@ -161,7 +161,7 @@ also how voice's usage/cost visibility gap (flagged in Security below) gets
 closed: without the CLI's automatic `usage`/`total_cost_usd` recording
 (`app.py` does this for every CLI turn; a caller that bypasses the CLI
 entirely must do it itself, same lesson `CLAUDE.md` documents for the
-supervisor feature skipping this once already), voice needs its own
+orchestrator feature skipping this once already), voice needs its own
 recording regardless — this table serves both that need and the one below.
 
 **Model combo box shows a real average, not a synthetic ping:** the
@@ -250,7 +250,7 @@ model:
 | Voice-mode flag tampering | Client-supplied chat-creation request | Turn-dispatch code deciding CLI vs. direct-call path | `voice_mode` is set once at creation and read from the chat's own owner-scoped DB row for every subsequent turn — never trusted from per-turn client input, same pattern as `model`/`ai_machine_id` today |
 | Global voice settings changed by non-admin | Settings dialog | `db.setting_set` | Reuses whatever access control already gates the rest of the Settings dialog (session TTL, turn timeout, etc.) — no new authorization surface |
 | Credential exposure via the new direct-call path | `get_backend()`'s resolved `api_key` | `AsyncOpenAI` client construction | Same value already flows to the CLI path today (as an env var); this just feeds the identical resolved value to an HTTP client instead — never logged, never returned in a response, same discipline `CLAUDE.md` already mandates for env-based credential handling |
-| Voice spend invisible if not recorded | Direct `AsyncOpenAI` call, bypassing the CLI's automatic usage recording | Usage tables | Voice must record its own usage per turn, same as `CLAUDE.md` documents `supervisor.py` having to learn the hard way — `voice_turn_timing` (added for the model-timing feature) is the natural home for this, not an afterthought |
+| Voice spend invisible if not recorded | Direct `AsyncOpenAI` call, bypassing the CLI's automatic usage recording | Usage tables | Voice must record its own usage per turn, same as `CLAUDE.md` documents `orchestrator.py` having to learn the hard way — `voice_turn_timing` (added for the model-timing feature) is the natural home for this, not an afterthought |
 
 No new RCE/path-traversal/SQL surface: no new subprocess call at all for
 voice turns (they skip subprocess spawning entirely), no new raw SQL (new

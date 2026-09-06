@@ -1,6 +1,6 @@
 """QA: the left panel marks which highlighted rows actually asked something.
 
-Every row in the Supervisor section is waiting on the user, so a mark on all of
+Every row in the Orchestrator section is waiting on the user, so a mark on all of
 them would carry no information. What it distinguishes is the rows that asked a
 question from the rows that failed, reported a blocker, or simply stopped
 talking -- three states that also sit there waiting and are answered by doing
@@ -98,7 +98,7 @@ class PanelTests(unittest.TestCase):
         self.source = CHAT_LIST.read_text(encoding="utf-8")
 
     def test_the_marker_is_rendered_for_waiting_rows(self):
-        self.assertIn("supervisor-asks", self.source)
+        self.assertIn("orchestrator-asks", self.source)
         self.assertIn("'?'", self.source)
 
     def test_it_is_guarded_by_the_server_flag(self):
@@ -107,12 +107,12 @@ class PanelTests(unittest.TestCase):
 
     def test_it_carries_a_text_alternative(self):
         """The glyph alone is meaningless to a screen reader."""
-        block = self.source.split("supervisor-asks", 1)[1][:400]
+        block = self.source.split("orchestrator-asks", 1)[1][:400]
         self.assertIn("aria-label", block)
         self.assertIn("title", block)
 
     def test_the_marker_is_styled(self):
-        self.assertIn(".supervisor-asks{", STYLES.read_text(encoding="utf-8"))
+        self.assertIn(".orchestrator-asks{", STYLES.read_text(encoding="utf-8"))
 
     def test_the_stylesheet_cache_key_was_bumped(self):
         """A new rule nobody can see is not a fix.

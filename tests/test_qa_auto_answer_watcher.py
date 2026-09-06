@@ -250,7 +250,7 @@ class WatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_then_stop_leaves_nothing_running(self):
         """rules.md §4: a timer nothing can stop is the named failure. The
-        supervisor page shipped a bare setInterval for exactly this reason.
+        orchestrator page shipped a bare setInterval for exactly this reason.
         """
         auto_answer.start(lambda _sid: None, interval_s=0.01)
         await asyncio.sleep(0.05)

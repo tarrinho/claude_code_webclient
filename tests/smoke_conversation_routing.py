@@ -108,7 +108,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/skills":
             return self._json({"skills": [], "sources": [], "total": 0,
                                "active_count": 0, "session_id": ""})
-        if path.startswith(("/api/sessions", "/api/transcripts", "/api/supervisor")):
+        if path.startswith(("/api/sessions", "/api/transcripts", "/api/orchestrator")):
             return self._json({"sessions": [], "transcripts": [], "turns": [],
                                "peers": [], "messages": []})
         if path in ("/", "/index.html"):

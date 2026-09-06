@@ -1,4 +1,4 @@
-// supervisor/state.js — the conversation state every module reads and writes.
+// orchestrator/state.js — the conversation state every module reads and writes.
 //
 // One exported object rather than one export per value, and that is forced
 // rather than stylistic. An ES module export is a *live binding*: an importing
@@ -65,7 +65,7 @@ export const state = {
   // Expanded task row: only one detail row open at a time.
   _expandedTaskId: null,
 
-  // Track previous supervisor statuses so we can flash badges on change.
+  // Track previous orchestrator statuses so we can flash badges on change.
   _prevStatuses: {},
 
   // Panel sizing.

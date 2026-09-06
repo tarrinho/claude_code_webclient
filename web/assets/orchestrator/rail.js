@@ -1,4 +1,4 @@
-// supervisor/rail.js — dependency-ordered overview of the task DAG.
+// orchestrator/rail.js — dependency-ordered overview of the task DAG.
 //
 // Additive: the flat #task-tree list (tasks.js) stays exactly as it is for
 // per-task detail and click-to-expand. This is an overview strip above it.
@@ -6,7 +6,7 @@
 import { el } from "./dom.js";
 
 // `depends_on` arrives from the API as a JSON-encoded string, not an array --
-// db_supervisors.supervisor_task_create stores it via json.dumps(deps or []),
+// db_supervisors.orchestrator_task_create stores it via json.dumps(deps or []),
 // so every task's column is literally the string "[]" at minimum, never SQL
 // NULL and never a real array. `(t.depends_on || [])` does not catch that: a
 // truthy string still reaches `.every`, which a string does not have.
@@ -30,7 +30,7 @@ function _dependsOnList(value) {
  *
  * A task lands in the earliest layer every one of its dependencies has
  * already cleared. A dependency cycle should never reach here -- PlanParser
- * (supervisor.py) excludes self-references -- but must not hang the UI if
+ * (orchestrator.py) excludes self-references -- but must not hang the UI if
  * one somehow does: anything still unplaced after `tasks.length` passes is
  * dumped into one final "unresolved" layer rather than looping forever.
  */

@@ -5,7 +5,7 @@ Extracted from app.py in 0.10.0. Twenty names, found by closing over
 a row is waiting on you, and nothing else. After closure the group referenced no
 app.py name except the logger, which is what made it a seam rather than a cut.
 
-Two surfaces call `classify_chat`: the sidebar and the supervisor members panel.
+Two surfaces call `classify_chat`: the sidebar and the orchestrator members panel.
 They once assembled its inputs separately and so agreed on the rule while
 disagreeing on the data -- the members panel announced running work as finished
 while the sidebar kept it quiet. `_cli_maps` exists to stop that recurring, and
@@ -208,7 +208,7 @@ def _asks_a_question(text: str) -> bool:
 
 
 def _one_line(text: str, limit: int = 120) -> str:
-    """First line of *text*, collapsed, for the supervisor's preview column."""
+    """First line of *text*, collapsed, for the orchestrator's preview column."""
     flat = " ".join((text or "").split())
     return flat[: limit - 1] + "…" if len(flat) > limit else flat
 
@@ -389,7 +389,7 @@ def classify_chat(
     Returns the entry with a "status" key set, or None when the conversation
     should not be listed at all.
 
-    Extracted so the sidebar and the supervisor members panel share one
+    Extracted so the sidebar and the orchestrator members panel share one
     definition of what "stuck" means. They had to: two implementations would
     agree only by coincidence, and would drift the first time either was
     touched -- the same argument that made backend_kind a single function
@@ -557,7 +557,7 @@ async def _classify_cli_session(cli: dict, meta: dict, mark: dict) -> dict | Non
     """Classify one terminal session as waiting, working, or not listed at all.
 
     The counterpart of `classify_chat`, and named to say so. Both halves of the
-    supervisor feed answer the same question -- is a person needed here -- about
+    orchestrator feed answer the same question -- is a person needed here -- about
     two kinds of thing, but only one of them was a function. The other was a
     hundred-and-forty-line loop body inside the handler, and that asymmetry is
     why the two drifted: every rule the conversation path learned had to be

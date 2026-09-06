@@ -174,7 +174,7 @@ class SingleSourceOfTruthTests(unittest.TestCase):
     def test_the_server_reuses_the_panel_heuristic(self):
         """Not a second definition of "is this a question".
 
-        `_asks_a_question` already decides this for the supervisor panel's "?".
+        `_asks_a_question` already decides this for the orchestrator panel's "?".
         A conversation that disagreed with the sidebar about the same message
         would be worse than either mark alone.
         """

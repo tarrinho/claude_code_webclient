@@ -7,7 +7,7 @@ Claude Code writes its own state into ``~/.claude/sessions/<pid>.json``. On
     idle     nothing further to do -- the task concluded
     waiting  blocked, a person is needed
 
-The supervisor tested ``status != "busy"``, which put both of the last two into
+The orchestrator tested ``status != "busy"``, which put both of the last two into
 the waiting feed. So every agent that *finished* was reported as one blocked on a
 question, with its closing sentence presented as the thing it was asking -- and
 the badge that exists to say "someone needs you" counted rows that needed
@@ -76,7 +76,7 @@ def _code_only(source: str) -> str:
 class StatusMeaningTests(unittest.TestCase):
     def test_waiting_reaches_the_user(self):
         """Guards everything else: if this stopped being waiting, the rest of
-        this file would pass against a supervisor that reports nothing at all."""
+        this file would pass against a orchestrator that reports nothing at all."""
         entry = classify("waiting")
         self.assertIsNotNone(entry)
         self.assertEqual(entry["status"], "waiting")
@@ -106,7 +106,7 @@ class StatusMeaningTests(unittest.TestCase):
         """`reason: "asks"` on an idle session was a fabricated question.
 
         It came from the status field, not from reading the transcript, so the
-        supervisor asserted an ask it had no evidence for.
+        orchestrator asserted an ask it had no evidence for.
         """
         entry = classify("idle")
         self.assertNotEqual(entry.get("reason"), "asks")

@@ -1,6 +1,6 @@
-# db_supervisors.py — Supervisor orchestration persistence.
+# db_supervisors.py — Orchestrator orchestration persistence.
 #
-# Extracted from db.py so that the supervisor route layer (routes/supervisors.py)
+# Extracted from db.py so that the orchestrator route layer (routes/orchestrators.py)
 # can import these helpers without pulling the full database module.
 
 import json
@@ -9,47 +9,47 @@ from typing import Any
 
 import db
 
-_log = logging.getLogger("wc.db.supervisors")
+_log = logging.getLogger("wc.db.orchestrators")
 
 
-async def supervisor_list(owner_id: str) -> list[dict[str, Any]]:
-    """All supervisors for *owner_id*, newest first."""
+async def orchestrator_list(owner_id: str) -> list[dict[str, Any]]:
+    """All orchestrators for *owner_id*, newest first."""
     cur = await db.db_conn.execute(
         "SELECT id, title, description, config, status, progress_pct, "
         "created_at, updated_at, completed_at, degraded, degraded_reason "
-        "FROM supervisors WHERE owner_id = ? ORDER BY id DESC",
+        "FROM orchestrators WHERE owner_id = ? ORDER BY id DESC",
         (owner_id,),
     )
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def supervisor_get(supervisor_id: str, owner_id: str) -> dict[str, Any] | None:
-    """Fetch one supervisor, owner-scoped."""
+async def orchestrator_get(orchestrator_id: str, owner_id: str) -> dict[str, Any] | None:
+    """Fetch one orchestrator, owner-scoped."""
     cur = await db.db_conn.execute(
         "SELECT id, title, description, config, status, plan, progress_pct, "
         "created_at, updated_at, completed_at, degraded, degraded_reason "
-        "FROM supervisors WHERE id = ? AND owner_id = ?",
-        (supervisor_id, owner_id),
+        "FROM orchestrators WHERE id = ? AND owner_id = ?",
+        (orchestrator_id, owner_id),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
 
 
-async def supervisor_create(
-    supervisor_id: str,
+async def orchestrator_create(
+    orchestrator_id: str,
     title: str,
     description: str | None,
     owner_id: str,
     config: dict[str, Any] | None = None,
 ) -> str:
-    """Create a new supervisor and return its created_at timestamp."""
+    """Create a new orchestrator and return its created_at timestamp."""
     now = db._now()
     await db.db_conn.execute(
-        "INSERT INTO supervisors (id, title, description, config, owner_id, status, "
+        "INSERT INTO orchestrators (id, title, description, config, owner_id, status, "
         "progress_pct, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, 'idle', 0.0, ?, '')",
         (
-            supervisor_id,
+            orchestrator_id,
             title,
             description,
             json.dumps(config or {}),
@@ -61,8 +61,8 @@ async def supervisor_create(
     return now
 
 
-async def supervisor_update(
-    supervisor_id: str,
+async def orchestrator_update(
+    orchestrator_id: str,
     owner_id: str,
     title: str | None = None,
     description: str | None = None,
@@ -71,7 +71,7 @@ async def supervisor_update(
     progress_pct: float | None = None,
     config: dict[str, Any] | None = None,
 ) -> bool:
-    """Update supervisor fields; only non-None values are set.  Returns rowcount."""
+    """Update orchestrator fields; only non-None values are set.  Returns rowcount."""
     pairs: list[tuple[str, Any]] = [
         ("title", title),
         ("description", description),
@@ -91,30 +91,30 @@ async def supervisor_update(
         return False
     sets.append("updated_at = ?")
     vals.append(db._now())
-    vals.extend([supervisor_id, owner_id])
+    vals.extend([orchestrator_id, owner_id])
     sql = (
-        "UPDATE supervisors SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
+        "UPDATE orchestrators SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
     )
     cur = await db.db_conn.execute(sql, vals)
     await db.db_conn.commit()
     return cur.rowcount > 0
 
 
-async def supervisor_delete(supervisor_id: str, owner_id: str) -> bool:
-    """Delete a supervisor and all its tasks/messages.  Returns rowcount."""
+async def orchestrator_delete(orchestrator_id: str, owner_id: str) -> bool:
+    """Delete a orchestrator and all its tasks/messages.  Returns rowcount."""
     try:
         await db.db_conn.execute("BEGIN")
         await db.db_conn.execute(
-            "DELETE FROM supervisor_tasks WHERE supervisor_id = ?",
-            (supervisor_id,),
+            "DELETE FROM orchestrator_tasks WHERE orchestrator_id = ?",
+            (orchestrator_id,),
         )
         await db.db_conn.execute(
-            "DELETE FROM supervisor_messages WHERE supervisor_id = ?",
-            (supervisor_id,),
+            "DELETE FROM orchestrator_messages WHERE orchestrator_id = ?",
+            (orchestrator_id,),
         )
         cur = await db.db_conn.execute(
-            "DELETE FROM supervisors WHERE id = ? AND owner_id = ?",
-            (supervisor_id, owner_id),
+            "DELETE FROM orchestrators WHERE id = ? AND owner_id = ?",
+            (orchestrator_id, owner_id),
         )
         await db.db_conn.commit()
         return cur.rowcount > 0
@@ -123,12 +123,12 @@ async def supervisor_delete(supervisor_id: str, owner_id: str) -> bool:
         raise
 
 
-async def supervisor_tasks_get(
-    supervisor_id: str, owner_id: str
+async def orchestrator_tasks_get(
+    orchestrator_id: str, owner_id: str
 ) -> list[dict[str, Any]]:
-    """All tasks for one owner's supervisor, ordered by creation.
+    """All tasks for one owner's orchestrator, ordered by creation.
 
-    ``owner_id`` was accepted and never used, so ``GET /api/supervisors/{any
+    ``owner_id`` was accepted and never used, so ``GET /api/orchestrators/{any
     id}/tasks`` returned any account's task titles, descriptions and results --
     agent output -- to any authenticated caller.  The argument's presence is what
     made it invisible: the handler passes it, so the call reads as scoped.
@@ -137,20 +137,20 @@ async def supervisor_tasks_get(
     where it was already missing.
     """
     cur = await db.db_conn.execute(
-        "SELECT t.id, t.supervisor_id, t.title, t.description, t.status, "
+        "SELECT t.id, t.orchestrator_id, t.title, t.description, t.status, "
         "       t.model, t.result, t.progress_pct, t.parent_task_id, "
         "       t.depends_on, t.created_at, t.updated_at "
-        "FROM supervisor_tasks t "
-        "JOIN supervisors s ON s.id = t.supervisor_id AND s.owner_id = ? "
-        "WHERE t.supervisor_id = ? "
+        "FROM orchestrator_tasks t "
+        "JOIN orchestrators s ON s.id = t.orchestrator_id AND s.owner_id = ? "
+        "WHERE t.orchestrator_id = ? "
         "ORDER BY t.id ASC",
-        (owner_id, supervisor_id),
+        (owner_id, orchestrator_id),
     )
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def supervisor_task_create(
-    supervisor_id: str,
+async def orchestrator_task_create(
+    orchestrator_id: str,
     task_id: str,
     title: str,
     description: str | None,
@@ -158,16 +158,16 @@ async def supervisor_task_create(
     parent_task_id: str | None = None,
     depends_on: list[str] | None = None,
 ) -> str:
-    """Create a task under a supervisor.  Returns created_at timestamp."""
+    """Create a task under a orchestrator.  Returns created_at timestamp."""
     now = db._now()
     await db.db_conn.execute(
-        "INSERT INTO supervisor_tasks "
-        "(id, supervisor_id, title, description, status, model, result, "
+        "INSERT INTO orchestrator_tasks "
+        "(id, orchestrator_id, title, description, status, model, result, "
         "progress_pct, parent_task_id, depends_on, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, 'pending', ?, '', 0.0, ?, ?, ?, ?)",
         (
             task_id,
-            supervisor_id,
+            orchestrator_id,
             title,
             description,
             model,
@@ -181,8 +181,8 @@ async def supervisor_task_create(
     return now
 
 
-async def supervisor_task_update(
-    supervisor_id: str,
+async def orchestrator_task_update(
+    orchestrator_id: str,
     task_id: str,
     owner_id: str,
     status: str | None = None,
@@ -209,7 +209,7 @@ async def supervisor_task_update(
         return False
     sets.append("updated_at = ?")
     vals.append(db._now())
-    vals.extend([task_id, supervisor_id])
+    vals.extend([task_id, orchestrator_id])
     # Scoped by ownership, not only by ids.  SQLite has no UPDATE ... JOIN, so
     # the check is a subselect.  This is the only write among the five functions
     # that took ``owner_id`` and ignored it, and its callers are all inside the
@@ -217,47 +217,47 @@ async def supervisor_task_update(
     # cross-tenant reads were until somebody added a route.
     vals.append(owner_id)
     sql = (
-        "UPDATE supervisor_tasks SET " + ", ".join(sets)
-        + " WHERE id = ? AND supervisor_id = ? AND supervisor_id IN "
-          "(SELECT id FROM supervisors WHERE owner_id = ?)"
+        "UPDATE orchestrator_tasks SET " + ", ".join(sets)
+        + " WHERE id = ? AND orchestrator_id = ? AND orchestrator_id IN "
+          "(SELECT id FROM orchestrators WHERE owner_id = ?)"
     )
     cur = await db.db_conn.execute(sql, vals)
     await db.db_conn.commit()
     return cur.rowcount > 0
 
 
-async def supervisor_task_get(
-    supervisor_id: str, task_id: str, owner_id: str
+async def orchestrator_task_get(
+    orchestrator_id: str, task_id: str, owner_id: str
 ) -> dict[str, Any] | None:
-    """Fetch one task under one owner's supervisor.
+    """Fetch one task under one owner's orchestrator.
 
     ``owner_id`` was accepted and unused here too.  Its only caller checks
     ownership first, so this was latent rather than reachable -- which is
     exactly the state the two reachable ones were in until a route was added.
     """
     cur = await db.db_conn.execute(
-        "SELECT t.id, t.supervisor_id, t.title, t.description, t.status, "
+        "SELECT t.id, t.orchestrator_id, t.title, t.description, t.status, "
         "       t.model, t.result, t.progress_pct, t.parent_task_id, "
         "       t.depends_on, t.created_at, t.updated_at "
-        "FROM supervisor_tasks t "
-        "JOIN supervisors s ON s.id = t.supervisor_id AND s.owner_id = ? "
-        "WHERE t.id = ? AND t.supervisor_id = ?",
-        (owner_id, task_id, supervisor_id),
+        "FROM orchestrator_tasks t "
+        "JOIN orchestrators s ON s.id = t.orchestrator_id AND s.owner_id = ? "
+        "WHERE t.id = ? AND t.orchestrator_id = ?",
+        (owner_id, task_id, orchestrator_id),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
 
 
-async def supervisor_messages_append(
-    supervisor_id: str, role: str, content: str, metadata: dict[str, Any] | None = None
+async def orchestrator_messages_append(
+    orchestrator_id: str, role: str, content: str, metadata: dict[str, Any] | None = None
 ) -> int:
-    """Append a supervisor message.  Returns row id."""
+    """Append a orchestrator message.  Returns row id."""
     cur = await db.db_conn.execute(
-        "INSERT INTO supervisor_messages "
-        "(supervisor_id, role, content, metadata, created_at) "
+        "INSERT INTO orchestrator_messages "
+        "(orchestrator_id, role, content, metadata, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (
-            supervisor_id,
+            orchestrator_id,
             role,
             content,
             json.dumps(metadata) if metadata else None,
@@ -268,17 +268,17 @@ async def supervisor_messages_append(
     return cur.lastrowid
 
 
-async def supervisor_messages_get(
-    supervisor_id: str,
+async def orchestrator_messages_get(
+    orchestrator_id: str,
     owner_id: str,
     after_id: int | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Read one owner's supervisor messages, optionally since a specific id.
+    """Read one owner's orchestrator messages, optionally since a specific id.
 
     Three things were wrong here and they were wrong in a way that read
     correctly.  ``owner_id`` was accepted and never used, so any authenticated
-    account could read any supervisor's conversation by id -- and every caller
+    account could read any orchestrator's conversation by id -- and every caller
     looked scoped, because the argument was right there in the call.  ``after_id``
     was accepted and never used either, so the SSE poller re-sent the same first
     hundred messages for ever.  And the ``if after_id is not None`` branch existed
@@ -291,11 +291,11 @@ async def supervisor_messages_get(
     """
     sql = (
         "SELECT m.id, m.role, m.content, m.metadata, m.created_at "
-        "FROM supervisor_messages m "
-        "JOIN supervisors s ON s.id = m.supervisor_id AND s.owner_id = ? "
-        "WHERE m.supervisor_id = ?"
+        "FROM orchestrator_messages m "
+        "JOIN orchestrators s ON s.id = m.orchestrator_id AND s.owner_id = ? "
+        "WHERE m.orchestrator_id = ?"
     )
-    params: list[Any] = [owner_id, supervisor_id]
+    params: list[Any] = [owner_id, orchestrator_id]
     if after_id:
         sql += " AND m.id > ?"
         params.append(after_id)
@@ -305,33 +305,33 @@ async def supervisor_messages_get(
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def supervisor_members_list(supervisor_id: str) -> list[dict[str, Any]]:
-    """The chats a supervisor watches, newest addition last.
+async def orchestrator_members_list(orchestrator_id: str) -> list[dict[str, Any]]:
+    """The chats a orchestrator watches, newest addition last.
 
     Joined against ``chats`` so a member whose conversation was deleted simply
-    stops appearing.  An INNER JOIN rather than a LEFT one: a supervisor listing
+    stops appearing.  An INNER JOIN rather than a LEFT one: a orchestrator listing
     a conversation that no longer exists is the failure worth preventing, and a
     row with a null title beside a real status reads as a bug.
 
-    Deliberately returns no status.  That comes from the supervisor classifier,
+    Deliberately returns no status.  That comes from the orchestrator classifier,
     which already decides working/waiting/failed for every chat and session; a
     second definition here would agree with it only by coincidence, and the two
     would drift the first time either changed.
     """
     cur = await db.db_conn.execute(
-        "SELECT m.supervisor_id, m.chat_id, m.added_at, "
+        "SELECT m.orchestrator_id, m.chat_id, m.added_at, "
         "       c.title, c.session_id, c.work_dir "
-        "FROM supervisor_members m "
+        "FROM orchestrator_members m "
         "JOIN chats c ON c.id = m.chat_id AND c.deleted_at IS NULL "
-        "WHERE m.supervisor_id = ? "
+        "WHERE m.orchestrator_id = ? "
         "ORDER BY m.added_at ASC, m.chat_id ASC",
-        (supervisor_id,),
+        (orchestrator_id,),
     )
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def supervisor_member_add(supervisor_id: str, chat_id: str) -> bool:
-    """Add one chat to a supervisor.  True if it was not already a member.
+async def orchestrator_member_add(orchestrator_id: str, chat_id: str) -> bool:
+    """Add one chat to a orchestrator.  True if it was not already a member.
 
     The caller is responsible for having checked that *chat_id* belongs to the
     requesting owner: this layer stores what it is given, and an unchecked id
@@ -339,30 +339,30 @@ async def supervisor_member_add(supervisor_id: str, chat_id: str) -> bool:
     with its title and preview.
     """
     cur = await db.db_conn.execute(
-        "INSERT INTO supervisor_members (supervisor_id, chat_id, added_at) "
-        "VALUES (?, ?, ?) ON CONFLICT(supervisor_id, chat_id) DO NOTHING",
-        (supervisor_id, chat_id, db._now()),
+        "INSERT INTO orchestrator_members (orchestrator_id, chat_id, added_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(orchestrator_id, chat_id) DO NOTHING",
+        (orchestrator_id, chat_id, db._now()),
     )
     await db.db_conn.commit()
     return cur.rowcount > 0
 
 
-async def supervisor_member_remove(supervisor_id: str, chat_id: str) -> bool:
+async def orchestrator_member_remove(orchestrator_id: str, chat_id: str) -> bool:
     """Drop a member.  Never deletes the conversation itself.
 
-    A supervisor is a view over work, not its owner -- removing a member must
+    A orchestrator is a view over work, not its owner -- removing a member must
     leave the conversation exactly as it was.
     """
     cur = await db.db_conn.execute(
-        "DELETE FROM supervisor_members WHERE supervisor_id = ? AND chat_id = ?",
-        (supervisor_id, chat_id),
+        "DELETE FROM orchestrator_members WHERE orchestrator_id = ? AND chat_id = ?",
+        (orchestrator_id, chat_id),
     )
     await db.db_conn.commit()
     return cur.rowcount > 0
 
 
-async def supervisor_progress(supervisor_id: str, owner_id: str) -> float:
-    """Mean task progress for one owner's supervisor, 0.0 when it has no tasks.
+async def orchestrator_progress(orchestrator_id: str, owner_id: str) -> float:
+    """Mean task progress for one owner's orchestrator, 0.0 when it has no tasks.
 
     Has no callers at the time of writing.  Kept and scoped rather than deleted
     because the name is one somebody will reach for, and an unscoped query
@@ -372,10 +372,10 @@ async def supervisor_progress(supervisor_id: str, owner_id: str) -> float:
     """
     cur = await db.db_conn.execute(
         "SELECT COUNT(*) AS total, SUM(t.progress_pct) AS sum_pct "
-        "FROM supervisor_tasks t "
-        "JOIN supervisors s ON s.id = t.supervisor_id AND s.owner_id = ? "
-        "WHERE t.supervisor_id = ?",
-        (owner_id, supervisor_id),
+        "FROM orchestrator_tasks t "
+        "JOIN orchestrators s ON s.id = t.orchestrator_id AND s.owner_id = ? "
+        "WHERE t.orchestrator_id = ?",
+        (owner_id, orchestrator_id),
     )
     row = await cur.fetchone()
     total = (row["total"] if row else 0) or 0
@@ -384,8 +384,8 @@ async def supervisor_progress(supervisor_id: str, owner_id: str) -> float:
     return round(float(row["sum_pct"] or 0) / total, 1)
 
 
-async def supervisor_mark_degraded(supervisor_id: str, kind: str, detail: str) -> None:
-    """Flag *supervisor_id* as carrying a known write failure of *kind*.
+async def orchestrator_mark_degraded(orchestrator_id: str, kind: str, detail: str) -> None:
+    """Flag *orchestrator_id* as carrying a known write failure of *kind*.
 
     Never raises -- see chat_mark_degraded in routes/db_chats.py for the same
     reasoning; the two exist in parallel rather than as one shared function
@@ -394,17 +394,17 @@ async def supervisor_mark_degraded(supervisor_id: str, kind: str, detail: str) -
     """
     try:
         await db.db_conn.execute(
-            "UPDATE supervisors SET degraded = 1, degraded_reason = ? WHERE id = ?",
-            (f"{kind}: {detail}", supervisor_id),
+            "UPDATE orchestrators SET degraded = 1, degraded_reason = ? WHERE id = ?",
+            (f"{kind}: {detail}", orchestrator_id),
         )
         await db.db_conn.commit()
     except Exception:
         _log.exception(
-            "supervisor_mark_degraded failed id=%s kind=%s", supervisor_id, kind,
+            "supervisor_mark_degraded failed id=%s kind=%s", orchestrator_id, kind,
         )
 
 
-async def supervisor_clear_degraded(supervisor_id: str, kind: str) -> None:
+async def orchestrator_clear_degraded(orchestrator_id: str, kind: str) -> None:
     """Clear the flag, but only if it currently names this same *kind*.
 
     A clear for kind B never touches a flag currently showing kind A. But
@@ -417,12 +417,12 @@ async def supervisor_clear_degraded(supervisor_id: str, kind: str) -> None:
     """
     try:
         await db.db_conn.execute(
-            "UPDATE supervisors SET degraded = 0, degraded_reason = NULL "
+            "UPDATE orchestrators SET degraded = 0, degraded_reason = NULL "
             "WHERE id = ? AND degraded_reason LIKE ?",
-            (supervisor_id, f"{kind}:%"),
+            (orchestrator_id, f"{kind}:%"),
         )
         await db.db_conn.commit()
     except Exception:
         _log.exception(
-            "supervisor_clear_degraded failed id=%s kind=%s", supervisor_id, kind,
+            "supervisor_clear_degraded failed id=%s kind=%s", orchestrator_id, kind,
         )

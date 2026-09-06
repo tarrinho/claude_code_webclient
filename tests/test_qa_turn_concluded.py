@@ -146,7 +146,7 @@ class ConclusionTests(unittest.TestCase):
         """Never guess "finished" from an absent transcript.
 
         Reporting a session as done because its file could not be read would
-        retire a live agent from the supervisor's attention, which is the one
+        retire a live agent from the orchestrator's attention, which is the one
         error mode here with a real cost.
         """
         state = transcripts._conclusion_sync(Path("/nonexistent/nope.jsonl"))

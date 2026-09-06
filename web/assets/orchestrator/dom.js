@@ -1,4 +1,4 @@
-// supervisor/dom.js — the element handles every module reaches for.
+// orchestrator/dom.js — the element handles every module reaches for.
 //
 // A leaf module on purpose. These lived in main.js, which imports every
 // other module, so every user of `$$` or `el` closed a cycle -- and a
@@ -14,7 +14,7 @@
   export const $$ = (s) => document.querySelectorAll(s);
 
   export const el = {
-    supervisorList: $("#supervisor-list"),
+    supervisorList: $("#orchestrator-list"),
     taskTree: $("#task-tree"),
     taskRail: $("#task-rail"),
     chatMessages: $("#chat-messages"),
@@ -23,10 +23,10 @@
     promptInput: $("#prompt-input"),
     sendBtn: $("#send-btn"),
     startScreen: $("#start-screen"),
-    supervisorChat: $("#supervisor-chat"),
+    supervisorChat: $("#orchestrator-chat"),
     detailContent: $("#detail-content"),
     progressBarFill: $("#overall-progress-fill"),
-    newSupervisorBtn: $("#new-supervisor-btn"),
+    newSupervisorBtn: $("#new-orchestrator-btn"),
     topbarInfo: $("#topbar-info"),
     goalBanner: $("#goal-banner"),
     goalText: $("#goal-text"),

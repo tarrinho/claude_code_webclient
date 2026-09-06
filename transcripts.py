@@ -1273,7 +1273,7 @@ async def usage_since(session_id: str, offset: int = 0) -> tuple[list[dict[str, 
 # text is the only place the reason survives, and it always opens this way.
 _SYNTHETIC_MODEL: Final[str] = "<synthetic>"
 _ERROR_PREFIX: Final[str] = "api error"
-# Only the tail is read. This runs against sessions the supervisor has already
+# Only the tail is read. This runs against sessions the orchestrator has already
 # decided are busy, on every poll, so it must not touch a 22 MB archive.
 _ERROR_TAIL_BYTES: Final[int] = 64 * 1024
 
@@ -1329,7 +1329,7 @@ def _last_error_sync(path: Path) -> str | None:
 async def last_error(session_id: str) -> str | None:
     """Report a session whose newest turn is a failed one.
 
-    The supervisor short-circuits on Claude Code's own "busy" status and never
+    The orchestrator short-circuits on Claude Code's own "busy" status and never
     reads the transcript, which is what keeps polling cheap. But a session
     retrying a failing endpoint reports busy the whole time -- "Retrying in 11s
     - attempt 9/10" is busy by every measure the status field has -- so a run

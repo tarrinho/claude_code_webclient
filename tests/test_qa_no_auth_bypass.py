@@ -1,12 +1,12 @@
 """QA: only logging in may mint a session.
 
-A `/dev/supervisor-trigger` route reached production. It was a GET, so the CSRF
+A `/dev/orchestrator-trigger` route reached production. It was a GET, so the CSRF
 middleware did not apply to it -- that guards {POST, PUT, PATCH, DELETE} -- it
 required no credential, and it called `auth.session_new("admin", "admin")` and
 returned the session id in the response body. Anyone who could reach the host
 had admin without seeing the login page, and any page open in the operator's
 browser could fire the request cross-origin: unreadable there, but the session
-was still minted and a supervisor run still started.
+was still minted and a orchestrator run still started.
 
 It was labelled "temporary, remove when done" and had been live for hours.
 ruff had flagged RUF059 on its very line -- `csrf` unpacked and never used --

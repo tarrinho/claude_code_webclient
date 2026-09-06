@@ -4,7 +4,7 @@ import {formatTime, formatAbsoluteTime} from './app.js?v=38';
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share top-level
 // scope across files), so it needs its own -- same pattern as
-// supervisor.js/device-alerts.js/server-stats.js/skills.js.
+// orchestrator.js/device-alerts.js/server-stats.js/skills.js.
 const byId = id => document.getElementById(id);
 let _usageData = null;          // last GET /api/usage payload
 let _usageFetchedFor = null;    // range the payload was fetched for

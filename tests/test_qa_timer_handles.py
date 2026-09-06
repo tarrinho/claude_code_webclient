@@ -31,13 +31,13 @@ ASSETS = WEB / "assets"
 def _shipped_js() -> list[Path]:
     """Every client script the server serves, not only the module directory.
 
-    This scanned ``web/assets/*.js`` alone, and the supervisor page is the one
+    This scanned ``web/assets/*.js`` alone, and the orchestrator page is the one
     client script that lives directly in ``web/`` -- so the file was outside the
     glob while the docstring above claimed "every repeating timer in the
     frontend". It went unnoticed because a scanner that looks in the wrong place
     reports clean and *looks* clean: the sweep that fixed every other bare timer
     (``3a68c5c``, "hold every repeating timer") passed this class afterwards
-    while ``web/supervisor.js`` still held one. rules.md §4's own verification
+    while ``web/orchestrator.js`` still held one. rules.md §4's own verification
     command greps the same narrow glob, so running the rule by hand could not
     have caught it either.
 
@@ -46,14 +46,14 @@ def _shipped_js() -> list[Path]:
 
     **Recursive, and that is the point.** The two flat globs it replaces would
     have recreated the exact hole they were written to close: a client script in
-    any *subdirectory* of ``web/`` — ``web/assets/supervisor/list.js``, say —
+    any *subdirectory* of ``web/`` — ``web/assets/orchestrator/list.js``, say —
     matches neither ``web/*.js`` nor ``web/assets/*.js``, so it would silently
     stop being scanned. Nothing fails when a scanner looks in the wrong place;
     it reports clean. That is how a bare ``setInterval`` survived the sweep in
     ``3a68c5c`` that was supposed to remove every one of them.
 
     Caught before it could bite, while planning the 0.10.0 split of
-    ``web/supervisor.js`` into ``web/assets/supervisor/``. ``rglob`` finds the
+    ``web/orchestrator.js`` into ``web/assets/orchestrator/``. ``rglob`` finds the
     same nine files today, so this changes nothing now and everything later.
     """
     return sorted(WEB.rglob("*.js"))
@@ -116,7 +116,7 @@ class TimerHandleTests(unittest.TestCase):
         """The glob was the defect, so the glob is what this pins.
 
         The regex worked the whole time; the scan simply never looked at
-        ``web/supervisor.js``, and a class that passes while missing a file is
+        ``web/orchestrator.js``, and a class that passes while missing a file is
         indistinguishable from one that passes because the tree is clean. Without
         this assertion the scope can be narrowed back to ``web/assets`` and every
         other test here still passes -- which is how the gap survived the sweep
@@ -130,15 +130,15 @@ class TimerHandleTests(unittest.TestCase):
         # used to be, and pinning equality would make the scan *fail* the first
         # time a script lands in a subdirectory -- which is precisely the case
         # the recursive version exists to cover, and precisely the change
-        # 0.10.0 makes to web/supervisor.js.
+        # 0.10.0 makes to web/orchestrator.js.
         self.assertTrue(
             flat <= scanned,
             f"the scan no longer covers what the flat globs did: {flat - scanned}",
         )
         # Named, but by subject rather than by path. This was
-        # `assertIn("supervisor.js", scanned)`, an exact string match against a
+        # `assertIn("orchestrator.js", scanned)`, an exact string match against a
         # relative path -- which the 0.10.0 split breaks, because the same code
-        # becomes `assets/supervisor/main.js` and friends. A test that fails on
+        # becomes `assets/orchestrator/main.js` and friends. A test that fails on
         # the move it was written to survive would be read as the move's fault
         # and edited out of the way, taking the property with it.
         #
@@ -146,10 +146,10 @@ class TimerHandleTests(unittest.TestCase):
         # scan is narrowed back to `web/assets/*.js` this set goes empty today
         # (the file sits in `web/`) *and* after the move (the modules sit in a
         # subdirectory). That is the whole assertion.
-        supervisor_scripts = {p for p in scanned if "supervisor" in p}
+        supervisor_scripts = {p for p in scanned if "orchestrator" in p}
         self.assertTrue(
             supervisor_scripts,
-            "no supervisor client script is scanned; this is the code the "
+            "no orchestrator client script is scanned; this is the code the "
             "narrow glob missed, wherever it now lives",
         )
         self.assertIn("assets/app.js", scanned)
@@ -164,8 +164,8 @@ class TimerHandleTests(unittest.TestCase):
         would replace the reference and leak the previous timer, leaving two
         polls running and only one of them stoppable.
 
-        Read from every supervisor script joined together, not from
-        ``web/supervisor.js`` by name. Two reasons, and the second is the one
+        Read from every orchestrator script joined together, not from
+        ``web/orchestrator.js`` by name. Two reasons, and the second is the one
         that matters. The name disappears in the 0.10.0 split, so a direct read
         would raise ``FileNotFoundError`` on the move. And the three markers
         need not land in the same new module -- the handle may end up in a state
@@ -174,9 +174,9 @@ class TimerHandleTests(unittest.TestCase):
         requires is that the guard exist somewhere in the code that owns the
         timer, which is what joining asserts.
         """
-        sources = [p for p in _shipped_js() if "supervisor" in p.name
-                   or "supervisor" in p.parent.name]
-        self.assertTrue(sources, "no supervisor client script found to check")
+        sources = [p for p in _shipped_js() if "orchestrator" in p.name
+                   or "orchestrator" in p.parent.name]
+        self.assertTrue(sources, "no orchestrator client script found to check")
         source = "\n".join(p.read_text(encoding="utf-8") for p in sources)
         # `state.` is optional in each of these. The 0.10.0 split moved the
         # shared bindings into a state object, so the handle is now
@@ -204,7 +204,7 @@ class TimerHandleTests(unittest.TestCase):
     def test_a_script_in_a_subdirectory_is_scanned(self):
         """The trap this scanner is one edit away from falling into.
 
-        `web/supervisor.js` is about to become `web/assets/supervisor/*.js`, and
+        `web/orchestrator.js` is about to become `web/assets/orchestrator/*.js`, and
         a flat glob would stop seeing it without failing -- the same silent
         blindness that let a bare timer survive the sweep meant to remove every
         one. Asserted with a real temporary file rather than by reading the

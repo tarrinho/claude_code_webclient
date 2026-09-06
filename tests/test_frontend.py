@@ -17,22 +17,22 @@ class FrontendStructureTests(unittest.TestCase):
         cls.chat_list = (ASSETS / "chat-list.js").read_text()
         cls.conversation = (ASSETS / "conversation.js").read_text()
         # Backends/models markup-building code moved here, and the pane's
-        # supervisor.html navigation moved here, in a later module split.
+        # orchestrator.html navigation moved here, in a later module split.
         cls.machines = (ASSETS / "machines.js").read_text()
-        cls.supervisor = (ASSETS / "supervisor.js").read_text()
-        cls.supervisor_list_js = (ASSETS / "supervisor" / "list.js").read_text()
-        cls.rail = (ASSETS / "supervisor" / "rail.js").read_text()
-        cls.tasks_js = (ASSETS / "supervisor" / "tasks.js").read_text()
-        cls.dom_js = (ASSETS / "supervisor" / "dom.js").read_text()
-        cls.supervisor_html = (WEB / "supervisor.html").read_text()
-        cls.banners_js = (ASSETS / "supervisor" / "banners.js").read_text()
-        cls.members_js = (ASSETS / "supervisor" / "members.js").read_text()
-        cls.list_js = (ASSETS / "supervisor" / "list.js").read_text()
-        cls.main_js_supervisor = (ASSETS / "supervisor" / "main.js").read_text()
+        cls.orchestrator = (ASSETS / "orchestrator.js").read_text()
+        cls.supervisor_list_js = (ASSETS / "orchestrator" / "list.js").read_text()
+        cls.rail = (ASSETS / "orchestrator" / "rail.js").read_text()
+        cls.tasks_js = (ASSETS / "orchestrator" / "tasks.js").read_text()
+        cls.dom_js = (ASSETS / "orchestrator" / "dom.js").read_text()
+        cls.supervisor_html = (WEB / "orchestrator.html").read_text()
+        cls.banners_js = (ASSETS / "orchestrator" / "banners.js").read_text()
+        cls.members_js = (ASSETS / "orchestrator" / "members.js").read_text()
+        cls.list_js = (ASSETS / "orchestrator" / "list.js").read_text()
+        cls.main_js_supervisor = (ASSETS / "orchestrator" / "main.js").read_text()
         # Not named in the plan's fixture list, but the new test below reads
         # self.stream_js and no prior test had loaded it -- without this the
         # test errors with AttributeError rather than failing its assertions.
-        cls.stream_js = (ASSETS / "supervisor" / "stream.js").read_text()
+        cls.stream_js = (ASSETS / "orchestrator" / "stream.js").read_text()
 
     def test_html_uses_external_assets(self):
         # Trailing quote omitted so a cache-busting ?v=N query stays valid. The
@@ -395,7 +395,7 @@ class FrontendStructureTests(unittest.TestCase):
 
     def test_turn_progress_estimate_matches_the_supervisor_pattern(self):
         """Elapsed time until this chat has history, an estimated % after --
-        same honest-fallback shape as the supervisor pane's per-task version,
+        same honest-fallback shape as the orchestrator pane's per-task version,
         never presented as a real measurement."""
         self.assertIn("_estimatedTurnPct", self.conversation)
         self.assertIn("_recordTurnDuration", self.conversation)
@@ -545,20 +545,20 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("dispatchEvent", self.chat_list)
 
     def test_the_supervisor_section_links_to_the_supervisor(self):
-        """The section names the supervisor, so it should reach it.
+        """The section names the orchestrator, so it should reach it.
 
         The only route in was a 📡 in the topbar, which does not say what it
         opens and sits nowhere near the agents it is about.
         """
-        self.assertIn("open-supervisor", self.chat_list)
+        self.assertIn("open-orchestrator", self.chat_list)
         self.assertIn("onOpenSupervisor", self.chat_list)
-        # openSupervisorPane's navigation moved to supervisor.js in a later
+        # openSupervisorPane's navigation moved to orchestrator.js in a later
         # module split.
-        self.assertIn("supervisor.html", self.supervisor)
+        self.assertIn("orchestrator.html", self.orchestrator)
 
     def test_the_supervisor_heading_survives_an_empty_queue(self):
         """The link has to be reachable when nothing is waiting -- that is
-        exactly when you want to go and look at the supervisor."""
+        exactly when you want to go and look at the orchestrator."""
         self.assertIn("nothingToShow", self.chat_list)
         body = self.chat_list.split("function renderSupervisor")[1].split("function render(")[0]
         self.assertIn("list.appendChild(heading)", body)
@@ -598,7 +598,7 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertIn("updateGateMarker(", self.stream_js)
         self.assertIn("topbarGate", self.dom_js)
         self.assertIn("state.members", self.members_js)
-        # Members must load when a supervisor is opened, not only after using
+        # Members must load when a orchestrator is opened, not only after using
         # the add/remove picker -- otherwise the gate marker is blind until
         # someone happens to touch that dialog.
         self.assertIn("loadMembers(", self.list_js)
@@ -624,7 +624,7 @@ class FrontendStructureTests(unittest.TestCase):
 
     def test_esc_escapes_both_quote_characters(self):
         """degraded_reason is interpolated into a `title="..."` HTML attribute
-        inside a template string assigned via innerHTML (web/assets/supervisor
+        inside a template string assigned via innerHTML (web/assets/orchestrator
         /list.js). That is only safe because esc() also escapes quotes, not
         just angle brackets -- pin it so an unrelated future edit to esc()
         cannot silently reopen that attribute-breakout."""

@@ -355,7 +355,7 @@ async def get_proxy_target(
         if not owner:
             return await get_proxy_host(), config.PROXY_PORT
         # Not a conversation -- same fallback get_backend uses for a caller
-        # (the supervisor) whose chat_id is a label rather than a row.
+        # (the orchestrator) whose chat_id is a label rather than a row.
         routing = {"machine": await db.ai_machine_backend(owner)}
     machine = routing["machine"]
     if not machine:
@@ -404,7 +404,7 @@ async def get_default_model(chat_id: str | None = None, owner: str | None = None
         machine = routing.get("machine")
         if machine and (machine.get("model") or "").strip():
             return machine["model"].strip()
-    # Same fallback as get_backend, and for the same caller: the supervisor's
+    # Same fallback as get_backend, and for the same caller: the orchestrator's
     # ids are not conversations, so the branch above finds nothing and the CLI
     # was left to pick its own default. A gateway that serves only one local
     # model then answered 429 "No deployments available for selected model,
@@ -455,11 +455,11 @@ async def get_backend(chat_id: str, owner: str | None = None) -> dict[str, str]:
     owner's active machine, as every conversation did before pinning existed.
 
     *owner* is the fallback for a caller whose chat_id is not a conversation at
-    all. The supervisor engine invents ids -- ``uuid4().hex`` for a planning
+    all. The orchestrator engine invents ids -- ``uuid4().hex`` for a planning
     turn, ``subtask_<id>`` for each task -- so chat_routing found no row, owner
     came back None, and this returned {}. That left the child with no base URL
     and no key while CLAUDE_CODE_SIMPLE=1 also blocked the host login, so every
-    supervisor turn died on "Not logged in - Please run /login". The engine
+    orchestrator turn died on "Not logged in - Please run /login". The engine
     could not reach any configured backend at all, which is why the feature had
     never once run a task.
 
@@ -715,7 +715,7 @@ def _build_cmd_direct(
         cmd.extend(["--resume", session_id])
     else:
         # A fresh session. Two callers land here legitimately: a new
-        # conversation with no session_id, and the supervisor engine, which
+        # conversation with no session_id, and the orchestrator engine, which
         # passes a "supervisor_<uuid>" marker precisely because it wants a new
         # one each time.
         #
@@ -1156,7 +1156,7 @@ async def stream_turn(
     """Yield SSE-compatible event dicts from the Claude Code subprocess/stream.
 
     *owner* has the same meaning as in :func:`run_turn`: the fallback identity for
-    a caller whose *chat_id* is not a row in ``chats``. The supervisor is that
+    a caller whose *chat_id* is not a row in ``chats``. The orchestrator is that
     caller -- its ids are ``supervisor_<uuid>`` for the planning turn and
     ``subtask_<id>`` for each task, which are labels rather than conversations --
     so without it ``get_backend`` finds no routing row, the child process is given

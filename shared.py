@@ -30,7 +30,7 @@ import turns
 _QUESTION_PENDING_NOTE = "(answer this in the terminal)"
 
 # Concurrent-SSE-connection cap, shared by every stream endpoint: chat
-# /stream and /live, supervisor /stream and task /stream, transcript
+# /stream and /live, orchestrator /stream and task /stream, transcript
 # /stream. Each open connection holds a Python generator, an event buffer,
 # and -- for the chat /stream endpoint specifically -- a turn slot, for as
 # long as the client keeps it open, which an authenticated caller fully
@@ -110,7 +110,7 @@ _SSE_INTERNAL = turns.INTERNAL_MESSAGE
 # value is passed to the subprocess as a single argv entry, never through a
 # shell, so the brackets carry no meaning downstream.
 #
-# Now `config.MODEL_ID_RE`, shared with supervisor.py, and tightened at the
+# Now `config.MODEL_ID_RE`, shared with orchestrator.py, and tightened at the
 # first character. The previous pattern was `^[A-Za-z0-9_.:/\[\]-]+$`, which
 # accepted `-p`, `--model` and `-dangerously-skip-permissions` -- flag-shaped
 # values that reach the child process as the argument to `--model`. No shell is

@@ -98,7 +98,7 @@ One `asyncio` task, started with the app, polling only chats whose knob is on.
   many chats exist.
 - **Held in a module-level handle and cancelled on shutdown.** `rules.md` §4
   names a bare unstoppable timer as a failure case, and this project has already
-  been bitten: `web/supervisor.js` carried a bare `setInterval` that nothing
+  been bitten: `web/orchestrator.js` carried a bare `setInterval` that nothing
   could stop and that doubled whenever its setup ran twice. A background task
   with no handle is the same defect in Python.
 - Server-side rather than in the page, so an unattended agent is answered with

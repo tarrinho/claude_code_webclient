@@ -124,7 +124,7 @@ class DevExemptionIsGoneTests(ApiTokenBase):
         mean the request reached the router, so the prefix is still exempt and
         the next route added under it is reachable by anyone.
         """
-        response = _client(follow_redirects=False).get("/dev/supervisor-trigger")
+        response = _client(follow_redirects=False).get("/dev/orchestrator-trigger")
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/login")
 

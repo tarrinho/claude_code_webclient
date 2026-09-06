@@ -25,6 +25,35 @@ duplicating it.
 - **Not** per-conversation voice model/speed override. Both are global App
   settings (see below) for now — reopen this later if it turns out to matter.
 
+## Deliberate exception: direct model connection, not the `claude` CLI
+
+`CLAUDE.md` states a hard rule for this codebase: *"The console never talks
+to a model API. It spawns the `claude` CLI and varies its parameters... There
+is no second transport, no SDK call, no HTTP client for a model provider
+anywhere in this codebase, and adding one is not the way to solve a problem
+here."* Voice-mode conversational turns are a **deliberate, scoped exception**
+to that rule, made explicitly rather than silently:
+
+- **Why:** voice needs none of what the CLI provides — no tools, no file
+  access, no agent capability (see Non-goals above) — and a spoken
+  back-and-forth is far more latency-sensitive than typed chat. Spawning a
+  subprocess and parsing `stream-json` frames adds overhead a direct
+  streaming HTTP call doesn't have, and going through the CLI can only ever
+  *restrict* tool access after the fact (`--tools ""`) rather than never
+  having the capability in the first place.
+- **Scope, precisely:** this exception covers **only** the model call that
+  produces a voice conversational reply. It does **not** extend to anything
+  else. If a voice conversation ever needs real implementation or research
+  work done, that is explicitly out of scope for this feature (see
+  Non-goals) — it would be a **separate, normal CLI-routed chat**, not a
+  capability bolted onto this one.
+- **What's preserved despite bypassing the CLI:** the actual network
+  credentials are **not** re-resolved via a new mechanism. Voice turns still
+  call the existing `get_backend()` — the same resolution every other chat
+  already uses to build CLI env vars — and feed its `base_url`/`api_key`
+  directly into an `AsyncOpenAI` client instead of a subprocess environment.
+  One resolution mechanism, two different consumers.
+
 ## Architecture
 
 Voice mode is a **per-chat flag** that changes how a chat's turns are
@@ -52,13 +81,20 @@ existing send/stream pipeline via voice instead of typing.
               → ALSO fed to speechSynthesis sentence-by-sentence
                 (ported from voice-chat-app's app.js/speech-recognition.js)
 
-[Backend: runner._build_cmd_direct / claude_proxy.py spawn]
-        │ if chat.voice_mode:
-        │   append --tools ""              (hard tool-free guarantee)
-        │   append --append-system-prompt   (conversational tone/brevity)
+[Backend: if chat.voice_mode — bypasses runner/claude CLI entirely]
+        │ get_backend(chat_id, owner)  (existing resolution, reused as-is)
+        │   → base_url, api_key
         ▼
-      claude CLI, same as every other WebConsole turn
+      AsyncOpenAI(base_url, api_key).chat.completions.create(stream=True)
+        (same shape as voice-chat-app's main.py; tool-free by construction —
+         no Claude Code process is invoked, so there is nothing to restrict)
 ```
+
+Non-voice chats are completely unaffected: `chat.voice_mode` is checked once,
+at the top of whatever turn-dispatch code decides how to run a turn, and
+voice turns take this new path instead of `runner.run_turn`/`stream_turn`.
+Message history still reads/writes the same `messages` table as any other
+chat — persistence doesn't change, only how the reply is generated.
 
 ## Backend changes
 
@@ -74,38 +110,38 @@ ALTER TABLE chats ADD COLUMN voice_mode INTEGER NOT NULL DEFAULT 0
 Set once at chat creation (from the sidebar's voice button), immutable after
 — no mid-conversation toggle in this pass.
 
-### 2. Tool-free guarantee via `--tools ""`
+### 2. Tool-free by construction, not by flag
 
-Confirmed via `claude --help`: `--tools ""` disables all tools at the
-CLI/process level. This is what "tool-free" actually means here — not a
-system-prompt request a model could choose to ignore (WebConsole's own
-`rules.md` already lists prompt injection into the CLI as a live threat;
-relying on the model to self-restrict would not be a real mitigation).
-
-Both `runner._build_cmd_direct` and `claude_proxy.py`'s spawn (the two
-places `CLAUDE.md` says must be kept in sync for any new parameter) read
-`chat.voice_mode` and append `--tools ""` when true — same "vary CLI
-parameters, not code paths" principle every other backend/model choice in
-this codebase already follows.
-
-### 3. Conversational tone via `--append-system-prompt`
-
-Also confirmed available. Appended (not replacing) Claude Code's own default
-system prompt, when `voice_mode` is true:
+No Claude Code process is invoked for a voice turn at all (see the
+exception section above), so there is no tool-execution capability to
+disable in the first place — nothing equivalent to `--tools ""` is needed.
+Conversational tone/brevity is a plain system message in the
+`chat.completions.create` call, adapted directly from voice-chat-app's
+`SYSTEM_PROMPT`:
 
 ```
-You are a conversational thinking partner in a spoken voice chat. Keep
-replies short and natural for speech: plain sentences, no markdown, no
-bullet lists, no code blocks. Speak as if talking out loud to a person in
-the room.
+You are a conversational thinking partner in a spoken voice chat. You have
+no tools, no file access, and cannot run code or take any action of any
+kind — you can only talk. Keep replies short and natural for speech: plain
+sentences, no markdown, no bullet lists, no code blocks.
 ```
 
-(Adapted from voice-chat-app's `SYSTEM_PROMPT` — the "you have no tools"
-line is dropped here since `--tools ""` already makes that true at the
-process level; no need to also tell the model, which would be redundant and
-_slightly_ risks the model second-guessing why it's being told that.)
+(Unlike the CLI path, the "no tools" line is worth keeping here — the model
+genuinely has no tool schema available to it in this raw completion call,
+but restating it still steers tone/behavior, and costs nothing since it's
+just a message, not a flag.)
 
-### 4. Voice model + speech rate: global App settings
+### 3. Credential + model resolution: reuses `get_backend()`
+
+Voice turns call the existing `get_backend(chat_id, owner)` — unchanged,
+the same resolution every other chat already uses — and feed its
+`base_url`/`api_key` into an `AsyncOpenAI` client instead of a subprocess
+environment. `chat.model` (already an existing per-chat column) is passed
+as-is to `chat.completions.create`; voice doesn't need a parallel model
+concept at the per-chat level, only at the *default* level (below), same as
+every other chat already has a default model.
+
+### 4. Voice model default + speech rate: global App settings, with real timing data
 
 New keys in the existing `db.setting_get`/`setting_set` key-value store
 (same mechanism as `session_ttl`, confirmed in `routes/misc.py`), with
@@ -113,24 +149,49 @@ New keys in the existing `db.setting_get`/`setting_set` key-value store
 setting:
 
 - `voice_model` — model id string, defaults to `config.VOICE_MODEL_DEFAULT`
-  (env `WC_VOICE_MODEL_DEFAULT`). Independent of a chat's regular
-  `ai_machine_id`/`model` — voice specifically trades off for reply speed,
-  same reasoning as voice-chat-app defaulting to `gpt-5.6-luna` over the
-  much slower shared vLLM model.
+  (env `WC_VOICE_MODEL_DEFAULT`). This is the model a *new* voice chat is
+  created with; same reasoning as voice-chat-app defaulting to
+  `gpt-5.6-luna` over the much slower shared vLLM model.
 - `voice_speech_rate` — float 0.5–5.0, defaults to `1.0`
   (env `WC_VOICE_SPEECH_RATE_DEFAULT`).
 
-Read once per voice-mode turn when building the `claude` invocation
-(`--model` flag) and sent to the client once per page load (for the
-`speechSynthesis` rate) — not on every turn.
+**New: `voice_turn_timing` table**, recorded once per completed voice turn
+(model id, time-to-first-token ms, total duration ms, timestamp) — this is
+also how voice's usage/cost visibility gap (flagged in Security below) gets
+closed: without the CLI's automatic `usage`/`total_cost_usd` recording
+(`app.py` does this for every CLI turn; a caller that bypasses the CLI
+entirely must do it itself, same lesson `CLAUDE.md` documents for the
+supervisor feature skipping this once already), voice needs its own
+recording regardless — this table serves both that need and the one below.
+
+**Model combo box shows a real average, not a synthetic ping:** the
+Settings dialog's "Voice conversation model" `<select>` labels each option
+with its rolling average TTFT computed from `voice_turn_timing`
+(`AVG(ttft_ms) WHERE model = ? AND recorded_at > now - 7d`, global across
+all users — deliberately not per-user, since per-user data would be too
+sparse and the point is real contention/latency patterns, which are shared
+infrastructure properties, not personal ones), e.g.:
+
+```
+azure_ai/gpt-5.6-luna       (~1.1s avg, 47 turns)
+azure_ai/gpt-5.4-mini       (~0.9s avg, 12 turns)
+vllm/Qwen3.6-35B-A3B-NVFP4  (~20.2s avg, 3 turns)
+vllm/Qwen3.5-0.8B           (not yet used)
+```
+
+A model with zero recorded turns shows "(not yet used)" rather than
+breaking or hiding the option — it's still selectable, just unmeasured.
+The model *list itself* (which ids exist to choose from) still comes from
+the gateway's live model list (same idea as voice-chat-app's `GET /models`
+— reuse or port that endpoint if WebConsole doesn't already have an
+equivalent); the timing annotation is a separate join against
+`voice_turn_timing`, not a live benchmark run at settings-page-load time
+(too slow, and duplicates data already being collected from real usage).
 
 New Settings dialog fields, in the existing "App" tab, following the
 existing `.app-setting-row` markup pattern exactly (label + input + hint):
 
-- "Voice conversation model" — `<select>`, populated live from the gateway's
-  model list (same idea as voice-chat-app's `GET /models` — reuse or port
-  that endpoint into WebConsole's backend if it doesn't already have an
-  equivalent).
+- "Voice conversation model" — `<select>` as above, with timing annotations.
 - "Voice speech rate" — `<input type="range" min="0.5" max="5" step="0.1">`.
 
 ## Frontend changes
@@ -185,21 +246,24 @@ model:
 
 | Threat | Source | Sink | Mitigation |
 |---|---|---|---|
-| Tool-use escape via prompt injection | User's voice-transcribed message | Claude Code CLI | `--tools ""` enforced at the CLI/process level for every voice-mode turn — not a prompt-level request, a real absence of tools to call |
-| Voice-mode flag tampering | Client-supplied chat-creation request | Command-building (`_build_cmd_direct`/`claude_proxy.py`) | `voice_mode` is set once at creation and read from the chat's own owner-scoped DB row for every subsequent turn — never trusted from per-turn client input, same pattern as `model`/`ai_machine_id` today |
+| Tool-use escape via prompt injection | User's voice-transcribed message | Nowhere — no Claude Code process exists for this turn | Structural, not a flag: voice turns never invoke the CLI at all, so there is no tool-execution capability to escape into in the first place |
+| Voice-mode flag tampering | Client-supplied chat-creation request | Turn-dispatch code deciding CLI vs. direct-call path | `voice_mode` is set once at creation and read from the chat's own owner-scoped DB row for every subsequent turn — never trusted from per-turn client input, same pattern as `model`/`ai_machine_id` today |
 | Global voice settings changed by non-admin | Settings dialog | `db.setting_set` | Reuses whatever access control already gates the rest of the Settings dialog (session TTL, turn timeout, etc.) — no new authorization surface |
+| Credential exposure via the new direct-call path | `get_backend()`'s resolved `api_key` | `AsyncOpenAI` client construction | Same value already flows to the CLI path today (as an env var); this just feeds the identical resolved value to an HTTP client instead — never logged, never returned in a response, same discipline `CLAUDE.md` already mandates for env-based credential handling |
+| Voice spend invisible if not recorded | Direct `AsyncOpenAI` call, bypassing the CLI's automatic usage recording | Usage tables | Voice must record its own usage per turn, same as `CLAUDE.md` documents `supervisor.py` having to learn the hard way — `voice_turn_timing` (added for the model-timing feature) is the natural home for this, not an afterthought |
 
-No new RCE/path-traversal/SQL surface: no new subprocess call shape (same
-`claude` CLI, same two spawn sites, additional flags only), no new raw SQL
-(new column + existing generic settings table).
+No new RCE/path-traversal/SQL surface: no new subprocess call at all for
+voice turns (they skip subprocess spawning entirely), no new raw SQL (new
+column + existing generic settings table + one new append-only timing table).
 
 ## Testing
 
 - **Backend:** extend existing chat-creation tests for the `voice_mode`
-  flag persisting and round-tripping; extend `_build_cmd_direct`/
-  `claude_proxy.py` command-building tests to assert `--tools ""` and
-  `--append-system-prompt` appear only when `voice_mode` is true, never
-  otherwise.
+  flag persisting and round-tripping; test the direct-call path the same
+  way voice-chat-app's own `test_chat.py` does — mock
+  `AsyncOpenAI.chat.completions.create`, never a real network call. Test
+  that non-voice chats are provably unaffected (still dispatch to
+  `runner.run_turn`/`stream_turn` exactly as before).
 - **Frontend:** WebConsole has no existing browser-automation (QA) layer
   today, unlike voice-chat-app (which built one this session, Playwright +
   a fake `SpeechRecognition`). Options for the plan to decide: (a) port that
@@ -220,6 +284,10 @@ No new RCE/path-traversal/SQL surface: no new subprocess call shape (same
   Conversation is clicked) — not visible at all in the idle state.
 - Speed and model are **not** per-conversation controls; both moved to
   Settings → App as global defaults.
+- The model combo box shows each option's rolling average reply time
+  (from real recorded turns, last 7 days, global across users), not just a
+  bare model id — makes the speed/capability trade-off visible at the
+  point of choosing, instead of requiring a separate benchmark run.
 
 ## Open questions for the implementation plan (not blocking this spec)
 
@@ -229,3 +297,7 @@ No new RCE/path-traversal/SQL surface: no new subprocess call shape (same
 3. Frontend debug-logging approach for the ported voice code (see above).
 4. Whether to port voice-chat-app's Playwright QA suite or rely on manual
    testing for the frontend piece.
+5. Exact `voice_turn_timing` schema (columns, retention/pruning policy —
+   append-only forever vs. rolling window) and the aggregation query's
+   precise window (7 days is this spec's starting assumption, not a firm
+   requirement).

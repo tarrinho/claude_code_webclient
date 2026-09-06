@@ -12,7 +12,7 @@ import secrets
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import auth
 import config
@@ -139,3 +139,53 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         client, headers = self._login("admin", password)
         response = client.get("/api/settings", headers=headers)
         self.assertEqual(response.json()["voice_speech_rate"], 1.8)
+
+    async def test_stream_voice_turn_yields_matching_sse_frames(self):
+        from types import SimpleNamespace
+        from routes import voice
+        import runner
+
+        class _FakeStream:
+            def __init__(self, chunks):
+                self._chunks = chunks
+
+            def __aiter__(self):
+                return self._iter()
+
+            async def _iter(self):
+                for text in self._chunks:
+                    yield SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
+                    )
+
+        await db.chat_create("c5", "Voice Chat", None, f"{self.tmp.name}/p/c5", "admin")
+        await db.chat_update("c5", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
+                              ai_machine_id="fake-machine-id")
+        chat = await db.chat_get("c5", "admin")
+
+        async def fake_get_backend(cid, owner=None):
+            return {"provider": "anthropic", "base_url": "https://example.test",
+                    "api_key": "fake-key"}
+
+        created_kwargs = {}
+
+        async def fake_create(**kwargs):
+            created_kwargs.update(kwargs)
+            return _FakeStream(["Hello", ", ", "there."])
+
+        with patch.object(runner, "get_backend", fake_get_backend), \
+                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+                patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_create)), create=True), \
+                patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
+            frames = [f async for f in voice.stream_voice_turn(chat, "hi", "admin")]
+
+        joined = "".join(frames)
+        self.assertIn('"type": "text"', joined)
+        self.assertIn('"content": "Hello"', joined)
+        self.assertIn('"type": "done"', joined)
+        self.assertEqual(created_kwargs["model"], "azure_ai/gpt-5.6-luna")
+
+        messages, _ = await db.messages_page("c5", limit=10)
+        roles = [m["role"] for m in messages]
+        self.assertEqual(roles, ["user", "assistant"])

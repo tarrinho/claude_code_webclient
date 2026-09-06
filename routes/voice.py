@@ -6,9 +6,24 @@ average-reply-time display.
 """
 from __future__ import annotations
 
+import json
 import time
 
+from openai import AsyncOpenAI
+
 import db
+import runner
+
+# Conversational tone/brevity — adapted from voice-chat-app's SYSTEM_PROMPT.
+# Kept even though this path genuinely has no tool schema available to the
+# model (unlike the CLI path, where --tools "" makes the same true and this
+# line would be redundant): it still steers tone, and costs nothing here.
+VOICE_SYSTEM_PROMPT = (
+    "You are a conversational thinking partner in a spoken voice chat. You "
+    "have no tools, no file access, and cannot run code or take any action "
+    "of any kind — you can only talk. Keep replies short and natural for "
+    "speech: plain sentences, no markdown, no bullet lists, no code blocks."
+)
 
 
 async def record_voice_turn_timing(model: str, ttft_ms: int, total_ms: int) -> None:
@@ -53,3 +68,53 @@ async def voice_model_timing_averages(active_models: list[str]) -> dict[str, dic
             "turn_count": row["n"],
         }
     return result
+
+
+async def stream_voice_turn(chat: dict, prompt: str, owner: str):
+    """Yields SSE frame strings identical in shape to stream_handler's own
+    (type: text/done/error), so the existing frontend parser needs no
+    changes. Bypasses the claude CLI entirely -- see the spec's "Deliberate
+    exception" section for why this is intentional, not a shortcut.
+    """
+    chat_id = chat["id"]
+    model = chat.get("model") or ""
+    backend = await runner.get_backend(chat_id, owner)
+    base_url = backend.get("base_url")
+    api_key = backend.get("api_key")
+    if not base_url or not model:
+        yield f"data: {json.dumps({'type': 'error', 'error': 'Voice chat has no configured model/backend'})}\n\n"
+        return
+    # get_backend()'s base_url comes from normalise_base_url(), which strips
+    # a trailing /v1 for the CLI's Anthropic-messages shape -- the opposite
+    # of what an OpenAI-compatible client needs. Never log base_url/api_key.
+    if not base_url.rstrip("/").endswith("/v1"):
+        base_url = base_url.rstrip("/") + "/v1"
+
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key or "unused")
+    t0 = time.time()
+    ttft_ms = None
+    assistant_text = ""
+    try:
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": VOICE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                if ttft_ms is None:
+                    ttft_ms = int((time.time() - t0) * 1000)
+                assistant_text += delta
+                yield f"data: {json.dumps({'type': 'text', 'content': delta})}\n\n"
+        await db.messages_batch(chat_id, [("user", prompt), ("assistant", assistant_text)])
+        total_ms = int((time.time() - t0) * 1000)
+        await record_voice_turn_timing(model, ttft_ms or total_ms, total_ms)
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+    except Exception as exc:  # noqa: BLE001 - surfaced to the client as an SSE event
+        yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+    finally:
+        await client.close()

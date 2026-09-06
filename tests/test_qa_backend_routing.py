@@ -161,6 +161,40 @@ async def _empty():
     yield b""  # pragma: no cover -- makes this an async generator
 
 
+class ProxyTargetResolutionTests(unittest.IsolatedAsyncioTestCase):
+    """runner.get_proxy_target routes through transport_id when set."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        Path(f"{self.tmp.name}/p").mkdir(parents=True, exist_ok=True)
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_get_proxy_target_routes_via_transport_id_not_provider(self):
+        await db.ssh_transport_create("t1", "Kali3", "admin", "h", "kali", "k")
+        await db.ai_machine_create(
+            "m1", "CF AI Machine (via Kali3)", "llm.example", 443, None,
+            "vllm/x", None, None, "admin", provider="claude_code",
+            transport_id="t1",
+        )
+        await db.ai_machine_activate("m1", "admin")
+        await db.chat_create("c1", "Test", None, f"{self.tmp.name}/p", "admin")
+
+        fake_status = {"tunnel_up": True, "proxy_ok": True, "local_port": 9005}
+        with patch("tunnel_manager.tunnel_status", AsyncMock(return_value=fake_status)):
+            host, port = await runner.get_proxy_target("c1")
+        self.assertEqual((host, port), ("127.0.0.1", 9005))
+
+
 class BaseUrlNormalisationTests(unittest.TestCase):
     """The CLI appends /v1 itself, so the stored value must be an origin."""
 

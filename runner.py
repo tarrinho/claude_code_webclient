@@ -363,8 +363,11 @@ async def get_proxy_target(
 
     provider = machine.get("provider", "")
 
-    # ssh_proxy: route through the tunnel to 127.0.0.1:<local_port>.
-    if provider == "ssh_proxy":
+    # A backend with transport_id set runs its claude process on that
+    # transport's remote host -- route through the tunnel to
+    # 127.0.0.1:<local_port>, same as before this was ai_machines.transport_id
+    # instead of provider == "ssh_proxy".
+    if machine.get("transport_id"):
         from tunnel_manager import tunnel_status
 
         status = await tunnel_status(machine["id"])

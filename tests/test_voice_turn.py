@@ -261,3 +261,20 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat["voice_mode"], 1)
         self.assertEqual(chat["ai_machine_id"], "voice-machine-1")
         self.assertEqual(chat["model"], "azure_ai/gpt-5.6-luna")
+
+    async def test_settings_get_includes_voice_model_options(self):
+        from routes import db_machines, voice
+
+        password = await self._make_admin_and_chat("c7")
+        await db.setting_set("voice_ai_machine_id", "voice-machine-2")
+        await voice.record_voice_turn_timing("azure_ai/gpt-5.6-luna", 1100, 1200)
+
+        async def fake_ai_machine_backend_by_id(machine_id, owner_id):
+            return {"id": machine_id, "active_models": '["azure_ai/gpt-5.6-luna", "vllm/Qwen3.5-0.8B"]'}
+
+        client, headers = self._login("admin", password)
+        with patch.object(db_machines, "ai_machine_backend_by_id", fake_ai_machine_backend_by_id):
+            response = client.get("/api/settings", headers=headers)
+        options = {o["id"]: o for o in response.json()["voice_model_options"]}
+        self.assertEqual(options["azure_ai/gpt-5.6-luna"]["turn_count"], 1)
+        self.assertEqual(options["vllm/Qwen3.5-0.8B"]["turn_count"], 0)

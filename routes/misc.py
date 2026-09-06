@@ -735,6 +735,21 @@ async def handle_settings_get(request: Request):
     webconsole_url = await db.setting_get("webconsole_url")
     if not webconsole_url and config.WC_WEBCONSOLE_URL:
         webconsole_url = config.WC_WEBCONSOLE_URL
+
+    from routes.db_machines import ai_machine_backend_by_id, parse_active_models
+    from routes.voice import voice_model_timing_averages
+
+    voice_model_options = []
+    if voice_ai_machine_id:
+        session = request.state.session
+        machine = await ai_machine_backend_by_id(voice_ai_machine_id, session["user"])
+        if machine:
+            active_models = parse_active_models(machine.get("active_models"))
+            averages = await voice_model_timing_averages(active_models)
+            voice_model_options = [
+                {"id": model_id, **averages[model_id]} for model_id in active_models
+            ]
+
     return JSONResponse(
         {
             "ai_machine_host": host,
@@ -749,6 +764,7 @@ async def handle_settings_get(request: Request):
             "voice_ai_machine_id": voice_ai_machine_id,
             "voice_model": voice_model,
             "voice_speech_rate": voice_speech_rate,
+            "voice_model_options": voice_model_options,
         }
     )
 

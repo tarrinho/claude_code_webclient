@@ -52,9 +52,7 @@ _MACHINE_ALLOWED_FIELDS = {
     "model",
     "base_url",
     "description",
-    "ssh_host",
-    "ssh_user",
-    "ssh_key_path",
+    "transport_id",
 }
 
 
@@ -67,15 +65,15 @@ _MACHINE_TEXT_FIELDS = (
     "model",
     "base_url",
     "description",
-    "ssh_host",
-    "ssh_user",
-    "ssh_key_path",
+    "transport_id",
 )
 
 
-# How a machine is reached. 'anthropic' is the official API -- what Claude Code
-# talks to out of the box; 'proxy' is a host running claude_proxy.py.
-_MACHINE_PROVIDERS = {"claude_code", "direct", "ssh_proxy"}
+# How a machine is reached. 'claude_code' is the official API -- what Claude
+# Code talks to out of the box; 'direct' is any other OpenAI/Anthropic-
+# compatible endpoint. Where it *runs* (locally vs a transport) is now
+# transport_id, independent of provider.
+_MACHINE_PROVIDERS = {"claude_code", "direct"}
 
 
 _ANTHROPIC_PORT = 443
@@ -141,9 +139,6 @@ async def handle_machine_create(request: Request):
         raise HTTPException(status_code=400, detail="Unknown provider")
     base_url = (data.get("base_url") or "").strip() or None
     host = (data.get("host") or "").strip()
-    ssh_host = (data.get("ssh_host") or "").strip()
-    ssh_user = (data.get("ssh_user") or "kali").strip()
-    ssh_key_path = (data.get("ssh_key_path") or "").strip() or None
     if provider == "claude_code":
         base_url = base_url or config.ANTHROPIC_BASE_URL
         host = host or _base_url_host(base_url)
@@ -161,34 +156,14 @@ async def handle_machine_create(request: Request):
         raise HTTPException(status_code=400, detail="Port must be 1-65535")
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
-    if provider == "ssh_proxy":
-        if not ssh_host:
-            raise HTTPException(status_code=400, detail="SSH host is required")
-        if not ssh_key_path:
-            raise HTTPException(status_code=400, detail="SSH key path is required")
-        if not _HOST_PATTERN_LOCAL.fullmatch(ssh_host):
-            raise HTTPException(
-                status_code=400, detail="Enter a valid hostname or IP address"
-            )
-        # Same SSRF/private-IP blocklist the `else` branch below already
-        # applies to `host` -- this branch checked ssh_host's format but
-        # never ran it through the blocklist at all, so 169.254.169.254
-        # (cloud metadata) and the other addresses that list exists to keep
-        # unreachable were accepted here unchecked. The tailnet/LAN ranges
-        # this feature actually targets stay allowed either way --
-        # _validate_host's default allowlist already covers them.
-        _validate_host(ssh_host)
-        # Use 9000 as the default proxy port the tunnel will expose.
-        data.setdefault("port", 9000)
-    else:
-        if not host:
-            raise HTTPException(status_code=400, detail="Host is required")
-        if not _HOST_PATTERN_LOCAL.fullmatch(host):
-            raise HTTPException(
-                status_code=400, detail="Enter a valid hostname or IP address"
-            )
-        _validate_host(host)
-        data.setdefault("port", port)
+    if not host:
+        raise HTTPException(status_code=400, detail="Host is required")
+    if not _HOST_PATTERN_LOCAL.fullmatch(host):
+        raise HTTPException(
+            status_code=400, detail="Enter a valid hostname or IP address"
+        )
+    _validate_host(host)
+    data.setdefault("port", port)
     default_model = (
         config.ANTHROPIC_MODEL if provider == "claude_code" else config.MODEL_NAME
     )
@@ -201,6 +176,9 @@ async def handle_machine_create(request: Request):
         base_url = _validate_base_url(base_url)
     api_key = (data.get("api_key") or "").strip() or None
     description = (data.get("description") or "").strip()[:500] or None
+    transport_id = (data.get("transport_id") or "").strip() or None
+    if transport_id and not await db.ssh_transport_get(transport_id, session["user"]):
+        raise HTTPException(status_code=404, detail="Transport not found")
     machine_id = uuid.uuid4().hex
     await db.ai_machine_create(
         machine_id,
@@ -213,9 +191,7 @@ async def handle_machine_create(request: Request):
         description,
         session["user"],
         provider=provider,
-        ssh_host=ssh_host if provider == "ssh_proxy" else None,
-        ssh_user=ssh_user,
-        ssh_key_path=ssh_key_path,
+        transport_id=transport_id,
     )
     _log.info(
         "ai_machine created by user=%s name=%s provider=%s",
@@ -297,6 +273,17 @@ async def handle_machine_patch(request: Request, machine_id: str):
     # Clear api_key if explicitly None
     if "api_key" in data and data["api_key"] is not None:
         data["api_key"] = data["api_key"].strip() or None
+    if "transport_id" in data:
+        tid = (data["transport_id"] or "").strip() or None
+        if tid and not await db.ssh_transport_get(tid, session["user"]):
+            raise HTTPException(status_code=404, detail="Transport not found")
+        if tid is None:
+            # Explicit clear -- ai_machine_update's None-means-omit rule
+            # can't express this (Task 2, Step 7).
+            await db.ai_machine_clear_transport(machine_id, session["user"])
+            data.pop("transport_id")
+        else:
+            data["transport_id"] = tid
     updated = await db.ai_machine_update(machine_id, session["user"], **data)
     if not updated:
         raise HTTPException(status_code=404, detail="Machine not found")

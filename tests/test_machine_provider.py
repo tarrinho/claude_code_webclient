@@ -240,6 +240,47 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
         created = next(m for m in machines if m["name"] == "Box")
         self.assertEqual(created["provider"], "proxy")
 
+    async def test_ssh_proxy_is_no_longer_a_legal_provider(self):
+        request = _make_request(
+            {"name": "x", "provider": "ssh_proxy", "host": "10.0.0.9"}
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await machine_routes.handle_machine_create(request)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("provider", ctx.exception.detail.lower())
+
+    async def test_create_with_valid_transport_id(self):
+        await db.ssh_transport_create("t1", "Kali3", "admin", "10.0.0.9", "kali", "k")
+        request = _make_request(
+            {
+                "name": "CF AI Machine (via Kali3)",
+                "provider": "claude_code",
+                "transport_id": "t1",
+                "model": "claude-sonnet-5",
+            }
+        )
+        import json as _json
+
+        response = await machine_routes.handle_machine_create(request)
+        machine_id = _json.loads(response.body)["id"]
+        created = await db.ai_machine_get(machine_id, "admin")
+        self.assertEqual(created["transport_id"], "t1")
+
+    async def test_create_with_someone_elses_transport_id_is_rejected(self):
+        await db.ssh_transport_create(
+            "t2", "Someone Else's", "not-admin", "10.0.0.9", "kali", "k"
+        )
+        request = _make_request(
+            {
+                "name": "x",
+                "provider": "claude_code",
+                "transport_id": "t2",
+            }
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await machine_routes.handle_machine_create(request)
+        self.assertEqual(ctx.exception.status_code, 404)
+
 
 class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
     """handle_machine_patch validates and applies the provider field."""
@@ -275,6 +316,22 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await machine_routes.handle_machine_patch(request, "m1")
         self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_patch_with_valid_transport_id(self):
+        await db.ssh_transport_create("t1", "Kali3", "admin", "10.0.0.9", "kali", "k")
+        request = _make_request({"transport_id": "t1"})
+        await machine_routes.handle_machine_patch(request, "m1")
+        machine = await db.ai_machine_get("m1", "admin")
+        self.assertEqual(machine["transport_id"], "t1")
+
+    async def test_patch_with_someone_elses_transport_id_is_rejected(self):
+        await db.ssh_transport_create(
+            "t2", "Someone Else's", "not-admin", "10.0.0.9", "kali", "k"
+        )
+        request = _make_request({"transport_id": "t2"})
+        with self.assertRaises(HTTPException) as ctx:
+            await machine_routes.handle_machine_patch(request, "m1")
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 class BaseUrlNormaliseTests(unittest.TestCase):

@@ -7,12 +7,15 @@ average-reply-time display.
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from openai import AsyncOpenAI
 
 import db
 import runner
+
+_log = logging.getLogger("wc.voice")
 
 # Conversational tone/brevity — adapted from voice-chat-app's SYSTEM_PROMPT.
 # Kept even though this path genuinely has no tool schema available to the
@@ -115,6 +118,13 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         await record_voice_turn_timing(model, ttft_ms or total_ms, total_ms)
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as an SSE event
-        yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+        # Never forward str(exc) to the client: openai/httpx exception text
+        # commonly embeds the request URL (connection errors, timeouts, DNS
+        # failures), which would leak the resolved gateway's base_url to the
+        # browser -- the same class of leak as the 2026-09-02 incident (see
+        # CLAUDE.md #3), just via an SSE frame instead of a log line. Log the
+        # real exception server-side only; the client gets a generic message.
+        _log.exception("stream_voice_turn failed for chat_id=%s", chat_id)
+        yield f"data: {json.dumps({'type': 'error', 'error': 'Voice reply failed. Please try again.'})}\n\n"
     finally:
         await client.close()

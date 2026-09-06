@@ -189,3 +189,39 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         messages, _ = await db.messages_page("c5", limit=10)
         roles = [m["role"] for m in messages]
         self.assertEqual(roles, ["user", "assistant"])
+
+    async def test_stream_voice_turn_error_frame_omits_raw_exception_text(self):
+        """A failed turn must not leak the exception's own text to the
+        client -- openai/httpx exceptions commonly embed the request URL
+        (connection errors, timeouts, DNS failures), which would leak the
+        resolved gateway's base_url to the browser via the SSE error frame.
+        """
+        from types import SimpleNamespace
+        from routes import voice
+        import runner
+
+        await db.chat_create("c6", "Voice Chat", None, f"{self.tmp.name}/p/c6", "admin")
+        await db.chat_update("c6", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
+                              ai_machine_id="fake-machine-id")
+        chat = await db.chat_get("c6", "admin")
+
+        sentinel_base_url = "https://internal-gateway.fake.example:9443/v1"
+
+        async def fake_get_backend(cid, owner=None):
+            return {"provider": "anthropic", "base_url": sentinel_base_url,
+                    "api_key": "fake-key"}
+
+        async def fake_create(**kwargs):
+            raise ConnectionError(f"Connection error connecting to {sentinel_base_url}")
+
+        with patch.object(runner, "get_backend", fake_get_backend), \
+                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+                patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_create)), create=True), \
+                patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
+            frames = [f async for f in voice.stream_voice_turn(chat, "hi", "admin")]
+
+        joined = "".join(frames)
+        self.assertIn('"type": "error"', joined)
+        self.assertNotIn(sentinel_base_url, joined)
+        self.assertNotIn("internal-gateway.fake.example", joined)

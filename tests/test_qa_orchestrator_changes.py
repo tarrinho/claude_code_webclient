@@ -30,7 +30,7 @@ import runner
 import shared
 import transcripts
 from routes import chats as chat_routes
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 

@@ -135,7 +135,7 @@ class PickerBehaviourTests(unittest.TestCase):
         let state = {{previousFocus: null}}, lastToast = null, addRequest = null;
         function showToast(msg, type) {{ lastToast = (type || 'ok') + ':' + msg; }}
         async function apiFetch(url, opts) {{
-          if (url === '/api/supervisors') {{
+          if (url === '/api/orchestrators') {{
             return {{ok: true, json: async () => ({{supervisors: {_json.dumps(supervisors)}}})}};
           }}
           addRequest = {{url, body: JSON.parse(opts.body)}};
@@ -165,7 +165,7 @@ class PickerBehaviourTests(unittest.TestCase):
         title = run_page(self._harness(
             [{"id": "s1", "title": "Release 0.9"}, {"id": "s2", "title": "Bug sweep"}]))
         self.assertIn('"options":2', title.replace(" ", ""))
-        self.assertIn("/api/supervisors/s1/members", title)
+        self.assertIn("/api/orchestrators/s1/members", title)
         self.assertIn('"kind":"chat"', title.replace(" ", ""))
         self.assertIn('"ref_id":"c1"', title.replace(" ", ""))
 

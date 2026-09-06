@@ -36,34 +36,34 @@ class CallSiteTests(unittest.TestCase):
 
     def test_persist_progress_marks_and_clears(self):
         body = self._body("_persist_progress")
-        self.assertIn('supervisor_mark_degraded(self.supervisor_id, "progress"', body)
-        self.assertIn('supervisor_clear_degraded(self.supervisor_id, "progress")', body)
+        self.assertIn('orchestrator_mark_degraded(self.orchestrator_id, "progress"', body)
+        self.assertIn('orchestrator_clear_degraded(self.orchestrator_id, "progress")', body)
 
     def test_set_status_marks_and_clears(self):
         body = self._body("_set_status")
-        self.assertIn('supervisor_mark_degraded(self.supervisor_id, "status"', body)
-        self.assertIn('supervisor_clear_degraded(self.supervisor_id, "status")', body)
+        self.assertIn('orchestrator_mark_degraded(self.orchestrator_id, "status"', body)
+        self.assertIn('orchestrator_clear_degraded(self.orchestrator_id, "status")', body)
 
     def test_materialise_plan_marks_per_task_and_clears_once_for_the_whole_plan(self):
         body = self._body("_materialise_plan")
-        self.assertIn('supervisor_mark_degraded(self.supervisor_id, "task_create"', body)
-        self.assertIn('supervisor_clear_degraded(self.supervisor_id, "task_create")', body)
+        self.assertIn('orchestrator_mark_degraded(self.orchestrator_id, "task_create"', body)
+        self.assertIn('orchestrator_clear_degraded(self.orchestrator_id, "task_create")', body)
 
     def test_execute_task_success_path_marks_and_clears_message_and_status(self):
         body = self._body("_execute_task")
         boundary = body.index("except Exception as exc:")
         before = body[:boundary]
-        self.assertIn('supervisor_mark_degraded(self.supervisor_id, "task_message"', before)
-        self.assertIn('supervisor_clear_degraded(self.supervisor_id, "task_message"', before)
-        self.assertIn('supervisor_mark_degraded(self.supervisor_id, "task_status_done"', before)
-        self.assertIn('supervisor_clear_degraded(self.supervisor_id, "task_status_done"', before)
+        self.assertIn('orchestrator_mark_degraded(self.orchestrator_id, "task_message"', before)
+        self.assertIn('orchestrator_clear_degraded(self.orchestrator_id, "task_message"', before)
+        self.assertIn('orchestrator_mark_degraded(self.orchestrator_id, "task_status_done"', before)
+        self.assertIn('orchestrator_clear_degraded(self.orchestrator_id, "task_status_done"', before)
 
     def test_execute_task_failure_path_marks_and_clears_status(self):
         body = self._body("_execute_task")
         boundary = body.index("except Exception as exc:")
         after = body[boundary:]
-        self.assertIn('supervisor_mark_degraded(self.supervisor_id, "task_status_failed"', after)
-        self.assertIn('supervisor_clear_degraded(self.supervisor_id, "task_status_failed"', after)
+        self.assertIn('orchestrator_mark_degraded(self.orchestrator_id, "task_status_failed"', after)
+        self.assertIn('orchestrator_clear_degraded(self.orchestrator_id, "task_status_failed"', after)
 
 
 if __name__ == "__main__":

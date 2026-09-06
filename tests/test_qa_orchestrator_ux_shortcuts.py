@@ -181,6 +181,15 @@ class _SupervisorPage(unittest.TestCase):
                               content_type="application/json")
             elif url.rstrip("/").endswith("orchestrator.html") or url == ORIGIN + "/":
                 route.fulfill(status=200, body=html, content_type="text/html")
+            elif url.endswith("/assets/favicon.svg"):
+                # The page declares <link rel="icon">, so the browser fetches
+                # this on every load. Served rather than 404'd because the
+                # 404 arrives as a console error, and the load assertion in
+                # this file is precisely "no console errors" -- letting the
+                # harness manufacture one would make that assertion untestable
+                # in the only place it is checked.
+                route.fulfill(status=200, body="<svg xmlns='http://www.w3.org/2000/svg'/>",
+                              content_type="image/svg+xml")
             else:
                 route.fulfill(status=404, body="")
 
@@ -193,9 +202,9 @@ class _SupervisorPage(unittest.TestCase):
             return {"tasks": TASKS}
         if "/messages" in url:
             return {"messages": []}
-        if "/api/supervisors/" in url:
+        if "/api/orchestrators/" in url:
             return {"orchestrator": SUPS[0]}
-        if "/api/supervisors" in url:
+        if "/api/orchestrators" in url:
             return {"supervisors": SUPS}
         return {}
 

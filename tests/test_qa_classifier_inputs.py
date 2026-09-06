@@ -40,7 +40,7 @@ from unittest.mock import AsyncMock, patch
 
 import config
 import db
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -131,13 +131,13 @@ class SurfacesAgreeWithACliSessionTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
 
         self.sup = uuid.uuid4().hex
-        await db.supervisor_create(self.sup, "Release", "", "alice")
+        await db.orchestrator_create(self.sup, "Release", "", "alice")
         self.chat = uuid.uuid4().hex
         await db.chat_create(self.chat, "linked agent", "", f"{self.tmp.name}/p",
                              "alice")
         await db.chat_set_session(self.chat, SESSION_ID)
         await db.messages_batch(self.chat, [("user", "go"), ("assistant", "on it")])
-        await db.supervisor_member_add(self.sup, self.chat)
+        await db.orchestrator_member_add(self.sup, self.chat)
 
     def _request(self):
         return types.SimpleNamespace(
@@ -163,7 +163,7 @@ class SurfacesAgreeWithACliSessionTests(unittest.IsolatedAsyncioTestCase):
             feed = json.loads(bytes(
                 (await supervisor_routes.handle_supervisor(self._request())).body))
             members = json.loads(bytes(
-                (await supervisor_routes.handle_supervisor_members_get(
+                (await supervisor_routes.handle_orchestrator_members_get(
                     self._request(), self.sup)).body))["members"]
         sidebar = None
         for bucket in ("waiting", "working", "updated"):

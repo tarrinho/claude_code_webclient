@@ -25,7 +25,7 @@ from fastapi import HTTPException
 
 import config
 import db
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 
 class SupervisorConfigBoundTests(unittest.TestCase):

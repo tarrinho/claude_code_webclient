@@ -32,7 +32,7 @@ import orchestrator
 
 class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.engine = orchestrator.SupervisorEngine("sup-1", "pedro")
+        self.engine = orchestrator.OrchestratorEngine("sup-1", "pedro")
         self.rows: list[dict] = []
 
     def _frame(self, models=None, cost=0.42, is_error=False):
@@ -58,6 +58,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(runner, "take_last_usage", return_value=frame),
             patch("db.usage_record", fake_usage_record),
+            patch.object(runner, "get_backend", return_value={"provider": "claude_code"}),
         ):
             await self.engine._record_usage(chat_id, model)
         return self.rows
@@ -119,10 +120,9 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
 
-    async def test_the_provider_reflects_the_transport(self):
-        with patch.object(config, "PROXY_ENABLED", True):
-            rows = await self._record(self._frame())
-        self.assertEqual(rows[0]["provider"], "proxy")
+    async def test_the_provider_comes_from_the_backend(self):
+        rows = await self._record(self._frame())
+        self.assertEqual(rows[0]["provider"], "claude_code")
 
     async def test_a_write_failure_marks_the_supervisor_degraded(self):
         async def failing_usage_record(**kwargs):
@@ -132,7 +132,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(runner, "take_last_usage", return_value=self._frame()),
             patch("db.usage_record", failing_usage_record),
-            patch("db.supervisor_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
+            patch("db.orchestrator_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
         ):
             await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
         self.assertEqual(len(marks), 1)
@@ -147,7 +147,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(runner, "take_last_usage", return_value=self._frame()),
             patch("db.usage_record", exploding_record),
-            patch("db.supervisor_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
+            patch("db.orchestrator_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
         ):
             await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
         self.assertEqual(len(marks), 1)
@@ -159,8 +159,8 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(runner, "take_last_usage", return_value={}),
             patch("db.usage_record", AsyncMock()),
-            patch("db.supervisor_mark_degraded", AsyncMock(side_effect=lambda *a: calls.append(("mark", a)))),
-            patch("db.supervisor_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(("clear", a)))),
+            patch("db.orchestrator_mark_degraded", AsyncMock(side_effect=lambda *a: calls.append(("mark", a)))),
+            patch("db.orchestrator_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(("clear", a)))),
         ):
             await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
         self.assertEqual(calls, [])
@@ -170,7 +170,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(runner, "take_last_usage", return_value=self._frame()),
             patch("db.usage_record", AsyncMock(return_value=1)),
-            patch("db.supervisor_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(a))),
+            patch("db.orchestrator_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(a))),
         ):
             await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
         self.assertEqual(len(calls), 1)

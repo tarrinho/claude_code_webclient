@@ -98,7 +98,7 @@ class ProxyTurnFrameTests(unittest.IsolatedAsyncioTestCase):
             machine_id=machine_id, name="Gateway", host="gw.example.com",
             port=443, api_key="secret-key", model="vllm/Local-Model",
             base_url="https://gw.example.com", description="",
-            owner_id="alice", provider="anthropic",
+            owner_id="alice", provider="claude_code",
         )
         await db.ai_machine_activate(machine_id, "alice")
         self.proxy = FakeProxy()

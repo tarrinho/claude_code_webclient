@@ -32,7 +32,7 @@ from fastapi import HTTPException
 import classification
 import config
 import db
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -40,7 +40,7 @@ SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 def make_request(user="alice", role="admin", body=None):
     request = types.SimpleNamespace(
         method="GET",
-        url=types.SimpleNamespace(path="/api/supervisors/x/members"),
+        url=types.SimpleNamespace(path="/api/orchestrators/x/members"),
         cookies={}, headers={},
         client=types.SimpleNamespace(host="127.0.0.1"),
         state=types.SimpleNamespace(session={"user": user, "role": role}),
@@ -82,7 +82,7 @@ class MembersBase(unittest.IsolatedAsyncioTestCase):
     async def _supervisor(self, owner, title):
         sid = uuid.uuid4().hex
         # (id, title, description, owner_id) -- config is last and optional.
-        await db.supervisor_create(sid, title, "", owner)
+        await db.orchestrator_create(sid, title, "", owner)
         return sid
 
     async def _chat(self, owner="alice", title="a chat"):
@@ -95,46 +95,46 @@ class MembershipTests(MembersBase):
 
     async def test_a_chat_can_be_added_and_listed(self):
         chat = await self._chat(title="cweb5")
-        self.assertTrue(await db.supervisor_member_add(self.sup, chat))
-        members = await db.supervisor_members_list(self.sup)
+        self.assertTrue(await db.orchestrator_member_add(self.sup, chat))
+        members = await db.orchestrator_members_list(self.sup)
         self.assertEqual([m["chat_id"] for m in members], [chat])
         self.assertEqual(members[0]["title"], "cweb5")
 
     async def test_adding_twice_is_a_no_op(self):
         """The composite key is what makes the picker safe to press twice."""
         chat = await self._chat()
-        self.assertTrue(await db.supervisor_member_add(self.sup, chat))
-        self.assertFalse(await db.supervisor_member_add(self.sup, chat),
+        self.assertTrue(await db.orchestrator_member_add(self.sup, chat))
+        self.assertFalse(await db.orchestrator_member_add(self.sup, chat),
                          "a repeat add must report that nothing changed")
-        self.assertEqual(len(await db.supervisor_members_list(self.sup)), 1)
+        self.assertEqual(len(await db.orchestrator_members_list(self.sup)), 1)
 
     async def test_one_chat_can_serve_two_supervisors(self):
         """Many-to-many is intended: an agent can work for two supervisors."""
         other = await self._supervisor("alice", "Bug sweep")
         chat = await self._chat()
-        await db.supervisor_member_add(self.sup, chat)
-        await db.supervisor_member_add(other, chat)
-        self.assertEqual(len(await db.supervisor_members_list(self.sup)), 1)
-        self.assertEqual(len(await db.supervisor_members_list(other)), 1)
+        await db.orchestrator_member_add(self.sup, chat)
+        await db.orchestrator_member_add(other, chat)
+        self.assertEqual(len(await db.orchestrator_members_list(self.sup)), 1)
+        self.assertEqual(len(await db.orchestrator_members_list(other)), 1)
 
     async def test_removing_a_member_keeps_the_conversation(self):
         """A orchestrator is a view over work, never its owner."""
         chat = await self._chat()
-        await db.supervisor_member_add(self.sup, chat)
-        self.assertTrue(await db.supervisor_member_remove(self.sup, chat))
-        self.assertEqual(await db.supervisor_members_list(self.sup), [])
+        await db.orchestrator_member_add(self.sup, chat)
+        self.assertTrue(await db.orchestrator_member_remove(self.sup, chat))
+        self.assertEqual(await db.orchestrator_members_list(self.sup), [])
         self.assertIsNotNone(await db.chat_get(chat, "alice"),
                              "removing a member must never delete the chat")
 
     async def test_removing_a_non_member_reports_false(self):
-        self.assertFalse(await db.supervisor_member_remove(self.sup, "nope"))
+        self.assertFalse(await db.orchestrator_member_remove(self.sup, "nope"))
 
     async def test_a_deleted_conversation_stops_appearing(self):
         """The panel must not list a conversation that no longer exists."""
         chat = await self._chat()
-        await db.supervisor_member_add(self.sup, chat)
+        await db.orchestrator_member_add(self.sup, chat)
         await db.chat_delete(chat, "alice")
-        self.assertEqual(await db.supervisor_members_list(self.sup), [],
+        self.assertEqual(await db.orchestrator_members_list(self.sup), [],
                          "a deleted chat must drop out of the members list")
 
 
@@ -145,12 +145,12 @@ class OwnershipTests(MembersBase):
         intruder = await self._chat(owner="bob", title="bob's private work")
         request = make_request(user="alice",
                                body={"members": [{"kind": "chat", "ref_id": intruder}]})
-        response = await supervisor_routes.handle_supervisor_members_add(request, self.sup)
+        response = await supervisor_routes.handle_orchestrator_members_add(request, self.sup)
         payload = body_of(response)
         self.assertEqual(payload["added"], [],
                          "another owner's conversation must never become a member")
         self.assertEqual(len(payload["failed"]), 1)
-        self.assertEqual(await db.supervisor_members_list(self.sup), [])
+        self.assertEqual(await db.orchestrator_members_list(self.sup), [])
 
     async def test_a_supervisor_belonging_to_someone_else_is_not_found(self):
         theirs = await self._supervisor("bob", "bob's orchestrator")
@@ -158,24 +158,24 @@ class OwnershipTests(MembersBase):
         request = make_request(user="alice",
                                body={"members": [{"kind": "chat", "ref_id": chat}]})
         with self.assertRaises(HTTPException) as caught:
-            await supervisor_routes.handle_supervisor_members_add(request, theirs)
+            await supervisor_routes.handle_orchestrator_members_add(request, theirs)
         self.assertEqual(caught.exception.status_code, 404)
 
     async def test_listing_someone_elses_supervisor_is_not_found(self):
         theirs = await self._supervisor("bob", "bob's orchestrator")
         with self.assertRaises(HTTPException) as caught:
-            await supervisor_routes.handle_supervisor_members_get(make_request(user="alice"), theirs)
+            await supervisor_routes.handle_orchestrator_members_get(make_request(user="alice"), theirs)
         self.assertEqual(caught.exception.status_code, 404)
 
     async def test_removing_from_someone_elses_supervisor_is_not_found(self):
         theirs = await self._supervisor("bob", "theirs")
         chat = await self._chat(owner="bob")
-        await db.supervisor_member_add(theirs, chat)
+        await db.orchestrator_member_add(theirs, chat)
         with self.assertRaises(HTTPException) as caught:
-            await supervisor_routes.handle_supervisor_member_remove(
+            await supervisor_routes.handle_orchestrator_member_remove(
                 make_request(user="alice"), theirs, chat)
         self.assertEqual(caught.exception.status_code, 404)
-        self.assertEqual(len(await db.supervisor_members_list(theirs)), 1,
+        self.assertEqual(len(await db.orchestrator_members_list(theirs)), 1,
                          "the real owner's membership must be untouched")
 
 
@@ -186,7 +186,7 @@ class BulkAddTests(MembersBase):
         good = [await self._chat() for _ in range(3)]
         payload = {"members": [{"kind": "chat", "ref_id": c} for c in good]
                    + [{"kind": "chat", "ref_id": "does-not-exist"}]}
-        response = await supervisor_routes.handle_supervisor_members_add(
+        response = await supervisor_routes.handle_orchestrator_members_add(
             make_request(body=payload), self.sup)
         result = body_of(response)
         self.assertCountEqual(result["added"], good)
@@ -194,19 +194,19 @@ class BulkAddTests(MembersBase):
 
     async def test_an_empty_list_is_rejected(self):
         with self.assertRaises(HTTPException) as caught:
-            await supervisor_routes.handle_supervisor_members_add(
+            await supervisor_routes.handle_orchestrator_members_add(
                 make_request(body={"members": []}), self.sup)
         self.assertEqual(caught.exception.status_code, 400)
 
     async def test_an_unreasonable_batch_is_rejected(self):
         payload = {"members": [{"kind": "chat", "ref_id": str(i)} for i in range(101)]}
         with self.assertRaises(HTTPException) as caught:
-            await supervisor_routes.handle_supervisor_members_add(
+            await supervisor_routes.handle_orchestrator_members_add(
                 make_request(body=payload), self.sup)
         self.assertEqual(caught.exception.status_code, 400)
 
     async def test_an_unknown_kind_is_refused(self):
-        response = await supervisor_routes.handle_supervisor_members_add(
+        response = await supervisor_routes.handle_orchestrator_members_add(
             make_request(body={"members": [{"kind": "wormhole", "ref_id": "x"}]}),
             self.sup)
         self.assertEqual(body_of(response)["added"], [])
@@ -214,9 +214,9 @@ class BulkAddTests(MembersBase):
     async def test_a_repeat_add_is_reported_separately_from_a_new_one(self):
         chat = await self._chat()
         payload = {"members": [{"kind": "chat", "ref_id": chat}]}
-        first = body_of(await supervisor_routes.handle_supervisor_members_add(
+        first = body_of(await supervisor_routes.handle_orchestrator_members_add(
             make_request(body=payload), self.sup))
-        second = body_of(await supervisor_routes.handle_supervisor_members_add(
+        second = body_of(await supervisor_routes.handle_orchestrator_members_add(
             make_request(body=payload), self.sup))
         self.assertEqual(first["added"], [chat])
         self.assertEqual(second["added"], [])
@@ -235,14 +235,14 @@ class AdoptionTests(MembersBase):
         # patch has to rebind the name the caller actually reads.
         with patch.object(supervisor_routes, "handle_sessions_resume",
                           AsyncMock(return_value=fake)) as resume:
-            response = await supervisor_routes.handle_supervisor_members_add(
+            response = await supervisor_routes.handle_orchestrator_members_add(
                 make_request(body={"members": [
                     {"kind": "session", "ref_id": "8e2e8bd0-1111-2222-3333-444455556666"}
                 ]}), self.sup)
         resume.assert_awaited_once()
         self.assertEqual(body_of(response)["added"], [adopted_chat],
                          "the member must be the chat id, never the session id")
-        stored = await db.supervisor_members_list(self.sup)
+        stored = await db.orchestrator_members_list(self.sup)
         self.assertEqual([m["chat_id"] for m in stored], [adopted_chat])
 
     async def test_an_agent_that_cannot_be_adopted_is_reported_not_stored(self):
@@ -251,11 +251,11 @@ class AdoptionTests(MembersBase):
         # patch has to rebind the name the caller actually reads.
         with patch.object(supervisor_routes, "handle_sessions_resume",
                           AsyncMock(side_effect=HTTPException(404, "no session"))):
-            response = await supervisor_routes.handle_supervisor_members_add(
+            response = await supervisor_routes.handle_orchestrator_members_add(
                 make_request(body={"members": [{"kind": "session", "ref_id": "gone"}]}),
                 self.sup)
         self.assertEqual(body_of(response)["added"], [])
-        self.assertEqual(await db.supervisor_members_list(self.sup), [])
+        self.assertEqual(await db.orchestrator_members_list(self.sup), [])
 
 
 class StatusReuseTests(MembersBase):
@@ -277,13 +277,13 @@ class StatusReuseTests(MembersBase):
         return None, None
 
     async def _members(self):
-        return body_of(await supervisor_routes.handle_supervisor_members_get(
+        return body_of(await supervisor_routes.handle_orchestrator_members_get(
             make_request(), self.sup))["members"]
 
     async def test_an_asking_member_agrees_with_the_sidebar(self):
         chat = await self._chat(title="cweb5")
         await db.messages_batch(chat, [("user", "go"), ("assistant", "Which one?")])
-        await db.supervisor_member_add(self.sup, chat)
+        await db.orchestrator_member_add(self.sup, chat)
 
         sidebar_status, sidebar_reason = await self._sidebar_status(chat)
         member = (await self._members())[0]
@@ -310,7 +310,7 @@ class StatusReuseTests(MembersBase):
         """
         chat = await self._chat(title="chatty")
         await db.messages_batch(chat, [("user", "go"), ("assistant", "All done.")])
-        await db.supervisor_member_add(self.sup, chat)
+        await db.orchestrator_member_add(self.sup, chat)
 
         sidebar_status, sidebar_reason = await self._sidebar_status(chat)
         self.assertEqual(sidebar_status, "waiting", "fixture must be finished work")
@@ -342,7 +342,7 @@ class StatusReuseTests(MembersBase):
         chat = await self._chat(title="busy-linked")
         await db.messages_batch(chat, [("user", "go"), ("assistant", "All done.")])
         await db.chat_set_session(chat, SESSION_ID)
-        await db.supervisor_member_add(self.sup, chat)
+        await db.orchestrator_member_add(self.sup, chat)
 
         cli = [{
             "id": SESSION_ID, "sessionId": SESSION_ID, "name": "cweb5",
@@ -367,7 +367,7 @@ class StatusReuseTests(MembersBase):
         sidebar legitimately omits them, so agreement is the wrong rule here.
         """
         chat = await self._chat(title="quiet one")
-        await db.supervisor_member_add(self.sup, chat)
+        await db.orchestrator_member_add(self.sup, chat)
         sidebar_status, _ = await self._sidebar_status(chat)
         self.assertIsNone(sidebar_status, "the sidebar omits a silent chat")
 
@@ -381,7 +381,7 @@ class StatusReuseTests(MembersBase):
         outsider = await self._chat(title="not a member")
         for c in (member, outsider):
             await db.messages_batch(c, [("user", "go"), ("assistant", "done")])
-        await db.supervisor_member_add(self.sup, member)
+        await db.orchestrator_member_add(self.sup, member)
         self.assertEqual([m["title"] for m in await self._members()], ["mine"])
 
     async def test_a_failure_sorts_above_another_waiting_member(self):
@@ -401,7 +401,7 @@ class StatusReuseTests(MembersBase):
         await db.messages_batch(broken, [("user", "go"), ("assistant", "x")])
         await db.messages_batch(asker, [("user", "go"), ("assistant", "y")])
         for c in (asker, broken):
-            await db.supervisor_member_add(self.sup, c)
+            await db.orchestrator_member_add(self.sup, c)
 
         real = classification.classify_chat
 
@@ -429,7 +429,7 @@ class StatusReuseTests(MembersBase):
         alive = await self._chat(title="alive")
         doomed = await self._chat(title="doomed")
         for c in (alive, doomed):
-            await db.supervisor_member_add(self.sup, c)
+            await db.orchestrator_member_add(self.sup, c)
         await db.chat_delete(doomed, "alice")
         titles = [m["title"] for m in await self._members()]
         self.assertEqual(titles, ["alive"],
@@ -454,7 +454,7 @@ class StatusReuseTests(MembersBase):
         mine = await self._chat(title="mine")
         theirs = await self._chat(owner="bob", title="bob's private title")
         for c in (mine, theirs):
-            await db.supervisor_member_add(self.sup, c)
+            await db.orchestrator_member_add(self.sup, c)
         titles = [m["title"] for m in await self._members()]
         self.assertEqual(titles, ["mine"])
         self.assertNotIn("bob's private title", titles)

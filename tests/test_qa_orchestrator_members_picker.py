@@ -417,7 +417,7 @@ class PickerTests(unittest.TestCase):
     def test_everything_selected_goes_in_one_request(self):
         """A request per item could half-apply and leave an unknown membership."""
         result = self._run()
-        self.assertEqual(result["posted"]["url"], "/api/supervisors/sup1/members")
+        self.assertEqual(result["posted"]["url"], "/api/orchestrators/sup1/members")
         self.assertEqual(len(result["posted"]["body"]["members"]), 4)
 
     def test_existing_members_are_shown_as_members_and_cannot_be_re_added(self):

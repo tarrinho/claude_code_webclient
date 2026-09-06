@@ -33,7 +33,7 @@ import auth
 import config
 import db
 import orchestrator
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_JS = Path(__file__).resolve().parent.parent / "web" / "assets" / "orchestrator" / "main.js"
@@ -87,8 +87,8 @@ async def _teardown(tc):
 
 async def _create_supervisor(tc, status="running", sup_id="s1"):
     """Create a orchestrator row in the DB."""
-    await db.supervisor_create(sup_id, "Test Orchestrator", None, "admin")
-    await db.supervisor_update(sup_id, "admin", status=status)
+    await db.orchestrator_create(sup_id, "Test Orchestrator", None, "admin")
+    await db.orchestrator_update(sup_id, "admin", status=status)
 
 
 # ── Orchestrator pause / resume (engine-level) ─────────────────────────────────
@@ -97,11 +97,11 @@ class EnginePauseStateTests(unittest.TestCase):
     """The engine must track pause state and pre-pause status."""
 
     def test_initial_state_is_not_paused(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         self.assertFalse(eng._paused)
 
     def test_pause_returns_true_when_running(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._running = True
         result = eng.pause()
         self.assertTrue(result)
@@ -109,17 +109,17 @@ class EnginePauseStateTests(unittest.TestCase):
 
     def test_pause_returns_false_when_not_running(self):
         """pause() guards on _running; the API handler has its own guard."""
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         self.assertFalse(eng.pause())
 
     def test_pause_while_already_paused_returns_false(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._running = True
         eng.pause()
         self.assertFalse(eng.pause())
 
     def test_pre_pause_status_stored_on_pause(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._running = True
         eng.pause()
         self.assertEqual(eng._pre_pause_status, "running")
@@ -127,7 +127,7 @@ class EnginePauseStateTests(unittest.TestCase):
     def test_pre_pause_status_overridable_after_pause(self):
         """set_status_for_pause lets the caller override the remembered status
         *after* the engine has been paused."""
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._running = True
         eng.pause()
         self.assertEqual(eng._pre_pause_status, "running")
@@ -135,13 +135,13 @@ class EnginePauseStateTests(unittest.TestCase):
         self.assertEqual(eng._pre_pause_status, "planning")
 
     def test_resume_clears_pause_and_sets_event(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._paused = True  # set directly, bypassing _running guard for test
         self.assertTrue(eng.resume())
         self.assertFalse(eng._paused)
 
     def test_resume_while_not_paused_returns_false(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         self.assertFalse(eng.resume())
 
 
@@ -149,14 +149,14 @@ class EngineWaitIfPausedTests(unittest.IsolatedAsyncioTestCase):
     """_wait_if_paused must yield when paused, return immediately otherwise."""
 
     async def test_not_paused_returns_immediately(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         start = asyncio.get_event_loop().time()
         await eng._wait_if_paused()
         elapsed = asyncio.get_event_loop().time() - start
         self.assertLess(elapsed, 0.5, "_wait_if_paused must return fast when not paused")
 
     async def test_paused_blocks_up_to_2_seconds(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._paused = True  # bypass _running guard for test
         start = asyncio.get_event_loop().time()
         await eng._wait_if_paused()
@@ -165,7 +165,7 @@ class EngineWaitIfPausedTests(unittest.IsolatedAsyncioTestCase):
                                 "_wait_if_paused must block up to 2 seconds when paused")
 
     async def test_paused_resumed_within_timeout(self):
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._paused = True
 
         async def _resume():
@@ -197,10 +197,10 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pause_nonexistent_raises_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await supervisor_routes._api_supervisor_pause(
+            await supervisor_routes._api_orchestrator_pause(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/pause"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/pause"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -211,10 +211,10 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_pause_while_stopped_raises_409(self):
         await _create_supervisor(self, status="stopped")
         with self.assertRaises(HTTPException) as ctx:
-            await supervisor_routes._api_supervisor_pause(
+            await supervisor_routes._api_orchestrator_pause(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/pause"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/pause"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -224,13 +224,13 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pause_while_running_ok(self):
         await _create_supervisor(self, status="running")
-        engine = orchestrator.SupervisorEngine("s1", "admin")
+        engine = orchestrator.OrchestratorEngine("s1", "admin")
         engine._running = True
         with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
-            resp = await supervisor_routes._api_supervisor_pause(
+            resp = await supervisor_routes._api_orchestrator_pause(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/pause"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/pause"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -243,10 +243,10 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_nonexistent_raises_404(self):
         with self.assertRaises(HTTPException) as ctx:
-            await supervisor_routes._api_supervisor_resume(
+            await supervisor_routes._api_orchestrator_resume(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/resume"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/resume"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -257,10 +257,10 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_resume_while_running_raises_409(self):
         await _create_supervisor(self, status="running")
         with self.assertRaises(HTTPException) as ctx:
-            await supervisor_routes._api_supervisor_resume(
+            await supervisor_routes._api_orchestrator_resume(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/resume"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/resume"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -270,14 +270,14 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_while_paused_ok(self):
         await _create_supervisor(self, status="paused")
-        engine = orchestrator.SupervisorEngine("s1", "admin")
+        engine = orchestrator.OrchestratorEngine("s1", "admin")
         engine._paused = True  # engine has been paused, so resume() returns True
         engine._pre_pause_status = "running"
         with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
-            resp = await supervisor_routes._api_supervisor_resume(
+            resp = await supervisor_routes._api_orchestrator_resume(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/resume"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/resume"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -292,16 +292,16 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
         """A orchestrator paused mid-task and resumed must restore 'running',
         not stay stuck on 'paused' in the DB."""
         await _create_supervisor(self, status="running")
-        engine = orchestrator.SupervisorEngine("s1", "admin")
+        engine = orchestrator.OrchestratorEngine("s1", "admin")
         engine._running = True
 
         # Pause — the API handler calls pause() (sets _paused=True, stores
         # _pre_pause_status="running") then writes DB status=paused.
         with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
-            resp = await supervisor_routes._api_supervisor_pause(
+            resp = await supervisor_routes._api_orchestrator_pause(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/pause"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/pause"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -310,16 +310,16 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status_code, 200)
 
         # Now the DB says paused
-        row = await db.supervisor_get("s1", "admin")
+        row = await db.orchestrator_get("s1", "admin")
         self.assertEqual(row["status"], "paused")
 
         # Resume — the engine was paused by the API call above, so resume()
         # returns True and the DB is restored to "running".
         with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
-            resp = await supervisor_routes._api_supervisor_resume(
+            resp = await supervisor_routes._api_orchestrator_resume(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/resume"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/resume"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -328,20 +328,20 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status_code, 200)
 
         # DB should be restored to 'running'
-        row = await db.supervisor_get("s1", "admin")
+        row = await db.orchestrator_get("s1", "admin")
         self.assertEqual(row["status"], "running")
 
     async def test_pause_planning_supervisor(self):
         """A orchestrator mid-planning can also be paused and resumes to planning."""
         await _create_supervisor(self, status="planning")
-        engine = orchestrator.SupervisorEngine("s1", "admin")
+        engine = orchestrator.OrchestratorEngine("s1", "admin")
         engine._running = True
         engine.set_status_for_pause("planning")
         with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine}):
-            resp = await supervisor_routes._api_supervisor_pause(
+            resp = await supervisor_routes._api_orchestrator_pause(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/pause"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/pause"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -351,14 +351,14 @@ class ApiPauseResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(resp.body)["status"], "paused")
 
         # Resume back to planning
-        engine2 = orchestrator.SupervisorEngine("s1", "admin")
+        engine2 = orchestrator.OrchestratorEngine("s1", "admin")
         engine2._paused = True  # resume() returns True only when _paused
         engine2._pre_pause_status = "planning"
         with patch.dict(supervisor_routes._supervisor_engines, {"s1": engine2}):
-            resp = await supervisor_routes._api_supervisor_resume(
+            resp = await supervisor_routes._api_orchestrator_resume(
                 SimpleNamespace(
                     method="POST",
-                    url=SimpleNamespace(path="/api/supervisors/s1/resume"),
+                    url=SimpleNamespace(path="/api/orchestrators/s1/resume"),
                     cookies={},
                     state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
                 ),
@@ -600,14 +600,14 @@ class SchedulerPauseIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pause_flag_stops_task_progress(self):
         """A paused engine must not advance task status."""
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._running = True  # the engine is actually scheduled
         self.assertTrue(eng.pause())
         self.assertTrue(eng._paused)
 
     async def test_resume_flag_allows_progress(self):
         """After resume, _paused must be False."""
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         eng._running = True
         eng.pause()
         eng.resume()
@@ -618,7 +618,7 @@ class SchedulerPauseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         remembers what status to restore. The API handler does:
         eng.set_status_for_pause(existing["status"])  then  eng.pause().
         """
-        eng = orchestrator.SupervisorEngine("s1", "admin")
+        eng = orchestrator.OrchestratorEngine("s1", "admin")
         # _paused must be True for set_status_for_pause to store the value.
         eng._paused = True
         eng.set_status_for_pause("running")

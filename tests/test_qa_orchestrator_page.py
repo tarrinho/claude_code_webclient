@@ -130,7 +130,7 @@ class ApiFetchTerminatesTests(unittest.TestCase):
     %(definitions)s
     (async () => {
       try {
-        await apiFetch("/api/supervisors");
+        await apiFetch("/api/orchestrators");
         document.title = "reachedFetch=" + reachedFetch + " header=" + sentHeader;
       } catch (e) {
         document.title = "THREW: " + e.message;

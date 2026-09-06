@@ -32,7 +32,7 @@ import auth
 import config
 import db
 import transcripts
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 
 async def _dismissed_at(owner: str = "admin") -> str:
@@ -138,7 +138,7 @@ class DismissEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
     async def _dismiss(self, kind="chat", ref_id=CHAT_ID):
         """Byte for byte what the row's dismiss control sends."""
-        return json.loads((await supervisor_routes.handle_supervisor_read(
+        return json.loads((await supervisor_routes.handle_orchestrator_read(
             _request({"kind": kind, "id": ref_id, "dismiss": True},
                      method="POST", path="/api/orchestrator/read")
         )).body)
@@ -253,7 +253,7 @@ class DismissRequestValidationTests(unittest.IsolatedAsyncioTestCase):
     async def _post(self, body):
         from fastapi import HTTPException
         try:
-            response = await supervisor_routes.handle_supervisor_read(
+            response = await supervisor_routes.handle_orchestrator_read(
                 _request(body, method="POST", path="/api/orchestrator/read"))
         except HTTPException as exc:
             return exc.status_code

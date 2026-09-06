@@ -1006,7 +1006,7 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
         csrf = next(c["value"] for c in self.page.context.cookies()
                     if c["name"] == "wc_csrf")
         return self.page.evaluate("""async ([csrf, title]) => {
-            const r = await fetch('/api/supervisors', {method: 'POST',
+            const r = await fetch('/api/orchestrators', {method: 'POST',
                 headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
                 body: JSON.stringify({title})});
             return (await r.json()).id;
@@ -1210,7 +1210,7 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
         csrf = next(c["value"] for c in self.page.context.cookies()
                     if c["name"] == "wc_csrf")
         return self.page.evaluate("""async ([csrf, title]) => {
-            const r = await fetch('/api/supervisors', {method: 'POST',
+            const r = await fetch('/api/orchestrators', {method: 'POST',
                 headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
                 body: JSON.stringify({title})});
             return (await r.json()).id;

@@ -35,7 +35,7 @@ import config
 import db
 import transcripts
 import turns
-from routes import supervisors as supervisor_routes
+from routes import orchestrators as supervisor_routes
 
 SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -568,20 +568,20 @@ class SupervisorReadEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def test_marks_a_chat(self):
-        response = await supervisor_routes.handle_supervisor_read(_request({"kind": "chat", "id": "c1"}))
+        response = await supervisor_routes.handle_orchestrator_read(_request({"kind": "chat", "id": "c1"}))
         self.assertTrue(json.loads(response.body)["ok"])
         marks = await db.read_marks_get("admin")
         self.assertIn(("chat", "c1"), marks)
 
     async def test_rejects_an_unknown_kind(self):
         with self.assertRaises(HTTPException) as ctx:
-            await supervisor_routes.handle_supervisor_read(_request({"kind": "robot", "id": "c1"}))
+            await supervisor_routes.handle_orchestrator_read(_request({"kind": "robot", "id": "c1"}))
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_rejects_a_traversal_id(self):
         for bad in ("../../etc/passwd", "a/b", "", "a b"):
             with self.subTest(ref=bad), self.assertRaises(HTTPException) as ctx:
-                await supervisor_routes.handle_supervisor_read(_request({"kind": "chat", "id": bad}))
+                await supervisor_routes.handle_orchestrator_read(_request({"kind": "chat", "id": bad}))
             self.assertEqual(ctx.exception.status_code, 400)
 
 
@@ -892,14 +892,14 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_clearing_silences_an_unanswered_question(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
-        response = await supervisor_routes.handle_supervisor_read(_request({"all": True}))
+        response = await supervisor_routes.handle_orchestrator_read(_request({"all": True}))
         self.assertTrue(json.loads(response.body)["ok"])
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
 
     async def test_clearing_reports_how_many_it_cleared(self):
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I?"))
         await _chat_with("c2", ("assistant", "2026-08-29T10:01:00Z", "Done, all green."))
-        body = json.loads((await supervisor_routes.handle_supervisor_read(_request({"all": True}))).body)
+        body = json.loads((await supervisor_routes.handle_orchestrator_read(_request({"all": True}))).body)
         self.assertEqual(body["cleared"], 2)
         counts = (await self._get())["counts"]
         self.assertEqual((counts["waiting"], counts["updated"]), (0, 0))
@@ -907,7 +907,7 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_later_question_returns_after_clearing(self):
         """Clearing silences what is there now, not the agent forever."""
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
-        await supervisor_routes.handle_supervisor_read(_request({"all": True}))
+        await supervisor_routes.handle_orchestrator_read(_request({"all": True}))
         self.assertEqual((await self._get())["counts"]["waiting"], 0)
         await db.db_conn.execute(
             "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?,?,?,?)",
@@ -919,7 +919,7 @@ class ClearAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_reading_alone_never_dismisses(self):
         """The distinction the whole change rests on."""
         await _chat_with("c1", ("assistant", "2026-08-29T10:01:00Z", "Shall I continue?"))
-        await supervisor_routes.handle_supervisor_read(_request({"kind": "chat", "id": "c1"}))
+        await supervisor_routes.handle_orchestrator_read(_request({"kind": "chat", "id": "c1"}))
         self.assertEqual((await self._get())["counts"]["waiting"], 1)
         marks = await db.read_marks_get("admin")
         self.assertFalse(marks[("chat", "c1")]["dismissed_at"])

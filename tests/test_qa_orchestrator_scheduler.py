@@ -93,8 +93,8 @@ class ScheduleLoopTests(unittest.IsolatedAsyncioTestCase):
     broken code as readily as the fixed one.
     """
 
-    def _engine(self, graph: orchestrator.TaskGraph) -> orchestrator.SupervisorEngine:
-        engine = orchestrator.SupervisorEngine("sup-1", "admin")
+    def _engine(self, graph: orchestrator.TaskGraph) -> orchestrator.OrchestratorEngine:
+        engine = orchestrator.OrchestratorEngine("sup-1", "admin")
         engine.graph = graph
         self.persisted: list[str] = []
         # A plain function, not a coroutine: patch.object replaces an async
@@ -102,7 +102,7 @@ class ScheduleLoopTests(unittest.IsolatedAsyncioTestCase):
         # side_effect that returns a coroutine would hand back an un-awaited
         # one instead of recording anything.
         patcher = patch.object(
-            orchestrator.SupervisorEngine, "_set_status",
+            orchestrator.OrchestratorEngine, "_set_status",
             side_effect=lambda status: self.persisted.append(status),
         )
         patcher.start()
@@ -154,7 +154,7 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
     """A task nobody holds a reference to can be collected mid-run."""
 
     async def test_spawn_keeps_a_reference_while_it_runs(self):
-        engine = orchestrator.SupervisorEngine("sup-2", "admin")
+        engine = orchestrator.OrchestratorEngine("sup-2", "admin")
         started = asyncio.Event()
 
         async def work():
@@ -169,7 +169,7 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_reference_is_released_when_it_finishes(self):
         """Holding them for ever would be a leak in the other direction."""
-        engine = orchestrator.SupervisorEngine("sup-3", "admin")
+        engine = orchestrator.OrchestratorEngine("sup-3", "admin")
 
         async def work():
             return None
@@ -181,7 +181,7 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_failure_in_a_spawned_task_is_logged(self):
         """Otherwise it surfaces only as "Task exception was never retrieved"."""
-        engine = orchestrator.SupervisorEngine("sup-4", "admin")
+        engine = orchestrator.OrchestratorEngine("sup-4", "admin")
 
         async def boom():
             raise RuntimeError("planner exploded")
@@ -195,7 +195,7 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("planner exploded", "\n".join(logs.output))
 
     async def test_cancelling_is_not_reported_as_a_failure(self):
-        engine = orchestrator.SupervisorEngine("sup-5", "admin")
+        engine = orchestrator.OrchestratorEngine("sup-5", "admin")
 
         async def forever():
             await asyncio.sleep(60)

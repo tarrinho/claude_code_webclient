@@ -29,7 +29,7 @@ The faults, in the order they surfaced:
 6. **The task number became the title.** The lazy group stopped at the first
    ":", so rows were named "1" and "2".
 7. **Task rows collided across supervisors.** ``PlanParser`` numbers from 1 per
-   plan and ``supervisor_tasks.id`` is a global PRIMARY KEY, so the second
+   plan and ``orchestrator_tasks.id`` is a global PRIMARY KEY, so the second
    orchestrator's insert failed on the UNIQUE constraint -- swallowed by a bare
    warning, so the task ran to completion while the list stayed empty.
 8. **The orchestrator's progress was never written.** Task rows carried theirs;
@@ -152,7 +152,7 @@ class BackendFallbackTests(unittest.IsolatedAsyncioTestCase):
             machine_id=machine_id, name="Gateway", host="gw.example.com",
             port=443, api_key="k", model="vllm/Local-Model",
             base_url="https://gw.example.com", description="",
-            owner_id="alice", provider="anthropic",
+            owner_id="alice", provider="claude_code",
         )
         await db.ai_machine_activate(machine_id, "alice")
 
@@ -223,32 +223,32 @@ class TaskRowIdentityTests(unittest.IsolatedAsyncioTestCase):
         completion while the task list stayed empty and progress sat at 0%.
         """
         for name in ("first", "second"):
-            await db.supervisor_create(uuid.uuid4().hex, name, "", "alice")
-        sups = await db.supervisor_list("alice")
-        await db.supervisor_task_create(
-            supervisor_id=sups[0]["id"], task_id="t001", title="A",
+            await db.orchestrator_create(uuid.uuid4().hex, name, "", "alice")
+        sups = await db.orchestrator_list("alice")
+        await db.orchestrator_task_create(
+            orchestrator_id=sups[0]["id"], task_id="t001", title="A",
             description="d", model=None, parent_task_id=None, depends_on=[])
         # The specific error, not bare Exception: this asserts the UNIQUE
         # constraint is what refuses the write. `Exception` also passes when the
         # call signature drifts and raises TypeError, which is the failure that
         # would quietly retire the test rather than the collision it names.
         with self.assertRaises(sqlite3.IntegrityError) as caught:
-            await db.supervisor_task_create(
-                supervisor_id=sups[1]["id"], task_id="t001", title="B",
+            await db.orchestrator_task_create(
+                orchestrator_id=sups[1]["id"], task_id="t001", title="B",
                 description="d", model=None, parent_task_id=None, depends_on=[])
-        self.assertIn("supervisor_tasks.id", str(caught.exception))
+        self.assertIn("orchestrator_tasks.id", str(caught.exception))
 
     async def test_a_namespaced_id_lets_two_supervisors_both_have_task_one(self):
         for name in ("first", "second"):
-            await db.supervisor_create(uuid.uuid4().hex, name, "", "alice")
-        sups = await db.supervisor_list("alice")
+            await db.orchestrator_create(uuid.uuid4().hex, name, "", "alice")
+        sups = await db.orchestrator_list("alice")
         for sup in sups:
-            await db.supervisor_task_create(
-                supervisor_id=sup["id"], task_id=f"{sup['id'][:8]}_t001",
+            await db.orchestrator_task_create(
+                orchestrator_id=sup["id"], task_id=f"{sup['id'][:8]}_t001",
                 title="Create the file", description="d", model=None,
                 parent_task_id=None, depends_on=[])
         for sup in sups:
-            rows = await db.supervisor_tasks_get(sup["id"], "alice")
+            rows = await db.orchestrator_tasks_get(sup["id"], "alice")
             self.assertEqual(len(rows), 1, "each orchestrator keeps its own task")
             self.assertEqual(rows[0]["title"], "Create the file")
 
@@ -256,7 +256,7 @@ class TaskRowIdentityTests(unittest.IsolatedAsyncioTestCase):
         """Pins the shape, so a future edit cannot go back to a raw t001."""
         source = Path(orchestrator.__file__).read_text(encoding="utf-8")
         self.assertIn("_row_id", source)
-        self.assertIn("self.supervisor_id[:8]", source)
+        self.assertIn("self.orchestrator_id[:8]", source)
         self.assertIn("task_id=node.id", source,
                       "the DB write must use the namespaced id the graph holds")
 

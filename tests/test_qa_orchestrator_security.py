@@ -4,8 +4,8 @@
 orchestration API as one of three surfaces added since and **not covered**. This
 file is the regression half of covering it. Two classes of finding came out:
 
-**Cross-tenant reads (F-21).** `db.supervisor_tasks_get` and
-`db.supervisor_messages_get` each took an `owner_id` argument and never used it.
+**Cross-tenant reads (F-21).** `db.orchestrator_tasks_get` and
+`db.orchestrator_messages_get` each took an `owner_id` argument and never used it.
 The SQL filtered on `supervisor_id` alone, so any authenticated account could
 read any orchestrator's task titles, descriptions and results -- agent output --
 and its whole message history, by id. Verified by exploit before it was fixed:
@@ -77,18 +77,18 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         for user, password in self.passwords.items():
             await db.user_create(user, None, auth.hash_password(password))
 
-        await db.supervisor_create("sup-bob", "Bob's secret plan", "private", "bob")
-        await db.supervisor_task_create(
-            supervisor_id="sup-bob", task_id="t001", title="Bob's task title",
+        await db.orchestrator_create("sup-bob", "Bob's secret plan", "private", "bob")
+        await db.orchestrator_task_create(
+            orchestrator_id="sup-bob", task_id="t001", title="Bob's task title",
             description="BOB-PRIVATE-DESCRIPTION", model=None,
             parent_task_id=None, depends_on=[],
         )
-        await db.supervisor_messages_append(
+        await db.orchestrator_messages_append(
             "sup-bob", "orchestrator", "BOB-PRIVATE-MESSAGE", {"kind": "plan"}
         )
-        await db.supervisor_create("sup-alice", "Alice's", "", "alice")
+        await db.orchestrator_create("sup-alice", "Alice's", "", "alice")
         for n in range(3):
-            await db.supervisor_messages_append(
+            await db.orchestrator_messages_append(
                 "sup-alice", "orchestrator", f"ALICE-{n}", {}
             )
 
@@ -102,14 +102,14 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
 
     def test_another_accounts_tasks_are_not_returned(self):
         client = self._login("alice")
-        response = client.get("/api/supervisors/sup-bob/tasks")
+        response = client.get("/api/orchestrators/sup-bob/tasks")
         self.assertNotIn("BOB-PRIVATE-DESCRIPTION", response.text)
         self.assertNotIn("Bob's task title", response.text)
         self.assertEqual(response.json()["count"], 0)
 
     def test_another_accounts_messages_are_not_returned(self):
         client = self._login("alice")
-        response = client.get("/api/supervisors/sup-bob/messages")
+        response = client.get("/api/orchestrators/sup-bob/messages")
         self.assertNotIn("BOB-PRIVATE-MESSAGE", response.text)
         self.assertEqual(response.json()["count"], 0)
 
@@ -117,7 +117,7 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         """The half that would go unnoticed: a scoping fix that scopes
         everything to nothing passes both tests above."""
         client = self._login("alice")
-        messages = client.get("/api/supervisors/sup-alice/messages").json()
+        messages = client.get("/api/orchestrators/sup-alice/messages").json()
         self.assertEqual(messages["count"], 3)
         self.assertIn("ALICE-0", str(messages))
 
@@ -126,14 +126,14 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         None` branch holding two byte-identical bodies -- which is what made it
         look deliberate. The SSE poller therefore re-sent the same first
         hundred messages for ever."""
-        rows = await db.supervisor_messages_get("sup-alice", "alice")
+        rows = await db.orchestrator_messages_get("sup-alice", "alice")
         ids = [r["id"] for r in rows]
         self.assertEqual(len(ids), 3)
-        after_first = await db.supervisor_messages_get(
+        after_first = await db.orchestrator_messages_get(
             "sup-alice", "alice", after_id=ids[0]
         )
         self.assertEqual([r["id"] for r in after_first], ids[1:])
-        past_end = await db.supervisor_messages_get(
+        past_end = await db.orchestrator_messages_get(
             "sup-alice", "alice", after_id=ids[-1]
         )
         self.assertEqual(past_end, [])
@@ -142,9 +142,9 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         """Asserted at the layer that holds the scoping, not only through HTTP.
         A handler-level check protects the handlers that have one; this one is
         the floor under all of them."""
-        self.assertEqual(await db.supervisor_tasks_get("sup-bob", "alice"), [])
-        self.assertEqual(await db.supervisor_messages_get("sup-bob", "alice"), [])
-        self.assertNotEqual(await db.supervisor_tasks_get("sup-bob", "bob"), [])
+        self.assertEqual(await db.orchestrator_tasks_get("sup-bob", "alice"), [])
+        self.assertEqual(await db.orchestrator_messages_get("sup-bob", "alice"), [])
+        self.assertNotEqual(await db.orchestrator_tasks_get("sup-bob", "bob"), [])
 
 
 class OwnerScopingIsRealTests(unittest.TestCase):

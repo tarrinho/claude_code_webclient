@@ -38,7 +38,7 @@ class SupervisorRouteQA(unittest.IsolatedAsyncioTestCase):
 
     async def test_both_serve_the_same_page(self):
         request = SimpleNamespace(state=SimpleNamespace(session={"user": "admin"}))
-        response = await app.handle_supervisor_page(request)
+        response = await app.handle_orchestrator_page(request)
         body = response.body.decode()
         self.assertEqual(response.status_code, 200)
         self.assertIn("Orchestrator", body)

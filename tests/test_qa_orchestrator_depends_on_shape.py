@@ -2,7 +2,7 @@
 
 Found while double-checking an unrelated feature (the per-task progress
 estimate) against real data rather than idealised fixtures. `depends_on` is
-stored via `json.dumps(depends_on or [])` (routes/db_supervisors.py) and
+stored via `json.dumps(depends_on or [])` (routes/db_orchestrators.py) and
 handed to the client untransformed (`state.tasks = data.tasks || []` in
 `loadTasks`) -- so every task's `depends_on` field is a JSON-encoded *string*,
 never an array. Confirmed against the live database, read-only:
@@ -51,7 +51,7 @@ REPO = Path(__file__).resolve().parent.parent
 SUPERVISOR_DIR = REPO / "web" / "assets" / "orchestrator"
 TASKS_JS = SUPERVISOR_DIR / "tasks.js"
 RAIL_JS = SUPERVISOR_DIR / "rail.js"
-DB_SUPERVISORS = REPO / "routes" / "db_supervisors.py"
+DB_SUPERVISORS = REPO / "routes" / "db_orchestrators.py"
 CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
 

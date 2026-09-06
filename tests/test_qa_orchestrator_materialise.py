@@ -17,7 +17,7 @@ it.
 Two defects the loop already carries scars from, both pinned below:
 
 * Every orchestrator's `PlanParser` numbers tasks from 1, so every plan produces a
-  `t001`, and `supervisor_tasks.id` is a global primary key. The second
+  `t001`, and `orchestrator_tasks.id` is a global primary key. The second
   orchestrator's writes failed on the UNIQUE constraint, were swallowed by a bare
   warning, and its task list stayed empty at 0% while the work actually ran.
 * That bare warning is why it took a live run to notice.
@@ -48,8 +48,8 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         self.addAsyncCleanup(db.close)
         self.sup = uuid.uuid4().hex
-        await db.supervisor_create(self.sup, "Release", "", "alice")
-        self.engine = orchestrator.SupervisorEngine(self.sup, "alice")
+        await db.orchestrator_create(self.sup, "Release", "", "alice")
+        self.engine = orchestrator.OrchestratorEngine(self.sup, "alice")
 
     @staticmethod
     def _tasks(*specs):
@@ -71,30 +71,30 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._materialise_plan(
             self._tasks(("t001", "Do the thing", "a description", None, ()))
         )
-        rows = await db.supervisor_tasks_get(self.sup, "alice")
+        rows = await db.orchestrator_tasks_get(self.sup, "alice")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["title"], "Do the thing")
 
     async def test_no_tasks_is_a_no_op(self):
         await self.engine._materialise_plan([])
-        self.assertEqual(await db.supervisor_tasks_get(self.sup, "alice"), [])
+        self.assertEqual(await db.orchestrator_tasks_get(self.sup, "alice"), [])
 
     async def test_row_ids_are_namespaced_so_two_supervisors_can_both_have_t001(self):
         """The collision that made a task list stay empty at 0%.
 
         PlanParser numbers from 1 within a plan, so every orchestrator emits a
-        `t001`, and `supervisor_tasks.id` is a global primary key. Without the
+        `t001`, and `orchestrator_tasks.id` is a global primary key. Without the
         namespace the second write fails the UNIQUE constraint.
         """
         other = uuid.uuid4().hex
-        await db.supervisor_create(other, "Second", "", "alice")
-        engine2 = orchestrator.SupervisorEngine(other, "alice")
+        await db.orchestrator_create(other, "Second", "", "alice")
+        engine2 = orchestrator.OrchestratorEngine(other, "alice")
         plan = self._tasks(("t001", "First", "d", None, ()))
         await self.engine._materialise_plan(plan)
         await engine2._materialise_plan(self._tasks(("t001", "Second", "d", None, ())))
 
-        mine = await db.supervisor_tasks_get(self.sup, "alice")
-        theirs = await db.supervisor_tasks_get(other, "alice")
+        mine = await db.orchestrator_tasks_get(self.sup, "alice")
+        theirs = await db.orchestrator_tasks_get(other, "alice")
         self.assertEqual(len(mine), 1, "the first orchestrator's task is missing")
         self.assertEqual(len(theirs), 1,
                          "the second orchestrator's task was lost to an id collision")
@@ -109,7 +109,7 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
             ("t002", "Second", "d", None, ("t001",)),
         ))
         rows = {r["title"]: r for r in
-                await db.supervisor_tasks_get(self.sup, "alice")}
+                await db.orchestrator_tasks_get(self.sup, "alice")}
         self.assertEqual(len(rows), 2)
         ids = {r["id"] for r in rows.values()}
         import json
@@ -125,7 +125,7 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
         which is the opposite of what it is for. Verified by failing the middle
         write rather than by reading the source.
         """
-        real = db.supervisor_task_create
+        real = db.orchestrator_task_create
         calls = {"n": 0}
 
         async def flaky(**kwargs):
@@ -134,14 +134,14 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("simulated write failure")
             return await real(**kwargs)
 
-        with patch.object(db, "supervisor_task_create", AsyncMock(side_effect=flaky)):
+        with patch.object(db, "orchestrator_task_create", AsyncMock(side_effect=flaky)):
             await self.engine._materialise_plan(self._tasks(
                 ("t001", "One", "d", None, ()),
                 ("t002", "Two", "d", None, ()),
                 ("t003", "Three", "d", None, ()),
             ))
         titles = {r["title"] for r in
-                  await db.supervisor_tasks_get(self.sup, "alice")}
+                  await db.orchestrator_tasks_get(self.sup, "alice")}
         self.assertEqual(titles, {"One", "Three"},
                          "a single failed write took the later tasks with it")
 
@@ -152,7 +152,7 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
         async def always_fail(**kwargs):
             raise RuntimeError("simulated write failure")
 
-        with patch.object(db, "supervisor_task_create",
+        with patch.object(db, "orchestrator_task_create",
                           AsyncMock(side_effect=always_fail)), \
              self.assertLogs("wc.orchestrator", level="ERROR") as logs:
             await self.engine._materialise_plan(
@@ -170,7 +170,7 @@ class MaterialisePlanTests(unittest.IsolatedAsyncioTestCase):
             ("t001", "One", "d", None, ()),
             ("t002", "Two", "d", None, ()),
         ))
-        rows = await db.supervisor_tasks_get(self.sup, "alice")
+        rows = await db.orchestrator_tasks_get(self.sup, "alice")
         self.assertEqual(
             {r["id"] for r in rows}, set(self.engine.graph.tasks),
             "the in-memory graph and the task rows disagree",

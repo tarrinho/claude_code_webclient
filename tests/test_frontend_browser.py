@@ -1967,6 +1967,79 @@ class QueuePanelBrowserTests(_BrowserFixture):
         )
         self.assertEqual(self.errors, [])
 
+    def _add_queue_row(self, chat_id: str, prompt: str, state: str) -> None:
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO turn_queue (chat_id,owner_id,prompt,model,state,"
+            "created_at) VALUES (?,'admin',?,NULL,?,?)",
+            (chat_id, prompt, state, stamp),
+        )
+        con.commit()
+        con.close()
+
+    def _fake_queued_reply(self, chat_id: str, position: int):
+        """Intercepts the composer's own POST /stream with a "queued" SSE
+        frame -- the real trigger for refreshQueue() while the panel is
+        closed. In production this fires when the viewer types a new prompt
+        into a conversation whose turn is already running elsewhere and gets
+        told theirs is waiting too; nothing here is on a timer."""
+        def handler(route):
+            route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=f'data: {{"type": "queued", "position": {position}}}\n\n',
+            )
+        self.page.route(f"**/api/chats/{chat_id}/stream", handler)
+
+    def test_closing_survives_a_refresh_that_changes_nothing(self):
+        chat_id = self._seed_chat_with_queue([("held one", "held")])
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.page.click("#queueClose")
+        self.page.wait_for_selector("#queueBar", state="hidden", timeout=5_000)
+
+        # The DB queue is unchanged -- still the one held row -- so the
+        # refresh this triggers must not undo the close.
+        self._fake_queued_reply(chat_id, 2)
+        self.page.fill("#composerInput", "another prompt")
+        self.page.click("#sendBtn")
+        self.page.wait_for_timeout(1500)
+
+        self.assertFalse(
+            self.page.is_visible("#queueBar"),
+            "a refresh reporting an unchanged queue reopened a panel the "
+            "user had just closed -- closing is supposed to survive "
+            "identical polls, only genuinely new information should break "
+            "through it",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_new_information_breaks_through_a_closed_panel(self):
+        chat_id = self._seed_chat_with_queue([("held one", "held")])
+        self.page.reload(wait_until="domcontentloaded")
+        self._open_chat(chat_id)
+        self.page.click("#queueClose")
+        self.page.wait_for_selector("#queueBar", state="hidden", timeout=5_000)
+
+        # A second prompt actually lands in the queue between the close and
+        # this refresh -- exactly the case a silently-permanent close would
+        # hide from the user.
+        self._add_queue_row(chat_id, "second one", "pending")
+        self._fake_queued_reply(chat_id, 2)
+        self.page.fill("#composerInput", "another prompt")
+        self.page.click("#sendBtn")
+
+        self.page.wait_for_selector("#queueBar", state="visible", timeout=10_000)
+        self.assertEqual(
+            self.page.inner_text("#queueToggle"), "Queue (2)",
+            "the panel reopened but the toggle did not pick up the new "
+            "count -- the two must stay in sync",
+        )
+        self.assertEqual(self.errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

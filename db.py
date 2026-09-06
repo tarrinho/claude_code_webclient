@@ -25,6 +25,7 @@ def __getattr__(name: str):
         "last_models_used": "routes.db_queue",
         "queue_add": "routes.db_queue",
         "queue_counts": "routes.db_queue",
+        "queue_held_counts": "routes.db_queue",
         "queue_delete": "routes.db_queue",
         "queue_hold_all": "routes.db_queue",
         "queue_list": "routes.db_queue",

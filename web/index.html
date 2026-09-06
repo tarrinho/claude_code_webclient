@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=33">
+<link rel="stylesheet" href="/assets/styles.css?v=34">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -27,7 +27,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.12.2</span>
+    <span class="ver" id="ver">0.13.0</span>
     <button class="btn-icon" id="supervisorBtn" aria-label="Open supervisor" title="Supervisor">📡</button>
 <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
@@ -115,6 +115,11 @@
       <div class="queue-head">
         <span class="queue-tag" id="queueTag"></span>
         <span class="queue-note" id="queueNote"></span>
+        <!-- Hides the panel without touching the queue itself -- Discard is
+             the only other way to make it go away, and that deletes a
+             prompt rather than just putting the panel out of sight. -->
+        <button type="button" class="btn-icon queue-close" id="queueClose"
+                aria-label="Hide queue panel" title="Hide (prompts stay queued)">&times;</button>
       </div>
       <ul class="queue-list" id="queueList" aria-label="Queued prompts"></ul>
     </section>
@@ -125,7 +130,7 @@
       <textarea id="composerInput" rows="1" maxlength="8000" placeholder="Ask Claude to inspect, explain, or change something…" aria-label="Message"></textarea>
       <button class="btn-send" id="sendBtn" aria-label="Send message">➜</button>
     </div>
-    <div class="composer-meta"><span class="composer-left"><span class="composer-hint" id="composerChatName"></span><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span></span><span><button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
+    <div class="composer-meta"><span class="composer-left"><span class="composer-hint" id="composerChatName"></span><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span></span><span><button type="button" class="queue-toggle" id="queueToggle" hidden aria-label="Show queued prompts" title="Show queued prompts"></button> <button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
   </section>
   <!-- The supervisor is its own page. Embedded rather than navigated to, so the
        conversation list stays put and you can leave again without a reload. -->
@@ -339,7 +344,7 @@
 <script type="module" src="/assets/machines.js?v=4"></script>
 <script type="module" src="/assets/supervisor.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
-<script type="module" src="/assets/app.js?v=37"></script>
+<script type="module" src="/assets/app.js?v=38"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

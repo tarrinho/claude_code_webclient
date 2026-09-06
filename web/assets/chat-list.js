@@ -307,11 +307,23 @@ export function createChatListController(dependencies) {
         title.prepend(mark);
       }
       if (chat.queued) {
+        const held = chat.queued_held || 0;
         const queued = document.createElement('span');
         queued.className = 'chat-queued';
+        // dataset, not a class swap: styling stays in CSS (mirrors
+        // .queue-bar[data-held="yes"] in the open-conversation panel) rather
+        // than being decided here.
+        queued.dataset.held = held ? 'yes' : 'no';
         queued.textContent = String(chat.queued);
-        queued.setAttribute('aria-label', `${chat.queued} prompts queued`);
-        queued.title = `${chat.queued} prompt${chat.queued > 1 ? 's' : ''} waiting to send`;
+        queued.setAttribute(
+          'aria-label',
+          held
+            ? `${held} of ${chat.queued} queued prompts held — needs Send or Discard`
+            : `${chat.queued} prompts queued`,
+        );
+        queued.title = held
+          ? `${held} held (its predecessor's turn failed) of ${chat.queued} waiting`
+          : `${chat.queued} prompt${chat.queued > 1 ? 's' : ''} waiting to send`;
         title.append(queued);
       }
       // Independent of the leading-dot chain above (running/terminal-busy/

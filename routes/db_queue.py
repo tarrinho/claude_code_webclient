@@ -53,6 +53,24 @@ async def queue_counts(owner_id: str) -> dict[str, int]:
     return {row["chat_id"]: row["n"] for row in await cur.fetchall()}
 
 
+async def queue_held_counts(owner_id: str) -> dict[str, int]:
+    """Held-only counterpart to `queue_counts`.
+
+    The sidebar badge used to render `queue_counts` alone, which sums
+    pending and held rows together -- a chat with 3 prompts safely waiting
+    to auto-send looked identical to one with 3 held because its last turn
+    broke and needs Send/Discard. Queried separately rather than folded into
+    `queue_counts` (e.g. a tuple) so a caller that only wants the total,
+    like the drain path, is not paying for a state filter it does not need.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT chat_id, COUNT(*) AS n FROM turn_queue WHERE owner_id = ? "
+        "AND state = 'held' GROUP BY chat_id",
+        (owner_id,),
+    )
+    return {row["chat_id"]: row["n"] for row in await cur.fetchall()}
+
+
 async def last_models_used(owner_id: str) -> dict[str, str]:
     """The model that actually served each conversation's most recent turn.
 

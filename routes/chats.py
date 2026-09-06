@@ -136,6 +136,7 @@ async def handle_chats_list(request: Request):
     chats = await db.chat_list(session["user"])
     live_updated = await _live_updated_at(chats)
     queued = await db.queue_counts(session["user"])
+    queued_held = await db.queue_held_counts(session["user"])
     busy_sessions = await _busy_terminal_sessions()
     last_models = await db.last_models_used(session["user"])
     return JSONResponse(
@@ -165,6 +166,13 @@ async def handle_chats_list(request: Request):
                     "ai_machine_id": c.get("ai_machine_id"),
                     "running": c["id"] in running,
                     "queued": queued.get(c["id"], 0),
+                    # Of "queued", how many are held (their predecessor's turn
+                    # failed, so they were not auto-sent). Split out so the
+                    # sidebar badge can look different for "safely waiting"
+                    # vs "needs a Send/Discard decision" -- summed together
+                    # in "queued" above, a chat with 3 held prompts looked
+                    # identical to one with 3 healthy ones.
+                    "queued_held": queued_held.get(c["id"], 0),
                     # Work happening in a terminal this conversation is linked
                     # to. Draws the same dot; offers nothing to attach to.
                     "terminal_busy": bool(

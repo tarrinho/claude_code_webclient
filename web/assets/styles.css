@@ -164,6 +164,14 @@ button{touch-action:manipulation}
 .queue-btn{font-size:.72rem;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);cursor:pointer;min-height:26px}
 .queue-btn:hover{border-color:var(--accent)}
 .queue-btn-drop:hover{border-color:var(--danger,#c0504d);color:var(--danger,#c0504d)}
+.queue-close{margin-left:auto;flex:0 0 auto;font-size:16px;line-height:1;padding:2px 8px;min-height:auto}
+/* Reopens a panel the close button hid, or one that never auto-opened
+   because nothing changed since it was last dismissed. Only visible when
+   there is something to show -- toggled from JS, not CSS, since that mirrors
+   the same count the sidebar badge and in-panel tag already carry. */
+.queue-toggle{font-size:.72rem;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);cursor:pointer;min-height:26px}
+.queue-toggle:hover{border-color:var(--accent)}
+.queue-toggle[data-held="yes"]{border-color:var(--warn);color:var(--warn)}
 /* A conversation whose linked terminal is working. Same size as the running dot
    so rows do not shift, but outlined: there is nothing here to attach to. */
 .chat-terminal-busy{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--muted);box-sizing:border-box;vertical-align:middle}
@@ -182,8 +190,12 @@ button{touch-action:manipulation}
 .chat-free{display:inline-block;width:11px;margin-right:6px;font-size:11px;line-height:1;color:var(--muted);vertical-align:middle}
 .chat-free::before{content:'○'}
 /* Count of prompts waiting to send. Trails the title rather than leading it:
-   it is a property of the queue, not an alert. */
+   it is a property of the queue, not an alert -- except when some of them
+   are held (their predecessor's turn failed), which is exactly the "look at
+   this" case the open conversation's queue-bar already warns about; same
+   --warn colour so the two read as the same state. */
 .chat-queued{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:.7rem;line-height:1.35;background:var(--surface-2,rgba(127,127,127,.18));color:var(--text-muted,inherit);vertical-align:middle}
+.chat-queued[data-held="yes"]{background:var(--warn);color:#0d1117}
 .chat-degraded{display:inline-block;margin-left:6px;color:var(--warn);font-size:11px;vertical-align:middle;cursor:help}
 @media (prefers-reduced-motion:reduce){.chat-running{animation:none}.chat-group>summary::before{transition:none}}
 
@@ -593,7 +605,7 @@ button{touch-action:manipulation}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 @media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn,.queue-toggle{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
 /* Reclaim chrome on small screens so the scrolling panel gets usable height. */
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(max-width:480px){.usage-row{grid-template-columns:minmax(0,1fr) 2.6rem 3.6rem 3.6rem}.usage-row>:nth-child(5){display:none}.usage-turn{grid-template-columns:minmax(0,1fr) 5.5rem auto}.usage-turn>.usage-when,.usage-turn>.usage-turn-model{display:none}}

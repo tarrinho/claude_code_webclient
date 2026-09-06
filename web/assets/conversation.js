@@ -243,6 +243,15 @@ let _turnTicker = null;
 // function.
 let _queueTooltipAnchor = null;
 
+// Set by the close (x) button, cleared by the toggle button or a chat
+// switch. Module-level like the tooltip state above -- one controller
+// instance per page. A signature of the current rows (count + held count)
+// is kept alongside it: closing hides the panel, but new information (a
+// prompt added, or one going held) still has to break through the manual
+// hide rather than staying invisible until the user thinks to check again.
+let _queueManuallyHidden = false;
+let _queueSignature = '';
+
 function _queueTooltipEl() {
   let el = document.getElementById('queueTooltip');
   if (!el) {
@@ -885,6 +894,11 @@ export function createConversationController(dependencies) {
       // do not include it yet, because nothing is persisted until the turn ends.
       attach(data.chat.id, 0);
     }
+    // A dismissal belongs to the conversation it was made in -- carrying it
+    // over would leave a *different* chat's queue silently hidden the first
+    // time you happened to open it after closing another one's.
+    _queueManuallyHidden = false;
+    _queueSignature = '';
     // Always, not only when the count is non-zero: opening a conversation has
     // to clear a panel left over from the previous one.
     refreshQueue(data.chat.id);
@@ -900,33 +914,69 @@ export function createConversationController(dependencies) {
 
   async function refreshQueue(chatId) {
     if (!elements.queueBar) return;
-    if (!chatId) return hideQueue();
+    if (!chatId) return hideQueue(true);
     let payload;
     try {
       const response = await apiFetch(`/api/chats/${encodeURIComponent(chatId)}/queue`);
-      if (!response.ok) return hideQueue();
+      if (!response.ok) return hideQueue(true);
       payload = await response.json();
-    } catch { return hideQueue(); }
+    } catch { return hideQueue(true); }
     if (state.currentChat?.id !== chatId) return;
     renderQueue(chatId, payload);
   }
 
-  function hideQueue() {
+  function hideQueue(resetToggle = false) {
     if (!elements.queueBar) return;
     elements.queueBar.hidden = true;
     if (elements.queueList) elements.queueList.textContent = '';
     // A row's tooltip has no meaning once the row it points at is gone.
     closeQueueTooltip();
+    // Only on "nothing queued at all" / can't reach the server, not on a
+    // manual close -- the toggle button's whole job is staying visible
+    // after a close so there is still a way back in.
+    if (resetToggle) updateQueueToggle([]);
+  }
+
+  // Kept visible whenever there is something to check, independent of
+  // whether the panel itself is currently shown -- "add a button to check
+  // the queue" was the ask this exists for: before this, the only way to
+  // see it again after closing was to wait for the next state change.
+  function updateQueueToggle(rows) {
+    if (!elements.queueToggle) return;
+    const held = rows.filter(row => row.state === 'held').length;
+    elements.queueToggle.hidden = rows.length === 0;
+    elements.queueToggle.textContent = rows.length ? `Queue (${rows.length})` : '';
+    elements.queueToggle.dataset.held = held ? 'yes' : 'no';
+    const label = held
+      ? `${held} of ${rows.length} queued prompts held — show queue`
+      : `${rows.length} queued prompt${rows.length === 1 ? '' : 's'} — show queue`;
+    elements.queueToggle.title = label;
+    elements.queueToggle.setAttribute('aria-label', label);
   }
 
   function renderQueue(chatId, payload) {
     const rows = payload.queue || [];
-    if (!rows.length) return hideQueue();
+    updateQueueToggle(rows);
+    if (!rows.length) {
+      _queueManuallyHidden = false;
+      _queueSignature = '';
+      return hideQueue();
+    }
+    const held = rows.filter(row => row.state === 'held').length;
+    // Signature, not a plain boolean: a close must stay closed across
+    // identical polls, but a *new* held prompt (or a new count) while
+    // closed is exactly the case a silent badge-only sidebar update is not
+    // enough for -- so it breaks back through.
+    const signature = `${rows.length}:${held}`;
+    if (_queueManuallyHidden) {
+      if (signature === _queueSignature) return;
+      _queueManuallyHidden = false;
+    }
+    _queueSignature = signature;
     // The 5-6s poll calls this again while a tooltip may still be open --
     // replacing the list below would leave it pointing at a detached node,
     // the same hazard renderAutoAnswerMenu already guards against.
     closeQueueTooltip();
-    const held = rows.filter(row => row.state === 'held').length;
     elements.queueBar.hidden = false;
     elements.queueBar.dataset.held = held ? 'yes' : 'no';
     elements.queueTag.textContent = held
@@ -1298,6 +1348,15 @@ export function createConversationController(dependencies) {
     elements.jumpButton.hidden = following;
   }, {passive: true});
   elements.jumpButton.addEventListener('click', scrollToBottom);
+
+  elements.queueClose?.addEventListener('click', () => {
+    _queueManuallyHidden = true;
+    hideQueue();
+  });
+  elements.queueToggle?.addEventListener('click', () => {
+    _queueManuallyHidden = false;
+    if (state.currentChat?.id) refreshQueue(state.currentChat.id);
+  });
 
   setStreamState('ready');
   return {selectChat, send, stop, retry, restoreDraft, persistDraft, refreshCurrent, destroy, setStreamState};

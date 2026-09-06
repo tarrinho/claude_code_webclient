@@ -20,6 +20,70 @@ churn.
 
 ---
 
+## [0.13.0] — 2026-09-06
+
+### Added
+
+- **Per-IP rate limiting** (`rate_limit.py`, token-bucket middleware) and an
+  **auto-answer cooldown** — the same (chat, question) pair is not answered
+  again within 5 minutes, so a stuck auto-answer loop cannot hammer a chat.
+- **The sidebar's queued-prompt badge now distinguishes held from pending.**
+  It previously summed both into one number — a chat with 3 prompts safely
+  waiting to auto-send looked identical to one with 3 held because its last
+  turn broke and needs a Send/Discard decision, and unlike the open
+  conversation's own queue panel (which already colours held differently),
+  the sidebar gave no reason to open it. `GET /api/chats` now reports
+  `queued_held` alongside `queued` (`db.queue_held_counts`), and the badge
+  takes the queue panel's own warning colour when any of it is held.
+- **A toggle and a close control for the per-conversation queue panel.** It
+  previously only ever showed itself automatically and had no way to put it
+  back out of sight without discarding a prompt or leaving the conversation.
+  A small "Queue (N)" button in the composer bar reopens it on demand —
+  visible only when there is something to show, and it takes the same
+  warning colour when any entry is held — and a close (×) in the panel's own
+  header hides it without touching the queue itself. Closing is
+  per-conversation and does not survive genuinely new information: a prompt
+  being added, or one going held, reopens the panel even if it was just
+  dismissed, since a silent close is meant to be quiet, not to bury a
+  failure.
+
+### Fixed
+
+- **SSH proxy tunnels could never actually connect** — 8 stacked bugs across
+  the tunnel lifecycle: `tunnel_manager.start()` was called without `await`
+  from `app.py` (its background loop never ran at all), the same missing
+  `await` on two `aiosqlite` reads, the tunnel-control request body was
+  never parsed (`json.loads` on an unawaited coroutine), `int()` was applied
+  to a UUID `machine_id`, a NOT NULL violation on machine creation, and
+  `connect()` read `ssh_host`/`ssh_user`/`ssh_key_path` from the wrong
+  table entirely.
+- **SSH proxy tunnels that did connect still could not forward traffic.**
+  `connect()` called paramiko's *remote* (`-R`) port-forward request with no
+  handler registered — the wrong direction, and nothing was ever bound to
+  listen on the local port `runner.get_proxy_target()` connects to. A real
+  turn through a real, fully-connected tunnel failed immediately with
+  "Cannot connect to proxy at 127.0.0.1:<port>". New `tunnel_manager_forward.py`
+  implements the actual local forwarder (thread-per-connection over
+  `direct-tcpip` channels). Verified live end-to-end against a real remote
+  machine and model.
+- **SSH host keys were accepted with no verification at all**
+  (`paramiko.AutoAddPolicy`, bandit B507, CWE-295 — a MITM between this host
+  and an `ssh_proxy` machine was undetectable). Replaced with trust-on-first-use
+  pinning: the SHA256 fingerprint is pinned on first successful connect and
+  any later connection with a different key is rejected.
+- **`ssh_host` was never checked against the SSRF blocklist** on machine
+  creation, unlike every other host field in the form.
+- **`tunnel_manager.py`'s boot-time reconnect scan deadlocked against the
+  shared async DB connection**, then, once fixed to use its own connection,
+  raised `AttributeError: module 'db' has no attribute 'db_path'` (a local
+  variable inside `db.init()`, never a module attribute) on every boot —
+  caught by a broad `except`, so it never crashed the app, but the scan
+  silently never ran.
+- **`ssh_proxy` machines were mislabeled** in Settings and the per-chat
+  backend picker.
+- **`app.py` referenced `rate_limit` without importing it** — crashed on
+  startup.
+
 ## [0.12.2] — 2026-09-05
 
 ### Fixed

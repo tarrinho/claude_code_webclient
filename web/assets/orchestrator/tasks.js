@@ -344,7 +344,7 @@ import { renderRail } from "./rail.js";
     // Decide which action to take from the current button text.
     const action = el.pauseResumeBtn.textContent === "⏸" ? "pause" : "resume";
     try {
-      await apiFetch(`/api/supervisors/${encodeURIComponent(state.activeSupervisorId)}/${action}`, {
+      await apiFetch(`/api/orchestrators/${encodeURIComponent(state.activeSupervisorId)}/${action}`, {
         method: "POST",
       });
       // Refresh the orchestrator so status and list update in one call.

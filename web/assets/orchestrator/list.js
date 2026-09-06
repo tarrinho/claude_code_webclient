@@ -160,7 +160,7 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
         return;
       }
       try {
-        await apiFetch(`/api/supervisors/${encodeURIComponent(id)}`, {
+        await apiFetch(`/api/orchestrators/${encodeURIComponent(id)}`, {
           method: "PATCH",
           body: { title: next },
         });

@@ -1,7 +1,7 @@
 // ── Orchestrator ────────────────────────────────────────────────────────────────
 
 import {apiFetch} from './api.js?v=1';
-import {state, showToast} from './app.js?v=38';
+import {state, showToast} from './app.js?v=39';
 
 // This file is loaded two ways at once: as its own <script type="module"> in
 // index.html, and via `import` from app.js for the pane/picker functions it
@@ -31,7 +31,7 @@ export function _closeSupervisorPicker() {
 async function _addChatToSupervisor(supervisorId, chatId, title) {
   try {
     const response = await apiFetch(
-      `/api/supervisors/${encodeURIComponent(supervisorId)}/members`,
+      `/api/orchestrators/${encodeURIComponent(supervisorId)}/members`,
       {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -88,7 +88,7 @@ export async function openSupervisorPicker(chatId) {
 
   let supervisors = [];
   try {
-    const response = await apiFetch('/api/supervisors');
+    const response = await apiFetch('/api/orchestrators');
     if (!response.ok) throw new Error('Could not load supervisors');
     supervisors = (await response.json()).supervisors || [];
   } catch (error) {

@@ -52,7 +52,7 @@ import { updateGateMarker } from "./banners.js";
       // not app.js's apiFetch, which returns a Response and resolves for 4xx.
       // Checking `.ok` on a parsed body finds undefined and fails every call.
       members = (await apiFetch(
-        `/api/supervisors/${encodeURIComponent(supervisorId)}/members`)).members || [];
+        `/api/orchestrators/${encodeURIComponent(supervisorId)}/members`)).members || [];
     } catch (err) {
       // The panel keeps whatever it last showed rather than going blank: one
       // failed poll is not evidence that the membership changed.
@@ -109,7 +109,7 @@ import { updateGateMarker } from "./banners.js";
   export async function removeMember(supervisorId, chatId) {
     try {
       await apiFetch(
-        `/api/supervisors/${encodeURIComponent(supervisorId)}/members/` +
+        `/api/orchestrators/${encodeURIComponent(supervisorId)}/members/` +
           encodeURIComponent(chatId),
         { method: "DELETE" });
       // Removing membership never deletes the conversation, so say that
@@ -153,7 +153,7 @@ import { updateGateMarker } from "./banners.js";
       const [sessionsBody, chatsBody, membersBody] = await Promise.all([
         apiFetch("/api/sessions"),
         apiFetch("/api/chats"),
-        apiFetch(`/api/supervisors/${encodeURIComponent(supervisorId)}/members`),
+        apiFetch(`/api/orchestrators/${encodeURIComponent(supervisorId)}/members`),
       ]);
       // A live agent that already has a conversation is offered as that
       // conversation, not twice: /api/sessions filters linked sessions out and
@@ -250,7 +250,7 @@ import { updateGateMarker } from "./banners.js";
     let pending;
     try {
       const result = await apiFetch(
-        `/api/supervisors/${encodeURIComponent(supervisorId)}/members`,
+        `/api/orchestrators/${encodeURIComponent(supervisorId)}/members`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

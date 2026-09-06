@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import config
 import db
 
 
@@ -232,6 +233,98 @@ class AiMachinesTransportIdTests(unittest.IsolatedAsyncioTestCase):
         )
         backend = await db.ai_machine_backend_by_id("m4", "admin")
         self.assertEqual(backend["transport_id"], "t1")
+
+
+class SshProxyMigrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        self.addCleanup(self.db_patch.stop)
+        self.addCleanup(self.root_patch.stop)
+
+    async def test_existing_ssh_proxy_row_becomes_transport_plus_backend(self):
+        # Simulate a pre-migration database: init() once to get every OTHER
+        # table, then hand-insert an old-shape ssh_proxy row directly (bypasses
+        # ai_machine_create, which no longer accepts ssh_host/etc, since this
+        # models data that predates this migration).
+        await db.init()
+        await db.db_conn.execute(
+            "INSERT INTO ai_machines "
+            "(id, name, provider, host, port, api_key, model, base_url, "
+            " description, active, owner_id, created_at, updated_at, "
+            " ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint) "
+            "VALUES ('old1', 'Kali3', 'ssh_proxy', '', 9000, NULL, "
+            "        'vllm/Qwen3.6-35B-A3B-NVFP4', NULL, NULL, 0, 'admin', "
+            "        '2026-08-29T00:00:00Z', '2026-08-29T00:00:00Z', "
+            "        'kali-3.tail850c40.ts.net', 'kali', '~/.ssh/id_ed25519', '')"
+        )
+        await db.db_conn.execute(
+            "INSERT INTO ai_machines "
+            "(id, name, provider, host, port, api_key, model, base_url, "
+            " description, active, owner_id, created_at, updated_at) "
+            "VALUES ('cfai', 'CF AI Machine', 'claude_code', "
+            "        'llm.ai-machine.cfappsecurity.com', 443, 'real-key', "
+            "        'vllm/Qwen3.6-35B-A3B-NVFP4', "
+            "        'https://llm.ai-machine.cfappsecurity.com', NULL, 1, "
+            "        'admin', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')"
+        )
+        await db.db_conn.commit()
+        await db.close()
+
+        # Re-run init() -- this is where the migration must fire.
+        await db.init()
+        self.addAsyncCleanup(db.close)
+
+        # Old row gone.
+        old = await db.ai_machine_get("old1", "admin")
+        self.assertIsNone(old)
+
+        # A transport now exists carrying Kali3's SSH details.
+        transports = await db.ssh_transports_list("admin")
+        self.assertEqual(len(transports), 1)
+        transport = transports[0]
+        self.assertEqual(transport["name"], "Kali3")
+        self.assertEqual(transport["ssh_host"], "kali-3.tail850c40.ts.net")
+        self.assertEqual(transport["ssh_key_path"], "~/.ssh/id_ed25519")
+
+        # A new backend exists, copying CF AI Machine's own fields, pointed
+        # at the new transport.
+        machines = await db.ai_machines_list("admin")
+        migrated = [m for m in machines if m.get("transport_id") == transport["id"]]
+        self.assertEqual(len(migrated), 1)
+        new_backend = await db.ai_machine_backend_by_id(migrated[0]["id"], "admin")
+        self.assertEqual(new_backend["model"], "vllm/Qwen3.6-35B-A3B-NVFP4")
+        self.assertEqual(new_backend["base_url"], "https://llm.ai-machine.cfappsecurity.com")
+        self.assertEqual(new_backend["api_key"], "real-key")
+        self.assertIn("Kali3", migrated[0]["name"])
+
+    async def test_migration_is_idempotent(self):
+        """Running init() a second time must not create duplicate transports
+        or backends."""
+        await db.init()
+        await db.db_conn.execute(
+            "INSERT INTO ai_machines "
+            "(id, name, provider, host, port, api_key, model, base_url, "
+            " description, active, owner_id, created_at, updated_at, "
+            " ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint) "
+            "VALUES ('old2', 'Pentester-Kali_Mac', 'ssh_proxy', '', 9000, "
+            "        NULL, 'vllm/Qwen3.6-35B-A3B-NVFP4', NULL, NULL, 0, "
+            "        'admin', '2026-08-29T00:00:00Z', '2026-08-29T00:00:00Z', "
+            "        'pentester.tail850c40.ts.net', 'claude-ai-machine', "
+            "        '~/.ssh/id_ed25519', '')"
+        )
+        await db.db_conn.commit()
+        await db.close()
+        await db.init()
+        await db.close()
+        await db.init()  # second run
+        self.addAsyncCleanup(db.close)
+        transports = await db.ssh_transports_list("admin")
+        self.assertEqual(len(transports), 1)
 
 
 if __name__ == "__main__":

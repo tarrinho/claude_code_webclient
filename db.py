@@ -619,6 +619,7 @@ async def init() -> None:
         CREATE INDEX IF NOT EXISTS idx_system_samples_at ON system_samples(created_at);
     """)
     await _ensure_chat_columns()
+    await _migrate_ssh_proxy_machines_to_transports()
     await _ensure_usage_columns()
     await _ensure_orchestrator_columns()
     await _backfill_orchestrators_from_supervisors()
@@ -824,6 +825,95 @@ async def _ensure_orchestrator_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE orchestrator_messages ADD COLUMN metadata TEXT"
         )
+
+
+async def _migrate_ssh_proxy_machines_to_transports() -> None:
+    """One-time, idempotent: turn every remaining provider='ssh_proxy'
+    ai_machines row into an ssh_transports row plus one backend copying its
+    owner's active claude_code/anthropic-compatible machine's own fields
+    (model/base_url/api_key/active_models), pointed at the new transport.
+
+    Why copy from the active machine rather than leave the new backend
+    empty: both real ssh_proxy rows found in production (Kali3,
+    Pentester-Kali_Mac) already declared the *same* model as the owner's
+    real backend's own default, which was never actually read for anything
+    except get_default_model -- the strongest available signal that the
+    original intent was "run that backend, but from over there," not "this
+    machine has its own separate identity." See
+    docs/superpowers/specs/2026-09-06-ssh-transport-backend-split-design.md.
+
+    Safe to call every startup: it only ever acts on provider='ssh_proxy'
+    rows, and this migration deletes every one it processes, so a second
+    run finds none left and does nothing.
+    """
+    import uuid
+
+    from routes.db_machines import _BACKEND_COLUMNS
+
+    cur = await db_conn.execute(
+        "SELECT id, name, owner_id, ssh_host, ssh_user, ssh_key_path, "
+        "ssh_host_key_fingerprint FROM ai_machines WHERE provider = 'ssh_proxy'"
+    )
+    old_rows = [dict(r) for r in await cur.fetchall()]
+    if not old_rows:
+        return
+
+    for old in old_rows:
+        owner_id = old["owner_id"]
+        # The owner's active backend, if any -- what the new machine copies.
+        active_cur = await db_conn.execute(
+            f"SELECT {_BACKEND_COLUMNS} FROM ai_machines "  # nosec B608: static columns
+            "WHERE owner_id = ? AND active = 1 AND provider != 'ssh_proxy' LIMIT 1",
+            (owner_id,),
+        )
+        active_row = await active_cur.fetchone()
+
+        transport_id = uuid.uuid4().hex
+        now = _now()
+        await db_conn.execute(
+            "INSERT INTO ssh_transports "
+            "(id, name, owner_id, ssh_host, ssh_user, ssh_key_path, "
+            " ssh_host_key_fingerprint, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                transport_id, old["name"], owner_id, old["ssh_host"],
+                old["ssh_user"], old["ssh_key_path"],
+                old["ssh_host_key_fingerprint"], now, now,
+            ),
+        )
+
+        if active_row:
+            active = dict(active_row)
+            new_machine_id = uuid.uuid4().hex
+            await db_conn.execute(
+                "INSERT INTO ai_machines "
+                "(id, name, provider, host, port, api_key, model, base_url, "
+                " description, active, owner_id, created_at, updated_at, "
+                " transport_id, active_models) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, "
+                "        (SELECT active_models FROM ai_machines WHERE id = ?))",
+                (
+                    new_machine_id, f"{active['name']} (via {old['name']})",
+                    active["provider"], active["host"], active["port"],
+                    active["api_key"], active["model"], active["base_url"],
+                    None, owner_id, now, now, transport_id, active["id"],
+                ),
+            )
+            _log.info(
+                "ssh_proxy_migrated old_machine=%s -> transport=%s new_backend=%s",
+                old["id"], transport_id, new_machine_id,
+            )
+        else:
+            _log.warning(
+                "ssh_proxy_migrated old_machine=%s -> transport=%s, no active "
+                "backend found for owner=%s to copy -- transport created with "
+                "no linked backend, add one by hand in Settings",
+                old["id"], transport_id, owner_id,
+            )
+
+        await db_conn.execute("DELETE FROM ai_machines WHERE id = ?", (old["id"],))
+
+    await db_conn.commit()
 
 
 async def _ensure_chat_columns() -> None:

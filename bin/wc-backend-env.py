@@ -101,7 +101,19 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
         rows = [r for r in rows if str(r.get("owner_id") or "").strip() == owner]
 
     if profile:
-        wanted = profile.strip().lower()
+        # Slugified, not merely lowercased. The selector a caller types is
+        # very often the machine's display name -- that is what the console
+        # shows and what the shell aliases in ~/.bashrc were written with
+        # (`--wc-profile "Anthropic API"`, `--wc-profile "CF AI Machine"`).
+        # A bare `.lower()` compared "anthropic api" against the slug
+        # "anthropic-api" and never matched, so every one of those aliases
+        # failed profile resolution. The failure was not visible: the shell
+        # wrapper eval'd the empty output, kept whatever environment it had,
+        # and launched with an empty `--model` -- which is the "cannot start
+        # on the Anthropic backend" symptom. Putting the request through the
+        # same sanitiser as the machine name makes name and slug equivalent
+        # selectors, which is what every caller already assumed.
+        wanted = _slugify(profile)
         matches = [r for r in rows if profile_slug(r) == wanted]
         if not matches:
             known = ", ".join(sorted({profile_slug(r) for r in rows})) or "none"
@@ -140,14 +152,19 @@ def active_machine(db: Path) -> dict[str, object]:
     return machine_for(db)
 
 
+def _slugify(text: str) -> str:
+    """The shared sanitiser behind both a machine's slug and a caller's
+    selector, so the two are always compared in the same form."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", str(text or "").strip()).strip("-").lower()
+
+
 def profile_slug(machine: dict[str, object]) -> str:
     """A short, stable, shell-safe identifier for the active backend.
 
     Derived from the name rather than the id so it is readable in a process
     list, and sanitised because it is about to be exported into a shell.
     """
-    name = str(machine.get("name") or "").strip()
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower()
+    slug = _slugify(str(machine.get("name") or ""))
     return slug or f"machine-{machine.get('id') or 'unknown'}"
 
 

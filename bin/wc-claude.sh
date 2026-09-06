@@ -172,8 +172,26 @@ query_backend() {
 }
 
 # Sets globals PROVIDER BASE_URL API_KEY MODEL NAME from query_backend's output.
+#
+# The exit status is captured and checked rather than left to `set -e`. A
+# failing helper prints its diagnosis to stderr and nothing to stdout, and
+# `read ... <<<"$(...)"` on empty input still succeeds -- it reads one empty
+# line -- so the failure produced five empty globals and a return of 0. What
+# followed looked like a successful resolution of a nameless backend: the
+# PROVIDER="-" guard below did not fire (the value was "" and not "-"),
+# build_model_args appended a literal empty `--model ''`, and the session was
+# launched unrouted with an argument the CLI rejects. That is the whole
+# observed "cannot start on the Anthropic backend" failure, and every layer
+# of it reported success.
 resolve_backend() {
-    read -r PROVIDER BASE_URL API_KEY MODEL NAME <<<"$(query_backend)"
+    local out status
+    out="$(query_backend)" && status=0 || status=$?
+    if [ "$status" != "0" ] || [ -z "${out//[[:space:]]/}" ]; then
+        echo "wc-claude: could not resolve a backend (wc-backend-env.py exited" \
+             "${status}). Refusing to start rather than launching unrouted." >&2
+        exit "${status:-1}"
+    fi
+    read -r PROVIDER BASE_URL API_KEY MODEL NAME <<<"$out"
 }
 
 # The environment the active backend implies. One definition, shared with
@@ -197,7 +215,20 @@ resolve_backend() {
 # The helper reads the database itself, so no credential passes through a
 # command line: /proc/<pid>/cmdline is world-readable.
 apply_env() {
-    eval "$(python3 "$HERE/bin/wc-backend-env.py" ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} --sh)"
+    # Same reasoning as resolve_backend: the helper's exit status has to be
+    # read before its output is applied. `eval "$(cmd)"` discards it, so a
+    # helper that refused to resolve anything eval'd to nothing at all and
+    # left the caller's own ANTHROPIC_* untouched -- the silent, undisclosed
+    # credential change this whole wrapper exists to prevent.
+    local sh status
+    sh="$(python3 "$HERE/bin/wc-backend-env.py" \
+        ${WC_PROFILE_ARGS[@]+"${WC_PROFILE_ARGS[@]}"} --sh)" && status=0 || status=$?
+    if [ "$status" != "0" ]; then
+        echo "wc-claude: wc-backend-env.py --sh exited ${status}; the backend" \
+             "environment was not applied. Refusing to start." >&2
+        exit "$status"
+    fi
+    eval "$sh"
 
     # The shared rule knows a keyless backend must not keep CLAUDE_CODE_SIMPLE;
     # it cannot know what value this shell started with. On a hot-swap onto a
@@ -292,7 +323,11 @@ build_model_args() {
         esac
     done
     MODEL_ARGS=()
-    if [ "$want_model" = 1 ] && [ "$MODEL" != "-" ]; then
+    # An empty MODEL is rejected as hard as the "-" sentinel. `--model ''` is
+    # not "no model": it is an option the CLI parses and refuses, so a
+    # resolution that produced no model at all used to fail at launch with an
+    # argument error rather than falling back to the backend's own default.
+    if [ "$want_model" = 1 ] && [ "$MODEL" != "-" ] && [ -n "$MODEL" ]; then
         MODEL_ARGS=(--model "$MODEL")
     fi
 }
@@ -467,7 +502,7 @@ fi
 
 resolve_backend
 
-if [ "$PROVIDER" = "-" ]; then
+if [ "$PROVIDER" = "-" ] || [ -z "$PROVIDER" ]; then
     # Not handoff_unmanaged: this is the very first thing the script does
     # after resolve_backend, so there is nothing of this script's own to
     # strip from the environment yet -- calling apply_env here would unset
@@ -638,7 +673,7 @@ while true; do
     # Handling it exactly the way the startup guard for this same state
     # handles it is what stops it from silently falling through to the CLI's
     # own bare default with no ANTHROPIC_*/MODEL_ARGS at all.
-    if [ "$PROVIDER" = "-" ]; then
+    if [ "$PROVIDER" = "-" ] || [ -z "$PROVIDER" ]; then
         handoff_unmanaged "$@"
     fi
 

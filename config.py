@@ -22,12 +22,9 @@ def _int(name: str, default: int) -> int:
 
 
 def _float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
     try:
-        return float(raw)
-    except ValueError:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
         return default
 
 
@@ -225,7 +222,7 @@ TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
 WC_WEBCONSOLE_URL = _str("WC_WEBCONSOLE_URL")
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.14.0"
+VERSION = "WebConsole_0.13.0"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

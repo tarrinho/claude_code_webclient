@@ -108,3 +108,60 @@ class TransportsApiTests(unittest.IsolatedAsyncioTestCase):
         client = _client()
         self.assertEqual(client.get("/api/transports").status_code, 401)
         self.assertEqual(client.post("/api/transports", json={}).status_code, 401)
+
+    async def test_patch_rejects_empty_ssh_host(self):
+        """PATCH with empty ssh_host should fail and leave transport unchanged."""
+        client, headers = self._login()
+        created = client.post(
+            "/api/transports",
+            json={"name": "Kali3", "ssh_host": "h", "ssh_user": "kali", "ssh_key_path": "k"},
+            headers=headers,
+        ).json()
+        original_host = "h"
+        resp = client.patch(
+            f"/api/transports/{created['id']}", json={"ssh_host": ""}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        got = client.get(f"/api/transports/{created['id']}", headers=headers).json()
+        self.assertEqual(got["ssh_host"], original_host)
+
+    async def test_patch_rejects_empty_ssh_key_path(self):
+        """PATCH with empty ssh_key_path should fail."""
+        client, headers = self._login()
+        created = client.post(
+            "/api/transports",
+            json={"name": "Kali3", "ssh_host": "h", "ssh_user": "kali", "ssh_key_path": "k"},
+            headers=headers,
+        ).json()
+        resp = client.patch(
+            f"/api/transports/{created['id']}", json={"ssh_key_path": ""}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    async def test_patch_rejects_empty_name(self):
+        """PATCH with empty name should fail."""
+        client, headers = self._login()
+        created = client.post(
+            "/api/transports",
+            json={"name": "Kali3", "ssh_host": "h", "ssh_user": "kali", "ssh_key_path": "k"},
+            headers=headers,
+        ).json()
+        resp = client.patch(
+            f"/api/transports/{created['id']}", json={"name": ""}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    async def test_patch_valid_update_to_ssh_user(self):
+        """Valid PATCH updating ssh_user should succeed (regression test)."""
+        client, headers = self._login()
+        created = client.post(
+            "/api/transports",
+            json={"name": "Kali3", "ssh_host": "h", "ssh_user": "kali", "ssh_key_path": "k"},
+            headers=headers,
+        ).json()
+        resp = client.patch(
+            f"/api/transports/{created['id']}", json={"ssh_user": "ubuntu"}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        got = client.get(f"/api/transports/{created['id']}", headers=headers).json()
+        self.assertEqual(got["ssh_user"], "ubuntu")

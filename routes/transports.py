@@ -68,14 +68,29 @@ async def handle_transport_patch(request: Request, transport_id: str):
     allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path"}
     if not data or not set(data).issubset(allowed):
         raise HTTPException(status_code=400, detail="No valid fields to update")
-    if "ssh_host" in data and data["ssh_host"]:
+    if "ssh_host" in data and data["ssh_host"] is not None:
         host = data["ssh_host"].strip()
+        if not host:
+            raise HTTPException(status_code=400, detail="SSH host cannot be empty")
         if not _HOST_PATTERN_LOCAL.fullmatch(host):
             raise HTTPException(status_code=400, detail="Enter a valid hostname or IP address")
         _validate_host(host)
         data["ssh_host"] = host
-    if "name" in data and data["name"]:
-        data["name"] = data["name"].strip()[:100]
+    if "ssh_key_path" in data and data["ssh_key_path"] is not None:
+        key_path = data["ssh_key_path"].strip()
+        if not key_path:
+            raise HTTPException(status_code=400, detail="SSH key path cannot be empty")
+        data["ssh_key_path"] = key_path
+    if "ssh_user" in data and data["ssh_user"] is not None:
+        user = data["ssh_user"].strip()
+        if not user:
+            raise HTTPException(status_code=400, detail="SSH user cannot be empty")
+        data["ssh_user"] = user
+    if "name" in data and data["name"] is not None:
+        name = data["name"].strip()[:100]
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        data["name"] = name
     updated = await db.ssh_transport_update(transport_id, session["user"], **data)
     if not updated:
         raise HTTPException(status_code=404, detail="Transport not found")

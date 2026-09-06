@@ -119,6 +119,13 @@ def __getattr__(name: str):
         "chat_set_machine": "routes.db_machines",
         "parse_active_models": "routes.db_machines",
         "_BACKEND_COLUMNS": "routes.db_machines",
+        # ssh transports
+        "ssh_transport_create": "routes.db_transports",
+        "ssh_transport_get": "routes.db_transports",
+        "ssh_transports_list": "routes.db_transports",
+        "ssh_transport_update": "routes.db_transports",
+        "ssh_transport_delete": "routes.db_transports",
+        "ssh_transport_set_host_key_fingerprint": "routes.db_transports",
         # users
         "user_get_by_name": "routes.db_users",
         "user_create": "routes.db_users",
@@ -276,6 +283,18 @@ async def init() -> None:
             owner_id      TEXT NOT NULL DEFAULT 'admin',
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ssh_transports (
+            id                        TEXT PRIMARY KEY,
+            name                      TEXT NOT NULL,
+            owner_id                  TEXT NOT NULL,
+            ssh_host                  TEXT NOT NULL,
+            ssh_user                  TEXT NOT NULL DEFAULT 'kali',
+            ssh_key_path              TEXT NOT NULL DEFAULT '',
+            ssh_host_key_fingerprint  TEXT NOT NULL DEFAULT '',
+            created_at                TEXT NOT NULL,
+            updated_at                TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS messages (

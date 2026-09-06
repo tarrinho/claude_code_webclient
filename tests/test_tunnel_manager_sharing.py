@@ -355,3 +355,91 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(connect_calls), 1)
         self.assertNotIn("ma", tunnel_manager._CONNECTING)
+
+    async def test_dropped_reconnect_while_finishing_connect_does_not_strand_machine(self):
+        """Reproduces round 3's new Important issue: _run()'s success path
+        writes "connected" state, then awaits a real DB write
+        (db.ssh_tunnel_update), and only AFTER that await does the finally
+        discard machine_id from _CONNECTING. If a RECONNECT drains during
+        that window, _release_machine correctly tears down the just-made
+        claim and _STATE gets rebuilt as "connecting" -- but _try_connect()
+        immediately no-ops because the guard is still held by the FIRST
+        connect (which hasn't reached its finally yet). No task gets
+        spawned for the new "connecting" state, and nothing else drives it
+        forward: _tick's plain "connecting" branch only stamps last_check.
+        Without the fix, the machine sits in "connecting" forever. With the
+        fix, once the first connect's finally clears _CONNECTING, _tick
+        recognizes "connecting" + not in _CONNECTING as stranded and routes
+        it through the same backoff-retry path "error" uses, which then
+        genuinely reconnects."""
+        import db
+
+        resume_db_write = asyncio.Event()
+        connect_calls = []
+
+        async def fake_connect(machine_id):
+            connect_calls.append(machine_id)
+            client, transport, forward_server = MagicMock(), MagicMock(), MagicMock()
+            return (True, client, transport, 9001, 22, forward_server, "t1")
+
+        async def fake_ssh_tunnel_update(*args, **kwargs):
+            # This is the real _run()'s await point between writing
+            # "connected" state and discarding _CONNECTING in the finally --
+            # held open so the test can interleave a RECONNECT here, exactly
+            # as a real concurrently-drained command queue would.
+            await resume_db_write.wait()
+
+        tunnel_manager._STATE["ma"] = {
+            "state": "connecting", "tunnel_up": 0, "proxy_ok": 0,
+            "error_msg": None, "connected_at": None, "last_check": "t0",
+        }
+
+        with patch("tunnel_manager_ssh.connect", fake_connect), \
+             patch("tunnel_manager_forward.stop_forward") as mock_stop_forward, \
+             patch.object(db, "ssh_tunnel_update", fake_ssh_tunnel_update):
+            tunnel_manager._try_connect("ma")
+            # Let the first connect's _run() run up to (and block on) the DB
+            # write.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            self.assertIn("ma", tunnel_manager._CONNECTING)
+            self.assertEqual(tunnel_manager._STATE["ma"]["state"], "connected")
+
+            # A RECONNECT drains here, mid-flight, exactly as the bug report
+            # describes.
+            tunnel_manager._handle_command("RECONNECT", "ma")
+
+            # The RECONNECT's own _try_connect() call must have no-op'd
+            # (guard still held by the first connect) -- the machine is now
+            # stranded in "connecting" with nothing actually running for it.
+            self.assertEqual(tunnel_manager._STATE["ma"]["state"], "connecting")
+            self.assertIn("ma", tunnel_manager._CONNECTING)
+            self.assertEqual(len(connect_calls), 1)
+
+            # The first connect's DB write finally completes; its finally
+            # discards "ma" from _CONNECTING -- the machine is now stranded:
+            # "connecting", but nothing in flight for it.
+            resume_db_write.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            self.assertNotIn("ma", tunnel_manager._CONNECTING)
+            self.assertEqual(tunnel_manager._STATE["ma"]["state"], "connecting")
+
+            # One _tick pass (backoff sleep faked out, for test speed) must
+            # recognize the stranded "connecting" state and recover it by
+            # retrying -- proving the machine is not orphaned forever.
+            with patch("asyncio.sleep", new=AsyncMock()):
+                await tunnel_manager._tick(store_fn=AsyncMock(), now_fn=lambda: "t2")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        # A second real connect happened (the recovery retry), and it
+        # completed all the way to "connected" (its own DB write resolves
+        # immediately since resume_db_write is already set), with the
+        # in-flight guard cleared again.
+        self.assertEqual(len(connect_calls), 2)
+        self.assertEqual(tunnel_manager._STATE["ma"]["state"], "connected")
+        self.assertNotIn("ma", tunnel_manager._CONNECTING)
+        mock_stop_forward.assert_called_once()

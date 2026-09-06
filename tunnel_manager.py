@@ -92,6 +92,10 @@ async def stop() -> None:
         _task = None
     for machine_id in list(_STATE):
         _release_machine(machine_id)
+    # Otherwise a stranded entry (e.g. a connect that never got the chance
+    # to hit _try_connect's finally before this stop() ran) would silently
+    # disable _try_connect for that machine_id across a restart/reboot.
+    _CONNECTING.clear()
     # A fresh Queue, not a drain of the old one. asyncio.Queue binds to
     # whichever event loop first awaits get()/put() on it, and this module
     # holds it at module scope -- every test file that starts the manager,
@@ -278,7 +282,21 @@ async def _tick(store_fn, now_fn) -> None:
                 state["error_msg"] = "Proxy health probe failed"
                 state["proxy_ok"] = 0
 
-        elif state.get("state") == "error":
+        elif state.get("state") == "error" or (
+            state.get("state") == "connecting" and machine_id not in _CONNECTING
+        ):
+            # The second condition is a stranded machine: "connecting" but
+            # nothing is actually running for it anymore -- e.g. a RECONNECT
+            # drained while a just-finishing _try_connect() had already
+            # written "connected" and was awaiting its DB update, still
+            # holding _CONNECTING, so the RECONNECT's own _try_connect() call
+            # no-op'd (guard still set from the *first* connect) and no task
+            # was ever spawned for the fresh "connecting" state it wrote.
+            # Nothing else drives a plain "connecting" state forward, so
+            # without this it would sit there forever. Folding it into the
+            # same retry path "error" already uses -- rather than a separate
+            # branch -- means one attempt at recovery, not two copies of the
+            # backoff logic.
             backoff = min(
                 state.get("_backoff", _BACKOFF_BASE) * 2, _BACKOFF_MAX
             )
@@ -401,4 +419,12 @@ def _try_connect(machine_id: str) -> None:
         finally:
             _CONNECTING.discard(machine_id)
 
-    asyncio.create_task(_run())
+    try:
+        asyncio.create_task(_run())
+    except Exception:
+        # create_task itself failing (rare) means _run()'s own finally never
+        # gets a chance to run -- without this, the guard added above would
+        # outlive the task it was meant to guard, permanently no-op'ing
+        # every future _try_connect() for this machine_id.
+        _CONNECTING.discard(machine_id)
+        raise

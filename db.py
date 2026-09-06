@@ -258,7 +258,7 @@ async def init() -> None:
             name          TEXT NOT NULL,
             -- 'anthropic' talks to the official API (what Claude Code uses by
             -- default); 'proxy' reaches a host running claude_proxy.py.
-            provider      TEXT NOT NULL DEFAULT 'proxy',
+            provider      TEXT NOT NULL DEFAULT 'claude_code',
             host          TEXT NOT NULL,
             port          INTEGER NOT NULL DEFAULT 9000,
             api_key       TEXT,
@@ -417,7 +417,7 @@ async def init() -> None:
             chat_id               TEXT NOT NULL,
             owner_id              TEXT NOT NULL,
             model                 TEXT NOT NULL,
-            provider              TEXT NOT NULL DEFAULT 'proxy',
+            provider              TEXT NOT NULL DEFAULT 'claude_code',
             input_tokens          INTEGER NOT NULL DEFAULT 0,
             output_tokens         INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
@@ -601,6 +601,7 @@ async def init() -> None:
     await _ensure_chat_columns()
     await _ensure_usage_columns()
     await _ensure_orchestrator_columns()
+    await _backfill_orchestrators_from_supervisors()
     await db_conn.commit()
 
     # Retention pruning. Imported directly rather than via db.usage_prune /
@@ -638,6 +639,93 @@ async def _admin_actions_prune(keep_days: int) -> None:
         "DELETE FROM admin_actions WHERE created_at < ?", (cutoff,)
     )
     await db_conn.commit()
+
+
+_SUPERVISOR_BACKFILL: Final[tuple[tuple[str, str, str], ...]] = (
+    # (legacy table, new table, the one column whose name changed)
+    ("supervisors", "orchestrators", ""),
+    ("supervisor_tasks", "orchestrator_tasks", "supervisor_id"),
+    ("supervisor_messages", "orchestrator_messages", "supervisor_id"),
+    ("supervisor_members", "orchestrator_members", "supervisor_id"),
+    ("supervisor_progress", "orchestrator_progress", "supervisor_id"),
+)
+
+
+async def _backfill_orchestrators_from_supervisors() -> None:
+    """Copy pre-rename `supervisor*` rows into the `orchestrator*` tables.
+
+    The supervisor -> orchestrator rename created a second, empty set of
+    tables and repointed every reader at them. It shipped no data migration,
+    so every orchestrator, task, message and member that existed before the
+    rename became unreachable: the rows were still on disk, and nothing read
+    them any more. On this deployment that was 2 orchestrators, 3 tasks, 25
+    messages and 6 members, and from the interface they had simply vanished.
+
+    Deliberately conservative, because it runs on every startup against a
+    live database:
+
+    * per table pair, it copies only when the legacy table exists, the new
+      table is **empty**, and the legacy table is not -- so it is a one-shot
+      that can never double-insert, and it stops applying the moment real
+      post-rename data exists;
+    * columns are matched by intersecting both tables' actual `PRAGMA
+      table_info`, with the single renamed foreign key mapped explicitly, so
+      a schema that has drifted on either side cannot silently write a row
+      into the wrong columns;
+    * the legacy tables are never dropped, altered, or emptied. If anything
+      about the copy turns out to be wrong, the original rows are still
+      exactly where they were.
+
+    A failure here must not stop the app from starting: an unreadable legacy
+    table is a reason to serve without the old orchestrators, not a reason to
+    serve nothing at all.
+    """
+    cursor = await db_conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    )
+    tables = {row["name"] for row in await cursor.fetchall()}
+
+    for legacy, new, renamed_fk in _SUPERVISOR_BACKFILL:
+        if legacy not in tables or new not in tables:
+            continue
+        try:
+            cursor = await db_conn.execute(f"SELECT count(*) AS n FROM {new}")
+            if (await cursor.fetchone())["n"]:
+                continue  # already holds post-rename data; never touch it
+            cursor = await db_conn.execute(f"SELECT count(*) AS n FROM {legacy}")
+            if not (await cursor.fetchone())["n"]:
+                continue  # nothing to carry over
+
+            cursor = await db_conn.execute(f"PRAGMA table_info({legacy})")
+            legacy_columns = [row["name"] for row in await cursor.fetchall()]
+            cursor = await db_conn.execute(f"PRAGMA table_info({new})")
+            new_columns = {row["name"] for row in await cursor.fetchall()}
+
+            # `supervisor_id` -> `orchestrator_id`; everything else keeps its
+            # name. Anything the new table does not have is left behind rather
+            # than guessed at.
+            pairs: list[tuple[str, str]] = []
+            for column in legacy_columns:
+                if renamed_fk and column == renamed_fk:
+                    target = "orchestrator_id"
+                else:
+                    target = column
+                if target in new_columns:
+                    pairs.append((target, column))
+            if not pairs:
+                continue
+
+            targets = ", ".join(target for target, _ in pairs)
+            sources = ", ".join(source for _, source in pairs)
+            await db_conn.execute(
+                f"INSERT INTO {new} ({targets}) SELECT {sources} FROM {legacy}"
+            )
+            _log.info(
+                "orchestrator_backfill copied %s -> %s columns=%d",
+                legacy, new, len(pairs),
+            )
+        except Exception:
+            _log.exception("orchestrator_backfill failed for %s -> %s", legacy, new)
 
 
 async def _ensure_orchestrator_columns() -> None:
@@ -803,8 +891,15 @@ async def _ensure_chat_columns() -> None:
     if ma_columns and "provider" not in ma_columns:
         # Existing rows are all claude_proxy hosts -- the default matches them.
         await db_conn.execute(
-            "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'proxy'"
+            "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude_code'"
         )
+    # Rename old provider literals to the canonical set.
+    await db_conn.execute(
+        "UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'anthropic'"
+    )
+    await db_conn.execute(
+        "UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'proxy'"
+    )
     try:
         rm_cursor = await db_conn.execute("PRAGMA table_info(read_marks)")
         rm_columns = {row["name"] for row in await rm_cursor.fetchall()}

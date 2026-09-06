@@ -167,10 +167,10 @@ async def handle_orchestrator_members_get(request: Request, supervisor_id: str):
     """
     session = request.state.session
     owner = session["user"]
-    if not await db.supervisor_get(supervisor_id, owner):
+    if not await db.orchestrator_get(supervisor_id, owner):
         raise HTTPException(status_code=404, detail="Orchestrator not found")
 
-    rows = await db.supervisor_members_list(supervisor_id)
+    rows = await db.orchestrator_members_list(supervisor_id)
     if not rows:
         return JSONResponse({"members": [], "count": 0})
 
@@ -254,7 +254,7 @@ async def handle_orchestrator_members_add(request: Request, supervisor_id: str):
     """
     session = request.state.session
     owner = session["user"]
-    if not await db.supervisor_get(supervisor_id, owner):
+    if not await db.orchestrator_get(supervisor_id, owner):
         raise HTTPException(status_code=404, detail="Orchestrator not found")
     try:
         body = await request.json()
@@ -282,7 +282,7 @@ async def handle_orchestrator_members_add(request: Request, supervisor_id: str):
             # One bad entry must not lose the rest of the selection.
             failed.append({"ref_id": ref_id, "error": str(exc.detail)})
             continue
-        if await db.supervisor_member_add(supervisor_id, chat_id):
+        if await db.orchestrator_member_add(supervisor_id, chat_id):
             added.append(chat_id)
         else:
             skipped.append(chat_id)
@@ -333,9 +333,9 @@ async def handle_orchestrator_member_remove(
     way to lose one.
     """
     session = request.state.session
-    if not await db.supervisor_get(supervisor_id, session["user"]):
+    if not await db.orchestrator_get(supervisor_id, session["user"]):
         raise HTTPException(status_code=404, detail="Orchestrator not found")
-    removed = await db.supervisor_member_remove(supervisor_id, chat_id)
+    removed = await db.orchestrator_member_remove(supervisor_id, chat_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Not a member")
     _log.info("supervisor_member_removed orchestrator=%s chat=%s", supervisor_id, chat_id)
@@ -419,7 +419,7 @@ async def handle_orchestrator_stream(request: Request, supervisor_id: str):
     session = request.state.session
     owner = session["user"]
 
-    existing = await db.supervisor_get(supervisor_id, owner)
+    existing = await db.orchestrator_get(supervisor_id, owner)
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
 
@@ -438,7 +438,7 @@ async def handle_orchestrator_stream(request: Request, supervisor_id: str):
                     return
 
                 # Read current orchestrator state from DB
-                current = await db.supervisor_get(supervisor_id, owner)
+                current = await db.orchestrator_get(supervisor_id, owner)
                 if not current:
                     yield f"data: {json.dumps({'type': 'error', 'error': 'Orchestrator deleted'})}\n\n"
                     return
@@ -462,7 +462,7 @@ async def handle_orchestrator_stream(request: Request, supervisor_id: str):
                         })}\n\n"
                     elif progress != last_progress:
                         # Get tasks only when progress actually changed
-                        tasks_data = await db.supervisor_tasks_get(
+                        tasks_data = await db.orchestrator_tasks_get(
                             supervisor_id, owner,
                         )
                         yield f"data: {json.dumps({
@@ -476,7 +476,7 @@ async def handle_orchestrator_stream(request: Request, supervisor_id: str):
 
                 # Check for new messages (the chat reads from this stream).
                 #
-                # Through db.supervisor_messages_get, not inline SQL. There were
+                # Through db.orchestrator_messages_get, not inline SQL. There were
                 # two copies here -- one per branch, differing only in the
                 # `id > ?` clause -- and neither filtered by owner, which made
                 # three copies of "read a orchestrator's messages" in the
@@ -485,7 +485,7 @@ async def handle_orchestrator_stream(request: Request, supervisor_id: str):
                 # above, and would stop being safe the moment somebody moved
                 # the query or dropped the check. `after_id=0` means "from the
                 # start", so the two branches collapse into one call.
-                new_msgs = await db.supervisor_messages_get(
+                new_msgs = await db.orchestrator_messages_get(
                     supervisor_id, owner, after_id=last_message_id, limit=10,
                 )
                 if new_msgs:
@@ -538,12 +538,12 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
     owner = session["user"]
 
     # Verify ownership
-    existing = await db.supervisor_get(supervisor_id, owner)
+    existing = await db.orchestrator_get(supervisor_id, owner)
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
 
     # Verify task exists
-    task = await db.supervisor_task_get(supervisor_id, task_id, owner)
+    task = await db.orchestrator_task_get(supervisor_id, task_id, owner)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -560,7 +560,7 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
                     return
 
                 # Read current task state from DB
-                current = await db.supervisor_task_get(supervisor_id, task_id, owner)
+                current = await db.orchestrator_task_get(supervisor_id, task_id, owner)
                 if not current:
                     yield f"data: {json.dumps({'type': 'error', 'error': 'Task deleted'})}\n\n"
                     return
@@ -600,7 +600,7 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
                 await asyncio.sleep(1.0)
 
                 # Re-read current state with fresh reference
-                current = await db.supervisor_task_get(supervisor_id, task_id, owner)
+                current = await db.orchestrator_task_get(supervisor_id, task_id, owner)
 
         except asyncio.CancelledError:
             raise
@@ -621,7 +621,7 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
 
 async def handle_orchestrator_tasks_get(supervisor_id: str, owner_id: str):
     """GET /api/supervisors/{id}/tasks — list tasks for a orchestrator."""
-    tasks = await db.supervisor_tasks_get(supervisor_id, owner_id)
+    tasks = await db.orchestrator_tasks_get(supervisor_id, owner_id)
     return JSONResponse({"tasks": tasks, "count": len(tasks)})
 
 
@@ -633,7 +633,7 @@ async def handle_orchestrator_messages_get(request: Request, supervisor_id: str)
         after_id = int(request.query_params.get("after", "0"))
     except (TypeError, ValueError):
         after_id = 0
-    messages = await db.supervisor_messages_get(supervisor_id, owner_id, after_id)
+    messages = await db.orchestrator_messages_get(supervisor_id, owner_id, after_id)
     return JSONResponse({"messages": messages, "count": len(messages)})
 
 
@@ -684,7 +684,7 @@ async def _api_orchestrator_send(request: Request, supervisor_id: str):
     if len(user_prompt) > config.PROMPT_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Prompt is too long")
 
-    existing = await db.supervisor_get(supervisor_id, session["user"])
+    existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
 
@@ -700,10 +700,10 @@ async def _api_orchestrator_send(request: Request, supervisor_id: str):
     await eng.start_from_user_prompt(user_prompt)
 
     # Store user message
-    await db.supervisor_messages_append(supervisor_id, "user", user_prompt)
+    await db.orchestrator_messages_append(supervisor_id, "user", user_prompt)
 
     # Set status to planning
-    await db.supervisor_update(supervisor_id, session["user"], status="planning")
+    await db.orchestrator_update(supervisor_id, session["user"], status="planning")
 
     return JSONResponse({
         "ok": True,
@@ -716,7 +716,7 @@ async def _api_orchestrator_send(request: Request, supervisor_id: str):
 async def _api_orchestrator_pause(request: Request, supervisor_id: str):
     """POST /api/supervisors/{id}/pause -- pause a running orchestrator."""
     session = request.state.session
-    existing = await db.supervisor_get(supervisor_id, session["user"])
+    existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
     if existing.get("status") not in ("planning", "running"):
@@ -726,7 +726,7 @@ async def _api_orchestrator_pause(request: Request, supervisor_id: str):
         # Remember what we were doing before the pause so resume can restore it.
         if eng:
             eng.set_status_for_pause(existing.get("status"))
-        await db.supervisor_update(supervisor_id, session["user"], status="paused")
+        await db.orchestrator_update(supervisor_id, session["user"], status="paused")
         return JSONResponse({"ok": True, "status": "paused"})
     raise HTTPException(status_code=409, detail="Orchestrator is already paused")
 
@@ -735,7 +735,7 @@ async def _api_orchestrator_pause(request: Request, supervisor_id: str):
 async def _api_orchestrator_resume(request: Request, supervisor_id: str):
     """POST /api/supervisors/{id}/resume -- resume a paused orchestrator."""
     session = request.state.session
-    existing = await db.supervisor_get(supervisor_id, session["user"])
+    existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
     if existing.get("status") != "paused":
@@ -744,7 +744,7 @@ async def _api_orchestrator_resume(request: Request, supervisor_id: str):
     if eng and eng.resume():
         # Restore the status the engine had before it was paused.
         restore = eng._pre_pause_status or "running"
-        await db.supervisor_update(supervisor_id, session["user"], status=restore)
+        await db.orchestrator_update(supervisor_id, session["user"], status=restore)
         return JSONResponse({"ok": True, "status": restore})
     raise HTTPException(status_code=409, detail="Orchestrator is not paused")
 
@@ -753,7 +753,7 @@ async def _api_orchestrator_resume(request: Request, supervisor_id: str):
 @router.get("/api/orchestrators")
 async def _api_supervisors_list(request: Request):
     session = request.state.session
-    list_ = await db.supervisor_list(session["user"])
+    list_ = await db.orchestrator_list(session["user"])
     return JSONResponse({"supervisors": list_, "count": len(list_)})
 
 
@@ -792,7 +792,7 @@ def _validated_supervisor_config(raw: Any) -> Any:
 @router.post("/api/orchestrators")
 async def _api_supervisors_create(request: Request):
     session = request.state.session
-    existing = await db.supervisor_list(session["user"])
+    existing = await db.orchestrator_list(session["user"])
     if len(existing) >= _MAX_SUPERVISORS_PER_OWNER:
         raise HTTPException(
             status_code=429,
@@ -809,7 +809,7 @@ async def _api_supervisors_create(request: Request):
         body.get("config") if body.get("config") else None
     )
     sid = uuid.uuid4().hex
-    await db.supervisor_create(sid, title, description, session["user"], config_data)
+    await db.orchestrator_create(sid, title, description, session["user"], config_data)
     eng = orchestrator.OrchestratorEngine(sid, session["user"])
     _register_engine(sid, eng)
     return JSONResponse({"ok": True, "id": sid, "title": title, "status": "idle"})
@@ -818,7 +818,7 @@ async def _api_supervisors_create(request: Request):
 @router.get("/api/orchestrators/{supervisor_id}")
 async def _api_orchestrator_get(request: Request, supervisor_id: str):
     session = request.state.session
-    existing = await db.supervisor_get(supervisor_id, session["user"])
+    existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
     return JSONResponse({"orchestrator": existing})
@@ -833,7 +833,7 @@ async def _api_orchestrator_patch(request: Request, supervisor_id: str):
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not body:
         raise HTTPException(status_code=400, detail="No fields to update")
-    existing = await db.supervisor_get(supervisor_id, session["user"])
+    existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
     updates: dict[str, Any] = {}
@@ -855,27 +855,27 @@ async def _api_orchestrator_patch(request: Request, supervisor_id: str):
     if updates:
         if "status" in updates:
             status = updates.pop("status")
-            await db.supervisor_update(supervisor_id, session["user"], **updates, status=status)
+            await db.orchestrator_update(supervisor_id, session["user"], **updates, status=status)
             eng = _supervisor_engines.get(supervisor_id)
             if status == "running" and eng and not eng._running:
                 eng.spawn(eng.run_schedule_loop())
             elif status in ("idle", "done", "error") and eng:
                 eng.stop()
         else:
-            await db.supervisor_update(supervisor_id, session["user"], **updates)
+            await db.orchestrator_update(supervisor_id, session["user"], **updates)
             if "config" in updates:
                 eng = _supervisor_engines.get(supervisor_id)
                 if eng:
                     eng.config = updates["config"]
                     eng.router = orchestrator.ModelRouter(updates["config"])
-    existing = await db.supervisor_get(supervisor_id, session["user"])
+    existing = await db.orchestrator_get(supervisor_id, session["user"])
     return JSONResponse({"ok": True, "orchestrator": existing})
 
 
 @router.delete("/api/orchestrators/{supervisor_id}")
 async def _api_orchestrator_delete(request: Request, supervisor_id: str):
     session = request.state.session
-    deleted = await db.supervisor_delete(supervisor_id, session["user"])
+    deleted = await db.orchestrator_delete(supervisor_id, session["user"])
     if not deleted:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
     _supervisor_engines.pop(supervisor_id, None)

@@ -56,7 +56,7 @@ async def main() -> None:
     await db.db_conn.execute("DELETE FROM supervisors WHERE id = ?", (sup_id,))
     await db.db_conn.commit()
 
-    await db.supervisor_create(
+    await db.orchestrator_create(
         sup_id, "Layout live check", "Seeded for the manual panel check", owner_id
     )
     print(f"created orchestrator id={sup_id}")
@@ -68,19 +68,19 @@ async def main() -> None:
         ("t004", "Wire the bottom handle", "failed", 0.0, "could not reach the proxy"),
     ]
     for task_id, title, status, pct, result in tasks:
-        await db.supervisor_task_create(
+        await db.orchestrator_task_create(
             sup_id, task_id, title, f"description for {title}", model="claude-opus-5"
         )
-        await db.supervisor_task_update(
+        await db.orchestrator_task_update(
             supervisor_id=sup_id, task_id=task_id, owner_id=owner_id,
             status=status, result=result or None, progress_pct=pct,
         )
     print(f"created {len(tasks)} tasks")
 
-    await db.supervisor_messages_append(
+    await db.orchestrator_messages_append(
         sup_id, "user", "Check the orchestrator page layout.", {"kind": "goal"}
     )
-    await db.supervisor_messages_append(
+    await db.orchestrator_messages_append(
         sup_id, "orchestrator",
         "Task 'Reattach the detail panel' completed "
         f"({len(LONG_RESULT)} chars)\n\n{LONG_RESULT[:3000]}",
@@ -92,7 +92,7 @@ async def main() -> None:
     other = "livecheck11111111111111111111111"
     await db.db_conn.execute("DELETE FROM supervisors WHERE id = ?", (other,))
     await db.db_conn.commit()
-    await db.supervisor_create(other, "Second orchestrator", None, owner_id)
+    await db.orchestrator_create(other, "Second orchestrator", None, owner_id)
     print(f"created orchestrator id={other}")
 
     # Without this the aiosqlite worker thread keeps the loop alive and the

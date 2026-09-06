@@ -184,7 +184,7 @@ SYSTEM_RETENTION_DAYS = _int("WC_SYSTEM_RETENTION_DAYS", 30)
 # plan carrying `[:--mcp-config=/tmp/evil.json]` put an attacker-chosen argv
 # token into the subprocess.
 #
-# Defined here rather than in app.py because supervisor.py needs the same rule
+# Defined here rather than in app.py because orchestrator.py needs the same rule
 # for models it reads out of model-authored plan text, and two copies of a
 # security pattern in one repository is the drift this project keeps paying for.
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]*$")

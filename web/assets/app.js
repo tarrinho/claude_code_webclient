@@ -8,11 +8,11 @@
 import {apiFetch, downloadMarkdown} from './api.js?v=1';
 import {createChatListController} from './chat-list.js?v=3';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=5';
-import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './supervisor.js?v=1';
+import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=1';
 
-// Exported for supervisor.js/device-alerts.js, which need this live app state
+// Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
 // see app.js's top-level scope any other way. A circular import back to the
 // file that imports them is safe here because both are only read inside
@@ -24,7 +24,7 @@ export const state = {
   currentChat: null,
   streamState: 'ready',
   // Element to restore focus to when a dialog/menu closes. A property here
-  // rather than its own top-level `let`, because supervisor.js needs to write
+  // rather than its own top-level `let`, because orchestrator.js needs to write
   // it too, and an imported binding for a bare `let` is read-only -- only a
   // shared object's properties can be assigned across modules.
   previousFocus: null,
@@ -80,7 +80,7 @@ let _skillsData = null;          // last successful /api/skills payload
 let _skillsFetchedFor = null;    // chat id the payload was fetched for
 let _skillDebounce = null;
 
-// Exported for supervisor.js, which reports add-to-supervisor results with it.
+// Exported for orchestrator.js, which reports add-to-orchestrator results with it.
 export function showToast(message, type = '') {
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
@@ -320,6 +320,8 @@ async function loadStats(force = false) {
 import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=1';
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1';
+
+import { _renderSshWizard } from './machine-wizard.js?v=1';
 
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
@@ -1662,6 +1664,7 @@ async function ensurePinnedModels(chat) {
 // each one serves. Only Anthropic-protocol backends publish a list.
 async function loadBackends() {
   await loadMachines();
+  _renderSshWizard(_machines);
   await loadTurnCounts();
   _renderMachineList();
   await Promise.all(
@@ -2116,6 +2119,7 @@ document.addEventListener('DOMContentLoaded', () => {
       queueBar: byId('queueBar'), queueList: byId('queueList'),
       queueTag: byId('queueTag'), queueNote: byId('queueNote'),
       queueClose: byId('queueClose'), queueToggle: byId('queueToggle'),
+      queueToggleTop: byId('queueToggleTop'),
       lastCommandBar: byId('lastCommandBar'),
       lastCommandText: byId('lastCommandText'),
       lastCommandWhen: byId('lastCommandWhen'),

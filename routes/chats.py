@@ -97,7 +97,7 @@ async def _busy_terminal_sessions() -> set[str]:
     typed into a window and is out of our hands -- so `running` is false for it
     and the sidebar showed nothing at all while work was plainly happening.
     Claude Code writes a `status` field into ~/.claude/sessions/<pid>.json, which
-    is the same signal the supervisor already trusts, and "busy" is the only
+    is the same signal the orchestrator already trusts, and "busy" is the only
     value observed. Reported separately from `running` rather than folded into
     it, because `running` also means "there is a buffer to attach to" and there
     is not one here.
@@ -310,7 +310,7 @@ async def handle_chat_get(request: Request, chat_id: str):
             # goes out. A mark per message cannot be buried by later output.
             #
             # Decided here rather than in the browser on purpose: the same
-            # judgement already backs the supervisor panel's "?", and a second
+            # judgement already backs the orchestrator panel's "?", and a second
             # copy of it in JavaScript would drift from this one.
             #
             # Assistant rows only. A user message ending in "?" is the user

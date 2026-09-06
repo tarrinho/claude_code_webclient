@@ -31,24 +31,24 @@ def __getattr__(name: str):
         "queue_list": "routes.db_queue",
         "queue_next": "routes.db_queue",
         "queue_release": "routes.db_queue",
-        # supervisors
-        "supervisor_create": "routes.db_supervisors",
-        "supervisor_delete": "routes.db_supervisors",
-        "supervisor_get": "routes.db_supervisors",
-        "supervisor_list": "routes.db_supervisors",
-        "supervisor_mark_degraded": "routes.db_supervisors",
-        "supervisor_clear_degraded": "routes.db_supervisors",
-        "supervisor_member_add": "routes.db_supervisors",
-        "supervisor_member_remove": "routes.db_supervisors",
-        "supervisor_members_list": "routes.db_supervisors",
-        "supervisor_messages_append": "routes.db_supervisors",
-        "supervisor_messages_get": "routes.db_supervisors",
-        "supervisor_progress": "routes.db_supervisors",
-        "supervisor_task_create": "routes.db_supervisors",
-        "supervisor_task_get": "routes.db_supervisors",
-        "supervisor_task_update": "routes.db_supervisors",
-        "supervisor_tasks_get": "routes.db_supervisors",
-        "supervisor_update": "routes.db_supervisors",
+        # orchestrators
+        "orchestrator_create": "routes.db_orchestrators",
+        "orchestrator_delete": "routes.db_orchestrators",
+        "orchestrator_get": "routes.db_orchestrators",
+        "orchestrator_list": "routes.db_orchestrators",
+        "orchestrator_mark_degraded": "routes.db_orchestrators",
+        "orchestrator_clear_degraded": "routes.db_orchestrators",
+        "orchestrator_member_add": "routes.db_orchestrators",
+        "orchestrator_member_remove": "routes.db_orchestrators",
+        "orchestrator_members_list": "routes.db_orchestrators",
+        "orchestrator_messages_append": "routes.db_orchestrators",
+        "orchestrator_messages_get": "routes.db_orchestrators",
+        "orchestrator_progress": "routes.db_orchestrators",
+        "orchestrator_task_create": "routes.db_orchestrators",
+        "orchestrator_task_get": "routes.db_orchestrators",
+        "orchestrator_task_update": "routes.db_orchestrators",
+        "orchestrator_tasks_get": "routes.db_orchestrators",
+        "orchestrator_update": "routes.db_orchestrators",
         # sessions
         "read_claude_sessions": "routes.db_sessions",
         "delete_claude_session_file": "routes.db_sessions",
@@ -300,7 +300,7 @@ async def init() -> None:
 
         -- One row per completed voice-mode turn. Exists for two reasons:
         -- bypassing the claude CLI for voice also loses its automatic
-        -- usage/cost recording (see CLAUDE.md's documented supervisor.py
+        -- usage/cost recording (see CLAUDE.md's documented orchestrator.py
         -- lesson for what happens when a caller skips this), and it powers
         -- the "average reply time per model" annotation in the Settings
         -- dialog's voice model picker.
@@ -392,7 +392,7 @@ async def init() -> None:
         CREATE INDEX IF NOT EXISTS idx_admin_actions_user_time
             ON admin_actions(user_id, created_at DESC);
 
-        -- When the user last looked at an agent, so the supervisor can tell
+        -- When the user last looked at an agent, so the orchestrator can tell
         -- "produced output you have not seen" from "finished a while ago".
         -- Its own table rather than a chats column because it also has to
         -- cover CLI sessions, which are files on disk and have no chats row.
@@ -474,18 +474,18 @@ async def init() -> None:
         CREATE INDEX IF NOT EXISTS idx_routed_session
             ON routed_requests(session_id, from_offset DESC);
 
-        -- Agent supervision: a supervisor is an autonomous worker with its own
+        -- Agent supervision: an orchestrator is an autonomous worker with its own
         -- conversation, task list, and message history.
-        CREATE TABLE IF NOT EXISTS supervisors (
+        CREATE TABLE IF NOT EXISTS orchestrators (
             id           TEXT PRIMARY KEY,
             title        TEXT NOT NULL,
             description  TEXT,
             -- JSON blob of orchestration settings (model, launcher options).
-            -- Read and written by routes/db_supervisors.py, which this table
+            -- Read and written by routes/db_orchestrators.py, which this table
             -- definition had fallen out of sync with -- along with plan,
             -- progress_pct and completed_at below -- so a fresh database
             -- (a new install, or any test's own throwaway one) crashed on
-            -- the first supervisor ever created with "no such column:
+            -- the first orchestrator ever created with "no such column:
             -- config". The production database this shipped alongside
             -- already had all four from an earlier, richer schema and so
             -- never showed the bug; a fresh one has no such history to fall
@@ -501,29 +501,29 @@ async def init() -> None:
         );
 
         -- description, model, result, parent_task_id and depends_on are all
-        -- read and written by routes/db_supervisors.py (task_get/task_create/
+        -- read and written by routes/db_orchestrators.py (task_get/task_create/
         -- task_update) and were entirely absent here -- this table definition
         -- had drifted from what the code actually uses in the same way
-        -- supervisors' did. started_at, finished_at and task_list, conversely,
+        -- orchestrators' did. started_at, finished_at and task_list, conversely,
         -- are not referenced anywhere in the codebase and are not part of the
         -- production schema either; dropped rather than carried forward as
         -- unused columns nothing ever reads.
-        CREATE TABLE IF NOT EXISTS supervisor_tasks (
+        CREATE TABLE IF NOT EXISTS orchestrator_tasks (
             id             TEXT PRIMARY KEY,
-            supervisor_id  TEXT NOT NULL REFERENCES supervisors(id),
+            orchestrator_id  TEXT NOT NULL REFERENCES orchestrators(id),
             title          TEXT NOT NULL,
             description    TEXT,
             status         TEXT NOT NULL DEFAULT 'pending',
             model          TEXT,
             result         TEXT,
             progress_pct   REAL NOT NULL DEFAULT 0.0,
-            parent_task_id TEXT REFERENCES supervisor_tasks(id),
+            parent_task_id TEXT REFERENCES orchestrator_tasks(id),
             depends_on     TEXT,
             created_at     TEXT NOT NULL,
             updated_at     TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_sup_tasks_super
-            ON supervisor_tasks(supervisor_id);
+            ON orchestrator_tasks(orchestrator_id);
         -- idx_sup_tasks_sup (on priority) is created after
         -- _ensure_supervisor_columns runs, not here: CREATE TABLE IF NOT
         -- EXISTS is a no-op against a database that already had this table
@@ -532,52 +532,52 @@ async def init() -> None:
         -- database with "no such column: priority" -- before the app ever
         -- got to serve a single request.
 
-        -- metadata was missing entirely -- same drift shape as supervisors
-        -- and supervisor_tasks above, and this table's own version of the
-        -- crash: "table supervisor_messages has no column named metadata"
+        -- metadata was missing entirely -- same drift shape as orchestrators
+        -- and orchestrator_tasks above, and this table's own version of the
+        -- crash: "table orchestrator_messages has no column named metadata"
         -- on the first message ever inserted into a fresh database.
-        CREATE TABLE IF NOT EXISTS supervisor_messages (
+        CREATE TABLE IF NOT EXISTS orchestrator_messages (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
+            orchestrator_id TEXT NOT NULL REFERENCES orchestrators(id),
             role          TEXT NOT NULL DEFAULT 'system',
             content       TEXT NOT NULL,
             metadata      TEXT,
             created_at    TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_msgs_sup ON supervisor_messages(supervisor_id, id);
+        CREATE INDEX IF NOT EXISTS idx_sup_msgs_sup ON orchestrator_messages(orchestrator_id, id);
 
         -- No surrogate id: the composite primary key IS the uniqueness
-        -- constraint routes/db_supervisors.py's supervisor_member_add
-        -- depends on (INSERT ... ON CONFLICT(supervisor_id, chat_id) DO
+        -- constraint routes/db_orchestrators.py's supervisor_member_add
+        -- depends on (INSERT ... ON CONFLICT(orchestrator_id, chat_id) DO
         -- NOTHING). A version of this table with a plain, non-unique index
         -- in place of the primary key shipped briefly and made every
         -- ON CONFLICT crash with "does not match any PRIMARY KEY or UNIQUE
         -- constraint" -- this production database was never actually
         -- created from that version, which is why it kept working.
-        CREATE TABLE IF NOT EXISTS supervisor_members (
-            supervisor_id TEXT NOT NULL REFERENCES supervisors(id),
+        CREATE TABLE IF NOT EXISTS orchestrator_members (
+            orchestrator_id TEXT NOT NULL REFERENCES orchestrators(id),
             chat_id       TEXT NOT NULL,
             added_at      TEXT NOT NULL,
-            PRIMARY KEY (supervisor_id, chat_id)
+            PRIMARY KEY (orchestrator_id, chat_id)
         );
         CREATE INDEX IF NOT EXISTS idx_sup_members_sup
-            ON supervisor_members(supervisor_id, chat_id);
+            ON orchestrator_members(orchestrator_id, chat_id);
         CREATE INDEX IF NOT EXISTS idx_sup_members_chat
-            ON supervisor_members(chat_id);
+            ON orchestrator_members(chat_id);
 
-        -- Supervisor progress: the latest state snapshot for each
-        -- supervisor.  A single row per supervisor, updated after each
+        -- Orchestrator progress: the latest state snapshot for each
+        -- orchestrator.  A single row per orchestrator, updated after each
         -- step so the polling UI never needs to scan the full message
         -- history.
-        CREATE TABLE IF NOT EXISTS supervisor_progress (
-            supervisor_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS orchestrator_progress (
+            orchestrator_id TEXT PRIMARY KEY,
             step          TEXT NOT NULL DEFAULT '',
             details       TEXT NOT NULL DEFAULT '{}',
             updated_at    TEXT NOT NULL
         );
 
         -- Per-host statistics, sampled every 30 seconds by the background
-        -- sysstats worker.  The supervisor UI queries these on the stats
+        -- sysstats worker.  The orchestrator UI queries these on the stats
         -- panel so the operator can see whether the machine is saturated.
         CREATE TABLE IF NOT EXISTS system_samples (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -641,23 +641,23 @@ async def _admin_actions_prune(keep_days: int) -> None:
 
 
 async def _ensure_supervisor_columns() -> None:
-    """Apply additive supervisor/supervisor_tasks schema migrations for
+    """Apply additive orchestrator/orchestrator_tasks schema migrations for
     existing databases, then create the indexes that depend on them.
 
-    Covers columns used by routes/db_supervisors.py that the CREATE TABLE
+    Covers columns used by routes/db_orchestrators.py that the CREATE TABLE
     text had drifted out of sync with:
 
-    * `supervisor_tasks.priority` was added straight into the CREATE TABLE
+    * `orchestrator_tasks.priority` was added straight into the CREATE TABLE
       IF NOT EXISTS in the same executescript as the index that reads it --
       a no-op against a database that already had this table, so the index
       creation right after it crashed db.init() outright with "no such
       column: priority" on any such database, before the app ever served a
       request.
-    * `supervisors.config`/`plan`/`progress_pct`/`completed_at` and
-      `supervisor_tasks.description`/`model`/`result`/`progress_pct`/
+    * `orchestrators.config`/`plan`/`progress_pct`/`completed_at` and
+      `orchestrator_tasks.description`/`model`/`result`/`progress_pct`/
       `parent_task_id`/`depends_on` were absent from the CREATE TABLE text
       entirely, so even a brand new database crashed on the first
-      supervisor or task ever created. This deployment's own database
+      orchestrator or task ever created. This deployment's own database
       survived only because it already had all of them from an earlier,
       richer schema -- an existing database that predates that schema
       still needs the ALTERs below.
@@ -665,40 +665,40 @@ async def _ensure_supervisor_columns() -> None:
     Same check-then-ALTER pattern as _ensure_chat_columns for the same
     reason: it is idempotent and safe to run on every startup.
     """
-    cursor = await db_conn.execute("PRAGMA table_info(supervisors)")
+    cursor = await db_conn.execute("PRAGMA table_info(orchestrators)")
     sup_columns = {row["name"] for row in await cursor.fetchall()}
     sup_migrations = {
-        "config": "ALTER TABLE supervisors ADD COLUMN config TEXT NOT NULL DEFAULT '{}'",
-        "plan": "ALTER TABLE supervisors ADD COLUMN plan TEXT",
+        "config": "ALTER TABLE orchestrators ADD COLUMN config TEXT NOT NULL DEFAULT '{}'",
+        "plan": "ALTER TABLE orchestrators ADD COLUMN plan TEXT",
         "progress_pct": (
-            "ALTER TABLE supervisors ADD COLUMN progress_pct "
+            "ALTER TABLE orchestrators ADD COLUMN progress_pct "
             "REAL NOT NULL DEFAULT 0.0"
         ),
-        "completed_at": "ALTER TABLE supervisors ADD COLUMN completed_at TEXT",
-        "degraded": "ALTER TABLE supervisors ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
-        "degraded_reason": "ALTER TABLE supervisors ADD COLUMN degraded_reason TEXT",
+        "completed_at": "ALTER TABLE orchestrators ADD COLUMN completed_at TEXT",
+        "degraded": "ALTER TABLE orchestrators ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
+        "degraded_reason": "ALTER TABLE orchestrators ADD COLUMN degraded_reason TEXT",
     }
     for name, sql in sup_migrations.items():
         if name not in sup_columns:
             await db_conn.execute(sql)
 
-    cursor = await db_conn.execute("PRAGMA table_info(supervisor_tasks)")
+    cursor = await db_conn.execute("PRAGMA table_info(orchestrator_tasks)")
     columns = {row["name"] for row in await cursor.fetchall()}
     task_migrations = {
-        "description": "ALTER TABLE supervisor_tasks ADD COLUMN description TEXT",
-        "model": "ALTER TABLE supervisor_tasks ADD COLUMN model TEXT",
-        "result": "ALTER TABLE supervisor_tasks ADD COLUMN result TEXT",
+        "description": "ALTER TABLE orchestrator_tasks ADD COLUMN description TEXT",
+        "model": "ALTER TABLE orchestrator_tasks ADD COLUMN model TEXT",
+        "result": "ALTER TABLE orchestrator_tasks ADD COLUMN result TEXT",
         "progress_pct": (
-            "ALTER TABLE supervisor_tasks ADD COLUMN progress_pct "
+            "ALTER TABLE orchestrator_tasks ADD COLUMN progress_pct "
             "REAL NOT NULL DEFAULT 0.0"
         ),
         "parent_task_id": (
-            "ALTER TABLE supervisor_tasks ADD COLUMN parent_task_id TEXT "
-            "REFERENCES supervisor_tasks(id)"
+            "ALTER TABLE orchestrator_tasks ADD COLUMN parent_task_id TEXT "
+            "REFERENCES orchestrator_tasks(id)"
         ),
-        "depends_on": "ALTER TABLE supervisor_tasks ADD COLUMN depends_on TEXT",
+        "depends_on": "ALTER TABLE orchestrator_tasks ADD COLUMN depends_on TEXT",
         "priority": (
-            "ALTER TABLE supervisor_tasks ADD COLUMN priority "
+            "ALTER TABLE orchestrator_tasks ADD COLUMN priority "
             "INTEGER NOT NULL DEFAULT 0"
         ),
     }
@@ -707,14 +707,14 @@ async def _ensure_supervisor_columns() -> None:
             await db_conn.execute(sql)
     await db_conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sup_tasks_sup "
-        "ON supervisor_tasks(supervisor_id, priority DESC)"
+        "ON orchestrator_tasks(orchestrator_id, priority DESC)"
     )
 
-    cursor = await db_conn.execute("PRAGMA table_info(supervisor_messages)")
+    cursor = await db_conn.execute("PRAGMA table_info(orchestrator_messages)")
     msg_columns = {row["name"] for row in await cursor.fetchall()}
     if "metadata" not in msg_columns:
         await db_conn.execute(
-            "ALTER TABLE supervisor_messages ADD COLUMN metadata TEXT"
+            "ALTER TABLE orchestrator_messages ADD COLUMN metadata TEXT"
         )
 
 
@@ -738,7 +738,7 @@ async def _ensure_chat_columns() -> None:
         "question_ids": (
             "ALTER TABLE chats ADD COLUMN question_ids TEXT NOT NULL DEFAULT ''"
         ),
-        "supervisor": "ALTER TABLE chats ADD COLUMN supervisor TEXT",
+        "orchestrator": "ALTER TABLE chats ADD COLUMN orchestrator TEXT",
         # Per-chat auto-approval of permission and plan-approval prompts.
         # Default 0, and deliberately not settable globally: on, this chat
         # approves the prompts that exist to ask a person, and the answer is a

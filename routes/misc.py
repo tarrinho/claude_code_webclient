@@ -724,6 +724,14 @@ async def handle_settings_get(request: Request):
         prompt_max = int(await db.setting_get("prompt_max") or config.PROMPT_MAX_CHARS)
     except (TypeError, ValueError):
         prompt_max = config.PROMPT_MAX_CHARS
+    voice_ai_machine_id = await db.setting_get("voice_ai_machine_id") or config.VOICE_AI_MACHINE_ID_DEFAULT
+    voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
+    try:
+        voice_speech_rate = float(
+            await db.setting_get("voice_speech_rate") or config.VOICE_SPEECH_RATE_DEFAULT
+        )
+    except (TypeError, ValueError):
+        voice_speech_rate = config.VOICE_SPEECH_RATE_DEFAULT
     webconsole_url = await db.setting_get("webconsole_url")
     if not webconsole_url and config.WC_WEBCONSOLE_URL:
         webconsole_url = config.WC_WEBCONSOLE_URL
@@ -738,6 +746,9 @@ async def handle_settings_get(request: Request):
             "session_ttl_s": session_ttl,
             "turn_timeout_s": turn_timeout,
             "prompt_max": prompt_max,
+            "voice_ai_machine_id": voice_ai_machine_id,
+            "voice_model": voice_model,
+            "voice_speech_rate": voice_speech_rate,
         }
     )
 
@@ -770,6 +781,26 @@ async def handle_settings_patch(request: Request):
         await db.admin_action_record(
             session["user"], "settings_ai_machine_host", f"host={host}",
         )
+
+    if "voice_ai_machine_id" in data:
+        value = data.get("voice_ai_machine_id")
+        if value is not None and not isinstance(value, str):
+            raise HTTPException(status_code=400, detail="Voice AI machine id must be text")
+        await db.setting_set("voice_ai_machine_id", (value or "").strip())
+    if "voice_model" in data:
+        value = data.get("voice_model")
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail="Voice model is required")
+        await db.setting_set("voice_model", value.strip())
+    if "voice_speech_rate" in data:
+        value = data.get("voice_speech_rate")
+        try:
+            rate = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Voice speech rate must be a number")
+        if not (0.5 <= rate <= 5.0):
+            raise HTTPException(status_code=400, detail="Voice speech rate must be between 0.5 and 5")
+        await db.setting_set("voice_speech_rate", str(rate))
 
     # Boot secrets – these live in the DB so the app can run without .env.
     boot_secrets = {

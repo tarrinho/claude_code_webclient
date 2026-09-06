@@ -122,3 +122,20 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         # Should count only the 6-day-old and fresh rows (2 rows, avg 1500)
         self.assertEqual(averages["test_model"]["turn_count"], 2)
         self.assertAlmostEqual(averages["test_model"]["avg_ttft_ms"], 1500, delta=1)
+
+    async def test_settings_get_includes_voice_defaults(self):
+        password = await self._make_admin_and_chat("c3")
+        client, headers = self._login("admin", password)
+        response = client.get("/api/settings", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["voice_model"], config.VOICE_MODEL_DEFAULT)
+        self.assertEqual(body["voice_speech_rate"], config.VOICE_SPEECH_RATE_DEFAULT)
+        self.assertEqual(body["voice_ai_machine_id"], config.VOICE_AI_MACHINE_ID_DEFAULT)
+
+    async def test_settings_get_reflects_stored_override(self):
+        password = await self._make_admin_and_chat("c4")
+        await db.setting_set("voice_speech_rate", "1.8")
+        client, headers = self._login("admin", password)
+        response = client.get("/api/settings", headers=headers)
+        self.assertEqual(response.json()["voice_speech_rate"], 1.8)

@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import auth
 import config
 import db
+import runner
 
 HTTPS = "https://testserver"
 
@@ -228,6 +229,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_handler_uses_voice_path_for_voice_chats(self):
         from routes import voice
+        from routes import chats
 
         password = await self._make_admin_and_chat("c6", voice_mode=True)
         await db.chat_update("c6", "admin", model="azure_ai/gpt-5.6-luna",
@@ -238,7 +240,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             yield 'data: {"type": "done"}\n\n'
 
         client, headers = self._login("admin", password)
-        with patch.object(voice, "stream_voice_turn", fake_stream_voice_turn):
+        with patch.object(chats, "stream_voice_turn", fake_stream_voice_turn):
             response = client.post(
                 "/api/chats/c6/stream", json={"content": "hi"}, headers=headers,
             )

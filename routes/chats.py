@@ -25,6 +25,7 @@ import runner
 import transcripts
 import turns
 from classification import _asks_a_question
+from routes.voice import stream_voice_turn
 from shared import (
     _MODEL_RE,
     _SSE_INTERNAL,
@@ -1004,16 +1005,20 @@ async def stream_handler(request: Request, chat_id: str):
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    data = await request.json()
+    prompt = (data.get("content") or "").strip()
+    if not prompt:
+        if chat.get("voice_mode"):
+            _log.warning(
+                "stream_handler: empty prompt from user=%s chat_id=%s "
+                "(voice_mode)",
+                session["user"], chat_id,
+            )
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    if len(prompt) > config.PROMPT_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Prompt is too long")
+
     if chat.get("voice_mode"):
-        data = await request.json()
-        prompt = (data.get("content") or "").strip()
-        if not prompt:
-            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-        if len(prompt) > config.PROMPT_MAX_CHARS:
-            raise HTTPException(status_code=400, detail="Prompt is too long")
-
-        from routes.voice import stream_voice_turn
-
         async def voice_event_generator():
             async for frame in stream_voice_turn(chat, prompt, session["user"]):
                 yield frame
@@ -1022,16 +1027,6 @@ async def stream_handler(request: Request, chat_id: str):
             voice_event_generator(), media_type="text/event-stream"
         )
 
-    data = await request.json()
-    prompt = (data.get("content") or "").strip()
-    if not prompt:
-        _log.warning(
-            "stream_handler: empty prompt from user=%s chat_id=%s",
-            session["user"], chat_id,
-        )
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-    if len(prompt) > config.PROMPT_MAX_CHARS:
-        raise HTTPException(status_code=400, detail="Prompt is too long")
     model = data.get("model")
     if model is not None:
         if (

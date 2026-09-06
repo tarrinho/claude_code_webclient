@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import secrets
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -85,3 +86,39 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(averages["vllm/Qwen3.6-35B-A3B-NVFP4"]["turn_count"], 1)
         self.assertEqual(averages["vllm/Qwen3.5-0.8B"]["turn_count"], 0)
         self.assertIsNone(averages["vllm/Qwen3.5-0.8B"]["avg_ttft_ms"])
+
+    async def test_voice_turn_timing_respects_7_day_window(self):
+        """Verify that rows outside the 7-day window are excluded."""
+        from routes import voice
+
+        # Calculate timestamps in the same format as db._now()
+        eight_days_ago = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() - 8 * 24 * 3600)
+        )
+        six_days_ago = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() - 6 * 24 * 3600)
+        )
+
+        # Insert a row 8 days ago (should NOT be counted)
+        await db.db_conn.execute(
+            "INSERT INTO voice_turn_timing (model, ttft_ms, total_ms, recorded_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("test_model", 500, 600, eight_days_ago),
+        )
+        # Insert a row 6 days ago (SHOULD be counted)
+        await db.db_conn.execute(
+            "INSERT INTO voice_turn_timing (model, ttft_ms, total_ms, recorded_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("test_model", 2000, 2100, six_days_ago),
+        )
+        # Insert a fresh row (SHOULD be counted)
+        await voice.record_voice_turn_timing("test_model", 1000, 1100)
+        await db.db_conn.commit()
+
+        averages = await voice.voice_model_timing_averages(["test_model"])
+
+        # Should count only the 6-day-old and fresh rows (2 rows, avg 1500)
+        self.assertEqual(averages["test_model"]["turn_count"], 2)
+        self.assertAlmostEqual(averages["test_model"]["avg_ttft_ms"], 1500, delta=1)

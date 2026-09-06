@@ -6,6 +6,8 @@ average-reply-time display.
 """
 from __future__ import annotations
 
+import time
+
 import db
 
 
@@ -28,14 +30,22 @@ async def voice_model_timing_averages(active_models: list[str]) -> dict[str, dic
     result = {model_id: {"avg_ttft_ms": None, "turn_count": 0} for model_id in active_models}
     if not active_models:
         return result
+    # Calculate 7-day cutoff in the same format as db._now() to ensure consistent
+    # string comparison. Using SQLite's datetime('now', '-7 days') produces a
+    # different format with space separators, which causes lexicographic comparison
+    # issues with our 'T'/'Z'-formatted timestamps.
+    cutoff_timestamp = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(time.time() - 7 * 24 * 3600)
+    )
     placeholders = ",".join("?" for _ in active_models)
     cur = await db.db_conn.execute(
         f"SELECT model, AVG(ttft_ms) AS avg_ttft, COUNT(*) AS n "
         f"FROM voice_turn_timing "
         f"WHERE model IN ({placeholders}) "
-        f"AND recorded_at > datetime('now', '-7 days') "
+        f"AND recorded_at > ? "
         f"GROUP BY model",
-        active_models,
+        active_models + [cutoff_timestamp],
     )
     for row in await cur.fetchall():
         result[row["model"]] = {

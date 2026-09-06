@@ -52,6 +52,7 @@ from routes.machines_tunnel import router as machines_tunnel_router
 # routes/orchestrators.py with that helper when the prefix is extracted.
 from routes.misc import router as misc_router
 from routes.orchestrators import router as orchestrators_router
+from routes.transports import router as transports_router
 
 
 # loguru keeps its own sinks, entirely separate from logging.conf, so
@@ -395,6 +396,7 @@ app.include_router(machines_router)
 app.include_router(chats_router)
 app.include_router(orchestrators_router)
 app.include_router(misc_router)
+app.include_router(transports_router)
 
 app.add_middleware(
     CORSMiddleware, allow_origins=[], allow_methods=["*"], allow_headers=["*"]

@@ -60,3 +60,7 @@ Thumbs.db
 # tests/test_qa_approval_questions.py and tests/test_qa_question_marker.py.
 scratch_*.py
 .worktrees/
+
+# Throwaway visual-brainstorming mockups (screens + click events), distinct
+# from .superpowers/sdd/ which IS tracked (spec-driven-development artefacts).
+.superpowers/brainstorm/

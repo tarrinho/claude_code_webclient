@@ -11,6 +11,7 @@ import asyncio
 import datetime
 import json
 import logging
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any, Final
@@ -345,7 +346,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
     session = request.state.session
     data = await request.json()
 
-    allowed = {"title", "description", "archived", "pinned", "ai_machine_id", "model"}
+    allowed = {"title", "description", "archived", "pinned", "ai_machine_id", "model", "voice_mode"}
     if not data or not set(data).issubset(allowed):
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
@@ -395,6 +396,16 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 status_code=400, detail="Model name contains invalid characters"
             )
         fields["model"] = model
+    if "voice_mode" in data:
+        if not isinstance(data["voice_mode"], bool):
+            raise HTTPException(status_code=400, detail="voice_mode must be a boolean")
+        fields["voice_mode"] = int(data["voice_mode"])
+        if data["voice_mode"]:
+            # Enable voice: pin to the voice AI machine and model.
+            voice_machine_id = await db.setting_get("voice_ai_machine_id") or config.VOICE_AI_MACHINE_ID_DEFAULT
+            voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
+            fields["ai_machine_id"] = voice_machine_id
+            fields["model"] = voice_model
 
     updated = await db.chat_update(chat_id, session["user"], **fields)
     if not updated:
@@ -580,7 +591,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     * ``anthropic`` -- the official API, where ``total_cost_usd`` is real.
     * ``anthropic-compatible`` -- an Anthropic-protocol gateway at a custom
       base_url (LiteLLM, a proxy, a self-hosted model). The machine's
-      ``provider`` column says ``anthropic`` for these too, since that only
+      ``provider`` column says ``claude_code`` for these too, since that only
       describes the wire protocol, but the CLI still prices them with
       Anthropic's rates so the cost is not meaningful.
     * ``proxy`` -- a claude_proxy host.
@@ -851,7 +862,7 @@ async def _prepare_transcript_for_backend(chat: dict) -> None:
         backend = await runner.get_backend(chat["id"])
     except Exception:
         return
-    if backend.get("provider") != "anthropic":
+    if backend.get("provider") != "claude_code":
         return
     try:
         result = await transcripts.repair_if_needed(session_id)
@@ -1019,9 +1030,19 @@ async def stream_handler(request: Request, chat_id: str):
         raise HTTPException(status_code=400, detail="Prompt is too long")
 
     if chat.get("voice_mode"):
+        # Same cap every other stream respects (checked before the
+        # StreamingResponse is built, for the same reason the non-voice path
+        # below does it here: a rejection has to raise before the response
+        # commits to a 200, or it reaches the client as a dead stream instead
+        # of the 429 it should be).
+        acquire_sse_slot(session["user"])
+
         async def voice_event_generator():
-            async for frame in stream_voice_turn(chat, prompt, session["user"]):
-                yield frame
+            try:
+                async for frame in stream_voice_turn(chat, prompt, session["user"]):
+                    yield frame
+            finally:
+                release_sse_slot(session["user"])
 
         return StreamingResponse(
             voice_event_generator(), media_type="text/event-stream"
@@ -1888,7 +1909,29 @@ async def handle_chat_sync(request: Request, chat_id: str):
     if not chat.get("session_id"):
         return JSONResponse({"messages": [], "linked": False})
 
-    rows = await _sync_linked_chat(chat)
+    try:
+        rows = await _sync_linked_chat(chat)
+    except sqlite3.OperationalError as exc:
+        # A locked database is a retryable condition, not a failed request.
+        # This route is polled every few seconds while a linked chat is open,
+        # and _sync_linked_chat's only write is bookkeeping (the transcript
+        # offset). Leaving the exception to escape turned a moment of write
+        # contention into a 500 with a 200-line ASGI traceback in the log and
+        # a red error in the user's console, for a poll that would have
+        # succeeded on its next tick.
+        #
+        # Nothing is lost by reporting no rows here: the offset is only
+        # advanced by the write that just failed, so the next poll re-reads
+        # exactly the same range. Failing closed this way is what makes it
+        # safe to swallow -- a partial ingest with an un-advanced offset
+        # would duplicate turns instead.
+        #
+        # Deliberately narrow. sync_all catches bare Exception because one
+        # unreadable transcript must not cost a whole sweep; this route is
+        # about a single conversation the user is looking at, so anything
+        # that is not this specific retryable class still surfaces as a 500.
+        _log.warning("sync_failed chat_id=%s: %s", chat_id, exc)
+        return JSONResponse({"messages": [], "linked": True, "retry": True})
     return JSONResponse(
         {
             "messages": [{"role": role, "content": content} for role, content in rows],

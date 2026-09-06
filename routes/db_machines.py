@@ -12,7 +12,7 @@ import db
 _log = logging.getLogger("wc.db.machines")
 
 _BACKEND_COLUMNS = (
-    "id, name, provider, host, port, model, base_url, api_key"
+    "id, name, provider, host, port, model, base_url, api_key, transport_id"
 )
 
 
@@ -47,7 +47,7 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     # regardless of what was saved in Settings.
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
-        "ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint, "
+        "ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint, transport_id, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         "CASE WHEN api_key IS NOT NULL AND TRIM(api_key) <> '' THEN 1 ELSE 0 END "
         "AS has_api_key, "
@@ -87,39 +87,17 @@ async def ai_machine_create(
     description: str | None,
     owner_id: str,
     provider: str = "proxy",
-    ssh_host: str | None = None,
-    ssh_user: str = "kali",
-    ssh_key_path: str | None = None,
+    transport_id: str | None = None,
 ) -> str:
     now = db._now()
-    # ssh_host/ssh_key_path are TEXT NOT NULL DEFAULT '' -- but a DEFAULT
-    # only applies when a column is *omitted* from the INSERT, not when it
-    # is present with an explicit NULL, which is what a non-ssh_proxy
-    # machine passes here (routes/machines.py: `ssh_host if provider ==
-    # "ssh_proxy" else None`). Coerced to '' so creating any other provider
-    # type doesn't violate the NOT NULL constraint.
     await db.db_conn.execute(
         "INSERT INTO ai_machines "
         "(id, name, provider, host, port, api_key, model, base_url, description, "
-        "active, owner_id, created_at, updated_at, "
-        "ssh_host, ssh_user, ssh_key_path) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+        "active, owner_id, created_at, updated_at, transport_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
         (
-            machine_id,
-            name,
-            provider,
-            host,
-            port,
-            api_key,
-            model,
-            base_url,
-            description,
-            owner_id,
-            now,
-            now,
-            ssh_host or "",
-            ssh_user,
-            ssh_key_path or "",
+            machine_id, name, provider, host, port, api_key, model, base_url,
+            description, owner_id, now, now, transport_id,
         ),
     )
     await db.db_conn.commit()
@@ -137,9 +115,7 @@ async def ai_machine_update(
     base_url: str | None = None,
     description: str | None = None,
     provider: str | None = None,
-    ssh_host: str | None = None,
-    ssh_user: str | None = None,
-    ssh_key_path: str | None = None,
+    transport_id: str | None = None,
 ) -> bool:
     pairs: list[tuple[str, Any]] = [
         ("name", name),
@@ -150,9 +126,7 @@ async def ai_machine_update(
         ("model", model),
         ("base_url", base_url),
         ("description", description),
-        ("ssh_host", ssh_host),
-        ("ssh_user", ssh_user),
-        ("ssh_key_path", ssh_key_path),
+        ("transport_id", transport_id),
     ]
     sets: list[str] = []
     vals: list[Any] = []
@@ -169,6 +143,19 @@ async def ai_machine_update(
         "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
     )  # nosec B608: fields are allowlisted
     cur = await db.db_conn.execute(sql, vals)
+    await db.db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def ai_machine_clear_transport(machine_id: str, owner_id: str) -> bool:
+    """Set transport_id back to NULL -- a bare None through ai_machine_update
+    is indistinguishable from "field not supplied" (its pairs-building only
+    sets a field when the value is not None), so clearing needs its own path."""
+    cur = await db.db_conn.execute(
+        "UPDATE ai_machines SET transport_id = NULL, updated_at = ? "
+        "WHERE id = ? AND owner_id = ?",
+        (db._now(), machine_id, owner_id),
+    )
     await db.db_conn.commit()
     return cur.rowcount > 0
 

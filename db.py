@@ -107,6 +107,7 @@ def __getattr__(name: str):
         "ai_machine_set_ssh_host_key_fingerprint": "routes.db_machines",
         "ai_machine_create": "routes.db_machines",
         "ai_machine_update": "routes.db_machines",
+        "ai_machine_clear_transport": "routes.db_machines",
         "ai_machine_activate": "routes.db_machines",
         "ai_machine_delete": "routes.db_machines",
         "ai_machine_set_models": "routes.db_machines",
@@ -963,6 +964,11 @@ async def _ensure_chat_columns() -> None:
         # other fixes just got working.
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN ssh_host_key_fingerprint TEXT NOT NULL DEFAULT ''"
+        )
+
+    if ma_columns and "transport_id" not in ma_columns:
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN transport_id TEXT"
         )
 
     # ssh_tunnels: one row per active ssh_proxy machine.

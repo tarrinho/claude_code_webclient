@@ -53,8 +53,8 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         `last_models_used` used by GET /api/chats/{id} -- the two must never
         disagree about the same conversation."""
         await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
-        await db.usage_record("c1", "admin", "claude-sonnet-5", "anthropic")
-        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic")
+        await db.usage_record("c1", "admin", "claude-sonnet-5", "claude_code")
+        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code")
         single = await db.last_model_used("c1", "admin")
         batched = (await db.last_models_used("admin"))["c1"]
         self.assertEqual(single, "claude-opus-5")
@@ -66,7 +66,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_last_model_used_is_owner_scoped(self):
         await db.chat_create("c1", "C1", None, f"{self.tmp.name}/c1", "admin")
-        await db.usage_record("c1", "someone-else", "claude-opus-5", "anthropic")
+        await db.usage_record("c1", "someone-else", "claude-opus-5", "claude_code")
         self.assertEqual(await db.last_model_used("c1", "admin"), "")
 
     async def test_last_models_used_is_the_newest_row_per_chat(self):
@@ -74,8 +74,8 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create("c2", "C2", None, f"{self.tmp.name}/c2", "admin")
         # c1 switches model mid-conversation; the newest row must win, not the
         # first or an arbitrary one -- this is the whole point of the query.
-        await db.usage_record("c1", "admin", "claude-sonnet-5", "anthropic")
-        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic")
+        await db.usage_record("c1", "admin", "claude-sonnet-5", "claude_code")
+        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code")
         await db.usage_record("c2", "admin", "vllm/Qwen3.6-35B-A3B-NVFP4", "anthropic-compatible")
         last = await db.last_models_used("admin")
         self.assertEqual(last["c1"], "claude-opus-5")
@@ -102,13 +102,13 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_last_models_used_is_owner_scoped_and_excludes_terminal_rows(self):
         await db.chat_create("mine", "Mine", None, f"{self.tmp.name}/mine", "admin")
-        await db.usage_record("mine", "admin", "claude-opus-5", "anthropic")
+        await db.usage_record("mine", "admin", "claude-opus-5", "claude_code")
         # A row from a different owner must not leak into admin's view.
-        await db.usage_record("theirs", "someone-else", "claude-opus-5", "anthropic")
+        await db.usage_record("theirs", "someone-else", "claude-opus-5", "claude_code")
         # chat_id='' is how a terminal-origin turn is recorded (db.py comment
         # on usage_events.session_id) and must not surface as a "chat".
         await db.usage_record("terminal-session-id", "admin", "claude-opus-5",
-                              "anthropic", origin="terminal")
+                              "claude_code", origin="terminal")
         await db.db_conn.execute(
             "UPDATE usage_events SET chat_id = '' WHERE origin = 'terminal'"
         )
@@ -170,6 +170,68 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         messages = {message["id"]: message["content"] for message in await db.messages_get("one")}
         self.assertEqual([messages[row_id] for row_id in first], ["first-u", "first-a"])
         self.assertEqual([messages[row_id] for row_id in second], ["second-u", "second-a"])
+
+
+class AiMachinesTransportIdTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_patch = patch.object(db.config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(db.config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        self.addCleanup(self.db_patch.stop)
+        self.addCleanup(self.root_patch.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+
+    async def test_ai_machines_has_transport_id_column(self):
+        cur = await db.db_conn.execute("PRAGMA table_info(ai_machines)")
+        columns = {row["name"] for row in await cur.fetchall()}
+        self.assertIn("transport_id", columns)
+
+    async def test_create_with_transport_id_round_trips(self):
+        await db.ai_machine_create(
+            "m1", "CF AI Machine (via Kali3)", "llm.ai-machine.cfappsecurity.com",
+            443, None, "vllm/Qwen3.6-35B-A3B-NVFP4",
+            "https://llm.ai-machine.cfappsecurity.com", None, "admin",
+            provider="claude_code", transport_id="t1",
+        )
+        row = await db.ai_machine_get("m1", "admin")
+        self.assertEqual(row["transport_id"], "t1")
+
+    async def test_create_without_transport_id_defaults_to_null(self):
+        await db.ai_machine_create(
+            "m2", "Anthropic API", "api.anthropic.com", 443, None,
+            "claude-sonnet-5", "https://api.anthropic.com", None, "admin",
+            provider="claude_code",
+        )
+        row = await db.ai_machine_get("m2", "admin")
+        self.assertIsNone(row["transport_id"])
+
+    async def test_update_can_set_and_clear_transport_id(self):
+        await db.ai_machine_create(
+            "m3", "CF AI Machine", "llm.ai-machine.cfappsecurity.com", 443,
+            None, "vllm/Qwen3.6-35B-A3B-NVFP4", None, None, "admin",
+            provider="claude_code",
+        )
+        await db.ai_machine_update("m3", "admin", transport_id="t1")
+        self.assertEqual((await db.ai_machine_get("m3", "admin"))["transport_id"], "t1")
+        await db.ai_machine_clear_transport("m3", "admin")
+        # NOTE: ai_machine_update's existing pairs-building only sets a field
+        # when `value is not None` (see routes/db_machines.py) -- clearing
+        # transport_id back to NULL needs its own explicit path (Step 4 below
+        # adds one), not a bare None kwarg. This test documents that: passing
+        # None must not silently no-op.
+        self.assertIsNone((await db.ai_machine_get("m3", "admin"))["transport_id"])
+
+    async def test_backend_columns_include_transport_id(self):
+        await db.ai_machine_create(
+            "m4", "CF AI Machine", "h", 443, None, "vllm/x", None, None,
+            "admin", provider="claude_code", transport_id="t1",
+        )
+        backend = await db.ai_machine_backend_by_id("m4", "admin")
+        self.assertEqual(backend["transport_id"], "t1")
 
 
 if __name__ == "__main__":

@@ -219,6 +219,14 @@ async def handle_chat_create(request: Request):
         chat_id, title, data.get("description"), work_dir, session["user"]
     )
     _log.info("chat_created chat_id=%s work_dir=%s", chat_id, work_dir)
+    voice_mode = bool(data.get("voice_mode"))
+    if voice_mode:
+        voice_machine_id = await db.setting_get("voice_ai_machine_id") or config.VOICE_AI_MACHINE_ID_DEFAULT
+        voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
+        await db.chat_update(
+            chat_id, session["user"],
+            voice_mode=1, model=voice_model, ai_machine_id=voice_machine_id,
+        )
     return JSONResponse(
         {"id": chat_id, "title": title, "work_dir": work_dir, "created_at": now}
     )

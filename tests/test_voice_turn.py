@@ -244,3 +244,20 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("voice-path-used", response.text)
+
+    async def test_chat_create_with_voice_mode_pins_machine_and_model(self):
+        password = secrets.token_urlsafe(16)
+        await db.user_create("admin", None, auth.hash_password(password))
+        await db.setting_set("voice_ai_machine_id", "voice-machine-1")
+        await db.setting_set("voice_model", "azure_ai/gpt-5.6-luna")
+
+        client, headers = self._login("admin", password)
+        response = client.post(
+            "/api/chats", json={"title": "Voice Chat", "voice_mode": True}, headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        chat_id = response.json()["id"]
+        chat = await db.chat_get(chat_id, "admin")
+        self.assertEqual(chat["voice_mode"], 1)
+        self.assertEqual(chat["ai_machine_id"], "voice-machine-1")
+        self.assertEqual(chat["model"], "azure_ai/gpt-5.6-luna")

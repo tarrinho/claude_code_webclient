@@ -2,7 +2,7 @@
 
 `degraded` exists so a write that silently failed (usage recording is the
 first caller) leaves a visible trace instead of only a log line -- see
-docs/superpowers/specs/2026-09-04-supervisor-observability-design.md.
+docs/superpowers/specs/2026-09-04-orchestrator-observability-design.md.
 """
 from __future__ import annotations
 

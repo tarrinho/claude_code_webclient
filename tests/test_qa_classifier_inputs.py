@@ -1,6 +1,6 @@
 """QA: the two surfaces that classify conversations must agree on the *data*.
 
-`classify_chat` is called from two places — the sidebar feed and the supervisor
+`classify_chat` is called from two places — the sidebar feed and the orchestrator
 members panel — and centralising it was the right move. But centralising a
 decision does not centralise its arguments, and that is where this went wrong
 once already: the members panel passed `{}, {}, {}` for the three CLI lookups,
@@ -142,7 +142,7 @@ class SurfacesAgreeWithACliSessionTests(unittest.IsolatedAsyncioTestCase):
     def _request(self):
         return types.SimpleNamespace(
             method="GET",
-            url=types.SimpleNamespace(path="/api/supervisor"),
+            url=types.SimpleNamespace(path="/api/orchestrator"),
             cookies={}, headers={}, query_params={},
             client=types.SimpleNamespace(host="127.0.0.1"),
             state=types.SimpleNamespace(session={"user": "alice", "role": "admin"}),

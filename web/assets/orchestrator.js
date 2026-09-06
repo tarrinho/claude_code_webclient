@@ -1,4 +1,4 @@
-// ── Supervisor ────────────────────────────────────────────────────────────────
+// ── Orchestrator ────────────────────────────────────────────────────────────────
 
 import {apiFetch} from './api.js?v=1';
 import {state, showToast} from './app.js?v=38';
@@ -9,15 +9,15 @@ import {state, showToast} from './app.js?v=38';
 // (ES modules do not share top-level scope across files), so it needs its own.
 const byId = id => document.getElementById(id);
 
-// ── Supervisor pane ───────────────────────────────────────────────────────────
-// The supervisor is a full page of its own. Framing it in the conversation area
+// ── Orchestrator pane ───────────────────────────────────────────────────────────
+// The orchestrator is a full page of its own. Framing it in the conversation area
 // rather than navigating to it keeps the sidebar in view -- which is the point,
 // since that is where you see who is waiting -- and leaving does not cost a
 // reload of the whole console.
 // What the conversation area looked like before the pane took over.
 let _paneReturn = {messages: '', composer: ''};
 
-// ── Adding a conversation to a supervisor ────────────────────────────────────
+// ── Adding a conversation to a orchestrator ────────────────────────────────────
 // Built in JS rather than as markup in index.html. It reuses the same
 // .dialog-backdrop / .dialog classes as the other dialogs so it looks and
 // behaves identically, but four sessions are editing that file at once and a
@@ -36,7 +36,7 @@ async function _addChatToSupervisor(supervisorId, chatId, title) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         // kind is sent even though every member ends up a chat: the same
-        // endpoint takes 'session' from the supervisor's own picker, and the
+        // endpoint takes 'session' from the orchestrator's own picker, and the
         // server is what decides how to resolve it.
         body: JSON.stringify({members: [{kind: 'chat', ref_id: chatId}]}),
       },
@@ -46,7 +46,7 @@ async function _addChatToSupervisor(supervisorId, chatId, title) {
     // conversation reordering appeared to save and did not.
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || data.detail || 'Could not add to the supervisor');
+      throw new Error(data.error || data.detail || 'Could not add to the orchestrator');
     }
     const result = await response.json();
     if (result.added?.length) showToast(`Added to ${title}`);
@@ -68,12 +68,12 @@ export async function openSupervisorPicker(chatId) {
   backdrop.id = 'supervisorPickDialog';
   backdrop.setAttribute('role', 'dialog');
   backdrop.setAttribute('aria-modal', 'true');
-  backdrop.setAttribute('aria-label', 'Add this conversation to a supervisor');
+  backdrop.setAttribute('aria-label', 'Add this conversation to a orchestrator');
 
   const panel = document.createElement('div');
   panel.className = 'dialog';
   const heading = document.createElement('h2');
-  heading.textContent = 'Add to supervisor';
+  heading.textContent = 'Add to orchestrator';
   const help = document.createElement('p');
   help.textContent = 'Loading supervisors…';
   panel.append(heading, help);
@@ -99,21 +99,21 @@ export async function openSupervisorPicker(chatId) {
   if (!supervisors.length) {
     // Says what to do next rather than presenting an empty box, which reads
     // as a failure when it is simply the first run.
-    help.textContent = 'No supervisors yet. Create one on the supervisor page first.';
+    help.textContent = 'No supervisors yet. Create one on the orchestrator page first.';
     return;
   }
 
-  help.textContent = 'Pick the supervisor that should watch this conversation.';
+  help.textContent = 'Pick the orchestrator that should watch this conversation.';
   const list = document.createElement('div');
   list.className = 'chat-menu open';
   list.style.position = 'static';
-  supervisors.forEach(supervisor => {
+  supervisors.forEach(orchestrator => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = supervisor.title || 'Untitled supervisor';
+    button.textContent = orchestrator.title || 'Untitled orchestrator';
     button.setAttribute('role', 'menuitem');
     button.addEventListener('click', () => _addChatToSupervisor(
-      supervisor.id, chatId, supervisor.title || 'the supervisor'));
+      orchestrator.id, chatId, orchestrator.title || 'the orchestrator'));
     list.appendChild(button);
   });
   panel.appendChild(list);
@@ -125,15 +125,15 @@ export function openSupervisorPane() {
   const frame = byId('supervisorFrame');
   if (!pane || !frame) {
     // No pane in this markup: fall back to the page rather than doing nothing.
-    window.location.href = 'supervisor.html';
+    window.location.href = 'orchestrator.html';
     return;
   }
   // Loaded on first open and left loaded afterwards, so reopening is instant
-  // and the supervisor keeps its state.
-  if (frame.getAttribute('src') !== 'supervisor.html') {
-    frame.setAttribute('src', 'supervisor.html');
+  // and the orchestrator keeps its state.
+  if (frame.getAttribute('src') !== 'orchestrator.html') {
+    frame.setAttribute('src', 'orchestrator.html');
   }
-  // Hide all other .main children (via the hidden attribute) so the supervisor
+  // Hide all other .main children (via the hidden attribute) so the orchestrator
   // fills the entire right-side panel — full height, not squeezed into the
   // bottom-right corner below the still-visible topbar / messages / composer.
   _paneReturn = new Map();
@@ -164,4 +164,4 @@ export function closeSupervisorPane() {
 }
 
 // Note: startSupervisorPolling lives in device-alerts.js alongside
-// refreshSupervisor — supervisor.js only owns the pane/picker UI.
+// refreshSupervisor — orchestrator.js only owns the pane/picker UI.

@@ -1,6 +1,6 @@
 # db_read_marks.py — Read marks and chat_last_activity.
 #
-# Extracted from db.py so the supervisor route path does not need the full
+# Extracted from db.py so the orchestrator route path does not need the full
 # database module.
 
 import logging
@@ -52,7 +52,7 @@ async def read_mark_set(
 async def chat_last_activity(owner_id: str) -> dict[str, dict[str, Any]]:
     """Latest message per chat: {chat_id: {role, created_at, preview, tail}}.
 
-    One grouped query rather than a read per conversation -- the supervisor
+    One grouped query rather than a read per conversation -- the orchestrator
     polls, so this runs repeatedly.
     """
     cur = await db.db_conn.execute(

@@ -1,7 +1,7 @@
-# supervisor.py -- AI supervisor orchestration engine for WebConsole 0.10.4
+# orchestrator.py -- AI orchestrator orchestration engine for WebConsole 0.10.4
 #
 # Provides the PlanParser, ModelRouter, TaskGraph, ProgressTracker,
-# and SupervisorEngine that coordinate multi-agent task decomposition,
+# and OrchestratorEngine that coordinate multi-agent task decomposition,
 # model assignment, dependency tracking, and streaming progress.
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 
 import config
 
-_log = logging.getLogger("wc.supervisor")
+_log = logging.getLogger("wc.orchestrator")
 
 # -- Model routing rules --------------------------------------------------
 DEFAULT_RULES: dict[str, Any] = {
@@ -114,7 +114,7 @@ _MODEL_PLACEHOLDERS = frozenset({"model", "model-name", "model_id",
 
 @dataclass
 class ParsedTask:
-    """One task extracted from a supervisor plan."""
+    """One task extracted from a orchestrator plan."""
     id: str
     title: str
     description: str = ""
@@ -310,7 +310,7 @@ class ModelRouter:
 
 @dataclass
 class TaskNode:
-    """A task in the supervisor graph with runtime state."""
+    """A task in the orchestrator graph with runtime state."""
     id: str
     title: str
     description: str
@@ -385,7 +385,7 @@ class TaskGraph:
         "failed" is a terminal state and has to be counted here. It was not,
         and the scheduler loops on `not all_done()`: a single failed task made
         that condition permanently true, so the loop spun at 0.5s for ever with
-        nothing runnable and the supervisor never reached a final state.
+        nothing runnable and the orchestrator never reached a final state.
         Finishing unsuccessfully is still finishing -- whether the run failed
         is what any_failed() answers, and the caller asks it separately.
         """
@@ -457,10 +457,10 @@ class ProgressTracker:
         ]
 
 
-# -- Supervisor engine -------------------------------------------------------
+# -- Orchestrator engine -------------------------------------------------------
 
 SUPERVISOR_SYSTEM_PROMPT = (
-    "You are a Supervisor Agent. Your ONLY job is to output a PLAN block "
+    "You are a Orchestrator Agent. Your ONLY job is to output a PLAN block "
     "with numbered tasks and nothing else.\n\n"
     "RULE — output ONLY this block, verbatim:\n"
     "  <<PLAN\n"
@@ -481,11 +481,11 @@ SUPERVISOR_SYSTEM_PROMPT = (
 )
 
 
-class SupervisorEngine:
+class OrchestratorEngine:
     """Main engine: plan parsing, model routing, task graph, and execution."""
 
-    def __init__(self, supervisor_id: str, owner_id: str) -> None:
-        self.supervisor_id = supervisor_id
+    def __init__(self, orchestrator_id: str, owner_id: str) -> None:
+        self.orchestrator_id = orchestrator_id
         self.owner_id = owner_id
         self.graph = TaskGraph()
         self.tracker = ProgressTracker()
@@ -517,18 +517,18 @@ class SupervisorEngine:
         return task
 
     async def _record_usage(self, chat_id: str, model: str | None) -> None:
-        """Persist what a supervisor turn cost, one row per model.
+        """Persist what a orchestrator turn cost, one row per model.
 
         Usage is recorded by the *caller*: `runner` collects the frames and hands
         them over through `take_last_usage`, and `app.py` does this for every
-        conversation turn. `supervisor.py` never did -- so a supervisor fanning
+        conversation turn. `orchestrator.py` never did -- so a orchestrator fanning
         out ten subtasks spent ten turns' worth of tokens and appeared in the
         usage tables as nothing at all. The engine is the only caller that can
         attribute them, because it owns the synthetic chat ids.
 
-        `origin="supervisor"` rather than the default `"web"`. The origin column
+        `origin="orchestrator"` rather than the default `"web"`. The origin column
         exists precisely so spend can be told apart by where it came from, and a
-        supervisor's fan-out is the case most worth separating: it is the one
+        orchestrator's fan-out is the case most worth separating: it is the one
         that can multiply a single request into a dozen turns without the user
         issuing a dozen prompts.
 
@@ -570,7 +570,7 @@ class SupervisorEngine:
                         cost_basis=stats.get("cost_basis"),
                         duration_ms=frame.get("duration_ms"),
                         is_error=bool(frame.get("is_error")),
-                        origin="supervisor",
+                        origin="orchestrator",
                     )
                     cost = None
                     if row_id is None:
@@ -578,50 +578,50 @@ class SupervisorEngine:
                     else:
                         any_written = True
             if any_failed:
-                await db.supervisor_mark_degraded(
-                    self.supervisor_id, "usage",
+                await db.orchestrator_mark_degraded(
+                    self.orchestrator_id, "usage",
                     f"usage_record returned no row id for chat_id={chat_id}",
                 )
             elif any_written:
-                await db.supervisor_clear_degraded(self.supervisor_id, "usage")
+                await db.orchestrator_clear_degraded(self.orchestrator_id, "usage")
         except Exception:
             _log.exception(
-                "supervisor_usage_not_recorded supervisor_id=%s chat_id=%s",
-                self.supervisor_id, chat_id,
+                "supervisor_usage_not_recorded orchestrator_id=%s chat_id=%s",
+                self.orchestrator_id, chat_id,
             )
             try:
-                await db.supervisor_mark_degraded(
-                    self.supervisor_id, "usage", f"usage recording raised for chat_id={chat_id}",
+                await db.orchestrator_mark_degraded(
+                    self.orchestrator_id, "usage", f"usage recording raised for chat_id={chat_id}",
                 )
             except Exception:
                 pass
 
     async def _persist_progress(self) -> None:
-        """Write the graph's overall progress onto the supervisor row.
+        """Write the graph's overall progress onto the orchestrator row.
 
-        Individual task rows carried their own progress, but the supervisor's
+        Individual task rows carried their own progress, but the orchestrator's
         did not, so a run whose every task was "done" still reported 0% -- and
-        the progress bar is the one thing a supervisor page is watched for.
+        the progress bar is the one thing a orchestrator page is watched for.
         """
         import db
 
         try:
-            await db.supervisor_update(
-                self.supervisor_id, self.owner_id,
+            await db.orchestrator_update(
+                self.orchestrator_id, self.owner_id,
                 progress_pct=self.graph.overall_progress(),
             )
-            await db.supervisor_clear_degraded(self.supervisor_id, "progress")
+            await db.orchestrator_clear_degraded(self.orchestrator_id, "progress")
         except Exception as exc:
-            _log.exception("could not persist progress for %s", self.supervisor_id)
+            _log.exception("could not persist progress for %s", self.orchestrator_id)
             try:
-                await db.supervisor_mark_degraded(self.supervisor_id, "progress", str(exc))
+                await db.orchestrator_mark_degraded(self.orchestrator_id, "progress", str(exc))
             except Exception:
                 pass
 
     async def _set_status(self, status: str) -> None:
         """Record the run's overall status where the UI actually reads it.
 
-        This file updated a graph node called "supervisor" in seven places, and
+        This file updated a graph node called "orchestrator" in seven places, and
         no such node is ever created: the only add_task() call inserts parsed
         plan tasks, whose ids come from _slug(title). Every one of those calls
         was therefore a no-op returning False, and nothing here ever wrote to
@@ -632,19 +632,19 @@ class SupervisorEngine:
         The graph update is kept because it is correct if such a node is ever
         added; the database write is the part the interface can see.
         """
-        self.graph.update_status("supervisor", status)
+        self.graph.update_status("orchestrator", status)
         try:
             import db  # local import: db imports this module at load time
-            await db.supervisor_update(self.supervisor_id, self.owner_id,
+            await db.orchestrator_update(self.orchestrator_id, self.owner_id,
                                        status=status)
-            await db.supervisor_clear_degraded(self.supervisor_id, "status")
+            await db.orchestrator_clear_degraded(self.orchestrator_id, "status")
         except Exception as exc:
             _log.exception(
-                "supervisor_status_not_persisted supervisor_id=%s status=%s",
-                self.supervisor_id, status,
+                "supervisor_status_not_persisted orchestrator_id=%s status=%s",
+                self.orchestrator_id, status,
             )
             try:
-                await db.supervisor_mark_degraded(self.supervisor_id, "status", str(exc))
+                await db.orchestrator_mark_degraded(self.orchestrator_id, "status", str(exc))
             except Exception:
                 pass
 
@@ -654,12 +654,12 @@ class SupervisorEngine:
         exc = task.exception()
         if exc is not None:
             _log.error(
-                "supervisor_task_failed supervisor_id=%s",
-                self.supervisor_id, exc_info=exc,
+                "supervisor_task_failed orchestrator_id=%s",
+                self.orchestrator_id, exc_info=exc,
             )
 
     async def start_from_user_prompt(self, user_prompt: str) -> dict[str, Any]:
-        """Launch the supervisor and begin planning.
+        """Launch the orchestrator and begin planning.
 
         Starts a background asyncio task that asks the LLM to produce a plan.
         When the plan arrives, PlanParser extracts tasks and the engine
@@ -668,7 +668,7 @@ class SupervisorEngine:
         self._running = True
         self.spawn(self._run_planner_turn(user_prompt))
         return {
-            "supervisor_id": self.supervisor_id,
+            "orchestrator_id": self.orchestrator_id,
             "status": "planning",
             "user_prompt": user_prompt,
         }
@@ -698,7 +698,7 @@ class SupervisorEngine:
 
         Two scars are recorded here rather than in a changelog, because both
         were invisible from outside and both belong to this loop: the id
-        collision that let a second supervisor's writes fail silently, and the
+        collision that let a second orchestrator's writes fail silently, and the
         bare warning that hid it.
 
         Deliberately not split further. The per-task `try` has to stay inside
@@ -707,21 +707,21 @@ class SupervisorEngine:
         """
         if not tasks:
             return
-        # Local, as every db use in this module is: db imports supervisor at
+        # Local, as every db use in this module is: db imports orchestrator at
         # load time, so a module-level import is a cycle. Ruff caught the
         # omission when this block was lifted out of a method that had its own
         # local import, and the suite did not -- 191 tests passed while this
         # function could not run, because none of them called it with tasks.
         import db
 
-        # PlanParser numbers tasks from 1 within a plan, so every supervisor
+        # PlanParser numbers tasks from 1 within a plan, so every orchestrator
         # produces a t001, and supervisor_tasks.id is a global PRIMARY KEY. The
-        # second supervisor's write failed on the UNIQUE constraint, was
+        # second orchestrator's write failed on the UNIQUE constraint, was
         # swallowed by a bare warning, and its task list sat empty at 0% while
         # the work actually ran. Namespacing here rather than in the parser
         # keeps {#taskN} references resolvable against the plan's own numbers.
         def _row_id(plan_id: str) -> str:
-            return f"{self.supervisor_id[:8]}_{plan_id}"
+            return f"{self.orchestrator_id[:8]}_{plan_id}"
 
         any_task_create_failed = False
         for parsed_task in tasks:
@@ -737,8 +737,8 @@ class SupervisorEngine:
             )
             self.graph.add_task(node)
             try:
-                await db.supervisor_task_create(
-                    supervisor_id=self.supervisor_id,
+                await db.orchestrator_task_create(
+                    orchestrator_id=self.orchestrator_id,
                     task_id=node.id,
                     title=parsed_task.title,
                     description=parsed_task.description,
@@ -764,7 +764,7 @@ class SupervisorEngine:
                 )
                 any_task_create_failed = True
                 try:
-                    await db.supervisor_mark_degraded(self.supervisor_id, "task_create",
+                    await db.orchestrator_mark_degraded(self.orchestrator_id, "task_create",
                                                        f"{node.id}: {exc}")
                 except Exception:
                     pass
@@ -773,7 +773,7 @@ class SupervisorEngine:
         # row is not fixed by a later plan's success, so this is not per-task.
         if not any_task_create_failed:
             try:
-                await db.supervisor_clear_degraded(self.supervisor_id, "task_create")
+                await db.orchestrator_clear_degraded(self.orchestrator_id, "task_create")
             except Exception:
                 pass
 
@@ -814,7 +814,7 @@ class SupervisorEngine:
                 # resolution is keyed on a chats row, so without this the child
                 # got no base URL and no API key and every turn died on
                 # "Not logged in - Please run /login" -- which is why the
-                # supervisor had never once run a task on any backend.
+                # orchestrator had never once run a task on any backend.
                 self.owner_id,
             )
             result = "".join(chunks) if chunks else ""
@@ -825,8 +825,8 @@ class SupervisorEngine:
 
             if not result:
                 _log.warning(
-                    "planner_turn returned empty result for supervisor %s",
-                    self.supervisor_id,
+                    "planner_turn returned empty result for orchestrator %s",
+                    self.orchestrator_id,
                 )
                 await self._set_status("error")
                 self._running = False
@@ -835,8 +835,8 @@ class SupervisorEngine:
             # Parse the plan
             tasks = PlanParser.parse(result)
             _log.info(
-                "plan_parsed supervisor=%s tasks=%d",
-                self.supervisor_id, len(tasks),
+                "plan_parsed orchestrator=%s tasks=%d",
+                self.orchestrator_id, len(tasks),
             )
 
             import db
@@ -845,8 +845,8 @@ class SupervisorEngine:
             # discarded, so `plan` stayed null and a parse that understood
             # nothing left no evidence of what the model had actually said.
             cleaned = clean_result(result)
-            await db.supervisor_update(
-                self.supervisor_id, self.owner_id, plan=cleaned[:20000])
+            await db.orchestrator_update(
+                self.orchestrator_id, self.owner_id, plan=cleaned[:20000])
 
             if not tasks:
                 # A plan nobody could parse is not a finished run. This fell
@@ -855,8 +855,8 @@ class SupervisorEngine:
                 # ran looked exactly like one that succeeded. A false success is
                 # worse than a failure, because nobody goes looking.
                 await self._set_status("error")
-                await db.supervisor_messages_append(
-                    self.supervisor_id, "system",
+                await db.orchestrator_messages_append(
+                    self.orchestrator_id, "system",
                     "The plan could not be read, so no tasks were created. "
                     "The planner replied:\n\n" + (cleaned[:1500] or "(nothing)"),
                     {"kind": "plan_unparsed"},
@@ -864,7 +864,7 @@ class SupervisorEngine:
                 self._running = False
                 return
 
-            # Emit the parsed plan as a supervisor message so the chat shows it.
+            # Emit the parsed plan as a orchestrator message so the chat shows it.
             if tasks:
                 task_titles = "\n".join(f"- {t.title}" for t in tasks)
                 # `>>`, not `>`: _PLAN_START_RE accepts `<<PLAN` or `<<PLAN>>`
@@ -877,15 +877,15 @@ class SupervisorEngine:
                 plan_text = (
                     f"<<PLAN>>\nPlan ({len(tasks)} tasks):\n\n{task_titles}\n<<PLAN>>"
                 )
-                await db.supervisor_messages_append(
-                    self.supervisor_id, "supervisor",
+                await db.orchestrator_messages_append(
+                    self.orchestrator_id, "orchestrator",
                     plan_text,
                     {"kind": "plan"},
                 )
 
             await self._materialise_plan(tasks)
 
-            # Update supervisor status to running
+            # Update orchestrator status to running
             await self._set_status("running")
             await asyncio.sleep(0.1)  # let state propagate
 
@@ -894,8 +894,8 @@ class SupervisorEngine:
 
         except Exception as exc:
             _log.exception(
-                "planner_turn_failed supervisor_id=%s: %s",
-                self.supervisor_id, exc,
+                "planner_turn_failed orchestrator_id=%s: %s",
+                self.orchestrator_id, exc,
             )
             await self._set_status("error")
             # The reason has to reach the user, not only the log. Until now a
@@ -912,8 +912,8 @@ class SupervisorEngine:
                 # the very message this block exists to record.
                 import db
 
-                await db.supervisor_messages_append(
-                    self.supervisor_id, "system",
+                await db.orchestrator_messages_append(
+                    self.orchestrator_id, "system",
                     f"Run failed: {exc}",
                     {"kind": "error"},
                 )
@@ -972,8 +972,8 @@ class SupervisorEngine:
         try:
             import db
 
-            await db.supervisor_task_update(
-                supervisor_id=self.supervisor_id,
+            await db.orchestrator_task_update(
+                orchestrator_id=self.orchestrator_id,
                 task_id=task_id,
                 owner_id=self.owner_id,
                 status="running",
@@ -1028,17 +1028,17 @@ class SupervisorEngine:
                         f"Task '{node_title}' completed with no text output "
                         f"-- it only made tool calls."
                     )
-                await db.supervisor_messages_append(
-                    self.supervisor_id, "supervisor",
+                await db.orchestrator_messages_append(
+                    self.orchestrator_id, "orchestrator",
                     body,
                     {"kind": "task_result", "task_id": task_id},
                 )
-                await db.supervisor_clear_degraded(self.supervisor_id, "task_message")
+                await db.orchestrator_clear_degraded(self.orchestrator_id, "task_message")
             except Exception as msg_exc:
                 _log.exception("could not record task result message for %s", task_id)
                 try:
                     import db
-                    await db.supervisor_mark_degraded(self.supervisor_id, "task_message",
+                    await db.orchestrator_mark_degraded(self.orchestrator_id, "task_message",
                                                        f"{task_id}: {msg_exc}")
                 except Exception:
                     pass
@@ -1046,19 +1046,19 @@ class SupervisorEngine:
             # Also update DB task row
             try:
                 import db
-                await db.supervisor_task_update(
-                    supervisor_id=self.supervisor_id,
+                await db.orchestrator_task_update(
+                    orchestrator_id=self.orchestrator_id,
                     task_id=task_id,
                     owner_id=self.owner_id,
                     status="done",
                     result=result,
                     progress_pct=100.0,
                 )
-                await db.supervisor_clear_degraded(self.supervisor_id, "task_status_done")
+                await db.orchestrator_clear_degraded(self.orchestrator_id, "task_status_done")
             except Exception as status_exc:
                 _log.exception("could not record task %s as done", task_id)
                 try:
-                    await db.supervisor_mark_degraded(self.supervisor_id, "task_status_done",
+                    await db.orchestrator_mark_degraded(self.orchestrator_id, "task_status_done",
                                                        f"{task_id}: {status_exc}")
                 except Exception:
                     pass
@@ -1070,7 +1070,7 @@ class SupervisorEngine:
             # A failed turn still spent tokens, and often more than a successful
             # one: a task that ran for two minutes and then hit an error has been
             # paid for. Recording only on success would make the cheapest-looking
-            # supervisor the one that fails most.
+            # orchestrator the one that fails most.
             await self._record_usage(task_chat_id, model)
             self.tracker.record(ProgressEvent(
                 event_type="task_error",
@@ -1082,18 +1082,18 @@ class SupervisorEngine:
             # Also update DB task row
             try:
                 import db
-                await db.supervisor_task_update(
-                    supervisor_id=self.supervisor_id,
+                await db.orchestrator_task_update(
+                    orchestrator_id=self.orchestrator_id,
                     task_id=task_id,
                     owner_id=self.owner_id,
                     status="failed",
                     progress_pct=0.0,
                 )
-                await db.supervisor_clear_degraded(self.supervisor_id, "task_status_failed")
+                await db.orchestrator_clear_degraded(self.orchestrator_id, "task_status_failed")
             except Exception as write_exc:
                 _log.exception("could not record task %s as failed", task_id)
                 try:
-                    await db.supervisor_mark_degraded(self.supervisor_id, "task_status_failed",
+                    await db.orchestrator_mark_degraded(self.orchestrator_id, "task_status_failed",
                                                        f"{task_id}: {write_exc}")
                 except Exception:
                     pass
@@ -1119,7 +1119,7 @@ class SupervisorEngine:
 
         Everything is wrapped because this runs as a bare background task that
         nothing awaits: an exception escaping here is reported only as asyncio's
-        "Task exception was never retrieved", and the supervisor would sit in
+        "Task exception was never retrieved", and the orchestrator would sit in
         "running" with nothing running and no error anywhere the user can see.
         """
         self._running = True
@@ -1146,7 +1146,7 @@ class SupervisorEngine:
             raise
         except Exception:
             _log.exception(
-                "schedule_loop_failed supervisor_id=%s", self.supervisor_id
+                "schedule_loop_failed orchestrator_id=%s", self.orchestrator_id
             )
             self._running = False
             await self._set_status("error")
@@ -1170,7 +1170,7 @@ class SupervisorEngine:
         self._running = False
 
     def pause(self) -> bool:
-        """Pause a running supervisor. Returns False if nothing was paused."""
+        """Pause a running orchestrator. Returns False if nothing was paused."""
         if self._running and not self._paused:
             self._paused = True
             self._resume_event.clear()
@@ -1182,7 +1182,7 @@ class SupervisorEngine:
         """Remember what status was before the run started (planning vs running).
 
         The engine always stores "running" at line 693, but the user's view
-        needs to know whether the supervisor was mid-plan or mid-task so the
+        needs to know whether the orchestrator was mid-plan or mid-task so the
         resume button shows the right thing.  The simplest correct approach is
         to let the caller tell us — the API handler passes the pre-pause DB
         value here before calling pause(), so the engine remembers it to
@@ -1192,7 +1192,7 @@ class SupervisorEngine:
             self._pre_pause_status = status
 
     def resume(self) -> bool:
-        """Resume a paused supervisor. Returns False if nothing was resumed."""
+        """Resume a paused orchestrator. Returns False if nothing was resumed."""
         if self._paused:
             self._paused = False
             self._resume_event.set()
@@ -1202,7 +1202,7 @@ class SupervisorEngine:
     async def _wait_if_paused(self) -> None:
         """Yield until the pause flag is cleared or a short interval elapses.
 
-        Used in the scheduler loop so a paused supervisor does not spin, but
+        Used in the scheduler loop so a paused orchestrator does not spin, but
         also does not block forever: a 2-second poll means the engine loop
         still reaches the progress-persist line at least once every 2 seconds
         even while paused, so the UI never looks stale.
@@ -1217,7 +1217,7 @@ class SupervisorEngine:
     def state(self) -> dict[str, Any]:
         """Return full engine state for serialization."""
         return {
-            "supervisor_id": self.supervisor_id,
+            "orchestrator_id": self.orchestrator_id,
             "status": "running" if self._running else "idle",
             "progress": self.tracker.supervisor_progress(self.graph),
             "tasks": self.graph.to_dict(),

@@ -1,18 +1,18 @@
-"""Screenshot the supervisor page's markup and CSS at a given size.
+"""Screenshot the orchestrator page's markup and CSS at a given size.
 
 WHAT THIS CAN AND CANNOT DO. It verifies layout: panel geometry, which panel is
 where, the `body.max-*` maximize rules, behaviour at narrow widths. It CANNOT
-verify anything `web/supervisor.js` renders, because with that script loaded
+verify anything `web/orchestrator.js` renders, because with that script loaded
 headless chromium never exits and never captures a frame at all.
 
 THE CAUSE, bisected. `init()` installs a 30-second `setInterval` to poll the
-supervisor list. `--virtual-time-budget` does not retire while that timer is
+orchestrator list. `--virtual-time-budget` does not retire while that timer is
 outstanding, and the budget is what `--dump-dom` waits on, so chromium never
 reaches the point of emitting anything. Three probes on the same binary
 (chromium 148.0.7778.178) isolate it:
 
-    web/supervisor.html, script tag stripped       dumps in 0.6s
-    the same page + web/supervisor.js              never exits
+    web/orchestrator.html, script tag stripped       dumps in 0.6s
+    the same page + web/orchestrator.js              never exits
     the same page, that one setInterval neutered   dumps in 1.0s
 
 That last line is the whole finding: one call, not the script as a whole.
@@ -26,7 +26,7 @@ list is kept because the failures were real and correctly measured:
     --virtual-time-budget=6000 / 2000 / omitted    timeout, no PNG
 
 The third is the instructive one. `setInterval` *was* stubbed — from a script
-injected before supervisor.js — but the page installs its timer through the
+injected before orchestrator.js — but the page installs its timer through the
 reference it had already captured, so the stub never intercepted it and the
 budget stayed open. A mitigation that looks like it addresses the cause and
 does not is worse than one that obviously misses, because it retires the
@@ -117,9 +117,9 @@ def build(served: Path, json_dir: Path, action: str, width: int, height: int,
     # Kill every animation and transition. This is the difference between a
     # screenshot and a hang: the task status dots carry
     # `animation: pulse-amber 1.5s infinite`, and those elements only exist
-    # once supervisor.js has rendered the task list. An infinite animation
+    # once orchestrator.js has rendered the task list. An infinite animation
     # means the page is never idle, so --virtual-time-budget never exhausts and
-    # chromium never exits -- which is why loading supervisor.js under
+    # chromium never exits -- which is why loading orchestrator.js under
     # --dump-dom hangs until its timeout while the same page without the script
     # returns in a second.
     html = html.replace(
@@ -133,8 +133,8 @@ def build(served: Path, json_dir: Path, action: str, width: int, height: int,
 <script>
 (function () {
   var DATA = __PAYLOAD__;
-  // Stub before supervisor.js loads. Routed by suffix because the page builds
-  // URLs with the supervisor id embedded.
+  // Stub before orchestrator.js loads. Routed by suffix because the page builds
+  // URLs with the orchestrator id embedded.
   window.fetch = function (url, opts) {
     var body = {};
     if (url.indexOf("/api/supervisors") === 0 && url.indexOf("/", 17) === -1) {
@@ -162,7 +162,7 @@ def build(served: Path, json_dir: Path, action: str, width: int, height: int,
 </script>
 """
     stub = stub.replace("__PAYLOAD__", json.dumps(payload))
-    html = html.replace('<script src="supervisor.js', stub + '<script src="supervisor.js', 1)
+    html = html.replace('<script src="orchestrator.js', stub + '<script src="orchestrator.js', 1)
 
     after = """
 <script>
@@ -187,7 +187,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         page = Path(tmp) / "page.html"
         page.write_text(html, encoding="utf-8")
-        # The page loads `supervisor.js` by RELATIVE path, so it only executes
+        # The page loads `orchestrator.js` by RELATIVE path, so it only executes
         # if a copy sits beside the temp page. It 404s silently otherwise -- a
         # failed script load raises no window error -- and the page then
         # renders its markup and CSS perfectly while running none of its own
@@ -200,11 +200,11 @@ def main() -> int:
         # --virtual-time-budget: every combination times out with no PNG. That
         # is the same wall that moved test_qa_supervisor_ux_shortcuts onto
         # playwright. So this script is good for markup and CSS geometry, and
-        # cannot verify anything supervisor.js renders.
+        # cannot verify anything orchestrator.js renders.
         if os.environ.get("LIVECHECK_WITH_JS") == "1":
             shutil.copy(
-                Path(__file__).resolve().parent.parent / "web" / "supervisor.js",
-                Path(tmp) / "supervisor.js",
+                Path(__file__).resolve().parent.parent / "web" / "orchestrator.js",
+                Path(tmp) / "orchestrator.js",
             )
         result = subprocess.run(
             [CHROMIUM, "--headless", "--disable-gpu", "--no-sandbox",

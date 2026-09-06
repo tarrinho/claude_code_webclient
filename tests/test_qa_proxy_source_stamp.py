@@ -1,6 +1,6 @@
 """QA: the running proxy stamps the source file it is actually serving.
 
-`claude_proxy.py` has no supervisor watching whether the file on disk still
+`claude_proxy.py` has no orchestrator watching whether the file on disk still
 matches the process that is running -- systemd restarts it if it exits, but a
 process that is alive and simply stale (started before the last edit landed)
 looks identical to a healthy one from the outside. This has already broken

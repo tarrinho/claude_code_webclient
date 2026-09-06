@@ -1,4 +1,4 @@
-// supervisor/layout.js — panel sizing, resize handles, minimise.
+// orchestrator/layout.js — panel sizing, resize handles, minimise.
 
 import { state } from "./state.js";
 import { PANEL_MIN_WIDTHS, PANEL_MIN_HEIGHTS } from "./state.js";

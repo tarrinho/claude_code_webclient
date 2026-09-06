@@ -1,4 +1,4 @@
-// supervisor/stream.js — the SSE connection and its event handling.
+// orchestrator/stream.js — the SSE connection and its event handling.
 
 import { state } from "./state.js";
 import { formatTime } from "./api.js";
@@ -14,16 +14,16 @@ import { loadTasks, renderTaskTree, updateOverallProgress, updatePauseResumeBtn 
     // accepts only `withCredentials`; a `signal` member is silently ignored,
     // so the previous teardown never did anything. Verified in Chromium rather
     // than read off the spec: after abort() the stream is still readyState 1
-    // (OPEN), and only close() reaches 2. Every supervisor switch therefore
+    // (OPEN), and only close() reaches 2. Every orchestrator switch therefore
     // left a stream open on both ends, and the stale one kept delivering into
-    // handleSSEEvent for a supervisor the user had already left.
+    // handleSSEEvent for a orchestrator the user had already left.
     if (state.sseStream) {
       state.sseStream.close();
       state.sseStream = null;
     }
 
     const url =
-      "/api/supervisors/" + state.activeSupervisorId + "/stream";
+      "/api/orchestrators/" + state.activeSupervisorId + "/stream";
 
     const evtSource = new EventSource(url);
     state.sseStream = evtSource;
@@ -69,8 +69,8 @@ import { loadTasks, renderTaskTree, updateOverallProgress, updatePauseResumeBtn 
         handleSSEMessages(data.messages || []);
         break;
       case "done":
-        addLogEntry("system", "Supervisor finished: " + data.status);
-        addChatMessage("system", "Supervisor completed with status: " + data.status);
+        addLogEntry("system", "Orchestrator finished: " + data.status);
+        addChatMessage("system", "Orchestrator completed with status: " + data.status);
         // Show the completion banner with task results summary
         if (data.status === "done") {
           // Reload fresh task data to build accurate completion summary
@@ -121,7 +121,7 @@ import { loadTasks, renderTaskTree, updateOverallProgress, updatePauseResumeBtn 
     }
     updateOverallProgress();
 
-    // Update supervisor status if available
+    // Update orchestrator status if available
     if (data.status && state.activeSupervisor) {
       state.activeSupervisor.status = data.status;
       // Same fix as handleStatusUpdate — renderSupervisorList() renders from

@@ -2,7 +2,7 @@
 
 `run_turn` has an `owner` parameter and `stream_turn` did not. It is the fallback
 identity for a caller whose `chat_id` is not a row in `chats` — which is exactly
-what the supervisor is, since `supervisor_<uuid>` and `subtask_<id>` are labels
+what the orchestrator is, since `supervisor_<uuid>` and `subtask_<id>` are labels
 rather than conversations. Without it `get_backend` finds no routing row, the
 child process is handed no base URL and no API key, and every turn dies on
 "Not logged in - Please run /login".
@@ -33,7 +33,7 @@ import config
 import runner
 
 OWNER = "pedro"
-# Deliberately not a conversation id. This is the shape the supervisor uses, and
+# Deliberately not a conversation id. This is the shape the orchestrator uses, and
 # the shape that makes `owner` load-bearing rather than decorative.
 SUPERVISOR_CHAT_ID = "subtask_9cbf264d_t001"
 

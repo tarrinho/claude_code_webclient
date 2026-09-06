@@ -187,7 +187,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         response = await handler(request)
         if hasattr(response, "headers"):
             response.headers["X-Content-Type-Options"] = "nosniff"
-            # SAMEORIGIN, not DENY: the console frames its own supervisor page
+            # SAMEORIGIN, not DENY: the console frames its own orchestrator page
             # so it can sit beside the conversation list. The clickjacking
             # threat this header exists for is a *foreign* site framing us,
             # which SAMEORIGIN still refuses -- an attacker's page cannot be

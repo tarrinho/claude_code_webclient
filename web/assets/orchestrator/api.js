@@ -1,4 +1,4 @@
-// supervisor/api.js — CSRF and the fetch wrapper every module calls.
+// orchestrator/api.js — CSRF and the fetch wrapper every module calls.
 
 import { state } from "./state.js";
 import { $ } from "./dom.js";

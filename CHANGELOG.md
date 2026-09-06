@@ -127,10 +127,10 @@ churn.
   unused read-side twin, `system_sample_list`). Registry #91.
 - **`app.js` was loaded as three disconnected module instances at once**
   (`?v=35` from `index.html`, `?v=34` from six panel modules, `?v=32` from
-  `supervisor.js`) — a version drift a dedicated test exists to catch
+  `orchestrator.js`) — a version drift a dedicated test exists to catch
   (`test_qa_asset_module_versions.py`), already failing before this
   release. The browser keys an ES module by its resolved URL including the
-  query string, so Skills, Machines, Supervisor, Usage and the other
+  query string, so Skills, Machines, Orchestrator, Usage and the other
   affected panels were reading and writing an inert, disconnected copy of
   `app.js`'s shared `state`, not the one actually driving the page. Every
   reference now points at the same version. Registry #92.
@@ -140,7 +140,7 @@ churn.
 ### Added
 
 - **A live progress estimate on chat turns**, in the composer status line.
-  Same honest-fallback pattern already built for the supervisor pane's task
+  Same honest-fallback pattern already built for the orchestrator pane's task
   list: elapsed time (`"· 12s"`) until this conversation has at least one
   finished turn to estimate an average duration from, then a clamped
   `"· N% (est.)"` after that — labelled as an estimate because there is no
@@ -191,18 +191,18 @@ churn.
   still-unresolved failure of another (a single `degraded_reason` column
   still means a later kind's mark-then-clear can lose an earlier kind's
   record — documented as an accepted tradeoff, not a bug). Wired into all 9
-  known-silent failure sites (3 in usage recording, 6 in the supervisor
+  known-silent failure sites (3 in usage recording, 6 in the orchestrator
   engine). Surfaced as a small warning badge in both the chat sidebar and
-  the supervisor list, with the failure reason on hover. See
-  `docs/superpowers/specs/2026-09-04-supervisor-observability-design.md`.
-- **A dependency-ordered task rail above the supervisor pane's task list.**
-  Shows a supervisor's subtasks laid out by what depends on what — one
+  the orchestrator list, with the failure reason on hover. See
+  `docs/superpowers/specs/2026-09-04-orchestrator-observability-design.md`.
+- **A dependency-ordered task rail above the orchestrator pane's task list.**
+  Shows a orchestrator's subtasks laid out by what depends on what — one
   status dot per task, grouped into columns by dependency layer — as an
   overview strip above the existing flat, click-to-expand task list, which
   is unchanged.
-- **A topbar marker for whatever a supervisor is actually gated on.** One
+- **A topbar marker for whatever a orchestrator is actually gated on.** One
   always-visible indicator (survives every panel-maximize layout) that lights
-  up only when the supervisor is genuinely blocked on a person — paused, or
+  up only when the orchestrator is genuinely blocked on a person — paused, or
   a watched member conversation whose own status is "waiting" — rather than
   requiring a scan of the task list or the members panel to notice.
 
@@ -272,7 +272,7 @@ churn.
   re-rendering a just-deleted machine as still present. Concurrent readers
   now share one in-flight fetch and never clear good data on a failed
   refresh; Activate/Delete/Save force a fresh read afterwards.
-- **A fresh database crashed on the first supervisor, task or message it
+- **A fresh database crashed on the first orchestrator, task or message it
   ever tried to create.** The 8-module `db.py` extraction's own changelog
   entry above says "no schema changes" — true of intent, not of execution:
   `supervisors` was missing `config`/`plan`/`progress_pct`/`completed_at`
@@ -317,9 +317,9 @@ churn.
   whenever the backend is not an anthropic machine with a key. See rules.md
   registry #82.
 
-- **`web/assets/supervisor/list.js` interpolated a supervisor's id and status
+- **`web/assets/orchestrator/list.js` interpolated a orchestrator's id and status
   into the DOM unescaped**, in the one card-list template rendering every
-  supervisor — the sibling `renderChatMessages()` in the same file escapes
+  orchestrator — the sibling `renderChatMessages()` in the same file escapes
   every value it writes. Not exploitable today: both are server-controlled
   UUID/enum values, the same currently-inert shape as the `task.status` fix
   below. Wrapped in `esc()`. Registry #79 — and #86: wrapping `s.id` in
@@ -328,12 +328,12 @@ churn.
   `&`/`<`/`>`. Writing a real regression test for this found it: `esc()` now
   escapes `"`/`'` too, a no-op everywhere else it is already used.
 
-- **`supervisor.py`'s header comment still read "WebConsole 0.9.0"** against
+- **`orchestrator.py`'s header comment still read "WebConsole 0.9.0"** against
   a current `config.VERSION` of `0.10.4`. Cosmetic only; corrected.
 
-- **`task.status` reached the supervisor page's DOM unescaped**, twice, in
+- **`task.status` reached the orchestrator page's DOM unescaped**, twice, in
   both a CSS class and visible text. Not exploitable today — every value
-  written to it is one of a handful of literals the supervisor engine's own
+  written to it is one of a handful of literals the orchestrator engine's own
   control flow assigns, never raw model output — but it violated this
   project's own "every interpolated value is escaped" rule with nothing
   enforcing it, found during the same rules.md pass above. Wrapped in the
@@ -349,7 +349,7 @@ churn.
   existing `retrying` UI state, so no frontend change was needed. Discarded
   attempts still spent real tokens, so their usage is recorded too, via
   `runner.take_retried_usage`, in both `routes/chats.py` handlers and
-  `supervisor.py`'s `_record_usage`.
+  `orchestrator.py`'s `_record_usage`.
 
 ### Testing
 
@@ -382,7 +382,7 @@ churn.
   caught, since a mock of the function under test cannot fail alongside it.
   Mutation-verified.
 - **`tests/test_frontend_browser.py::SupervisorListEscapingBrowserTests`**,
-  new: seeds a supervisor directly into the database with a crafted id and
+  new: seeds a orchestrator directly into the database with a crafted id and
   status, and asserts on DOM structure rather than script execution —
   `Content-Security-Policy: script-src 'self'` blocks every inline handler
   regardless of escaping, so an execution-based assertion would have passed
@@ -433,7 +433,7 @@ churn.
 ### Fixed
 
 - **The chat list, the composer, and half of Settings were broken for every
-  user.** A concurrent split of `app.js` into `supervisor.js`,
+  user.** A concurrent split of `app.js` into `orchestrator.js`,
   `device-alerts.js`, `machines.js`, `usage.js`, `server-stats.js` left
   several names disconnected from their new homes: a whole function
   (`refreshSessions`) was deleted outright when two `import` statements
@@ -449,7 +449,7 @@ churn.
   Statistics, Server, Skills, App) ran with zero console errors.
   `previousFocus` moved onto the already-shared `state` object rather than
   staying a bare `let`, since it is written from both app.js and
-  supervisor.js and a plain `let` import is read-only from the importing
+  orchestrator.js and a plain `let` import is read-only from the importing
   side.
 
 ## [0.10.3] — 2026-09-02
@@ -625,7 +625,7 @@ churn.
   than from a line target. `web/assets/app.js` (3,010) is now the least-divided
   large file in the repository.
 
-  §13 also gains what the completed `supervisor.js` split actually cost, because
+  §13 also gains what the completed `orchestrator.js` split actually cost, because
   the chapter previously argued for more of them without a price: tests reading
   the file by path broke, a `?v=` assertion broke, `STATED` in
   `test_qa_version_consistency.py` had to be repointed because a version surface
@@ -647,8 +647,8 @@ churn.
 >
 > Bumped with `config.VERSION`, so this heading is the build rather than a claim
 > about one — §15a rule 1's ordering. All six stated surfaces moved in this one
-> commit, including `web/assets/supervisor/main.js`, which is where the version
-> string went when `supervisor.js` was split; `docs/threat-model.md` stays at
+> commit, including `web/assets/orchestrator/main.js`, which is where the version
+> string went when `orchestrator.js` was split; `docs/threat-model.md` stays at
 > 0.9.2 on purpose, because it records which build was analysed.
 
 ### Documentation
@@ -658,10 +658,10 @@ churn.
   totals, the 1.44:1 test-to-code ratio, and the two files that carry a
   disproportionate share — `app.py` at 35% of the server and
   `web/assets/app.js` at 30% of the client — measured against the 1,600-line
-  `supervisor.js` that 0.10.0 was judged worth splitting into ten modules.
+  `orchestrator.js` that 0.10.0 was judged worth splitting into ten modules.
 
   §9 had drifted enough to mislead. It listed three files that no longer exist
-  (`_setup_db.py`, `web/supervisor.js`, and `test_functional.py` at the
+  (`_setup_db.py`, `web/orchestrator.js`, and `test_functional.py` at the
   repository root), omitted two that do (`net_validation.py`, `start.sh`),
   reported 79 test files where there are 105, and understated every line count
   it gave — `app.py` as 5364 against 5787. Refreshing it was not optional once
@@ -742,7 +742,7 @@ churn.
 
 ## [0.10.1] — 2026-09-02
 
-> First two steps of `docs/superpowers/specs/2026-09-01-supervisor-next-design.md`,
+> First two steps of `docs/superpowers/specs/2026-09-01-orchestrator-next-design.md`,
 > landed in that document's own order. Both are prerequisites for the streaming
 > and budget work behind them, and both are useful on their own.
 
@@ -750,7 +750,7 @@ churn.
 
 - **`runner.stream_turn` now carries `owner` to backend resolution.** It is the
   fallback identity for a caller whose `chat_id` is not a row in `chats` — which
-  is exactly what the supervisor is, since `supervisor_<uuid>` and
+  is exactly what the orchestrator is, since `supervisor_<uuid>` and
   `subtask_<id>` are labels rather than conversations. Without it `get_backend`
   finds no routing row, the child process is handed no base URL and no API key,
   and the turn dies on *"Not logged in — Please run /login"*.
@@ -769,13 +769,13 @@ churn.
   deliberately: a regression here would otherwise be blamed on the streaming
   work that needs it.
 
-- **A supervisor turn's cost is recorded.** Usage is written by the *caller* —
+- **A orchestrator turn's cost is recorded.** Usage is written by the *caller* —
   `runner` collects the frames and hands them over through `take_last_usage`, and
-  `app.py` does this for every conversation turn. `supervisor.py` never did, so a
-  supervisor fanning out ten subtasks spent ten turns' worth of tokens and
+  `app.py` does this for every conversation turn. `orchestrator.py` never did, so a
+  orchestrator fanning out ten subtasks spent ten turns' worth of tokens and
   appeared in the usage tables as nothing at all.
 
-  Recorded with `origin="supervisor"` rather than the default `"web"`. The column
+  Recorded with `origin="orchestrator"` rather than the default `"web"`. The column
   exists so spend can be told apart by where it came from, and a fan-out is the
   case most worth separating: one request becoming a dozen turns without the user
   issuing a dozen prompts.
@@ -784,7 +784,7 @@ churn.
 
   - **A failed turn is recorded too.** A task that ran for two minutes and then
     errored has been paid for. Recording only successes would make the
-    cheapest-looking supervisor the one that fails most.
+    cheapest-looking orchestrator the one that fails most.
   - **Cost is charged once across models,** matching `app.py` — the CLI reports
     it for the whole turn, so attaching it per row would bill a two-model turn
     twice.
@@ -794,7 +794,7 @@ churn.
     `UnboundLocalError` over the real fault. This file has already lost one real
     error message to exactly that substitution.
 
-  Found while auditing what the supervisor could observe about itself, which is
+  Found while auditing what the orchestrator could observe about itself, which is
   the thesis of the design document: it was spending money it could not see.
 
 - **Opening a conversation on a phone no longer raises the on-screen keyboard.**
@@ -849,7 +849,7 @@ churn.
 
   Two decisions worth stating. The judgement is `app._asks_a_question`,
   server-side, and the client is told the answer rather than deciding it: that
-  helper already backs the supervisor panel's "?", and a second copy of the
+  helper already backs the orchestrator panel's "?", and a second copy of the
   heuristic in JavaScript would drift. And only assistant messages are marked —
   a user message ending in "?" is the user asking Claude, which needs nothing
   from the user.
@@ -863,14 +863,14 @@ churn.
 
 > A minor bump rather than a patch, because two of the changes below alter what
 > the software refuses rather than what it does: no path is exempt from
-> authentication any more, and a supervisor's tasks and messages are scoped to
+> authentication any more, and a orchestrator's tasks and messages are scoped to
 > their owner where they previously were not. Anything deployed from an earlier
 > 0.9.x is serving a cross-tenant read.
 
 ### Changed
 
 - **`classify_chat` and the terminal-session classifier are now symmetrical.**
-  Both halves of the supervisor feed answer the same question — is a person
+  Both halves of the orchestrator feed answer the same question — is a person
   needed here — but only one of them was a function. The other was a
   hundred-and-forty-line loop body inside `handle_supervisor`, and that
   asymmetry is why the two drifted: every rule the conversation path learned had
@@ -916,7 +916,7 @@ churn.
 
   That last one is the clearest argument for the order. Its globs were
   `web/*.js` and `web/assets/*.js`, neither recursive — so the planned move of
-  `web/supervisor.js` into `web/assets/supervisor/` would have silently dropped
+  `web/orchestrator.js` into `web/assets/orchestrator/` would have silently dropped
   it from the scan. Nothing would have failed. That glob had been widened in the
   first place *because* this file was the one outside it, holding a bare
   `setInterval` that survived the sweep meant to remove every one.
@@ -948,14 +948,14 @@ churn.
   refusals: abort if collection is empty, and abort if the chunk plan count
   differs from the collected count.
 
-- **The supervisor UX suite moved onto playwright.**
+- **The orchestrator UX suite moved onto playwright.**
   `tests/test_qa_supervisor_ux_shortcuts.py` drove `chromium --headless
   --dump-dom` directly and shared one browser launch across all 28 tests. Both
   were wrong. It depended on Chromium choosing to exit, and when it stopped
   doing so on this page every test failed on a 180s timeout — with one probe
   feeding all of them, a single hang reported 27 failures with one cause.
   Confirmed a harness fault rather than a page one: the HTML alone exits in 1s,
-  the HTML plus `supervisor.js` hangs, and both files were byte-identical to
+  the HTML plus `orchestrator.js` hangs, and both files were byte-identical to
   when the suite passed. It now uses the same guarded playwright fixture as the
   rest of the browser suite, with a page per test, and needs no server —
   `page.route` fulfils the document, the script and the API. 28 passed in ~43s.
@@ -1176,7 +1176,7 @@ churn.
   first and looked like ordinary fixture rot.
 
 - **A finished agent is no longer reported as one blocked on a question.** The
-  supervisor tested `status != "busy"`, and Claude Code 2.1.252 writes three
+  orchestrator tested `status != "busy"`, and Claude Code 2.1.252 writes three
   values into `~/.claude/sessions/<pid>.json`, not one:
 
       busy     working
@@ -1212,12 +1212,12 @@ churn.
 
 ### Security
 
-- **Any account could read any supervisor's tasks and messages.**
+- **Any account could read any orchestrator's tasks and messages.**
   `GET /api/supervisors/{id}/tasks` and `.../messages` returned another
   account's task titles, descriptions and results — agent output — and its whole
-  message history, to any authenticated caller who knew or guessed a supervisor
+  message history, to any authenticated caller who knew or guessed a orchestrator
   id. Confirmed by exploit before it was fixed: one user logged in, requested
-  another's supervisor by id, and got HTTP 200 with the contents.
+  another's orchestrator by id, and got HTTP 200 with the contents.
 
   The cause is worth stating precisely, because the code read correctly.
   `db.supervisor_tasks_get(supervisor_id, owner_id)` and
@@ -1231,7 +1231,7 @@ churn.
 
   Two more things fell out of the same functions. `after_id` was accepted and
   ignored, with the `if after_id is not None` branch holding two
-  byte-identical bodies — so the supervisor's SSE poller re-sent the same first
+  byte-identical bodies — so the orchestrator's SSE poller re-sent the same first
   hundred messages for ever, and the dead branch is what made it look
   deliberate. And the SSE handler had two further inline copies of the messages
   query, neither owner-filtered, safe only by virtue of the ownership check
@@ -1261,7 +1261,7 @@ churn.
   from exactly this by putting it after a `--` sentinel "where a leading dash
   cannot be mistaken for a CLI flag", and the model had no equivalent.
   `config.valid_model_id()` now requires an alphanumeric first character and
-  caps the length, from one definition shared by `app.py` and `supervisor.py`.
+  caps the length, from one definition shared by `app.py` and `orchestrator.py`.
   A rejected plan model logs and falls back to the backend's choice, which is
   what a plan with no `[:model]` already gets. `claude-opus-5[1m]` still
   validates — the CLI documents that suffix, and a fix that broke it would have
@@ -1269,8 +1269,8 @@ churn.
 
 - **`docs/threat-model.md` now covers the surfaces it said it did not.** The
   document analysed 0.7.2 and carried a note naming three uncovered surfaces:
-  the supervisor orchestration API, the host statistics endpoints and the
-  supervisor SSE stream. §5a covers those plus the two added since — API tokens
+  the orchestrator orchestration API, the host statistics endpoints and the
+  orchestrator SSE stream. §5a covers those plus the two added since — API tokens
   and the question-dismiss route — as F-21 to F-24. F-23 (host facts readable
   by any authenticated account, no admin gate) and F-24 (tokens outside the
   login rate limiter; the dismiss route as a new sink for F-02's targeting
@@ -1316,13 +1316,13 @@ churn.
 
 ### Added
 
-- **Supervisor pause / resume.** A supervisor that is planning or running can be
+- **Orchestrator pause / resume.** A orchestrator that is planning or running can be
   put on hold and resumed later. The button sits in the chat panel header; it
   shows pause while running and play while paused. The engine respects a
   ``_wait_if_paused`` guard so it stops spinning but still persists progress
   every two seconds so the UI does not look stale.
 
-- **Recency sort for the supervisor list.** A toggle button (``⇅``) cycles
+- **Recency sort for the orchestrator list.** A toggle button (``⇅``) cycles
   between newest-first and last-active, so recently-used supervisors stay at
   the top. The choice persists in ``localStorage`` under ``wc_supervisor_sort``.
 
@@ -1336,7 +1336,7 @@ churn.
 - **Auto-grow composer.** The prompt textarea starts at 38 px and expands up to
   200 px as the user types, so long prompts fit without swallowing the chat.
 
-- **Supervisor list shows last-activity time.** When a supervisor's
+- **Orchestrator list shows last-activity time.** When a orchestrator's
   ``updated_at`` differs from ``created_at`` the list item renders
   ``· 3 days ago`` alongside the status badge.
 
@@ -1373,11 +1373,11 @@ churn.
   sends nothing, because calling it "Don't answer" there would promise a
   session had been let go while it is still sitting on the prompt.
 
-- **Five supervisor UX affordances.** Keyboard shortcuts (`Ctrl`/`Alt`+`Enter`
-  to send, `Ctrl`+`N` for a new supervisor, `Escape` to close a banner, `1`–`4`
+- **Five orchestrator UX affordances.** Keyboard shortcuts (`Ctrl`/`Alt`+`Enter`
+  to send, `Ctrl`+`N` for a new orchestrator, `Escape` to close a banner, `1`–`4`
   to focus a panel), expandable task rows that show a task's result inline
   instead of only in the right panel, an unread badge in the top bar, a pulse on
-  a supervisor's status badge when its status changes, and a goal banner that
+  a orchestrator's status badge when its status changes, and a goal banner that
   shrinks to a slim strip once streamed output pushes it above the fold, with an
   arrow to expand it again.
 
@@ -1389,7 +1389,7 @@ churn.
   `<div>`s, a silent no-op without `tabindex`, so three of the four did nothing
   even outside the composer. The restore arrow cleared the shrink flag but not
   the reason for it, so the next streamed message re-shrank the banner the user
-  had just expanded — about a second on a live supervisor, so the control looked
+  had just expanded — about a second on a live orchestrator, so the control looked
   inert. The unread badge counted log events only, missing chat messages, which
   is the one thing anyone actually misses while scrolled up. And the expand
   toggle's CSS was scoped under `.task-detail-row` while the button lives in
@@ -1475,7 +1475,7 @@ churn.
     the redirect target, which is the property the test is named for and is
     immune to concurrent writers.
 
-- **The supervisor page's 30-second poller can be stopped.** It was a bare
+- **The orchestrator page's 30-second poller can be stopped.** It was a bare
   `setInterval` — no handle, no teardown — which rules.md §4 names as *the*
   failure case. It now holds `_refreshTimer`, guards re-entry with
   `if (!_refreshTimer)`, and clears on `pagehide`. The guard matters beyond the
@@ -1486,7 +1486,7 @@ churn.
   Worth recording is why it survived. The sweep that fixed every other bare
   timer (`3a68c5c`, "hold every repeating timer"), §4's verification command,
   and `tests/test_qa_timer_handles.py` had all inherited the same glob —
-  `web/assets/*.js` — and `web/supervisor.js` is the one client script that
+  `web/assets/*.js` — and `web/orchestrator.js` is the one client script that
   lives directly in `web/`. So three apparently independent confirmations that
   the rule held were a single blind spot counted three times. All three globs
   were widened; the test additionally pins its own **scope**, because the scope
@@ -1494,11 +1494,11 @@ churn.
 
 ### Testing
 
-- **The supervisor UX affordances are covered in a real browser.**
+- **The orchestrator UX affordances are covered in a real browser.**
   `tests/test_qa_supervisor_ux_shortcuts.py` loads the actual page in headless
   Chromium and drives it the way a user does — real clicks, real keystrokes,
   real scrolls, and real stream frames pushed through the `window._supervisorSSE`
-  the page already exports. `supervisor.js` is an IIFE, so nothing inside is
+  the page already exports. `orchestrator.js` is an IIFE, so nothing inside is
   reachable by name, which is the point: the tests can only use the handles a
   user has. One of them asks the browser for the toggle's computed `cursor`,
   because a CSS rule scoped to the wrong ancestor is invisible to any check that
@@ -1524,7 +1524,7 @@ churn.
 
   The exemption was **debug scaffolding of mine that nobody meant to ship.** I
   added it, uncommitted, on 2026-08-31 at 18:11 alongside a throwaway
-  `/dev/supervisor-trigger` endpoint used to reproduce a supervisor failure.
+  `/dev/orchestrator-trigger` endpoint used to reproduce a orchestrator failure.
   Twenty-eight minutes later `1f7c914` — a commit about pause/resume, recency
   sort and member heartbeat — swept both into itself; `dc85305` then removed the
   endpoint and left the exemption behind. A later session found the orphaned
@@ -1564,8 +1564,8 @@ churn.
 
 ### Fixed
 
-- **Supervisor turns crashed Claude Code with "session ID not UUID".**
-  The supervisor passed synthetic identifiers (`supervisor_xxx`, `subtask_xxx`)
+- **Orchestrator turns crashed Claude Code with "session ID not UUID".**
+  The orchestrator passed synthetic identifiers (`supervisor_xxx`, `subtask_xxx`)
   to Claude Code's `--resume` flag, which only accepts real UUID session IDs.
   Added a UUID-format guard in `runner.py` and `claude_proxy.py`: `--resume`
   is used only when the session_id matches the UUID pattern; synthetic IDs fall
@@ -1776,7 +1776,7 @@ churn.
     0–100, without which a box idling at 3% CPU draws a line across the top
     of the chart — a truthful shape and a completely misleading picture.
 
-- **Supervisor orchestration engine** (`supervisor.py` / `SupervisorEngine`): a
+- **Orchestrator orchestration engine** (`orchestrator.py` / `SupervisorEngine`): a
   multi-agent planning and execution layer. A free-text user prompt is parsed
   into a structured task DAG by `PlanParser` (extracts tasks from
   `<<PLAN>>`…`>>` markers, resolves self- and cross-refs, assigns per-task
@@ -1788,21 +1788,21 @@ churn.
   A task-level SSE endpoint (`/api/supervisors/{id}/tasks/{taskId}/stream`)
   lets clients follow individual subtasks.
 
-- **Supervisor CRUD, task and message tables** in the database. New `supervisor`
-  column on the `chats` table. Tables `supervisor_tasks` (per-supervisor task
+- **Orchestrator CRUD, task and message tables** in the database. New `orchestrator`
+  column on the `chats` table. Tables `supervisor_tasks` (per-orchestrator task
   records with status, dependencies, model, progress),
   `supervisor_messages` (task-level messages), and `agent_sessions` (agent
   registry / blocking questions) are all created at startup.
 
-- **Supervisor management endpoints**: POST /api/supervisors (create + start),
+- **Orchestrator management endpoints**: POST /api/supervisors (create + start),
   GET /api/supervisors (list), PATCH /api/supervisors/{id} (rename / update
   config), DELETE /api/supervisors/{id} (remove). POST
   /api/supervisors/{id}/send (submit a new prompt). SSE streams at
   /api/supervisors/{id}/stream (all events) and
   /api/supervisors/{id}/tasks/{taskId}/stream (single-task).
 
-- **Supervisor mode selector** in the chat form, supervisor dashboard page
-  (`supervisor.html`), and the sidebar supervisor list. A supervisor card shows
+- **Orchestrator mode selector** in the chat form, orchestrator dashboard page
+  (`orchestrator.html`), and the sidebar orchestrator list. A orchestrator card shows
   live progress bars for each subtask.
 
 ### Fixed
@@ -1813,9 +1813,9 @@ churn.
 
 ### Testing
 
-- **Supervisor pipeline stages** in `tests/test_pipeline_audit.py` verify task
+- **Orchestrator pipeline stages** in `tests/test_pipeline_audit.py` verify task
   graph construction, dependency resolution, model assignment rules, progress
-  tracking, PlanParser robustness, and the supervisor engine's start+send+stream
+  tracking, PlanParser robustness, and the orchestrator engine's start+send+stream
   endpoints.
 
 ---
@@ -1864,7 +1864,7 @@ churn.
   loop". Resources are now released with `addCleanup` and `addClassCleanup`,
   registered as they are acquired, so a failure can no longer escape with them.
   The suite is 1405 passed, 0 failed, twice in a row.
-- **The browser tests read the developer's own Claude sessions.** `/api/supervisor`
+- **The browser tests read the developer's own Claude sessions.** `/api/orchestrator`
   merges the live CLI sessions under `~/.claude`, and the test server inherited
   the real `HOME` — so its "waiting agents" count reflected whatever other
   agents on the machine were doing. Since a device alert fires only on a *rise*
@@ -1908,7 +1908,7 @@ churn.
   started it, so `running` on the server side is insufficient — conversations
   linked to live terminals need their own indicator. The sidebar now shows a
   busy dot for sessions whose Claude Code process reports `"busy"` in
-  `~/.claude/sessions/<pid>.json`, read from the status field the supervisor
+  `~/.claude/sessions/<pid>.json`, read from the status field the orchestrator
   already trusts.
 
 - **Explicit Stop endpoint** (`POST /api/chats/{id}/stop`). When a turn
@@ -1925,7 +1925,7 @@ churn.
   Kept separate from the flat `/api/usage` table so the common read does not pay
   for the rare one.
 
-- **Supervisor module** (`supervisor.py`): read/write the agent session
+- **Orchestrator module** (`orchestrator.py`): read/write the agent session
   registry, stream live session updates, list and manage blocking questions,
   and message agents back. Agents that have asked a question and are waiting are
   surfaced so a stalled agent is visible instead of silently idle.
@@ -2104,7 +2104,7 @@ silently reused. Everything previously under *Unreleased* ships here.
 
 ### Added
 
-- **A supervisor that says which agents are waiting on you.** Surfaces sessions
+- **A orchestrator that says which agents are waiting on you.** Surfaces sessions
   that have asked a question and are blocked, so a stalled agent is visible
   instead of silently idle.
 - **Terminal usage folded into the Usage tab.** Turns run in a terminal never
@@ -2145,7 +2145,7 @@ are in the current tree.
 
 ### Added
 
-- Supervisor coverage and browser tests for the conversation list, the question
+- Orchestrator coverage and browser tests for the conversation list, the question
   flow and usage logging — 969 lines across nine test files.
 - The `auth.py` half of durable sessions. **This is the one piece that did not
   make it**, and it was not the stash's fault: see the correction under

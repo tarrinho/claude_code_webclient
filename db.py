@@ -522,10 +522,10 @@ async def init() -> None:
             created_at     TEXT NOT NULL,
             updated_at     TEXT NOT NULL DEFAULT ''
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_tasks_super
+        CREATE INDEX IF NOT EXISTS idx_orch_tasks_super
             ON orchestrator_tasks(orchestrator_id);
-        -- idx_sup_tasks_sup (on priority) is created after
-        -- _ensure_supervisor_columns runs, not here: CREATE TABLE IF NOT
+        -- idx_orch_tasks_sup (on priority) is created after
+        -- _ensure_orchestrator_columns runs, not here: CREATE TABLE IF NOT
         -- EXISTS is a no-op against a database that already had this table
         -- before `priority` was added to it, so an index referencing that
         -- column in the same script crashed db.init() outright on any such
@@ -544,7 +544,7 @@ async def init() -> None:
             metadata      TEXT,
             created_at    TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_msgs_sup ON orchestrator_messages(orchestrator_id, id);
+        CREATE INDEX IF NOT EXISTS idx_orch_msgs_sup ON orchestrator_messages(orchestrator_id, id);
 
         -- No surrogate id: the composite primary key IS the uniqueness
         -- constraint routes/db_orchestrators.py's supervisor_member_add
@@ -560,9 +560,9 @@ async def init() -> None:
             added_at      TEXT NOT NULL,
             PRIMARY KEY (orchestrator_id, chat_id)
         );
-        CREATE INDEX IF NOT EXISTS idx_sup_members_sup
+        CREATE INDEX IF NOT EXISTS idx_orch_members_sup
             ON orchestrator_members(orchestrator_id, chat_id);
-        CREATE INDEX IF NOT EXISTS idx_sup_members_chat
+        CREATE INDEX IF NOT EXISTS idx_orch_members_chat
             ON orchestrator_members(chat_id);
 
         -- Orchestrator progress: the latest state snapshot for each
@@ -600,7 +600,7 @@ async def init() -> None:
     """)
     await _ensure_chat_columns()
     await _ensure_usage_columns()
-    await _ensure_supervisor_columns()
+    await _ensure_orchestrator_columns()
     await db_conn.commit()
 
     # Retention pruning. Imported directly rather than via db.usage_prune /
@@ -640,7 +640,7 @@ async def _admin_actions_prune(keep_days: int) -> None:
     await db_conn.commit()
 
 
-async def _ensure_supervisor_columns() -> None:
+async def _ensure_orchestrator_columns() -> None:
     """Apply additive orchestrator/orchestrator_tasks schema migrations for
     existing databases, then create the indexes that depend on them.
 
@@ -706,7 +706,7 @@ async def _ensure_supervisor_columns() -> None:
         if name not in columns:
             await db_conn.execute(sql)
     await db_conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sup_tasks_sup "
+        "CREATE INDEX IF NOT EXISTS idx_orch_tasks_sup "
         "ON orchestrator_tasks(orchestrator_id, priority DESC)"
     )
 

@@ -47,11 +47,11 @@ from routes.chats import router as chats_router
 from routes.machines import router as machines_router
 from routes.machines_tunnel import router as machines_tunnel_router
 
-# _resolve_member (a supervisors helper) adopts a session by calling the
+# _resolve_member (an orchestrators helper) adopts a session by calling the
 # sessions route's handler, so this crosses prefixes. It travels to
-# routes/supervisors.py with that helper when the prefix is extracted.
+# routes/orchestrators.py with that helper when the prefix is extracted.
 from routes.misc import router as misc_router
-from routes.supervisors import router as supervisors_router
+from routes.orchestrators import router as orchestrators_router
 
 
 # loguru keeps its own sinks, entirely separate from logging.conf, so
@@ -274,11 +274,11 @@ async def handle_login_page(request: Request):
         return HTMLResponse("<h1>Login template missing</h1>", status_code=500)
 
 
-async def handle_supervisor_page(request: Request):
+async def handle_orchestrator_page(request: Request):
     try:
-        return HTMLResponse((_WEB_DIR / "supervisor.html").read_text())
+        return HTMLResponse((_WEB_DIR / "orchestrator.html").read_text())
     except FileNotFoundError:
-        return HTMLResponse("<h1>Supervisor template missing</h1>", status_code=500)
+        return HTMLResponse("<h1>Orchestrator template missing</h1>", status_code=500)
 
 
 # ── App ──────────────────────────────────────────────────────────────────────────
@@ -393,7 +393,7 @@ app = FastAPI(title="WebConsole", version=config.VERSION, lifespan=lifespan)
 app.include_router(machines_tunnel_router)
 app.include_router(machines_router)
 app.include_router(chats_router)
-app.include_router(supervisors_router)
+app.include_router(orchestrators_router)
 app.include_router(misc_router)
 
 app.add_middleware(
@@ -460,32 +460,32 @@ _MACHINE_PORT_RE = re.compile(r"^(?:0|[1-9]\d{0,4})$")
 # ── Session routes ─────────────────────────────────────────────────────────────────
 
 
-# Two paths, one page. "/supervisor.html" is what index.html's iframe and its
-# standalone fallback both ask for, so it cannot move; "/supervisor" is what
+# Two paths, one page. "/orchestrator.html" is what index.html's iframe and its
+# standalone fallback both ask for, so it cannot move; "/orchestrator" is what
 # anyone types or bookmarks, and it 404'd. Served directly rather than
 # redirected, matching how "/" and "/login" already serve their templates.
 # Relative asset resolution is the same from both: with no trailing slash the
-# base is "/", so "supervisor.js" resolves to "/supervisor.js" either way.
-@app.get("/supervisor")
-@app.get("/supervisor.html")
-async def _serve_supervisor_page(request: Request):
-    return await handle_supervisor_page(request)
+# base is "/", so "orchestrator.js" resolves to "/orchestrator.js" either way.
+@app.get("/orchestrator")
+@app.get("/orchestrator.html")
+async def _serve_orchestrator_page(request: Request):
+    return await handle_orchestrator_page(request)
 
 
-# `_serve_supervisor_js` was here. The supervisor script lived in web/ rather
+# `_serve_orchestrator_js` was here. The orchestrator script lived in web/ rather
 # than web/assets/, so nothing served it and this route existed to read the file
 # and set `application/javascript` by hand -- browsers enforce strict MIME
 # checking on scripts, and served as text/html it was refused outright, leaving
 # the page rendering its markup with none of its behaviour.
 #
-# The script now lives under web/assets/supervisor/, which StaticFiles already
+# The script now lives under web/assets/orchestrator/, which StaticFiles already
 # mounts, so the MIME type is correct without a route. Its old location is also
 # why the section-4 timer scan globbed the wrong directory and missed a bare
 # timer for a whole sweep: a file outside the directory everything else lives in
 # is invisible to every check written against that directory.
 #
-# `_serve_supervisor_page` below stays. StaticFiles is mounted on /assets only,
-# so "/supervisor" and "/supervisor.html" still need a route of their own.
+# `_serve_orchestrator_page` below stays. StaticFiles is mounted on /assets only,
+# so "/orchestrator" and "/orchestrator.html" still need a route of their own.
 
 
 # ── Machine routes ─────────────────────────────────────────────────────────────────

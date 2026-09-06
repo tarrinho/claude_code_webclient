@@ -83,32 +83,32 @@ button{touch-action:manipulation}
 .chat-item[draggable="true"]{cursor:grab}
 .chat-item.dragging{opacity:.5;cursor:grabbing}
 .chat-item.dragging .chat-actions{visibility:hidden}
-/* Supervisor: which agents are blocked on the user. Sits above everything
+/* Orchestrator: which agents are blocked on the user. Sits above everything
    because it is the one section that is about now rather than about history. */
-.supervisor-label{display:flex;align-items:center;gap:6px;color:var(--warn)}
-.supervisor-badge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--warn);color:#0d1117;font:700 11px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center}
-.supervisor-item{box-shadow:inset 2px 0 var(--warn)}
-.supervisor-open{margin-left:auto;min-width:26px;min-height:26px;font-size:13px;line-height:1}
-.supervisor-open:hover,.supervisor-open:focus-visible{color:var(--accent);background:var(--line)}
+.orchestrator-label{display:flex;align-items:center;gap:6px;color:var(--warn)}
+.orchestrator-badge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--warn);color:#0d1117;font:700 11px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center}
+.orchestrator-item{box-shadow:inset 2px 0 var(--warn)}
+.orchestrator-open{margin-left:auto;min-width:26px;min-height:26px;font-size:13px;line-height:1}
+.orchestrator-open:hover,.orchestrator-open:focus-visible{color:var(--accent);background:var(--line)}
 /* With the link present the clear control no longer needs to push itself
    right -- the two sit together at the end of the heading. */
-.supervisor-open + .supervisor-clear{margin-left:0}
-.supervisor-clear{margin-left:auto;min-width:26px;min-height:26px;font-size:13px;line-height:1}
-.supervisor-clear:hover,.supervisor-clear:focus-visible{color:var(--fg);background:var(--line)}
+.orchestrator-open + .orchestrator-clear{margin-left:0}
+.orchestrator-clear{margin-left:auto;min-width:26px;min-height:26px;font-size:13px;line-height:1}
+.orchestrator-clear:hover,.orchestrator-clear:focus-visible{color:var(--fg);background:var(--line)}
 /* Per-row dismiss. Dimmed rather than hidden: this sidebar is read on a phone,
    where there is no hover, and a control that only appears on one does not
    exist. Same treatment .chat-actions already gets. */
-.supervisor-dismiss{flex:0 0 auto;opacity:.55;font-size:13px;line-height:1}
-.supervisor-dismiss:hover,.supervisor-dismiss:focus-visible{opacity:1;color:var(--fg);background:var(--line)}
-.supervisor-dot{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--warn);vertical-align:middle}
+.orchestrator-dismiss{flex:0 0 auto;opacity:.55;font-size:13px;line-height:1}
+.orchestrator-dismiss:hover,.orchestrator-dismiss:focus-visible{opacity:1;color:var(--fg);background:var(--line)}
+.orchestrator-dot{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--warn);vertical-align:middle}
 /* Trails the title rather than leading it: the dot marks the row, this marks
    what kind of row it is, and reading order should reach the name first. */
-.supervisor-asks{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;background:var(--warn);color:var(--bg);font:700 10px/16px ui-monospace,SFMono-Regular,Consolas,monospace;vertical-align:middle}
+.orchestrator-asks{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;background:var(--warn);color:var(--bg);font:700 10px/16px ui-monospace,SFMono-Regular,Consolas,monospace;vertical-align:middle}
 /* Same warning colour as the panel's "?" so the two read as one signal, but
    spelled out: in the conversation there is room for words, and the row it
    marks is the one still owed an answer. */
 .msg-asks{display:inline-block;align-self:flex-start;margin-top:4px;padding:1px 7px;border-radius:8px;background:var(--warn);color:var(--bg);font:700 10px/16px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.02em}
-.supervisor-note{padding:2px 10px 8px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
+.orchestrator-note{padding:2px 10px 8px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 .sidebar-empty{padding:24px 12px;text-align:center;color:var(--muted);font-size:12px}
 /* Collapsed sections: archived chats and CLI sessions stay reachable without
    pushing the active conversations off screen. */
@@ -665,25 +665,25 @@ button{touch-action:manipulation}
 .srv-meter-bad{background:var(--bad)}
 .srv-host,.srv-note{margin:0;font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);overflow-wrap:anywhere}
 
-/* Supervisor, embedded in the conversation area. It is a whole page of its own,
+/* Orchestrator, embedded in the conversation area. It is a whole page of its own,
    so it is framed rather than ported -- and framing keeps the sidebar, which is
    the point: you can see which agents are waiting while you work in it. */
-.supervisor-pane{display:flex;flex-direction:column;background:var(--bg)}
+.orchestrator-pane{display:flex;flex-direction:column;background:var(--bg)}
 #supervisorPane.open{
   position:absolute;
   inset:0;
   z-index:10;
   /* When open, all other .main children are hidden via the hidden attribute
-     so the supervisor fills the entire right-side panel. */
+     so the orchestrator fills the entire right-side panel. */
 }
-.supervisor-pane[hidden]{display:none}
-.supervisor-pane-bar{display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
-.supervisor-pane-title{flex:1;font:600 12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.orchestrator-pane[hidden]{display:none}
+.orchestrator-pane-bar{display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.orchestrator-pane-title{flex:1;font:600 12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
 #supervisorFrame{flex:1;width:100%;border:0;background:var(--bg)}
 
 /* A failing agent reads as a failure, not as a question waiting on you. */
-.supervisor-item.failed{box-shadow:inset 2px 0 var(--bad)}
-.supervisor-item.failed .supervisor-dot{background:var(--bad)}
+.orchestrator-item.failed{box-shadow:inset 2px 0 var(--bad)}
+.orchestrator-item.failed .orchestrator-dot{background:var(--bad)}
 
 /* ── SSH Proxy badge ───────────────────────────────────────────── */
 .machine-badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700;letter-spacing:.5px;cursor:pointer;user-select:none}

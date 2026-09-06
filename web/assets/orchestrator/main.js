@@ -1,4 +1,4 @@
-// supervisor/main.js — Supervisor orchestration UI.
+// orchestrator/main.js — Orchestrator orchestration UI.
 //
 // An ES module rather than an IIFE: a module has its own scope, so the
 // wrapper that used to provide one is gone. It lives under /assets/ so
@@ -35,7 +35,7 @@
 
   // Expanded task row: only one detail row open at a time.
 
-  // Track previous supervisor statuses so we can flash badges on change.
+  // Track previous orchestrator statuses so we can flash badges on change.
 
   // ── Panel sizing state ──────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
 
   // Expanded task row: only one detail row open at a time.
 
-  // Track previous supervisor statuses so we can flash badges on change.
+  // Track previous orchestrator statuses so we can flash badges on change.
 
   // ── Escape HTML ─────────────────────────────────────────────────────
   // The div.textContent round-trip escapes &, < and > -- enough for a text
@@ -155,7 +155,7 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
         sendPrompt();
         return;
       }
-      // New supervisor. Both cases, so Shift does not swallow it.
+      // New orchestrator. Both cases, so Shift does not swallow it.
       if (e.ctrlKey && (e.key === "n" || e.key === "N")) {
         e.preventDefault();
         createSupervisor();
@@ -181,7 +181,7 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
       .getElementById("addMembersBtn")
       ?.addEventListener("click", () => {
         if (state.activeSupervisorId) openMembersPicker(state.activeSupervisorId);
-        else membersNotice("Pick a supervisor first.", true);
+        else membersNotice("Pick a orchestrator first.", true);
       });
     el.completionCloseBtn?.addEventListener("click", dismissCompletionBanner);
     el.pauseResumeBtn?.addEventListener("click", togglePauseResume);
@@ -199,18 +199,18 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
     // Panel resize
     initResizeHandles();
 
-    // Load initial supervisor list
+    // Load initial orchestrator list
     loadSupervisors();
 
     // Refresh every 30s. The list refresh is deliberately outside the guard:
     // it used to sit inside it, so with nothing selected -- the state the page
-    // opens in -- the list never updated at all, and a supervisor created
+    // opens in -- the list never updated at all, and a orchestrator created
     // anywhere else appeared only after a manual reload. Tasks genuinely need
-    // an active supervisor; the list does not.
+    // an active orchestrator; the list does not.
     // Guarded, not merely assigned: `init()` runs on DOMContentLoaded, which
     // fires once per document today -- but that is a property of where the call
     // sits rather than of the code, and this page is loaded in an iframe whose
-    // `src` the console resets each time the supervisor pane opens. The guard
+    // `src` the console resets each time the orchestrator pane opens. The guard
     // makes a second `init()` idempotent instead of doubling the poll rate.
     if (!state._refreshTimer) {
       state._refreshTimer = setInterval(() => {
@@ -219,7 +219,7 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
           loadTasks();
           // Members have no SSE push of their own (unlike tasks, which
           // arrive over the stream) -- without this the gate marker's view
-          // of who is "waiting" would only ever refresh when a supervisor is
+          // of who is "waiting" would only ever refresh when a orchestrator is
           // first opened or the add/remove picker is used.
           loadMembers(state.activeSupervisorId);
         }

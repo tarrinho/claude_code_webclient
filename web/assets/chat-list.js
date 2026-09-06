@@ -126,8 +126,8 @@ export function createChatListController(dependencies) {
   // cleared the moment you send into it again rather than by opening it.
   let endedIds = new Set();
   let historyEntries = [];
-  // {waiting: [...], working: [...]} from GET /api/supervisor.
-  let supervisor = {waiting: [], working: []};
+  // {waiting: [...], working: [...]} from GET /api/orchestrator.
+  let orchestrator = {waiting: [], working: []};
   let dragging = null;
 
   // Persist the order of one section. Sends the whole section rather than a
@@ -401,9 +401,9 @@ export function createChatListController(dependencies) {
         makeButton('Continue in terminal', 'terminal', chat.id, chat.title),
         // Placed with the routing actions rather than the ordering ones: it
         // changes where this conversation is watched from, not where it sits
-        // in the list. The supervisor list is fetched on click rather than
+        // in the list. The orchestrator list is fetched on click rather than
         // built here, so a sidebar render costs no request.
-        makeButton('Add to supervisor', 'add-to-supervisor', chat.id, chat.title),
+        makeButton('Add to orchestrator', 'add-to-orchestrator', chat.id, chat.title),
         makeButton(
           chat.archived ? 'Restore' : 'Archive',
           chat.archived ? 'restore' : 'archive',
@@ -563,13 +563,13 @@ export function createChatListController(dependencies) {
     const nothingToShow = !waiting.length && !working.length && !updated.length;
 
     const heading = document.createElement('button');
-    heading.className = 'chat-section-label supervisor-label';
+    heading.className = 'chat-section-label orchestrator-label';
     heading.type = 'button';
-    heading.dataset.action = 'open-supervisor';
-    heading.appendChild(document.createTextNode('Supervisor'));
+    heading.dataset.action = 'open-orchestrator';
+    heading.appendChild(document.createTextNode('Orchestrator'));
     if (waiting.length) {
       const badge = document.createElement('span');
-      badge.className = 'supervisor-badge';
+      badge.className = 'orchestrator-badge';
       badge.textContent = String(waiting.length);
       // "needs you" rather than "waiting for you": the feed now also holds
       // agents that have finished, and those are not waiting on anything.
@@ -583,18 +583,18 @@ export function createChatListController(dependencies) {
     }
     const open = document.createElement('button');
     open.type = 'button';
-    open.className = 'chat-action supervisor-open';
-    open.dataset.action = 'open-supervisor';
+    open.className = 'chat-action orchestrator-open';
+    open.dataset.action = 'open-orchestrator';
     open.textContent = '↗';
-    open.title = 'Open the supervisor';
-    open.setAttribute('aria-label', 'Open the supervisor');
+    open.title = 'Open the orchestrator';
+    open.setAttribute('aria-label', 'Open the orchestrator');
     heading.appendChild(open);
 
     if (waiting.length || updated.length) {
       const clear = document.createElement('button');
       clear.type = 'button';
-      clear.className = 'chat-action supervisor-clear';
-      clear.dataset.action = 'clear-supervisor';
+      clear.className = 'chat-action orchestrator-clear';
+      clear.dataset.action = 'clear-orchestrator';
       clear.textContent = '✕';
       clear.title = 'Clear all alerts';
       clear.setAttribute('aria-label', 'Clear all alerts');
@@ -608,7 +608,7 @@ export function createChatListController(dependencies) {
       // Deliberately not draggable: these rows are a view onto other sections,
       // and a drop here would ask the reorder handler to place a conversation
       // in a container that does not own the ordering.
-      item.className = 'chat-item supervisor-item'
+      item.className = 'chat-item orchestrator-item'
         + (entry.reason === 'failed' ? ' failed' : '');
 
       const open = document.createElement('button');
@@ -621,7 +621,7 @@ export function createChatListController(dependencies) {
       const title = document.createElement('div');
       title.className = 'chat-title';
       const dot = document.createElement('span');
-      dot.className = 'supervisor-dot';
+      dot.className = 'orchestrator-dot';
       dot.setAttribute('aria-label', 'Waiting for you');
       title.append(dot, document.createTextNode(entry.title || entry.id));
       // A "?" only where there is a question to answer. Every row in this
@@ -630,7 +630,7 @@ export function createChatListController(dependencies) {
       // that failed, stalled, or simply stopped talking.
       if (entry.question) {
         const asks = document.createElement('span');
-        asks.className = 'supervisor-asks';
+        asks.className = 'orchestrator-asks';
         asks.textContent = '?';
         asks.title = 'This one asked you a question';
         asks.setAttribute('aria-label', 'Has a question');
@@ -669,7 +669,7 @@ export function createChatListController(dependencies) {
       const label = entry.title || entry.id;
       const dismiss = document.createElement('button');
       dismiss.type = 'button';
-      dismiss.className = 'chat-action supervisor-dismiss';
+      dismiss.className = 'chat-action orchestrator-dismiss';
       dismiss.dataset.action = 'dismiss-agent';
       dismiss.dataset.agentKind = entry.kind;
       dismiss.dataset.agentId = entry.id;
@@ -686,7 +686,7 @@ export function createChatListController(dependencies) {
     if (updated.length) quiet.push(`${updated.length} with new output`);
     if (quiet.length) {
       const note = document.createElement('div');
-      note.className = 'supervisor-note';
+      note.className = 'orchestrator-note';
       note.textContent = `${quiet.join(' · ')} · nothing needed`;
       list.appendChild(note);
     }
@@ -710,7 +710,7 @@ export function createChatListController(dependencies) {
 
     lists.forEach(list => {
       list.replaceChildren();
-      renderSupervisor(list, supervisor);
+      renderSupervisor(list, orchestrator);
       renderSection(list, 'Favourites', groups.pinned, currentId);
       renderSection(list, 'Recent', groups.recent, currentId);
       renderSection(list, 'Archived', groups.archived, currentId, true);
@@ -774,7 +774,7 @@ export function createChatListController(dependencies) {
   }
 
   function setSupervisor(state) {
-    supervisor = {
+    orchestrator = {
       waiting: Array.isArray(state?.waiting) ? state.waiting : [],
       working: Array.isArray(state?.working) ? state.working : [],
     };
@@ -824,11 +824,11 @@ export function createChatListController(dependencies) {
     const action = button.dataset.action;
     if (action === 'open') return onSelect(button.dataset.chatId);
     if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
-    if (action === 'open-supervisor') return onOpenSupervisor?.();
-    if (action === 'add-to-supervisor') {
+    if (action === 'open-orchestrator') return onOpenSupervisor?.();
+    if (action === 'add-to-orchestrator') {
       return onAddToSupervisor?.(button.dataset.chatId, button);
     }
-    if (action === 'clear-supervisor') return onClearSupervisor?.();
+    if (action === 'clear-orchestrator') return onClearSupervisor?.();
     if (action === 'dismiss-agent') {
       // Sits inside the row, whose own click opens the conversation. Without
       // this the row would open the very chat you asked to stop being shown.
@@ -837,7 +837,7 @@ export function createChatListController(dependencies) {
       return onDismissAgent?.(agentKind, agentId);
     }
     if (action === 'jump-agent') {
-      // A supervisor row is a pointer at something listed elsewhere: a web
+      // A orchestrator row is a pointer at something listed elsewhere: a web
       // chat opens, a terminal session resumes into one.
       const {agentKind, agentId} = button.dataset;
       return agentKind === 'session' ? onResumeCli(agentId) : onSelect(agentId);

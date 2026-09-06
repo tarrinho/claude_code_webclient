@@ -233,10 +233,10 @@ graph LR
     style FS fill:#FFF3E0,stroke:#D97A2C
 ```
 
-### 2.5 Supervisor Run
+### 2.5 Orchestrator Run
 
 How a prompt becomes a task graph and then a result. The engine is
-`supervisor.py`; everything below the dashed line runs in a background task the
+`orchestrator.py`; everything below the dashed line runs in a background task the
 request does not wait for.
 
 ```mermaid
@@ -285,12 +285,12 @@ false:
 - **`all_done()` counts `failed` as terminal.** When it did not, one failed task
   left the loop spinning at half-second intervals for ever.
 - **Status is written to the database**, not only to the graph. The engine also
-  updates a graph node named `"supervisor"` that nothing creates, so those calls
+  updates a graph node named `"orchestrator"` that nothing creates, so those calls
   do nothing; `_set_status()` is what the interface actually reads.
 
 ### 2.6 Attention Feed — how a row becomes a highlight
 
-`GET /api/supervisor` answers one question: which agents are blocked on the
+`GET /api/orchestrator` answers one question: which agents are blocked on the
 user. `classify_chat()` decides, per conversation, and the order of its branches
 matters — a conversation can reach "waiting" by two different routes, and they
 consult different dismissal marks.
@@ -658,13 +658,13 @@ Key settings:
   for that purpose. **Not `AbortController`:** `EventSource`'s init dictionary
   accepts only `withCredentials`, so a `signal` member is silently ignored and
   `abort()` does nothing to the stream. This document previously claimed the
-  opposite, and the supervisor page was written to match the claim — every
+  opposite, and the orchestrator page was written to match the claim — every
   switch leaked a live stream until it was measured in a browser (`readyState`
   stayed `1` after `abort()`, and reached `2` only after `close()`).
 - No `eval()`, no inline event handlers.
 - CSRF token injected from `wc_csrf` cookie on every mutating request.
 
-### 3.8 `supervisor.py` — Orchestration Engine (955 lines)
+### 3.8 `orchestrator.py` — Orchestration Engine (955 lines)
 
 Decomposes a prompt into a task graph and runs it. Imported by `app.py`; imports
 `db` lazily inside functions to avoid a cycle.
@@ -685,7 +685,7 @@ Decomposes a prompt into a task graph and runs it. Imported by `app.py`; imports
   on completion, and logs any exception rather than leaving it as asyncio's
   "Task exception was never retrieved".
 - Overall status goes through `_set_status()`, which writes to the database.
-  The engine also updates a graph node named `"supervisor"`, but nothing creates
+  The engine also updates a graph node named `"orchestrator"`, but nothing creates
   such a node — the only `add_task()` call inserts parsed plan tasks — so those
   updates are no-ops kept for the case where one exists. The database write is
   the part the interface reads.
@@ -1050,7 +1050,7 @@ CREATE TABLE ai_machines (
 | POST | `/api/machines/{id}/test` | Yes | — | `{ok: bool, status: reachable\|unreachable, error?}` |
 | DELETE | `/api/machines/{id}` | Yes | — | `{ok: true}` |
 
-### Supervisor — attention feed
+### Orchestrator — attention feed
 
 Which agents are blocked on the user. Distinct from the orchestration API below
 despite the near-identical prefix: this is a read-only view over conversations
@@ -1058,25 +1058,25 @@ and CLI sessions, and owns no state of its own beyond read marks.
 
 | Method | Path | Auth | Body | Response |
 |--------|------|------|------|----------|
-| GET | `/api/supervisor` | Yes | — | `{waiting: [...], working: [...], updated: [...]}` |
-| POST | `/api/supervisor/read` | Yes | `{kind, id, dismiss?}` or `{all: true}` | `{ok: true, read_at}` |
+| GET | `/api/orchestrator` | Yes | — | `{waiting: [...], working: [...], updated: [...]}` |
+| POST | `/api/orchestrator/read` | Yes | `{kind, id, dismiss?}` or `{all: true}` | `{ok: true, read_at}` |
 
 `dismiss: true` writes the same timestamp to `read_at` and `dismissed_at`, which
 silences an unanswered question; reading alone never does. `kind` is `chat` or
 `session` — a row shown as a conversation is dismissed under `chat` even when
 its waiting status is derived from a linked CLI session.
 
-### Supervisor — orchestration
+### Orchestrator — orchestration
 
-A supervisor decomposes a prompt into a task graph and runs the tasks. State
+A orchestrator decomposes a prompt into a task graph and runs the tasks. State
 lives in `supervisors`, `supervisor_tasks` and `supervisor_messages`; the engine
-is `supervisor.py`.
+is `orchestrator.py`.
 
 | Method | Path | Auth | Body | Response |
 |--------|------|------|------|----------|
 | GET | `/api/supervisors` | Yes | — | `{supervisors: [{id, title, description, status, progress_pct, ...}]}` |
 | POST | `/api/supervisors` | Yes | `{title?, description?, config?}` | `{ok: true, id, title, status}` |
-| GET | `/api/supervisors/{id}` | Yes | — | `{supervisor: {...}}` |
+| GET | `/api/supervisors/{id}` | Yes | — | `{orchestrator: {...}}` |
 | PATCH | `/api/supervisors/{id}` | Yes | `{title?, description?, status?, config?}` | `{ok: true}` |
 | DELETE | `/api/supervisors/{id}` | Yes | — | `{ok: true}` |
 | POST | `/api/supervisors/{id}/send` | Yes | `{prompt}` | `{ok: true, supervisor_id, status}` |
@@ -1196,7 +1196,7 @@ claude-code-webconsole/
 ├── db.py                   3600  SQLite: schema, CRUD, migrations, CLI sync
 ├── app.py                  463   FastAPI app, entry point, middleware, route registration
 ├── transcripts.py          1678  Read and parse Claude CLI transcripts
-├── supervisor.py           1134  Orchestration: plan parsing, task graph, scheduler
+├── orchestrator.py           1134  Orchestration: plan parsing, task graph, scheduler
 ├── runner.py               1031  Claude Code invocation (direct + proxy)
 ├── prompts.py               788  Detect and answer a CLI permission prompt
 ├── classification.py        718  Attention: which conversations need a person, and why
@@ -1204,7 +1204,7 @@ claude-code-webconsole/
 ├── auth.py                  477  Auth: passwords, sessions, CSRF, rate-limit, tokens
 ├── sysstats.py              458  Host sampling from /proc + write-health probe
 ├── turns.py                 380  Turn lifecycle: a turn outlives its request
-├── routes/misc.py          1278  Settings, sessions, skills, health, supervisor feed
+├── routes/misc.py          1278  Settings, sessions, skills, health, orchestrator feed
 ├── net_validation.py        232  Outbound address validation (SSRF guard)
 ├── middleware.py            207  The three middleware classes and the API-token session
 ├── config.py                185  Env-driven config with validation
@@ -1234,7 +1234,7 @@ claude-code-webconsole/
 ├── .env                           Local secrets (gitignored)
 ├── .env.example              62   Config template (committed)
 ├── web/                    8489  Vanilla-JS SPA; no framework, no build step
-│   ├── supervisor.html      1095  Supervisor page markup
+│   ├── orchestrator.html      1095  Orchestrator page markup
 │   ├── index.html            304  Main SPA
 │   ├── login.html             81  Login page
 │   └── assets/
@@ -1248,8 +1248,8 @@ claude-code-webconsole/
 │       ├── api.js             61  escapeHtml + fetch wrapper with CSRF
 │       ├── login.js           54  Login page
 │       ├── favicon.svg
-│       └── supervisor/      1881  Ten ES modules, split from the old
-│           ├── list.js       324  single-file supervisor.js in 0.10.0.
+│       └── orchestrator/      1881  Ten ES modules, split from the old
+│           ├── list.js       324  single-file orchestrator.js in 0.10.0.
 │           ├── main.js       302  Loaded as `type="module"`; entry is main.js.
 │           ├── members.js    275
 │           ├── tasks.js      241
@@ -1261,8 +1261,8 @@ claude-code-webconsole/
 │           └── dom.js         41
 ├── routes/                4513  Four route modules extracted from app.py in 0.10.3
 │   ├── chats.py            1704  Chat CRUD, turns, questions, transcript, streaming
-│   ├── misc.py             1278  Settings, sessions, skills, health, supervisor feed
-│   ├── supervisors.py       860  Supervisor orchestration routes
+│   ├── misc.py             1278  Settings, sessions, skills, health, orchestrator feed
+│   ├── supervisors.py       860  Orchestrator orchestration routes
 │   └── machines.py           665  AI machine CRUD and connectivity tests
 ├── tests/                 39825  109 files, 2481 collected cases
 │   ├── conftest.py                Capability guard: aborts a partial or blind run
@@ -1427,8 +1427,8 @@ longer the dominant file:
 | `classification.py` | 683 | Attention: which conversations need a person, and why |
 | `middleware.py` | 197 | The three middleware classes and the API-token session |
 | `routes/chats.py` | 1,704 | Chat CRUD, turns, questions, transcript, streaming |
-| `routes/misc.py` | 1,278 | Settings, sessions, skills, health, supervisor feed |
-| `routes/supervisors.py` | 860 | Supervisor orchestration routes |
+| `routes/misc.py` | 1,278 | Settings, sessions, skills, health, orchestrator feed |
+| `routes/supervisors.py` | 860 | Orchestrator orchestration routes |
 | `routes/machines.py` | 665 | AI machine CRUD and connectivity tests |
 
 Both old and new docstrings record how the boundary was chosen — twenty names
@@ -1441,17 +1441,17 @@ large file and the natural next split candidate.
 
 ### What a split costs, from the one already done
 
-`0.10.0` broke the 1,600-line `web/supervisor.js` into the ten modules under
-`web/assets/supervisor/`, averaging 188 lines — `dom.js` is 41. That move also:
+`0.10.0` broke the 1,600-line `web/orchestrator.js` into the ten modules under
+`web/assets/orchestrator/`, averaging 188 lines — `dom.js` is 41. That move also:
 
 - changed the page from a classic script to `type="module"`, so **every test
-  reading `web/supervisor.js` by path broke**;
+  reading `web/orchestrator.js` by path broke**;
 - invalidated a `?v=` cache-busting assertion in `test_qa_supervisor_route.py`;
 - required repointing `STATED` in `test_qa_version_consistency.py`, because one
   of the six surfaces that must agree on the version string lived in the file
   being moved — a release-blocker until updated;
 - silently removed the file from `test_qa_timer_handles.py`'s scan, whose two
-  flat globs did not recurse into `web/assets/supervisor/`. Fixed in `cf175d6` by
+  flat globs did not recurse into `web/assets/orchestrator/`. Fixed in `cf175d6` by
   making the scan recursive **before** the split landed.
 
 The last one is the instructive one: nothing failed. The scan simply stopped

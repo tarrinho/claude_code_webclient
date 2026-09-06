@@ -22,7 +22,7 @@ have been prevented by splitting files:**
 
 | Defect | Cause |
 |---|---|
-| Cross-tenant read of supervisor tasks and messages | five `db.py` functions accepted `owner_id` and never used it |
+| Cross-tenant read of orchestrator tasks and messages | five `db.py` functions accepted `owner_id` and never used it |
 | SSE poller re-sent the same hundred messages for ever | `after_id` accepted and ignored, two byte-identical branches |
 | A timer nothing could stop | bare `setInterval` with no handle |
 | Removal of an auth bypass surfaced as two skips | `except Exception` wrapped an assertion |
@@ -63,15 +63,15 @@ named from measurement rather than imagination:
 
 | commits | file | lines |
 |---|---|---|
-| 12 | `web/supervisor.js` | 1710 |
+| 12 | `web/orchestrator.js` | 1710 |
 | 11 | `app.py` | 5792 |
-| 8 | `supervisor.py` | 1041 |
+| 8 | `orchestrator.py` | 1041 |
 | 6 | `config.py` | 185 |
 | 5 | `db.py` | 3291 |
 | 3 | `transcripts.py` | 1531 |
 
 Contention, not size, sets the order. `db.py` is the second-largest file and one
-of the calmest; `web/supervisor.js` is the hottest file in the repository.
+of the calmest; `web/orchestrator.js` is the hottest file in the repository.
 
 **No dead code.** Zero unreferenced private helpers, so there is nothing to
 delete before moving.
@@ -144,7 +144,7 @@ not be sold on it.
 routes each, and six files of ~200 lines would sit under the 150-line floor this
 plan is built on. They split when they grow.
 
-### `supervisor.py` 1041 → 6 files
+### `orchestrator.py` 1041 → 6 files
 
 `SupervisorEngine` is 558 lines — over half the file — and its two largest
 methods are 317 lines between them. A four-way split leaves `engine.py` at ~600
@@ -160,19 +160,19 @@ bookkeeping.
 | `engine.py` | 450 | `SupervisorEngine`, after decomposition |
 | `prompts_text.py` | 80 | `SUPERVISOR_SYSTEM_PROMPT`, `clean_result` |
 
-### `web/supervisor.js` 1710 → 8 files, under `web/assets/supervisor/`
+### `web/orchestrator.js` 1710 → 8 files, under `web/assets/orchestrator/`
 
 The file already carries 21 comment-banner sections; the split follows those
 rather than inventing boundaries: `main.js`, `api.js`, `list.js`, `banners.js`,
 `tasks.js`, `stream.js`, `members.js`, `layout.js`.
 
-**This is not only a move.** `supervisor.js` is a plain IIFE loaded as
-`<script src="supervisor.js?v=5">`, while `index.html` uses
+**This is not only a move.** `orchestrator.js` is a plain IIFE loaded as
+`<script src="orchestrator.js?v=5">`, while `index.html` uses
 `<script type="module">`. Splitting requires converting to ES modules, which
 changes the page tag, moves the file under `/assets/` so `StaticFiles` serves
 it, and lets `_serve_supervisor_js` and `_serve_supervisor_page` be deleted from
 `app.py`. `tests/test_qa_version_consistency.py`'s `STATED` table needs its
-`supervisor.js` and `supervisor.html` patterns updated with the move.
+`orchestrator.js` and `orchestrator.html` patterns updated with the move.
 
 ### Left alone, deliberately
 
@@ -220,10 +220,10 @@ suite; the tree has 33,000 lines of tests and this is what they are for.
    `_run_planner_turn`, `_execute_task`. Safe with other sessions active,
    because editing within a file is an ordinary merge.
 4. **Extract modules, one file at a time, announced.** Order:
-   `web/supervisor.js` (hottest), `app.py` routes (one prefix per window),
-   `supervisor.py`. Suite between each.
+   `web/orchestrator.js` (hottest), `app.py` routes (one prefix per window),
+   `orchestrator.py`. Suite between each.
 5. **Frontend consistency.** ES-module conversion, `/assets/` move, delete the
-   two serving routes, drop `supervisor.html`'s inlined stylesheet block.
+   two serving routes, drop `orchestrator.html`'s inlined stylesheet block.
 6. **0.10.0.** Bump `config.VERSION` and the five other files that state the
    version, in one commit, with `test_qa_version_consistency` green.
    `docs/threat-model.md` keeps its own analysed-version line: it records which

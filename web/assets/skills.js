@@ -6,7 +6,7 @@ import {state} from './app.js?v=38';
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
 // top-level scope across files), so it needs its own -- same pattern as
-// supervisor.js/device-alerts.js/usage.js/server-stats.js.
+// orchestrator.js/device-alerts.js/usage.js/server-stats.js.
 const byId = id => document.getElementById(id);
 // The filter text lives in the input element, not in a variable shared with
 // app.js. app.js declares its own `_skillFilter` and assigns it on every

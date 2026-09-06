@@ -10,17 +10,17 @@ is already true on the machine it runs on today.
 > **Currency, as of 2026-09-01 · build 0.9.2.** The version above is the one
 > that was analysed and is deliberately left alone: rewriting it would claim an
 > analysis that was never performed. Three attack surfaces have been added since
-> and are **not covered below** — the supervisor orchestration API
+> and are **not covered below** — the orchestrator orchestration API
 > (`/api/supervisors/*`, which starts model turns from a stored plan), the host
 > statistics endpoints (`/api/system*`, which disclose hostname, CPU model and
-> load), and the supervisor page's SSE stream. One finding has also been closed
-> that this document predates: an unauthenticated `GET /dev/supervisor-trigger`
+> load), and the orchestrator page's SSE stream. One finding has also been closed
+> that this document predates: an unauthenticated `GET /dev/orchestrator-trigger`
 > minted an admin session and returned its id in the response body; the route is
 > removed, though the middleware's blanket exemption for `/dev/` paths remains.
 > **Partly discharged, 2026-09-01.** §5a covers all three of those surfaces
 > plus the two added since this note was written (API tokens and the
 > question-dismiss route), as findings F-21 to F-24. Two were real and are
-> fixed: any account could read any supervisor's tasks and messages (F-21,
+> fixed: any account could read any orchestrator's tasks and messages (F-21,
 > confirmed by exploit), and a plan could put an attacker-chosen argv token into
 > the Claude Code child (F-22). The `/dev/` middleware exemption mentioned above
 > is also gone. What is still owed is a re-read of §6's attack chains against
@@ -137,7 +137,7 @@ than moving JSON around:
 | `POST /api/machines`, `PATCH /api/machines/{id}` | sets egress destination + credential |
 | `POST /api/machines/{id}/test`, `GET /api/models` | server-side HTTP to a user-chosen URL |
 | `POST /api/sessions/{id}/resume` | imports **any** session's transcript on the host |
-| `GET /api/transcripts*`, `/api/supervisor` | reads `~/.claude/**` unscoped |
+| `GET /api/transcripts*`, `/api/orchestrator` | reads `~/.claude/**` unscoped |
 | `PATCH /api/settings` (admin) | rewrites `projects_root` — the sandbox root itself |
 | `GET /api/admin/export` (admin) | downloads the DB, secrets included |
 | `POST /api/admin/import` (admin) | replaces the authentication store |
@@ -553,7 +553,7 @@ deployment's identity.
 **Severity: Low today**, **High the moment a second account exists**
 
 `/api/sessions`, `POST /api/sessions/{id}/resume`, `/api/transcripts`,
-`/api/transcripts/{id}`, `/api/supervisor` and `_import_cli_usage` all read
+`/api/transcripts/{id}`, `/api/orchestrator` and `_import_cli_usage` all read
 `~/.claude/**` globally. Any authenticated account can enumerate every Claude
 Code session on the host and import any transcript in full into its own chat.
 
@@ -580,15 +580,15 @@ can contain absolute paths, environment fragments and command output.
 ## 5a. Findings from the 0.9.3 pass — the three surfaces §0 said were uncovered
 
 Date: 2026-09-01 · Version analysed: 0.9.3 (`e6e7a9b`, plus uncommitted work in
-`supervisor.py`, `transcripts.py` and `conversation.js`).
+`orchestrator.py`, `transcripts.py` and `conversation.js`).
 
 The currency note at the top of this document named three surfaces added after
-0.7.2 and not covered: the supervisor orchestration API, the host statistics
-endpoints, and the supervisor page's SSE stream. Two more have arrived since it
+0.7.2 and not covered: the orchestrator orchestration API, the host statistics
+endpoints, and the orchestrator page's SSE stream. Two more have arrived since it
 was written — API tokens and the question-dismiss route. This section covers all
 five. F-21 and F-22 were **fixed in the same pass**; the rest are open.
 
-### F-21 — Any account could read any supervisor's tasks and messages **[verified by exploit] — FIXED**
+### F-21 — Any account could read any orchestrator's tasks and messages **[verified by exploit] — FIXED**
 
 **Severity: High** (cross-tenant disclosure of agent output) · **Closed**
 
@@ -657,7 +657,7 @@ sentinel "where a leading dash cannot be mistaken for a CLI flag"; the model had
 no equivalent.
 
 **Fix.** `config.MODEL_ID_RE` / `config.valid_model_id()` — one definition, used
-by both `app.py` and `supervisor.py` — requires an alphanumeric first character
+by both `app.py` and `orchestrator.py` — requires an alphanumeric first character
 and caps the length. A rejected plan model logs and falls back to `None`, which
 is what a plan with no `[:model]` already gets. `claude-opus-5[1m]` still
 validates: the CLI documents that suffix, and a fix that broke it would have
@@ -711,18 +711,18 @@ Not XSS: the string is a selector, never markup. Fixed with `CSS.escape`, which
 `querySelector` template in `web/*.js` and `web/assets/*.js` now finds zero
 interpolations without it.
 
-### Checked and not a finding — the supervisor page's markup
+### Checked and not a finding — the orchestrator page's markup
 
 Recorded because a future change could make it one, and because the reasoning is
 what a reader needs rather than the conclusion.
 
-`web/supervisor.js` has twelve `innerHTML` writes, and its `esc()` is
+`web/orchestrator.js` has twelve `innerHTML` writes, and its `esc()` is
 `div.textContent = s; return div.innerHTML` — which escapes `&`, `<` and `>` but
 **not quotes**. So esc() output is safe in element content and unsafe in an
 attribute. The five attribute interpolations in those templates
 (`data-id`, `data-task-id`, `data-expand`, `data-detail`, `title`) all take
-server-generated values: supervisor ids are `uuid4().hex` from
-`POST /api/supervisors`, task ids are `t%03d` or a supervisor-prefixed row id,
+server-generated values: orchestrator ids are `uuid4().hex` from
+`POST /api/supervisors`, task ids are `t%03d` or a orchestrator-prefixed row id,
 and the one `title=` is an internal label. Agent- and user-authored strings —
 titles, descriptions, task results — go into element *content* through `esc()`,
 or into `textContent`.

@@ -71,7 +71,7 @@ CAPABILITIES = (
             "sys.exit(0 if pathlib.Path(p).exists() else 1)"
         ),
         covers="every browser test (tests/test_frontend_browser.py and the "
-               "supervisor UI suites)",
+               "orchestrator UI suites)",
     ),
 )
 

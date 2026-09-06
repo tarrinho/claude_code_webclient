@@ -1,4 +1,4 @@
-// supervisor/banners.js — goal, completion and the unread badge.
+// orchestrator/banners.js — goal, completion and the unread badge.
 
 import { state } from "./state.js";
 import { $, el } from "./dom.js";
@@ -103,7 +103,7 @@ import { addChatMessage } from "./list.js";
     el.completionBanner.hidden = false;
 
     // Also add a chat message so the completion shows up in the scrollback too
-    addChatMessage("system", `✅ Supervisor completed: ${doneCount}/${total} tasks done.`);
+    addChatMessage("system", `✅ Orchestrator completed: ${doneCount}/${total} tasks done.`);
   }
 
   export function dismissCompletionBanner() {
@@ -114,9 +114,9 @@ import { addChatMessage } from "./list.js";
   // ── Human-gate marker ────────────────────────────────────────────────
   // The one topbar element every body.max-* state leaves visible, so this is
   // the only reliable place to say "something needs you" regardless of which
-  // panel is currently maximized. Two things actually gate a supervisor on a
+  // panel is currently maximized. Two things actually gate a orchestrator on a
   // person -- the engine paused, or a watched member whose own status is
-  // "waiting" -- see docs/superpowers/specs/2026-09-04-supervisor-observability-design.md
+  // "waiting" -- see docs/superpowers/specs/2026-09-04-orchestrator-observability-design.md
   // for why the task DAG itself never does (subtasks run one-shot,
   // non-interactive turns and never wait on anyone).
 

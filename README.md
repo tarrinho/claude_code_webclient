@@ -151,7 +151,7 @@ being spread across modules that install themselves on import.
 app.py            wiring, login/logout, templates, lifespan
 routes/chats.py   conversations, turns, questions, transcripts
 routes/misc.py    tokens, sessions, settings, system, usage, admin
-routes/supervisors.py  the supervisor panel and its subtasks
+routes/supervisors.py  the orchestrator panel and its subtasks
 routes/machines.py     /api/machines and /api/models
 middleware.py     auth, CSRF and security-header middleware
 classification.py which conversations need a person, and why

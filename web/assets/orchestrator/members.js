@@ -1,4 +1,4 @@
-// supervisor/members.js — the members panel and its picker.
+// orchestrator/members.js — the members panel and its picker.
 
 import { apiFetch, formatTime } from "./api.js";
 import { $ } from "./dom.js";
@@ -6,8 +6,8 @@ import { state } from "./state.js";
 import { updateGateMarker } from "./banners.js";
 
   // ── Members ──────────────────────────────────────────────────────────
-  // The conversations and agents a supervisor watches. Deliberately separate
-  // from the task tree: a task is work the supervisor invented and runs
+  // The conversations and agents a orchestrator watches. Deliberately separate
+  // from the task tree: a task is work the orchestrator invented and runs
   // headless, a member is work that already existed and belongs to someone.
   //
   // Nothing here dispatches on its own. A member can be prompted, but only by
@@ -132,7 +132,7 @@ import { updateGateMarker } from "./banners.js";
     backdrop.id = "membersPickerDialog";
     backdrop.setAttribute("role", "dialog");
     backdrop.setAttribute("aria-modal", "true");
-    backdrop.setAttribute("aria-label", "Add members to this supervisor");
+    backdrop.setAttribute("aria-label", "Add members to this orchestrator");
     const panel = document.createElement("div");
     panel.className = "dialog";
     const heading = document.createElement("h2");
@@ -170,7 +170,7 @@ import { updateGateMarker } from "./banners.js";
       help.textContent = "Nothing to add yet \u2014 no agents or conversations.";
       return;
     }
-    help.textContent = "Pick the agents and conversations this supervisor should watch.";
+    help.textContent = "Pick the agents and conversations this orchestrator should watch.";
 
     const filter = document.createElement("input");
     filter.type = "search";

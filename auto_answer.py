@@ -376,7 +376,7 @@ async def stop() -> None:
 
     Held in a handle and cancelled here rather than left to the loop teardown:
     rules.md §4 names a timer nothing can stop as the failure case, and this
-    project shipped one in web/supervisor.js that doubled whenever its setup ran
+    project shipped one in web/orchestrator.js that doubled whenever its setup ran
     twice.
     """
     global _task

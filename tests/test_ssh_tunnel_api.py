@@ -119,26 +119,39 @@ def test_init_ssh_test_bad_key(client):
     assert data.get("ok") is False
 
 
-def _create_ssh_proxy_machine(client, name="Test SSH Box"):
-    """POST /api/machines with provider=ssh_proxy. Returns the new machine id.
+def _create_machine_with_transport(client, name="Test SSH Box"):
+    """Create an ssh_transport, then a machine pointed at it. Returns the
+    new machine id.
 
-    ssh_host must actually resolve now: creation runs it through
+    ssh_proxy stopped being a legal `provider` value once ssh transports
+    were split into their own table/route (an earlier task in this plan):
+    the SSH connection (ssh_host/ssh_user/ssh_key_path) now lives on
+    ssh_transports, and ai_machines only references it via transport_id.
+    So this creates a transport via POST /api/transports first, then a
+    normal-provider ("claude_code") machine with transport_id set --
+    mirroring what routes/machines_tunnel.py now gates on.
+
+    ssh_host must actually resolve: transport creation runs it through
     net_validation._validate_host (see
     test_ssh_host_is_ssrf_checked_like_every_other_host_field), which needs
     a real DNS answer to classify the address at all. "localhost" resolves
     to 127.0.0.1, in the SSRF check's own default allowlist (loopback is
-    where a real ssh_proxy machine legitimately points during dev/test), so
-    this exercises the real validation path rather than bypassing it.
-    example.invalid (RFC 2606 -- guaranteed never to resolve) was used here
-    before that check existed and started failing "DNS resolution failed"
-    the moment it did.
+    where a real transport legitimately points during dev/test), so this
+    exercises the real validation path rather than bypassing it.
     """
-    resp = client.post("/api/machines", json={
-        "name": name,
-        "provider": "ssh_proxy",
+    resp = client.post("/api/transports", json={
+        "name": f"{name} Transport",
         "ssh_host": "localhost",
         "ssh_user": "kali",
         "ssh_key_path": "~/.ssh/id_ed25519",
+    })
+    assert resp.status_code == 200, resp.text
+    transport_id = resp.json()["id"]
+
+    resp = client.post("/api/machines", json={
+        "name": name,
+        "provider": "claude_code",
+        "transport_id": transport_id,
         "model": "claude-sonnet-5",
     })
     assert resp.status_code == 200, resp.text
@@ -146,18 +159,22 @@ def _create_ssh_proxy_machine(client, name="Test SSH Box"):
 
 
 def test_ssh_host_is_ssrf_checked_like_every_other_host_field(client):
-    """POST /api/machines validated ssh_host's *format* (a real hostname or
-    IP shape) for provider=ssh_proxy, but never ran it through
-    net_validation._validate_host -- the SSRF/private-IP blocklist every
-    other host field on this same endpoint (the `host` field, for
-    anthropic/proxy machines) already goes through. 169.254.169.254 is the
-    canonical cloud-metadata SSRF target that blocklist exists to stop, and
-    it has a perfectly valid hostname *shape*, so the format check alone
-    let it straight through for an ssh_proxy machine."""
-    resp = client.post("/api/machines", json={
-        "name": "Metadata Probe", "provider": "ssh_proxy",
-        "ssh_host": "169.254.169.254", "ssh_key_path": "~/.ssh/id_ed25519",
-        "model": "claude-sonnet-5",
+    """POST /api/transports validates ssh_host's *format* (a real hostname
+    or IP shape), and must also run it through net_validation._validate_host
+    -- the SSRF/private-IP blocklist every other host field in this app
+    (e.g. the `host` field on POST /api/machines) already goes through.
+    169.254.169.254 is the canonical cloud-metadata SSRF target that
+    blocklist exists to stop, and it has a perfectly valid hostname
+    *shape*, so the format check alone would let it straight through.
+
+    This used to POST to /api/machines with provider=ssh_proxy, back when
+    ssh_host lived directly on ai_machines. ssh_proxy is no longer a legal
+    provider and ssh_host now lives on ssh_transports, so this targets
+    POST /api/transports, the route that actually owns ssh_host today --
+    same SSRF check, same assertion."""
+    resp = client.post("/api/transports", json={
+        "name": "Metadata Probe", "ssh_host": "169.254.169.254",
+        "ssh_key_path": "~/.ssh/id_ed25519",
     })
     assert resp.status_code == 403, resp.text
 
@@ -212,7 +229,7 @@ def test_tunnel_start_for_a_real_machine_actually_creates_the_row(client, monkey
         lambda mid, cmd: queued.append((mid, cmd)) or _noop(),
     )
 
-    machine_id = _create_ssh_proxy_machine(client)
+    machine_id = _create_machine_with_transport(client)
     resp = client.post("/api/tunnel/start", json={"machine_id": machine_id})
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"ok": True, "status": "connecting"}

@@ -58,7 +58,7 @@ async def tunnel_start(req: Request):
     machine = await db.ai_machine_get(machine_id, user)
     if not machine:
         raise HTTPException(status_code=404, detail="machine not found")
-    if machine.get("provider") != "ssh_proxy":
+    if not machine.get("transport_id"):
         raise HTTPException(status_code=400, detail="not an ssh_proxy machine")
 
     # Create tunnel DB row if missing.
@@ -99,7 +99,7 @@ async def tunnel_stop(req: Request):
     machine = await db.ai_machine_get(machine_id, user)
     if not machine:
         raise HTTPException(status_code=404, detail="machine not found")
-    if machine.get("provider") != "ssh_proxy":
+    if not machine.get("transport_id"):
         raise HTTPException(status_code=400, detail="not an ssh_proxy machine")
 
     await tunnel_manager.queue_command(machine_id, "STOP_TUNNEL")
@@ -120,7 +120,7 @@ async def tunnel_toggle(req: Request):
     machine = await db.ai_machine_get(machine_id, user)
     if not machine:
         raise HTTPException(status_code=404, detail="machine not found")
-    if machine.get("provider") != "ssh_proxy":
+    if not machine.get("transport_id"):
         raise HTTPException(status_code=400, detail="not an ssh_proxy machine")
 
     status = await tunnel_manager.tunnel_status(machine_id)
@@ -141,7 +141,7 @@ async def tunnel_status_endpoint(req: Request):
     machines = await db.ai_machines_list(user)
     result = {}
     for m in machines:
-        if m.get("provider") == "ssh_proxy":
+        if m.get("transport_id"):
             mid = m["id"]
             status = await tunnel_manager.tunnel_status(mid)
             if status:
@@ -164,7 +164,7 @@ async def tunnel_machine_status(machine_id: str, req: Request):
     import tunnel_manager
 
     machine = await db.ai_machine_get(machine_id, user)
-    if not machine or machine.get("provider") != "ssh_proxy":
+    if not machine or not machine.get("transport_id"):
         raise HTTPException(status_code=404, detail="ssh_proxy machine not found")
 
     status = await tunnel_manager.tunnel_status(machine_id)

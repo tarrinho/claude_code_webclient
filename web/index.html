@@ -33,8 +33,8 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.13.0</span>
-    <button class="btn-icon" id="supervisorBtn" aria-label="Open supervisor" title="Supervisor">📡</button>
+    <span class="ver" id="ver">0.14.0</span>
+    <button class="btn-icon" id="orchestratorBtn" aria-label="Open orchestrator" title="Orchestrator">📡</button>
 <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
@@ -64,6 +64,8 @@
            holds #runState after this group, so anchoring the popover to
            .strip-right's own right edge put it past the status dot instead of
            under the info button. -->
+      <button class="btn-icon strip-action queue-toggle" id="queueToggleTop"
+              aria-label="Show queued prompts" title="Queued prompts" aria-pressed="false" hidden>📋</button>
       <span class="auto-answer-group">
         <button class="btn-icon strip-action auto-answer-toggle" id="autoAnswerToggle"
                 aria-label="Auto-approve permission prompts for this conversation"
@@ -134,19 +136,22 @@
   <section class="composer" id="composerArea" aria-label="Message composer">
     <div class="composer-inner">
       <textarea id="composerInput" rows="1" maxlength="8000" placeholder="Ask Claude to inspect, explain, or change something…" aria-label="Message"></textarea>
+      <button class="btn-icon voice-control" id="voiceMicBtn" title="Mic" aria-label="Start voice input">🎙</button>
+      <button class="btn-icon voice-control" id="voiceLiveBtn" title="Live Conversation" aria-label="Start live voice conversation">🔁</button>
+      <button class="btn-icon voice-control" id="voiceStopBtn" title="Stop" aria-label="Stop voice conversation" hidden>⏹</button>
       <button class="btn-send" id="sendBtn" aria-label="Send message">➜</button>
     </div>
     <div class="composer-meta"><span class="composer-left"><span class="composer-hint" id="composerChatName"></span><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span></span><span><button type="button" class="queue-toggle" id="queueToggle" hidden aria-label="Show queued prompts" title="Show queued prompts"></button> <button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
   </section>
-  <!-- The supervisor is its own page. Embedded rather than navigated to, so the
+  <!-- The orchestrator is its own page. Embedded rather than navigated to, so the
        conversation list stays put and you can leave again without a reload. -->
-  <section class="supervisor-pane" id="supervisorPane" hidden aria-label="Supervisor">
-    <div class="supervisor-pane-bar">
-      <span class="supervisor-pane-title" id="supervisorPaneTitle">Supervisor</span>
-      <button type="button" class="btn-icon" id="supervisorPaneClose"
-              aria-label="Close supervisor" title="Back to the conversation">&times;</button>
+  <section class="orchestrator-pane" id="orchestratorPane" hidden aria-label="Orchestrator">
+    <div class="orchestrator-pane-bar">
+      <span class="orchestrator-pane-title" id="orchestratorPaneTitle">Orchestrator</span>
+      <button type="button" class="btn-icon" id="orchestratorPaneClose"
+              aria-label="Close orchestrator" title="Back to the conversation">&times;</button>
     </div>
-    <iframe id="supervisorFrame" title="Supervisor" src="about:blank"></iframe>
+    <iframe id="orchestratorFrame" title="Orchestrator" src="about:blank"></iframe>
   </section>
 </main>
 <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
@@ -358,10 +363,11 @@
 <script type="module" src="/assets/server-stats.js?v=1"></script>
 <script type="module" src="/assets/skills.js?v=1"></script>
 <script type="module" src="/assets/machines.js?v=4"></script>
-<script type="module" src="/assets/supervisor.js?v=1"></script>
+<script type="module" src="/assets/orchestrator.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
 <script type="module" src="/assets/voice-settings.js?v=1"></script>
 <script type="module" src="/assets/app.js?v=38"></script>
+<script type="module" src="/assets/voice-conversation.js?v=1"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

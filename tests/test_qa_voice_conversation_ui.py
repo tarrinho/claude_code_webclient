@@ -36,3 +36,18 @@ class VoiceConversationUiTests(unittest.TestCase):
         voice_occurrences = self.html.count('voice-new-chat-btn')
         self.assertEqual(occurrences, 2, "expected mobile + desktop new-chat buttons")
         self.assertEqual(voice_occurrences, 2, "expected mobile + desktop voice buttons")
+
+    def test_composer_row_has_voice_icons(self):
+        composer = self.html.split('id="composerArea"')[1].split('</section>')[0]
+        for control in ('voiceMicBtn', 'voiceLiveBtn', 'voiceStopBtn'):
+            self.assertIn(f'id="{control}"', composer)
+
+    def test_voice_conversation_js_file_stays_under_300_lines(self):
+        content = (ASSETS / "voice-conversation.js").read_text()
+        self.assertLess(len(content.splitlines()), 300)
+
+    def test_conversation_js_calls_voice_hooks(self):
+        conv = (ASSETS / "conversation.js").read_text()
+        self.assertIn('window.voiceConversation?.onReplyChunk', conv)
+        self.assertIn('window.voiceConversation?.onReplyDone', conv)
+        self.assertIn('window.voiceConversation?.onReplyError', conv)

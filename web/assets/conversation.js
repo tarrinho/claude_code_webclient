@@ -197,12 +197,12 @@ let _lastCommandTimer = null;
 // only basis available that is not invented outright. Shown as elapsed time
 // alone until there is at least one finished turn in this chat to estimate
 // from, and always labelled "(est.)" once it is -- never presented as a
-// measurement. Same reasoning and shape as the supervisor pane's identical
-// feature (web/assets/supervisor/tasks.js's _progressView).
+// measurement. Same reasoning and shape as the orchestrator pane's identical
+// feature (web/assets/orchestrator/tasks.js's _progressView).
 //
 // Kept in memory only, per chat id, for this page load -- there is no
 // server-side average to fall back on without a new query, and matching the
-// supervisor version's own choice keeps the two consistent.
+// orchestrator version's own choice keeps the two consistent.
 const _TURN_HISTORY_MAX = 20;
 const _turnDurationsByChat = new Map(); // chatId -> number[] (seconds)
 
@@ -489,7 +489,7 @@ export function createConversationController(dependencies) {
 
   // `asks` marks a message that put a question to the user. The server decides
   // it and sends the answer; this must not re-derive it, or the conversation and
-  // the supervisor panel will eventually disagree about the same message.
+  // the orchestrator panel will eventually disagree about the same message.
   //
   // Streamed rows are built empty and filled as tokens arrive, so they carry
   // false until the turn ends and refreshCurrent() reloads from the server. The
@@ -942,16 +942,28 @@ export function createConversationController(dependencies) {
   // the queue" was the ask this exists for: before this, the only way to
   // see it again after closing was to wait for the next state change.
   function updateQueueToggle(rows) {
-    if (!elements.queueToggle) return;
     const held = rows.filter(row => row.state === 'held').length;
-    elements.queueToggle.hidden = rows.length === 0;
-    elements.queueToggle.textContent = rows.length ? `Queue (${rows.length})` : '';
-    elements.queueToggle.dataset.held = held ? 'yes' : 'no';
+    const hasQueued = rows.length > 0;
     const label = held
       ? `${held} of ${rows.length} queued prompts held — show queue`
       : `${rows.length} queued prompt${rows.length === 1 ? '' : 's'} — show queue`;
-    elements.queueToggle.title = label;
-    elements.queueToggle.setAttribute('aria-label', label);
+
+    // Composer-level toggle (text badge)
+    if (elements.queueToggle) {
+      elements.queueToggle.hidden = !hasQueued;
+      elements.queueToggle.textContent = rows.length ? `Queue (${rows.length})` : '';
+      elements.queueToggle.dataset.held = held ? 'yes' : 'no';
+      elements.queueToggle.title = label;
+      elements.queueToggle.setAttribute('aria-label', label);
+    }
+    // Topbar button (icon + badge)
+    if (elements.queueToggleTop) {
+      elements.queueToggleTop.hidden = !hasQueued;
+      elements.queueToggleTop.textContent = rows.length ? `${rows.length}` : '';
+      elements.queueToggleTop.dataset.held = held ? 'yes' : 'no';
+      elements.queueToggleTop.title = label;
+      elements.queueToggleTop.setAttribute('aria-label', label);
+    }
   }
 
   function renderQueue(chatId, payload) {
@@ -1239,6 +1251,7 @@ export function createConversationController(dependencies) {
               elements.messages.appendChild(assistantRow);
             }
             fullText += event.content || '';
+            window.voiceConversation?.onReplyChunk(event.content || '');
             if (viewingChatId === chatId) {
               renderSafeText(assistantBubble, fullText);
               setStreamState('responding');
@@ -1255,6 +1268,7 @@ export function createConversationController(dependencies) {
             throw new Error(event.error || 'Claude failed');
           } else if (event.type === 'done') {
             streamCompleted = true;
+            window.voiceConversation?.onReplyDone();
             break streamLoop;
           }
         }
@@ -1262,6 +1276,7 @@ export function createConversationController(dependencies) {
       if (!streamCompleted) throw new Error('Response stream ended before completion');
       succeeded = true;
     } catch (error) {
+      window.voiceConversation?.onReplyError();
       if (error.name === 'AbortError') {
         if (detaching) {
           // The user changed conversation. The turn is the server's and is
@@ -1354,6 +1369,11 @@ export function createConversationController(dependencies) {
     hideQueue();
   });
   elements.queueToggle?.addEventListener('click', () => {
+    _queueManuallyHidden = false;
+    if (state.currentChat?.id) refreshQueue(state.currentChat.id);
+  });
+  // Topbar button: opens the same queue panel from anywhere.
+  elements.queueToggleTop?.addEventListener('click', () => {
     _queueManuallyHidden = false;
     if (state.currentChat?.id) refreshQueue(state.currentChat.id);
   });

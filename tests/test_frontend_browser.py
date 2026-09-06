@@ -106,7 +106,7 @@ class _BrowserFixture(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         tmp = Path(cls.tmp.name)
         (tmp / "projects").mkdir()
-        # A home of its own. The supervisor does not read only its database: it
+        # A home of its own. The orchestrator does not read only its database: it
         # merges the live Claude CLI sessions under ~/.claude, so a server
         # pointed at the real home reports whatever the agents on this machine
         # happen to be doing. The alert tests assert on a *rise* in the waiting
@@ -238,8 +238,8 @@ class _BrowserFixture(unittest.TestCase):
 
     def _login(self):
         page = self.page
-        # domcontentloaded, not networkidle: this app polls the supervisor, the
-        # chat list and pending questions, and the supervisor pane holds an SSE
+        # domcontentloaded, not networkidle: this app polls the orchestrator, the
+        # chat list and pending questions, and the orchestrator pane holds an SSE
         # stream open -- so the network is never idle and that wait can only
         # ever time out. The app-shell wait below is the real readiness signal.
         page.goto(f"{self.base}/login", wait_until="domcontentloaded")
@@ -508,7 +508,7 @@ class BackendsTurnCountBrowserTests(_BrowserFixture):
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorBrowserTests(_BrowserFixture):
-    """The supervisor section, driven the way the user drives it.
+    """The orchestrator section, driven the way the user drives it.
 
     Inherits the server/browser fixture. The seeded conversation ends on an
     assistant reply that was never read, so it must appear as waiting.
@@ -550,16 +550,16 @@ class SupervisorBrowserTests(_BrowserFixture):
         con.close()
 
     def _supervisor_rows(self):
-        return self.page.query_selector_all(f"{self.DESKTOP} .supervisor-item")
+        return self.page.query_selector_all(f"{self.DESKTOP} .orchestrator-item")
 
     def _badge(self):
-        node = self.page.query_selector(f"{self.DESKTOP} .supervisor-badge")
+        node = self.page.query_selector(f"{self.DESKTOP} .orchestrator-badge")
         return int(node.inner_text()) if node else 0
 
     def _load(self):
         self._seed_waiting_chat()
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_selector(f"{self.DESKTOP} .orchestrator-item", timeout=15_000)
 
     def test_supervisor_sits_above_the_other_sections(self):
         self._load()
@@ -568,7 +568,7 @@ class SupervisorBrowserTests(_BrowserFixture):
             for e in self.page.query_selector_all(f"{self.DESKTOP} .chat-section-label")
         ]
         self.assertTrue(labels, "the sidebar rendered no sections")
-        self.assertEqual(labels[0].lower(), "supervisor")
+        self.assertEqual(labels[0].lower(), "orchestrator")
         self.assertEqual(self.errors, [])
 
     def test_badge_counts_the_waiting_agents(self):
@@ -614,23 +614,23 @@ class SupervisorBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
     def test_the_heading_offers_a_link_to_the_supervisor(self):
-        """Present, labelled, and pointing at the supervisor page."""
+        """Present, labelled, and pointing at the orchestrator page."""
         self._load()
-        heading = self.page.query_selector(f"{self.DESKTOP} .supervisor-label")
-        self.assertIsNotNone(heading, "the Supervisor section did not render")
-        link = heading.query_selector(".supervisor-open")
-        self.assertIsNotNone(link, "no link to the supervisor in its own section")
-        self.assertEqual(link.get_attribute("aria-label"), "Open the supervisor")
+        heading = self.page.query_selector(f"{self.DESKTOP} .orchestrator-label")
+        self.assertIsNotNone(heading, "the Orchestrator section did not render")
+        link = heading.query_selector(".orchestrator-open")
+        self.assertIsNotNone(link, "no link to the orchestrator in its own section")
+        self.assertEqual(link.get_attribute("aria-label"), "Open the orchestrator")
 
     def test_clearing_leaves_the_link_reachable(self):
         """Nothing waiting is exactly when you want to go and look."""
         self._load()
-        clear = self.page.query_selector(f"{self.DESKTOP} .supervisor-clear")
+        clear = self.page.query_selector(f"{self.DESKTOP} .orchestrator-clear")
         if clear:
             clear.click()
             self.page.wait_for_timeout(2000)
         self.assertIsNotNone(
-            self.page.query_selector(f"{self.DESKTOP} .supervisor-open"),
+            self.page.query_selector(f"{self.DESKTOP} .orchestrator-open"),
             "the link vanished once the queue emptied",
         )
 
@@ -641,7 +641,7 @@ class SupervisorBrowserTests(_BrowserFixture):
         """It used to navigate away, which cost the sidebar and a reload.
 
         Scoped to the pane deliberately: what loads *inside* the frame is the
-        supervisor's own page, with its own engine and SSE stream. Driving that
+        orchestrator's own page, with its own engine and SSE stream. Driving that
         from here made this suite depend on another subsystem's behaviour and
         destabilised every test after it.
         """
@@ -653,13 +653,13 @@ class SupervisorBrowserTests(_BrowserFixture):
         self.assertFalse(self.page.is_visible("#messagesWrap"),
                          "the conversation area is still showing behind it")
         self.assertIn(
-            "supervisor.html",
+            "orchestrator.html",
             self.page.query_selector("#supervisorFrame").get_attribute("src"),
         )
 
     def test_the_sidebar_link_opens_the_same_pane(self):
         self._load()
-        self.page.click(f"{self.DESKTOP} .supervisor-open")
+        self.page.click(f"{self.DESKTOP} .orchestrator-open")
         self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
 
     def test_the_conversation_list_stays_visible_beside_it(self):
@@ -724,7 +724,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         """The one level that always works, on any device, with no prompt."""
         self._seed()
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_selector(f"{self.DESKTOP} .orchestrator-item", timeout=15_000)
         self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$")
 
     def _answer(self, chat_id):
@@ -748,12 +748,12 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         """
         chat_id = self._seed()
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_selector(f"{self.DESKTOP} .orchestrator-item", timeout=15_000)
         before = self.page.title()
         self.assertRegex(before, r"^\(\d+\) WebConsole$")
 
         row = next(
-            r for r in self.page.query_selector_all(f"{self.DESKTOP} .supervisor-item")
+            r for r in self.page.query_selector_all(f"{self.DESKTOP} .orchestrator-item")
             if chat_id[-8:] in r.query_selector(".chat-title").inner_text()
             or "Alert" in r.query_selector(".chat-title").inner_text()
         )
@@ -765,7 +765,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
     def test_the_count_clears_once_the_question_is_answered(self):
         chat_id = self._seed()
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_selector(f"{self.DESKTOP} .orchestrator-item", timeout=15_000)
         self.assertRegex(self.page.title(), r"^\(\d+\) WebConsole$")
 
         before = int(self.page.title().split(")")[0].lstrip("("))
@@ -815,7 +815,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         # The page must not be the focused thing, or alerting would be noise.
         self.page.evaluate("() => Object.defineProperty(document, 'hasFocus', {value: () => false})")
         self._seed()
-        # The supervisor polls every 15s and three browser suites contend for
+        # The orchestrator polls every 15s and three browser suites contend for
         # this machine, so allow several cycles rather than assuming the first
         # one lands promptly.
         self.page.wait_for_function(
@@ -869,7 +869,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         }""")
         self.page.evaluate("() => localStorage.setItem('wc_alerts', 'on')")
         self.page.evaluate("() => Object.defineProperty(document, 'hasFocus', {value: () => false})")
-        # Wait out the first supervisor poll before reading the baseline. Taken
+        # Wait out the first orchestrator poll before reading the baseline. Taken
         # straight after domcontentloaded it is the static title from the HTML,
         # so the poll landing -- not this test's seed -- moved the count, and
         # the comparison below failed whenever an earlier test in the class had
@@ -994,7 +994,7 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
     the previous stream down with `AbortController.abort()`. EventSource's init
     dictionary accepts only `withCredentials`; a `signal` member is ignored, so
     the teardown was inert -- every switch left a stream open on both ends and
-    the stale one kept delivering into handleSSEEvent for a supervisor the user
+    the stale one kept delivering into handleSSEEvent for an orchestrator the user
     had left.
 
     Nothing about that is visible in the source: the code reads as if it tears
@@ -1013,11 +1013,11 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
         }""", [csrf, title])
 
     def _open_page_with_two(self):
-        self._make_supervisor("First supervisor")
-        self._make_supervisor("Second supervisor")
-        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
-        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
-        rows = self.page.locator(".supervisor-list-item")
+        self._make_supervisor("First orchestrator")
+        self._make_supervisor("Second orchestrator")
+        self.page.goto(f"{self.base}/orchestrator", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".orchestrator-list-item", timeout=15_000)
+        rows = self.page.locator(".orchestrator-list-item")
         # A locator, not element handles: the list re-renders on every refresh
         # and on selection, which detaches any handle taken beforehand.
         self.assertGreaterEqual(rows.count(), 2, "both supervisors should be listed")
@@ -1040,7 +1040,7 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
         first_state = self.page.evaluate("() => window.__first.readyState")
         self.assertEqual(
             first_state, 2,
-            "the stream for the supervisor we left is still open: every switch "
+            "the stream for the orchestrator we left is still open: every switch "
             "leaks a connection and keeps delivering its events",
         )
 
@@ -1052,17 +1052,17 @@ class SupervisorStreamBrowserTests(_BrowserFixture):
         self.page.wait_for_timeout(1500)
         self.assertIn(
             self.page.evaluate("() => window._supervisorSSE.readyState"), (0, 1),
-            "the current supervisor has no live stream",
+            "the current orchestrator has no live stream",
         )
 
     def test_the_list_refreshes_with_nothing_selected(self):
         """The 30s refresh used to be gated on having a selection.
 
-        That is the state the page opens in, so a supervisor created anywhere
+        That is the state the page opens in, so an orchestrator created anywhere
         else never appeared until a manual reload -- and staleness you cannot
         see is worse than a list that never claims to be current.
         """
-        source = (ROOT / "web" / "assets" / "supervisor" / "main.js").read_text(encoding="utf-8")
+        source = (ROOT / "web" / "assets" / "orchestrator" / "main.js").read_text(encoding="utf-8")
         start = source.index("setInterval(")
         body = source[start:source.index("30000", start)]
         self.assertIn("loadSupervisors()", body)
@@ -1106,13 +1106,13 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
         return chat_id
 
     def _rows(self):
-        return self.page.locator(f"{self.DESKTOP} .supervisor-item")
+        return self.page.locator(f"{self.DESKTOP} .orchestrator-item")
 
     def _load_with(self, count):
         for _ in range(count):
             self._seed()
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_selector(f"{self.DESKTOP} .orchestrator-item", timeout=15_000)
         return self._rows()
 
     def test_every_highlighted_row_offers_one(self):
@@ -1121,24 +1121,24 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
         for index in range(rows.count()):
             with self.subTest(row=index):
                 self.assertEqual(
-                    rows.nth(index).locator(".supervisor-dismiss").count(), 1,
+                    rows.nth(index).locator(".orchestrator-dismiss").count(), 1,
                     "a highlighted agent with no way to dismiss it on its own",
                 )
 
     def test_it_is_labelled_for_a_screen_reader(self):
         """"✕" alone announces as nothing useful."""
         rows = self._load_with(1)
-        label = rows.nth(0).locator(".supervisor-dismiss").get_attribute("aria-label")
+        label = rows.nth(0).locator(".orchestrator-dismiss").get_attribute("aria-label")
         self.assertIn("highlights", (label or "").lower())
 
     def test_clicking_it_removes_that_row(self):
         rows = self._load_with(2)
         before = rows.count()
         self.assertGreaterEqual(before, 2)
-        rows.nth(0).locator(".supervisor-dismiss").click()
+        rows.nth(0).locator(".orchestrator-dismiss").click()
         self.page.wait_for_function(
             "([sel, n]) => document.querySelectorAll(sel).length < n",
-            arg=[f"{self.DESKTOP} .supervisor-item", before],
+            arg=[f"{self.DESKTOP} .orchestrator-item", before],
             timeout=15_000,
         )
 
@@ -1147,13 +1147,13 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
         rows = self._load_with(3)
         before = rows.count()
         kept = rows.nth(1).locator(".chat-title").inner_text()
-        rows.nth(0).locator(".supervisor-dismiss").click()
+        rows.nth(0).locator(".orchestrator-dismiss").click()
         self.page.wait_for_function(
             "([sel, n]) => document.querySelectorAll(sel).length < n",
-            arg=[f"{self.DESKTOP} .supervisor-item", before],
+            arg=[f"{self.DESKTOP} .orchestrator-item", before],
             timeout=15_000,
         )
-        remaining = self.page.locator(f"{self.DESKTOP} .supervisor-item .chat-title")
+        remaining = self.page.locator(f"{self.DESKTOP} .orchestrator-item .chat-title")
         titles = [remaining.nth(i).inner_text() for i in range(remaining.count())]
         self.assertIn(kept, titles, "dismissing one silenced the others too")
 
@@ -1165,7 +1165,7 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
         dismiss, the row would come straight back.
         """
         rows = self._load_with(2)
-        rows.nth(0).locator(".supervisor-dismiss").click()
+        rows.nth(0).locator(".orchestrator-dismiss").click()
         self.page.wait_for_timeout(1500)
         self.assertTrue(
             self.page.is_visible("#messagesArea .empty-state")
@@ -1178,16 +1178,16 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
         rows = self._load_with(2)
         before = rows.count()
         gone = rows.nth(0).locator(".chat-title").inner_text()
-        rows.nth(0).locator(".supervisor-dismiss").click()
+        rows.nth(0).locator(".orchestrator-dismiss").click()
         self.page.wait_for_function(
             "([sel, n]) => document.querySelectorAll(sel).length < n",
-            arg=[f"{self.DESKTOP} .supervisor-item", before],
+            arg=[f"{self.DESKTOP} .orchestrator-item", before],
             timeout=15_000,
         )
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(f"{self.DESKTOP} .supervisor-item", timeout=15_000)
+        self.page.wait_for_selector(f"{self.DESKTOP} .orchestrator-item", timeout=15_000)
         self.page.wait_for_timeout(1000)
-        titles = self.page.locator(f"{self.DESKTOP} .supervisor-item .chat-title")
+        titles = self.page.locator(f"{self.DESKTOP} .orchestrator-item .chat-title")
         self.assertNotIn(
             gone, [titles.nth(i).inner_text() for i in range(titles.count())],
             "the dismissed agent reappeared after a reload",
@@ -1197,12 +1197,12 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorRenameBrowserTests(_BrowserFixture):
-    """Renaming a supervisor from the row it appears on.
+    """Renaming an orchestrator from the row it appears on.
 
     Driven in a browser rather than asserted against the source, because the
     two things most likely to break are invisible in the file: whether the
     30-second refresh wipes a half-typed name, and whether clicking the
-    rename control also selects a supervisor the user was not looking at.
+    rename control also selects an orchestrator the user was not looking at.
     Both read as fine in the source and are decided at runtime.
     """
 
@@ -1217,13 +1217,13 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
         }""", [csrf, title])
 
     def _titles(self) -> list[str]:
-        return self.page.locator(".supervisor-list-item .sl-title").all_text_contents()
+        return self.page.locator(".orchestrator-list-item .sl-title").all_text_contents()
 
     def _open(self, *titles):
         for title in titles:
             self._make_supervisor(title)
-        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
-        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.page.goto(f"{self.base}/orchestrator", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".orchestrator-list-item", timeout=15_000)
 
     def _begin_rename(self, title: str):
         """Click the rename control on the row named *title*.
@@ -1242,7 +1242,7 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
         last = None
         for _ in range(4):
             try:
-                row = self.page.locator(".supervisor-list-item", has_text=title)
+                row = self.page.locator(".orchestrator-list-item", has_text=title)
                 # force=True: the button is opacity:0 until the row is hovered,
                 # which is a paint state rather than a hit-testing one.
                 row.locator(".sl-rename").click(force=True, timeout=4_000)
@@ -1269,7 +1269,7 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
             ".some(n => n.textContent === 'After rename')", timeout=10_000)
         # And it survives a reload, so it was stored rather than only painted.
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.page.wait_for_selector(".orchestrator-list-item", timeout=15_000)
         self.assertIn("After rename", self._titles())
 
     def test_escape_abandons_the_edit(self):
@@ -1279,7 +1279,7 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
         field.press("Escape")
         self.page.wait_for_selector(".sl-rename-input", state="detached", timeout=5_000)
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.page.wait_for_selector(".orchestrator-list-item", timeout=15_000)
         titles = self._titles()
         self.assertIn("Keep this name", titles)
         self.assertNotIn("Discarded", titles)
@@ -1302,13 +1302,13 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
         below is what makes the wait meaningful, and without it this would be
         thirty seconds of proving nothing.
         """
-        self._open("Mid-edit supervisor")
+        self._open("Mid-edit orchestrator")
         polls = []
         self.page.on("request", lambda r: (
-            polls.append(r.url) if r.url.endswith("/api/supervisors")
+            polls.append(r.url) if r.url.endswith("/api/orchestrators")
             and r.method == "GET" else None))
 
-        field = self._begin_rename("Mid-edit supervisor")
+        field = self._begin_rename("Mid-edit orchestrator")
         field.fill("Half typed")
         before = len(polls)
 
@@ -1327,27 +1327,27 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
 
     def test_renaming_does_not_select_the_row(self):
         """The row's own click selects. Without stopPropagation, renaming a
-        supervisor you are not looking at also switches you to it."""
+        orchestrator you are not looking at also switches you to it."""
         self._open("First one", "Second one")
-        before = self.page.locator(".supervisor-list-item.active").count()
+        before = self.page.locator(".orchestrator-list-item.active").count()
         self._begin_rename("First one")
         self.assertEqual(
-            self.page.locator(".supervisor-list-item.active").count(), before,
+            self.page.locator(".orchestrator-list-item.active").count(), before,
             "opening the rename control changed the selection")
 
     def test_the_field_caps_at_the_length_the_server_stores(self):
         """The server slices titles to 200. Without a matching maxlength the
         user types past it and is truncated with no indication, so the rename
         reads as having half worked."""
-        self._open("Capped supervisor")
-        field = self._begin_rename("Capped supervisor")
+        self._open("Capped orchestrator")
+        field = self._begin_rename("Capped orchestrator")
         self.assertEqual(field.get_attribute("maxlength"), "200")
 
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorListEscapingBrowserTests(_BrowserFixture):
-    """Registry #79: `renderSupervisorList()` interpolated a supervisor's id
+    """Registry #79: `renderSupervisorList()` interpolated an orchestrator's id
     (into `data-id="..."`) and its status (into a badge's class and text)
     without `esc()`, unlike every other value the same file writes.
 
@@ -1394,10 +1394,10 @@ class SupervisorListEscapingBrowserTests(_BrowserFixture):
         """
         payload_id = 'x" onmouseover="window.__wc_pwned_id=1" data-y="'
         self._seed_supervisor(payload_id, "idle")
-        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
-        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.page.goto(f"{self.base}/orchestrator", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".orchestrator-list-item", timeout=15_000)
         self.assertIsNone(self.page.eval_on_selector(
-            ".supervisor-list-item", 'el => el.getAttribute("onmouseover")'))
+            ".orchestrator-list-item", 'el => el.getAttribute("onmouseover")'))
 
     def test_a_crafted_status_is_not_parsed_as_an_element(self):
         """Text-node position: a `<img onerror>` typed here *is* real markup
@@ -1414,10 +1414,10 @@ class SupervisorListEscapingBrowserTests(_BrowserFixture):
         sup_id = f"sup-{secrets.token_hex(4)}"
         self._seed_supervisor(
             sup_id, '<img src=x onerror="window.__wc_pwned_status=1">')
-        self.page.goto(f"{self.base}/supervisor", wait_until="domcontentloaded")
-        self.page.wait_for_selector(".supervisor-list-item", timeout=15_000)
+        self.page.goto(f"{self.base}/orchestrator", wait_until="domcontentloaded")
+        self.page.wait_for_selector(".orchestrator-list-item", timeout=15_000)
         self.assertEqual(
-            self.page.locator(".supervisor-list-item img").count(), 0)
+            self.page.locator(".orchestrator-list-item img").count(), 0)
 
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
@@ -2037,6 +2037,97 @@ class QueuePanelBrowserTests(_BrowserFixture):
             self.page.inner_text("#queueToggle"), "Queue (2)",
             "the panel reopened but the toggle did not pick up the new "
             "count -- the two must stay in sync",
+        )
+        self.assertEqual(self.errors, [])
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class SshWizardBrowserTests(_BrowserFixture):
+    """The SSH init wizard renders and is callable from the Backends tab.
+
+    Before the fix, machine-wizard.js existed but was never imported or
+    called by app.js — the file sat unused. The tests verify that after the
+    import wire-up, an ssh_proxy machine present in the listing causes the
+    wizard panel to appear inside Settings, and that a backend without
+    ssh_proxy machines does not cause it to show.
+    """
+
+    def _seed_ssh_machine(self) -> str:
+        import datetime
+        import sqlite3
+        import secrets as sec
+        machine_id = f"ssh-{sec.token_hex(4)}"
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO ai_machines (id,name,host,port,provider,base_url,"
+            "description,ssh_host,ssh_user,ssh_key_path,"
+            "model,api_key,owner_id,created_at,updated_at,"
+            "ai_api_key_name,has_api_key,active_models,active) "
+            "VALUES (?,?,?,?,?,NULL,NULL,?,?,?,NULL,?,?,?,0,'[]',0)",
+            (machine_id, "SSH Proxy", "127.0.0.1", 9000, "ssh_proxy",
+             "192.168.1.100", "kali", "/home/kali/.ssh/id_rsa",
+             "admin", stamp, stamp),
+        )
+        # Seed one chat so the sidebar has a conversation to show.
+        chat_id = f"q-{sec.token_hex(4)}"
+        con.execute(
+            "INSERT INTO chats (id,title,work_dir,owner_id,created_at,updated_at) "
+            "VALUES (?,?,NULL,'admin',?,?)",
+            (chat_id, "Test", stamp, stamp),
+        )
+        con.commit()
+        con.close()
+        return machine_id
+
+    def test_wizard_panel_shows_when_ssh_proxy_exists(self):
+        self._seed_ssh_machine()
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=10_000)
+        self.page.click("#settingsBtn")
+        self.page.wait_for_selector(".machine-card", timeout=10_000)
+        self.page.wait_for_timeout(800)
+
+        wizard = self.page.wait_for_selector("#sshWizard", state="visible", timeout=5_000)
+        self.assertTrue(
+            wizard,
+            "the SSH Proxy Setup wizard must appear in Settings when an "
+            "ssh_proxy machine is present in the backends list",
+        )
+        self.assertIn("SSH Proxy Setup", wizard.inner_text())
+        self.assertEqual(self.errors, [])
+
+    def test_wizard_panel_does_not_show_without_ssh_proxy(self):
+        # Only the default Anthropic machine exists — no ssh_proxy.
+        self._open_backends()
+
+        wizard = self.page.query_selector("#sshWizard")
+        self.assertIsNone(
+            wizard,
+            "the wizard must not render when no ssh_proxy machine is "
+            "registered",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_wizard_panel_hides_after_cancel(self):
+        self._seed_ssh_machine()
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=10_000)
+        self.page.click("#settingsBtn")
+        self.page.wait_for_selector(".machine-card", timeout=10_000)
+        self.page.wait_for_timeout(800)
+
+        wizard = self.page.wait_for_selector("#sshWizard", state="visible", timeout=5_000)
+        self.assertTrue(wizard.is_visible())
+
+        self.page.click("#wizardCancel")
+        self.page.wait_for_timeout(500)
+
+        wizard2 = self.page.query_selector("#sshWizard")
+        self.assertIsNone(
+            wizard2,
+            "clicking Cancel must remove the wizard panel from the DOM",
         )
         self.assertEqual(self.errors, [])
 

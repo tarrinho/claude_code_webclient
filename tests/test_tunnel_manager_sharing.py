@@ -13,11 +13,13 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tunnel_manager._STATE.clear()
         tunnel_manager._TRANSPORT_CONNECTIONS.clear()
+        tunnel_manager._CONNECTING.clear()
         self.addAsyncCleanup(self._cleanup)
 
     async def _cleanup(self):
         tunnel_manager._STATE.clear()
         tunnel_manager._TRANSPORT_CONNECTIONS.clear()
+        tunnel_manager._CONNECTING.clear()
 
     async def test_two_machines_same_transport_share_one_ssh_client(self):
         import db
@@ -252,3 +254,104 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("t1", tunnel_manager._TRANSPORT_CONNECTIONS)
         client_a.close.assert_called_once()
         transport_a.close.assert_called_once()
+
+    async def test_orphaned_successful_connect_releases_its_own_claim(self):
+        """Reproduces Issue A from round 2 review: _release_machine (e.g.
+        via STOP_TUNNEL) racing an in-flight _try_connect(). Simulated by
+        having the mocked connect() itself pop _STATE[machine_id] just
+        before returning successfully -- exactly what a concurrent
+        _release_machine() call while the real paramiko handshake is still
+        awaiting would do. Before the fix, _run()'s
+        _STATE[machine_id].update(...) would KeyError (silently swallowed
+        by the generic except), and the successful connect's registry claim
+        and forward server would leak forever -- refcount could never reach
+        zero, poisoning the transport for every future machine sharing it.
+        After the fix, _run() notices _STATE[machine_id] is gone and
+        releases the claim itself."""
+        forward_server = MagicMock()
+        shared_client = MagicMock()
+        shared_transport = MagicMock()
+
+        async def fake_connect(machine_id):
+            # Simulate a real handshake succeeding and registering itself in
+            # the shared registry...
+            tunnel_manager._TRANSPORT_CONNECTIONS["t1"] = {
+                "ssh_client": shared_client, "transport": shared_transport,
+                "refcount": 1,
+            }
+            # ...but by the time it's about to return, STOP_TUNNEL has
+            # already raced in and released this machine's _STATE entry.
+            tunnel_manager._STATE.pop(machine_id, None)
+            return (True, shared_client, shared_transport, 9001, 22, forward_server, "t1")
+
+        tunnel_manager._STATE["ma"] = {
+            "state": "connecting", "tunnel_up": 0, "proxy_ok": 0,
+            "error_msg": None, "connected_at": None, "last_check": "t0",
+        }
+
+        captured_tasks = []
+        real_create_task = asyncio.create_task
+
+        def capturing_create_task(coro, *a, **kw):
+            t = real_create_task(coro, *a, **kw)
+            captured_tasks.append(t)
+            return t
+
+        with patch("tunnel_manager_ssh.connect", fake_connect), \
+             patch("tunnel_manager_forward.stop_forward") as mock_stop_forward, \
+             patch("asyncio.create_task", side_effect=capturing_create_task):
+            tunnel_manager._try_connect("ma")
+            await captured_tasks[0]
+
+        self.assertNotIn("t1", tunnel_manager._TRANSPORT_CONNECTIONS)
+        shared_transport.close.assert_called_once()
+        shared_client.close.assert_called_once()
+        mock_stop_forward.assert_called_once_with(forward_server)
+        # The in-flight guard must also clear once the orphaned connect is
+        # done being cleaned up, or this machine could never reconnect.
+        self.assertNotIn("ma", tunnel_manager._CONNECTING)
+
+    async def test_second_reconnect_while_one_in_flight_is_a_no_op(self):
+        """Reproduces Issue B from round 2 review: two RECONNECT/
+        START_TUNNEL actions for the same machine close together (nothing
+        stopped this before the fix) each call _try_connect(), each
+        spawning its own _run() task -- both connect successfully and both
+        increment the same transport's shared refcount, even though only
+        one machine is actually using the connection, leaving a phantom +1
+        that never closes. After the fix, a second _try_connect() call for
+        a machine already in _CONNECTING is a no-op: only one _run() task
+        is ever spawned while one is in flight."""
+        connect_calls = []
+
+        async def fake_connect(machine_id):
+            connect_calls.append(machine_id)
+            return (True, MagicMock(), MagicMock(), 9001, 22, MagicMock(), "t1")
+
+        tunnel_manager._STATE["ma"] = {
+            "state": "connecting", "tunnel_up": 0, "proxy_ok": 0,
+            "error_msg": None, "connected_at": None, "last_check": "t0",
+        }
+
+        captured_tasks = []
+        real_create_task = asyncio.create_task
+
+        def capturing_create_task(coro, *a, **kw):
+            t = real_create_task(coro, *a, **kw)
+            captured_tasks.append(t)
+            return t
+
+        with patch("tunnel_manager_ssh.connect", fake_connect), \
+             patch("asyncio.create_task", side_effect=capturing_create_task):
+            tunnel_manager._try_connect("ma")
+            # A second call while the first's _run() task hasn't even had a
+            # chance to run yet (and therefore hasn't discarded "ma" from
+            # _CONNECTING) must be a no-op -- no second task spawned. This
+            # assertion doesn't depend on any scheduling/timing: the guard
+            # is a synchronous set membership check inside _try_connect
+            # itself, before anything is awaited.
+            tunnel_manager._try_connect("ma")
+            self.assertEqual(len(captured_tasks), 1)
+            await captured_tasks[0]
+
+        self.assertEqual(len(connect_calls), 1)
+        self.assertNotIn("ma", tunnel_manager._CONNECTING)

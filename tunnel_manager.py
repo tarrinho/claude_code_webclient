@@ -28,6 +28,12 @@ _STATE: dict[str, dict] = {}
 # later) connect() calls reuse it instead of opening a new handshake.
 _TRANSPORT_CONNECTIONS: dict[str, dict] = {}
 _TRANSPORT_LOCKS: dict[str, asyncio.Lock] = {}
+# machine_ids with an in-flight _try_connect() whose _run() hasn't finished
+# yet -- guards against two RECONNECT/START_TUNNEL actions for the same
+# machine close together each spawning their own _run() task, which would
+# both connect successfully and both increment the same transport's shared
+# refcount for only one machine actually in use.
+_CONNECTING: set[str] = set()
 _queue: asyncio.Queue = asyncio.Queue()
 _task: asyncio.Task | None = None
 _running: bool = False
@@ -311,6 +317,15 @@ def _try_connect(machine_id: str) -> None:
     """Attempt SSH connect and port forward. Calls into tunnel_manager_ssh."""
     import asyncio
 
+    if machine_id in _CONNECTING:
+        # Already connecting -- a second RECONNECT/START_TUNNEL for the same
+        # machine while one is still in flight must not spawn a second
+        # _run(): both would connect successfully and both increment the
+        # same transport's shared refcount for only one machine actually in
+        # use, leaving a phantom claim that never releases.
+        return
+    _CONNECTING.add(machine_id)
+
     async def _run():
         from tunnel_manager_ssh import connect as _connect
 
@@ -318,6 +333,29 @@ def _try_connect(machine_id: str) -> None:
             ok, client, transport, local_port, ssh_port, forward_server, transport_id = (
                 await _connect(machine_id)
             )
+            if machine_id not in _STATE:
+                # Stopped/removed while this connect was in flight (e.g.
+                # STOP_TUNNEL fired during "connecting"). Nobody holds a
+                # claim to release this result anymore -- release it
+                # ourselves, or a successful connect leaks its own forward
+                # server and registry claim forever, poisoning the
+                # transport (refcount never reaches zero) for every future
+                # machine that shares it.
+                if ok:
+                    if forward_server:
+                        import tunnel_manager_forward
+                        with contextlib.suppress(Exception):
+                            tunnel_manager_forward.stop_forward(forward_server)
+                    if transport_id:
+                        shared = _TRANSPORT_CONNECTIONS.get(transport_id)
+                        if shared:
+                            shared["refcount"] -= 1
+                            if shared["refcount"] <= 0:
+                                _close_ssh(
+                                    shared.get("transport"), shared.get("ssh_client")
+                                )
+                                _TRANSPORT_CONNECTIONS.pop(transport_id, None)
+                return
             if ok:
                 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 _STATE[machine_id].update({
@@ -360,5 +398,7 @@ def _try_connect(machine_id: str) -> None:
             raise
         except Exception:
             _log.exception("connect_task error for %s", machine_id)
+        finally:
+            _CONNECTING.discard(machine_id)
 
     asyncio.create_task(_run())

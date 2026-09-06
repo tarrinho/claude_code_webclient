@@ -24,6 +24,13 @@ churn.
 
 ### Added
 
+- **Voice conversation** — a mic-driven chat mode that turns speech into turns
+  via the Web Speech API (browser STT), streams replies back through the
+  existing SSE pipeline, and speaks them aloud with TTS.  Bypasses the Claude
+  CLI for latency (direct `AsyncOpenAI` call), a deliberate scoped exception
+  documented in the design spec.  Includes model picker with average reply-time
+  annotations, barge-in via spoken "stop", and hands-free "Live Conversation"
+  mode.
 - **Per-IP rate limiting** (`rate_limit.py`, token-bucket middleware) and an
   **auto-answer cooldown** — the same (chat, question) pair is not answered
   again within 5 minutes, so a stuck auto-answer loop cannot hammer a chat.

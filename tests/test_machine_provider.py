@@ -333,6 +333,26 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
             await machine_routes.handle_machine_patch(request, "m1")
         self.assertEqual(ctx.exception.status_code, 404)
 
+    async def test_patch_clearing_transport_id_alone_succeeds(self):
+        """A PATCH whose only field is a null transport_id must not misread
+        ai_machine_update's own "nothing left to set" False as 404 once the
+        clear already succeeded."""
+        await db.ssh_transport_create("t1", "Kali3", "admin", "10.0.0.9", "kali", "k")
+        await db.ai_machine_update("m1", "admin", transport_id="t1")
+        request = _make_request({"transport_id": None})
+        response = await machine_routes.handle_machine_patch(request, "m1")
+        self.assertEqual(response.status_code, 200)
+        machine = await db.ai_machine_get("m1", "admin")
+        self.assertIsNone(machine["transport_id"])
+
+    async def test_patch_clearing_transport_id_alone_on_missing_machine_is_404(self):
+        """The naive fix -- skip ai_machine_update whenever data is empty --
+        would report 200 here even though the machine does not exist."""
+        request = _make_request({"transport_id": None})
+        with self.assertRaises(HTTPException) as ctx:
+            await machine_routes.handle_machine_patch(request, "does-not-exist")
+        self.assertEqual(ctx.exception.status_code, 404)
+
 
 class BaseUrlNormaliseTests(unittest.TestCase):
     """Legacy rows hold a bare host, from the old truncating validator."""

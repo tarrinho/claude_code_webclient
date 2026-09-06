@@ -280,8 +280,18 @@ async def handle_machine_patch(request: Request, machine_id: str):
         if tid is None:
             # Explicit clear -- ai_machine_update's None-means-omit rule
             # can't express this (Task 2, Step 7).
-            await db.ai_machine_clear_transport(machine_id, session["user"])
+            cleared = await db.ai_machine_clear_transport(machine_id, session["user"])
             data.pop("transport_id")
+            if not data:
+                # Clearing was the only requested change -- ai_machine_update
+                # below would be called with zero fields and misread its own
+                # "nothing to set" False as "machine not found", even though
+                # the clear above may have already succeeded (or correctly
+                # failed for a machine that isn't this owner's).
+                if not cleared:
+                    raise HTTPException(status_code=404, detail="Machine not found")
+                _log.info("ai_machine updated by user=%s id=%s", session["user"], machine_id)
+                return JSONResponse({"ok": True})
         else:
             data["transport_id"] = tid
     updated = await db.ai_machine_update(machine_id, session["user"], **data)

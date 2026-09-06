@@ -27,6 +27,7 @@ _STATE: dict[str, dict] = {}
 # ai_machines.transport_id; this is the registry that makes the second (and
 # later) connect() calls reuse it instead of opening a new handshake.
 _TRANSPORT_CONNECTIONS: dict[str, dict] = {}
+_TRANSPORT_LOCKS: dict[str, asyncio.Lock] = {}
 _queue: asyncio.Queue = asyncio.Queue()
 _task: asyncio.Task | None = None
 _running: bool = False
@@ -170,10 +171,22 @@ def _handle_command(action: str, machine_id: str, now_fn=None) -> None:
         state = _STATE.get(machine_id)
         if not state:
             return
-        state["state"] = "connecting"
-        state["tunnel_up"] = 0
-        state["error_msg"] = None
-        state["last_check"] = now
+        # Release this machine's own prior claim on a shared transport (if
+        # any) before reconnecting -- reconnecting without releasing first
+        # double-counts the shared refcount every time a health-check retry
+        # or a START_TUNNEL fires this, and the underlying connection is
+        # then never actually closed (it outlives every machine still using
+        # it, and survives stop()). Symmetric with STOP_TUNNEL's
+        # release-before-clearing-state above.
+        _release_machine(machine_id)
+        _STATE[machine_id] = {
+            "state": "connecting",
+            "tunnel_up": 0,
+            "proxy_ok": 0,
+            "error_msg": None,
+            "connected_at": None,
+            "last_check": now,
+        }
         _try_connect(machine_id)
 
 
@@ -223,6 +236,24 @@ def _close_ssh(transport, ssh_client) -> None:
             ssh_client.close()
 
 
+def _transport_lock(transport_id: str) -> asyncio.Lock:
+    """One lock per transport_id, created on first use. Guards the whole
+    check-connect-store sequence in tunnel_manager_ssh.connect() against two
+    machines racing to become "the first connection" on the same transport:
+    without it, both could see no live entry, both perform a real paramiko
+    handshake, and the second write clobbers (orphans, never closed) the
+    first -- and releasing either machine could then drive the *other's*
+    still-live connection to refcount zero and close it out from under it.
+    Never cleaned up -- the number of transports a user configures is small
+    and this is a cheap resource, not worth the complexity of tearing down.
+    """
+    lock = _TRANSPORT_LOCKS.get(transport_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _TRANSPORT_LOCKS[transport_id] = lock
+    return lock
+
+
 async def _tick(store_fn, now_fn) -> None:
     """One cycle: health-check + stats for each machine."""
     from tunnel_manager_health import collect_stats, probe_proxy
@@ -241,13 +272,29 @@ async def _tick(store_fn, now_fn) -> None:
                 state["error_msg"] = "Proxy health probe failed"
                 state["proxy_ok"] = 0
 
-        elif state.get("state") in ("connecting", "error"):
-            if state.get("state") == "error":
-                state["_backoff"] = min(
-                    state.get("_backoff", _BACKOFF_BASE) * 2, _BACKOFF_MAX
-                )
-                await asyncio.sleep(state["_backoff"])
-                _try_connect(machine_id)
+        elif state.get("state") == "error":
+            backoff = min(
+                state.get("_backoff", _BACKOFF_BASE) * 2, _BACKOFF_MAX
+            )
+            await asyncio.sleep(backoff)
+            # Release this machine's own prior claim on a shared transport
+            # (if any) before retrying -- same reasoning as the RECONNECT
+            # command: retrying without releasing first leaks the shared
+            # refcount on every backoff cycle, and the underlying connection
+            # is then never actually closed.
+            _release_machine(machine_id)
+            _STATE[machine_id] = {
+                "state": "connecting",
+                "tunnel_up": 0,
+                "proxy_ok": 0,
+                "error_msg": None,
+                "connected_at": None,
+                "last_check": now_fn(),
+                "_backoff": backoff,
+            }
+            _try_connect(machine_id)
+
+        elif state.get("state") == "connecting":
             state["last_check"] = now_fn()
 
         # Stats collection on interval.

@@ -136,84 +136,94 @@ async def connect(machine_id: str):
     import tunnel_manager
     import config
 
-    shared = tunnel_manager._TRANSPORT_CONNECTIONS.get(transport_id)
-    if shared:
-        # Reuse: no new SSH handshake, just another forward channel over the
-        # already-live transport.
+    # Everything from here to the registry write is guarded by one lock per
+    # transport_id -- without it, two machines sharing a transport could both
+    # see "no live connection", both perform a real paramiko handshake, and
+    # the second write would clobber (orphan, never close) the first; worse,
+    # releasing either machine could then drive the *other's* still-live
+    # connection to refcount zero and close it out from under it. Holding
+    # the lock across the (up to 10s) handshake means the second machine
+    # simply awaits it, then takes the fast reuse path once it sees the
+    # now-populated registry -- no wasted handshake, no clobbered entry.
+    async with tunnel_manager._transport_lock(transport_id):
+        shared = tunnel_manager._TRANSPORT_CONNECTIONS.get(transport_id)
+        if shared:
+            # Reuse: no new SSH handshake, just another forward channel over
+            # the already-live transport.
+            try:
+                forward_server = tunnel_manager_forward.start_forward(
+                    shared["transport"], local_port, "127.0.0.1", config.PROXY_PORT,
+                )
+            except Exception as exc:
+                return _fail(machine_id, str(exc)[:200])
+            shared["refcount"] += 1
+            return (
+                True, shared["ssh_client"], shared["transport"], local_port,
+                ssh_port, forward_server, transport_id,
+            )
+
+        # No live connection for this transport yet: connect for real.
+        ssh_host = transport_row["ssh_host"]
+        ssh_user = transport_row["ssh_user"]
+        ssh_key_path = transport_row["ssh_key_path"]
+        if not ssh_host:
+            return _fail(machine_id, "ssh_host is empty")
+        if not ssh_key_path:
+            return _fail(machine_id, "ssh_key_path is empty")
+
         try:
-            forward_server = tunnel_manager_forward.start_forward(
-                shared["transport"], local_port, "127.0.0.1", config.PROXY_PORT,
+            ssh_key_path = _check_key_permissions(ssh_key_path)
+        except Exception as exc:
+            return _fail(machine_id, str(exc))
+
+        stored_fingerprint = transport_row.get("ssh_host_key_fingerprint", "")
+        policy = _PinnedHostKeyPolicy(stored_fingerprint)
+        ssh_client = paramiko.SSHClient()
+        ssh_client.set_missing_host_key_policy(policy)
+        try:
+            await asyncio.to_thread(
+                ssh_client.connect,
+                hostname=ssh_host,
+                username=ssh_user,
+                key_filename=ssh_key_path,
+                timeout=10,
             )
         except Exception as exc:
-            return _fail(machine_id, str(exc)[:200])
-        shared["refcount"] += 1
-        return (
-            True, shared["ssh_client"], shared["transport"], local_port,
-            ssh_port, forward_server, transport_id,
-        )
-
-    # No live connection for this transport yet: connect for real.
-    ssh_host = transport_row["ssh_host"]
-    ssh_user = transport_row["ssh_user"]
-    ssh_key_path = transport_row["ssh_key_path"]
-    if not ssh_host:
-        return _fail(machine_id, "ssh_host is empty")
-    if not ssh_key_path:
-        return _fail(machine_id, "ssh_key_path is empty")
-
-    try:
-        ssh_key_path = _check_key_permissions(ssh_key_path)
-    except Exception as exc:
-        return _fail(machine_id, str(exc))
-
-    stored_fingerprint = transport_row.get("ssh_host_key_fingerprint", "")
-    policy = _PinnedHostKeyPolicy(stored_fingerprint)
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(policy)
-    try:
-        await asyncio.to_thread(
-            ssh_client.connect,
-            hostname=ssh_host,
-            username=ssh_user,
-            key_filename=ssh_key_path,
-            timeout=10,
-        )
-    except Exception as exc:
-        ssh_client.close()
-        if policy.mismatch:
-            _log.warning(
-                "ssh_host_key_mismatch transport=%s expected=%s got=%s",
-                transport_id, policy.mismatch[0], policy.mismatch[1],
-            )
-        return _fail(machine_id, str(exc)[:200])
-
-    if policy.new_fingerprint:
-        try:
-            await db.ssh_transport_set_host_key_fingerprint(
-                transport_id, policy.new_fingerprint
-            )
-        except Exception:
-            _log.exception(
-                "could not persist ssh host key fingerprint for transport %s",
-                transport_id,
-            )
-
-    try:
-        transport = ssh_client.get_transport()
-        if not transport:
             ssh_client.close()
-            return _fail(machine_id, "no transport after connect")
-        forward_server = tunnel_manager_forward.start_forward(
-            transport, local_port, "127.0.0.1", config.PROXY_PORT,
-        )
-    except Exception as exc:
-        ssh_client.close()
-        return _fail(machine_id, str(exc)[:200])
+            if policy.mismatch:
+                _log.warning(
+                    "ssh_host_key_mismatch transport=%s expected=%s got=%s",
+                    transport_id, policy.mismatch[0], policy.mismatch[1],
+                )
+            return _fail(machine_id, str(exc)[:200])
 
-    tunnel_manager._TRANSPORT_CONNECTIONS[transport_id] = {
-        "ssh_client": ssh_client, "transport": transport, "refcount": 1,
-    }
-    return (True, ssh_client, transport, local_port, ssh_port, forward_server, transport_id)
+        if policy.new_fingerprint:
+            try:
+                await db.ssh_transport_set_host_key_fingerprint(
+                    transport_id, policy.new_fingerprint
+                )
+            except Exception:
+                _log.exception(
+                    "could not persist ssh host key fingerprint for transport %s",
+                    transport_id,
+                )
+
+        try:
+            transport = ssh_client.get_transport()
+            if not transport:
+                ssh_client.close()
+                return _fail(machine_id, "no transport after connect")
+            forward_server = tunnel_manager_forward.start_forward(
+                transport, local_port, "127.0.0.1", config.PROXY_PORT,
+            )
+        except Exception as exc:
+            ssh_client.close()
+            return _fail(machine_id, str(exc)[:200])
+
+        tunnel_manager._TRANSPORT_CONNECTIONS[transport_id] = {
+            "ssh_client": ssh_client, "transport": transport, "refcount": 1,
+        }
+        return (True, ssh_client, transport, local_port, ssh_port, forward_server, transport_id)
 
 
 def _check_key_permissions(key_path: str) -> str:

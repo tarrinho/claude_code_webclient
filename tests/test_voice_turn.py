@@ -67,3 +67,21 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(updated)
         chat = await db.chat_get("c2", "admin")
         self.assertEqual(chat["voice_mode"], 1)
+
+    async def test_voice_turn_timing_records_and_averages(self):
+        from routes import voice
+
+        await voice.record_voice_turn_timing("azure_ai/gpt-5.6-luna", 1100, 1200)
+        await voice.record_voice_turn_timing("azure_ai/gpt-5.6-luna", 900, 1000)
+        await voice.record_voice_turn_timing("vllm/Qwen3.6-35B-A3B-NVFP4", 20000, 21000)
+
+        averages = await voice.voice_model_timing_averages([
+            "azure_ai/gpt-5.6-luna",
+            "vllm/Qwen3.6-35B-A3B-NVFP4",
+            "vllm/Qwen3.5-0.8B",
+        ])
+        self.assertEqual(averages["azure_ai/gpt-5.6-luna"]["turn_count"], 2)
+        self.assertAlmostEqual(averages["azure_ai/gpt-5.6-luna"]["avg_ttft_ms"], 1000, delta=1)
+        self.assertEqual(averages["vllm/Qwen3.6-35B-A3B-NVFP4"]["turn_count"], 1)
+        self.assertEqual(averages["vllm/Qwen3.5-0.8B"]["turn_count"], 0)
+        self.assertIsNone(averages["vllm/Qwen3.5-0.8B"]["avg_ttft_ms"])

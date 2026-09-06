@@ -298,6 +298,22 @@ async def init() -> None:
         -- Manually maintained via _refresh_fts_sync() — content=auto
         -- triggers don't work on some SQLite builds.
 
+        -- One row per completed voice-mode turn. Exists for two reasons:
+        -- bypassing the claude CLI for voice also loses its automatic
+        -- usage/cost recording (see CLAUDE.md's documented supervisor.py
+        -- lesson for what happens when a caller skips this), and it powers
+        -- the "average reply time per model" annotation in the Settings
+        -- dialog's voice model picker.
+        CREATE TABLE IF NOT EXISTS voice_turn_timing (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            model        TEXT NOT NULL,
+            ttft_ms      INTEGER NOT NULL,
+            total_ms     INTEGER NOT NULL,
+            recorded_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_voice_turn_timing_model
+            ON voice_turn_timing(model, recorded_at);
+
         CREATE TABLE IF NOT EXISTS users (
             id       TEXT PRIMARY KEY,
             email    TEXT,

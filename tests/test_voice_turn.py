@@ -225,3 +225,22 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"type": "error"', joined)
         self.assertNotIn(sentinel_base_url, joined)
         self.assertNotIn("internal-gateway.fake.example", joined)
+
+    async def test_stream_handler_uses_voice_path_for_voice_chats(self):
+        from routes import voice
+
+        password = await self._make_admin_and_chat("c6", voice_mode=True)
+        await db.chat_update("c6", "admin", model="azure_ai/gpt-5.6-luna",
+                              ai_machine_id="fake-machine-id")
+
+        async def fake_stream_voice_turn(chat, prompt, owner):
+            yield 'data: {"type": "text", "content": "voice-path-used"}\n\n'
+            yield 'data: {"type": "done"}\n\n'
+
+        client, headers = self._login("admin", password)
+        with patch.object(voice, "stream_voice_turn", fake_stream_voice_turn):
+            response = client.post(
+                "/api/chats/c6/stream", json={"content": "hi"}, headers=headers,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("voice-path-used", response.text)

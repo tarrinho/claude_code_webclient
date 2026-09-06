@@ -996,6 +996,24 @@ async def stream_handler(request: Request, chat_id: str):
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    if chat.get("voice_mode"):
+        data = await request.json()
+        prompt = (data.get("content") or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+        if len(prompt) > config.PROMPT_MAX_CHARS:
+            raise HTTPException(status_code=400, detail="Prompt is too long")
+
+        from routes.voice import stream_voice_turn
+
+        async def voice_event_generator():
+            async for frame in stream_voice_turn(chat, prompt, session["user"]):
+                yield frame
+
+        return StreamingResponse(
+            voice_event_generator(), media_type="text/event-stream"
+        )
+
     data = await request.json()
     prompt = (data.get("content") or "").strip()
     if not prompt:

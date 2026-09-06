@@ -33,7 +33,7 @@ async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
-        "created_at, updated_at "
+        "created_at, updated_at, transport_id "
         "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
         (owner_id,),
     )

@@ -234,6 +234,18 @@ class AiMachinesTransportIdTests(unittest.IsolatedAsyncioTestCase):
         backend = await db.ai_machine_backend_by_id("m4", "admin")
         self.assertEqual(backend["transport_id"], "t1")
 
+    async def test_machines_list_includes_transport_id(self):
+        """ai_machines_list must expose transport_id -- routes/machines_tunnel.py's
+        tunnel_status_endpoint (and the frontend's transport grouping) rely on
+        db.ai_machines_list(...) returning it directly, not a bare id lookup."""
+        await db.ai_machine_create(
+            "m5", "CF AI Machine (via Kali3)", "h", 443, None, "vllm/x", None,
+            None, "admin", provider="claude_code", transport_id="t1",
+        )
+        machines = await db.ai_machines_list("admin")
+        machine = next(m for m in machines if m["id"] == "m5")
+        self.assertEqual(machine["transport_id"], "t1")
+
 
 class SshProxyMigrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

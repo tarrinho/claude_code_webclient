@@ -11,14 +11,20 @@
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
 <nav class="sidebar-shell sidebar-mobile" id="sidebar" aria-label="Conversations" aria-hidden="true" inert>
   <div class="sidebar-header"><h2>Conversations</h2><button class="btn-icon" id="sidebarCloseBtn" aria-label="Close conversations">&times;</button></div>
-  <button class="btn-new new-chat-btn">＋ New conversation</button>
+  <div style="display:flex; gap:8px;">
+    <button class="btn-new new-chat-btn" style="flex:1">＋ New conversation</button>
+    <button class="btn-icon voice-new-chat-btn" title="New voice conversation" aria-label="New voice conversation">🎙</button>
+  </div>
   <div class="sidebar-search"><label for="chatSearch" hidden>Search conversations</label><input id="chatSearch" type="search" placeholder="Search conversations and messages"></div>
   <div class="chat-list" id="chatList"></div>
 </nav>
 <aside class="sidebar-desktop" aria-label="Conversations">
   <div class="sidebar-shell">
     <div class="sidebar-header"><h2>Conversations</h2></div>
-    <button class="btn-new new-chat-btn">＋ New conversation</button>
+    <div style="display:flex; gap:8px;">
+      <button class="btn-new new-chat-btn" style="flex:1">＋ New conversation</button>
+      <button class="btn-icon voice-new-chat-btn" title="New voice conversation" aria-label="New voice conversation">🎙</button>
+    </div>
     <div class="sidebar-search"><label for="chatSearchDesktop" hidden>Search conversations</label><input id="chatSearchDesktop" type="search" placeholder="Search conversations and messages"></div>
     <div class="chat-list" id="chatListDesktop"></div>
   </div>

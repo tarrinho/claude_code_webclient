@@ -40,6 +40,7 @@ export const storageSet = (key, value) => { try { localStorage.setItem(key, valu
 const storageRemove = key => { try { localStorage.removeItem(key); } catch {} };
 let dialogMode = 'create';
 let dialogChat = null;
+let dialogVoiceMode = false;
 // Reassigned once in loadInitialData-adjacent setup; exported for the same
 // reason and under the same safety argument as `state` above.
 export let listController;
@@ -165,9 +166,10 @@ function trapDialogFocus(event) {
   }
 }
 
-function openChatDialog(mode, chat = state.currentChat) {
+function openChatDialog(mode, chat = state.currentChat, options = {}) {
   dialogMode = mode;
   dialogChat = chat;
+  dialogVoiceMode = Boolean(options.voiceMode);
   state.previousFocus = document.activeElement;
   const editing = mode === 'edit';
   const deleting = mode === 'delete';
@@ -191,6 +193,7 @@ function closeDialog() {
   if (!dialog.classList.contains('open')) return;
   dialog.classList.remove('open');
   dialogChat = null;
+  dialogVoiceMode = false;
   if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
@@ -399,7 +402,7 @@ async function saveChatDialog(event) {
     if (dialogMode === 'create') {
       const response = await apiFetch('/api/chats', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({title, description: description || null}),
+        body: JSON.stringify({title, description: description || null, voice_mode: dialogVoiceMode}),
       });
       if (!response.ok) throw new Error('Could not create conversation');
       const data = await response.json();
@@ -2126,6 +2129,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.querySelectorAll('.new-chat-btn').forEach(button => button.addEventListener('click', () => openChatDialog('create')));
+  document.querySelectorAll('.voice-new-chat-btn').forEach(button => button.addEventListener('click', () => openChatDialog('create', undefined, {voiceMode: true})));
 
   document.addEventListener('keydown', event => {
     trapDialogFocus(event);

@@ -9,8 +9,10 @@ Run:  .venv/bin/python -m pytest tests/test_dast.py -v -rs
 
 import os
 import random
+import socket
 import subprocess
 import time
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -18,7 +20,32 @@ import requests
 
 # ── fixtures ──────────────────────────────────────────────────────────────
 
-SERVER_URL = os.environ.get("WC_SERVER_URL", "http://127.0.0.1:18901")
+
+def _free_port() -> int:
+    """A port nothing is listening on right now.
+
+    The hardcoded 18901 this used to bind to collided with a second run of
+    this same file (or anything else already on that port) on a shared,
+    busy host: two uvicorn processes fought over one port, and the loser's
+    session-scoped `logged_in` fixture failed every one of its 16 dependent
+    tests on a login-rate-limit false positive that had nothing to do with
+    the application. Same fix as test_frontend_browser.py's `_BrowserFixture`.
+    """
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+_server_url_override = os.environ.get("WC_SERVER_URL")
+if _server_url_override:
+    # An explicit override names a server this file does not own the
+    # lifecycle of -- honour its port rather than picking a different one
+    # and starting a second server nobody asked for.
+    SERVER_URL = _server_url_override
+    _PORT = urlparse(_server_url_override).port or _free_port()
+else:
+    _PORT = _free_port()
+    SERVER_URL = f"http://127.0.0.1:{_PORT}"
 SERVER_PROC = None
 
 
@@ -39,7 +66,7 @@ def live_server():
     global SERVER_PROC
     SERVER_PROC = subprocess.Popen(
         ["python3", "-m", "uvicorn", "app:app",
-         "--host", "127.0.0.1", "--port", "18901", "--log-level", "error"],
+         "--host", "127.0.0.1", "--port", str(_PORT), "--log-level", "error"],
         env=env,
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     )

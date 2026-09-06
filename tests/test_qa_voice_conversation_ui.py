@@ -30,3 +30,9 @@ class VoiceConversationUiTests(unittest.TestCase):
     def test_voice_settings_js_file_stays_under_300_lines(self):
         content = (ASSETS / "voice-settings.js").read_text()
         self.assertLess(len(content.splitlines()), 300)
+
+    def test_mic_new_chat_button_exists_beside_new_conversation(self):
+        occurrences = self.html.count('class="btn-new new-chat-btn"')
+        voice_occurrences = self.html.count('voice-new-chat-btn')
+        self.assertEqual(occurrences, 2, "expected mobile + desktop new-chat buttons")
+        self.assertEqual(voice_occurrences, 2, "expected mobile + desktop voice buttons")

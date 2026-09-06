@@ -129,20 +129,26 @@ def deltas(backend: Any) -> Deltas:
         unset.append("ANTHROPIC_API_KEY")
         return Deltas(set_, unset)
 
-    base_url = _text(backend.get("base_url"))
-    if base_url:
-        set_["ANTHROPIC_BASE_URL"] = base_url
-    else:
-        # No base_url means "the official API" -- which requires *removing* an
-        # inherited one, not leaving it alone. Leaving it alone is registry #68.
-        unset.append("ANTHROPIC_BASE_URL")
-
     api_key = _text(backend.get("api_key"))
+
     if api_key:
+        # API-key auth: set whatever the backend record specifies. The CLI uses
+        # the key, and a base_url is meaningful only in API-key mode anyway.
+        base_url = _text(backend.get("base_url"))
+        if base_url:
+            set_["ANTHROPIC_BASE_URL"] = base_url
+        else:
+            unset.append("ANTHROPIC_BASE_URL")
         set_["ANTHROPIC_API_KEY"] = api_key
     else:
-        # Fall through to the host's own login: drop any inherited key so a
-        # stale one from the launching shell cannot be used instead.
+        # No API key means OAuth: unset everything that would force API-key
+        # mode.  The CLI already knows api.anthropic.com by default, so
+        # exporting ANTHROPIC_BASE_URL for it is pointless and counterproductive
+        # — the CLI interprets any ANTHROPIC_BASE_URL as "API-key auth please"
+        # and ignores its OAuth path.  This is registry #68's root cause:
+        # a non-empty ANTHROPIC_BASE_URL that points to the official API still
+        # disables OAuth and expects a key the CLI never receives.
+        unset.append("ANTHROPIC_BASE_URL")
         unset.append("ANTHROPIC_API_KEY")
         unset.append("CLAUDE_CODE_SIMPLE")
     return Deltas(set_, unset)

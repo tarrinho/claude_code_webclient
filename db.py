@@ -249,7 +249,8 @@ async def init() -> None:
             position      INTEGER,
             deleted_at    TEXT,
             model         TEXT,
-            ai_machine_id TEXT
+            ai_machine_id TEXT,
+            voice_mode    INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS ai_machines (
@@ -747,6 +748,13 @@ async def _ensure_chat_columns() -> None:
         "degraded": "ALTER TABLE chats ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
         "degraded_reason": "ALTER TABLE chats ADD COLUMN degraded_reason TEXT",
         "degraded_at": "ALTER TABLE chats ADD COLUMN degraded_at TEXT",
+        "voice_mode": (
+            # Set once at chat creation from the sidebar's voice button,
+            # immutable after — no mid-conversation toggle. Gates whether
+            # stream_handler dispatches to the direct-model-call path
+            # (routes/voice.py) instead of the claude CLI.
+            "ALTER TABLE chats ADD COLUMN voice_mode INTEGER NOT NULL DEFAULT 0"
+        ),
     }
     for name, sql in migrations.items():
         if name not in columns:

@@ -18,7 +18,7 @@ _log = logging.getLogger("wc.db.chats")
 _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
     "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
-    "transcript_offset, degraded, degraded_reason, degraded_at"
+    "transcript_offset, degraded, degraded_reason, degraded_at, voice_mode"
 )
 _ALLOWED_CHAT_FIELDS = {
     "title",
@@ -28,6 +28,7 @@ _ALLOWED_CHAT_FIELDS = {
     "pinned_at",
     "model",
     "ai_machine_id",
+    "voice_mode",
 }
 
 

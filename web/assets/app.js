@@ -321,12 +321,12 @@ import { startServerPolling, stopServerPolling, loadServer, notifyResult, setSta
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1';
 
-import { _renderSshWizard } from './machine-wizard.js?v=1';
-
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires } from './machines.js?v=4';
+  _drawMapWires } from './machines.js?v=5';
+
+import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=1';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();
@@ -558,10 +558,10 @@ function updateCurrentUi(chat) {
 // machines.js now imports this instead of keeping its own table.
 export function backendKindLabel(kind) {
   return {
-    'anthropic': 'Anthropic API',
-    'anthropic-compatible': 'Anthropic-compatible',
-    'proxy': 'Claude Code proxy',
+    'through_claude_code': 'Thru claude code',
+    'direct': 'Direct',
     'ssh-proxy': 'SSH proxy',
+    'proxy': 'Claude Code proxy',
   }[kind] || kind || '';
 }
 
@@ -1664,12 +1664,12 @@ async function ensurePinnedModels(chat) {
 // each one serves. Only Anthropic-protocol backends publish a list.
 async function loadBackends() {
   await loadMachines();
-  _renderSshWizard(_machines);
+  await loadTransports();
   await loadTurnCounts();
   _renderMachineList();
   await Promise.all(
     _machines
-      .filter(machine => machine.provider === 'anthropic')
+      .filter(machine => machine.provider === 'claude_code')
       .map(machine => loadModelsFor(machine.id)),
   );
 }
@@ -1888,7 +1888,7 @@ async function loadInitialData() {
     // Only the active backend's models are needed to fill the picker at boot;
     // the rest load when the Backends tab is opened.
     const active = _machines.find(machine => machine.active);
-    if (active && active.provider === 'anthropic') await loadModelsFor(active.id);
+    if (active && active.provider === 'claude_code') await loadModelsFor(active.id);
     await refreshSupervisor();
     startSupervisorPolling();
     const lastId = storageGet('wc_last_chat');
@@ -1980,6 +1980,10 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);
   byId('machineProvider').addEventListener('change', _syncMachineProviderFields);
+  byId('addTransportBtn').addEventListener('click', _showAddTransport);
+  byId('cancelTransport').addEventListener('click', _cancelTransportForm);
+  byId('testTransport').addEventListener('click', _testTransportForm);
+  byId('saveTransport').addEventListener('click', () => _saveTransport(_renderMachineList));
   const settingsTabs = Array.from(document.querySelectorAll('.settings-tab'));
   settingsTabs.forEach((tab, index) => {
     tab.addEventListener('click', () => _switchTab(tab.dataset.tab));

@@ -18,9 +18,10 @@ import {
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
   backendKindLabel,
-} from './app.js?v=38';
+} from './app.js?v=39';
 import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
+import {_transports, loadTransports, populateTransportPicker} from './transports.js?v=1';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -79,8 +80,8 @@ export async function loadMachines(force = false) {
   }
 }
 
-// 'anthropic' is the wire protocol, not the vendor: a gateway speaking the
-// Anthropic API at a custom base_url is still provider='anthropic'. The server
+// 'claude_code' is the wire protocol: a gateway speaking the Anthropic API at a
+// custom base_url still has provider='claude_code'. The server
 // classifies this (app.backend_kind) and the Usage tab gates its cost column on
 // the same value, so read it rather than re-deriving it here -- two
 // implementations agreeing by coincidence is a latent disagreement.
@@ -149,7 +150,7 @@ function _buildModelSection(machine) {
   const section = document.createElement('div');
   section.className = 'machine-models';
 
-  if (machine.provider !== 'anthropic') {
+  if (machine.provider !== 'claude_code') {
     const note = document.createElement('p');
     note.className = 'machine-hint';
     note.textContent = 'A Claude Code proxy does not publish a model list.';
@@ -354,17 +355,7 @@ export function _drawMapWires() {
   wires.appendChild(svg);
 }
 
-export function _renderMachineList() {
-  const list = byId('machineList');
-  list.replaceChildren();
-  if (!_machines.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sidebar-empty';
-    empty.textContent = 'No machines yet. Add one below.';
-    list.appendChild(empty);
-    return;
-  }
-  _machines.forEach(m => {
+function _buildMachineCard(m) {
     const card = document.createElement('div');
     card.className = 'machine-card';
     if (m.active) card.classList.add('machine-active');
@@ -392,7 +383,7 @@ export function _renderMachineList() {
     meta.className = 'machine-meta';
     // Anthropic machines are identified by their endpoint; host/port only
     // describe the transport and would read as noise on the card.
-    const where = m.provider === 'anthropic'
+    const where = m.provider === 'claude_code'
       ? (m.base_url || 'https://api.anthropic.com')
       : m.host;
     meta.textContent = where;
@@ -411,17 +402,6 @@ export function _renderMachineList() {
     // its card rather than in a separate tab that silently described whichever
     // machine happened to be active.
     card.appendChild(_buildModelSection(m));
-
-    // SSH proxy badge and tunnel toggle.
-    if (m.provider === 'ssh_proxy') {
-      const badge = document.createElement('span');
-      badge.className = 'machine-badge machine-badge-ssh';
-      badge.id = `ssh-badge-${m.id}`;
-      badge.title = 'Click to start tunnel';
-      badge.textContent = 'SSH';
-      badge.addEventListener('click', () => _toggleSshTunnel(m.id, badge));
-      card.appendChild(badge);
-    }
 
     const actions = document.createElement('div');
     actions.className = 'machine-actions';
@@ -459,8 +439,69 @@ export function _renderMachineList() {
     actions.appendChild(delBtn);
 
     card.appendChild(actions);
-    list.appendChild(card);
+    return card;
+}
+
+// One transport's group header, with a tunnel-toggle badge -- reusing the
+// existing _toggleSshTunnel, keyed by the FIRST machine in the group (since
+// starting the tunnel for one machine on a shared transport brings the whole
+// connection up for all of them, per Task 5). Omitted when the group is
+// empty: there is no machine id to start a tunnel for yet.
+function _buildTransportHeader(label, machines) {
+  const header = document.createElement('div');
+  header.className = 'chat-section-label';
+  header.textContent = label;
+  if (machines.length) {
+    const badge = document.createElement('span');
+    badge.className = 'machine-badge machine-badge-ssh';
+    badge.title = 'Click to start tunnel';
+    badge.textContent = 'SSH';
+    badge.addEventListener('click', () => _toggleSshTunnel(machines[0].id, badge));
+    header.appendChild(badge);
+  }
+  return header;
+}
+
+export function _renderMachineList() {
+  const list = byId('machineList');
+  list.replaceChildren();
+  if (!_machines.length && !_transports.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sidebar-empty';
+    empty.textContent = 'No machines yet. Add one below.';
+    list.appendChild(empty);
+    return;
+  }
+
+  const local = _machines.filter(m => !m.transport_id);
+  const byTransport = new Map();
+  _machines.forEach(m => {
+    if (!m.transport_id) return;
+    if (!byTransport.has(m.transport_id)) byTransport.set(m.transport_id, []);
+    byTransport.get(m.transport_id).push(m);
   });
+
+  if (local.length) {
+    local.forEach(m => list.appendChild(_buildMachineCard(m)));
+  }
+
+  // Every known transport gets a header, even one with no backend pointed at
+  // it yet -- a transport just created should read as "via <name>" right
+  // away, not only once a machine is assigned to it.
+  const renderedTransportIds = new Set();
+  _transports.forEach(transport => {
+    renderedTransportIds.add(transport.id);
+    const machines = byTransport.get(transport.id) || [];
+    list.appendChild(_buildTransportHeader(`via ${transport.name}`, machines));
+    machines.forEach(m => list.appendChild(_buildMachineCard(m)));
+  });
+  // A machine pointed at a transport that no longer exists must not silently
+  // vanish from the list.
+  for (const [transportId, machines] of byTransport) {
+    if (renderedTransportIds.has(transportId)) continue;
+    list.appendChild(_buildTransportHeader('via (unknown transport)', machines));
+    machines.forEach(m => list.appendChild(_buildMachineCard(m)));
+  }
 
   const total = byId('mapTotal');
   if (total) {
@@ -545,18 +586,20 @@ async function _deleteMachine(id) {
   }
 }
 
-// Anthropic machines are configured by endpoint, proxy machines by host, so
-// only one of the two field groups is ever relevant.
+// claude_code and direct are configured by endpoint (base_url + api_key),
+// proxy by host — only one group is relevant. "Executes on" (transport) is
+// independent of provider and always visible, so it is not gated here.
 // Exported: app.js wires this as the 'change' listener on #machineProvider.
 export function _syncMachineProviderFields() {
   const provider = byId('machineProvider').value;
-  const isAnthropic = provider === 'anthropic';
-  const isSsh = provider === 'ssh_proxy';
-  byId('machineProxyFields').hidden = !(provider === 'proxy');
-  byId('machineAnthropicFields').hidden = isAnthropic;
-  byId('machineSshFields').hidden = !isSsh;
-  byId('machineApiKeyFields').hidden = !isAnthropic;
-  byId('machineModel').placeholder = isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5';
+  const isClaude = provider === 'claude_code';
+  const isDirect = provider === 'direct';
+  byId('machineProxyFields').hidden = !isDirect;
+  byId('machineAnthropicFields').hidden = !(isClaude || isDirect);
+  byId('machineApiKeyFields').hidden = !(isClaude || isDirect);
+  byId('machineModel').placeholder = isClaude
+    ? 'claude-opus-5'
+    : isDirect ? 'vllm/Qwen3.6-35B-A3B-NVFP4' : 'claude-sonnet-5';
 }
 
 export function _editMachine(id) {
@@ -565,16 +608,14 @@ export function _editMachine(id) {
   _setMachineEditing(id);
   byId('machineFormTitle').textContent = 'Edit machine';
   byId('machineName').value = m.name;
-  byId('machineProvider').value = m.provider || 'proxy';
+  byId('machineProvider').value = m.provider || 'claude_code';
   byId('machineHost').value = m.host || '';
   byId('machineBaseUrl').value = m.base_url || '';
-  byId('machineSshHost').value = m.ssh_host || '';
-  byId('machineSshUser').value = m.ssh_user || 'kali';
-  byId('machineSshKeyPath').value = m.ssh_key_path || '';
   byId('machineModel').value = m.model;
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Leave blank to keep current';
   _syncMachineProviderFields();
+  populateTransportPicker(m.transport_id || '');
   byId('machineForm').hidden = false;
   byId('addMachineBtn').hidden = true;
   byId('machineName').focus();
@@ -583,23 +624,16 @@ export function _editMachine(id) {
 export async function _saveMachine() {
   const name = byId('machineName').value.trim();
   const provider = byId('machineProvider').value;
-  const isAnthropic = provider === 'anthropic';
-  const isSsh = provider === 'ssh_proxy';
+  const isClaude = provider === 'claude_code';
   const host = byId('machineHost').value.trim();
   const base_url = byId('machineBaseUrl').value.trim();
   const model = (byId('machineModel').value || '').trim()
-    || (isAnthropic ? 'claude-opus-5' : 'claude-sonnet-5');
+    || (isClaude ? 'claude-opus-5' : 'claude-sonnet-5');
   const api_key = byId('machineApiKey').value.trim() || null;
-  const ssh_host = byId('machineSshHost').value.trim();
-  const ssh_user = byId('machineSshUser').value.trim() || 'kali';
-  const ssh_key_path = byId('machineSshKeyPath').value.trim();
+  const transport_id = byId('machineTransport').value || null;
 
   if (!name) { byId('machineName').focus(); return; }
-  if (!isAnthropic && !host && !isSsh) { byId('machineHost').focus(); return; }
-  if (isSsh && (!ssh_host || !ssh_key_path)) {
-    if (!ssh_host) byId('machineSshHost').focus();
-    return;
-  }
+  if (!isClaude && provider !== 'direct' && !host) { byId('machineHost').focus(); return; }
 
   const save = byId('saveMachine');
   save.disabled = true;
@@ -608,17 +642,15 @@ export async function _saveMachine() {
     // Only send fields the form actually collects — the server rejects the
     // whole request if the body carries any field outside its allowlist.
     const body = { name, provider, model };
-    if (isAnthropic) {
+    body.transport_id = transport_id;
+    if (isClaude) {
       // Blank means "the default endpoint"; the server fills it in.
       if (base_url) body.base_url = base_url;
-      // Only an anthropic backend consumes the key, so only that provider
-      // sends one. Storing it for a proxy machine put a live credential in the
-      // database that no turn could ever use -- cost with no effect.
       if (api_key !== null) body.api_key = api_key;
-    } else if (isSsh) {
-      body.ssh_host = ssh_host;
-      body.ssh_user = ssh_user;
-      body.ssh_key_path = ssh_key_path;
+    } else if (provider === 'direct') {
+      body.host = host;
+      if (base_url) body.base_url = base_url;
+      if (api_key !== null) body.api_key = api_key;
     } else {
       body.host = host;
     }
@@ -675,13 +707,11 @@ export function _showAddMachine() {
   byId('machineProvider').value = 'anthropic';
   byId('machineHost').value = '';
   byId('machineBaseUrl').value = '';
-  byId('machineSshHost').value = '';
-  byId('machineSshUser').value = 'kali';
-  byId('machineSshKeyPath').value = '';
   byId('machineModel').value = '';
   byId('machineApiKey').value = '';
   byId('machineApiKey').placeholder = 'Optional';
   _syncMachineProviderFields();
+  populateTransportPicker('');
   byId('machineForm').hidden = false;
   byId('addMachineBtn').hidden = true;
   byId('machineName').focus();

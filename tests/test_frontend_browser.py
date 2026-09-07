@@ -2041,96 +2041,12 @@ class QueuePanelBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
-@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
-@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
-class SshWizardBrowserTests(_BrowserFixture):
-    """The SSH init wizard renders and is callable from the Backends tab.
-
-    Before the fix, machine-wizard.js existed but was never imported or
-    called by app.js — the file sat unused. The tests verify that after the
-    import wire-up, an ssh_proxy machine present in the listing causes the
-    wizard panel to appear inside Settings, and that a backend without
-    ssh_proxy machines does not cause it to show.
-    """
-
-    def _seed_ssh_machine(self) -> str:
-        import datetime
-        import sqlite3
-        import secrets as sec
-        machine_id = f"ssh-{sec.token_hex(4)}"
-        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
-        con.execute(
-            "INSERT INTO ai_machines (id,name,host,port,provider,base_url,"
-            "description,ssh_host,ssh_user,ssh_key_path,"
-            "model,api_key,owner_id,created_at,updated_at,"
-            "ai_api_key_name,has_api_key,active_models,active) "
-            "VALUES (?,?,?,?,?,NULL,NULL,?,?,?,NULL,?,?,?,0,'[]',0)",
-            (machine_id, "SSH Proxy", "127.0.0.1", 9000, "ssh_proxy",
-             "192.168.1.100", "kali", "/home/kali/.ssh/id_rsa",
-             "admin", stamp, stamp),
-        )
-        # Seed one chat so the sidebar has a conversation to show.
-        chat_id = f"q-{sec.token_hex(4)}"
-        con.execute(
-            "INSERT INTO chats (id,title,work_dir,owner_id,created_at,updated_at) "
-            "VALUES (?,?,NULL,'admin',?,?)",
-            (chat_id, "Test", stamp, stamp),
-        )
-        con.commit()
-        con.close()
-        return machine_id
-
-    def test_wizard_panel_shows_when_ssh_proxy_exists(self):
-        self._seed_ssh_machine()
-        self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector("#settingsBtn", timeout=10_000)
-        self.page.click("#settingsBtn")
-        self.page.wait_for_selector(".machine-card", timeout=10_000)
-        self.page.wait_for_timeout(800)
-
-        wizard = self.page.wait_for_selector("#sshWizard", state="visible", timeout=5_000)
-        self.assertTrue(
-            wizard,
-            "the SSH Proxy Setup wizard must appear in Settings when an "
-            "ssh_proxy machine is present in the backends list",
-        )
-        self.assertIn("SSH Proxy Setup", wizard.inner_text())
-        self.assertEqual(self.errors, [])
-
-    def test_wizard_panel_does_not_show_without_ssh_proxy(self):
-        # Only the default Anthropic machine exists — no ssh_proxy.
-        self._open_backends()
-
-        wizard = self.page.query_selector("#sshWizard")
-        self.assertIsNone(
-            wizard,
-            "the wizard must not render when no ssh_proxy machine is "
-            "registered",
-        )
-        self.assertEqual(self.errors, [])
-
-    def test_wizard_panel_hides_after_cancel(self):
-        self._seed_ssh_machine()
-        self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_selector("#settingsBtn", timeout=10_000)
-        self.page.click("#settingsBtn")
-        self.page.wait_for_selector(".machine-card", timeout=10_000)
-        self.page.wait_for_timeout(800)
-
-        wizard = self.page.wait_for_selector("#sshWizard", state="visible", timeout=5_000)
-        self.assertTrue(wizard.is_visible())
-
-        self.page.click("#wizardCancel")
-        self.page.wait_for_timeout(500)
-
-        wizard2 = self.page.query_selector("#sshWizard")
-        self.assertIsNone(
-            wizard2,
-            "clicking Cancel must remove the wizard panel from the DOM",
-        )
-        self.assertEqual(self.errors, [])
-
+# SshWizardBrowserTests (machine-wizard.js's #sshWizard panel) was removed
+# along with machine-wizard.js itself: the ssh-transport/backend-split plan's
+# Task 9 retired the old provider='ssh_proxy' init wizard in favor of the
+# transport form's own "Test connection" button plus the transport header's
+# SSH tunnel badge. See web/assets/transports.js and machines.js's grouped
+# _renderMachineList.
 
 if __name__ == "__main__":
     unittest.main()

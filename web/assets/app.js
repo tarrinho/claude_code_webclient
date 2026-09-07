@@ -557,7 +557,14 @@ function updateCurrentUi(chat) {
 // per-chat Backend picker (this copy's `|| machine.backend_kind` fallback).
 // machines.js now imports this instead of keeping its own table.
 export function backendKindLabel(kind) {
+  // 'anthropic'/'anthropic-compatible' are what shared.py's backend_kind()
+  // still actually emits as committed today -- a separate, still-uncommitted
+  // session rename would replace those with 'direct', but until that lands
+  // every real machine needs these old keys or its label falls back to a
+  // raw, unlabeled string. Kept alongside the new keys, not instead of them.
   return {
+    'anthropic': 'Anthropic API',
+    'anthropic-compatible': 'Anthropic-compatible',
     'through_claude_code': 'Thru claude code',
     'direct': 'Direct',
     'ssh-proxy': 'SSH proxy',

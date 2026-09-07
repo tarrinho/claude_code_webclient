@@ -316,8 +316,26 @@ class SshProxyMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_migration_is_idempotent(self):
         """Running init() a second time must not create duplicate transports
-        or backends."""
+        or backends.
+
+        An active claude_code machine is inserted alongside the ssh_proxy
+        row (mirroring test_existing_ssh_proxy_row_becomes_transport_plus_backend
+        above) so the migration actually takes its "copy the active backend"
+        branch and creates a migrated ai_machines row -- without one, this
+        is the one production data migration in the whole branch, and
+        asserting only the transport count would miss a duplicated backend
+        entirely."""
         await db.init()
+        await db.db_conn.execute(
+            "INSERT INTO ai_machines "
+            "(id, name, provider, host, port, api_key, model, base_url, "
+            " description, active, owner_id, created_at, updated_at) "
+            "VALUES ('cfai2', 'CF AI Machine', 'claude_code', "
+            "        'llm.ai-machine.cfappsecurity.com', 443, 'real-key', "
+            "        'vllm/Qwen3.6-35B-A3B-NVFP4', "
+            "        'https://llm.ai-machine.cfappsecurity.com', NULL, 1, "
+            "        'admin', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')"
+        )
         await db.db_conn.execute(
             "INSERT INTO ai_machines "
             "(id, name, provider, host, port, api_key, model, base_url, "
@@ -337,6 +355,14 @@ class SshProxyMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
         transports = await db.ssh_transports_list("admin")
         self.assertEqual(len(transports), 1)
+        transport_id = transports[0]["id"]
+
+        machines = await db.ai_machines_list("admin")
+        migrated = [m for m in machines if m.get("transport_id") == transport_id]
+        self.assertEqual(
+            len(migrated), 1,
+            "the migrated backend was duplicated by re-running init()",
+        )
 
 
 if __name__ == "__main__":

@@ -912,6 +912,7 @@ async def _migrate_ssh_proxy_machines_to_transports() -> None:
             )
 
         await db_conn.execute("DELETE FROM ai_machines WHERE id = ?", (old["id"],))
+        await db_conn.execute("DELETE FROM ssh_tunnels WHERE machine_id = ?", (old["id"],))
 
     await db_conn.commit()
 

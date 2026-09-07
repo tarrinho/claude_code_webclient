@@ -47,7 +47,7 @@ def make_db(path: Path, *, machines: list[dict], default_model: str = ""):
         con.execute(
             "INSERT INTO ai_machines (id, name, provider, base_url, api_key,"
             " model, active) VALUES (?,?,?,?,?,?,?)",
-            (m["id"], m["name"], m.get("provider", "anthropic"),
+            (m["id"], m["name"], m.get("provider", "claude_code"),
              m.get("base_url", ""), m.get("api_key", ""), m.get("model", ""),
              int(m.get("active", 0))),
         )
@@ -135,8 +135,8 @@ class WrapperTests(unittest.TestCase):
 
     def test_a_non_anthropic_backend_gets_no_anthropic_variables(self):
         make_db(self.db, machines=[{
-            "id": "m1", "name": "Proxy", "provider": "proxy",
-            "base_url": GATEWAY_URL, "api_key": GATEWAY_KEY, "active": 1}])
+            "id": "m1", "name": "SSH Proxy", "provider": "ssh_proxy",
+            "active": 1}])
         out = self.run_wrapper()
         self.assertIn("ANTHROPIC_BASE_URL = (unset)", out)
         self.assertIn("ANTHROPIC_AUTH_TOKEN = (unset)", out)

@@ -28,11 +28,11 @@ PORT = 8756
 FAILURES: list[str] = []
 
 MACHINES = [
-    {"id": "anthropic-api", "name": "Anthropic API", "provider": "anthropic",
-     "backend_kind": "anthropic", "host": "api.anthropic.com", "port": 443,
+    {"id": "anthropic-api", "name": "Anthropic API", "provider": "claude_code",
+     "backend_kind": "through_claude_code", "host": "api.anthropic.com", "port": 443,
      "base_url": "https://api.anthropic.com", "model": "claude-opus-5",
      "active_models": "[]", "active": 1, "description": ""},
-    {"id": "ai-machine", "name": "AI Machine", "provider": "anthropic",
+    {"id": "ai-machine", "name": "AI Machine", "provider": "claude_code",
      "backend_kind": "anthropic-compatible", "host": "llm.example.invalid",
      "port": 443, "base_url": "https://llm.example.invalid",
      "model": "vllm/Qwen3.6-35B-A3B-NVFP4", "active_models": "[]", "active": 0,

@@ -50,6 +50,25 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, "the fixture must log in")
         return client, {"X-CSRF-Token": client.cookies.get("wc_csrf")}
 
+    async def _make_voice_machine(
+        self,
+        machine_id: str,
+        owner: str,
+        models: str = '["azure_ai/gpt-5.6-luna", "vllm/Qwen3.5-0.8B"]',
+    ) -> str:
+        """A backend this owner actually has, for the voice settings to name."""
+        await db.ai_machine_create(
+            machine_id, "Voice Gateway", "gw.example.invalid", 443, None,
+            "azure_ai/gpt-5.6-luna", "https://gw.example.invalid", None, owner,
+            provider="claude_code",
+        )
+        await db.db_conn.execute(
+            "UPDATE ai_machines SET active_models = ? WHERE id = ?",
+            (models, machine_id),
+        )
+        await db.db_conn.commit()
+        return machine_id
+
     async def _make_admin_and_chat(self, chat_id: str, voice_mode: bool = False):
         password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(password))
@@ -165,7 +184,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         chat = await db.chat_get("c5", "admin")
 
         async def fake_get_backend(cid, owner=None):
-            return {"provider": "anthropic", "base_url": "https://example.test",
+            return {"provider": "claude_code", "base_url": "https://example.test",
                     "api_key": "fake-key"}
 
         created_kwargs = {}
@@ -209,7 +228,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         sentinel_base_url = "https://internal-gateway.fake.example:9443/v1"
 
         async def fake_get_backend(cid, owner=None):
-            return {"provider": "anthropic", "base_url": sentinel_base_url,
+            return {"provider": "claude_code", "base_url": sentinel_base_url,
                     "api_key": "fake-key"}
 
         async def fake_create(**kwargs):
@@ -226,6 +245,126 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"type": "error"', joined)
         self.assertNotIn(sentinel_base_url, joined)
         self.assertNotIn("internal-gateway.fake.example", joined)
+
+    async def test_stream_voice_turn_empty_response_reports_error_not_done(self):
+        """A clean completion with no real text is a non-answer, the same
+        class runner.py's _is_non_answer exists to catch on the CLI path --
+        it must not be stored as a successful empty assistant message.
+        """
+        from types import SimpleNamespace
+        from routes import voice
+        import runner
+
+        class _FakeStream:
+            def __init__(self, chunks):
+                self._chunks = chunks
+
+            def __aiter__(self):
+                return self._iter()
+
+            async def _iter(self):
+                for text in self._chunks:
+                    yield SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))],
+                        usage=None,
+                    )
+
+        await db.chat_create("c8", "Voice Chat", None, f"{self.tmp.name}/p/c8", "admin")
+        await db.chat_update("c8", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
+                              ai_machine_id="fake-machine-id")
+        chat = await db.chat_get("c8", "admin")
+
+        async def fake_get_backend(cid, owner=None):
+            return {"provider": "claude_code", "base_url": "https://example.test",
+                    "api_key": "fake-key"}
+
+        async def fake_create(**kwargs):
+            # No content deltas at all -- e.g. the model's whole reply landed
+            # in a reasoning block never surfaced as text.
+            return _FakeStream([None, ""])
+
+        with patch.object(runner, "get_backend", fake_get_backend), \
+                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+                patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_create)), create=True), \
+                patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
+            frames = [f async for f in voice.stream_voice_turn(chat, "hi", "admin")]
+
+        joined = "".join(frames)
+        self.assertIn('"type": "error"', joined)
+        self.assertNotIn('"type": "done"', joined)
+
+        messages, _ = await db.messages_page("c8", limit=10)
+        self.assertEqual(messages, [], "an empty reply must not be stored as a real turn")
+
+        averages = await voice.voice_model_timing_averages(["azure_ai/gpt-5.6-luna"])
+        self.assertEqual(
+            averages["azure_ai/gpt-5.6-luna"]["turn_count"], 1,
+            "an empty-response attempt still spent time/tokens and must be recorded",
+        )
+
+        cur = await db.db_conn.execute(
+            "SELECT is_error, model FROM usage_events WHERE chat_id = ?", ("c8",),
+        )
+        row = await cur.fetchone()
+        self.assertIsNotNone(row, "a voice attempt must record usage even when it produced no text")
+        self.assertEqual(row["is_error"], 1)
+        self.assertEqual(row["model"], "azure_ai/gpt-5.6-luna")
+
+    async def test_stream_voice_turn_records_usage_on_success(self):
+        from types import SimpleNamespace
+        from routes import voice
+        import runner
+
+        class _FakeStream:
+            def __init__(self, chunks):
+                self._chunks = chunks
+
+            def __aiter__(self):
+                return self._iter()
+
+            async def _iter(self):
+                for text in self._chunks:
+                    yield SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))],
+                        usage=None,
+                    )
+                yield SimpleNamespace(
+                    choices=[],
+                    usage=SimpleNamespace(prompt_tokens=12, completion_tokens=7),
+                )
+
+        await db.chat_create("c9", "Voice Chat", None, f"{self.tmp.name}/p/c9", "admin")
+        await db.chat_update("c9", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
+                              ai_machine_id="fake-machine-id")
+        chat = await db.chat_get("c9", "admin")
+
+        async def fake_get_backend(cid, owner=None):
+            return {"provider": "claude_code", "base_url": "https://example.test",
+                    "api_key": "fake-key"}
+
+        async def fake_create(**kwargs):
+            return _FakeStream(["Hi", " there."])
+
+        with patch.object(runner, "get_backend", fake_get_backend), \
+                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+                patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_create)), create=True), \
+                patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
+            frames = [f async for f in voice.stream_voice_turn(chat, "hi", "admin")]
+
+        self.assertIn('"type": "done"', "".join(frames))
+
+        cur = await db.db_conn.execute(
+            "SELECT input_tokens, output_tokens, is_error, origin FROM usage_events "
+            "WHERE chat_id = ?", ("c9",),
+        )
+        row = await cur.fetchone()
+        self.assertIsNotNone(row, "a successful voice turn must record usage")
+        self.assertEqual(row["input_tokens"], 12)
+        self.assertEqual(row["output_tokens"], 7)
+        self.assertEqual(row["is_error"], 0)
+        self.assertEqual(row["origin"], "voice")
 
     async def test_stream_handler_uses_voice_path_for_voice_chats(self):
         from routes import voice
@@ -247,9 +386,54 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("voice-path-used", response.text)
 
+    async def test_voice_stream_respects_the_sse_slot_cap(self):
+        """The voice branch must reserve a slot exactly like every other
+        stream endpoint (shared.acquire_sse_slot), or one account can open
+        unlimited concurrent voice streams while every other stream type is
+        capped at _MAX_SSE_PER_OWNER.
+        """
+        import shared
+        from routes import chats
+
+        password = await self._make_admin_and_chat("c10", voice_mode=True)
+        await db.chat_update("c10", "admin", model="azure_ai/gpt-5.6-luna",
+                              ai_machine_id="fake-machine-id")
+
+        async def fake_stream_voice_turn(chat, prompt, owner):
+            yield 'data: {"type": "done"}\n\n'
+
+        client, headers = self._login("admin", password)
+        self.addCleanup(shared._sse_slots.pop, "admin", None)
+        shared._sse_slots["admin"] = shared._MAX_SSE_PER_OWNER
+
+        with patch.object(chats, "stream_voice_turn", fake_stream_voice_turn):
+            response = client.post(
+                "/api/chats/c10/stream", json={"content": "hi"}, headers=headers,
+            )
+        self.assertEqual(
+            response.status_code, 429,
+            "voice stream must be capped the same as every other SSE endpoint",
+        )
+
+        shared._sse_slots["admin"] = 0
+        with patch.object(chats, "stream_voice_turn", fake_stream_voice_turn):
+            response = client.post(
+                "/api/chats/c10/stream", json={"content": "hi"}, headers=headers,
+            )
+        self.assertEqual(response.status_code, 200)
+        # The generator's finally must release the slot even on a clean
+        # finish, or a handful of ordinary voice turns would exhaust the cap.
+        self.assertEqual(shared._sse_slots.get("admin", 0), 0)
+
     async def test_chat_create_with_voice_mode_pins_machine_and_model(self):
         password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(password))
+        # The machine has to exist and belong to this user. Pinning a bare id
+        # that names nobody's machine used to be accepted, and the failure
+        # surfaced only later, at turn time, as a voice chat with no reachable
+        # backend -- the owner-scoped lookup finds nothing for a machine the
+        # caller does not own.
+        await self._make_voice_machine("voice-machine-1", "admin")
         await db.setting_set("voice_ai_machine_id", "voice-machine-1")
         await db.setting_set("voice_model", "azure_ai/gpt-5.6-luna")
 
@@ -265,18 +449,18 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat["model"], "azure_ai/gpt-5.6-luna")
 
     async def test_settings_get_includes_voice_model_options(self):
-        from routes import db_machines, voice
+        from routes import voice
 
         password = await self._make_admin_and_chat("c7")
+        # A real owned machine rather than a patched lookup: /api/settings only
+        # offers the models of a backend the caller actually has, so stubbing
+        # the read tested a path the endpoint no longer takes.
+        await self._make_voice_machine("voice-machine-2", "admin")
         await db.setting_set("voice_ai_machine_id", "voice-machine-2")
         await voice.record_voice_turn_timing("azure_ai/gpt-5.6-luna", 1100, 1200)
 
-        async def fake_ai_machine_backend_by_id(machine_id, owner_id):
-            return {"id": machine_id, "active_models": '["azure_ai/gpt-5.6-luna", "vllm/Qwen3.5-0.8B"]'}
-
         client, headers = self._login("admin", password)
-        with patch.object(db_machines, "ai_machine_backend_by_id", fake_ai_machine_backend_by_id):
-            response = client.get("/api/settings", headers=headers)
+        response = client.get("/api/settings", headers=headers)
         options = {o["id"]: o for o in response.json()["voice_model_options"]}
         self.assertEqual(options["azure_ai/gpt-5.6-luna"]["turn_count"], 1)
         self.assertEqual(options["vllm/Qwen3.5-0.8B"]["turn_count"], 0)

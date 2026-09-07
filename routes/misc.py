@@ -710,6 +710,8 @@ async def handle_settings_get(request: Request):
     therefore stay non-sensitive -- never add a secret, key, or token here.
     """
     session = request.state.session
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required")
     host = await runner.get_proxy_host()
     try:
         session_ttl = int(await db.setting_get("session_ttl") or config.SESSION_TTL_S)
@@ -810,6 +812,9 @@ async def handle_settings_get(request: Request):
             "turn_timeout_s": turn_timeout,
             "prompt_max": prompt_max,
             "voice_backend_id": voice_backend_id,
+            # Compatibility key for older clients; both values are the same
+            # owner-scoped selection and never expose another user's machine.
+            "voice_ai_machine_id": voice_backend_id,
             "voice_backend_options": voice_backend_options,
             "voice_model": voice_model,
             "voice_speech_rate": voice_speech_rate,

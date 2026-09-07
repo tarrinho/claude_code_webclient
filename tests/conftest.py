@@ -37,6 +37,13 @@ if not os.environ.get("WC_LOG_FILE"):
     # the test log needs to be protected from.
     os.environ["WC_LOG_FILE"] = str(_log_dir / "suite.log")
 
+# Session persistence now lives in a separate database to avoid writer
+# collision with the main app DB.  Point it at a throwaway so tests that
+# spawn subprocesses never touch the production sessions store.
+if not os.environ.get("WC_SESSION_DB_PATH"):
+    _sdir = pathlib.Path(tempfile.gettempdir()) / "wc-test-sessions"
+    os.environ["WC_SESSION_DB_PATH"] = str(_sdir / "sessions.db")
+
 
 # ── Capability guard ─────────────────────────────────────────────────────────
 #

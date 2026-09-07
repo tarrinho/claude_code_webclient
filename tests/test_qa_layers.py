@@ -416,8 +416,22 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_security_middleware_wraps_auth_rejections(self):
-        self.assertIs(app.app.user_middleware[0].cls, app.SecurityMiddleware)
-        self.assertIs(app.app.user_middleware[1].cls, app.AuthMiddleware)
+        """Security must still see an auth rejection on its way out.
+
+        Asserted as relative order rather than as fixed indices. The rate
+        limiter was added outside Security -- deliberately, so a flood is
+        refused before any session lookup or database read happens -- and an
+        index-based assertion turned that correct change into a failure while
+        saying nothing about the property this test is named for.
+        """
+        order = [entry.cls for entry in app.app.user_middleware]
+        self.assertIn(app.SecurityMiddleware, order)
+        self.assertIn(app.AuthMiddleware, order)
+        self.assertLess(
+            order.index(app.SecurityMiddleware), order.index(app.AuthMiddleware),
+            "Security sits inside Auth, so an auth rejection would leave "
+            "without its security headers",
+        )
 
     async def test_expired_browser_page_redirects_to_login(self):
         request = SimpleNamespace(

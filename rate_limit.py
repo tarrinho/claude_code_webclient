@@ -13,6 +13,7 @@ POST with a JSON body (login, chat prompts) into a 500 with JSONDecodeError.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -183,7 +184,6 @@ _cleanup_task: ClassVar[Any] = None
 
 def start_cleanup(interval_s: float = 300.0) -> None:
     """Start a background task that prunes stale buckets every `interval_s` seconds."""
-    import asyncio
 
     async def _run() -> None:
         while True:
@@ -200,6 +200,7 @@ def start_cleanup(interval_s: float = 300.0) -> None:
 
 
 async def stop_cleanup() -> None:
+    global _cleanup_task
     if _cleanup_task and not _cleanup_task.done():
         _cleanup_task.cancel()
         try:

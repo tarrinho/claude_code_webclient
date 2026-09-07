@@ -39,8 +39,9 @@ def _app():
     resolves WC_DB_PATH at import time (CLAUDE.md rule 9 -- db.init migrates,
     so it must never be pointed at production by a test).
     """
-    tmp = Path(tempfile.mkdtemp(prefix="wc-routes-")) / "wc.db"
-    os.environ["WC_DB_PATH"] = str(tmp)
+    tmpdir = tempfile.mkdtemp(prefix="wc-routes-")
+    os.environ["WC_DB_PATH"] = f"{tmpdir}/wc.db"
+    os.environ["WC_SESSION_DB_PATH"] = f"{tmpdir}/sessions.db"
     os.environ.setdefault("WC_PROXY_ENABLED", "0")
     import config
 

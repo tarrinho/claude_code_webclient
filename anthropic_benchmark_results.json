@@ -1,0 +1,187 @@
+{
+  "results": {
+    "claude-opus-5": {
+      "coding-bug-fix": {
+        "response": "Bug not \"drops last element\" \u2014 elements all there, order reversed. `[1,2,3], n=2` gives `[3,2]`, want `[2,3]`. Fix: reverse result back.\n\n```python\nfrom typing import Sequence, TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: Sequence[T], n: int) -> list[T]:\n    \"\"\"Return the last n unique elements of lst, in original order.\n\n    Uniqueness is resolved from the end of the sequence, so when a value\n    occurs more than once its last occurrence is the one kept.\n\n    Args:\n        lst: Sequence to scan. Elements need only support equality.\n        n: Maximum number of unique elements to return. Values <= 0\n            return an empty list.\n\n    Returns:\n        A new list of at most n unique elements, ordered as they appear\n        in lst.\n    \"\"\"\n    if n <= 0:\n        return []\n    seen: list[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n            if len(seen) == n:\n                break\n    seen.reverse()\n    return seen\n```\n\nNotes:\n- `n <= 0` guard added: raw `seen[:n]` with negative `n` silently trims from the wrong end.\n- Early `break` stops scanning once `n` found \u2014 old code walked whole list.\n- `x not in seen` kept instead of a `set` so unhashable elements still work; cost is O(n\u00b7len(lst)).",
+        "metrics": {
+          "elapsed_s": 18.82,
+          "output_chars": 1261
+        }
+      },
+      "reasoning-puzzle": {
+        "response": "Start (0,0,8).\n\nstep 1: C\u2192A \u2192 (5,0,3)\nstep 2: A\u2192B \u2192 (2,3,3)\nstep 3: B\u2192C \u2192 (2,0,6)\nstep 4: A\u2192B \u2192 (0,2,6)\nstep 5: C\u2192A \u2192 (5,2,1)\nstep 6: A\u2192B \u2192 (4,3,1)\nstep 7: B\u2192C \u2192 (4,0,4)\n\nMinimum: **7 pours**.\n\nOther branch (start C\u2192B) reach same goal in 8, so 7 is min.",
+        "metrics": {
+          "elapsed_s": 11.06,
+          "output_chars": 253
+        }
+      },
+      "coding-algo": {
+        "response": "```python\nclass Node:\n    __slots__ = (\"key\", \"value\", \"prev\", \"next\")\n\n    def __init__(self, key=None, value=None):\n        self.key = key\n        self.value = value\n        self.prev = None\n        self.next = None\n\n\nclass LRUCache:\n    def __init__(self, capacity: int):\n        if capacity <= 0:\n            raise ValueError(\"capacity must be positive\")\n        self.capacity = capacity\n        self.map = {}\n        # Sentinel head/tail: head.next is least recently used,\n        # tail.prev is most recently used.\n        self.head = Node()\n        self.tail = Node()\n        self.head.next = self.tail\n        self.tail.prev = self.head\n\n    def _unlink(self, node):\n        node.prev.next = node.next\n        node.next.prev = node.prev\n        node.prev = node.next = None\n\n    def _append(self, node):\n        last = self.tail.prev\n        last.next = node\n        node.prev = last\n        node.next = self.tail\n        self.tail.prev = node\n\n    def get(self, key) -> int:\n        node = self.map.get(key)\n        if node is None:\n            return -1\n        self._unlink(node)\n        self._append(node)\n        return node.value\n\n    def put(self, key, value) -> None:\n        node = self.map.get(key)\n        if node is not None:\n            node.value = value\n            self._unlink(node)\n            self._append(node)\n            return\n        if len(self.map) >= self.capacity:\n            lru = self.head.next\n            self._unlink(lru)\n            del self.map[lru.key]\n        node = Node(key, value)\n        self.map[key] = node\n        self._append(node)\n\n    def __len__(self) -> int:\n        return len(self.map)\n\n    def __repr__(self) -> str:\n        items = []\n        node = self.head.next\n        while node is not self.tail:\n            items.append((node.key, node.value))\n            node = node.next\n        return f\"LRUCache(capacity={self.capacity}, items={items})\"\n```\n\n`__repr__` order: least recently used first, most recently used last.",
+        "metrics": {
+          "elapsed_s": 10.06,
+          "output_chars": 1984
+        }
+      },
+      "reasoning-math": {
+        "response": "$$P = 1 - \\prod_{k=0}^{22}\\frac{365-k}{365} = 1 - \\frac{365}{365}\\cdot\\frac{364}{365}\\cdot\\frac{363}{365}\\cdots\\frac{343}{365} = 1 - \\frac{365!}{342!\\cdot 365^{23}}$$\n\n$$P = 1 - 0.4927027657 = 0.5072972343$$\n\n**0.5073**",
+        "metrics": {
+          "elapsed_s": 9.64,
+          "output_chars": 219
+        }
+      },
+      "comprehension-read": {
+        "response": "1. Dict mapping category -> mean of that category's values. Groups `item['value']` by `item['category']`, then averages each bucket. True division, so values float. Empty `data` gives `{}`.\n\n2. `{}` in data still counted. Both `.get` calls hit defaults: category `'unknown'`, value `0`. So empty dict adds a 0 sample to `'unknown'` bucket, dragging that mean down. Same for any item missing `value` \u2014 missing and genuine zero indistinguishable.\n\n3. Cannot happen. Key created only on line right before append, so every list holds at least 1 element. No zero-count category exists in `result`.\n\n4. None. `ZeroDivisionError` unreachable from any `data` value \u2014 follows from 3. Empty `data` skips loop, comprehension over empty dict returns `{}`, no division runs. Guard unneeded.\n\nReal failure modes instead:\n- non-numeric `value` (string, `None`): `TypeError` in `sum`\n- unhashable `category` (list, dict): `TypeError: unhashable type`\n- item not dict, no `.get`: `AttributeError`\n\nCleanup: `collections.defaultdict(list)` kills the `if k not in result` line.",
+        "metrics": {
+          "elapsed_s": 16.67,
+          "output_chars": 1058
+        }
+      },
+      "planning-task": {
+        "response": "Repo already 80% there: `html[data-theme=\"light\"]` in `web/assets/styles.css:15`, toggle button `web/index.html:34`, `toggleTheme` at `web/assets/app.js:74`. Missing piece is server persistence \u2014 current pref lives only in `localStorage` under `wc_theme`. Also: this checkout serves static HTML from `web/`, no Jinja2 templates exist; design below marks which steps need the Jinja hop added.\n\n## 1. SQL schema change\n\n1. Per-user column on `users`, not the global `settings` key/value table \u2014 `settings` is app-wide and `GET /api/settings` is readable by every authenticated user (`app.py:2220`).\n2. Register in the existing migration dict pattern (`db.py:383`):\n   ```sql\n   ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';\n   ```\n3. Allowed values `'dark' | 'light' | 'system'`. Enforce in Python, not a CHECK constraint \u2014 SQLite cannot add a CHECK by `ALTER TABLE`, and every other column here validates in code.\n4. No index. Read is always by primary key `users.id`.\n5. `'system'` as default, not `'dark'`: default must mean \"no choice recorded\" so OS preference stays live. Dark stays the fallback paint in CSS (`:root`), so existing behavior unchanged.\n\n## 2. API endpoints\n\n1. `GET /api/me/theme` \u2192 `{\"theme\":\"dark\"}`. Authenticated. Own row only, no `user_id` parameter \u2014 that parameter is an IDOR waiting to happen.\n2. `PUT /api/me/theme` body `{\"theme\":\"dark|light|system\"}` \u2192 `{\"theme\":\"dark\"}`. 422 on any other value, allowlist not regex.\n3. `PUT` not `PATCH`: single scalar, idempotent, no partial update to express.\n4. Needs the CSRF token from `sessions.csrf` like other mutating routes \u2014 a state-changing endpoint reachable by cookie alone is CSRF-able even for something this small.\n5. Skip a dedicated `GET` if theme is server-rendered (\u00a73.1) \u2014 the page already carries it. Keep `GET` only for the SPA rehydrating after login without reload.\n\n## 3. Frontend components\n\n1. **Template attribute** (Jinja2) \u2014 `<html data-theme=\"{{ theme }}\">`, resolved server-side from the session user. Kills the flash-of-wrong-theme entirely. This checkout hardcodes `data-theme=\"dark\"` in `web/index.html:2`; needs Jinja2 rendering to become dynamic.\n2. **Pre-paint inline script** in `<head>`, before any stylesheet \u2014 reads `localStorage.wc_theme`, resolves `'system'` via `matchMedia('(prefers-color-scheme: dark)')`, sets `documentElement.dataset.theme`. Synchronous and inline, so it runs before first paint. Still required with \u00a73.1 for the unauthenticated login page.\n3. **CSS variables** \u2014 already done. `:root` holds dark, `html[data-theme=\"light\"]` overrides. Add a `[data-theme=\"light\"]` block only; never a `prefers-color-scheme` media query in the stylesheet, or OS and explicit choice fight each other.\n4. **Toggle button** \u2014 extend `web/index.html:34`. Tri-state cycle dark \u2192 light \u2192 system, `aria-pressed` replaced by `aria-label` naming the current state (\"Theme: system\"), because `aria-pressed` is boolean and cannot express three.\n5. **Controller module** `theme.js`, lifted out of `app.js:68-77` so `login.js` stops duplicating it (`login.js:12-19`).\n6. **Write path** \u2014 set `dataset.theme`, write `localStorage`, then fire `PUT /api/me/theme`. Optimistic: paint first, network after. Debounce 300 ms so a user clicking through the cycle sends one request.\n7. **System listener** \u2014 `matchMedia(...).addEventListener('change', \u2026)` active only while pref is `'system'`, so an OS switch repaints live.\n8. **Canvas repaint** \u2014 `web/assets/stats.js:348` reads palette slots off the stylesheet; theme change must re-run that, or charts keep the old palette until reload.\n\n## 4. Default / inheritance behavior\n\n1. Resolution order, first hit wins: server-stored `users.theme` \u2192 `localStorage.wc_theme` \u2192 `'system'`.\n2. `'system'` then resolves through `prefers-color-scheme`; browser reporting no preference resolves to dark.\n3. Final fallback is dark with no JS and no server value at all \u2014 that is what `:root` paints today.\n4. Login page has no user row, so it starts at step 2. On successful login the server value wins and overwrites `localStorage`.\n5. Server value overwrites `localStorage` on page load; `localStorage` never overwrites the server. One direction only \u2014 otherwise a stale tab reverts a choice made on another device.\n6. `supervisor.html` in an iframe does not inherit the parent's `data-theme` \u2014 set it on the iframe document too, or pass it as a query parameter at iframe `src`.\n\n## 5. Cross-device persistence\n\nThe `users.theme` column makes the choice follow the account rather than the browser, so a device that never toggled still paints correctly on first load, while `localStorage` degrades to a pre-paint cache that only prevents the flash.",
+        "metrics": {
+          "elapsed_s": 61.04,
+          "output_chars": 4705
+        }
+      }
+    },
+    "claude-sonnet-5": {
+      "coding-bug-fix": {
+        "response": "```python\nfrom typing import List, TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: List[T], n: int) -> List[T]:\n    \"\"\"Return the last n unique elements of lst, in original order.\"\"\"\n    seen: List[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n        if len(seen) == n:\n            break\n    return list(reversed(seen))\n```\n\nBug: old code built `seen` in reverse-traversal order then sliced `seen[:n]` without reversing back \u2014 wrong order, and stopping condition missing let dedup logic skip needed break. Fix reverses result to restore original order and breaks once `n` uniques found.",
+        "metrics": {
+          "elapsed_s": 14.46,
+          "output_chars": 633
+        }
+      },
+      "reasoning-puzzle": {
+        "response": "Min: 7 pours.\n\nstep 1: C\u2192A \u2192 (5,0,3)\nstep 2: A\u2192B \u2192 (2,3,3)\nstep 3: B\u2192C \u2192 (2,0,6)\nstep 4: A\u2192B \u2192 (0,2,6)\nstep 5: C\u2192A \u2192 (5,2,1)\nstep 6: A\u2192B \u2192 (4,3,1)\nstep 7: B\u2192C \u2192 (4,0,4)\n\nFinal count: 7.",
+        "metrics": {
+          "elapsed_s": 33.24,
+          "output_chars": 185
+        }
+      },
+      "coding-algo": {
+        "response": "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    def __init__(self, capacity: int) -> None:\n        self.capacity = capacity\n        self._data: OrderedDict[int, int] = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self._data:\n            return -1\n        self._data.move_to_end(key)\n        return self._data[key]\n\n    def put(self, key: int, value: int) -> None:\n        if key in self._data:\n            self._data.move_to_end(key)\n        self._data[key] = value\n        if len(self._data) > self.capacity:\n            self._data.popitem(last=False)\n\n    def __repr__(self) -> str:\n        items = \", \".join(f\"({k}, {v})\" for k, v in self._data.items())\n        return f\"LRUCache([{items}])\"\n```",
+        "metrics": {
+          "elapsed_s": 5.17,
+          "output_chars": 746
+        }
+      },
+      "reasoning-math": {
+        "response": "P(\u22652 share) = 1 \u2212 \u220f_{k=0}^{22} (365\u2212k)/365\n\n= 1 \u2212 (365/365 \u00d7 364/365 \u00d7 363/365 \u00d7 ... \u00d7 343/365)\n\n= 1 \u2212 0.492703\n\n**\u2248 0.5073**",
+        "metrics": {
+          "elapsed_s": 5.13,
+          "output_chars": 125
+        }
+      },
+      "comprehension-read": {
+        "response": "1. Dict mapping each category to average of its values.\n2. Empty list \u2192 result stays `{}`, return `{}`.\n3. Can't happen \u2014 category key only added when item seen, so list always has \u22651 entry.\n4. None. Every key in result got \u22651 append before averaging, so `len(v)` never 0. Only way to force ZeroDivisionError: manually pre-seed `result` with empty list before calling, but function itself can't produce it.",
+        "metrics": {
+          "elapsed_s": 5.51,
+          "output_chars": 406
+        }
+      },
+      "planning-task": {
+        "response": "## 1. SQL schema change\n\n```sql\nALTER TABLE users ADD COLUMN theme_preference TEXT\n    NOT NULL DEFAULT 'system'\n    CHECK (theme_preference IN ('light', 'dark', 'system'));\n```\n\nNo new table needed. One column, three values.\n\n## 2. API endpoints\n\n```\nGET  /api/user/theme        -> {\"theme\": \"light\" | \"dark\" | \"system\"}\nPUT  /api/user/theme        body {\"theme\": \"light\" | \"dark\" | \"system\"} -> 204\n```\n\n`PUT` not `POST`: full replace of single value, idempotent.\n\n## 3. Frontend components\n\n- Toggle button/switch in header, `id=\"theme-toggle\"`, three-state or simple two-state cycle.\n- `theme.js` (vanilla JS, no framework):\n  - On load: read `localStorage.theme`, else `prefers-color-scheme` media query, else fetch `/api/user/theme` for logged-in user.\n  - Apply via `document.documentElement.dataset.theme = value` (avoids flash \u2014 inline `<script>` in `<head>`, before CSS render).\n  - On toggle click: update DOM attr, `localStorage.theme`, `PUT /api/user/theme`.\n- CSS: `[data-theme=\"dark\"] { --bg: ...; --fg: ...; }` custom properties, defined once, consumed everywhere. No duplicate stylesheets.\n- Jinja2 base template: inline blocking script in `<head>` reads theme before body paint, sets `data-theme` on `<html>` server-side too (Jinja2 renders `data-theme=\"{{ user.theme_preference }}\"` if user known) \u2014 avoids flash-of-wrong-theme for logged-in users on first paint.\n\n## 4. Default / inheritance behavior\n\n- Anonymous visitor: `system` (OS `prefers-color-scheme`), no DB row.\n- Logged-in user, no explicit choice: `system` (DB default).\n- Explicit choice: `light` or `dark` overrides system, persists.\n- Order of precedence: explicit user choice > OS preference > light fallback.\n\n## 5. Cross-device persistence\n\nServer-stored `theme_preference` (not just localStorage) means toggle follows user across devices/browsers once logged in, since page load fetches server value and localStorage is per-browser-only.",
+        "metrics": {
+          "elapsed_s": 13.41,
+          "output_chars": 1926
+        }
+      }
+    },
+    "claude-fable-5": {
+      "coding-bug-fix": {
+        "response": "Bug: function collects unique elements in reverse order, never reverses back. Result order wrong, and element at list end appears first, not last. Fix: reverse slice before return.\n\n```python\nfrom collections.abc import Hashable\nfrom typing import TypeVar\n\nT = TypeVar(\"T\", bound=Hashable)\n\n\ndef last_n_unique(lst: list[T], n: int) -> list[T]:\n    \"\"\"Return the last n unique elements of lst, preserving original order.\n\n    Uniqueness keeps the final occurrence of each element. For example,\n    last_n_unique([1, 2, 1, 3], 2) returns [1, 3].\n    \"\"\"\n    seen: set[T] = set()\n    result: list[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.add(x)\n            result.append(x)\n    return result[:n][::-1]\n```\n\nAlso swapped membership list for set: O(n) not O(n\u00b2). If elements may be unhashable, drop set, keep list membership \u2014 same fix (`return seen[:n][::-1]`) still applies.",
+        "metrics": {
+          "elapsed_s": 15.77,
+          "output_chars": 909
+        }
+      },
+      "reasoning-puzzle": {
+        "response": "Classic 8-5-3 puzzle. Minimum: 7 pours.\n\n```\nstep 1: C\u2192A \u2192 (5,0,3)\nstep 2: A\u2192B \u2192 (2,3,3)\nstep 3: B\u2192C \u2192 (2,0,6)\nstep 4: A\u2192B \u2192 (0,2,6)\nstep 5: C\u2192A \u2192 (5,2,1)\nstep 6: A\u2192B \u2192 (4,3,1)\nstep 7: B\u2192C \u2192 (4,0,4)\n```\n\nKey trick: step 6 tops off B (holds 2, takes only 1 more), leaves exactly 4 in A. Step 7 dumps B back to C for second 4.\n\nFinal count: **7 pours**. No shorter path exists \u2014 BFS over state space confirms 7 is minimum for (4,0,4) from (0,0,8).",
+        "metrics": {
+          "elapsed_s": 16.71,
+          "output_chars": 445
+        }
+      },
+      "coding-algo": {
+        "response": "```python\nclass LRUCache:\n    \"\"\"LRU cache with O(1) get and put, backed by a hash map and a doubly linked list.\"\"\"\n\n    class _Node:\n        __slots__ = (\"key\", \"value\", \"prev\", \"next\")\n\n        def __init__(self, key=None, value=None):\n            self.key = key\n            self.value = value\n            self.prev = None\n            self.next = None\n\n    def __init__(self, capacity: int):\n        if capacity <= 0:\n            raise ValueError(\"capacity must be positive\")\n        self.capacity = capacity\n        self._map = {}\n        # Sentinel head/tail avoid edge-case branches when unlinking nodes.\n        # Order: head <-> most recently used ... least recently used <-> tail.\n        self._head = self._Node()\n        self._tail = self._Node()\n        self._head.next = self._tail\n        self._tail.prev = self._head\n\n    def _unlink(self, node):\n        node.prev.next = node.next\n        node.next.prev = node.prev\n\n    def _push_front(self, node):\n        node.next = self._head.next\n        node.prev = self._head\n        self._head.next.prev = node\n        self._head.next = node\n\n    def get(self, key) -> int:\n        node = self._map.get(key)\n        if node is None:\n            return -1\n        self._unlink(node)\n        self._push_front(node)\n        return node.value\n\n    def put(self, key, value) -> None:\n        node = self._map.get(key)\n        if node is not None:\n            node.value = value\n            self._unlink(node)\n            self._push_front(node)\n            return\n        if len(self._map) >= self.capacity:\n            lru = self._tail.prev\n            self._unlink(lru)\n            del self._map[lru.key]\n        node = self._Node(key, value)\n        self._map[key] = node\n        self._push_front(node)\n\n    def __repr__(self):\n        items = []\n        node = self._head.next\n        while node is not self._tail:\n            items.append((node.key, node.value))\n            node = node.next\n        return f\"LRUCache({items})\"\n```\n\n`__repr__` lists most-recent first. Both `get` and `put` O(1): dict lookup plus constant-count pointer swaps. Note stdlib `OrderedDict` (`move_to_end`, `popitem(last=False)`) gives same in fewer lines \u2014 this version explicit per classic interview shape.",
+        "metrics": {
+          "elapsed_s": 16.68,
+          "output_chars": 2242
+        }
+      },
+      "reasoning-math": {
+        "response": "P(share) = 1 \u2212 P(all distinct)\n\nP(all distinct) = \u220f\u2096\u208c\u2080\u00b2\u00b2 (365\u2212k)/365 = (365/365)\u00b7(364/365)\u00b7(363/365)\u00b7\u2026\u00b7(343/365) = 365!/(342!\u00b7365\u00b2\u00b3)\n\n\u220f \u2248 0.492703\n\nP(share) = 1 \u2212 0.492703 \u2248 **0.5073**",
+        "metrics": {
+          "elapsed_s": 7.16,
+          "output_chars": 184
+        }
+      },
+      "comprehension-read": {
+        "response": "**1. Returns**\n\nDict: category name \u2192 arithmetic mean of that category's `value` fields. Two-pass shape \u2014 loop groups values into `result[k]` lists, comprehension replaces each list with `sum(v)/len(v)`. Same key set in, out. Insertion order = order categories first seen.\n\n**2. Empty dict in `data`**\n\nNo error. Both `.get` calls hit defaults: category `'unknown'`, value `0`. So `{}` contributes one `0` to the `'unknown'` bucket. Consequence worth knowing: `[{}, {}, {}]` returns `{'unknown': 0.0}`, and a real `'unknown'` category in the same input gets silently mixed with these placeholder zeros. Items missing only `value` also inject `0`, dragging that category's mean down instead of being skipped.\n\n**3. Zero items per category**\n\nCannot happen. Category key exists only because the `if k not in result` branch created it and the very next line appended to it \u2014 creation and append are in the same iteration, unconditionally. So every list has length \u2265 1. No category can be present-but-empty.\n\n**4. ZeroDivisionError**\n\nNone. The premise does not hold for this code as written \u2014 there is no input that reaches it.\n\n`len(v) == 0` is the only divisor that could raise, and (3) rules that out. Empty `data` is not it either: `result` stays `{}`, comprehension iterates zero times, returns `{}`.\n\nWhere it *would* appear, since this is the interesting part:\n\n- Refactor to `result.setdefault(k, []).append(...)` is safe, but `result.setdefault(k, [])` on one line with append moved under a condition is not.\n- Pre-seeding keys from a known category list before the loop \u2014 categories with no matching items keep empty lists, then divide by zero.\n- Filtering values (`if isinstance(x, (int, float))`) after grouping.\n\nReal failures this function *does* have: non-numeric `value` raises `TypeError` in `sum` (mixed str/int), unhashable `category` (list, dict) raises `TypeError` at `k not in result`, and a non-dict item raises `AttributeError` on `.get`.",
+        "metrics": {
+          "elapsed_s": 25.32,
+          "output_chars": 1959
+        }
+      },
+      "planning-task": {
+        "response": "Design below. No code change made \u2014 spec only.\n\n**1) SQL schema change**\n\n1. Add column to users table:\n```sql\nALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'system'\n    CHECK (theme IN ('light', 'dark', 'system'));\n```\n2. No migration table needed \u2014 single additive column, old rows get `'system'`.\n\n**2) API endpoints**\n\n1. `GET /api/prefs/theme` \u2014 return `{\"theme\": \"system\"}` for current user.\n2. `PUT /api/prefs/theme` \u2014 body `{\"theme\": \"dark\"}`, validate against three allowed values, 422 otherwise. Return saved value.\n3. No separate endpoint per value \u2014 one resource, idempotent PUT.\n\n**3) Frontend components**\n\n1. Inline `<script>` in `<head>` of base Jinja2 template, before CSS paint: read `localStorage.theme`, fall back to `matchMedia('(prefers-color-scheme: dark)')`, set `document.documentElement.dataset.theme`. Inline because deferred script causes flash of wrong theme.\n2. CSS: variables on `:root[data-theme=\"light\"]` and `:root[data-theme=\"dark\"]`; components use only variables, never raw colors.\n3. Toggle button in header partial \u2014 three-state cycle (system, light, dark) with icon per state. Click: update `dataset.theme`, write `localStorage`, `fetch` PUT to `/api/prefs/theme` fire-and-forget.\n4. Listener on `matchMedia` change event \u2014 re-apply only when current setting is `'system'`.\n\n**4) Default / inheritance behavior**\n\n1. Default `'system'` \u2014 OS preference wins until user picks explicitly.\n2. Resolution order: DB value (logged in) over `localStorage` (anonymous or before sync) over OS `prefers-color-scheme`.\n3. On login: server renders `data-theme` from DB into template; JS syncs it into `localStorage` so both agree.\n4. Explicit light/dark choice never silently reverts to system; only user action changes it back.\n\n**5) Cross-device persistence**\n\nDB row is source of truth: any device loads theme from `GET /api/prefs/theme` at login and mirrors it into `localStorage`, so choice follows account, not browser.",
+        "metrics": {
+          "elapsed_s": 18.82,
+          "output_chars": 1963
+        }
+      }
+    },
+    "claude-haiku-4-5": {
+      "coding-bug-fix": {
+        "response": "```python\ndef last_n_unique(lst: list, n: int) -> list:\n    \"\"\"Last n unique elements from lst, preserving order.\"\"\"\n    seen = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n    return seen[:n][::-1]\n```\n\nBug: reversed iteration builds the unique elements backwards, but `seen[:n]` doesn't reverse them back before returning. Added `[::-1]` to restore original order.",
+        "metrics": {
+          "elapsed_s": 21.36,
+          "output_chars": 405
+        }
+      },
+      "reasoning-puzzle": {
+        "response": "Starting: (0,0,8)\nGoal: (4,0,4)\n\nStep 1: C\u2192A \u2192 (5,0,3)\nStep 2: A\u2192B \u2192 (2,3,3)\nStep 3: B\u2192C \u2192 (2,0,6)\nStep 4: A\u2192B \u2192 (0,2,6)\nStep 5: C\u2192A \u2192 (5,2,1)\nStep 6: A\u2192B \u2192 (4,3,1)\nStep 7: B\u2192C \u2192 (4,0,4)\n\n**Minimum: 7 pours**",
+        "metrics": {
+          "elapsed_s": 19.56,
+          "output_chars": 208
+        }
+      },
+      "coding-algo": {
+        "response": "```python\nclass Node:\n    def __init__(self, key, val):\n        self.key = key\n        self.val = val\n        self.prev = None\n        self.next = None\n\n\nclass LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = {}\n        self.head = Node(0, 0)\n        self.tail = Node(0, 0)\n        self.head.next = self.tail\n        self.tail.prev = self.head\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        node = self.cache[key]\n        self._remove(node)\n        self._add(node)\n        return node.val\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            self._remove(self.cache[key])\n        node = Node(key, value)\n        self.cache[key] = node\n        self._add(node)\n        if len(self.cache) > self.capacity:\n            lru = self.head.next\n            self._remove(lru)\n            del self.cache[lru.key]\n\n    def _remove(self, node):\n        node.prev.next = node.next\n        node.next.prev = node.prev\n\n    def _add(self, node):\n        node.prev = self.tail.prev\n        node.next = self.tail\n        self.tail.prev.next = node\n        self.tail.prev = node\n\n    def __repr__(self) -> str:\n        result = []\n        node = self.head.next\n        while node != self.tail:\n            result.append((node.key, node.val))\n            node = node.next\n        return repr(result)\n```\n\nDict + doubly linked list. Head\u2192tail tracks access order. O(1) all operations.",
+        "metrics": {
+          "elapsed_s": 25.78,
+          "output_chars": 1509
+        }
+      },
+      "comprehension-read": {
+        "response": "1. **Returns:** dict with category names as keys, average values per category as values. Groups input items by `category` field, computes mean `value` for each group.\n\n2. **Empty data:** Returns empty dict `{}`. Loop never runs, `result.items()` is empty, dict comprehension produces nothing.\n\n3. **Zero items per category:** Not possible. Each item appended to `result[k]` means every category list has \u22651 item. Code builds lists only by appending.\n\n4. **ZeroDivisionError edge case:** None exists. Every category in `result.items()` has a non-empty list (built only via append), so `len(v) >= 1` always. Division safe.\n\n(The function is robust \u2014 no crash on empty input or missing keys.)",
+        "metrics": {
+          "elapsed_s": 13.47,
+          "output_chars": 689
+        }
+      },
+      "planning-task": {
+        "response": "## 1. SQL schema change\n```sql\nALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'system';\n-- Values: 'light', 'dark', 'system' (respects OS preference)\n```\n\n## 2. API endpoints\n- `POST /api/theme` \u2014 set theme for current user\n  - Body: `{\"theme\": \"light\"|\"dark\"|\"system\"}`\n  - Returns: `{\"theme\": \"\u2026\"}`\n- `GET /api/theme` \u2014 fetch user's theme setting\n  - Returns: `{\"theme\": \"\u2026\"}`\n\n## 3. Frontend components\n- **Toggle button** (HTML): `<button id=\"theme-toggle\" aria-label=\"Toggle dark mode\">\u2600\ufe0f/\ud83c\udf19</button>`\n- **Script** (VanillaJS): \n  - Read `theme` from `/api/theme` on load\n  - Apply class `dark` to `<html>` if theme is `\"dark\"` or if theme is `\"system\"` and `prefers-color-scheme: dark` matches\n  - POST to `/api/theme` on toggle, update DOM class and button text\n- **Styles** (CSS): define `--bg`, `--text` vars in `:root` and `:root.dark`; Jinja2 template applies them\n\n## 4. Default/inheritance behavior\n- New users default to `'system'` (respects OS preference, no DB write until they toggle)\n- If user never sets a preference, CSS `@media (prefers-color-scheme: dark)` controls rendering\n- Explicit `'light'` or `'dark'` always overrides OS preference\n\n## 5. Cross-device persistence\nUser's choice syncs via database so the same preference follows them across devices on next login.",
+        "metrics": {
+          "elapsed_s": 10.4,
+          "output_chars": 1292
+        }
+      },
+      "reasoning-math": {
+        "response": "**Product formula:**\n\nP(at least two share) = 1 \u2212 \u220f(i=0 to 22) [(365\u2212i)/365]\n\n= 1 \u2212 [(365 \u00d7 364 \u00d7 363 \u00d7 ... \u00d7 343) / 365\u00b2\u00b3]\n\n**Calculation:**\n\u220f(i=0 to 22) [(365\u2212i)/365] = (365/365) \u00d7 (364/365) \u00d7 (363/365) \u00d7 ... \u00d7 (343/365)\n\u2248 0.4927\n\nP(at least two share) = 1 \u2212 0.4927 = 0.5073\n\n**Answer: 0.5073**",
+        "metrics": {
+          "elapsed_s": 5.2,
+          "output_chars": 296
+        }
+      }
+    }
+  },
+  "errors": {},
+  "models_tested": [
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-haiku-4-5"
+  ]
+}

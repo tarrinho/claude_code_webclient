@@ -58,7 +58,7 @@ async def usage_record(
                 chat_id,
                 owner_id,
                 model,
-                provider or "proxy",
+                provider or "claude_code",
                 int(input_tokens or 0),
                 int(output_tokens or 0),
                 int(cache_read_tokens or 0),

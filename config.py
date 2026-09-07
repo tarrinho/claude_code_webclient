@@ -43,13 +43,13 @@ PORT = _int("WC_PORT", 8080)
 LISTEN_HOST = _str("WC_LISTEN_HOST", HOST)
 
 # --- database --------------------------------------------------------------
-DB_PATH = _str("WC_DB_PATH", None)  # default to project-local if not set
+# Both databases live in the same data directory for simplicity (backup,
+# export, restore). The separation is purely architectural — no collision.
+_db_dir = pathlib.Path(__file__).parent / "data"
+_db_dir.mkdir(parents=True, exist_ok=True)
 
-# Keep default value available for when env is not set
-if DB_PATH is None:
-    _db_dir = pathlib.Path(__file__).parent / "data"
-    _db_dir.mkdir(parents=True, exist_ok=True)
-    DB_PATH = str(_db_dir / "webconsole.db")
+DB_PATH = _str("WC_DB_PATH", str(_db_dir / "webconsole.db"))
+SESSION_DB_PATH = _str("WC_SESSION_DB_PATH", str(_db_dir / "webconsole-sessions.db"))
 
 # --- project directories ---------------------------------------------------
 PROJECTS_ROOT = _str("WC_PROJECTS_ROOT", None)
@@ -152,6 +152,7 @@ MODEL_NAME = _str("WC_MODEL_NAME", "claude-sonnet-5")
 # --- Voice conversation defaults -------------------------------------------
 # Settings dialog can override at runtime via the generic settings table;
 # these are the fallback when unset.
+VOICE_BACKEND_ID_DEFAULT = _str("WC_VOICE_BACKEND_ID_DEFAULT", None)
 VOICE_AI_MACHINE_ID_DEFAULT = _str("WC_VOICE_AI_MACHINE_ID_DEFAULT", None)
 VOICE_MODEL_DEFAULT = _str("WC_VOICE_MODEL_DEFAULT", "azure_ai/gpt-5.6-luna")
 VOICE_SPEECH_RATE_DEFAULT = _float("WC_VOICE_SPEECH_RATE_DEFAULT", 1.0)
@@ -222,7 +223,7 @@ TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
 WC_WEBCONSOLE_URL = _str("WC_WEBCONSOLE_URL")
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.14.0"
+VERSION = "WebConsole_0.15.3"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

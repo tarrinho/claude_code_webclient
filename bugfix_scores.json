@@ -1,0 +1,52 @@
+{
+  "claude-opus-5": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "claude-sonnet-5": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "claude-fable-5": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "claude-haiku-4-5": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "vllm/Qwen3.6-35B-A3B-NVFP4": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "azure_ai/gpt-5.6-luna": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "azure_ai/gpt-5.6-sol": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "azure_ai/gpt-5.4-mini-copilot": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "azure_ai/gpt-5.4-mini": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  },
+  "azure_ai/gpt-5-mini": {
+    "passed": 6,
+    "total": 6,
+    "note": "all cases pass"
+  }
+}

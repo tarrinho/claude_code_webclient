@@ -48,7 +48,7 @@ class ResolutionTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         await db.ai_machine_create("m-gw", "Gateway", "", 0, "k",
                                    "gateway/model", "https://gw.invalid", "",
-                                   "admin", provider="anthropic")
+                                   "admin", provider="claude_code")
         await db.ai_machine_activate("m-gw", "admin")
         await db.setting_set("default_model", "global/model")
         wd = Path(config.PROJECTS_ROOT) / "c1"

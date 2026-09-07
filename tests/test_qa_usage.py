@@ -237,25 +237,25 @@ class ProviderClassificationQA(unittest.TestCase):
 
     def test_official_api_is_trusted_for_cost(self):
         for machine in (
-            {"provider": "anthropic", "base_url": None},
-            {"provider": "anthropic", "base_url": ""},
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com"},
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com/"},
+            {"provider": "claude_code", "base_url": None},
+            {"provider": "claude_code", "base_url": ""},
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com"},
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com/"},
         ):
-            self.assertEqual(shared.backend_kind(machine), "anthropic", repr(machine))
+            self.assertEqual(shared.backend_kind(machine), "through_claude_code", repr(machine))
 
     def test_a_gateway_is_not_trusted_for_cost(self):
-        # provider='anthropic' only describes the wire protocol; a self-hosted
+        # provider='claude_code' only describes the wire protocol; a self-hosted
         # gateway speaks it too, and the CLI still prices it at Anthropic rates.
         for base in (GATEWAY, "http://10.0.0.5:4000/llm", "https://litellm.internal"):
             self.assertEqual(
-                shared.backend_kind({"provider": "anthropic", "base_url": base}),
-                "anthropic-compatible",
+                shared.backend_kind({"provider": "claude_code", "base_url": base}),
+                "through_claude_code",
                 base,
             )
 
     def test_proxy_and_missing_machines_are_untrusted(self):
-        self.assertEqual(shared.backend_kind({"provider": "proxy"}), "proxy")
+        self.assertEqual(shared.backend_kind({"provider": "claude_code"}), "through_claude_code")
         self.assertEqual(shared.backend_kind(None), "proxy")
         self.assertEqual(shared.backend_kind({}), "proxy")
 
@@ -274,11 +274,11 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await self.close_temp_db()
 
     async def test_record_then_aggregate(self):
-        await db.usage_record("c1", "admin", "m-a", "anthropic",
+        await db.usage_record("c1", "admin", "m-a", "claude_code",
                               input_tokens=100, output_tokens=10)
-        await db.usage_record("c1", "admin", "m-a", "anthropic",
+        await db.usage_record("c1", "admin", "m-a", "claude_code",
                               input_tokens=50, output_tokens=5, is_error=True)
-        await db.usage_record("c1", "admin", "m-b", "proxy",
+        await db.usage_record("c1", "admin", "m-b", "claude_code",
                               input_tokens=7, output_tokens=1)
         totals = {r["model"]: r for r in await db.usage_totals("admin")}
         self.assertEqual(totals["m-a"]["requests"], 2)
@@ -291,21 +291,21 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(overall["models"], 2)
 
     async def test_rows_are_scoped_to_their_owner(self):
-        await db.usage_record("c1", "admin", "m", "anthropic", input_tokens=10)
-        await db.usage_record("c1", "bob", "m", "anthropic", input_tokens=999)
+        await db.usage_record("c1", "admin", "m", "claude_code", input_tokens=10)
+        await db.usage_record("c1", "bob", "m", "claude_code", input_tokens=999)
         self.assertEqual((await db.usage_overall("admin"))["input_tokens"], 10)
         self.assertEqual((await db.usage_overall("bob"))["input_tokens"], 999)
         self.assertEqual(await db.usage_totals("carol"), [])
 
     async def test_incomplete_rows_are_refused(self):
-        self.assertIsNone(await db.usage_record("", "admin", "m", "anthropic"))
-        self.assertIsNone(await db.usage_record("c1", "", "m", "anthropic"))
-        self.assertIsNone(await db.usage_record("c1", "admin", "", "anthropic"))
+        self.assertIsNone(await db.usage_record("", "admin", "m", "claude_code"))
+        self.assertIsNone(await db.usage_record("c1", "", "m", "claude_code"))
+        self.assertIsNone(await db.usage_record("c1", "admin", "", "claude_code"))
         self.assertEqual((await db.usage_overall("admin"))["requests"], 0)
 
     async def test_recent_orders_newest_first_and_joins_the_title(self):
         for i in range(3):
-            await db.usage_record("c1", "admin", f"m{i}", "anthropic", input_tokens=i)
+            await db.usage_record("c1", "admin", f"m{i}", "claude_code", input_tokens=i)
         recent = await db.usage_recent("admin", 10)
         self.assertEqual([r["model"] for r in recent], ["m2", "m1", "m0"])
         self.assertEqual(recent[0]["chat_title"], "teste")
@@ -313,26 +313,26 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_recent_survives_a_deleted_conversation(self):
         # A LEFT JOIN: usage already spent must not vanish from the log because
         # the conversation was removed afterwards.
-        await db.usage_record("c1", "admin", "m", "anthropic", input_tokens=5)
+        await db.usage_record("c1", "admin", "m", "claude_code", input_tokens=5)
         await db.chat_delete("c1", "admin")
         recent = await db.usage_recent("admin", 10)
         self.assertEqual(len(recent), 1)
         self.assertIsNone(recent[0]["chat_title"])
 
     async def test_recent_follows_a_renamed_conversation(self):
-        await db.usage_record("c1", "admin", "m", "anthropic", input_tokens=5)
+        await db.usage_record("c1", "admin", "m", "claude_code", input_tokens=5)
         await db.chat_update("c1", "admin", title="Renamed")
         self.assertEqual((await db.usage_recent("admin", 5))[0]["chat_title"], "Renamed")
 
     async def test_recent_limit_is_clamped(self):
         for i in range(5):
-            await db.usage_record("c1", "admin", "m", "anthropic", input_tokens=i)
+            await db.usage_record("c1", "admin", "m", "claude_code", input_tokens=i)
         self.assertEqual(len(await db.usage_recent("admin", 2)), 2)
         self.assertEqual(len(await db.usage_recent("admin", 0)), 1)
         self.assertLessEqual(len(await db.usage_recent("admin", 10_000)), 5)
 
     async def _record_at(self, days_ago: int, model: str) -> None:
-        await db.usage_record("c1", "admin", model, "anthropic", input_tokens=1)
+        await db.usage_record("c1", "admin", model, "claude_code", input_tokens=1)
         await db.db_conn.execute(
             "UPDATE usage_events SET created_at = ? WHERE model = ?",
             (db._cutoff(days_ago), model),
@@ -406,7 +406,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_cost_is_hidden_for_a_gateway_and_shown_for_the_official_api(self):
         await db.usage_record("c1", "admin", "vllm/Q", "anthropic-compatible",
                               input_tokens=10, cost_usd=0.078)
-        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic",
+        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code",
                               input_tokens=10, cost_usd=1.25)
         rows = {r["model"]: r for r in (await self._get())["totals"]}
         self.assertIsNone(rows["vllm/Q"]["cost_usd"])
@@ -414,8 +414,14 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(rows["claude-opus-5"]["cost_usd"], 1.25)
         self.assertNotIn("cost_note", rows["claude-opus-5"])
 
-    async def test_cost_is_hidden_for_proxy_rows(self):
-        await db.usage_record("c1", "admin", "m", "proxy",
+    async def test_cost_is_visible_for_claude_code_rows(self):
+        await db.usage_record("c1", "admin", "m", "claude_code",
+                              input_tokens=10, cost_usd=9.99)
+        self.assertAlmostEqual((await self._get())["totals"][0]["cost_usd"], 9.99)
+        self.assertAlmostEqual((await self._get())["recent"][0]["cost_usd"], 9.99)
+
+    async def test_cost_is_hidden_for_non_claude_code_rows(self):
+        await db.usage_record("c1", "admin", "m", "direct",
                               input_tokens=10, cost_usd=9.99)
         self.assertIsNone((await self._get())["totals"][0]["cost_usd"])
         self.assertIsNone((await self._get())["recent"][0]["cost_usd"])
@@ -448,7 +454,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_an_unknown_basis_never_suppresses_a_trusted_cost(self):
         # cost_basis explains; base_url decides. An official-API row keeps its
         # cost even if the CLI happened to report an unknown basis.
-        await db.usage_record("c1", "admin", "m", "anthropic",
+        await db.usage_record("c1", "admin", "m", "claude_code",
                               input_tokens=1, cost_usd=2.50, cost_basis="unknown")
         self.assertAlmostEqual((await self._get())["totals"][0]["cost_usd"], 2.50)
 
@@ -462,13 +468,13 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_limit_is_clamped(self):
         for i in range(4):
-            await db.usage_record("c1", "admin", f"m{i}", "anthropic", input_tokens=1)
+            await db.usage_record("c1", "admin", f"m{i}", "claude_code", input_tokens=1)
         self.assertEqual(len((await self._get({"limit": "2"}))["recent"]), 2)
         self.assertLessEqual(len((await self._get({"limit": "99999"}))["recent"]), 4)
         self.assertGreaterEqual(len((await self._get({"limit": "nope"}))["recent"]), 1)
 
     async def test_one_user_cannot_see_another_users_usage(self):
-        await db.usage_record("c1", "bob", "secret-model", "anthropic",
+        await db.usage_record("c1", "bob", "secret-model", "claude_code",
                               input_tokens=4242)
         body = await self._get()
         self.assertEqual(body["overall"]["requests"], 0)
@@ -476,7 +482,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_no_credential_appears_in_the_response(self):
         await db.ai_machine_create("m1", "GW", "llm.invalid", 443, "super-secret",
-                                   "m", GATEWAY, None, "admin", "anthropic")
+                                   "m", GATEWAY, None, "admin", "claude_code")
         await db.ai_machine_activate("m1", "admin")
         await db.usage_record("c1", "admin", "m", "anthropic-compatible",
                               input_tokens=1)
@@ -497,7 +503,7 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await self.init_temp_db()
         await db.chat_create("c1", "teste", None, f"{self.tmp.name}/projects", "admin")
         await db.ai_machine_create("m1", "GW", "llm.invalid", 443, None, "m",
-                                   GATEWAY, None, "admin", "anthropic")
+                                   GATEWAY, None, "admin", "claude_code")
         await db.ai_machine_activate("m1", "admin")
         runner._usage_by_chat.pop("c1", None)
         runner._models_by_chat.pop("c1", None)
@@ -560,7 +566,7 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_is_captured_from_the_active_machine(self):
         await chat_routes._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
-        self.assertEqual((await self._rows())[0]["provider"], "anthropic-compatible")
+        self.assertEqual((await self._rows())[0]["provider"], "through_claude_code")
 
     async def test_empty_frame_records_nothing(self):
         for frame in ({}, None, {"models": {}}):
@@ -615,24 +621,24 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
                                    base_url, None, "admin", provider)
 
     async def test_list_labels_each_backend(self):
-        await self._make("official", "anthropic", "https://api.anthropic.com")
-        await self._make("gateway", "anthropic", GATEWAY)
-        await self._make("proxied", "proxy", None)
+        await self._make("official", "claude_code", "https://api.anthropic.com")
+        await self._make("gateway", "claude_code", GATEWAY)
+        await self._make("proxied", "claude_code", None)
         body = json.loads((await machine_routes.handle_machines_list(self._req())).body)
         kinds = {m["id"]: m["backend_kind"] for m in body["machines"]}
-        self.assertEqual(kinds["official"], "anthropic")
-        self.assertEqual(kinds["gateway"], "anthropic-compatible")
-        self.assertEqual(kinds["proxied"], "proxy")
+        self.assertEqual(kinds["official"], "through_claude_code")
+        self.assertEqual(kinds["gateway"], "through_claude_code")
+        self.assertEqual(kinds["proxied"], "through_claude_code")
 
     async def test_get_labels_the_backend(self):
-        await self._make("gateway", "anthropic", GATEWAY)
+        await self._make("gateway", "claude_code", GATEWAY)
         body = json.loads((await machine_routes.handle_machine_get(self._req(), "gateway")).body)
-        self.assertEqual(body["machine"]["backend_kind"], "anthropic-compatible")
+        self.assertEqual(body["machine"]["backend_kind"], "through_claude_code")
 
     async def test_label_matches_what_usage_records(self):
         # The whole point of one source of truth: the badge on a backend card and
         # the provider on its usage rows must never disagree.
-        await self._make("gateway", "anthropic", GATEWAY)
+        await self._make("gateway", "claude_code", GATEWAY)
         await db.ai_machine_activate("gateway", "admin")
         await db.chat_create("c1", "t", None, f"{self.tmp.name}/projects", "admin")
         await chat_routes._record_turn_usage("c1", "admin", runner.usage_frame(RESULT_FRAME))
@@ -643,7 +649,7 @@ class BackendKindAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_label_never_leaks_the_key(self):
         await db.ai_machine_create("k", "k", "h.invalid", 443, "super-secret", "m",
-                                   GATEWAY, None, "admin", "anthropic")
+                                   GATEWAY, None, "admin", "claude_code")
         for resp in (await machine_routes.handle_machines_list(self._req()),
                      await machine_routes.handle_machine_get(self._req(), "k")):
             self.assertNotIn("super-secret", resp.body.decode())

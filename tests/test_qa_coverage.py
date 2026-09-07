@@ -1482,7 +1482,8 @@ class MachineCreateValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_machine_create_missing_host_400(self):
-        req = self._make_request({"name": "test", "port": 9000})
+        # Direct provider requires host; claude_code auto-fills from base_url.
+        req = self._make_request({"name": "test", "provider": "direct", "port": 9000})
         with self.assertRaises(app.HTTPException) as ctx:
             await machine_routes.handle_machine_create(req)
         self.assertEqual(ctx.exception.status_code, 400)
@@ -1911,9 +1912,8 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     def _make_request(self, body=None):
-        # stream_handler authenticates from the wc_session cookie directly, not
-        # from request.state, so the cookie has to be present or every call
-        # short-circuits with a 401.
+        # stream_handler reads request.state.session (not the cookie directly),
+        # so the session must be attached to the request state.
         req = _make_request(
             method="POST",
             path="/api/chats/test/stream",
@@ -1922,7 +1922,7 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
         if body is None:
             body = {"content": "hello"}
         req.json = AsyncMock(return_value=body)
-        req.state = SimpleNamespace(session=None)
+        req.state = SimpleNamespace(session={"user": "admin", "role": "admin"})
         return req
 
     async def _create_chat(self):

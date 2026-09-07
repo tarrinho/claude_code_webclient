@@ -1,0 +1,413 @@
+%PDF-1.4
+%âãÏÓ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R] /Count 6 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+6 0 obj
+<< /Length 4680 >>
+stream
+q
+BT
+/F2 21 Tf 1 0 0 1 48 790.0 Tm (Backend and Model Comparison ? 2026-09-02) Tj
+/F1 9 Tf 1 0 0 1 48 758.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 745.0 Tm (Executive result) Tj
+/F1 9 Tf 1 0 0 1 48 719.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 706.0 Tm (This comparison now uses the benchmark that WebConsole actually uses: the CLI transport.) Tj
+/F1 9 Tf 1 0 0 1 48 693.0 Tm (Raw HTTP is not an active WebConsole configuration and is included only in the diagnostic) Tj
+/F1 9 Tf 1 0 0 1 48 680.0 Tm (appendix because it exposed a separate gateway problem.) Tj
+/F1 9 Tf 1 0 0 1 48 667.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 654.0 Tm (The benchmark ran 14 tasks, 2 repeats per task, with mechanical execution for code and) Tj
+/F1 9 Tf 1 0 0 1 48 641.0 Tm (claim checks for prose. Results below come from 264 measured CLI runs:) Tj
+/F1 9 Tf 1 0 0 1 48 628.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 615.0 Tm (? 4 Anthropic models × 14 tasks × 2 repeats = 112 runs) Tj
+/F1 9 Tf 1 0 0 1 48 602.0 Tm (? 5 Azure models × 14 tasks × 2 repeats = 140 runs) Tj
+/F1 9 Tf 1 0 0 1 48 589.0 Tm (? Qwen × 6 floor/simple tasks × 2 repeats = 12 runs) Tj
+/F1 9 Tf 1 0 0 1 48 576.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 563.0 Tm (Qwen was intentionally re-tested on simpler tasks. The clean or empty output seen in the) Tj
+/F1 9 Tf 1 0 0 1 48 550.0 Tm (old benchmark was a harness failure, not evidence that Qwen was unusable. Qwen is) Tj
+/F1 9 Tf 1 0 0 1 48 537.0 Tm (self-hosted and free; Anthropic models have the measured token costs below; Azure prices) Tj
+/F1 9 Tf 1 0 0 1 48 524.0 Tm (were not recorded.) Tj
+/F1 9 Tf 1 0 0 1 48 511.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 498.0 Tm (Recommendation by scarce resource) Tj
+/F1 9 Tf 1 0 0 1 48 472.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 459.0 Tm (Constraint | First choice | Why) Tj
+/F1 7.2 Tf 1 0 0 1 48 449.0 Tm (Lowest cost | vllm/Qwen3.6-35B-A3B-NVFP4 | 11/12 on the floor/simple CLI tier,) Tj
+/F1 7.2 Tf 1 0 0 1 48 439.0 Tm (5.2 s median, $0 marginal token cost) Tj
+/F1 7.2 Tf 1 0 0 1 48 429.0 Tm (Best measured quality | claude-fable-5 | 28/28 CLI runs correct; most) Tj
+/F1 7.2 Tf 1 0 0 1 48 419.0 Tm (expensive Anthropic option) Tj
+/F1 7.2 Tf 1 0 0 1 48 409.0 Tm (Best Anthropic value | claude-haiku-4-5 | 27/28, $0.0433 per correct answer,) Tj
+/F1 7.2 Tf 1 0 0 1 48 399.0 Tm (fastest Anthropic TTFT) Tj
+/F1 7.2 Tf 1 0 0 1 48 389.0 Tm (Fast capable Azure option | azureai/gpt-5.4-mini-copilot | 24/28, 5.8 s) Tj
+/F1 7.2 Tf 1 0 0 1 48 379.0 Tm (median; Azure price not recorded) Tj
+/F1 7.2 Tf 1 0 0 1 48 369.0 Tm (Fastest measured Azure option | azureai/gpt-5.4-mini | 25/28, 6.3 s median;) Tj
+/F1 7.2 Tf 1 0 0 1 48 359.0 Tm (Azure price not recorded) Tj
+/F1 7.2 Tf 1 0 0 1 48 349.0 Tm (Higher-quality Azure fallback | azureai/gpt-5.6-sol | 25/28, but 10.5 s median) Tj
+/F1 7.2 Tf 1 0 0 1 48 339.0 Tm (and Azure price not recorded) Tj
+/F1 9 Tf 1 0 0 1 48 329.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 316.0 Tm (No single quality-only ranking should hide cost. Qwen is the correct default when latency) Tj
+/F1 9 Tf 1 0 0 1 48 303.0 Tm (is not scarce. Anthropic is the expensive quality tier. Azure cannot be ranked on cost) Tj
+/F1 9 Tf 1 0 0 1 48 290.0 Tm (until its deployment rate card is recorded.) Tj
+/F1 9 Tf 1 0 0 1 48 277.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 264.0 Tm (CLI measurements) Tj
+/F1 9 Tf 1 0 0 1 48 238.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 225.0 Tm (All rows below are CLI runs. Correct means all core checks for the run passed. Edge checks) Tj
+/F1 9 Tf 1 0 0 1 48 212.0 Tm (remain visible in task scores but do not decide whether the task is solved. $ total is the) Tj
+/F1 9 Tf 1 0 0 1 48 199.0 Tm (CLI-reported cost only when the result carries costBasis: list; unknown Azure pricing is) Tj
+/F1 9 Tf 1 0 0 1 48 186.0 Tm (reported as n/r, never as zero.) Tj
+/F1 9 Tf 1 0 0 1 48 173.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 160.0 Tm (Tier | Model | Runs | Correct | Median total | Median TTFT | Median output) Tj
+/F1 7.2 Tf 1 0 0 1 48 150.0 Tm (tokens | $ total | $/correct) Tj
+/F1 7.2 Tf 1 0 0 1 48 140.0 Tm (Anthropic | claude-fable-5 | 28 | 28/28 | 9.1 s | 3.31 s | 142 | $7.3130 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 130.0 Tm ($0.2612) Tj
+/F1 7.2 Tf 1 0 0 1 48 120.0 Tm (Anthropic | claude-opus-5 | 28 | 27/28 | 8.3 s | 2.55 s | 122 | $4.8428 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 110.0 Tm ($0.1794) Tj
+/F1 7.2 Tf 1 0 0 1 48 100.0 Tm (Anthropic | claude-sonnet-5 | 28 | 27/28 | 6.0 s | 1.97 s | 132 | $2.4518 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 90.0 Tm ($0.0908) Tj
+/F1 7.2 Tf 1 0 0 1 48 80.0 Tm (Anthropic | claude-haiku-4-5 | 28 | 27/28 | 10.6 s | 1.75 s | 611 | $1.1682 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 70.0 Tm ($0.0433) Tj
+/F1 7.2 Tf 1 0 0 1 48 60.0 Tm (Azure | azureai/gpt-5.6-sol | 28 | 25/28 | 10.5 s | 4.80 s | 131 | n/r | n/r) Tj
+ET
+Q
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 5675 >>
+stream
+q
+BT
+/F1 7.2 Tf 1 0 0 1 48 790.0 Tm (Azure | azureai/gpt-5.4-mini | 28 | 25/28 | 6.3 s | 1.53 s | 163 | n/r | n/r) Tj
+/F1 7.2 Tf 1 0 0 1 48 780.0 Tm (Azure | azureai/gpt-5-mini | 28 | 25/28 | 35.1 s | 13.21 s | n/r | n/r | n/r) Tj
+/F1 7.2 Tf 1 0 0 1 48 770.0 Tm (Azure | azureai/gpt-5.4-mini-copilot | 28 | 24/28 | 5.8 s | 1.42 s | 161 | n/r) Tj
+/F1 7.2 Tf 1 0 0 1 48 760.0 Tm (| n/r) Tj
+/F1 7.2 Tf 1 0 0 1 48 750.0 Tm (Azure | azureai/gpt-5.6-luna | 28 | 24/28 | 6.2 s | 3.52 s | 116 | n/r | n/r) Tj
+/F1 7.2 Tf 1 0 0 1 48 740.0 Tm (Self-hosted | vllm/Qwen3.6-35B-A3B-NVFP4 | 12 | 11/12 | 5.2 s | 0.74 s | 56 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 730.0 Tm ($0.0000 | $0.0000) Tj
+/F1 7.2 Tf 1 0 0 1 48 720.0 Tm (Self-hosted | vllm/Qwen3.5-0.8B | 12 | 4/12 | 14.9 s | 2.86 s | 149 | $0.0000) Tj
+/F1 7.2 Tf 1 0 0 1 48 710.0 Tm (| $0.0000) Tj
+/F1 9 Tf 1 0 0 1 48 700.0 Tm () Tj
+/F2 11 Tf 1 0 0 1 48 687.0 Tm (What the table means) Tj
+/F1 9 Tf 1 0 0 1 48 666.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 653.0 Tm (? Fable is the only clean sweep across the full 14-task Anthropic tier. It costs) Tj
+/F1 9 Tf 1 0 0 1 48 640.0 Tm (approximately 6× Haiku per correct answer.) Tj
+/F1 9 Tf 1 0 0 1 48 627.0 Tm (? Opus and Sonnet each miss one of 28 runs. Opus costs about 2× Sonnet per correct answer.) Tj
+/F1 9 Tf 1 0 0 1 48 614.0 Tm (? Haiku matches Opus and Sonnet at 27/28 while having the fastest Anthropic TTFT and the) Tj
+/F1 9 Tf 1 0 0 1 48 601.0 Tm (lowest Anthropic cost per correct answer. Its total time is higher because some reasoning) Tj
+/F1 9 Tf 1 0 0 1 48 588.0 Tm (tasks produce substantially more output.) Tj
+/F1 9 Tf 1 0 0 1 48 575.0 Tm (? Azure models are all unpriced in the recorded data. Their cost must not be inferred from) Tj
+/F1 9 Tf 1 0 0 1 48 562.0 Tm (the old console totals, which applied Anthropic fallback rates to non-Anthropic backends.) Tj
+/F1 9 Tf 1 0 0 1 48 549.0 Tm (? Qwen's measured CLI result is fast and free on the simpler tier. It is not directly) Tj
+/F1 9 Tf 1 0 0 1 48 536.0 Tm (comparable to the Anthropic/Azure 14-task count because only the floor/simple tier was) Tj
+/F1 9 Tf 1 0 0 1 48 523.0 Tm (re-run for Qwen.) Tj
+/F1 9 Tf 1 0 0 1 48 510.0 Tm (? vllm/Qwen3.5-0.8B was also floor/simple-only, and for a harder reason than Qwen3.6: the) Tj
+/F1 9 Tf 1 0 0 1 48 497.0 Tm (hard tier's reasoning-puzzle task alone ran 1130.96s \(82,194 output tokens\) before being) Tj
+/F1 9 Tf 1 0 0 1 48 484.0 Tm (killed after one repeat, and the remaining hard tasks were never attempted. This is a size) Tj
+/F1 9 Tf 1 0 0 1 48 471.0 Tm (effect, not a harness bug ? 0.8B parameters spends its budget on unbounded reasoning output) Tj
+/F1 9 Tf 1 0 0 1 48 458.0 Tm (rather than converging. 4/12 correct on floor/simple, well below both Qwen3.6 \(11/12\) and) Tj
+/F1 9 Tf 1 0 0 1 48 445.0 Tm (every other backend on the same tier.) Tj
+/F1 9 Tf 1 0 0 1 48 432.0 Tm (? vllm/Qwen3-0.6B was requested but could not be benchmarked: it does not appear in) Tj
+/F1 9 Tf 1 0 0 1 48 419.0 Tm (aimachines.activemodels for the CF AI Machine backend \(bin/wc-backend-env.py) Tj
+/F1 9 Tf 1 0 0 1 48 406.0 Tm (--resolve-model returns nothing\), so the CLI would route it as a 429 wearing a capacity) Tj
+/F1 9 Tf 1 0 0 1 48 393.0 Tm (error's clothes rather than a real answer. Needs a corrected model id or registration) Tj
+/F1 9 Tf 1 0 0 1 48 380.0 Tm (before it can be measured.) Tj
+/F1 9 Tf 1 0 0 1 48 367.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 354.0 Tm (CLI task comparison) Tj
+/F1 9 Tf 1 0 0 1 48 328.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 315.0 Tm (Task cells are median scores across the two CLI repeats. 100 means all core and edge checks) Tj
+/F1 9 Tf 1 0 0 1 48 302.0 Tm (passed; a lower score shows a visible verifier failure. For prose tasks, verification is) Tj
+/F1 9 Tf 1 0 0 1 48 289.0 Tm (claim-based and therefore weaker than code execution.) Tj
+/F1 9 Tf 1 0 0 1 48 276.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 263.0 Tm (Task | Difficulty | Verified by | Fable | Opus | Sonnet | Haiku | gpt-5.6-sol) Tj
+/F1 7.2 Tf 1 0 0 1 48 253.0 Tm (| gpt-5.4-mini | gpt-5-mini | copilot | luna | Qwen) Tj
+/F1 7.2 Tf 1 0 0 1 48 243.0 Tm (floor-add | floor | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 233.0 Tm (| 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 223.0 Tm (simple-fizzbuzz | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 213.0 Tm (| 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 203.0 Tm (simple-count-vowels | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 193.0 Tm (100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 183.0 Tm (simple-reverse-words | simple | execution | 100 | 100 | 100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 173.0 Tm (| 100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 163.0 Tm (simple-sum-evens | simple | execution | 100 | 100 | 100 | 100 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 153.0 Tm (100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 143.0 Tm (simple-json-field | simple | execution | 75 | 75 | 75 | 75 | 75 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 133.0 Tm (75 | 75 | 75/0) Tj
+/F1 7.2 Tf 1 0 0 1 48 123.0 Tm (coding-bug-fix | hard | execution | 100 | 100 | 94 | 100 | 100 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 113.0 Tm (100 | 100 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 103.0 Tm (coding-algo | hard | execution | 100 | 100 | 96 | 98 | 100 | 100 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 93.0 Tm (100 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 83.0 Tm (reasoning-puzzle | hard | claim | 100 | 100 | 75 | 100 | 50 | 100/50 | 50 | 50) Tj
+/F1 7.2 Tf 1 0 0 1 48 73.0 Tm (| 50 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 63.0 Tm (reasoning-math | hard | claim | 100 | 100 | 100 | 75/100 | 100 | 100 | 100 |) Tj
+ET
+Q
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 4666 >>
+stream
+q
+BT
+/F1 7.2 Tf 1 0 0 1 48 790.0 Tm (100 | 100 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 780.0 Tm (comprehension-read | hard | claim | 100 | 100/75 | 100 | 100 | 75/100 | 75 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 770.0 Tm (75/100 | 75 | 75 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 760.0 Tm (planning-task | hard | claim | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 750.0 Tm (100 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 740.0 Tm (long-context-needle | hard | claim | 100 | 100 | 100 | 100 | 100 | 100 | 100 |) Tj
+/F1 7.2 Tf 1 0 0 1 48 730.0 Tm (100 | 100 | ?) Tj
+/F1 7.2 Tf 1 0 0 1 48 720.0 Tm (multi-turn-resume | hard | execution | 100 | 100 | 100 | 100 | 100 | 100 | 100) Tj
+/F1 7.2 Tf 1 0 0 1 48 710.0 Tm (| 100 | 100 | ?) Tj
+/F1 9 Tf 1 0 0 1 48 700.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 687.0 Tm (Qwen's two CLI repeats on simple-json-field scored 75 and 0: one run passed the core checks) Tj
+/F1 9 Tf 1 0 0 1 48 674.0 Tm (but failed the optional edge check, while the other omitted the json import and failed) Tj
+/F1 9 Tf 1 0 0 1 48 661.0 Tm (execution. This is the one measured Qwen miss, not a clean/empty response.) Tj
+/F1 9 Tf 1 0 0 1 48 648.0 Tm () Tj
+/F2 11 Tf 1 0 0 1 48 635.0 Tm (Task-level observations) Tj
+/F1 9 Tf 1 0 0 1 48 614.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 601.0 Tm (? All models handled the five simplest executable tasks consistently.) Tj
+/F1 9 Tf 1 0 0 1 48 588.0 Tm (? simple-json-field exposes a common idiom failure: direct indexing of an optional field) Tj
+/F1 9 Tf 1 0 0 1 48 575.0 Tm (instead of using .get\(\). This is an edge-quality signal, not a reason to reject a model) Tj
+/F1 9 Tf 1 0 0 1 48 562.0 Tm (that passes the core task.) Tj
+/F1 9 Tf 1 0 0 1 48 549.0 Tm (? The malformed reasoning-puzzle target asks for 4 litres in a 3-litre jug. Models that) Tj
+/F1 9 Tf 1 0 0 1 48 536.0 Tm (identify the impossibility receive only the claim-check partial score. This task is useful) Tj
+/F1 9 Tf 1 0 0 1 48 523.0 Tm (for constraint awareness but should not be read as evidence that the models failed to) Tj
+/F1 9 Tf 1 0 0 1 48 510.0 Tm (reason.) Tj
+/F1 9 Tf 1 0 0 1 48 497.0 Tm (? The hard coding tasks separate the Anthropic tier slightly from the Azure tier, but the) Tj
+/F1 9 Tf 1 0 0 1 48 484.0 Tm (sample is small and consists of only two repeats.) Tj
+/F1 9 Tf 1 0 0 1 48 471.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 458.0 Tm (Consistency) Tj
+/F1 9 Tf 1 0 0 1 48 432.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 419.0 Tm ("Unstable" means the same prompt produced different scores in its two repeats.) Tj
+/F1 9 Tf 1 0 0 1 48 406.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 393.0 Tm (Model / transport | Unstable tasks) Tj
+/F1 7.2 Tf 1 0 0 1 48 383.0 Tm (claude-fable-5 / CLI | 0 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 373.0 Tm (claude-opus-5 / CLI | 1 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 363.0 Tm (claude-sonnet-5 / CLI | 3 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 353.0 Tm (claude-haiku-4-5 / CLI | 2 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 343.0 Tm (azureai/gpt-5.6-sol / CLI | 1 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 333.0 Tm (azureai/gpt-5.4-mini / CLI | 1 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 323.0 Tm (azureai/gpt-5-mini / CLI | 1 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 313.0 Tm (azureai/gpt-5.4-mini-copilot / CLI | 1 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 303.0 Tm (azureai/gpt-5.6-luna / CLI | 0 of 14) Tj
+/F1 7.2 Tf 1 0 0 1 48 293.0 Tm (vllm/Qwen3.6-35B-A3B-NVFP4 / CLI | 1 of 6) Tj
+/F1 9 Tf 1 0 0 1 48 283.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 270.0 Tm (Two repeats show that instability exists; they do not estimate long-run failure rates.) Tj
+/F1 9 Tf 1 0 0 1 48 257.0 Tm (Sonnet's three unstable tasks include a 50-versus-100 swing on reasoning-puzzle, so) Tj
+/F1 9 Tf 1 0 0 1 48 244.0 Tm (one-shot results should not be treated as deterministic.) Tj
+/F1 9 Tf 1 0 0 1 48 231.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 218.0 Tm (Cost) Tj
+/F1 9 Tf 1 0 0 1 48 192.0 Tm () Tj
+/F2 11 Tf 1 0 0 1 48 179.0 Tm (Recorded rate card) Tj
+/F1 9 Tf 1 0 0 1 48 158.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 145.0 Tm (Model/backend | Input / 1M tokens | Output / 1M tokens | Cache read | Cache) Tj
+/F1 7.2 Tf 1 0 0 1 48 135.0 Tm (write | Basis) Tj
+/F1 7.2 Tf 1 0 0 1 48 125.0 Tm (claude-fable-5 | $10.00 | $50.00 | $1.00 | $20.00 | published) Tj
+/F1 7.2 Tf 1 0 0 1 48 115.0 Tm (claude-opus-5 | $5.00 | $25.00 | $0.50 | $10.00 | published and independently) Tj
+/F1 7.2 Tf 1 0 0 1 48 105.0 Tm (confirmed) Tj
+/F1 7.2 Tf 1 0 0 1 48 95.0 Tm (claude-sonnet-5 | $2.00 | $10.00 | $0.20 | $4.00 | published) Tj
+/F1 7.2 Tf 1 0 0 1 48 85.0 Tm (claude-haiku-4-5 | $1.00 | $5.00 | $0.10 | $2.00 | published) Tj
+/F1 7.2 Tf 1 0 0 1 48 75.0 Tm (vllm/Qwen3.6-35B-A3B-NVFP4 | $0 | $0 | ? | ? | self-hosted, marginal token) Tj
+/F1 7.2 Tf 1 0 0 1 48 65.0 Tm (cost treated as zero) Tj
+ET
+Q
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 4297 >>
+stream
+q
+BT
+/F1 7.2 Tf 1 0 0 1 48 790.0 Tm (azureai/ | not recorded | not recorded | not recorded | not recorded | no) Tj
+/F1 7.2 Tf 1 0 0 1 48 780.0 Tm (deployment rate supplied) Tj
+/F1 9 Tf 1 0 0 1 48 770.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 757.0 Tm (Anthropic totals use the CLI's totalcostusd only when costBasis is list. The harness also) Tj
+/F1 9 Tf 1 0 0 1 48 744.0 Tm (captures uncached input, cache-read, cache-write, and output tokens. Unknown vendor pricing) Tj
+/F1 9 Tf 1 0 0 1 48 731.0 Tm (is not silently converted to zero.) Tj
+/F1 9 Tf 1 0 0 1 48 718.0 Tm () Tj
+/F2 11 Tf 1 0 0 1 48 705.0 Tm (Why old non-Anthropic console costs are not usable) Tj
+/F1 9 Tf 1 0 0 1 48 684.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 671.0 Tm (The old usage table charged non-Anthropic backends with an Anthropic fallback rate. That) Tj
+/F1 9 Tf 1 0 0 1 48 658.0 Tm (made self-hosted Qwen appear to cost money and produced fictional Azure costs. Those) Tj
+/F1 9 Tf 1 0 0 1 48 645.0 Tm (figures are excluded from this comparison. Qwen is free under the stated self-hosted) Tj
+/F1 9 Tf 1 0 0 1 48 632.0 Tm (deployment assumption. Azure remains n/r until its actual rate card is supplied.) Tj
+/F1 9 Tf 1 0 0 1 48 619.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 606.0 Tm (Qwen: corrected interpretation) Tj
+/F1 9 Tf 1 0 0 1 48 580.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 567.0 Tm (The first benchmark ranked Qwen at 55.4% and described empty output as a model failure.) Tj
+/F1 9 Tf 1 0 0 1 48 554.0 Tm (That result is withdrawn.) Tj
+/F1 9 Tf 1 0 0 1 48 541.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 528.0 Tm (The old harness used a 4,096-token cap for both reasoning and answer, a 180-second timeout,) Tj
+/F1 9 Tf 1 0 0 1 48 515.0 Tm (and an extractor that collapsed truncated thinking into the literal [thinking] marker.) Tj
+/F1 9 Tf 1 0 0 1 48 502.0 Tm (Qwen's reasoning output consumed the budget and time limit. A truncated answer and an empty) Tj
+/F1 9 Tf 1 0 0 1 48 489.0 Tm (answer became indistinguishable.) Tj
+/F1 9 Tf 1 0 0 1 48 476.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 463.0 Tm (The corrected benchmark used 16,384 maximum output tokens, a 1,000-second timeout, private) Tj
+/F1 9 Tf 1 0 0 1 48 450.0 Tm (per-run directories, file-delivery recovery, and explicit core versus edge checks. The) Tj
+/F1 9 Tf 1 0 0 1 48 437.0 Tm (simpler CLI tier produced:) Tj
+/F1 9 Tf 1 0 0 1 48 424.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 411.0 Tm (? 11/12 core tasks correct) Tj
+/F1 9 Tf 1 0 0 1 48 398.0 Tm (? 5.2 s median total time) Tj
+/F1 9 Tf 1 0 0 1 48 385.0 Tm (? 0.74 s median TTFT) Tj
+/F1 9 Tf 1 0 0 1 48 372.0 Tm (? 56 median output tokens) Tj
+/F1 9 Tf 1 0 0 1 48 359.0 Tm (? $0 marginal token cost) Tj
+/F1 9 Tf 1 0 0 1 48 346.0 Tm (? no clean/empty runs in the corrected CLI result) Tj
+/F1 9 Tf 1 0 0 1 48 333.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 320.0 Tm (The one miss was simple-json-field, where one answer omitted import json. That is a real) Tj
+/F1 9 Tf 1 0 0 1 48 307.0 Tm (answer defect. It is not the earlier harness artefact.) Tj
+/F1 9 Tf 1 0 0 1 48 294.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 281.0 Tm (Historical HTTP diagnostic: not active configuration) Tj
+/F1 9 Tf 1 0 0 1 48 255.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 242.0 Tm (Raw HTTP was removed from the benchmark because WebConsole production uses the CLI path.) Tj
+/F1 9 Tf 1 0 0 1 48 229.0 Tm (The following measurements remain only to explain why old conclusions were wrong.) Tj
+/F1 9 Tf 1 0 0 1 48 216.0 Tm () Tj
+/F2 11 Tf 1 0 0 1 48 203.0 Tm (Qwen head-to-head, same six floor/simple tasks) Tj
+/F1 9 Tf 1 0 0 1 48 182.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 169.0 Tm (Metric | HTTP | CLI) Tj
+/F1 7.2 Tf 1 0 0 1 48 159.0 Tm (Correct | 11/12 | 11/12) Tj
+/F1 7.2 Tf 1 0 0 1 48 149.0 Tm (Median total time | 88.2 s | 5.2 s) Tj
+/F1 7.2 Tf 1 0 0 1 48 139.0 Tm (Median output tokens | 2,134 | 56) Tj
+/F1 7.2 Tf 1 0 0 1 48 129.0 Tm (Median thinking characters | 6,540 | 102) Tj
+/F1 7.2 Tf 1 0 0 1 48 119.0 Tm (Median TTFT | 76.71 s | 0.74 s) Tj
+/F1 9 Tf 1 0 0 1 48 109.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 96.0 Tm (The model's correctness was the same. The HTTP path generated far more reasoning and was) Tj
+/F1 9 Tf 1 0 0 1 48 83.0 Tm (much slower. Those HTTP figures must not be used to choose the current WebConsole backend) Tj
+/F1 9 Tf 1 0 0 1 48 70.0 Tm (because that transport is no longer part of the application benchmark.) Tj
+ET
+Q
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 12 0 R >>
+endobj
+14 0 obj
+<< /Length 4461 >>
+stream
+q
+BT
+/F1 9 Tf 1 0 0 1 48 790.0 Tm () Tj
+/F2 11 Tf 1 0 0 1 48 777.0 Tm (Azure HTTP gateway failure) Tj
+/F1 9 Tf 1 0 0 1 48 756.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 743.0 Tm (The historical Azure HTTP stream returned a LiteLLM gateway error \(list index out of range\)) Tj
+/F1 9 Tf 1 0 0 1 48 730.0 Tm (for most streaming attempts. The stream error carried no normal type field, so the old) Tj
+/F1 9 Tf 1 0 0 1 48 717.0 Tm (parser recorded silence. The corrected parser surfaces the error and can re-run unstreamed,) Tj
+/F1 9 Tf 1 0 0 1 48 704.0 Tm (but the raw HTTP transport was then removed from the production comparison.) Tj
+/F1 9 Tf 1 0 0 1 48 691.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 678.0 Tm (This is a gateway/transport finding, not a model-quality finding. It should be fixed in the) Tj
+/F1 9 Tf 1 0 0 1 48 665.0 Tm (gateway separately if HTTP streaming is needed. It does not change the CLI measurements) Tj
+/F1 9 Tf 1 0 0 1 48 652.0 Tm (above.) Tj
+/F1 9 Tf 1 0 0 1 48 639.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 626.0 Tm (Benchmark method and limits) Tj
+/F1 9 Tf 1 0 0 1 48 600.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 587.0 Tm (? Harness: bin/wc-bench.py) Tj
+/F1 9 Tf 1 0 0 1 48 574.0 Tm (? Report generator: bin/wc-bench-report.py) Tj
+/F1 9 Tf 1 0 0 1 48 561.0 Tm (? Verifiers: bench/verify.py) Tj
+/F1 9 Tf 1 0 0 1 48 548.0 Tm (? Tasks: bench/tasks.py) Tj
+/F1 9 Tf 1 0 0 1 48 535.0 Tm (? Cost logic: bench/cost.py) Tj
+/F1 9 Tf 1 0 0 1 48 522.0 Tm (? Maximum output tokens: 16,384) Tj
+/F1 9 Tf 1 0 0 1 48 509.0 Tm (? Timeout: 1,000 seconds) Tj
+/F1 9 Tf 1 0 0 1 48 496.0 Tm (? Repeats: 2 for the completed comparison) Tj
+/F1 9 Tf 1 0 0 1 48 483.0 Tm (? Active transport: CLI only) Tj
+/F1 9 Tf 1 0 0 1 48 470.0 Tm (? Code correctness: extracted code executed in a subprocess with a restricted environment) Tj
+/F1 9 Tf 1 0 0 1 48 457.0 Tm (? Prose correctness: mechanical claim checks, weaker than execution) Tj
+/F1 9 Tf 1 0 0 1 48 444.0 Tm (? Core checks decide correct; edge checks remain in the score and report) Tj
+/F1 9 Tf 1 0 0 1 48 431.0 Tm (? Result files: benchanthropic20260902.json, benchazure20260902.json,) Tj
+/F1 9 Tf 1 0 0 1 48 418.0 Tm (benchqwentransport20260902.json) Tj
+/F1 9 Tf 1 0 0 1 48 405.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 392.0 Tm (Limitations remain:) Tj
+/F1 9 Tf 1 0 0 1 48 379.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 366.0 Tm (? Azure and Anthropic are not identical vendor deployments, so raw scores do not establish) Tj
+/F1 9 Tf 1 0 0 1 48 353.0 Tm (general model rankings outside this environment.) Tj
+/F1 9 Tf 1 0 0 1 48 340.0 Tm (? Qwen was re-run on the floor/simple tier after the original harness failure; its 11/12 is) Tj
+/F1 9 Tf 1 0 0 1 48 327.0 Tm (not a 14-task score.) Tj
+/F1 9 Tf 1 0 0 1 48 314.0 Tm (? Two repeats are enough to expose some instability, not enough to establish production) Tj
+/F1 9 Tf 1 0 0 1 48 301.0 Tm (failure probabilities.) Tj
+/F1 9 Tf 1 0 0 1 48 288.0 Tm (? Claim checks can miss errors that execution would catch.) Tj
+/F1 9 Tf 1 0 0 1 48 275.0 Tm (? Azure rates are not recorded, so no Azure cost-per-correct result is claimed.) Tj
+/F1 9 Tf 1 0 0 1 48 262.0 Tm (? The benchmark measures model responses in isolated CLI runs, not complete end-to-end) Tj
+/F1 9 Tf 1 0 0 1 48 249.0 Tm (WebConsole user journeys.) Tj
+/F1 9 Tf 1 0 0 1 48 236.0 Tm () Tj
+/F2 15 Tf 1 0 0 1 48 223.0 Tm (Files and provenance) Tj
+/F1 9 Tf 1 0 0 1 48 197.0 Tm () Tj
+/F1 7.2 Tf 1 0 0 1 48 184.0 Tm (File | Contents) Tj
+/F1 7.2 Tf 1 0 0 1 48 174.0 Tm (benchanthropic20260902.json | 112 Anthropic CLI runs) Tj
+/F1 7.2 Tf 1 0 0 1 48 164.0 Tm (benchazure20260902.json | Completed Azure run: 280 historical CLI/HTTP rows,) Tj
+/F1 7.2 Tf 1 0 0 1 48 154.0 Tm (including diagnostic HTTP rows) Tj
+/F1 7.2 Tf 1 0 0 1 48 144.0 Tm (benchqwentransport20260902.json | 12 Qwen CLI rows and 12 historical HTTP rows) Tj
+/F1 7.2 Tf 1 0 0 1 48 134.0 Tm (benchqwen350.8bfloor20260903.json | 12 vllm/Qwen3.5-0.8B CLI rows,) Tj
+/F1 7.2 Tf 1 0 0 1 48 124.0 Tm (floor/simple tier) Tj
+/F1 7.2 Tf 1 0 0 1 48 114.0 Tm (benchqwen350.8b20260903.json | Partial \(20-row\) hard-tier attempt, killed) Tj
+/F1 7.2 Tf 1 0 0 1 48 104.0 Tm (after reasoning-puzzle hit 1130.96s ? kept for the record, not scored into the) Tj
+/F1 7.2 Tf 1 0 0 1 48 94.0 Tm (table above) Tj
+/F1 7.2 Tf 1 0 0 1 48 84.0 Tm (benchrates.json | Explicit rate card used by the harness) Tj
+/F1 7.2 Tf 1 0 0 1 48 74.0 Tm (bin/wc-bench-report.py | Reproducible report generator) Tj
+/F1 9 Tf 1 0 0 1 48 64.0 Tm () Tj
+ET
+Q
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 14 0 R >>
+endobj
+16 0 obj
+<< /Length 680 >>
+stream
+q
+BT
+/F1 9 Tf 1 0 0 1 48 790.0 Tm (The final recommendation is therefore conditional, not a single league-table number:) Tj
+/F1 9 Tf 1 0 0 1 48 777.0 Tm () Tj
+/F1 9 Tf 1 0 0 1 48 764.0 Tm (? Choose Qwen for free background and batch work where the corrected floor/simple task bar) Tj
+/F1 9 Tf 1 0 0 1 48 751.0 Tm (is sufficient.) Tj
+/F1 9 Tf 1 0 0 1 48 738.0 Tm (? Choose Haiku for the best measured Anthropic cost/quality balance.) Tj
+/F1 9 Tf 1 0 0 1 48 725.0 Tm (? Choose Fable when the extra clean-sweep quality is worth its much higher cost.) Tj
+/F1 9 Tf 1 0 0 1 48 712.0 Tm (? Choose Azure based on latency and task fit only until actual Azure pricing is recorded.) Tj
+ET
+Q
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 16 0 R >>
+endobj
+xref
+0 18
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000155 00000 n 
+0000000225 00000 n 
+0000000300 00000 n 
+0000000368 00000 n 
+0000005099 00000 n 
+0000005245 00000 n 
+0000010971 00000 n 
+0000011117 00000 n 
+0000015835 00000 n 
+0000015983 00000 n 
+0000020332 00000 n 
+0000020480 00000 n 
+0000024993 00000 n 
+0000025141 00000 n 
+0000025872 00000 n 
+trailer
+<< /Size 18 /Root 1 0 R >>
+startxref
+26020
+%%EOF

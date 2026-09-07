@@ -34,12 +34,15 @@ async def probe_proxy(machine_id: str) -> bool:
         return False
 
 
-async def collect_stats(machine_id: str, store_fn=None) -> None:
-    """Collect remote host stats via SSH exec and persist them."""
-    import db
+async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
+    """Collect remote host stats via SSH exec and optionally publish them."""
+    import tunnel_manager
     from tunnel_manager_ssh import exec_command
 
-    stats = {}
+    state = tunnel_manager._STATE.get(machine_id)
+    if not state or not state.get("ssh_client"):
+        return {}
+    stats: dict[str, str] = {}
     for label, cmd in [
         ("cpu", "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"),
         ("disk", "df -h / 2>/dev/null | awk 'NR==2{print $5}'"),
@@ -52,17 +55,9 @@ async def collect_stats(machine_id: str, store_fn=None) -> None:
         except Exception:
             stats[label] = "ERROR"
 
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    row_id = await db.system_sample_insert(
-        host_type="remote",
-        host_id=machine_id,
-        cpu_pct=None,
-        mem_pct=None,
-        stats=stats,
-        created_at=now,
-    )
-    if row_id and store_fn:
+    if store_fn:
         try:
-            store_fn(machine_id, row_id)
+            store_fn(machine_id, stats)
         except Exception as exc:
-            _log.error("insert_system_sample failed: %s", exc)
+            _log.error("store remote stats failed: %s", exc)
+    return stats

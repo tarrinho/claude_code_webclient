@@ -72,7 +72,7 @@ class BackendResolutionTests(unittest.IsolatedAsyncioTestCase):
             "machine_id": "m1", "name": "GW", "host": "gw.example.com",
             "port": 443, "api_key": None, "model": "vllm/Model",
             "base_url": "https://gw.example.com", "description": None,
-            "owner_id": "admin", "provider": "anthropic",
+            "owner_id": "admin", "provider": "claude_code",
         }
         fields.update(kw)
         await db.ai_machine_create(**fields)
@@ -81,7 +81,7 @@ class BackendResolutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_anthropic_machine_yields_base_url(self):
         await self._machine()
         backend = await runner.get_backend("c1")
-        self.assertEqual(backend.get("provider"), "anthropic")
+        self.assertEqual(backend.get("provider"), "claude_code")
         self.assertEqual(backend.get("base_url"), "https://gw.example.com")
 
     async def test_api_key_travels_when_set(self):
@@ -104,7 +104,7 @@ class TurnPayloadParityTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.backend = {
-            "provider": "anthropic",
+            "provider": "claude_code",
             "base_url": "https://gw.example.com",
             "api_key": "k",
         }

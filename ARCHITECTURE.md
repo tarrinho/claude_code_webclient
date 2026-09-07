@@ -2,7 +2,7 @@
 
 A self-hosted web interface for a local Claude Code CLI. It provides mobile-friendly conversations, SSE token streaming, SQLite persistence, resumable CLI sessions, multi-machine AI routing, and skills inventory.
 
-**Version:** 0.13.0
+**Version:** 0.15.3
 **License:** Proprietary
 
 ---
@@ -84,7 +84,7 @@ graph TB
     end
 
     subgraph WebConsole["FastAPI WebConsole\nPython 3.13 / uvicorn"]
-        MW["Middleware Stack\nSecurity → Auth → CSRF → CORS"]
+        MW["Middleware Stack\nrate_limit → Security → Auth → CSRF → CORS"]
         Routes["Route Handlers\nAuth · Chats · Sessions\nSettings · Machines · Skills"]
         Runner["Runner Module\nConcurrency Gate\nProxy / Direct"]
         DBAccess["DB Layer\naiosqlite / WAL"]

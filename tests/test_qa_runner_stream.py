@@ -144,12 +144,12 @@ class ProxyStreamTests(unittest.IsolatedAsyncioTestCase):
         while the same prompt through the blocking path succeeded."""
         await db.ai_machine_create(
             "m1", "Gateway", "gw.example.com", 443, "sk-test", "claude-opus-5",
-            "https://gw.example.com", None, "admin", provider="anthropic",
+            "https://gw.example.com", None, "admin", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
         await self._drain({"type": "done"})
         backend = self.writer.sent()[1]["backend"]
-        self.assertEqual(backend["provider"], "anthropic")
+        self.assertEqual(backend["provider"], "claude_code")
         self.assertEqual(backend["base_url"], "https://gw.example.com")
         self.assertEqual(backend["api_key"], "sk-test")
 

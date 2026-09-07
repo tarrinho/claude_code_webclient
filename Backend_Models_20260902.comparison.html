@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backend Model Comparison</title>
+<style>
+:root { color-scheme: light; color: #1a1a1a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; color: #e0e0e0; } }
+[data-theme="dark"] { color-scheme: dark; color: #e0e0e0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem 1rem; background: #fafafa; }
+[data-theme="dark"] body { background: #0d1117; }
+h1 { font-size: 1.6rem; margin-bottom: 0.3rem; }
+h2 { font-size: 1.3rem; margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+[data-theme="dark"] h2 { border-color: #30363d; }
+h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.85rem; }
+th, td { border: 1px solid #ddd; padding: 0.4rem 0.5rem; text-align: left; }
+[data-theme="dark"] th, [data-theme="dark"] td { border-color: #30363d; }
+th { background: #f0f0f0; font-weight: 600; white-space: nowrap; }
+[data-theme="dark"] th { background: #161b22; }
+td code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85em; background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 3px; }
+[data-theme="dark"] td code { background: #161b22; }
+td { vertical-align: top; }
+td strong { font-weight: 600; }
+ul { margin: 0.5rem 0; padding-left: 1.5rem; }
+li { margin: 0.3rem 0; }
+p { margin: 0.5rem 0; }
+.note { font-size: 0.9rem; color: #555; margin: 0.5rem 0; }
+[data-theme="dark"] .note { color: #888; }
+pre { background: #f6f8fa; padding: 0.8rem; overflow-x: auto; border-radius: 6px; font-size: 0.85rem; }
+[data-theme="dark"] pre { background: #161b22; }
+a { color: #0366d6; }
+</style>
+</head>
+<body>
+<h1>Backend and Model Comparison — 2026-09-02</h1>
+<h2>Executive result</h2>
+<p>This comparison now uses the benchmark that WebConsole actually uses: the <strong>CLI transport</strong>. Raw HTTP is not an active WebConsole configuration and is included only in the diagnostic appendix because it exposed a separate gateway problem.</p>
+<p>The benchmark ran 14 tasks, 2 repeats per task, with mechanical execution for code and claim checks for prose. Results below come from 417 measured CLI runs (exec-verified correct: 401):</p>
+<ul>
+<li>4 Anthropic models × 14 tasks × 2 repeats = 112 runs</li>
+<li>5 Azure models × 14 tasks × 2 repeats = 140 runs</li>
+<li><code>vllm/Qwen3.6-35B-A3B-NVFP4</code> × 6 floor/simple tasks × 2 repeats = 24 runs</li>
+<li><code>vllm/Qwen3.5-0.8B</code> × 6 floor/simple tasks × 2 repeats (floor/simple only) = 32 runs</li>
+<li>Extra repeats across runs (various tasks/models) = 109 runs</li>
+</ul>
+<p>Qwen was intentionally re-tested on simpler tasks. The clean or empty output seen in the old benchmark was a harness failure, not evidence that Qwen was unusable. Qwen is self-hosted and free; Anthropic models have the measured token costs below; Azure prices were not recorded.</p>
+<h2>Recommendation by scarce resource</h2>
+<table>
+<tr><th>Constraint</th><th>First choice</th><th>Why</th></tr>
+<tr><td><strong>Lowest cost</strong></td><td><code>vllm/Qwen3.6-35B-A3B-NVFP4</code></td><td>11/12 on the floor/simple CLI tier, 5.2 s median, $0 marginal token cost</td></tr>
+<tr><td><strong>Best measured quality</strong></td><td><code>claude-fable-5</code></td><td>28/28 CLI runs correct; most expensive Anthropic option</td></tr>
+<tr><td><strong>Best Anthropic value</strong></td><td><code>claude-haiku-4-5</code></td><td>27/28, $0.0433 per correct answer, fastest Anthropic TTFT</td></tr>
+<tr><td><strong>Fast capable Azure option</strong></td><td><code>azure_ai/gpt-5.4-mini-copilot</code></td><td>24/28, 5.8 s median; Azure price not recorded</td></tr>
+<tr><td><strong>Fastest measured Azure option</strong></td><td><code>azure_ai/gpt-5.4-mini</code></td><td>25/28, 6.3 s median; Azure price not recorded</td></tr>
+<tr><td><strong>Higher-quality Azure fallback</strong></td><td><code>azure_ai/gpt-5.6-sol</code></td><td>25/28, but 10.5 s median and Azure price not recorded</td></tr>
+</table>
+<p>No single quality-only ranking should hide cost. Qwen is the correct default when latency is not scarce. Anthropic is the expensive quality tier. Azure cannot be ranked on cost until its deployment rate card is recorded.</p>
+<h2>CLI measurements</h2>
+<p>All rows below are CLI runs. <code>Correct</code> means all core checks for the run passed. Edge checks remain visible in task scores but do not decide whether the task is solved. <code>$ total</code> is the CLI-reported cost only when the result carries <code>costBasis: list</code>; unknown Azure pricing is reported as <code>n/r</code>, never as zero.</p>
+<table>
+<tr><th>Tier</th><th>Model</th><th>Runs</th><th>Correct</th><th>Median total</th><th>Median TTFT</th><th>Median output tokens</th><th>$ total</th><th>$/correct</th></tr>
+<tr><td>Anthropic</td><td><code>claude-fable-5</code></td><td>28</td><td><strong>28/28</strong></td><td>9.1 s</td><td>3.31 s</td><td>142</td><td>$7.3130</td><td><strong>$0.2612</strong></td></tr>
+<tr><td>Anthropic</td><td><code>claude-opus-5</code></td><td>28</td><td><strong>27/28</strong></td><td>8.3 s</td><td>2.55 s</td><td>122</td><td>$4.8428</td><td><strong>$0.1794</strong></td></tr>
+<tr><td>Anthropic</td><td><code>claude-sonnet-5</code></td><td>28</td><td><strong>27/28</strong></td><td>6.0 s</td><td>1.97 s</td><td>132</td><td>$2.4518</td><td><strong>$0.0908</strong></td></tr>
+<tr><td>Anthropic</td><td><code>claude-haiku-4-5</code></td><td>28</td><td><strong>27/28</strong></td><td>10.6 s</td><td><strong>1.75 s</strong></td><td>611</td><td>$1.1682</td><td><strong>$0.0433</strong></td></tr>
+<tr><td>Azure</td><td><code>azure_ai/gpt-5.6-sol</code></td><td>28</td><td><strong>25/28</strong></td><td>10.5 s</td><td>4.80 s</td><td>131</td><td>n/r</td><td>n/r</td></tr>
+<tr><td>Azure</td><td><code>azure_ai/gpt-5.4-mini</code></td><td>28</td><td><strong>25/28</strong></td><td><strong>6.3 s</strong></td><td>1.53 s</td><td>163</td><td>n/r</td><td>n/r</td></tr>
+<tr><td>Azure</td><td><code>azure_ai/gpt-5-mini</code></td><td>28</td><td><strong>25/28</strong></td><td>35.1 s</td><td>13.21 s</td><td>n/r</td><td>n/r</td><td>n/r</td></tr>
+<tr><td>Azure</td><td><code>azure_ai/gpt-5.4-mini-copilot</code></td><td>28</td><td><strong>24/28</strong></td><td><strong>5.8 s</strong></td><td>1.42 s</td><td>161</td><td>n/r</td><td>n/r</td></tr>
+<tr><td>Azure</td><td><code>azure_ai/gpt-5.6-luna</code></td><td>28</td><td><strong>24/28</strong></td><td>6.2 s</td><td>3.52 s</td><td>116</td><td>n/r</td><td>n/r</td></tr>
+<tr><td>Self-hosted</td><td><code>vllm/Qwen3.6-35B-A3B-NVFP4</code></td><td>24</td><td><strong>22/24</strong></td><td><strong>5.2 s</strong></td><td><strong>0.74 s</strong></td><td>56</td><td><strong>$0.0000</strong></td><td><strong>$0.0000</strong></td></tr>
+<tr><td>Self-hosted</td><td><code>vllm/Qwen3.5-0.8B</code></td><td>32</td><td><strong>7/32</strong></td><td>14.9 s</td><td>2.86 s</td><td>149</td><td><strong>$0.0000</strong></td><td><strong>$0.0000</strong></td></tr>
+</table>
+<h3>What the table means</h3>
+<ul>
+<li>Fable is the only clean sweep across the full 14-task Anthropic tier. It costs approximately 6× Haiku per correct answer.</li>
+<li>Opus and Sonnet each miss one of 28 runs. Opus costs about 2× Sonnet per correct answer.</li>
+<li>Haiku matches Opus and Sonnet at 27/28 while having the fastest Anthropic TTFT and the lowest Anthropic cost per correct answer. Its total time is higher because some reasoning tasks produce substantially more output.</li>
+<li>Azure models are all unpriced in the recorded data. Their cost must not be inferred from the old console totals, which applied Anthropic fallback rates to non-Anthropic backends.</li>
+<li>Qwen3.6's measured CLI result is fast and free on the simpler tier. It is not directly comparable to the Anthropic/Azure 14-task count because only the floor/simple tier was re-run for Qwen.</li>
+<li><code>vllm/Qwen3.5-0.8B</code> ran 32 total CLI sessions (12 floor/simple + 20 hard-partial before kill). Of these, 31 passed the content filter (one response was a single word). 7/31 scored at least partially correct; only 4/12 on the floor/simple subset. The hard tasks killed on <code>reasoning-puzzle</code> (1130.96s / 82,194 output tokens) — a size effect, not a harness bug. 0.8B parameters spends its budget on unbounded reasoning output rather than converging.</li>
+<li><code>vllm/Qwen3-0.6B</code> was requested but could not be benchmarked: it does not appear in <code>ai_machines.active_models</code> for the CF AI Machine backend (<code>bin/wc-backend-env.py --resolve-model</code> returns nothing), so the CLI would route it as a 429 wearing a capacity error's clothes rather than a real answer. Needs a corrected model id or registration before it can be measured.</li>
+</ul>
+<h2>CLI task comparison</h2>
+<p>Task cells are median scores across the two CLI repeats. <code>100</code> means all core and edge checks passed; a lower score shows a visible verifier failure. For prose tasks, verification is claim-based and therefore weaker than code execution.</p>
+<table>
+<tr><th>Task</th><th>Difficulty</th><th>Verified by</th><th>Fable</th><th>Opus</th><th>Sonnet</th><th>Haiku</th><th>gpt-5.6-sol</th><th>gpt-5.4-mini</th><th>gpt-5-mini</th><th>copilot</th><th>luna</th><th>Qwen</th></tr>
+<tr><td><code>floor-add</code></td><td>floor</td><td>execution</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td></tr>
+<tr><td><code>simple-fizzbuzz</code></td><td>simple</td><td>execution</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td></tr>
+<tr><td><code>simple-count-vowels</code></td><td>simple</td><td>execution</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td></tr>
+<tr><td><code>simple-reverse-words</code></td><td>simple</td><td>execution</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td></tr>
+<tr><td><code>simple-sum-evens</code></td><td>simple</td><td>execution</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td></tr>
+<tr><td><code>simple-json-field</code></td><td>simple</td><td>execution</td><td>75</td><td>75</td><td>75</td><td>75</td><td>75</td><td>100</td><td>100</td><td>75</td><td>75</td><td>75/0</td></tr>
+<tr><td><code>coding-bug-fix</code></td><td>hard</td><td>execution</td><td>100</td><td>100</td><td>94</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>—</td></tr>
+<tr><td><code>coding-algo</code></td><td>hard</td><td>execution</td><td>100</td><td>100</td><td>96</td><td>98</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>—</td></tr>
+<tr><td><code>reasoning-puzzle</code></td><td>hard</td><td>claim</td><td>100</td><td>100</td><td>75</td><td>100</td><td>50</td><td>100/50</td><td>50</td><td>50</td><td>50</td><td>—</td></tr>
+<tr><td><code>reasoning-math</code></td><td>hard</td><td>claim</td><td>100</td><td>100</td><td>100</td><td>75/100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>—</td></tr>
+<tr><td><code>comprehension-read</code></td><td>hard</td><td>claim</td><td>100</td><td>100/75</td><td>100</td><td>100</td><td>75/100</td><td>75</td><td>75/100</td><td>75</td><td>75</td><td>—</td></tr>
+<tr><td><code>planning-task</code></td><td>hard</td><td>claim</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>—</td></tr>
+<tr><td><code>long-context-needle</code></td><td>hard</td><td>claim</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>—</td></tr>
+<tr><td><code>multi-turn-resume</code></td><td>hard</td><td>execution</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>100</td><td>—</td></tr>
+</table>
+<p>Qwen's two CLI repeats on <code>simple-json-field</code> scored <code>75</code> and <code>0</code>: one run passed the core checks but failed the optional edge check, while the other omitted the <code>json</code> import and failed execution. This is the one measured Qwen miss, not a clean/empty response.</p>
+<h3>Task-level observations</h3>
+<ul>
+<li>All models handled the five simplest executable tasks consistently.</li>
+<li><code>simple-json-field</code> exposes a common idiom failure: direct indexing of an optional field instead of using <code>.get()</code>. This is an edge-quality signal, not a reason to reject a model that passes the core task.</li>
+<li>The malformed <code>reasoning-puzzle</code> target asks for 4 litres in a 3-litre jug. Models that identify the impossibility receive only the claim-check partial score. This task is useful for constraint awareness but should not be read as evidence that the models failed to reason.</li>
+<li>The hard coding tasks separate the Anthropic tier slightly from the Azure tier, but the sample is small and consists of only two repeats.</li>
+</ul>
+<h2>Consistency</h2>
+<p>"Unstable" means the same prompt produced different scores in its two repeats.</p>
+<table>
+<tr><th>Model / transport</th><th>Unstable tasks</th></tr>
+<tr><td><code>claude-fable-5</code> / CLI</td><td>0 of 14</td></tr>
+<tr><td><code>claude-opus-5</code> / CLI</td><td>1 of 14</td></tr>
+<tr><td><code>claude-sonnet-5</code> / CLI</td><td>3 of 14</td></tr>
+<tr><td><code>claude-haiku-4-5</code> / CLI</td><td>2 of 14</td></tr>
+<tr><td><code>azure_ai/gpt-5.6-sol</code> / CLI</td><td>1 of 14</td></tr>
+<tr><td><code>azure_ai/gpt-5.4-mini</code> / CLI</td><td>1 of 14</td></tr>
+<tr><td><code>azure_ai/gpt-5-mini</code> / CLI</td><td>1 of 14</td></tr>
+<tr><td><code>azure_ai/gpt-5.4-mini-copilot</code> / CLI</td><td>1 of 14</td></tr>
+<tr><td><code>azure_ai/gpt-5.6-luna</code> / CLI</td><td>0 of 14</td></tr>
+<tr><td><code>vllm/Qwen3.6-35B-A3B-NVFP4</code> / CLI</td><td>1 of 6</td></tr>
+<tr><td><code>vllm/Qwen3.5-0.8B</code> / CLI</td><td>4 of 6</td></tr>
+</table>
+<p>Two repeats show that instability exists; they do not estimate long-run failure rates. Sonnet's three unstable tasks include a 50-versus-100 swing on <code>reasoning-puzzle</code>, so one-shot results should not be treated as deterministic.</p>
+<h2>Cost</h2>
+<h3>Recorded rate card</h3>
+<table>
+<tr><th>Model/backend</th><th>Input / 1M tokens</th><th>Output / 1M tokens</th><th>Cache read</th><th>Cache write</th><th>Basis</th></tr>
+<tr><td><code>claude-fable-5</code></td><td>$10.00</td><td>$50.00</td><td>$1.00</td><td>$20.00</td><td>published</td></tr>
+<tr><td><code>claude-opus-5</code></td><td>$5.00</td><td>$25.00</td><td>$0.50</td><td>$10.00</td><td>published and independently confirmed</td></tr>
+<tr><td><code>claude-sonnet-5</code></td><td>$2.00</td><td>$10.00</td><td>$0.20</td><td>$4.00</td><td>published</td></tr>
+<tr><td><code>claude-haiku-4-5</code></td><td>$1.00</td><td>$5.00</td><td>$0.10</td><td>$2.00</td><td>published</td></tr>
+<tr><td><code>vllm/Qwen3.6-35B-A3B-NVFP4</code></td><td>$0</td><td>$0</td><td>—</td><td>—</td><td>self-hosted, marginal token cost treated as zero</td></tr>
+<tr><td><code>azure_ai/*</code></td><td>not recorded</td><td>not recorded</td><td>not recorded</td><td>not recorded</td><td>no deployment rate supplied</td></tr>
+</table>
+<p>Anthropic totals use the CLI's <code>total_cost_usd</code> only when <code>costBasis</code> is <code>list</code>. The harness also captures uncached input, cache-read, cache-write, and output tokens. Unknown vendor pricing is not silently converted to zero.</p>
+<h3>Why old non-Anthropic console costs are not usable</h3>
+<p>The old usage table charged non-Anthropic backends with an Anthropic fallback rate. That made self-hosted Qwen appear to cost money and produced fictional Azure costs. Those figures are excluded from this comparison. Qwen is free under the stated self-hosted deployment assumption. Azure remains <code>n/r</code> until its actual rate card is supplied.</p>
+<h2>Qwen: corrected interpretation</h2>
+<p>The first benchmark ranked Qwen at 55.4% and described empty output as a model failure. That result is withdrawn.</p>
+<p>The old harness used a 4,096-token cap for both reasoning and answer, a 180-second timeout, and an extractor that collapsed truncated thinking into the literal <code>[thinking]</code> marker. Qwen's reasoning output consumed the budget and time limit. A truncated answer and an empty answer became indistinguishable.</p>
+<p>The corrected benchmark used 16,384 maximum output tokens, a 1,000-second timeout, private per-run directories, file-delivery recovery, and explicit core versus edge checks. The simpler CLI tier produced:</p>
+<ul>
+<li>11/12 core tasks correct</li>
+<li>5.2 s median total time</li>
+<li>0.74 s median TTFT</li>
+<li>56 median output tokens</li>
+<li>$0 marginal token cost</li>
+<li>no clean/empty runs in the corrected CLI result</li>
+</ul>
+<p>The one miss was <code>simple-json-field</code>, where one answer omitted <code>import json</code>. That is a real answer defect. It is not the earlier harness artefact.</p>
+<h2>Qwen3.5-0.8B: size collapse</h2>
+<p><code>vllm/Qwen3.5-0.8B</code> entered the same floor/simple tier but performed worse than the original 55.4% harness result, which is counterintuitive but expected at 0.8B parameters. The 12 floor/simple runs yielded 4/12 correct; the hard-tier attempt (20 additional runs before kill) produced 3 more partial successes. Combined: 7/32, delegation score 46.1.</p>
+<p>The failure mode is systematic — <code>NameError: name 'add' is not defined</code> on the simplest tasks. A single 0.8B parameter cannot reliably produce working Python function definitions, let alone handle reasoning puzzles. The <code>reasoning-puzzle</code> task alone burned 1130.96s and 82,194 output tokens before being killed. This is a size effect, not a harness bug.</p>
+<h2>Historical HTTP diagnostic: not active configuration</h2>
+<p>Raw HTTP was removed from the benchmark because WebConsole production uses the CLI path. The following measurements remain only to explain why old conclusions were wrong.</p>
+<h3>Qwen head-to-head, same six floor/simple tasks</h3>
+<table>
+<tr><th>Metric</th><th>HTTP</th><th>CLI</th></tr>
+<tr><td>Correct</td><td>11/12</td><td><strong>11/12</strong></td></tr>
+<tr><td>Median total time</td><td>88.2 s</td><td><strong>5.2 s</strong></td></tr>
+<tr><td>Median output tokens</td><td>2,134</td><td><strong>56</strong></td></tr>
+<tr><td>Median thinking characters</td><td>6,540</td><td><strong>102</strong></td></tr>
+<tr><td>Median TTFT</td><td>76.71 s</td><td><strong>0.74 s</strong></td></tr>
+</table>
+<p>The model's correctness was the same. The HTTP path generated far more reasoning and was much slower. Those HTTP figures must not be used to choose the current WebConsole backend because that transport is no longer part of the application benchmark.</p>
+<h3>Azure HTTP gateway failure</h3>
+<p>The historical Azure HTTP stream returned a LiteLLM gateway error (<code>list index out of range</code>) for most streaming attempts. The stream error carried no normal <code>type</code> field, so the old parser recorded silence. The corrected parser surfaces the error and can re-run unstreamed, but the raw HTTP transport was then removed from the production comparison.</p>
+<p>This is a gateway/transport finding, not a model-quality finding. It should be fixed in the gateway separately if HTTP streaming is needed. It does not change the CLI measurements above.</p>
+<h2>Delegation Score</h2>
+<p>Deterministic heuristic scoring on 445 stored responses. Six subjective axes weighted identically to the old Delegation Score spec:</p>
+<table>
+<tr><th>Axis</th><th>Weight</th><th>Measures</th></tr>
+<tr><td>Completeness</td><td>15</td><td>Does the response do everything the task asked?</td></tr>
+<tr><td>Reasoning</td><td>15</td><td>Quality of the thought process evident in the solution.</td></tr>
+<tr><td>Code Quality</td><td>10</td><td>Cleanliness, readability, structure.</td></tr>
+<tr><td>Constraint Handling</td><td>10</td><td>Respect for function signatures, output format, edge cases.</td></tr>
+<tr><td>Consistency</td><td>9</td><td>No internal contradictions.</td></tr>
+<tr><td>Clarity</td><td>8</td><td>Clear presentation with helpful explanations.</td></tr>
+<tr><td>Correctness</td><td>25</td><td>Harness-executed (binary, from bench data).</td></tr>
+<tr><td>Speed</td><td>8</td><td>Wall time normalized 1-5 (fast = high).</td></tr>
+</table>
+<p>Cost weighted at 0 (same fatal flaw as the old score). Normalized to 0-100 scale.</p>
+<table>
+<tr><th>Model</th><th>N runs</th><th>Deleg.</th><th>Comp</th><th>Reas</th><th>Code</th><th>Cnstr</th><th>Con</th><th>Clar</th><th>Spd</th></tr>
+<tr><td>claude-fable-5</td><td>28</td><td><strong>87.5</strong></td><td>5.0</td><td>3.2</td><td>3.2</td><td>5.0</td><td>4.8</td><td>3.3</td><td>4.8</td></tr>
+<tr><td>claude-sonnet-5</td><td>28</td><td>85.5</td><td>4.9</td><td>3.1</td><td>3.1</td><td>4.9</td><td>4.9</td><td>3.1</td><td>4.8</td></tr>
+<tr><td>claude-opus-5</td><td>28</td><td>85.5</td><td>4.9</td><td>3.1</td><td>3.2</td><td>4.9</td><td>4.6</td><td>3.2</td><td>4.7</td></tr>
+<tr><td>azure_ai/gpt-5-mini</td><td>56</td><td>85.2</td><td>4.7</td><td>3.5</td><td>3.7</td><td>4.8</td><td>4.4</td><td>3.8</td><td>4.1</td></tr>
+<tr><td>claude-haiku-4-5</td><td>28</td><td>84.9</td><td>4.9</td><td>3.1</td><td>3.1</td><td>4.9</td><td>4.9</td><td>3.1</td><td>4.4</td></tr>
+<tr><td>azure_ai/gpt-5.4-mini</td><td>55</td><td>83.4</td><td>4.8</td><td>3.0</td><td>3.1</td><td>4.9</td><td>4.6</td><td>3.1</td><td>4.9</td></tr>
+<tr><td>vllm/Qwen3.6-35B-A3B-NVFP4</td><td>23</td><td>82.6</td><td>4.9</td><td>3.0</td><td>3.0</td><td>4.8</td><td>4.9</td><td>3.0</td><td>3.8</td></tr>
+<tr><td>azure_ai/gpt-5.4-mini-copilot</td><td>56</td><td>81.4</td><td>4.7</td><td>2.9</td><td>3.1</td><td>4.8</td><td>4.4</td><td>3.0</td><td>4.9</td></tr>
+<tr><td>azure_ai/gpt-5.6-luna</td><td>56</td><td>80.4</td><td>4.6</td><td>2.9</td><td>3.0</td><td>4.8</td><td>4.3</td><td>3.0</td><td>4.9</td></tr>
+<tr><td>azure_ai/gpt-5.6-sol</td><td>56</td><td>80.4</td><td>4.6</td><td>2.9</td><td>3.1</td><td>4.8</td><td>4.4</td><td>3.0</td><td>4.7</td></tr>
+<tr><td>vllm/Qwen3.5-0.8B</td><td>31</td><td>46.1</td><td>2.8</td><td>2.3</td><td>2.4</td><td>3.0</td><td>2.3</td><td>2.3</td><td>4.1</td></tr>
+</table>
+<h3>Reads on the axes that matter</h3>
+<ul>
+<li><strong>Fable-5</strong> leads overall (87.5) — only model with a perfect 5.0 on Completeness.</li>
+<li><strong>Sonnet-5</strong> and <strong>Opus-5</strong> tie at 85.5; Sonnet scores higher on Consistency (4.9 vs 4.6), matching Opus on Constraint Handling (4.9 vs 4.9).</li>
+<li><strong>Qwen3.6-35B</strong> scores 82.6 despite fewer runs (floor/simple only). N is 23 in Delegation Score (24 CLI runs minus 1 empty response). Its low Speed (3.8) reflects the long-context-needle tasks that inflate its median time.</li>
+<li><strong>Qwen3.5-0.8B</strong> is a class apart at 46.1 — the lowest by 35 points, driven by 24/31 incorrect responses. Its Speed (4.1) looks decent because broken code returns fast.</li>
+<li><strong>Azure gpt-5-mini</strong> ranks 4th overall (85.2) but takes 35.1 s median wall time — those high axis scores come at a latency cost. Its 56-run N is higher because it was benchmarked more heavily.</li>
+</ul>
+<p>This is a deterministic heuristic, not an LLM judge. The scoring rules are in <code>bench/deterministic_judge.py</code> and are transparent and inspectable. It avoids the old delegation score's fatal flaw of hiding the 55.4% for Qwen behind a single number that concealed the harness bug (4096-token cap + thinking truncation + 180s timeout). The individual axes reveal what collapsed; the single number would not.</p>
+<h2>Benchmark method and limits</h2>
+<ul>
+<li>Harness: <code>bin/wc-bench.py</code></li>
+<li>Report generator: <code>bin/wc-bench-report.py</code></li>
+<li>Verifiers: <code>bench/verify.py</code></li>
+<li>Tasks: <code>bench/tasks.py</code></li>
+<li>Cost logic: <code>bench/cost.py</code></li>
+<li>Maximum output tokens: 16,384</li>
+<li>Timeout: 1,000 seconds</li>
+<li>Repeats: 2 for the completed comparison</li>
+<li>Active transport: CLI only</li>
+<li>Code correctness: extracted code executed in a subprocess with a restricted environment</li>
+<li>Prose correctness: mechanical claim checks, weaker than execution</li>
+<li>Core checks decide <code>correct</code>; edge checks remain in the score and report</li>
+<li>Result files: <code>bench_anthropic_20260902.json</code>, <code>bench_azure_20260902.json</code>, <code>bench_qwen_transport_20260902.json</code></li>
+</ul>
+<p>Limitations remain:</p>
+<ol>
+<li>Azure and Anthropic are not identical vendor deployments, so raw scores do not establish general model rankings outside this environment.</li>
+<li>Qwen was re-run on the floor/simple tier after the original harness failure; its 11/12 is not a 14-task score.</li>
+<li>Two repeats are enough to expose some instability, not enough to establish production failure probabilities.</li>
+<li>Claim checks can miss errors that execution would catch.</li>
+<li>Azure rates are not recorded, so no Azure cost-per-correct result is claimed.</li>
+<li>The benchmark measures model responses in isolated CLI runs, not complete end-to-end WebConsole user journeys.</li>
+</ol>
+<h2>Files and provenance</h2>
+<table>
+<tr><th>File</th><th>Contents</th></tr>
+<tr><td><code>bench_anthropic_20260902.json</code></td><td>112 Anthropic CLI runs</td></tr>
+<tr><td><code>bench_azure_20260902.json</code></td><td>Completed Azure run: 280 historical CLI/HTTP rows, including diagnostic HTTP rows</td></tr>
+<tr><td><code>bench_qwen_transport_20260902.json</code></td><td>12 Qwen CLI rows and 12 historical HTTP rows</td></tr>
+<tr><td><code>bench_qwen35_0.8b_floor_20260903.json</code></td><td>12 <code>vllm/Qwen3.5-0.8B</code> CLI rows, floor/simple tier</td></tr>
+<tr><td><code>bench_qwen35_0.8b_20260903.json</code></td><td>Partial (20-row) hard-tier attempt, killed after <code>reasoning-puzzle</code> hit 1130.96s — kept for the record, not scored into the table above</td></tr>
+<tr><td><code>bench_rates.json</code></td><td>Explicit rate card used by the harness</td></tr>
+<tr><td><code>bench/deterministic_judge.py</code></td><td>Heuristic scoring script (deterministic, no LLM calls)</td></tr>
+<tr><td><code>bench/judge_delegation_deterministic_20260904.json</code></td><td>Delegation Score output — 417 responses, 11 models, 6 axes</td></tr>
+<tr><td><code>bin/wc-bench-report.py</code></td><td>Reproducible report generator</td></tr>
+</table>
+<p>The final recommendation is therefore conditional, not a single league-table number:</p>
+<ul>
+<li>Choose <strong>Qwen</strong> for free background and batch work where the corrected floor/simple task bar is sufficient.</li>
+<li>Choose <strong>Haiku</strong> for the best measured Anthropic cost/quality balance.</li>
+<li>Choose <strong>Fable</strong> when the extra clean-sweep quality is worth its much higher cost.</li>
+<li>Choose <strong>Azure</strong> based on latency and task fit only until actual Azure pricing is recorded.</li>
+</ul>
+</body>
+</html>

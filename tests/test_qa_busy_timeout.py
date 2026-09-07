@@ -74,7 +74,7 @@ class BusyTimeoutIsAppliedTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "sessions.db"
         sqlite3.connect(self.path).close()
-        p = patch.object(config, "DB_PATH", str(self.path))
+        p = patch.object(config, "SESSION_DB_PATH", str(self.path))
         p.start()
         self.addCleanup(p.stop)
 

@@ -95,7 +95,7 @@ class DryRunResolutionTests(unittest.TestCase):
 
     def test_no_active_machine_starts_claude_unchanged(self):
         db = str(Path(self.tmp.name) / "db.sqlite")
-        _make_db(db, machines=[{"name": "idle", "provider": "anthropic",
+        _make_db(db, machines=[{"name": "idle", "provider": "claude_code",
                                 "active": False}])
         result = self._run(db, "--resume", "test1")
         self.assertIn("FAKE-CLAUDE-RAN", result.stdout)
@@ -112,7 +112,7 @@ class DryRunResolutionTests(unittest.TestCase):
         CLAUDE_CODE_SIMPLE the caller's own shell had already set, while the
         banner still (falsely) says "unchanged"."""
         db = str(Path(self.tmp.name) / "db.sqlite")
-        _make_db(db, machines=[{"name": "idle", "provider": "anthropic",
+        _make_db(db, machines=[{"name": "idle", "provider": "claude_code",
                                 "active": False}])
         env_reporter = Path(self.tmp.name) / "bin" / "claude"
         env_reporter.write_text(
@@ -135,7 +135,7 @@ class DryRunResolutionTests(unittest.TestCase):
     def test_anthropic_machine_with_key_resolves(self):
         db = str(Path(self.tmp.name) / "db.sqlite")
         _make_db(db, machines=[{
-            "name": "Anthropic API", "provider": "anthropic",
+            "name": "Anthropic API", "provider": "claude_code",
             "base_url": "", "api_key": "sk-test-key-value",
             "model": "claude-opus-5", "active": True,
         }])
@@ -160,7 +160,7 @@ class DryRunResolutionTests(unittest.TestCase):
     def test_explicit_model_flag_always_wins(self):
         db = str(Path(self.tmp.name) / "db.sqlite")
         _make_db(db, machines=[{
-            "name": "Anthropic API", "provider": "anthropic",
+            "name": "Anthropic API", "provider": "claude_code",
             "api_key": "sk-test", "model": "claude-opus-5", "active": True,
         }])
         result = self._run(db, "--resume", "test1", "--model", "claude-haiku-4-5")
@@ -212,7 +212,7 @@ class PollerTests(unittest.TestCase):
 
     def test_a_real_change_signals_the_target(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         # write_backend_state needs PROVIDER/BASE_URL/API_KEY/MODEL set, as
@@ -240,7 +240,7 @@ stop_poller
 
     def test_no_change_does_not_signal(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         body = f'''
@@ -260,7 +260,7 @@ stop_poller
         """A machine being deactivated with nothing else active must not
         trigger a restart into a broken state."""
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         body = f'''
@@ -291,7 +291,7 @@ stop_poller
         silently dead for the rest of the session with nothing left to
         notice a real change ever again."""
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         body = f'''
@@ -333,7 +333,7 @@ stop_poller
 
     def test_stop_poller_leaves_no_process_behind(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         body = f'''
@@ -425,7 +425,7 @@ class HotswapLoopTests(unittest.TestCase):
 
     def test_a_backend_change_restarts_with_the_same_resume_name(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         proc = subprocess.Popen(
@@ -462,7 +462,7 @@ class HotswapLoopTests(unittest.TestCase):
 
     def test_no_change_means_no_restart(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         proc = subprocess.Popen(
@@ -479,7 +479,7 @@ class HotswapLoopTests(unittest.TestCase):
         env = dict(self.env)
         env.pop("WC_CLAUDE_HOTSWAP")
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         proc = subprocess.Popen(
@@ -502,7 +502,7 @@ class HotswapLoopTests(unittest.TestCase):
     def test_without_resume_behaves_like_a_single_exec(self):
         env = dict(self.env)
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         proc = subprocess.Popen(
@@ -533,7 +533,7 @@ sys.exit(0)
         (bindir / "claude").write_text(exiting_claude)
         (bindir / "claude").chmod(0o755)
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         result = subprocess.run(
@@ -544,7 +544,7 @@ sys.exit(0)
 
     def test_the_poller_and_child_are_cleaned_up_on_exit(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         proc = subprocess.Popen(
@@ -579,7 +579,7 @@ sys.exit(0)
         of depending on hitting a microsecond window between two commits.
         """
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         proc = subprocess.Popen(
@@ -704,7 +704,7 @@ class ScreenSurvivalTests(unittest.TestCase):
 
     def test_the_banner_reprints_in_the_same_screen_session_on_a_hot_swap(self):
         _make_db(self.db, machines=[{
-            "name": "one", "provider": "anthropic", "api_key": "key-one",
+            "name": "one", "provider": "claude_code", "api_key": "key-one",
             "model": "claude-opus-5", "active": True,
         }])
         env_pairs = [f"{k}={v}" for k, v in self.overrides.items()]

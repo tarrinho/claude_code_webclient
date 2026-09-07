@@ -1,0 +1,52 @@
+{
+  "claude-opus-5": {
+    "response": "```python\nfrom typing import TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: list[T], n: int) -> list[T]:\n    \"\"\"Return the n distinct values of lst whose last occurrences come latest.\n\n    Each distinct value is represented by its last occurrence in lst. The n\n    values with the latest such occurrences are returned, ordered by the\n    position of those last occurrences in lst.\n\n    Fewer than n values are returned when lst holds fewer than n distinct\n    values. An empty list is returned when n is zero or negative.\n\n    >>> last_n_unique([1, 2, 3, 2, 1], 2)\n    [2, 1]\n    >>> last_n_unique([5, 5, 5], 2)\n    [5]\n    >>> last_n_unique([1, 2, 3], 0)\n    []\n    \"\"\"\n    if n <= 0:\n        return []\n    seen: list[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n            if len(seen) == n:\n                break\n    seen.reverse()\n    return seen\n```",
+    "elapsed_s": 12.64,
+    "error": null
+  },
+  "claude-sonnet-5": {
+    "response": "```python\ndef last_n_unique(lst: list, n: int) -> list:\n    \"\"\"Return the n distinct values whose last occurrence in lst is latest,\n    ordered by the position of that last occurrence (ascending).\"\"\"\n    last_index: dict = {}\n    for i, x in enumerate(lst):\n        last_index[x] = i\n    top = sorted(last_index, key=lambda x: last_index[x], reverse=True)[:n]\n    return sorted(top, key=lambda x: last_index[x])\n```",
+    "elapsed_s": 7.42,
+    "error": null
+  },
+  "claude-fable-5": {
+    "response": "```python\nfrom collections.abc import Sequence\nfrom typing import TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: Sequence[T], n: int) -> list[T]:\n    \"\"\"Return the n distinct values of lst whose last occurrences come latest.\n\n    Each distinct value is considered at the position of its last occurrence\n    in lst. The n values with the latest such positions are returned, ordered\n    by where those last occurrences appear in lst (earliest first).\n\n    Examples:\n        last_n_unique([1, 2, 3, 2, 1], 2) -> [2, 1]\n        last_n_unique([5, 5, 5], 2) -> [5]\n        last_n_unique([1, 2, 3], 0) -> []\n    \"\"\"\n    seen: list[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n            if len(seen) == n:\n                break\n    return list(reversed(seen[:n]))\n```",
+    "elapsed_s": 14.36,
+    "error": null
+  },
+  "claude-haiku-4-5": {
+    "response": "```python\ndef last_n_unique(lst: list, n: int) -> list:\n    \"\"\"\n    Return n distinct values with the latest last occurrences, ordered by position in lst.\n    \n    Considers the last occurrence of each distinct value. Returns the n distinct values\n    whose last occurrences come latest (furthest right), ordered by their appearance position.\n    \"\"\"\n    last_indices = {}\n    for i, x in enumerate(lst):\n        last_indices[x] = i\n    \n    sorted_by_last = sorted(last_indices.items(), key=lambda item: item[1], reverse=True)\n    top_n = sorted_by_last[:n]\n    result = sorted(top_n, key=lambda item: item[1])\n    \n    return [value for value, _ in result]\n```",
+    "elapsed_s": 14.4,
+    "error": null
+  },
+  "vllm/Qwen3.6-35B-A3B-NVFP4": {
+    "response": "\n\n```python\ndef last_n_unique(lst: list, n: int) -> list:\n    \"\"\"Return the last n distinct values from *lst*, ordered by position.\n\n    Considers only the last occurrence of each distinct value. Picks the n\n    distinct values whose last occurrences appear latest in the list, and\n    returns them in the order those last occurrences appear.\n    \"\"\"\n    # Map each value to the index of its last occurrence.\n    last_pos: dict = {}\n    for i, x in enumerate(lst):\n        last_pos[x] = i\n\n    if n <= 0:\n        return []\n\n    # Pick the n values with the largest last-occurrence indices.\n    # Sort by index descending, take the first n, then restore list order.\n    picked = sorted(last_pos, key=last_pos.get, reverse=True)[:n]\n    return sorted(picked, key=last_pos.get)\n```",
+    "elapsed_s": 29.76,
+    "error": null
+  },
+  "azure_ai/gpt-5.6-luna": {
+    "response": "from typing import TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: list[T], n: int) -> list[T]:\n    \"\"\"Return up to n distinct values ordered by their latest occurrence.\"\"\"\n    if n <= 0:\n        return []\n\n    seen: list[T] = []\n    for value in reversed(lst):\n        if value not in seen:\n            seen.append(value)\n\n    return list(reversed(seen[:n]))",
+    "elapsed_s": 9.31,
+    "error": null
+  },
+  "azure_ai/gpt-5.6-sol": {
+    "response": "from typing import TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: list[T], n: int) -> list[T]:\n    \"\"\"Return up to n values with latest last occurrences, in occurrence order.\"\"\"\n    if n <= 0:\n        return []\n\n    seen: list[T] = []\n    for value in reversed(lst):\n        if value not in seen:\n            seen.append(value)\n            if len(seen) == n:\n                break\n\n    return seen[::-1]",
+    "elapsed_s": 9.04,
+    "error": null
+  },
+  "azure_ai/gpt-5.4-mini-copilot": {
+    "response": "from typing import TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: list[T], n: int) -> list[T]:\n    \"\"\"Return up to n distinct values whose last occurrences appear latest.\n\n    Distinct values are ranked by the position of their final occurrence in lst.\n    The returned list is ordered from earlier to later among those final\n    occurrences.\n    \"\"\"\n    if n <= 0:\n        return []\n\n    seen: list[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n\n    return seen[:n][::-1]",
+    "elapsed_s": 13.94,
+    "error": null
+  },
+  "azure_ai/gpt-5.4-mini": {
+    "response": "from typing import List, Sequence, TypeVar\n\nT = TypeVar(\"T\")\n\n\ndef last_n_unique(lst: Sequence[T], n: int) -> List[T]:\n    \"\"\"Return the n distinct values whose last occurrences are latest in lst.\n\n    The result is ordered by the position of each value's last occurrence in\n    lst, from earlier to later among the selected values.\n    \"\"\"\n    if n <= 0:\n        return []\n\n    seen: List[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n\n    return list(reversed(seen[:n]))",
+    "elapsed_s": 14.16,
+    "error": null
+  },
+  "azure_ai/gpt-5-mini": {
+    "response": "from typing import TypeVar, List\n\nT = TypeVar(\"T\")\n\ndef last_n_unique(lst: List[T], n: int) -> List[T]:\n    \"\"\"\n    Consider the last occurrence of each distinct value in `lst`.\n    Take the `n` distinct values whose last occurrences come latest.\n    Return them ordered by where those last occurrences appear in `lst`.\n\n    Examples:\n    last_n_unique([1, 2, 3, 2, 1], 2) -> [2, 1]\n    last_n_unique([5, 5, 5], 2) -> [5]\n    last_n_unique([1, 2, 3], 0) -> []\n    \"\"\"\n    if n <= 0:\n        return []\n    seen: List[T] = []\n    for x in reversed(lst):\n        if x not in seen:\n            seen.append(x)\n    # `seen` is newest->oldest by last occurrence. Take up to n newest,\n    # then return them ordered by their position in the original list (oldest->newest).\n    return list(reversed(seen[:n]))",
+    "elapsed_s": 65.65,
+    "error": null
+  }
+}

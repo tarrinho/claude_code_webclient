@@ -72,13 +72,13 @@ RETRY_401 = ('{"type": "system", "subtype": "api_retry", "attempt": 1, '
 # The exact machine that reproduced the report: official Anthropic API,
 # no stored key -- so `api_key` below is None, matching a host-login backend.
 ANTHROPIC_HOST_LOGIN = {
-    "provider": "anthropic",
+    "provider": "claude_code",
     "base_url": "https://api.anthropic.com",
     "model": "claude-sonnet-5",
 }
 
 CF_GATEWAY = {
-    "provider": "anthropic",
+    "provider": "claude_code",
     "base_url": "https://llm.ai-machine.cfappsecurity.com",
     "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
 }

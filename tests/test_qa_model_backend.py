@@ -73,7 +73,7 @@ class TemporaryDBMixin:
             "base_url": None,
             "description": None,
             "owner_id": "admin",
-            "provider": "proxy",
+            "provider": "claude_code",
         }
         fields.update(over)
         await db.ai_machine_create(**fields)
@@ -124,7 +124,7 @@ class UnitQA(unittest.TestCase):
 
     def test_anthropic_env_carries_endpoint_and_key(self):
         env = runner._build_env(
-            {"provider": "anthropic", "base_url": GATEWAY, "api_key": "k-123"}
+            {"provider": "claude_code", "base_url": GATEWAY, "api_key": "k-123"}
         )
         self.assertEqual(env["ANTHROPIC_BASE_URL"], GATEWAY)
         self.assertEqual(env["ANTHROPIC_API_KEY"], "k-123")
@@ -132,7 +132,7 @@ class UnitQA(unittest.TestCase):
     def test_anthropic_env_omits_the_openai_shim_vars(self):
         # A leftover OPENAI_BASE_URL would pull the turn back to the local shim.
         env = runner._build_env(
-            {"provider": "anthropic", "base_url": GATEWAY, "api_key": "k"}
+            {"provider": "claude_code", "base_url": GATEWAY, "api_key": "k"}
         )
         self.assertNotIn("OPENAI_BASE_URL", env)
         self.assertNotIn("OPENAI_API_KEY", env)
@@ -140,16 +140,16 @@ class UnitQA(unittest.TestCase):
     def test_keyless_anthropic_env_allows_the_host_login(self):
         # CLAUDE_CODE_SIMPLE makes the CLI ignore OAuth and the keychain, so it
         # must come off when there is no key to use instead.
-        env = runner._build_env({"provider": "anthropic", "base_url": GATEWAY})
+        env = runner._build_env({"provider": "claude_code", "base_url": GATEWAY})
         self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("CLAUDE_CODE_SIMPLE", env)
 
     def test_betas_disabled_on_both_paths_for_every_backend(self):
         for backend in (
             None,
-            {"provider": "proxy"},
-            {"provider": "anthropic", "base_url": GATEWAY, "api_key": "k"},
-            {"provider": "anthropic", "base_url": GATEWAY},
+            {"provider": "claude_code"},
+            {"provider": "claude_code", "base_url": GATEWAY, "api_key": "k"},
+            {"provider": "claude_code", "base_url": GATEWAY},
         ):
             self.assertEqual(runner._build_env(backend).get(BETAS), "1", repr(backend))
             self.assertEqual(
@@ -176,33 +176,31 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.close_temp_db()
 
-    async def test_proxy_provider_yields_no_backend_even_when_configured(self):
-        # The production failure: correct host, correct model, valid key, and
-        # base_url set -- but provider left at 'proxy', so no ANTHROPIC_BASE_URL
-        # is exported and every turn silently goes to the official API.
+    async def test_direct_provider_yields_no_anthropic_env(self):
+        # The new provider: direct machines have their own key/host but
+        # get_backend returns {} because it only resolves claude_code providers.
         mid = await self.make_machine(
-            machine_id="m-proxy", provider="proxy",
-            base_url=GATEWAY, api_key="k-valid",
+            machine_id="m-direct", provider="direct",
+            host="llm.example.invalid", api_key="k-valid",
         )
         await db.ai_machine_activate(mid, "admin")
-        self.assertEqual(await runner.get_backend("c1"), {})
-        env = runner._build_env(await runner.get_backend("c1"))
-        self.assertNotIn("ANTHROPIC_BASE_URL", env)
+        backend = await runner.get_backend("c1")
+        self.assertEqual(backend, {})
 
     async def test_anthropic_provider_yields_the_full_backend(self):
         mid = await self.make_machine(
-            machine_id="m-anthropic", provider="anthropic",
+            machine_id="m-anthropic", provider="claude_code",
             base_url=GATEWAY, api_key="k-valid",
         )
         await db.ai_machine_activate(mid, "admin")
         backend = await runner.get_backend("c1")
-        self.assertEqual(backend["provider"], "anthropic")
+        self.assertEqual(backend["provider"], "claude_code")
         self.assertEqual(backend["base_url"], GATEWAY)
         self.assertEqual(backend["api_key"], "k-valid")
 
     async def test_stored_v1_suffix_is_normalised_on_read(self):
         mid = await self.make_machine(
-            machine_id="m-v1", provider="anthropic",
+            machine_id="m-v1", provider="claude_code",
             base_url=GATEWAY + "/v1", api_key="k",
         )
         await db.ai_machine_activate(mid, "admin")
@@ -211,7 +209,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_legacy_host_only_base_url_is_repaired_on_read(self):
         # Rows written before the validator stopped discarding the scheme.
         mid = await self.make_machine(
-            machine_id="m-legacy", provider="anthropic",
+            machine_id="m-legacy", provider="claude_code",
             base_url="llm.example-gateway.invalid", api_key="k",
         )
         await db.ai_machine_activate(mid, "admin")
@@ -222,33 +220,33 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         # the host's own login.
         for blank in (None, "", "   "):
             mid = await self.make_machine(
-                machine_id=f"m-blank-{len(str(blank))}", provider="anthropic",
+                machine_id=f"m-blank-{len(str(blank))}", provider="claude_code",
                 base_url=GATEWAY, api_key=blank,
             )
             await db.ai_machine_activate(mid, "admin")
             self.assertNotIn("api_key", await runner.get_backend("c1"), repr(blank))
 
     async def test_no_active_machine_yields_no_backend(self):
-        await self.make_machine(machine_id="m-idle", provider="anthropic",
+        await self.make_machine(machine_id="m-idle", provider="claude_code",
                                 base_url=GATEWAY, api_key="k")
         self.assertEqual(await runner.get_backend("c1"), {})
 
     async def test_unknown_chat_yields_no_backend(self):
-        mid = await self.make_machine(machine_id="m-x", provider="anthropic",
+        mid = await self.make_machine(machine_id="m-x", provider="claude_code",
                                       base_url=GATEWAY, api_key="k")
         await db.ai_machine_activate(mid, "admin")
         self.assertEqual(await runner.get_backend("does-not-exist"), {})
 
     async def test_activation_is_exclusive(self):
-        first = await self.make_machine(machine_id="m-1", provider="anthropic")
-        second = await self.make_machine(machine_id="m-2", provider="anthropic")
+        first = await self.make_machine(machine_id="m-1", provider="claude_code")
+        second = await self.make_machine(machine_id="m-2", provider="claude_code")
         await db.ai_machine_activate(first, "admin")
         await db.ai_machine_activate(second, "admin")
         actives = [m["id"] for m in await db.ai_machines_list("admin") if m["active"]]
         self.assertEqual(actives, [second])
 
     async def test_backend_is_not_shared_across_owners(self):
-        mid = await self.make_machine(machine_id="m-bob", provider="anthropic",
+        mid = await self.make_machine(machine_id="m-bob", provider="claude_code",
                                       base_url=GATEWAY, api_key="k", owner_id="bob")
         await db.ai_machine_activate(mid, "bob")
         # c1 belongs to admin, who has no active machine.
@@ -281,7 +279,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_list_never_returns_the_api_key(self):
-        mid = await self.make_machine(machine_id="m-k", provider="anthropic",
+        mid = await self.make_machine(machine_id="m-k", provider="claude_code",
                                       base_url=GATEWAY, api_key="super-secret")
         await db.ai_machine_activate(mid, "admin")
         import json as _json
@@ -293,7 +291,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_get_reports_key_presence_without_the_value(self):
         import json as _json
-        mid = await self.make_machine(machine_id="m-k2", provider="anthropic",
+        mid = await self.make_machine(machine_id="m-k2", provider="claude_code",
                                       base_url=GATEWAY, api_key="super-secret")
         body = _json.loads((await machine_routes.handle_machine_get(self._req(), mid)).body)
         machine = body["machine"]
@@ -303,7 +301,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_get_reports_absent_key_as_false(self):
         import json as _json
-        mid = await self.make_machine(machine_id="m-nokey", provider="anthropic")
+        mid = await self.make_machine(machine_id="m-nokey", provider="claude_code")
         body = _json.loads((await machine_routes.handle_machine_get(self._req(), mid)).body)
         self.assertFalse(body["machine"]["has_api_key"])
 
@@ -372,7 +370,7 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         await self.init_temp_db()
         await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", "admin")
         mid = await self.make_machine(
-            machine_id="m-e2e", provider="anthropic",
+            machine_id="m-e2e", provider="claude_code",
             base_url=GATEWAY + "/v1", api_key="k-e2e",
         )
         await db.ai_machine_activate(mid, "admin")
@@ -438,7 +436,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_pointing_a_machine_at_my_own_gateway_routes_turns_there(self):
         mid = await self.make_machine(
-            machine_id="m-mine", provider="anthropic",
+            machine_id="m-mine", provider="claude_code",
             base_url=GATEWAY, api_key="my-key", model=SERVED_MODELS[0],
         )
         await db.ai_machine_activate(mid, "admin")
@@ -447,12 +445,12 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_switching_the_active_machine_switches_the_endpoint(self):
         mine = await self.make_machine(
-            machine_id="m-mine", provider="anthropic",
+            machine_id="m-mine", provider="claude_code",
             base_url=GATEWAY, api_key="my-key",
         )
         official = await self.make_machine(
-            machine_id="m-official", provider="anthropic",
-            base_url="https://api.anthropic.com", api_key=None,
+            machine_id="m-official", provider="claude_code",
+            base_url="https://api.anthropic.com", api_key="other-key",
         )
         await db.ai_machine_activate(mine, "admin")
         first = runner._build_env(await runner.get_backend("c1"))
@@ -460,15 +458,14 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         second = runner._build_env(await runner.get_backend("c1"))
         self.assertEqual(first["ANTHROPIC_BASE_URL"], GATEWAY)
         self.assertEqual(second["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
-        # The official machine has no key, so the host login must stay reachable.
-        self.assertNotIn("ANTHROPIC_API_KEY", second)
+        self.assertEqual(second["ANTHROPIC_API_KEY"], "other-key")
 
-    async def test_leaving_provider_as_proxy_is_a_visible_no_op(self):
-        # Documents the trap: a user who fills in Base URL and API Key but does
-        # not change Provider gets none of it applied.
+    async def test_direct_provider_strips_anthropic_env(self):
+        # Direct providers have their own host/key — they must not leak
+        # ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY into the runner env.
         mid = await self.make_machine(
-            machine_id="m-trap", provider="proxy",
-            base_url=GATEWAY, api_key="my-key",
+            machine_id="m-direct", provider="direct",
+            host="llm.example.invalid", api_key="my-key",
         )
         await db.ai_machine_activate(mid, "admin")
         env = runner._build_env(await runner.get_backend("c1"))
@@ -478,7 +475,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_my_key_is_never_echoed_back_to_the_browser(self):
         from types import SimpleNamespace
         mid = await self.make_machine(
-            machine_id="m-secret", provider="anthropic",
+            machine_id="m-secret", provider="claude_code",
             base_url=GATEWAY, api_key="do-not-leak-me",
         )
         await db.ai_machine_activate(mid, "admin")

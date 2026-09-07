@@ -36,8 +36,11 @@ class SessionDurabilityBase(unittest.IsolatedAsyncioTestCase):
         self.projects.mkdir()
         self.db_path = os.path.join(self.tmp.name, "db")
         self.db_patch = patch.object(config, "DB_PATH", self.db_path)
+        self.session_db_path = os.path.join(self.tmp.name, "sessions")
+        self.session_db_patch = patch.object(config, "SESSION_DB_PATH", self.session_db_path)
         self.root_patch = patch.object(config, "PROJECTS_ROOT", str(self.projects))
         self.db_patch.start()
+        self.session_db_patch.start()
         self.root_patch.start()
         await db.init()
         await db.close()
@@ -91,12 +94,12 @@ class SessionIdIsNeverStoredTests(SessionDurabilityBase):
 
     async def test_the_raw_id_never_reaches_disk(self):
         sid, _ = auth.session_new("pedro", "admin")
-        blob = Path(self.db_path).read_bytes().decode("utf-8", errors="replace")
+        blob = Path(self.session_db_path).read_bytes().decode("utf-8", errors="replace")
         self.assertNotIn(sid, blob, "a stored session id would be a replayable credential")
 
     async def test_the_stored_key_is_a_hash_of_the_id(self):
         sid, _ = auth.session_new("pedro", "admin")
-        con = sqlite3.connect(self.db_path)
+        con = sqlite3.connect(self.session_db_path)
         stored = con.execute("SELECT sid_key FROM sessions").fetchone()[0]
         con.close()
         self.assertEqual(stored, auth._sid_key(sid))
@@ -137,7 +140,7 @@ class LogoutAndExpiryAreDurableTests(SessionDurabilityBase):
         auth._sessions[key]["expiry"] = time.time() - 1
         auth._persist(key, auth._sessions[key])
         self.assertIsNone(auth.session_get(sid))
-        con = sqlite3.connect(self.db_path)
+        con = sqlite3.connect(self.session_db_path)
         remaining = con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         con.close()
         self.assertEqual(remaining, 0)
@@ -153,7 +156,7 @@ class LogoutAndExpiryAreDurableTests(SessionDurabilityBase):
         with patch.object(config, "SESSION_MAX", 3):
             for i in range(6):
                 auth.session_new(f"u{i}", "user")
-        con = sqlite3.connect(self.db_path)
+        con = sqlite3.connect(self.session_db_path)
         rows = con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         con.close()
         self.assertEqual(len(auth._sessions), rows,

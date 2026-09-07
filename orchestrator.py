@@ -1,4 +1,4 @@
-# orchestrator.py -- AI orchestrator orchestration engine for WebConsole 0.10.4
+# orchestrator.py -- AI orchestrator orchestration engine for WebConsole 0.15.0
 #
 # Provides the PlanParser, ModelRouter, TaskGraph, ProgressTracker,
 # and OrchestratorEngine that coordinate multi-agent task decomposition,
@@ -539,6 +539,12 @@ class OrchestratorEngine:
             import db
             import runner  # circular import at module level
 
+            # Get the provider from the backend so the usage row is attributed
+            # to the right kind (claude_code, direct, ssh_proxy) rather than
+            # guessing from config flags.
+            backend = await runner.get_backend(chat_id)
+            provider = backend.get("provider", "claude_code") if isinstance(backend, dict) else "claude_code"
+
             # `take_last_usage` carries only the attempt runner.run_turn kept.
             # An attempt a content-quality retry discarded still spent real
             # tokens against the backend (CLAUDE.md rule 5: record failures
@@ -561,7 +567,7 @@ class OrchestratorEngine:
                         chat_id=chat_id,
                         owner_id=self.owner_id,
                         model=name or (model or ""),
-                        provider="proxy" if config.PROXY_ENABLED else "anthropic",
+                        provider=provider,
                         input_tokens=stats.get("input_tokens", 0),
                         output_tokens=stats.get("output_tokens", 0),
                         cache_read_tokens=stats.get("cache_read_tokens", 0),

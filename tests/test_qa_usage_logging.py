@@ -49,7 +49,7 @@ class UsageRecordDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejected_row_is_logged_with_the_missing_field(self):
         with self.assertLogs("wc.db", level="WARNING") as caught:
-            self.assertIsNone(await db.usage_record("c1", "admin", "", "anthropic"))
+            self.assertIsNone(await db.usage_record("c1", "admin", "", "claude_code"))
         self.assertIn("usage_record_rejected", "\n".join(caught.output))
 
     async def test_each_required_field_is_named_when_missing(self):
@@ -58,7 +58,7 @@ class UsageRecordDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                 self.subTest(args=args),
                 self.assertLogs("wc.db", level="WARNING"),
             ):
-                self.assertIsNone(await db.usage_record(*args, "anthropic"))
+                self.assertIsNone(await db.usage_record(*args, "claude_code"))
 
     async def test_write_failure_is_logged_not_only_swallowed(self):
         """The write still must not break the turn -- but it must be visible."""
@@ -66,13 +66,13 @@ class UsageRecordDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(db.db_conn, "execute", AsyncMock(side_effect=RuntimeError("disk"))),
             self.assertLogs("wc.db", level="ERROR") as caught,
         ):
-            result = await db.usage_record("c1", "admin", "m", "anthropic")
+            result = await db.usage_record("c1", "admin", "m", "claude_code")
         self.assertIsNone(result)          # swallowed, as designed
         self.assertIn("usage_record_failed", "\n".join(caught.output))
 
     async def test_successful_write_still_returns_a_row_id(self):
         self.assertIsInstance(
-            await db.usage_record("c1", "admin", "m", "anthropic", input_tokens=5), int
+            await db.usage_record("c1", "admin", "m", "claude_code", input_tokens=5), int
         )
 
 

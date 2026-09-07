@@ -253,6 +253,15 @@ def _backend_env(backend: object) -> dict[str, str]:
     wholesale, because a proxied child needs the host's login to be reachable.
     """
     env = backend_env.deltas(backend).apply_to(dict(os.environ))
+    # Same marker `runner._build_env` sets, and it matters more here: this path
+    # copies the environment wholesale, so a proxy started from a shell hands
+    # the child that shell's TERM and the request log cannot tell the turn from
+    # something Pedro typed. See `.claude/hooks/log_pt_request.py`. Set after
+    # `deltas` so the rule that owns credentials stays the only thing in it --
+    # this is a provenance flag, not backend configuration, which is also why
+    # it is not in `deltas` itself: `bin/wc-claude.sh` calls that too, and an
+    # interactive session must stay unmarked.
+    env["WC_INTERNAL_SPAWN"] = "1"
     log.info("backend_env %s", backend_env.describe(backend))
     return env
 

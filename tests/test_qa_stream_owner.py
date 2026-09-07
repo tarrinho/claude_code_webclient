@@ -98,7 +98,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             seen["chat_id"] = chat_id
             seen["owner"] = owner
             # Shape `_build_env` accepts; enough to get past resolution.
-            return {"provider": "anthropic", "base_url": "", "api_key": ""}
+            return {"provider": "claude_code", "base_url": "", "api_key": ""}
 
         async def fake_default_model(chat_id=None, owner=None):
             return "claude-sonnet-5"
@@ -165,7 +165,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_get_backend(chat_id, owner=None):
             seen["owner"] = owner
-            return {"provider": "anthropic", "base_url": "", "api_key": ""}
+            return {"provider": "claude_code", "base_url": "", "api_key": ""}
 
         async def boom(*args, **kwargs):
             raise OSError("stubbed")

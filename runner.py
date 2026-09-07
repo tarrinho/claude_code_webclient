@@ -384,9 +384,12 @@ async def get_proxy_target(
             machine["id"], machine.get("transport_id"),
         )
 
-    if provider != "proxy" or not machine.get("host"):
-        return await get_proxy_host(), config.PROXY_PORT
-    return machine["host"], int(machine.get("port") or config.PROXY_PORT)
+    # keyless claude_code (the former "proxy" type): no base_url, route
+    # to the machine's host as the proxy target.
+    if provider == "claude_code" and machine.get("base_url") is None:
+        if machine.get("host"):
+            return machine["host"], int(machine.get("port") or config.PROXY_PORT)
+    return await get_proxy_host(), config.PROXY_PORT
 
 
 async def get_default_model(chat_id: str | None = None, owner: str | None = None) -> str:
@@ -487,9 +490,9 @@ async def get_backend(chat_id: str, owner: str | None = None) -> dict[str, str]:
         routing = {"owner": owner, "model": None,
                    "machine": await db.ai_machine_backend(owner), "pinned": False}
     machine = routing["machine"]
-    if not machine or machine.get("provider") != "anthropic":
+    if not machine or machine.get("provider") != "claude_code":
         return {}
-    backend: dict[str, str] = {"provider": "anthropic"}
+    backend: dict[str, str] = {"provider": "claude_code"}
     base_url = normalise_base_url(machine.get("base_url"))
     if base_url:
         backend["base_url"] = base_url
@@ -755,12 +758,19 @@ def _build_env(backend: dict[str, str] | None = None) -> dict[str, str]:
     safe = {"HOME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM"}
     env = {k: v for k, v in os.environ.items() if k in safe}
     env["PYTHONUNBUFFERED"] = "1"
+    # Marks this as a spawn the console made, not a session Pedro started, so
+    # `.claude/hooks/log_pt_request.py` does not record a turn's prompt as a
+    # request he typed. TERM alone did not separate the two: it is in the
+    # allowlist above, so a turn started from a terminal-rooted process
+    # inherits it. Not set by `bin/wc-claude.sh` -- an interactive session is
+    # precisely what must stay unmarked.
+    env["WC_INTERNAL_SPAWN"] = "1"
     # Set before the backend is applied, so `deltas` can take it away again:
     # under CLAUDE_CODE_SIMPLE the CLI refuses to read the host's own login
     # (`claude auth status` reports loggedIn:false, authMethod:none), so a
     # keyless backend must not keep it or the subprocess has no credentials.
     env["CLAUDE_CODE_SIMPLE"] = "1"
-    if isinstance(backend, dict) and backend.get("provider") == "anthropic":
+    if isinstance(backend, dict) and backend.get("provider") == "claude_code":
         # normalise_base_url stays here rather than moving into backend_env:
         # this path accepts a bare host ("api.anthropic.com") from databases
         # written before the column was a URL, and the proxy path never did.

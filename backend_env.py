@@ -116,15 +116,15 @@ def deltas(backend: Any) -> Deltas:
     # everything succeeds, just against the wrong account.
     unset.append("ANTHROPIC_AUTH_TOKEN")
 
-    if not isinstance(backend, dict) or backend.get("provider") != "anthropic":
-        # A non-anthropic backend -- or no backend at all -- must not inherit
+    if not isinstance(backend, dict) or backend.get("provider") not in {"anthropic", "claude_code"}:
+        # A non-claude_code backend -- or no backend at all -- must not inherit
         # Anthropic variables. When the CLI is talking to a gateway, a base URL
         # or key from the host shell reaching the child would route the turn,
         # or authenticate it, somewhere nobody selected. Missing ANTHROPIC_API_KEY
         # here left a key exported by an *earlier* call in the same long-lived
         # process (the shell wrapper's hot-swap, mid-session) reaching a child
-        # that should have had none: switching off an Anthropic machine did not
-        # clear its key, only switching to a different Anthropic machine did.
+        # that should have had none: switching off a Claude Code machine did not
+        # clear its key, only switching to a different Claude Code machine did.
         unset.append("ANTHROPIC_BASE_URL")
         unset.append("ANTHROPIC_API_KEY")
         return Deltas(set_, unset)
@@ -160,11 +160,11 @@ def describe(backend: Any) -> str:
     Never includes the key. Whether a key is present is the operationally
     useful fact and is safe to state; the value is not.
     """
-    if not isinstance(backend, dict) or backend.get("provider") != "anthropic":
+    if not isinstance(backend, dict) or backend.get("provider") not in {"anthropic", "claude_code"}:
         provider = _text(backend.get("provider")) if isinstance(backend, dict) else ""
         return f"provider={provider or 'none'} anthropic_vars=stripped"
     return (
-        f"provider=anthropic "
+        f"provider=claude_code "
         f"base_url={_text(backend.get('base_url')) or '<default>'} "
         f"api_key={'set' if _text(backend.get('api_key')) else 'host login'}"
     )

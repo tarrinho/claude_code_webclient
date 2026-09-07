@@ -334,6 +334,16 @@ export function createChatListController(dependencies) {
           : `${chat.queued} prompt${chat.queued > 1 ? 's' : ''} waiting to send`;
         title.append(queued);
       }
+      // Voice-mode chats get a mic icon on the right side, after queued but
+      // before degraded (degraded is the highest-trust warning and stays last).
+      if (chat.voice_mode) {
+        const mic = document.createElement('span');
+        mic.className = 'chat-voice';
+        mic.textContent = '🎙';
+        mic.setAttribute('aria-label', 'Voice conversation');
+        mic.title = 'Voice conversation';
+        title.append(mic);
+      }
       // Independent of the leading-dot chain above (running/terminal-busy/
       // unread/ended/free): a chat can be actively running right now and
       // still carry a degraded flag from an earlier turn's silent write

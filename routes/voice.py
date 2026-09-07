@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 
 import db
 import runner
+from shared import backend_kind
 
 _log = logging.getLogger("wc.voice")
 
@@ -78,6 +79,15 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     (type: text/done/error), so the existing frontend parser needs no
     changes. Bypasses the claude CLI entirely -- see the spec's "Deliberate
     exception" section for why this is intentional, not a shortcut.
+
+    Persistence and usage accounting happen once, after the try/except, for
+    every attempt that reached the model -- success, a mid-stream failure, or
+    a content-empty response -- not just a clean success. CLAUDE.md rule 5
+    ("record failures too") applies here exactly as it does to the CLI path:
+    an attempt that spent tokens or already spoke part of a reply to the user
+    has been paid for and must leave a trace, matching routes/chats.py's
+    finish(), which stores a cancelled/failed turn's partial text rather than
+    discarding it.
     """
     chat_id = chat["id"]
     model = chat.get("model") or ""
@@ -97,6 +107,9 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     t0 = time.time()
     ttft_ms = None
     assistant_text = ""
+    input_tokens = 0
+    output_tokens = 0
+    failed = False
     try:
         stream = await client.chat.completions.create(
             model=model,
@@ -105,18 +118,35 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
                 {"role": "user", "content": prompt},
             ],
             stream=True,
+            # Asks an OpenAI-compatible gateway to attach a usage object to
+            # the final chunk. Not every gateway honours it -- chunk.usage
+            # stays None on those, and input_tokens/output_tokens stay 0
+            # rather than the turn failing over a missing accounting detail.
+            stream_options={"include_usage": True},
         )
         async for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices else None
-            if delta:
-                if ttft_ms is None:
-                    ttft_ms = int((time.time() - t0) * 1000)
-                assistant_text += delta
-                yield f"data: {json.dumps({'type': 'text', 'content': delta})}\n\n"
-        await db.messages_batch(chat_id, [("user", prompt), ("assistant", assistant_text)])
-        total_ms = int((time.time() - t0) * 1000)
-        await record_voice_turn_timing(model, ttft_ms or total_ms, total_ms)
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            if chunk.choices:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    if ttft_ms is None:
+                        ttft_ms = int((time.time() - t0) * 1000)
+                    assistant_text += delta
+                    yield f"data: {json.dumps({'type': 'text', 'content': delta})}\n\n"
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                input_tokens = usage.prompt_tokens or 0
+                output_tokens = usage.completion_tokens or 0
+        if assistant_text.strip():
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        else:
+            # A clean completion with no real text is a non-answer, not a
+            # success -- the same class the CLI path's _is_non_answer exists
+            # to catch (runner.py). Voice has no retry loop yet, so this
+            # reports it honestly instead of silently storing an empty
+            # assistant message and telling the client the turn succeeded.
+            failed = True
+            _log.warning("stream_voice_turn empty response chat_id=%s model=%s", chat_id, model)
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Voice reply came back empty. Please try again.'})}\n\n"
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as an SSE event
         # Never forward str(exc) to the client: openai/httpx exception text
         # commonly embeds the request URL (connection errors, timeouts, DNS
@@ -125,6 +155,23 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         # CLAUDE.md #3), just via an SSE frame instead of a log line. Log the
         # real exception server-side only; the client gets a generic message.
         _log.exception("stream_voice_turn failed for chat_id=%s", chat_id)
+        failed = True
         yield f"data: {json.dumps({'type': 'error', 'error': 'Voice reply failed. Please try again.'})}\n\n"
     finally:
         await client.close()
+
+    total_ms = int((time.time() - t0) * 1000)
+    if assistant_text.strip():
+        await db.messages_batch(chat_id, [("user", prompt), ("assistant", assistant_text)])
+    await record_voice_turn_timing(model, ttft_ms or total_ms, total_ms)
+    await db.usage_record(
+        chat_id=chat_id,
+        owner_id=owner,
+        model=model,
+        provider=backend_kind(await db.ai_machine_active(owner)),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=total_ms,
+        is_error=failed,
+        origin="voice",
+    )

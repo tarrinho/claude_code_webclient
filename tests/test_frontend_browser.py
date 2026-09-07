@@ -790,7 +790,7 @@ class SupervisorBrowserTests(_BrowserFixture):
         )
 
     def _pane(self):
-        return self.page.query_selector("#supervisorPane")
+        return self.page.query_selector("#orchestratorPane")
 
     def test_the_topbar_control_opens_the_pane_not_a_new_page(self):
         """It used to navigate away, which cost the sidebar and a reload.
@@ -802,38 +802,77 @@ class SupervisorBrowserTests(_BrowserFixture):
         """
         self._load()
         before = self.page.url
-        self.page.click("#supervisorBtn")
-        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+        self.page.click("#orchestratorBtn")
+        self.page.wait_for_selector("#orchestratorPane:not([hidden])", timeout=10_000)
         self.assertEqual(self.page.url, before, "it navigated instead of embedding")
         self.assertFalse(self.page.is_visible("#messagesWrap"),
                          "the conversation area is still showing behind it")
         self.assertIn(
             "orchestrator.html",
-            self.page.query_selector("#supervisorFrame").get_attribute("src"),
+            self.page.query_selector("#orchestratorFrame").get_attribute("src"),
         )
+
+    def test_the_embedded_frame_actually_fills_the_pane(self):
+        """The frame must have real size, not just the right `src`.
+
+        Reported as "the UI is bad and strangely small". The
+        supervisor -> orchestrator rename reached index.html and
+        orchestrator.js but not styles.css, so `#supervisorFrame{flex:1}`
+        and `#supervisorPane.open{inset:0}` matched nothing. An unstyled
+        iframe falls back to its HTML-default intrinsic size, 300x150 --
+        and orchestrator.html lays itself out with `calc(100vh - 44px)`,
+        which inside a frame measures the frame's box and not the window,
+        so the entire page rendered into 150px of height with its 600px
+        panels crushed to 300px.
+
+        The test above passed throughout: `src` was always correct. Size is
+        the property that was wrong, so size is what has to be asserted --
+        a dead selector is invisible to every check that only reads
+        attributes. Compared against the viewport rather than a pixel
+        constant so the assertion does not depend on this fixture's window
+        size.
+        """
+        self._load()
+        self.page.click("#orchestratorBtn")
+        self.page.wait_for_selector("#orchestratorPane:not([hidden])", timeout=10_000)
+        self.page.wait_for_timeout(300)
+
+        box = self.page.query_selector("#orchestratorFrame").bounding_box()
+        viewport = self.page.viewport_size
+        self.assertGreater(
+            box["height"], viewport["height"] * 0.5,
+            f"the frame is {box['height']}px tall in a "
+            f"{viewport['height']}px viewport -- it is not being sized by "
+            f"CSS at all (300x150 is the unstyled iframe default)",
+        )
+        self.assertGreater(
+            box["width"], viewport["width"] * 0.5,
+            f"the frame is only {box['width']}px wide",
+        )
+        self.assertEqual(self.errors, [])
 
     def test_the_sidebar_link_opens_the_same_pane(self):
         self._load()
         self.page.click(f"{self.DESKTOP} .orchestrator-open")
-        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+        self.page.wait_for_selector("#orchestratorPane:not([hidden])", timeout=10_000)
 
     def test_the_conversation_list_stays_visible_beside_it(self):
         """The reason for embedding: you can still see who is waiting."""
         self._load()
-        self.page.click("#supervisorBtn")
-        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
+        self.page.click("#orchestratorBtn")
+        self.page.wait_for_selector("#orchestratorPane:not([hidden])", timeout=10_000)
         self.assertTrue(self.page.is_visible(self.DESKTOP),
                         "the sidebar went away, which defeats the point")
 
     def test_closing_returns_to_the_conversation(self):
         self._load()
-        self.page.click("#supervisorBtn")
-        self.page.wait_for_selector("#supervisorPane:not([hidden])", timeout=10_000)
-        self.page.click("#supervisorPaneClose")
+        self.page.click("#orchestratorBtn")
+        self.page.wait_for_selector("#orchestratorPane:not([hidden])", timeout=10_000)
+        self.page.click("#orchestratorPaneClose")
         # state="hidden": the default waits for *visible*, so asserting on a
         # hidden element that way can only ever time out -- the element was
         # correctly hidden the whole time.
-        self.page.wait_for_selector("#supervisorPane", state="hidden", timeout=10_000)
+        self.page.wait_for_selector("#orchestratorPane", state="hidden", timeout=10_000)
         self.assertTrue(self.page.is_visible("#messagesWrap"))
 
     def test_supervisor_rows_are_not_draggable(self):

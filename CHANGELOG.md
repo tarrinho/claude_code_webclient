@@ -20,6 +20,12 @@ churn.
 
 ---
 
+## [0.15.3] — 2026-09-07
+
+### Added
+
+- **QA test coverage** — 5 new test files (82 tests) covering 22 previously uncovered route handlers: SSH transport CRUD (7 handlers), API tokens (3), session deletion (2), queue operations (3), and orchestrator sub-routes (5). All tests verify auth requirements, owner scoping, and input validation.
+
 ## [0.15.2] — 2026-09-06
 
 ### Changed

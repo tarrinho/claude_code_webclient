@@ -1,0 +1,42 @@
+{
+  "claude-opus-5": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "claude-sonnet-5": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "claude-fable-5": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "claude-haiku-4-5": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "vllm/Qwen3.6-35B-A3B-NVFP4": {
+    "verdict": "EXEC FAIL",
+    "note": "SyntaxError"
+  },
+  "azure_ai/gpt-5.6-luna": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "azure_ai/gpt-5.6-sol": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "azure_ai/gpt-5.4-mini-copilot": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "azure_ai/gpt-5.4-mini": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  },
+  "azure_ai/gpt-5-mini": {
+    "verdict": "PASS",
+    "note": "correct LRU semantics"
+  }
+}

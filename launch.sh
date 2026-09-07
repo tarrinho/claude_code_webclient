@@ -24,7 +24,7 @@ fi
 export WC_DB_PATH="${WC_DB_PATH:-/home/kali/projects/claude-code-webconsole/data/webconsole.db}"
 export WC_PROJECTS_ROOT="${WC_PROJECTS_ROOT:-/home/kali/projects/cweb3}"
 export WC_LISTEN_HOST="${TAILNET_IP}"
-export WC_PORT=443
+export WC_PORT=8080
 export WC_COOKIE_ALLOW_INSECURE="0"
 
 # Session secret — persist to disk so it survives restarts

@@ -89,7 +89,7 @@ class MachineSchemaTests(unittest.IsolatedAsyncioTestCase):
             "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin"
         )
         machine = await db.ai_machine_get("m1", "admin")
-        self.assertEqual(machine["provider"], "proxy")
+        self.assertEqual(machine["provider"], "claude_code")
 
     async def test_migration_adds_provider_to_legacy_rows(self):
         """A database written before the column must gain it, defaulting to proxy."""
@@ -119,7 +119,7 @@ class MachineSchemaTests(unittest.IsolatedAsyncioTestCase):
 
         await db.init()
         machine = await db.ai_machine_get("old", "admin")
-        self.assertEqual(machine["provider"], "proxy")
+        self.assertEqual(machine["provider"], "claude_code")
 
 
 class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
@@ -134,7 +134,7 @@ class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
     async def test_seed_creates_anthropic_machine(self):
         machine_id = await db.ai_machine_seed_anthropic("admin")
         machine = await db.ai_machine_get(machine_id, "admin")
-        self.assertEqual(machine["provider"], "anthropic")
+        self.assertEqual(machine["provider"], "claude_code")
         self.assertEqual(machine["host"], "api.anthropic.com")
         self.assertEqual(machine["port"], 443)
         self.assertEqual(machine["base_url"], "https://api.anthropic.com")
@@ -144,7 +144,7 @@ class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
         second = await db.ai_machine_seed_anthropic("admin")
         self.assertEqual(first, second)
         machines = await db.ai_machines_list("admin")
-        anthropic = [m for m in machines if m["provider"] == "anthropic"]
+        anthropic = [m for m in machines if m["provider"] == "claude_code"]
         self.assertEqual(len(anthropic), 1)
 
     async def test_seed_carries_no_api_key(self):
@@ -160,7 +160,7 @@ class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
         import json as _json
 
         machines = _json.loads(response.body)["machines"]
-        self.assertTrue(any(m["provider"] == "anthropic" for m in machines))
+        self.assertTrue(any(m["provider"] == "claude_code" for m in machines))
 
     async def test_listing_never_exposes_api_key(self):
         await db.ai_machine_create(
@@ -186,17 +186,17 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
         await _teardown_db(self)
 
     async def test_anthropic_defaults_endpoint_and_port(self):
-        request = _make_request({"name": "Anthropic", "provider": "anthropic"})
+        request = _make_request({"name": "Anthropic", "provider": "claude_code"})
         await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Anthropic")
-        self.assertEqual(created["provider"], "anthropic")
+        self.assertEqual(created["provider"], "claude_code")
         self.assertEqual(created["base_url"], "https://api.anthropic.com")
         self.assertEqual(created["host"], "api.anthropic.com")
         self.assertEqual(created["port"], 443)
 
     async def test_anthropic_defaults_model(self):
-        request = _make_request({"name": "Anthropic", "provider": "anthropic"})
+        request = _make_request({"name": "Anthropic", "provider": "claude_code"})
         await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Anthropic")
@@ -206,7 +206,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
         request = _make_request(
             {
                 "name": "Gateway",
-                "provider": "anthropic",
+                "provider": "claude_code",
                 "base_url": "https://gateway.example.com/v1",
             }
         )
@@ -217,8 +217,8 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created["base_url"], "https://gateway.example.com/v1")
         self.assertEqual(created["host"], "gateway.example.com")
 
-    async def test_proxy_provider_still_requires_host(self):
-        request = _make_request({"name": "Box", "provider": "proxy"})
+    async def test_direct_provider_requires_host(self):
+        request = _make_request({"name": "Box", "provider": "direct"})
         with self.assertRaises(HTTPException) as ctx:
             await machine_routes.handle_machine_create(request)
         self.assertEqual(ctx.exception.status_code, 400)
@@ -238,7 +238,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
         await machine_routes.handle_machine_create(request)
         machines = await db.ai_machines_list("admin")
         created = next(m for m in machines if m["name"] == "Box")
-        self.assertEqual(created["provider"], "proxy")
+        self.assertEqual(created["provider"], "claude_code")
 
     async def test_ssh_proxy_is_no_longer_a_legal_provider(self):
         request = _make_request(
@@ -296,11 +296,11 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_switch_to_anthropic(self):
         request = _make_request(
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com"}
         )
         await machine_routes.handle_machine_patch(request, "m1")
         machine = await db.ai_machine_get("m1", "admin")
-        self.assertEqual(machine["provider"], "anthropic")
+        self.assertEqual(machine["provider"], "claude_code")
         self.assertEqual(machine["base_url"], "https://api.anthropic.com")
 
     async def test_unknown_provider_rejected(self):
@@ -456,7 +456,7 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, "sk-test",
             "claude-opus-5", "https://api.anthropic.com", None, "admin",
-            provider="anthropic",
+            provider="claude_code",
         )
         self._resolve = patch.object(machine_routes, "_resolve_host", return_value="160.79.104.10")
         self._resolve.start()
@@ -499,7 +499,7 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--model", args)
         self.assertEqual(args[args.index("--model") + 1], "claude-opus-5")
         expected = backend_env.deltas(
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com",
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com",
              "api_key": "sk-test"}
         ).apply_to({})
         for name, value in expected.items():
@@ -650,9 +650,10 @@ class GetBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await runner.get_backend("c1"), {})
 
     async def test_active_proxy_machine_is_empty(self):
-        """A proxy machine must not rewrite the CLI's provider environment."""
+        """A ssh_proxy machine must not rewrite the CLI's provider environment."""
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, "k", "claude-sonnet-5", None, None, "admin"
+            "m1", "Box", "10.0.0.9", 9000, "k", "claude-sonnet-5", None, None, "admin",
+            provider="ssh_proxy"
         )
         await db.ai_machine_activate("m1", "admin")
         self.assertEqual(await runner.get_backend("c1"), {})
@@ -661,11 +662,11 @@ class GetBackendTests(unittest.IsolatedAsyncioTestCase):
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, "sk-test",
             "claude-opus-5", "https://api.anthropic.com", None, "admin",
-            provider="anthropic",
+            provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
         backend = await runner.get_backend("c1")
-        self.assertEqual(backend["provider"], "anthropic")
+        self.assertEqual(backend["provider"], "claude_code")
         self.assertEqual(backend["base_url"], "https://api.anthropic.com")
         self.assertEqual(backend["api_key"], "sk-test")
 
@@ -674,7 +675,7 @@ class GetBackendTests(unittest.IsolatedAsyncioTestCase):
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, None,
             "claude-opus-5", "https://api.anthropic.com", None, "admin",
-            provider="anthropic",
+            provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
         backend = await runner.get_backend("c1")
@@ -690,7 +691,7 @@ class BuildEnvTests(unittest.TestCase):
     def test_anthropic_backend_sets_anthropic_vars(self):
         env = runner._build_env(
             {
-                "provider": "anthropic",
+                "provider": "claude_code",
                 "base_url": "https://api.anthropic.com",
                 "api_key": "sk-test",
             }
@@ -701,7 +702,7 @@ class BuildEnvTests(unittest.TestCase):
     def test_anthropic_backend_excludes_openai_shim(self):
         """A leftover OPENAI_BASE_URL would pull the turn back to the shim."""
         env = runner._build_env(
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com"}
         )
         self.assertNotIn("OPENAI_BASE_URL", env)
         self.assertNotIn("OPENAI_API_KEY", env)
@@ -709,7 +710,7 @@ class BuildEnvTests(unittest.TestCase):
 
     def test_anthropic_backend_without_key_omits_it(self):
         env = runner._build_env(
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com"}
         )
         self.assertNotIn("ANTHROPIC_API_KEY", env)
 
@@ -722,7 +723,7 @@ class BuildEnvTests(unittest.TestCase):
         credentials at all.
         """
         env = runner._build_env(
-            {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
+            {"provider": "claude_code", "base_url": "https://api.anthropic.com"}
         )
         self.assertNotIn("CLAUDE_CODE_SIMPLE", env)
 
@@ -730,7 +731,7 @@ class BuildEnvTests(unittest.TestCase):
         """With a key there is nothing to read from the keychain."""
         env = runner._build_env(
             {
-                "provider": "anthropic",
+                "provider": "claude_code",
                 "base_url": "https://api.anthropic.com",
                 "api_key": "sk-test",
             }
@@ -739,7 +740,7 @@ class BuildEnvTests(unittest.TestCase):
 
     def test_legacy_host_only_base_url_coerced(self):
         env = runner._build_env(
-            {"provider": "anthropic", "base_url": "api.anthropic.com"}
+            {"provider": "claude_code", "base_url": "api.anthropic.com", "api_key": "sk-test"}
         )
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
 
@@ -760,7 +761,7 @@ class ProxyBackendEnvTests(unittest.TestCase):
     def test_anthropic_backend_applied_over_inherited_env(self):
         env = claude_proxy._backend_env(
             {
-                "provider": "anthropic",
+                "provider": "claude_code",
                 "base_url": "https://api.anthropic.com",
                 "api_key": "sk-test",
             }
@@ -773,24 +774,24 @@ class ProxyBackendEnvTests(unittest.TestCase):
         """Otherwise a stale key in the proxy's shell silently wins."""
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-stale"}):
             env = claude_proxy._backend_env(
-                {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
+                {"provider": "claude_code", "base_url": "https://api.anthropic.com"}
             )
         self.assertNotIn("ANTHROPIC_API_KEY", env)
 
     def test_missing_key_drops_inherited_simple_mode(self):
         with patch.dict(os.environ, {"CLAUDE_CODE_SIMPLE": "1"}):
             env = claude_proxy._backend_env(
-                {"provider": "anthropic", "base_url": "https://api.anthropic.com"}
+                {"provider": "claude_code", "base_url": "https://api.anthropic.com"}
             )
         self.assertNotIn("CLAUDE_CODE_SIMPLE", env)
 
     def test_non_anthropic_backend_left_alone(self):
-        env = claude_proxy._backend_env({"provider": "proxy"})
+        env = claude_proxy._backend_env({"provider": "claude_code"})
         self.assertNotIn("ANTHROPIC_BASE_URL", env)
 
     def test_malformed_backend_ignored(self):
         """The payload is client-supplied, so a non-dict must not raise."""
-        for value in ("anthropic", 42, [], None):
+        for value in ("claude_code", 42, [], None):
             env = claude_proxy._backend_env(value)
             self.assertIn("PATH", env)
 
@@ -804,7 +805,7 @@ class TurnPayloadTests(unittest.IsolatedAsyncioTestCase):
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, "sk-test",
             "claude-opus-5", "https://api.anthropic.com", None, "admin",
-            provider="anthropic",
+            provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
 
@@ -845,7 +846,7 @@ class TurnPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         frames = [_json.loads(b.decode()) for b in written]
         turn = next(f for f in frames if f.get("type") == "turn")
-        self.assertEqual(turn["backend"]["provider"], "anthropic")
+        self.assertEqual(turn["backend"]["provider"], "claude_code")
         self.assertEqual(turn["backend"]["base_url"], "https://api.anthropic.com")
         self.assertEqual(turn["backend"]["api_key"], "sk-test")
 

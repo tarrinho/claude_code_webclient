@@ -187,7 +187,7 @@ def test_creating_a_non_ssh_machine_does_not_violate_not_null(client):
     creation of any other provider type raised sqlite3.IntegrityError."""
     resp = client.post("/api/machines", json={
         "name": "Plain Anthropic Machine",
-        "provider": "anthropic",
+        "provider": "claude_code",
         "model": "claude-sonnet-5",
     })
     assert resp.status_code == 200, resp.text

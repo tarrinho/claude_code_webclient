@@ -3,6 +3,16 @@
 .env.*
 !.env.example
 
+# Deploy helpers with embedded credentials
+deploy_*.sh
+start_*.sh
+kali3_patch.sql
+kali3_upgrade.sql
+patch_*.sql
+patch_kali3.sql
+check_kali3_db.py
+restart.sh
+
 # Python
 __pycache__/
 *.py[cod]

@@ -11,8 +11,11 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import sqlite3
+import time
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any, Final
 
@@ -223,11 +226,19 @@ async def handle_chat_create(request: Request):
     _log.info("chat_created chat_id=%s work_dir=%s", chat_id, work_dir)
     voice_mode = bool(data.get("voice_mode"))
     if voice_mode:
-        voice_machine_id = await db.setting_get("voice_ai_machine_id") or config.VOICE_AI_MACHINE_ID_DEFAULT
+        voice_backend_id = (
+            await db.setting_get("voice_backend_id")
+            or await db.setting_get("voice_ai_machine_id")
+            or config.VOICE_BACKEND_ID_DEFAULT
+            or config.VOICE_AI_MACHINE_ID_DEFAULT
+        )
+        if voice_backend_id and not await db.ai_machine_get(voice_backend_id, session["user"]):
+            raise HTTPException(status_code=404, detail="Voice backend not found")
         voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
         await db.chat_update(
             chat_id, session["user"],
-            voice_mode=1, model=voice_model, ai_machine_id=voice_machine_id,
+            voice_mode=1, model=voice_model, ai_machine_id=voice_backend_id,
+            type="brainstorming",
         )
     return JSONResponse(
         {"id": chat_id, "title": title, "work_dir": work_dir, "created_at": now}
@@ -297,6 +308,13 @@ async def handle_chat_get(request: Request, chat_id: str):
                 "running": turns.is_running(chat_id),
                 "turn_seq": (turns.get(chat_id).seq if turns.get(chat_id) else 0),
                 "queued": len(await db.queue_list(chat_id, session["user"])),
+                # Voice conversations answer through a different turn path and
+                # own the mic / live-conversation controls in the composer.
+                # Without this the client could not tell one apart after a
+                # reload, so every guard in voice-conversation.js read
+                # undefined and the controls stayed hidden in the very
+                # conversations they belong to.
+                "voice_mode": bool(chat.get("voice_mode")),
                 "degraded": bool(chat.get("degraded")),
                 "degraded_reason": chat.get("degraded_reason"),
             },
@@ -401,11 +419,43 @@ async def handle_chat_patch(request: Request, chat_id: str):
             raise HTTPException(status_code=400, detail="voice_mode must be a boolean")
         fields["voice_mode"] = int(data["voice_mode"])
         if data["voice_mode"]:
-            # Enable voice: pin to the voice AI machine and model.
-            voice_machine_id = await db.setting_get("voice_ai_machine_id") or config.VOICE_AI_MACHINE_ID_DEFAULT
+            # Enable voice: pin to the owner's configured voice machine and model.
+            voice_machine_id = (
+                await db.setting_get("voice_backend_id")
+                or await db.setting_get("voice_ai_machine_id")
+                or config.VOICE_BACKEND_ID_DEFAULT
+                or config.VOICE_AI_MACHINE_ID_DEFAULT
+            )
+            if voice_machine_id and not await db.ai_machine_get(voice_machine_id, session["user"]):
+                raise HTTPException(status_code=404, detail="Voice backend not found")
             voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
             fields["ai_machine_id"] = voice_machine_id
             fields["model"] = voice_model
+
+    if "type" in data:
+        if data["type"] not in ("normal", "brainstorming"):
+            raise HTTPException(
+                status_code=400, detail="type must be 'normal' or 'brainstorming'"
+            )
+
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Voice-mode chats must always be brainstorming.
+    if data.get("type") == "normal" and chat.get("voice_mode"):
+        raise HTTPException(
+            status_code=400,
+            detail="voice conversations must be brainstorming type",
+        )
+
+    # When voice_mode is turned on, force brainstorming.
+    if data.get("voice_mode"):
+        fields["type"] = "brainstorming"
+
+    # When voice_mode is turned off on a brainstorming chat, allow downgrade.
+    if data.get("voice_mode") is False and chat.get("type") == "brainstorming":
+        fields.setdefault("type", "normal")
 
     updated = await db.chat_update(chat_id, session["user"], **fields)
     if not updated:
@@ -510,6 +560,49 @@ _IMAGE_TYPES = _CHAT_FILE_TYPES
 # Large enough for a screenshot, small enough that a stray path cannot stream
 # a database file out through an <img> tag.
 _IMAGE_MAX_BYTES: Final[int] = 12 * 1024 * 1024
+_GENERATED_IMAGE_MAX: Final[int] = 12
+_GENERATED_IMAGE_EXTENSIONS = frozenset(_CHAT_FILE_TYPES) - {".pdf"}
+_GENERATED_IMAGE_SKIP_DIRS = frozenset({".git", ".hg", ".svn", "node_modules"})
+
+
+def _new_workspace_images(work_dir: str, since: float) -> list[str]:
+    """Return newly written image paths in *work_dir*, oldest first.
+
+    Walk only ordinary workspace directories. Hidden/dependency trees can be
+    large and commonly contain unrelated assets, so they are not part of the
+    generated-file boundary.
+    """
+    root = Path(work_dir)
+    found: list[tuple[float, str]] = []
+    try:
+        for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+            dirs[:] = [
+                name for name in dirs
+                if not name.startswith(".") and name not in _GENERATED_IMAGE_SKIP_DIRS
+            ]
+            current_path = Path(current)
+            for name in files:
+                path = current_path / name
+                if path.suffix.lower() not in _GENERATED_IMAGE_EXTENSIONS:
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if stat.st_mtime <= since or not path.is_file():
+                    continue
+                found.append((stat.st_mtime, path.relative_to(root).as_posix()))
+    except OSError:
+        return []
+    # Stable lexical ordering keeps the cap deterministic and matches the
+    # relative-path order shown in the chat, while discovery remains limited to
+    # files newer than the turn start.
+    found.sort(key=lambda item: item[1])
+    return [relative for _, relative in found[:_GENERATED_IMAGE_MAX]]
+
+
+def _image_markdown(paths: list[str]) -> str:
+    return "\n".join(f"![{Path(path).name}]({path})" for path in paths)
 
 
 async def handle_chat_file(request: Request, chat_id: str):
@@ -891,6 +984,8 @@ async def _start_turn(
     """
     chat_id = chat["id"]
 
+    turn_started_at = time.time()
+
     async def produce():
         if runner.slots_busy():
             # Otherwise waiting for a slot is indistinguishable from a slow
@@ -951,9 +1046,17 @@ async def _start_turn(
             # conversation must not gain a phantom message for every failure
             # the user retried past.
             return
-        await db.messages_batch(
-            chat_id, [("user", prompt), ("assistant", "".join(parts))]
+        assistant = "".join(parts)
+        images = await asyncio.to_thread(
+            _new_workspace_images, chat["work_dir"], turn_started_at
         )
+        if images:
+            image_text = _image_markdown(images)
+            assistant = f"{assistant}\n\n{image_text}" if assistant.strip() else image_text
+        if assistant.strip():
+            await db.messages_batch(
+                chat_id, [("user", prompt), ("assistant", assistant)]
+            )
         await db.bump_chat_updated_at(chat_id)
         if session_id and session_id != chat["session_id"]:
             await db.chat_set_session(chat_id, session_id)
@@ -1019,17 +1122,22 @@ async def stream_handler(request: Request, chat_id: str):
     data = await request.json()
     prompt = (data.get("content") or "").strip()
     if not prompt:
-        if chat.get("voice_mode"):
-            _log.warning(
-                "stream_handler: empty prompt from user=%s chat_id=%s "
-                "(voice_mode)",
-                session["user"], chat_id,
-            )
+        _log.warning(
+            "stream_handler: empty prompt from user=%s chat_id=%s voice_mode=%s",
+            session["user"], chat_id, bool(chat.get("voice_mode")),
+        )
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     if len(prompt) > config.PROMPT_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Prompt is too long")
 
     if chat.get("voice_mode"):
+        # Belt-and-suspenders: reject if auto_answer is somehow enabled.
+        # The set() handler blocks it, but the DB could have stale data.
+        if await db.chat_auto_answer_get(chat_id, session["user"]):
+            raise HTTPException(
+                status_code=400,
+                detail="auto-answer cannot be used with voice conversations",
+            )
         # Same cap every other stream respects (checked before the
         # StreamingResponse is built, for the same reason the non-voice path
         # below does it here: a rejection has to raise before the response
@@ -1740,6 +1848,19 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
             status_code=400, detail="accept_recommended must be a boolean"
         )
 
+    # Fetch the chat so the voice_mode gate fires before we touch the db
+    # write.  This double-checks before committing to the change: if the chat
+    # is voice-mode, reject immediately instead of writing then rolling back.
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    if chat.get("voice_mode"):
+        raise HTTPException(
+            status_code=400,
+            detail="auto-answer is not allowed for voice conversations",
+        )
+
     ok = await db.chat_auto_answer_set(
         chat_id, session["user"], enabled, accept_recommended,
     )
@@ -1765,6 +1886,15 @@ async def handle_chat_auto_answer_get(request: Request, chat_id: str):
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
+    # Voice-mode chats cannot use auto_answer: surface that fact so the UI
+    # can hide/disable the knob even if the stored value is stale.
+    if chat.get("voice_mode"):
+        return JSONResponse({
+            "enabled": False,
+            "accept_recommended": False,
+            "log": [],
+            "voice_mode_blocked": True,
+        })
     enabled = await db.chat_auto_answer_get(chat_id, session["user"])
     accept_recommended = await db.chat_auto_answer_recommend_get(
         chat_id, session["user"],
@@ -1792,7 +1922,96 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
     if not session_id:
         return []
 
+    # One importer per conversation. The open conversation polls /sync every
+    # five seconds while the 30-second sweep walks every linked chat, so two
+    # imports could read the same transcript_offset, both decide the same
+    # bytes were new, and both insert them -- which is one of the two ways a
+    # message appeared twice.
+    async with _sync_lock_for(chat_id):
+        return await _sync_linked_chat_locked(chat, chat_id, session_id)
+
+
+# loop -> {chat_id: lock}. Created on demand; a conversation that is never
+# synced never gets one.
+#
+# Keyed by the running loop, not by chat id alone: an asyncio.Lock binds to the
+# loop that first awaits it, and awaiting it from a second loop raises
+# "bound to a different event loop". A module-level dict outlives any one loop
+# -- every test builds its own, and so does a restarted server inside one
+# process -- so a plain {chat_id: lock} turns the first sync after a loop swap
+# into a hard failure. Weak keys so a finished loop's entry goes with it.
+_sync_locks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+# How many stored messages the dedup compares against. A web turn stores two
+# rows (prompt and reply) and a transcript block can carry a few more around
+# them, so this is deliberately larger than the two it has to catch and still
+# small enough to be one indexed read.
+_SYNC_DEDUP_WINDOW: Final[int] = 12
+
+
+def _drop_already_stored(
+    tail: list[dict[str, Any]], rows: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Return *rows* without the prefix already present at the end of *tail*.
+
+    *tail* is oldest-first (``db.messages_last``). The longest suffix of the
+    stored rows that equals a prefix of the imported ones is the overlap, so
+    everything after it is what is genuinely new. Returns *rows* unchanged
+    when nothing overlaps, and an empty list when the whole block is already
+    stored.
+    """
+    stored = [(row["role"], row["content"]) for row in tail]
+    for size in range(min(len(stored), len(rows)), 0, -1):
+        if stored[-size:] == rows[:size]:
+            return rows[size:]
+    return rows
+
+
+def _sync_lock_for(chat_id: str) -> asyncio.Lock:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop to bind to; the caller is about to await, so this is only
+        # reachable from a synchronous caller, which has no race to lose.
+        return asyncio.Lock()
+    per_loop = _sync_locks.get(loop)
+    if per_loop is None:
+        per_loop = {}
+        _sync_locks[loop] = per_loop
+    lock = per_loop.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        per_loop[chat_id] = lock
+    return lock
+
+
+async def _sync_linked_chat_locked(
+    chat: dict, chat_id: str, session_id: str
+) -> list[tuple[str, str]]:
+    """The body of _sync_linked_chat, run under this conversation's lock."""
+    # A turn running here is writing the same conversation from the other end:
+    # the CLI appends the prompt to the transcript as soon as it starts, and
+    # `finish()` stores the pair and steps the offset past it when it ends.
+    # Importing those bytes in between stores the prompt a second time, which
+    # is exactly the duplicate the user sees. The turn's own bookkeeping is
+    # authoritative, so the sync stands aside while it runs.
+    if turns.is_running(chat_id):
+        return []
+
+    # Re-read rather than trusting the caller's snapshot: the row it came from
+    # may have been listed before a finishing turn, or the importer that just
+    # released this lock, advanced the offset. Reading the stale value is what
+    # makes a second importer re-read bytes that are already stored.
     offset = int(chat.get("transcript_offset") or 0)
+    try:
+        cursor = await db.db_conn.execute(
+            "SELECT transcript_offset FROM chats WHERE id = ?", (chat_id,)
+        )
+        row = await cursor.fetchone()
+        if row is not None and row["transcript_offset"] is not None:
+            offset = int(row["transcript_offset"])
+    except Exception:
+        pass
 
     # Run the question scan *before* the dedup guard so unanswered questions
     # in already-imported chats (offset == 0) are still caught.  The scan
@@ -1872,16 +2091,20 @@ async def _sync_linked_chat(chat: dict) -> list[tuple[str, str]]:
         return []
 
     # Dedup: the /stream handler's finish() callback may have already stored
-    # these turns in the messages table.  Compare the last stored row against
-    # the first row from the transcript; if they match, all rows are already
-    # present (the transcript order is fixed, so equality at the tail means
-    # the whole block is a duplicate).
+    # some of these turns. Comparing only the stored tail against rows[0] --
+    # what this did before -- catches the case where the overlap starts
+    # exactly at the newest stored row and misses every other one: a web turn
+    # stores ("user", prompt) and ("assistant", reply) while the transcript
+    # block also carries the prompt in the middle, so the prompt landed twice.
+    # Match the stored tail against the imported prefix instead, and keep only
+    # what is genuinely new.
     try:
-        tail = await db.messages_last(chat_id, 1)
+        tail = await db.messages_last(chat_id, _SYNC_DEDUP_WINDOW)
     except Exception:
         tail = []
-    if tail and tail[0]["role"] == rows[0][0] and tail[0]["content"] == rows[0][1]:
-        _log.info("transcript_sync_deduped chat_id=%s count=%d", chat_id, len(rows))
+    rows = _drop_already_stored(tail, rows)
+    if not rows:
+        _log.info("transcript_sync_deduped chat_id=%s", chat_id)
         return []
 
     await db.messages_batch(chat_id, rows)

@@ -11,9 +11,9 @@ all, regardless of what the database row says.
 
 THE BUG is narrower than it first looks, and the corrected diagnosis matters
 for the fix. `get_backend()` only ever returns non-empty for
-`machine.get("provider") == "anthropic"`:
+`machine.get("provider") == "claude_code"`:
 
-    if not machine or machine.get("provider") != "anthropic":
+    if not machine or machine.get("provider") != "claude_code":
         return {}
 
 That is CORRECT for a "proxy"-provider machine (Settings shows it as "Claude
@@ -78,11 +78,11 @@ class AnthropicActivateWorksTests(ActivateBackendTestsBase):
     async def test_get_backend_follows_the_newly_activated_machine(self):
         await db.ai_machine_create(
             "m1", "First", "a.example", 443, "key-one", "claude-opus-5",
-            "https://one.example", None, "alice", provider="anthropic",
+            "https://one.example", None, "alice", provider="claude_code",
         )
         await db.ai_machine_create(
             "m2", "Second", "b.example", 443, "key-two", "claude-opus-5",
-            "https://two.example", None, "alice", provider="anthropic",
+            "https://two.example", None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")
         backend = await runner.get_backend("c1", owner="alice")
@@ -100,15 +100,15 @@ class AnthropicActivateWorksTests(ActivateBackendTestsBase):
 
 
 class GetBackendIsRightlyBlindToProxyMachinesTests(ActivateBackendTestsBase):
-    """Not the bug. get_backend() must keep returning {} for a 'proxy'
-    machine -- it is not the function responsible for routing to one, and
-    making it react here would mean two functions both claiming that job.
+    """SSH proxy machines must keep returning {} from get_backend --
+    get_backend is only for claude_code/direct backends, and routing to a
+    proxy target is handled by get_proxy_target, not by get_backend.
     """
 
     async def test_activating_a_proxy_machine_does_not_touch_get_backend(self):
         await db.ai_machine_create(
             "m1", "Proxy One", "10.0.0.5", 9001, None, "default",
-            None, None, "alice", provider="proxy",
+            None, None, "alice", provider="ssh_proxy",
         )
         before = await runner.get_backend("c1", owner="alice")
         await db.ai_machine_activate("m1", "alice")
@@ -120,18 +120,18 @@ class GetBackendIsRightlyBlindToProxyMachinesTests(ActivateBackendTestsBase):
 class ProxyActivateFollowsTheMachineTests(ActivateBackendTestsBase):
     """runner.get_proxy_target is the fix: the (host, port) a turn connects
     to now follows the same pin/active resolution get_backend already used
-    for anthropic machines, through the exact functions _execute_proxy and
+    for claude_code machines, through the exact functions _execute_proxy and
     _do_proxy_stream call before asyncio.open_connection.
     """
 
     async def test_the_target_follows_the_newly_activated_machine(self):
         await db.ai_machine_create(
             "m1", "Proxy One", "10.0.0.5", 9001, None, "default",
-            None, None, "alice", provider="proxy",
+            None, None, "alice", provider="claude_code",
         )
         await db.ai_machine_create(
             "m2", "Proxy Two", "10.0.0.6", 9002, None, "default",
-            None, None, "alice", provider="proxy",
+            None, None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")
         host_1, port_1 = await runner.get_proxy_target("c1", owner="alice")
@@ -152,7 +152,7 @@ class ProxyActivateFollowsTheMachineTests(ActivateBackendTestsBase):
         """
         await db.ai_machine_create(
             "m1", "Proxy One", "10.0.0.5", 9999, None, "default",
-            None, None, "alice", provider="proxy",
+            None, None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")
         _host, port = await runner.get_proxy_target("c1", owner="alice")
@@ -170,11 +170,11 @@ class ProxyActivateFollowsTheMachineTests(ActivateBackendTestsBase):
         """
         await db.ai_machine_create(
             "m1", "Proxy One", "10.0.0.5", 9001, None, "default",
-            None, None, "alice", provider="proxy",
+            None, None, "alice", provider="claude_code",
         )
         await db.ai_machine_create(
             "m2", "Proxy Two", "10.0.0.6", 9002, None, "default",
-            None, None, "alice", provider="proxy",
+            None, None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")
         await db.chat_set_machine("c1", "alice", "m2")
@@ -200,7 +200,7 @@ class ProxyActivateFollowsTheMachineTests(ActivateBackendTestsBase):
         """
         await db.ai_machine_create(
             "m1", "Anthropic", "a.example", 443, "key", "claude-opus-5",
-            "https://one.example", None, "alice", provider="anthropic",
+            "https://one.example", None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")
         host, port = await runner.get_proxy_target("c1", owner="alice")

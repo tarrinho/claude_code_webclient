@@ -258,7 +258,10 @@ async def init() -> None:
             deleted_at    TEXT,
             model         TEXT,
             ai_machine_id TEXT,
-            voice_mode    INTEGER NOT NULL DEFAULT 0
+            voice_mode    INTEGER NOT NULL DEFAULT 0,
+            -- 'normal' | 'brainstorming'. Voice-mode chats are forced
+            -- to 'brainstorming' at creation and cannot be changed.
+            type          TEXT NOT NULL DEFAULT 'normal'
         );
 
         CREATE TABLE IF NOT EXISTS ai_machines (
@@ -353,15 +356,6 @@ async def init() -> None:
         CREATE TABLE IF NOT EXISTS usage_cursors (
             session_id TEXT PRIMARY KEY,
             offset     INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS sessions (
-            sid_key    TEXT PRIMARY KEY,
-            user       TEXT NOT NULL,
-            role       TEXT NOT NULL,
-            expiry     REAL NOT NULL,
-            last       REAL NOT NULL,
-            csrf       TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -970,10 +964,33 @@ async def _ensure_chat_columns() -> None:
             # (routes/voice.py) instead of the claude CLI.
             "ALTER TABLE chats ADD COLUMN voice_mode INTEGER NOT NULL DEFAULT 0"
         ),
+        "type": (
+            # Chat conversation type: 'normal' or 'brainstorming'.
+            # Voice-mode chats are forced to 'brainstorming' and locked.
+            "ALTER TABLE chats ADD COLUMN type TEXT NOT NULL DEFAULT 'normal'"
+        ),
     }
     for name, sql in migrations.items():
         if name not in columns:
             await db_conn.execute(sql)
+
+    # Backfill: voice-mode chats that existed before the `type` column was
+    # created default to 'normal' (the column DEFAULT).  Promote them all
+    # to 'brainstorming' now — only runs once because voice_mode+normal
+    # counts drop to zero after the first pass.
+    try:
+        cur = await db_conn.execute(
+            "UPDATE chats SET type = 'brainstorming' "
+            "WHERE voice_mode = 1 AND type = 'normal'"
+        )
+        await db_conn.commit()
+        if cur.rowcount:
+            _log.info(
+                "type_backfill: updated %d voice-mode chats to brainstorming",
+                cur.rowcount,
+            )
+    except Exception:
+        _log.warning("type_backfill failed (non-fatal)")
 
     # Migrate ai_machines table for existing databases
     try:
@@ -1270,21 +1287,23 @@ async def ssh_tunnel_create(
 async def ssh_tunnel_update(
     machine_id: str,
     **fields,
-) -> None:
-    """Update ssh_tunnels row for *machine_id* with any subset of keys.
-
-    Supported keys: local_port, ssh_port, tunnel_up, proxy_ok, state,
-    concurrent_conns, connected_at, last_check, error_msg.
-    Sets updated_at automatically.
-    """
-    fields["updated_at"] = _now()
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [machine_id]
-    await db_conn.execute(
+) -> bool:
+    """Update an SSH tunnel row when every requested field is allowlisted."""
+    allowed = {
+        "local_port", "ssh_port", "tunnel_up", "proxy_ok", "state",
+        "concurrent_conns", "connected_at", "last_check", "error_msg",
+    }
+    if not fields or not set(fields).issubset(allowed):
+        return False
+    fields = {**fields, "updated_at": _now()}
+    set_clause = ", ".join(f"{key} = ?" for key in fields)
+    values = [*fields.values(), machine_id]
+    cursor = await db_conn.execute(
         f"UPDATE ssh_tunnels SET {set_clause} WHERE machine_id = ?",
         values,
     )
     await db_conn.commit()
+    return bool(cursor.rowcount)
 
 
 async def ssh_tunnel_delete(machine_id: str) -> None:

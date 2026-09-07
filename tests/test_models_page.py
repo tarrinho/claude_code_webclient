@@ -88,7 +88,7 @@ async def _teardown_db(tc):
 async def _add_anthropic_machine(base_url="https://gateway.example.com", key="sk-test"):
     await db.ai_machine_create(
         "m1", "Gateway", "gateway.example.com", 443, key,
-        "claude-opus-5", base_url, None, "admin", provider="anthropic",
+        "claude-opus-5", base_url, None, "admin", provider="claude_code",
     )
     await db.ai_machine_activate("m1", "admin")
 
@@ -251,14 +251,15 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
             [m["id"] for m in data["models"]], list(config.KNOWN_MODELS)
         )
 
-    async def test_proxy_machine_has_no_model_list(self):
+    async def test_non_claude_code_machine_has_no_model_list(self):
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin"
+            "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin",
+            provider="ssh_proxy"
         )
         await db.ai_machine_activate("m1", "admin")
         data = await self._call()
         self.assertEqual(data["source"], "builtin")
-        self.assertIn("proxy", data["reason"])
+        self.assertIn("Claude Code proxy", data["reason"])
 
     async def test_rejected_key(self):
         await _add_anthropic_machine()

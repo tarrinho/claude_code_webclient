@@ -10,6 +10,7 @@ const STREAM_LABELS = {
   failed: 'Failed',
 };
 const ACTIVE_STATES = new Set(['connecting', 'thinking', 'retrying', 'responding']);
+let _queueManuallyHidden = false;
 
 // Focusing a text input opens the on-screen keyboard on a touch device, and on a
 // phone that keyboard covers most of the conversation. So opening a chat must
@@ -249,7 +250,6 @@ let _queueTooltipAnchor = null;
 // is kept alongside it: closing hides the panel, but new information (a
 // prompt added, or one going held) still has to break through the manual
 // hide rather than staying invisible until the user thinks to check again.
-let _queueManuallyHidden = false;
 let _queueSignature = '';
 
 function _queueTooltipEl() {
@@ -335,6 +335,9 @@ export function createConversationController(dependencies) {
   // conversation reported "Response stopped" for a turn that was still running
   // -- the abort looks identical from the catch block.
   let detaching = false;
+  // True from the moment send() accepts a prompt until its finally clears it.
+  // See send() for why the stream state cannot serve as this guard.
+  let _sending = false;
 
   // Only the newest MESSAGE_PAGE_SIZE messages load by default -- a chat with
   // thousands of turns used to fetch, send, and render every one of them on
@@ -912,6 +915,36 @@ export function createConversationController(dependencies) {
   // the ones whose predecessor failed: they are deliberately not sent on, so
   // they need somewhere to be seen and acted on rather than only counted.
 
+  /** Show the queue for the open conversation, and say so when there is none.
+   *
+   * The click used to be `if (state.currentChat?.id) refreshQueue(...)`, so
+   * pressing it with no conversation open did nothing at all and pressing it
+   * with an empty queue also did nothing -- indistinguishable from a broken
+   * button. Every press now ends in either an open panel or a sentence.
+   */
+  async function openQueuePanel() {
+    const chatId = state.currentChat?.id;
+    if (!chatId) {
+      showToast('Open a conversation to see its queued prompts');
+      return;
+    }
+    _queueManuallyHidden = false;
+    let rows = null;
+    try {
+      const response = await apiFetch(
+        `/api/chats/${encodeURIComponent(chatId)}/queue`);
+      if (!response.ok) throw new Error('Could not load the queue');
+      const payload = await response.json();
+      if (state.currentChat?.id !== chatId) return;
+      rows = payload.queue || [];
+      renderQueue(chatId, payload);
+    } catch (error) {
+      showToast(error.message, 'error');
+      return;
+    }
+    if (!rows.length) showToast('Nothing is queued in this conversation');
+  }
+
   async function refreshQueue(chatId) {
     if (!elements.queueBar) return;
     if (!chatId) return hideQueue(true);
@@ -943,26 +976,30 @@ export function createConversationController(dependencies) {
   // see it again after closing was to wait for the next state change.
   function updateQueueToggle(rows) {
     const held = rows.filter(row => row.state === 'held').length;
-    const hasQueued = rows.length > 0;
     const label = held
       ? `${held} of ${rows.length} queued prompts held — show queue`
       : `${rows.length} queued prompt${rows.length === 1 ? '' : 's'} — show queue`;
 
     // Composer-level toggle (text badge)
     if (elements.queueToggle) {
-      elements.queueToggle.hidden = !hasQueued;
-      elements.queueToggle.textContent = rows.length ? `Queue (${rows.length})` : '';
+      if (rows.length) elements.queueToggle.removeAttribute('hidden');
+      else elements.queueToggle.setAttribute('hidden', '');
+      elements.queueToggle.textContent = rows.length
+        ? `Queue (${rows.length})`
+        : 'Queue';
       elements.queueToggle.dataset.held = held ? 'yes' : 'no';
       elements.queueToggle.title = label;
       elements.queueToggle.setAttribute('aria-label', label);
     }
-    // Topbar button (icon + badge)
+    // Topbar button stays present so the queue entry point is always available.
+    // Its badge is empty when there are no queued prompts.
     if (elements.queueToggleTop) {
-      elements.queueToggleTop.hidden = !hasQueued;
-      elements.queueToggleTop.textContent = rows.length ? `${rows.length}` : '';
+      elements.queueToggleTop.textContent = rows.length ? `${rows.length}` : '📋';
       elements.queueToggleTop.dataset.held = held ? 'yes' : 'no';
-      elements.queueToggleTop.title = label;
-      elements.queueToggleTop.setAttribute('aria-label', label);
+      elements.queueToggleTop.title = rows.length ? label : 'Queued prompts';
+      elements.queueToggleTop.setAttribute(
+        'aria-label', rows.length ? label : 'Show queued prompts',
+      );
     }
   }
 
@@ -1174,6 +1211,13 @@ export function createConversationController(dependencies) {
     const chatId = state.currentChat?.id;
     const content = (forcedContent ?? elements.composerInput.value).trim();
     if (!chatId || !content) return;
+    // The stream state alone is not a lock: it only becomes active after the
+    // first await below, so Enter and a Send click landing in the same tick --
+    // or the voice bridge calling send() while a click is already in flight --
+    // both got past it and posted the same prompt twice. One submission per
+    // chat is in flight at a time; the flag is cleared in the finally.
+    if (_sending) return;
+    _sending = true;
 
     const model = elements.modelPicker?.value || null;
     lastAttempt = {chatId, content, model};
@@ -1300,6 +1344,7 @@ export function createConversationController(dependencies) {
         showToast(error.message, 'error');
       }
     } finally {
+      _sending = false;
       abortController = null;
       if (assistantRow && !fullText) assistantRow.remove();
       await refreshQueue(chatId);
@@ -1358,6 +1403,9 @@ export function createConversationController(dependencies) {
   });
   elements.sendButton.addEventListener('click', () => send());
   elements.retryButton.addEventListener('click', retry);
+  // Expose send() on window so voice-conversation.js can call it.
+  window.__webConsoleSend = send;
+
   elements.messages.addEventListener('scroll', () => {
     following = isNearBottom();
     elements.jumpButton.hidden = following;
@@ -1368,15 +1416,9 @@ export function createConversationController(dependencies) {
     _queueManuallyHidden = true;
     hideQueue();
   });
-  elements.queueToggle?.addEventListener('click', () => {
-    _queueManuallyHidden = false;
-    if (state.currentChat?.id) refreshQueue(state.currentChat.id);
-  });
+  elements.queueToggle?.addEventListener('click', () => openQueuePanel());
   // Topbar button: opens the same queue panel from anywhere.
-  elements.queueToggleTop?.addEventListener('click', () => {
-    _queueManuallyHidden = false;
-    if (state.currentChat?.id) refreshQueue(state.currentChat.id);
-  });
+  elements.queueToggleTop?.addEventListener('click', () => openQueuePanel());
 
   setStreamState('ready');
   return {selectChat, send, stop, retry, restoreDraft, persistDraft, refreshCurrent, destroy, setStreamState};

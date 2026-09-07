@@ -43,6 +43,13 @@ SESSION_ID = "b198eb69-a405-445a-96d5-1ea3e3f70b92"
 class SendTextTests(unittest.TestCase):
     """The payload that reaches the multiplexer."""
 
+    def setUp(self):
+        self.session_db_patch = patch.object(config, "SESSION_DB_PATH", "/dev/null")
+        self.session_db_patch.start()
+
+    def tearDown(self):
+        self.session_db_patch.stop()
+
     def _calls(self, target, text, returncode=0):
         seen = []
 

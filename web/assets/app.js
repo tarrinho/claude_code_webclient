@@ -7,7 +7,7 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=1';
 import {createChatListController} from './chat-list.js?v=3';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=5';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=6';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5';
@@ -182,6 +182,14 @@ function openChatDialog(mode, chat = state.currentChat, options = {}) {
   byId('chatTitleInput').required = !deleting;
   byId('chatTitleInput').value = editing && chat ? chat.title : '';
   byId('chatDescriptionInput').value = editing && chat ? (chat.description || '') : '';
+  // Voice-mode toggle: only visible when editing an existing chat.
+  // Create uses the separate "create from voice" path (dialogVoiceMode).
+  if (editing) {
+    byId('voiceModeLabel').hidden = false;
+    byId('chatVoiceModeToggle').checked = Boolean(chat?.voice_mode);
+  } else {
+    byId('voiceModeLabel').hidden = true;
+  }
   const save = byId('dialogSave');
   save.textContent = deleting ? 'Delete conversation' : editing ? 'Save changes' : 'Create conversation';
   save.classList.toggle('btn-danger', deleting);
@@ -195,6 +203,7 @@ function closeDialog() {
   dialog.classList.remove('open');
   dialogChat = null;
   dialogVoiceMode = false;
+  byId('chatVoiceModeToggle').checked = false;
   if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
@@ -415,9 +424,10 @@ async function saveChatDialog(event) {
       await selectChat(data.id);
     } else {
       const editedId = dialogChat.id;
+      const voiceMode = byId('chatVoiceModeToggle').checked;
       const response = await apiFetch(`/api/chats/${encodeURIComponent(editedId)}`, {
         method: 'PATCH', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({title, description}),
+        body: JSON.stringify({title, description, voice_mode: voiceMode}),
       });
       if (!response.ok) throw new Error('Could not save conversation');
       closeDialog();
@@ -531,6 +541,9 @@ function updateCurrentUi(chat) {
   // Only a chat linked to a CLI session has a transcript to refresh from.
   byId('syncBtn').hidden = !chat.session_id;
   byId('composerArea').style.display = 'block';
+  // Mic and live-conversation belong to voice chats only, and
+  // voice-conversation.js cannot hear that the open chat changed.
+  window.voiceConversation?.refreshControls?.();
   storageSet('wc_last_chat', chat.id);
   markSeen(chat.id, chat.updated_at);
   listController.setUnread(unreadChatIds(state.chats));

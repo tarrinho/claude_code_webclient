@@ -406,6 +406,12 @@ async def _test_anthropic_endpoint(machine: dict, api_key: str | None):
     model = (machine.get("model") or "").strip() or config.MODEL_NAME
     backend = {**machine, "api_key": api_key}
     env = backend_env.deltas(backend).apply_to(os.environ.copy())
+    # This probe is the spawn that proved the old TERM-only filter insufficient:
+    # run from a terminal-rooted process it inherits TERM, and its
+    # `_PROBE_PROMPT` ("Reply with exactly: ok") was recorded eleven times in
+    # PT_request.md as a request Pedro had typed. See
+    # `.claude/hooks/log_pt_request.py`.
+    env["WC_INTERNAL_SPAWN"] = "1"
     claude_bin = os.environ.get("WC_CLAUDE_PATH", "claude")
     cmd = [
         claude_bin, "-p", _PROBE_PROMPT,

@@ -62,7 +62,7 @@ def lift(path: Path, name: str) -> str:
 
 
 # Every kind shared.py's backend_kind() can actually return.
-KINDS = ["anthropic", "anthropic-compatible", "proxy", "ssh-proxy"]
+KINDS = ["through_claude_code", "direct", "ssh-proxy", "proxy"]
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>pending</title>
 <script>

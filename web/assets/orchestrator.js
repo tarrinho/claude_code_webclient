@@ -121,8 +121,8 @@ export async function openSupervisorPicker(chatId) {
 }
 
 export function openSupervisorPane() {
-  const pane = byId('supervisorPane');
-  const frame = byId('supervisorFrame');
+  const pane = byId('orchestratorPane');
+  const frame = byId('orchestratorFrame');
   if (!pane || !frame) {
     // No pane in this markup: fall back to the page rather than doing nothing.
     window.location.href = 'orchestrator.html';
@@ -146,11 +146,11 @@ export function openSupervisorPane() {
   }
   pane.hidden = false;
   pane.classList.add('open');
-  byId('supervisorPaneClose')?.focus();
+  byId('orchestratorPaneClose')?.focus();
 }
 
 export function closeSupervisorPane() {
-  const pane = byId('supervisorPane');
+  const pane = byId('orchestratorPane');
   if (!pane || pane.hidden) return;
   pane.hidden = true;
   pane.classList.remove('open');

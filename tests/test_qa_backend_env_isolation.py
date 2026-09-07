@@ -37,8 +37,8 @@ POLLUTED = {
     "ANTHROPIC_AUTH_TOKEN": "inherited-token-value",
 }
 
-DIRECT = {"provider": "anthropic", "base_url": "", "api_key": "key-from-record"}
-GATEWAY = {"provider": "anthropic", "base_url": "https://machine.invalid",
+DIRECT = {"provider": "claude_code", "base_url": "", "api_key": "key-from-record"}
+GATEWAY = {"provider": "claude_code", "base_url": "https://machine.invalid",
            "api_key": "key-from-record"}
 
 
@@ -73,7 +73,7 @@ class ProxyEnvTests(unittest.TestCase):
 
     def test_a_non_anthropic_backend_is_still_stripped(self):
         """The pre-existing guarantee, kept."""
-        env = self._env({"provider": "proxy"})
+        env = self._env({"provider": "claude_code"})
         for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
             self.assertNotIn(var, env)
 
@@ -93,7 +93,7 @@ class DirectRunnerTests(unittest.TestCase):
 
     def test_nothing_is_inherited(self):
         with mock.patch.dict(os.environ, POLLUTED, clear=False):
-            env = runner._build_env({"provider": "anthropic", "base_url": "",
+            env = runner._build_env({"provider": "claude_code", "base_url": "",
                                      "api_key": "key-from-record"})
         self.assertNotIn("ANTHROPIC_BASE_URL", env)
         self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)

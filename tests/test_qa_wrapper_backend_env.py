@@ -65,7 +65,7 @@ def make_db(path: Path, **machine) -> None:
                 "INSERT INTO ai_machines (name, provider, base_url, api_key, "
                 "model, active_models, active) VALUES (?,?,?,?,?,?,1)",
                 (machine.get("name", "Test Machine"),
-                 machine.get("provider", "anthropic"),
+                 machine.get("provider", "claude_code"),
                  machine.get("base_url", ""),
                  machine.get("api_key", ""),
                  machine.get("model", ""),

@@ -640,9 +640,9 @@ class ProxyBetaOptOutTests(unittest.TestCase):
         for backend in (
             None,
             {},
-            {"provider": "proxy"},
-            {"provider": "anthropic", "base_url": "https://h", "api_key": "k"},
-            {"provider": "anthropic", "base_url": "https://h"},
+            {"provider": "claude_code"},
+            {"provider": "claude_code", "base_url": "https://h", "api_key": "k"},
+            {"provider": "claude_code", "base_url": "https://h"},
         ):
             env = claude_proxy._backend_env(backend)
             self.assertEqual(env.get(self.VAR), "1", repr(backend))
@@ -650,7 +650,7 @@ class ProxyBetaOptOutTests(unittest.TestCase):
     def test_overrides_an_inherited_value(self):
         with patch.dict(os.environ, {self.VAR: "0"}):
             self.assertEqual(
-                claude_proxy._backend_env({"provider": "proxy"}).get(self.VAR), "1"
+                claude_proxy._backend_env({"provider": "claude_code"}).get(self.VAR), "1"
             )
 
     def test_does_not_disturb_the_inherited_environment(self):
@@ -664,9 +664,9 @@ class ProxyBetaOptOutTests(unittest.TestCase):
         # otherwise WC_PROXY_ENABLED=0 silently keeps betas on.
         for backend in (
             None,
-            {"provider": "proxy"},
-            {"provider": "anthropic", "base_url": "https://h", "api_key": "k"},
-            {"provider": "anthropic", "base_url": "https://h"},
+            {"provider": "claude_code"},
+            {"provider": "claude_code", "base_url": "https://h", "api_key": "k"},
+            {"provider": "claude_code", "base_url": "https://h"},
         ):
             direct = runner._build_env(backend).get(self.VAR)
             proxy = claude_proxy._backend_env(backend).get(self.VAR)

@@ -50,7 +50,7 @@ class RoutingMixin:
         self.tmp.cleanup()
 
     async def make_machine(self, mid, *, base_url, model, owner="admin",
-                           provider="anthropic", api_key=None):
+                           provider="claude_code", api_key=None):
         await db.ai_machine_create(mid, mid, "host.invalid", 443, api_key, model,
                                    base_url, None, owner, provider)
         return mid
@@ -192,10 +192,16 @@ class IntegrationQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         # And does not leak into the other conversation.
         self.assertEqual(await runner.get_default_model("chatA"), "claude-opus-5")
 
-    async def test_a_proxy_backend_yields_no_anthropic_env(self):
-        await self.make_machine("prox", base_url=None, model="m", provider="proxy")
-        await db.chat_set_machine("chatA", "admin", "prox")
-        self.assertEqual(await runner.get_backend("chatA"), {})
+    async def test_a_keyless_claude_code_backend_yields_no_url(self):
+        # A claude_code machine with no base_url returns {"provider": "claude_code"}
+        # from get_backend — the env builder strips ANTHROPIC_BASE_URL in OAuth mode.
+        await self.make_machine("keyless", base_url=None, model="m")
+        await db.chat_set_machine("chatA", "admin", "keyless")
+        backend = await runner.get_backend("chatA")
+        self.assertEqual(backend["provider"], "claude_code")
+        self.assertNotIn("base_url", backend)
+        env = runner._build_env(backend)
+        self.assertNotIn("ANTHROPIC_BASE_URL", env)
 
     async def test_pin_survives_a_fork(self):
         # chat_fork already copied ai_machine_id; now that it routes, a fork
@@ -313,7 +319,7 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await self.init_temp_db()
         await self.make_machine("anthropic-api", base_url=OFFICIAL,
-                                model="claude-opus-5")
+                                model="claude-opus-5", api_key="key1")
         await self.make_machine("ai-machine", base_url=GATEWAY,
                                 model="vllm/Qwen3.6-35B-A3B-NVFP4", api_key="k")
         await db.ai_machine_activate("anthropic-api", "admin")
@@ -326,6 +332,10 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         return runner._build_env(await runner.get_backend(chat_id)).get(
             "ANTHROPIC_BASE_URL"
         )
+
+    async def _backend_id(self, chat_id):
+        backend = await runner.get_backend(chat_id)
+        return backend.get("provider")
 
     async def test_i_can_move_a_conversation_from_anthropic_to_my_ai_machine(self):
         self.assertEqual(await self._endpoint("work"), OFFICIAL)
@@ -384,8 +394,8 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         await chat_routes._record_turn_usage("work", "admin", frame2)
         providers = {r["model"]: r["provider"]
                      for r in await db.usage_totals("admin", None)}
-        self.assertEqual(providers["claude-opus-5"], "anthropic")
-        self.assertEqual(providers["vllm/Q"], "anthropic-compatible")
+        self.assertEqual(providers["claude-opus-5"], "through_claude_code")
+        self.assertEqual(providers["vllm/Q"], "through_claude_code")
 
 
 if __name__ == "__main__":

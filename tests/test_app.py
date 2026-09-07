@@ -560,6 +560,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         self.root_patch.start()
         await db.init()
         await auth.bootstrap_admin()
+        await db.ai_machine_seed_anthropic("admin")
 
     async def asyncTearDown(self):
         await db.close()
@@ -580,7 +581,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(resp.body)
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(data["machines"]), 1)
-        self.assertEqual(data["machines"][0]["provider"], "anthropic")
+        self.assertEqual(data["machines"][0]["provider"], "claude_code")
 
     async def test_machine_create_and_list(self):
         request = self._make_request(
@@ -599,7 +600,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         list_data = json.loads(list_resp.body)
         self.assertEqual(len(list_data["machines"]), 2)
         created = next(m for m in list_data["machines"] if m["name"] == "GCP")
-        self.assertEqual(created["provider"], "proxy")
+        self.assertEqual(created["provider"], "claude_code")
         self.assertNotIn("api_key", created)
 
     async def test_machine_create_rejects_empty_name(self):

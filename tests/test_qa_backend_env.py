@@ -38,18 +38,18 @@ import claude_proxy
 import runner
 
 ANTHROPIC = {
-    "provider": "anthropic",
+    "provider": "claude_code",
     "base_url": "https://api.anthropic.com",
     "api_key": "test-key-not-real",
 }
 GATEWAY = {
-    "provider": "anthropic",
+    "provider": "claude_code",
     "base_url": "https://llm.example.invalid",
     "api_key": "test-key-not-real",
 }
-KEYLESS = {"provider": "anthropic", "base_url": "https://api.anthropic.com",
+KEYLESS = {"provider": "claude_code", "base_url": "https://api.anthropic.com",
            "api_key": ""}
-DEFAULT_URL = {"provider": "anthropic", "base_url": "", "api_key": "k"}
+DEFAULT_URL = {"provider": "claude_code", "base_url": "", "api_key": "k"}
 NON_ANTHROPIC = {"provider": "openai-compatible", "base_url": "https://x.invalid",
                  "api_key": "k"}
 
@@ -64,9 +64,9 @@ MATRIX = [
     ("anthropic gateway", GATEWAY),
     ("anthropic keyless", KEYLESS),
     ("anthropic default url", DEFAULT_URL),
-    ("whitespace url and key", {"provider": "anthropic", "base_url": "   ",
+    ("whitespace url and key", {"provider": "claude_code", "base_url": "   ",
                                 "api_key": "  "}),
-    ("non-string url", {"provider": "anthropic", "base_url": 123, "api_key": None}),
+    ("non-string url", {"provider": "claude_code", "base_url": 123, "api_key": None}),
 ]
 
 # A caller's environment that has every variable the rule cares about already
@@ -121,7 +121,7 @@ GOLDEN = {
     "anthropic keyless": {
         "ANTHROPIC_API_KEY": None,
         "ANTHROPIC_AUTH_TOKEN": None,
-        "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+        "ANTHROPIC_BASE_URL": None,
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_SIMPLE": None
     },
@@ -240,7 +240,7 @@ class TheRuleTests(unittest.TestCase):
 
     def test_whitespace_is_not_a_value(self):
         got = backend_env.deltas(
-            {"provider": "anthropic", "base_url": "   ", "api_key": "  "})
+            {"provider": "claude_code", "base_url": "   ", "api_key": "  "})
         self.assertIn("ANTHROPIC_BASE_URL", got.unset)
         self.assertIn("ANTHROPIC_API_KEY", got.unset)
 
@@ -274,7 +274,7 @@ class ShellRenderingTests(unittest.TestCase):
         Without escaping, a value containing a single quote closes the quoting
         and everything after it is executed by the shell.
         """
-        evil = {"provider": "anthropic",
+        evil = {"provider": "claude_code",
                 "base_url": f"https://x.invalid'; touch {PWNED_PROBE}; '",
                 "api_key": "k"}
         rendered = backend_env.deltas(evil).as_shell()
@@ -409,7 +409,7 @@ class TheRunnerUsesTheSameRuleTests(unittest.TestCase):
         failed authentication, instead of falling back to the host login the way
         the proxy path did with the same record.
         """
-        env = self._built({"provider": "anthropic", "base_url": "https://a.invalid",
+        env = self._built({"provider": "claude_code", "base_url": "https://a.invalid",
                            "api_key": "  "})
         self.assertIsNone(env.get("ANTHROPIC_API_KEY"))
         self.assertIsNone(
@@ -426,7 +426,7 @@ class TheRunnerUsesTheSameRuleTests(unittest.TestCase):
         default endpoint. SQLite is dynamically typed: a TEXT column returns
         whatever was written into it.
         """
-        env = self._built({"provider": "anthropic", "base_url": 123, "api_key": "k"})
+        env = self._built({"provider": "claude_code", "base_url": 123, "api_key": "k"})
         self.assertIsNone(env.get("ANTHROPIC_BASE_URL"))
         self.assertEqual(env.get("ANTHROPIC_API_KEY"), "k")
         self.assertIsNone(runner.normalise_base_url(123))
@@ -442,7 +442,7 @@ class TheRunnerUsesTheSameRuleTests(unittest.TestCase):
                     "ANTHROPIC_API_KEY", "CLAUDE_CODE_SIMPLE")
         for label, backend in MATRIX:
             if not (isinstance(backend, dict)
-                    and backend.get("provider") == "anthropic"):
+                    and backend.get("provider") == "claude_code"):
                 continue
             with self.subTest(case=label):
                 mine = self._built(backend)

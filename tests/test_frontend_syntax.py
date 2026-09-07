@@ -51,6 +51,14 @@ def _parse(source: str) -> None:
         src,
         flags=re.MULTILINE,
     )
+    # Re-export lists are module syntax too (for example `export { notifyResult
+    # };`) and must be removed before wrapping the source in a script function.
+    src = re.sub(
+        r"^\s*export\s*\{.*?\};\s*$",
+        "",
+        src,
+        flags=re.MULTILINE | re.DOTALL,
+    )
     quickjs.Context().eval("(function(){\n" + src + "\n})")
 
 

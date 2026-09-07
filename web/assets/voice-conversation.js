@@ -5,6 +5,8 @@
 // Kept in its own file since conversation.js (1363 lines) and app.js (2254
 // lines) are both already over this project's 300-line-per-file cap.
 
+import {apiFetch} from './api.js?v=1';
+
 const voiceMicBtn = document.getElementById('voiceMicBtn');
 const voiceLiveBtn = document.getElementById('voiceLiveBtn');
 const voiceStopBtn = document.getElementById('voiceStopBtn');
@@ -26,14 +28,14 @@ let speechBuffer = '';
 let voiceStatus = 'idle'; // idle | listening | thinking | speaking
 
 function updateVoiceButtonVisibility() {
+  const inTurn = voiceStatus !== 'idle';
   const active = Boolean(window.state?.currentChat?.voice_mode);
   voiceMicBtn.hidden = !active;
   voiceLiveBtn.hidden = !active;
-  const inTurn = voiceStatus !== 'idle';
   voiceMicBtn.disabled = inTurn;
   voiceLiveBtn.disabled = inTurn;
-  voiceStopBtn.hidden = !active || !inTurn;
-  voiceSendBtn.hidden = active && inTurn;
+  voiceStopBtn.hidden = !inTurn;
+  voiceSendBtn.hidden = inTurn;
 }
 
 function setVoiceStatus(next) {
@@ -87,7 +89,7 @@ function resetSilenceTimer() {
     accumulatedText = '';
     lastFinalChunk = '';
     setVoiceStatus('thinking');
-    send(finalText);
+    window.__webConsoleSend?.(finalText);
   }, SILENCE_TIMEOUT_MS);
 }
 
@@ -155,7 +157,32 @@ function startListening(handsFree) {
   catch { handsFreeMode = false; setVoiceStatus('idle'); }
 }
 
-voiceMicBtn.addEventListener('click', () => { if (voiceStatus === 'idle') startListening(false); });
+voiceMicBtn.addEventListener('click', async () => {
+  if (voiceStatus !== 'idle') return;
+  const chat = window.state?.currentChat;
+  if (!chat) return;
+  if (!chat.voice_mode) {
+    // Enable voice mode on the current chat so the server routes through
+    // stream_voice_turn. Goes through apiFetch, not a bare fetch(): that is
+    // what attaches the X-CSRF-Token header CsrfMiddleware requires on every
+    // mutating request, and fetch() alone does not reject on a 4xx/5xx, so a
+    // rejected PATCH would otherwise look identical to a saved one here.
+    try {
+      const response = await apiFetch(`/api/chats/${chat.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_mode: true }),
+      });
+      if (!response.ok) return; // server rejected — leave mic disabled briefly
+      // Refresh the chat in state so voice-mode UI reacts.
+      window.state.currentChat = { ...chat, voice_mode: true };
+      updateVoiceButtonVisibility();
+    } catch {
+      return; // network error — leave mic disabled briefly
+    }
+  }
+  startListening(false);
+});
 voiceLiveBtn.addEventListener('click', () => { if (voiceStatus === 'idle') startListening(true); });
 voiceStopBtn.addEventListener('click', () => performVoiceStop(true));
 
@@ -187,6 +214,15 @@ function flushSpeechBuffer(finalFlush) {
 }
 
 window.voiceConversation = {
+  /** Re-read the open conversation and show or hide the voice controls.
+   *
+   * Called by app.js when a conversation is opened. Visibility is a property
+   * of that conversation, not of the voice turn state this module otherwise
+   * reacts to, so nothing here would notice the change on its own.
+   */
+  refreshControls() {
+    updateVoiceButtonVisibility();
+  },
   onReplyChunk(text) {
     if (!window.state?.currentChat?.voice_mode) return;
     setVoiceStatus('speaking');

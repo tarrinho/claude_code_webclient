@@ -31,22 +31,35 @@ class VoiceConversationBrowserTests(_BrowserFixture):
         cls.voice_chat_id = f"vc-{__import__('secrets').token_hex(4)}"
         cls.regular_chat_id = f"rc-{__import__('secrets').token_hex(4)}"
         con = __import__('sqlite3').connect(str(__import__('pathlib').Path(cls.tmp.name) / "wc.db"))
+        # No backend pin. These tests are about which composer controls a voice
+        # conversation shows, and that follows voice_mode alone. Pinning an id
+        # here made the page fetch that machine's model list, which answered
+        # 404 for a machine that was never seeded and 400 for a seeded one
+        # whose hostname cannot resolve -- a console error unrelated to the
+        # buttons, in a suite that asserts the console stays clean.
+        # Every column carries its own placeholder. Writing owner_id as a
+        # literal NULL while still passing "admin" left more values than
+        # placeholders, so both inserts raised ProgrammingError in setUpClass
+        # and neither test ever ran -- the suite reported two errors rather
+        # than an opinion about the buttons.
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at,voice_mode,ai_machine_id,model) VALUES "
-            "(?,?,?,?,NULL,?,?,1,'voice-machine-test','azure_ai/gpt-5.6-luna')",
+            "created_at,updated_at,voice_mode,model) VALUES "
+            "(?,?,?,?,?,?,?,1,'azure_ai/gpt-5.6-luna')",
             (cls.voice_chat_id, "Voice Test Chat", None, "/tmp", "admin", stamp, stamp),
         )
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
             "created_at,updated_at,voice_mode) VALUES "
-            "(?,?,?,?,NULL,?,0)",
+            "(?,?,?,?,?,?,?,0)",
             (cls.regular_chat_id, "Regular Test Chat", None, "/tmp", "admin", stamp, stamp),
         )
         con.commit()
         con.close()
-        # Wait for sidebar poll to surface the rows before tests run.
-        cls.page.wait_for_timeout(8000)
+        # No wait here: _BrowserFixture opens the page in setUp, so there is no
+        # cls.page yet and touching one raised AttributeError before either
+        # test ran. Each test already waits up to 30s for its own row to be
+        # surfaced by the sidebar poll, which is the same wait done properly.
 
     @staticmethod
     def _now():

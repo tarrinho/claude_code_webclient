@@ -98,7 +98,7 @@ class OriginRecordedQA(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_a_web_turn_records_origin_web(self):
-        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic",
+        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code",
                               input_tokens=10, output_tokens=5)
         rows = await db.usage_by_origin("admin", days=None)
         self.assertEqual([r["origin"] for r in rows], ["web"])
@@ -142,7 +142,7 @@ class OriginRecordedQA(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsplit_tokens_are_reported_apart_from_the_rest(self):
         # Both origins present; only the gateway rows are flagged.
-        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic",
+        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code",
                               input_tokens=100, output_tokens=20)
         await db.usage_import("admin", "sess-agent", [
             {"model": "gw/model", "input_tokens": 90000, "output_tokens": 10,
@@ -241,7 +241,7 @@ class BackfillQA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows["web"]["unsplit_tokens"], 0)
 
     async def test_the_backfill_does_not_relabel_an_explicit_origin(self):
-        await db.usage_record("c1", "admin", "m", "anthropic",
+        await db.usage_record("c1", "admin", "m", "claude_code",
                               input_tokens=1, output_tokens=1, origin="web")
         await db._ensure_usage_columns()
         await db._ensure_usage_columns()   # idempotent
@@ -291,7 +291,7 @@ class UsageApiQA(unittest.IsolatedAsyncioTestCase):
         self.assertIn("whole conversation", note.lower())
 
     async def test_no_note_when_nothing_was_unsplit(self):
-        await db.usage_record("c1", "admin", "claude-opus-5", "anthropic",
+        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code",
                               input_tokens=5, output_tokens=1)
         payload = await self._get()
         web = next(r for r in payload["by_origin"] if r["origin"] == "web")

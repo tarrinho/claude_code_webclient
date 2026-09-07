@@ -156,13 +156,19 @@ async def handle_machine_create(request: Request):
         raise HTTPException(status_code=400, detail="Port must be 1-65535")
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
-    if not host:
+    # Host is required for direct backends. For claude_code it is derived from
+    # the default base_url above; for transport-routed machines it is irrelevant
+    # (the SSH tunnel carries all traffic) — skip validation when transport_id
+    # is present.
+    has_transport = bool(data.get("transport_id"))
+    if not host and not (provider == "claude_code" or has_transport):
         raise HTTPException(status_code=400, detail="Host is required")
-    if not _HOST_PATTERN_LOCAL.fullmatch(host):
+    if host and not _HOST_PATTERN_LOCAL.fullmatch(host):
         raise HTTPException(
             status_code=400, detail="Enter a valid hostname or IP address"
         )
-    _validate_host(host)
+    if host:
+        _validate_host(host)
     data.setdefault("port", port)
     default_model = (
         config.ANTHROPIC_MODEL if provider == "claude_code" else config.MODEL_NAME

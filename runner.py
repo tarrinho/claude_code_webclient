@@ -377,7 +377,12 @@ async def get_proxy_target(
         # can report "waiting_remote" to the SSE client.
         if status and status.get("local_port"):
             return "127.0.0.1", int(status["local_port"])
-        # No tunnel info yet; fall through to DB fallback.
+        _log.warning(
+            "transport_routed_backend_falling_back_to_local machine_id={} transport_id={} "
+            "(tunnel not up -- turn will run on this host against the backend's own "
+            "credentials instead of via the tunnel, which may be the wrong endpoint)",
+            machine["id"], machine.get("transport_id"),
+        )
 
     if provider != "proxy" or not machine.get("host"):
         return await get_proxy_host(), config.PROXY_PORT

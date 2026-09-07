@@ -224,11 +224,42 @@ async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
 
 
 async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
-    """Ensure the owner has an Anthropic API machine, and return its id."""
+    """Ensure the owner has a machine pointing at the official Anthropic API.
+
+    Keyed on the *host*, not on a provider literal, and that is the whole
+    point of this function's shape.
+
+    It used to look for ``provider = 'anthropic'`` and create rows with that
+    same value. Then the provider rename landed, and ``db.py``'s migration
+    runs unconditionally on every ``db.init()``:
+
+        UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'anthropic'
+
+    So every startup erased the exact marker this guard searched for, and the
+    next caller -- ``routes/machines.py`` seeds on every Backends panel load
+    -- found nothing and created another one. One new "Anthropic API" per
+    restart-then-open cycle. Seven had accumulated on this deployment before
+    anyone noticed, because they are all inactive with no declared models and
+    nothing routes through them.
+
+    ``provider='anthropic'`` was also no longer a value the API would accept:
+    ``_MACHINE_PROVIDERS`` is ``{"claude_code", "direct"}``, so the rename
+    missed this function on both sides -- the literal it searched for and the
+    literal it wrote.
+
+    The host is the durable identity here: it is what makes a machine *the
+    official Anthropic API* rather than a gateway, it survives a rename of the
+    provider vocabulary, and it survives the user renaming the machine itself.
+    A backend the owner has already pointed at api.anthropic.com satisfies
+    this function's promise whatever it is called, so that row is returned
+    rather than shadowed by a fresh duplicate.
+    """
     cur = await db.db_conn.execute(
-        "SELECT id FROM ai_machines WHERE owner_id = ? AND provider = 'anthropic' "
-        "LIMIT 1",
-        (owner_id,),
+        # Oldest first, so repeated calls are stable rather than depending on
+        # row order if duplicates already exist from before this fix.
+        "SELECT id FROM ai_machines WHERE owner_id = ? AND host = ? "
+        "ORDER BY created_at LIMIT 1",
+        (owner_id, db._ANTHROPIC_HOST),
     )
     row = await cur.fetchone()
     if row:
@@ -244,7 +275,7 @@ async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
         db.config.ANTHROPIC_BASE_URL,
         "Official Anthropic API — Claude Code's default backend.",
         owner_id,
-        provider="anthropic",
+        provider="claude_code",
     )
     return machine_id
 

@@ -482,13 +482,20 @@ async def handle_machine_test(request: Request, machine_id: str):
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
     provider = machine.get("provider")
-    if provider == "ssh_proxy":
-        # An ssh_proxy has no endpoint of its own to open a socket to: what
-        # "reachable" means for it is whether the tunnel is up and the proxy
-        # on the far side is answering. That lives in routes/machines_tunnel,
-        # which used to register this same path on its own router and, being
-        # included first, answered every machine test for every provider --
-        # see ssh_proxy_test_result for what that cost.
+    if machine.get("transport_id"):
+        # A transport-routed machine has no endpoint of its own to open a
+        # socket to: what "reachable" means for it is whether the tunnel is
+        # up and the proxy on the far side is answering. That lives in
+        # routes/machines_tunnel, which used to register this same path on
+        # its own router and, being included first, answered every machine
+        # test for every provider -- see ssh_proxy_test_result for what that
+        # cost. This used to key on provider == "ssh_proxy", a value no
+        # machine can have anymore since ssh_host/ssh_user/ssh_key_path
+        # moved off ai_machines onto ssh_transports -- so this branch never
+        # matched, and a transport-routed backend's Test button fell through
+        # to the local reachability probe below, displaying that probe's
+        # result (of this host reaching the gateway directly) as if it were
+        # tunnel status.
         from routes.machines_tunnel import ssh_proxy_test_result
 
         return JSONResponse(await ssh_proxy_test_result(machine_id, provider))

@@ -46,7 +46,7 @@ def _user(req: Request) -> str:
 
 @router.post("/api/tunnel/start")
 async def tunnel_start(req: Request):
-    """Start tunnel for a ssh_proxy machine."""
+    """Start tunnel for a transport-routed machine."""
     import tunnel_manager
 
     user = _user(req)
@@ -59,7 +59,7 @@ async def tunnel_start(req: Request):
     if not machine:
         raise HTTPException(status_code=404, detail="machine not found")
     if not machine.get("transport_id"):
-        raise HTTPException(status_code=400, detail="not an ssh_proxy machine")
+        raise HTTPException(status_code=400, detail="not a transport-routed machine")
 
     # Create tunnel DB row if missing.
     try:
@@ -87,7 +87,7 @@ async def tunnel_start(req: Request):
 
 @router.post("/api/tunnel/stop")
 async def tunnel_stop(req: Request):
-    """Stop tunnel for a ssh_proxy machine."""
+    """Stop tunnel for a transport-routed machine."""
     import tunnel_manager
 
     user = _user(req)
@@ -100,7 +100,7 @@ async def tunnel_stop(req: Request):
     if not machine:
         raise HTTPException(status_code=404, detail="machine not found")
     if not machine.get("transport_id"):
-        raise HTTPException(status_code=400, detail="not an ssh_proxy machine")
+        raise HTTPException(status_code=400, detail="not a transport-routed machine")
 
     await tunnel_manager.queue_command(machine_id, "STOP_TUNNEL")
     return {"ok": True, "status": "disconnecting"}
@@ -108,7 +108,7 @@ async def tunnel_stop(req: Request):
 
 @router.post("/api/tunnel/toggle")
 async def tunnel_toggle(req: Request):
-    """Toggle tunnel on/off for a ssh_proxy machine."""
+    """Toggle tunnel on/off for a transport-routed machine."""
     import tunnel_manager
 
     user = _user(req)
@@ -121,7 +121,7 @@ async def tunnel_toggle(req: Request):
     if not machine:
         raise HTTPException(status_code=404, detail="machine not found")
     if not machine.get("transport_id"):
-        raise HTTPException(status_code=400, detail="not an ssh_proxy machine")
+        raise HTTPException(status_code=400, detail="not a transport-routed machine")
 
     status = await tunnel_manager.tunnel_status(machine_id)
     if status and status.get("tunnel_up"):
@@ -134,7 +134,7 @@ async def tunnel_toggle(req: Request):
 
 @router.get("/api/tunnel/status")
 async def tunnel_status_endpoint(req: Request):
-    """Return tunnel status for all ssh_proxy machines."""
+    """Return tunnel status for all transport-routed machines."""
     user = _user(req)
     import tunnel_manager
 
@@ -159,13 +159,13 @@ async def tunnel_status_endpoint(req: Request):
 
 @router.get("/api/tunnel/status/{machine_id}")
 async def tunnel_machine_status(machine_id: str, req: Request):
-    """Return tunnel status for one ssh_proxy machine."""
+    """Return tunnel status for one transport-routed machine."""
     user = _user(req)
     import tunnel_manager
 
     machine = await db.ai_machine_get(machine_id, user)
     if not machine or not machine.get("transport_id"):
-        raise HTTPException(status_code=404, detail="ssh_proxy machine not found")
+        raise HTTPException(status_code=404, detail="transport-routed machine not found")
 
     status = await tunnel_manager.tunnel_status(machine_id)
     if not status:
@@ -225,7 +225,8 @@ async def init_probe_remote(req: Request):
 # ── Machine test extension ──────────────────────────────────────────────
 
 async def ssh_proxy_test_result(machine_id: str, provider: str) -> dict:
-    """The tunnel half of POST /api/machines/{id}/test, for an ssh_proxy.
+    """The tunnel half of POST /api/machines/{id}/test, for a transport-routed
+    machine.
 
     Deliberately not a route. It used to carry its own
     ``@router.post("/api/machines/{machine_id}/test")``, which is the same
@@ -235,7 +236,8 @@ async def ssh_proxy_test_result(machine_id: str, provider: str) -> dict:
     startup -- it silently won, and routes.machines.handle_machine_test was
     unreachable code that still looked live in its own module.
 
-    What that cost: the Test button never tested anything except an ssh_proxy.
+    What that cost: the Test button never tested anything except a
+    transport-routed machine.
     Every other provider fell through to a branch that returned
     ``{"status": "configured"}`` -- a description of the database row, not a
     probe of the endpoint -- with no ``ok`` key at all. The frontend keys on

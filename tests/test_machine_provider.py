@@ -593,6 +593,49 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         _json.loads(response.body)  # also: still valid JSON
 
 
+class MachineTestButtonTransportRoutingTests(unittest.IsolatedAsyncioTestCase):
+    """POST /api/machines/{id}/test must route a transport-routed backend to
+    the tunnel-result branch, not the local reachability probe.
+
+    Regression: this branch used to key on provider == "ssh_proxy", a value
+    no machine can have anymore (ssh_host/ssh_user/ssh_key_path moved off
+    ai_machines onto ssh_transports). Because the branch never matched, a
+    transport-routed backend's Test button fell through to a local probe of
+    the gateway from this host and reported *that* result as if it were
+    tunnel status -- e.g. "SSH tunnel connected" while the tunnel was
+    actually down. Fixed by keying on machine.get("transport_id") instead.
+    """
+
+    async def asyncSetUp(self):
+        await _setup_db(self)
+        await db.ssh_transport_create(
+            "t1", "Test Transport", "admin",
+            "host.invalid", "kali", "/tmp/does-not-exist",
+        )
+        await db.ai_machine_create(
+            "m-transport", "Via Transport", "", 0, None,
+            "claude-sonnet-5", None, None, "admin",
+            provider="claude_code", transport_id="t1",
+        )
+
+    async def asyncTearDown(self):
+        await _teardown_db(self)
+
+    async def test_transport_routed_machine_reaches_tunnel_result_branch(self):
+        import json as _json
+
+        response = await machine_routes.handle_machine_test(
+            _make_request(), "m-transport"
+        )
+        body = _json.loads(response.body)
+        # ssh_proxy_test_result's own shape (not the local-probe shape,
+        # which reports {"ok": ..., "status": "reachable"/"unreachable"}
+        # with no tunnel_up/proxy_ok keys at all).
+        self.assertIn("tunnel_up", body)
+        self.assertIn("proxy_ok", body)
+        self.assertEqual(body["status"], "no_tunnel")
+
+
 class GetBackendTests(unittest.IsolatedAsyncioTestCase):
     """runner.get_backend resolves the chat owner's active machine."""
 

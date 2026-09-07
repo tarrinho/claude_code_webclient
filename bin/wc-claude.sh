@@ -101,6 +101,27 @@ resolve_claude_bin() {
 }
 resolve_claude_bin
 
+# ── Memory admission ───────────────────────────────────────────────────
+# Interactive agents are the dominant consumer on this host: measured
+# 2026-09-08, seven of them held 1884 MB of the 2520 MB that claude processes
+# were using, while console-spawned turns held 3 MB. config.MAX_CONCURRENT and
+# claude_proxy's own limit gate only that 3 MB, which is why neither has ever
+# prevented the box from going into swap and taking the webconsole with it.
+#
+# Checked once here, at the top, and deliberately NOT inside the hot-swap loop
+# further down: that loop relaunches a session that is already running and
+# already holds its memory, so refusing there would kill a live session to save
+# memory it was not about to allocate.
+#
+# See docs/superpowers/specs/2026-09-08-resource-guard-design.md. Refusal is
+# hard -- no prompt, no y/N -- and WC_RESOURCE_GUARD=off is the documented,
+# logged way past it.
+if ! guard_output="$(python3 -m resource_guard --cost-mb "${WC_AGENT_COST_MB:-320}" 2>&1)"; then
+    echo "wc-claude: refused to start — not enough memory on this host." >&2
+    printf '%s\n' "$guard_output" >&2
+    exit 75  # EX_TEMPFAIL: a retry later may well succeed
+fi
+
 # --wc-profile <name> pins this session to one backend for its whole life,
 # instead of following whatever the console is currently routing to. Consumed
 # here and removed from the arguments, because `claude` does not know the flag.

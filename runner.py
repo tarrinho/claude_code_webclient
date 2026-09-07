@@ -522,6 +522,39 @@ def _get_sem() -> asyncio.Semaphore:
     return _sem
 
 
+def memory_refusal() -> str | None:
+    """Why this host cannot take another turn right now, or None.
+
+    MAX_CONCURRENT bounds how many turns run at once; it says nothing about
+    whether the host has memory for even one. Measured 2026-09-08, the console's
+    own turns were 3 MB of the 2520 MB that claude processes held -- so this
+    limit has never been the one that mattered, and a turn admitted onto a
+    swapping box is how the server itself gets OOM-killed.
+
+    Cheap enough for the admission path: two files read, no scan. The /proc walk
+    that names *who* is holding memory happens only when a refusal is being
+    explained.
+
+    Returns a string so the caller can put it straight into the event stream,
+    the way a full-slots wait already reports itself (routes/chats.py). None
+    means "no objection", including when the guard could not measure -- it fails
+    open, deliberately, so a monitoring fault cannot stop every turn at once.
+
+    See docs/superpowers/specs/2026-09-08-resource-guard-design.md.
+    """
+    try:
+        import resource_guard
+
+        verdict = resource_guard.check()
+        if verdict.ok:
+            return None
+        return resource_guard.explain(verdict)
+    except Exception:
+        # Never let the guard itself be the reason a turn cannot run.
+        _log.exception("resource_guard_failed — admitting the turn anyway")
+        return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Proxy mode — TCP connection to host-side proxy.py
 # ──────────────────────────────────────────────────────────────────────────────

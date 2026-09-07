@@ -31,6 +31,29 @@ cd "$(dirname "$0")/.." || exit 1
 
 PY=.venv/bin/python
 OUT="${WC_SUITE_OUT:-/tmp/wc-suite-$$}"
+
+# ── Memory admission ───────────────────────────────────────────────────
+# This runner exists because the whole suite in one process gets OOM-killed on
+# this box (see the header above). Chunking bounds what *this* run costs; it
+# says nothing about whether the host had room for the run in the first place.
+#
+# On 2026-09-07 it did not: a suite run started alongside seven interactive
+# agents and a live server, and the webconsole was SIGKILLed at a 720 MB peak.
+# That is the incident this check exists to refuse, and it is the reason the
+# guard was built with a caller here rather than only in the console.
+#
+# Declared cost is higher than an agent's: a chunk running chromium is the
+# heaviest tenant in the suite, which is why browser files already run one at
+# a time below.
+#
+# See docs/superpowers/specs/2026-09-08-resource-guard-design.md.
+if ! guard_output="$($PY -m resource_guard --cost-mb "${WC_SUITE_COST_MB:-700}" 2>&1)"; then
+    echo "run-suite-chunked: refusing to start — not enough memory on this host." >&2
+    printf '%s\n' "$guard_output" >&2
+    echo "A suite run here is what took the server down on 2026-09-07." >&2
+    exit 75  # EX_TEMPFAIL: try again when the box is quieter
+fi
+
 mkdir -p "$OUT"
 
 # The file list comes from PYTEST'S OWN COLLECTION, never from a glob here.

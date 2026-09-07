@@ -996,6 +996,20 @@ async def _start_turn(
                 "error": f"Waiting for a free slot — {config.MAX_CONCURRENT} "
                          f"turns are already running.",
             }
+        # Memory is the other reason a turn cannot start, and unlike a busy
+        # slot it does not clear on its own. Reported the same way rather than
+        # raised: the conversation stays intact and the user is told what is
+        # holding the memory, which is a thing they can act on.
+        refusal = runner.memory_refusal()
+        if refusal:
+            _log.warning("turn_refused_low_memory chat_id=%s", chat_id)
+            yield {
+                "type": "status",
+                "status": "low_memory",
+                "error": refusal,
+            }
+            yield {"type": "done"}
+            return
         # Inside the task, not before it: a transcript repair on a large
         # conversation would otherwise delay the HTTP response.
         await _prepare_transcript_for_backend(chat)

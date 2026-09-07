@@ -99,6 +99,13 @@ window.addEventListener("load", function () {
     out[id] = [Math.round(r.x), Math.round(r.y),
                Math.round(r.width), Math.round(r.height)].join(",");
   });
+  // The menu's positioning anchor, measured by class because it has no id:
+  // .auto-answer-menu is position:absolute inside .auto-answer-group's
+  // position:relative, so the group -- not the info badge -- is what its
+  // top/right resolve against. See the alignment tests below.
+  var g = document.querySelector(".auto-answer-group").getBoundingClientRect();
+  out.autoAnswerGroup = [Math.round(g.x), Math.round(g.y),
+                         Math.round(g.width), Math.round(g.height)].join(",");
   out.viewport = window.innerWidth + "," + window.innerHeight;
   document.title = JSON.stringify(out);
 });
@@ -141,14 +148,19 @@ class AutoAnswerMenuGeometryTests(unittest.TestCase):
         """The regression itself. Before the fix this menu rendered near the
         foot of the viewport; now it sits a few pixels below the button.
         """
-        _ix, iy, _iw, ih = box(self.geo, "autoAnswerInfo")
+        # Against the group, for the same reason as the alignment test below:
+        # the menu is `top:calc(100% + 6px)` of the group, while the info badge
+        # is a 14px corner badge pulled up to `top:-6px`, so its bottom edge
+        # sits well above the group's and measuring from it inflated the gap
+        # by the badge's own offset rather than by any drift.
+        _gx, gy, _gw, gh = box(self.geo, "autoAnswerGroup")
         _mx, my, _mw, _mh = box(self.geo, "autoAnswerMenu")
-        info_bottom = iy + ih
-        self.assertGreater(my, info_bottom,
+        anchor_bottom = gy + gh
+        self.assertGreater(my, anchor_bottom,
                            "the menu must open below the button, not overlap it")
         self.assertLess(
-            my - info_bottom, 20,
-            f"menu top is {my - info_bottom}px below the button's bottom "
+            my - anchor_bottom, 20,
+            f"menu top is {my - anchor_bottom}px below the anchor's bottom "
             f"edge -- more than a small gap means it has drifted away from "
             f"the button again, the way it did when it had no positioned "
             f"ancestor and rendered near the bottom of the page",
@@ -170,12 +182,23 @@ class AutoAnswerMenuGeometryTests(unittest.TestCase):
     def test_the_menu_aligns_with_the_button_it_belongs_to(self):
         """Right edges matching is what "next to the button" means here --
         the popover is right-aligned under the control that opens it.
+
+        Measured against `.auto-answer-group`, not `#autoAnswerInfo`. The menu
+        is `right:0` inside the group, so the group is what it aligns to. The
+        info badge is deliberately `right:-6px` -- a corner badge overhanging
+        the robot icon, asserted by
+        `test_the_info_badge_sits_on_the_icons_top_right_corner` in
+        test_frontend_browser.py -- so requiring the menu to match the *badge*
+        contradicts that on purpose and failed by exactly the 6px of overhang.
+        The badge moving to the corner is the newer, tested intent; this
+        assertion's original premise predates it.
         """
-        ix, _iy, iw, _ih = box(self.geo, "autoAnswerInfo")
+        gx, _gy, gw, _gh = box(self.geo, "autoAnswerGroup")
         mx, _my, mw, _mh = box(self.geo, "autoAnswerMenu")
-        self.assertAlmostEqual(ix + iw, mx + mw, delta=2,
+        self.assertAlmostEqual(gx + gw, mx + mw, delta=2,
                                msg="the menu's right edge must line up with "
-                                   "the info button's right edge")
+                                   "the right edge of the group it is "
+                                   "anchored to")
 
     def test_the_menu_does_not_land_past_run_state(self):
         """Guards the specific wrong anchor: .strip-right's own right edge is

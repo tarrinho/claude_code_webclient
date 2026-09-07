@@ -152,7 +152,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_returns_models_from_the_endpoint(self):
         await _add_anthropic_machine()
-        data = await self._call(lambda url, key: (200, GATEWAY_BODY))
+        data = await self._call(lambda url, key, **_: (200, GATEWAY_BODY))
         self.assertEqual(data["source"], "endpoint")
         self.assertIsNone(data["reason"])
         self.assertEqual(
@@ -164,7 +164,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _add_anthropic_machine()
         seen = {}
 
-        def _probe(url, key):
+        def _probe(url, key, **_):
             seen["url"] = url
             seen["key"] = key
             return 200, ANTHROPIC_BODY
@@ -175,7 +175,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_endpoint_reported_back(self):
         await _add_anthropic_machine()
-        data = await self._call(lambda url, key: (200, ANTHROPIC_BODY))
+        data = await self._call(lambda url, key, **_: (200, ANTHROPIC_BODY))
         self.assertEqual(data["endpoint"], "https://gateway.example.com")
 
     async def test_result_is_cached(self):
@@ -183,7 +183,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _add_anthropic_machine()
         calls = []
 
-        def _probe(url, key):
+        def _probe(url, key, **_):
             calls.append(url)
             return 200, ANTHROPIC_BODY
 
@@ -195,7 +195,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
         await _add_anthropic_machine(base_url="https://gateway.example.com/v1")
         seen = {}
 
-        def _probe(url, key):
+        def _probe(url, key, **_):
             seen["url"] = url
             return 200, ANTHROPIC_BODY
 
@@ -205,7 +205,7 @@ class ModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_key_never_appears_in_the_response(self):
         await _add_anthropic_machine()
-        with patch.object(machine_routes, "_probe_anthropic", lambda url, key: (200, ANTHROPIC_BODY)):
+        with patch.object(machine_routes, "_probe_anthropic", lambda url, key, **_: (200, ANTHROPIC_BODY)):
             response = await machine_routes.handle_models_list(_make_request())
         self.assertNotIn(b"sk-test", response.body)
 
@@ -251,7 +251,7 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
             [m["id"] for m in data["models"]], list(config.KNOWN_MODELS)
         )
 
-    async def test_non_claude_code_machine_has_no_model_list(self):
+    async def test_a_retired_provider_falls_back_instead_of_crashing(self):
         await db.ai_machine_create(
             "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin",
             provider="ssh_proxy"
@@ -259,11 +259,17 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
         await db.ai_machine_activate("m1", "admin")
         data = await self._call()
         self.assertEqual(data["source"], "builtin")
-        self.assertIn("Claude Code proxy", data["reason"])
+        # 'ssh_proxy' is a retired provider: the transport split replaced it, so
+        # it is no longer in _MACHINE_PROVIDERS and now takes the unknown-provider
+        # branch rather than the old "this is a Claude Code proxy" one. Kept
+        # seeding that exact retired value on purpose -- a production row written
+        # before the migration is precisely what must not crash the models
+        # endpoint, and this is the only test covering that branch.
+        self.assertIn("Unknown machine provider", data["reason"])
 
     async def test_rejected_key(self):
         await _add_anthropic_machine()
-        data = await self._call(lambda url, key: (401, b""))
+        data = await self._call(lambda url, key, **_: (401, b""))
         self.assertEqual(data["source"], "builtin")
         self.assertIn("rejected the API key", data["reason"])
 
@@ -274,20 +280,20 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
         # reason stays None rather than blaming the backend for the probe's
         # limitation on a backend that serves turns fine.
         await _add_anthropic_machine(key=None)
-        data = await self._call(lambda url, key: (403, b""))
+        data = await self._call(lambda url, key, **_: (403, b""))
         self.assertEqual(data["source"], "builtin")
         self.assertIsNone(data["reason"])
         self.assertTrue(data["models"], "built-in ids must still be offered")
 
     async def test_unexpected_status_named(self):
         await _add_anthropic_machine()
-        data = await self._call(lambda url, key: (503, b""))
+        data = await self._call(lambda url, key, **_: (503, b""))
         self.assertIn("503", data["reason"])
 
     async def test_unreachable(self):
         await _add_anthropic_machine()
 
-        def _boom(url, key):
+        def _boom(url, key, **_):
             raise OSError("no route to host")
 
         data = await self._call(_boom)
@@ -295,20 +301,20 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unparseable_body(self):
         await _add_anthropic_machine()
-        data = await self._call(lambda url, key: (200, b"<html>nope</html>"))
+        data = await self._call(lambda url, key, **_: (200, b"<html>nope</html>"))
         self.assertIn("unreadable", data["reason"])
 
     async def test_empty_list_is_not_presented_as_the_truth(self):
         await _add_anthropic_machine()
-        data = await self._call(lambda url, key: (200, b'{"data": []}'))
+        data = await self._call(lambda url, key, **_: (200, b'{"data": []}'))
         self.assertEqual(data["source"], "builtin")
         self.assertIn("listed no models", data["reason"])
 
     async def test_failure_is_not_cached(self):
         """A transient error must not freeze the fallback for a minute."""
         await _add_anthropic_machine()
-        await self._call(lambda url, key: (503, b""))
-        data = await self._call(lambda url, key: (200, ANTHROPIC_BODY))
+        await self._call(lambda url, key, **_: (503, b""))
+        data = await self._call(lambda url, key, **_: (200, ANTHROPIC_BODY))
         self.assertEqual(data["source"], "endpoint")
 
 

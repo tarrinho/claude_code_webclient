@@ -161,7 +161,7 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
         await _setup(self)
         self._resolve = patch.object(machine_routes, "_resolve_host", return_value="93.184.216.34")
         self._resolve.start()
-        self._probe = patch.object(machine_routes, "_probe_anthropic", lambda url, key: (200, GATEWAY_BODY)
+        self._probe = patch.object(machine_routes, "_probe_anthropic", lambda url, key, **_: (200, GATEWAY_BODY)
         )
         self._probe.start()
 

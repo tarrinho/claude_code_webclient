@@ -253,11 +253,31 @@ def members_section() -> str:
     # Only the fields the lifted sections actually touch. A wholesale copy of
     # the real state module would let a test pass on a field the page never
     # populates.
+    # `el` is dom.js's element registry, stubbed for the same reason and on the
+    # same terms as `state`: only what the lifted code touches. loadMembers
+    # calls updateGateMarker (lifted below, real), which reads el.topbarGate and
+    # returns immediately when it is absent -- so a null entry is the whole
+    # contract this harness needs, and the gate badge is no part of what these
+    # tests assert.
     stub = ("const state = { csrfToken: '', supervisors: [], activeSupervisorId: null,"
-            " activeSupervisor: null, tasks: [], chatMessages: [], eventLog: [] };\n")
+            " activeSupervisor: null, tasks: [], chatMessages: [], eventLog: [] };\n"
+            "const el = { topbarGate: null, pauseResumeBtn: null };\n")
     lifted = (
         _lift(source, "function getCsrf()", "// ── API helpers")
         + _lift(source, "async function apiFetch(", "// Every timestamp on this page")
+        # loadMembers calls this straight after assigning state.members, and
+        # OUTSIDE its own try/catch, so with the import line stripped it threw
+        # ReferenceError, the await in submitMembers rejected, and the
+        # membersNotice() call on the line after it never ran. The three tests
+        # that assert on the notice failed reporting `toast: None` while the
+        # product was fine -- the harness had broken the page, not the page.
+        # Lifted rather than faked, per this function's own rule: stub the
+        # boundary, never a collaborator of the code under test.
+        # End marker is dom.js's own first line: updateGateMarker is the last
+        # function in banners.js, so nothing inside that file follows it, and
+        # the concatenation puts dom.js next (candidates are sorted).
+        + _lift(source, "function updateGateMarker(",
+                "// orchestrator/dom.js")
         + _lift(source, SECTION_START, SECTION_END)
     )
     # Module syntax a classic <script> rejects outright: `import` lines, and the
@@ -372,6 +392,18 @@ class PickerTests(unittest.TestCase):
           for (let i = 0; i < 200 && !gone(); i++) await sleep(25);
           // Then let the panel refresh that follows the close actually land.
           for (let i = 0; i < 80 && posted !== null && refreshed === refreshedBefore; i++) {{
+            await sleep(25);
+          }}
+          // And then the notice, which is the LAST thing submitMembers does:
+          // `closeMembersPicker(); await loadMembers(...); membersNotice(...)`.
+          // The refresh loop above exits the moment `refreshed` increments,
+          // which happens inside loadMembers -- a microtask before the await
+          // resolves and the notice is raised. Reading the title there caught
+          // the toast as null while the product was behaving correctly.
+          // Bounded and conditional on a post having gone out, so the tests
+          // that assert no notice do not pay two seconds for the privilege.
+          for (let i = 0; i < 80 && posted !== null && lastToast === null
+                          && !document.querySelector('.members-note'); i++) {{
             await sleep(25);
           }}
           const help = dialog ? dialog.querySelector('p') : null;

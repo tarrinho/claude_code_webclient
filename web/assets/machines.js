@@ -652,12 +652,11 @@ export async function _saveMachine() {
       // Blank means "the default endpoint"; the server fills it in.
       if (base_url) body.base_url = base_url;
       if (api_key !== null) body.api_key = api_key;
-    } else if (provider === 'direct') {
+    } else {
+      // provider === 'direct' — host is required, already validated above.
       body.host = host;
       if (base_url) body.base_url = base_url;
       if (api_key !== null) body.api_key = api_key;
-    } else {
-      body.host = host;
     }
     if (_machineEditing) {
       resp = await apiFetch(`/api/machines/${encodeURIComponent(_machineEditing)}`, {

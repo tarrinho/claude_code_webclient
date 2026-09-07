@@ -86,7 +86,7 @@ async def ai_machine_create(
     base_url: str | None,
     description: str | None,
     owner_id: str,
-    provider: str = "proxy",
+    provider: str = "claude_code",
     transport_id: str | None = None,
 ) -> str:
     now = db._now()

@@ -20,6 +20,18 @@ churn.
 
 ---
 
+## [0.15.2] — 2026-09-06
+
+### Changed
+
+- **Provider/transport split** — separated the monolithic provider dropdown into two independent dimensions: **Provider** (`Thru claude code` / `Direct`) and **Transport** (`Direct` / `SSH proxy`). Each provider can now use either transport, giving four real configurations instead of three conflated options.
+
+## [0.15.0] — 2026-09-06
+
+### Changed
+
+- **Version consistency** — advanced the release identifier to `WebConsole_0.15.0` and aligned the dashboard, orchestrator page, architecture metadata, and version test with the new release.
+
 ## [0.13.0] — 2026-09-06
 
 ### Added

@@ -1,7 +1,7 @@
 // ── Orchestrator ────────────────────────────────────────────────────────────────
 
 import {apiFetch} from './api.js?v=1';
-import {state, showToast} from './app.js?v=39';
+import {state, showToast} from './app.js?v=42';
 
 // This file is loaded two ways at once: as its own <script type="module"> in
 // index.html, and via `import` from app.js for the pane/picker functions it

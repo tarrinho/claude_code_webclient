@@ -255,6 +255,14 @@ export function createChatListController(dependencies) {
       if (activeTurnIds.has(chat.id)) {
         const dot = document.createElement('span');
         dot.className = 'chat-running';
+        // render() rebuilds every row from scratch each poll (replaceChildren
+        // above), so a fresh dot always starts its CSS animation at 0% --
+        // opacity:1 -- regardless of where the "true" continuous pulse would
+        // be by wall-clock time. A negative delay keyed to Date.now() puts it
+        // at the right phase immediately, so a rebuild is invisible instead
+        // of reading as a periodic flash. Matches chat-pulse's 1.2s duration
+        // (styles.css); update both together if that ever changes.
+        dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
         dot.setAttribute('aria-label', 'Response in progress');
         dot.title = 'Response in progress';
         title.prepend(dot);

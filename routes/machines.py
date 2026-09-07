@@ -328,15 +328,24 @@ async def handle_machine_delete(request: Request, machine_id: str):
     return JSONResponse({"ok": True})
 
 
-def _probe_anthropic(url: str, api_key: str | None) -> tuple[int, bytes]:
+def _probe_anthropic(url: str, api_key: str | None, *, provider: str = "claude_code") -> tuple[int, bytes]:
     """GET *url* and return (status, body). Runs in a worker thread.
 
     The body is capped: it comes from a user-configured endpoint, so an
     unbounded read would let a hostile or broken one exhaust memory.
+
+    For "claude_code" / "anthropic" providers the endpoint expects
+    *anthropic-version* + *x-api-key* headers.  For "direct" (OpenAI-compatible)
+    endpoints the key is sent as *Authorization: Bearer*.
     """
-    headers = {"anthropic-version": _ANTHROPIC_API_VERSION}
-    if api_key:
-        headers["x-api-key"] = api_key
+    headers: dict[str, str] = {}
+    if provider == "direct":
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        headers["anthropic-version"] = _ANTHROPIC_API_VERSION
+        if api_key:
+            headers["x-api-key"] = api_key
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:  # nosec B310: scheme checked
@@ -638,9 +647,9 @@ async def handle_models_list(request: Request):
         machine = await db.ai_machine_active(session["user"])
     if not machine:
         return _builtin_models("No machine is active.")
-    if machine.get("provider") != "claude_code":
+    if machine.get("provider") not in _MACHINE_PROVIDERS:
         return _builtin_models(
-            "This is a Claude Code proxy, which does not publish a model list.",
+            "Unknown machine provider, no model list published.",
             None,
             machine,
         )
@@ -668,7 +677,7 @@ async def handle_models_list(request: Request):
     url = f"{base_url}/v1/models?limit=1000"
     try:
         status, body = await asyncio.wait_for(
-            asyncio.to_thread(_probe_anthropic, url, api_key), timeout=10.0
+            asyncio.to_thread(_probe_anthropic, url, api_key, provider=machine.get("provider", "claude_code")), timeout=10.0
         )
     except (asyncio.TimeoutError, TimeoutError):
         _log.warning("model list timeout %s", host)

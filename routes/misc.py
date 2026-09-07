@@ -441,7 +441,7 @@ async def handle_usage_get(request: Request):
     any authenticated user rather than admin-only, and for the same reason: it
     is their own data and carries no secret.
 
-    ``cost_usd`` is reported only for ``provider='anthropic'`` rows. Claude Code
+    ``cost_usd`` is reported only for ``provider='claude_code'`` rows. Claude Code
     prices every turn with Anthropic's rates, so the figure is meaningless for a
     self-hosted or third-party gateway; ``cost_note`` tells the client why the
     value is absent so the UI can explain the blank rather than just show one.
@@ -477,7 +477,7 @@ async def handle_usage_get(request: Request):
             )
     totals = await db.usage_totals(owner, days)
     for row in totals:
-        if row.get("provider") != "anthropic":
+        if row.get("provider") != "claude_code":
             row["cost_usd"] = None
             # Prefer the CLI's own assessment when it gave one: that is a
             # statement from the tool, not an inference from our base_url.
@@ -488,7 +488,7 @@ async def handle_usage_get(request: Request):
             )
     recent = await db.usage_recent(owner, limit)
     for row in recent:
-        if row.get("provider") != "anthropic":
+        if row.get("provider") != "claude_code":
             row["cost_usd"] = None
 
     return JSONResponse(
@@ -540,7 +540,7 @@ async def handle_usage_series_get(request: Request):
     # turn with Anthropic's rates, so a gateway's figure is arithmetic on the
     # wrong number. Blanked here for the same reason /api/usage blanks it.
     for row in series:
-        if row.get("provider") != "anthropic":
+        if row.get("provider") != "claude_code":
             row["cost_usd"] = None
 
     return JSONResponse(
@@ -709,6 +709,7 @@ async def handle_settings_get(request: Request):
     to render the version and the settings form. Every value below must
     therefore stay non-sensitive -- never add a secret, key, or token here.
     """
+    session = request.state.session
     host = await runner.get_proxy_host()
     try:
         session_ttl = int(await db.setting_get("session_ttl") or config.SESSION_TTL_S)
@@ -724,7 +725,10 @@ async def handle_settings_get(request: Request):
         prompt_max = int(await db.setting_get("prompt_max") or config.PROMPT_MAX_CHARS)
     except (TypeError, ValueError):
         prompt_max = config.PROMPT_MAX_CHARS
-    voice_ai_machine_id = await db.setting_get("voice_ai_machine_id") or config.VOICE_AI_MACHINE_ID_DEFAULT
+    voice_backend_id = await db.setting_get("voice_backend_id")
+    if not voice_backend_id:
+        voice_backend_id = await db.setting_get("voice_ai_machine_id")
+    voice_backend_id = voice_backend_id or config.VOICE_BACKEND_ID_DEFAULT
     voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
     try:
         voice_speech_rate = float(
@@ -736,19 +740,63 @@ async def handle_settings_get(request: Request):
     if not webconsole_url and config.WC_WEBCONSOLE_URL:
         webconsole_url = config.WC_WEBCONSOLE_URL
 
-    from routes.db_machines import ai_machine_backend_by_id, parse_active_models
+    from routes.db_machines import parse_active_models
     from routes.voice import voice_model_timing_averages
 
-    voice_model_options = []
-    if voice_ai_machine_id:
-        session = request.state.session
-        machine = await ai_machine_backend_by_id(voice_ai_machine_id, session["user"])
-        if machine:
-            active_models = parse_active_models(machine.get("active_models"))
-            averages = await voice_model_timing_averages(active_models)
-            voice_model_options = [
-                {"id": model_id, **averages[model_id]} for model_id in active_models
-            ]
+    # Voice backend options are scoped to the authenticated owner.
+    owner_id = session["user"]
+    if voice_backend_id and not await db.ai_machine_get(voice_backend_id, owner_id):
+        voice_backend_id = None
+    # active_models travels with each backend, so the Settings dialog can
+    # repopulate the model dropdown from the *selected* backend without
+    # another request.
+    #
+    # It used to be sent only for the stored backend, and the dialog's
+    # onchange handler re-GET this endpoint to "refresh" the list -- which
+    # cannot work: this handler reads voice_backend_id from the settings
+    # table, so re-reading it returns the same stored backend's models no
+    # matter what the dropdown now shows. The list only ever changed after a
+    # Save and a reopen.
+    cur = await db.db_conn.execute(
+        "SELECT id, name, provider, active_models FROM ai_machines "
+        "WHERE owner_id = ? ORDER BY active DESC, name ASC",
+        (owner_id,),
+    )
+    rows = await cur.fetchall()
+    per_backend = {
+        row["id"]: parse_active_models(row["active_models"])
+        for row in rows
+    }
+
+    # One timing query for the union, not one per backend: the helper is a
+    # single GROUP BY over whatever model list it is handed, so asking it
+    # once for every id any backend offers costs the same as asking for one
+    # backend's.
+    every_model = sorted({m for models in per_backend.values() for m in models})
+    averages = await voice_model_timing_averages(every_model)
+
+    def _options(machine_id: str) -> list[dict]:
+        return [
+            {"id": model_id, **averages[model_id]}
+            for model_id in per_backend.get(machine_id, [])
+        ]
+
+    voice_backend_options = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "provider": row["provider"],
+            "models": _options(row["id"]),
+        }
+        for row in rows
+    ]
+    _log.info("settings_get: voice_backend_options=%s voice_backend_id=%s",
+              [m["name"] for m in voice_backend_options], voice_backend_id)
+
+    # Retained alongside the per-backend lists: this is the selected
+    # backend's list, which is what the dialog shows before anyone touches
+    # the dropdown, and what an API client reading settings expects.
+    voice_model_options = _options(voice_backend_id) if voice_backend_id else []
 
     return JSONResponse(
         {
@@ -761,7 +809,8 @@ async def handle_settings_get(request: Request):
             "session_ttl_s": session_ttl,
             "turn_timeout_s": turn_timeout,
             "prompt_max": prompt_max,
-            "voice_ai_machine_id": voice_ai_machine_id,
+            "voice_backend_id": voice_backend_id,
+            "voice_backend_options": voice_backend_options,
             "voice_model": voice_model,
             "voice_speech_rate": voice_speech_rate,
             "voice_model_options": voice_model_options,
@@ -798,16 +847,42 @@ async def handle_settings_patch(request: Request):
             session["user"], "settings_ai_machine_host", f"host={host}",
         )
 
-    if "voice_ai_machine_id" in data:
-        value = data.get("voice_ai_machine_id")
+    for setting_name, field_name, error in (
+        ("voice_backend_id", "voice_backend_id", "Voice backend id must be text"),
+        ("voice_ai_machine_id", "voice_ai_machine_id", "Voice AI machine id must be text"),
+    ):
+        if field_name not in data:
+            continue
+        value = data.get(field_name)
         if value is not None and not isinstance(value, str):
-            raise HTTPException(status_code=400, detail="Voice AI machine id must be text")
-        await db.setting_set("voice_ai_machine_id", (value or "").strip())
+            raise HTTPException(status_code=400, detail=error)
+        machine_id = (value or "").strip()
+        if machine_id and not await db.ai_machine_get(machine_id, session["user"]):
+            raise HTTPException(status_code=404, detail="Voice backend not found")
+        await db.setting_set(setting_name, machine_id)
     if "voice_model" in data:
+        from routes.db_machines import parse_active_models
         value = data.get("voice_model")
-        if not isinstance(value, str) or not value.strip():
-            raise HTTPException(status_code=400, detail="Voice model is required")
-        await db.setting_set("voice_model", value.strip())
+        if value is not None and not isinstance(value, str):
+            raise HTTPException(status_code=400, detail="Voice model must be text")
+        if value is not None:
+            model_id = value.strip()
+            backend_id = await db.setting_get("voice_backend_id") or config.VOICE_BACKEND_ID_DEFAULT
+            if backend_id:
+                cur = await db.db_conn.execute(
+                    "SELECT active_models FROM ai_machines "
+                    "WHERE id = ? AND owner_id = ?",
+                    (backend_id, session["user"]),
+                )
+                row = await cur.fetchone()
+                if row and row["active_models"]:
+                    allowed = parse_active_models(row["active_models"])
+                    if model_id not in allowed:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Model must be one of: {', '.join(allowed)}",
+                        )
+            await db.setting_set("voice_model", model_id)
     if "voice_speech_rate" in data:
         value = data.get("voice_speech_rate")
         try:

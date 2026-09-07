@@ -10,7 +10,7 @@ import {createChatListController} from './chat-list.js?v=3';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=5';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
-import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=2';
+import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=4';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -1537,14 +1537,16 @@ async function loadSettings() {
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
       if (data.webconsole_url) byId('webconsoleUrl').value = data.webconsole_url;
-      renderVoiceSettingsFields(data, async (backendId) => {
-        const resp = await apiFetch('/api/settings');
-        if (resp.ok) {
-          const fresh = await resp.json();
-          _loadedSettings = fresh;
-          populateModelOptions(byId('voiceModelSelect'), fresh.voice_model, fresh.voice_model_options, fresh.voice_backend_id);
-          populateModelPicker();
-        }
+      // The model dropdown is repopulated inside renderVoiceSettingsFields
+      // from the chosen backend's own `models`, so this callback no longer
+      // touches it. It used to call a populateModelOptions that is private
+      // to voice-settings.js and was never imported here, so changing the
+      // voice backend raised "populateModelOptions is not defined" and the
+      // list never updated -- and the re-GET it did first could not have
+      // helped anyway, since /api/settings derives the options from the
+      // stored backend id rather than the newly selected one.
+      renderVoiceSettingsFields(data, () => {
+        populateModelPicker();
       });
       // The global default is only a fallback for when no backend is active;
       // it is still worth offering in the picker.

@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import re
+import os
 import secrets
 import sqlite3
 import time
@@ -18,6 +19,16 @@ from typing import Any, Final
 import config
 
 _log = logging.getLogger("wc.auth")
+
+# How long the one-time session migration will wait on a busy database.
+#
+# Kept well under app.py's per-startup-step timeout, so a contended database
+# surfaces here as "migration skipped this boot" -- which is harmless, the
+# migration is idempotent and retries next start -- rather than as the whole
+# startup being abandoned. Python's sqlite3 default is 5.0s; this is explicit
+# because the value matters relative to that other timeout, and a default that
+# quietly changes underneath is exactly the kind of coupling worth naming.
+_MIGRATION_TIMEOUT_S: float = 5.0
 
 _VALID_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 _N, _R, _P = 1 << 14, 8, 1
@@ -122,23 +133,127 @@ def _sid_key(sid: str) -> str:
 def _session_conn() -> sqlite3.Connection | None:
     """A short-lived synchronous handle, or None if the database is not ready.
 
-    Separate from the app's aiosqlite connection because the session store is
-    read from middleware, which is synchronous.
-
-    That makes it the second writer against a WAL file, which permits only one,
-    and registry #47 is what happens when writers disagree about how long to
-    wait: this one waited 5s while db.py's shared connection waits
-    ``_BUSY_TIMEOUT_MS`` (15s), so under contention the session write was always
-    the one that lost. The two now use the same budget, for the reason db.py
-    gives for the number -- a wait is a slow request, a timeout is a lost write,
-    and a lost session write logs a user out for no reason they can see.
+    Sessions live in their own database file (SESSION_DB_PATH) so they never
+    collide with the app's aiosqlite writer (registry #47).
+    Calls `_ensure_session_db_file()` to guarantee the table exists before
+    opening the connection — tests patch SESSION_DB_PATH to a throwaway that
+    is not backed by `db.init()`.
     """
+    _ensure_session_db_file()
     try:
-        conn = sqlite3.connect(str(config.DB_PATH), timeout=_BUSY_TIMEOUT_MS / 1000)
+        conn = sqlite3.connect(
+            str(config.SESSION_DB_PATH),
+            timeout=_BUSY_TIMEOUT_MS / 1000,
+        )
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         return conn
     except sqlite3.Error:
         return None
+
+
+def _migrate_sessions_to_own_db() -> int:
+    """Move sessions from DB_PATH (the old combined file) to SESSION_DB_PATH.
+
+    Returns the number of rows migrated. Called once at startup; idempotent.
+    """
+    if not os.path.exists(config.SESSION_DB_PATH):
+        _ensure_session_db_file()
+    if not os.path.exists(config.DB_PATH):
+        return 0
+    # The common case is "already migrated", so ask that question read-only and
+    # get out. This runs at startup, before the socket is bound, against the
+    # production database that the rest of the process and any other instance
+    # are also using -- opening it read-write to discover there is nothing to
+    # do took a write-capable connection on the main file for no reason, and
+    # any delay here is a delay in binding the port.
+    #
+    # `mode=ro` cannot create or upgrade the file, which is correct: if the
+    # sessions table is missing entirely, sqlite3.Error is raised and caught
+    # below as "nothing to migrate", which is the right answer.
+    try:
+        probe = sqlite3.connect(
+            f"file:{config.DB_PATH}?mode=ro", uri=True, timeout=_MIGRATION_TIMEOUT_S
+        )
+        try:
+            src_row_count = probe.execute(
+                "SELECT COUNT(*) FROM sessions"
+            ).fetchone()[0]
+        finally:
+            probe.close()
+    except sqlite3.Error:
+        _log.warning("session_migration_probe_failed")
+        return 0
+    if src_row_count == 0:
+        return 0
+    try:
+        # Only now, with real rows to move, is a writer justified.
+        src = sqlite3.connect(str(config.DB_PATH), timeout=_MIGRATION_TIMEOUT_S)
+        rows = src.execute("SELECT * FROM sessions").fetchall()
+        if not rows:
+            src.close()
+            return 0
+        dst = _get_session_db()
+        dst.executescript(
+            """CREATE TABLE IF NOT EXISTS sessions (
+                sid_key    TEXT PRIMARY KEY,
+                user       TEXT NOT NULL,
+                role       TEXT NOT NULL,
+                expiry     REAL NOT NULL,
+                last       REAL NOT NULL,
+                csrf       TEXT NOT NULL
+            )"""
+        )
+        dst.executemany(
+            "INSERT OR REPLACE INTO sessions VALUES "
+            "(?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        dst.commit()
+        dst.close()
+        src.execute("DELETE FROM sessions").fetchall()
+        src.commit()
+        src.close()
+        return src_row_count
+    except sqlite3.Error:
+        _log.warning("session_migration_failed")
+        return 0
+
+
+def _ensure_session_db_file() -> None:
+    """Create the sessions table if the DB file does not exist yet.
+
+    If the file exists but is corrupted (e.g. left over from a crash), try
+    to recreate it; the table will be rebuilt on next persist call.
+    """
+    _db_dir = os.path.dirname(config.SESSION_DB_PATH)
+    if _db_dir:
+        os.makedirs(_db_dir, exist_ok=True)
+    try:
+        conn = sqlite3.connect(config.SESSION_DB_PATH)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS sessions (
+                sid_key    TEXT PRIMARY KEY,
+                user       TEXT NOT NULL,
+                role       TEXT NOT NULL,
+                expiry     REAL NOT NULL,
+                last       REAL NOT NULL,
+                csrf       TEXT NOT NULL
+            )"""
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.DatabaseError:
+        # Corrupted file – remove and recreate
+        try:
+            os.remove(config.SESSION_DB_PATH)
+        except OSError:
+            pass
+        _ensure_session_db_file()
+
+
+def _get_session_db() -> sqlite3.Connection:
+    """A persistent connection to the sessions database."""
+    return sqlite3.connect(str(config.SESSION_DB_PATH))
 
 
 def _persist(key: str, record: dict) -> None:

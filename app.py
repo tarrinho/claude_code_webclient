@@ -5,10 +5,13 @@
 # static assets.
 from __future__ import annotations
 
+import asyncio
 import configparser
 import logging
 import logging.config
+import os
 import re
+import time
 from contextlib import asynccontextmanager
 from html import escape as html_escape
 from pathlib import Path
@@ -325,6 +328,61 @@ async def _load_settings_from_db() -> None:
                 setattr(config, attr, str(val))
 
 
+# Per-step ceiling on startup work, and it is deliberately below
+# wc-health.sh's 45-second boot grace.
+#
+# Startup runs before uvicorn binds the socket, so a step that hangs leaves a
+# process systemd considers healthy and nothing listening on the port. That is
+# invisible from the outside and indistinguishable from a wedged server, so
+# wc-health.sh restarts it -- killing the boot, which starts again, and hangs
+# again. Measured on 2026-09-07: six consecutive boots between 12:25 and 12:31,
+# a restart every ~70s, the site down the whole time. Every one of those boots
+# logged "WebConsole starting" and "PROJECTS_ROOT=..." and then nothing at all,
+# which named the window but not the step inside it.
+#
+# Two things follow from that outage, and both are the point of this block:
+#
+# * Failing inside the grace window means the process ends itself before the
+#   health check can race it. systemd's Restart=always then does the cycling,
+#   one restarter instead of two.
+# * Every step is timed and logged by name, so the next occurrence says which
+#   one hung instead of leaving a silent gap to bisect.
+_STARTUP_STEP_TIMEOUT_S: Final[float] = float(
+    os.environ.get("WC_STARTUP_STEP_TIMEOUT_S", "20")
+)
+
+# Anything slower than this is worth a WARNING even when it completes: it is
+# the early warning for the hang, seen before it becomes one.
+_STARTUP_STEP_SLOW_S: Final[float] = 2.0
+
+
+async def _startup_step(name: str, awaitable):
+    """Run one startup step under a timeout, recording what it cost.
+
+    Synchronous steps must be handed over as ``asyncio.to_thread(fn)``. A bare
+    blocking call cannot be timed out at all -- ``wait_for`` can only abandon a
+    coroutine, never interrupt a thread already inside ``sqlite3`` -- and it
+    also blocks the event loop while it runs. Abandoning it at least gets the
+    process to a decision instead of hanging forever with the port unbound.
+    """
+    started = time.monotonic()
+    try:
+        result = await asyncio.wait_for(awaitable, _STARTUP_STEP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        _log.error(
+            "startup_step_timeout step=%s after=%.0fs — refusing to start with "
+            "an unbound port; systemd will restart this process",
+            name, _STARTUP_STEP_TIMEOUT_S,
+        )
+        raise
+    elapsed = time.monotonic() - started
+    if elapsed >= _STARTUP_STEP_SLOW_S:
+        _log.warning("startup_step_slow step=%s took=%.1fs", name, elapsed)
+    else:
+        _log.info("startup_step step=%s took=%.2fs", name, elapsed)
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _log.info("WebConsole starting v%s", config.VERSION)
@@ -334,11 +392,23 @@ async def lifespan(app: FastAPI):
         config.HOST,
         config.PORT,
     )
-    await db.init()
+    await _startup_step("db.init", db.init())
+    # Sessions: migrate from DB_PATH to SESSION_DB_PATH if they still share
+    # the old combined file (registry #47). Runs once, idempotent.
+    #
+    # Through a thread: it is synchronous sqlite3 against the *production*
+    # database, on the event loop, before the socket is bound.
+    migrated = await _startup_step(
+        "migrate_sessions", asyncio.to_thread(auth._migrate_sessions_to_own_db)
+    )
+    if migrated:
+        _log.info("migrated %d session(s) to a separate database", migrated)
     # Load DB settings into env so config.py can see them at runtime.
-    await _load_settings_from_db()
+    await _startup_step("load_settings", _load_settings_from_db())
     config.validate()
-    restored = auth.load_sessions()
+    restored = await _startup_step(
+        "load_sessions", asyncio.to_thread(auth.load_sessions)
+    )
     if restored:
         _log.info("restored %d session(s) across the restart", restored)
     admin = await auth.bootstrap_admin()

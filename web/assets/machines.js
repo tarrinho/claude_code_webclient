@@ -704,7 +704,7 @@ export function _showAddMachine() {
   byId('machineFormTitle').textContent = 'Add machine';
   byId('machineName').value = '';
   // Default to the API Claude Code itself uses, rather than the proxy.
-  byId('machineProvider').value = 'anthropic';
+  byId('machineProvider').value = 'claude_code';
   byId('machineHost').value = '';
   byId('machineBaseUrl').value = '';
   byId('machineModel').value = '';

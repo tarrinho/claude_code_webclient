@@ -507,6 +507,161 @@ class BackendsTurnCountBrowserTests(_BrowserFixture):
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class TransportUIBrowserTests(_BrowserFixture):
+    """The "+ Add transport" form and the grouped backends map.
+
+    Before this feature, every backend rendered flat in the Backends map and
+    ran on the same host as the console. The ssh-transport/backend-split plan
+    lets a backend execute over an SSH transport instead, and groups the map
+    by which transport (if any) each backend runs on. This is the only
+    committed regression coverage for that grouping -- a static text read of
+    machines.js/transports.js cannot see whether a transport's header
+    actually appears in the DOM, whether the SSH badge is present only once a
+    backend is assigned, or whether editing a backend back to "This server"
+    actually moves its card in the rendered list.
+
+    Each test creates its own uniquely-named transport (and, where needed, its
+    own backend) through the real UI rather than seeding the database, so
+    tests in this class do not depend on run order or on each other's leftover
+    state -- matching this file's own convention elsewhere (e.g.
+    BackendsTurnCountBrowserTests gets its own class rather than sharing
+    BackendsPanelBrowserTests' fixture data).
+    """
+
+    def _add_transport(self, name: str) -> None:
+        self.page.click("#addTransportBtn")
+        self.page.wait_for_selector("#transportForm", state="visible", timeout=5_000)
+        self.page.fill("#transportName", name)
+        # A resolvable host is required -- the server validates it can be
+        # looked up (SSRF-style guard) before ever attempting to connect, so
+        # "localhost" gets past that check without needing a real remote box.
+        # The key path stays fake: nothing here ever needs SSH to succeed.
+        self.page.fill("#transportSshHost", "localhost")
+        self.page.fill("#transportSshUser", "kali")
+        self.page.fill("#transportSshKeyPath", "/tmp/does-not-exist-key")
+        self.page.click("#saveTransport")
+        self.page.wait_for_selector("#transportForm", state="hidden", timeout=10_000)
+        self.page.wait_for_timeout(500)
+
+    def _add_backend_on_transport(self, machine_name: str, transport_name: str) -> None:
+        self.page.click("#addMachineBtn")
+        self.page.wait_for_selector("#machineForm", state="visible", timeout=5_000)
+        self.page.fill("#machineName", machine_name)
+        self.page.select_option("#machineProvider", "claude_code")
+        options = self.page.eval_on_selector_all(
+            "#machineTransport option", "opts => opts.map(o => [o.value, o.textContent])"
+        )
+        transport_value = next(val for val, text in options if transport_name in text)
+        self.page.select_option("#machineTransport", transport_value)
+        self.page.click("#saveMachine")
+        self.page.wait_for_selector("#machineForm", state="hidden", timeout=10_000)
+        self.page.wait_for_timeout(500)
+
+    def _machine_list_dump(self) -> list[dict]:
+        """{cls, text} for every direct child of #machineList, in render order."""
+        return self.page.eval_on_selector_all(
+            "#machineList > *",
+            "(nodes) => nodes.map(n => ({cls: n.className, text: n.textContent}))",
+        )
+
+    # None of the tests below assert `self.errors == []`, unlike most of this
+    # file's other classes. Two ambient, unrelated bugs are live in this
+    # shared tree right now and would make that assertion fail regardless of
+    # anything this class tests: (1) routes/misc.py's /api/settings handler
+    # raises (`for row in cur.fetchall()` on an un-awaited coroutine), logged
+    # as a console error on every page load; (2) app.js is currently loaded as
+    # two separate module instances (index.html's <script> tag references
+    # ?v=40, every importing module still references ?v=39), so every button
+    # wired in its DOMContentLoaded handler -- including #saveTransport and
+    # #saveMachine -- fires its click listener twice. Neither is caused by, or
+    # fixable from, this file. The second one is also why the assertions below
+    # tolerate more than one matching header/card turning up (a single click
+    # can create two identically-named rows) rather than asserting exactly
+    # one -- the point of this class is to catch a real regression in the
+    # grouping logic, not to go red for an unrelated, already-tracked bug.
+
+    def test_saving_a_transport_shows_an_empty_group_header(self):
+        self._open_backends()
+        self._add_transport("HeaderOnlyBox")
+        dump = self._machine_list_dump()
+        headers = [
+            item for item in dump
+            if item["cls"] == "chat-section-label" and "HeaderOnlyBox" in item["text"]
+        ]
+        self.assertTrue(headers, f"expected a 'via HeaderOnlyBox' header, got: {dump}")
+        for header in headers:
+            self.assertNotIn(
+                "SSH", header["text"],
+                "a transport with no backend assigned yet must not show the "
+                "tunnel-toggle badge -- there is no machine id to start a "
+                "tunnel for",
+            )
+
+    def test_adding_a_backend_groups_it_under_its_transports_header(self):
+        self._open_backends()
+        self._add_transport("AssignBox")
+        self._add_backend_on_transport("Assigned Backend", "AssignBox")
+
+        dump = self._machine_list_dump()
+        card_idx = next(
+            i for i, item in enumerate(dump) if "Assigned Backend" in item["text"]
+        )
+        header_idx = max(
+            i for i in range(card_idx) if dump[i]["cls"] == "chat-section-label"
+        )
+        self.assertIn(
+            "AssignBox", dump[header_idx]["text"],
+            f"the backend's nearest preceding header must be its own "
+            f"transport's, got: {dump}",
+        )
+        self.assertIn(
+            "SSH", dump[header_idx]["text"],
+            "a transport header must gain the tunnel-toggle badge once a "
+            "backend is assigned to it",
+        )
+
+    def test_editing_back_to_this_server_moves_it_out_of_the_group(self):
+        self._open_backends()
+        self._add_transport("ReleaseBox")
+        self._add_backend_on_transport("Released Backend", "ReleaseBox")
+
+        cards = self.page.query_selector_all("#machineList .machine-card")
+        target = next(c for c in cards if "Released Backend" in c.inner_text())
+        target.query_selector(".machine-action:has-text('Edit')").click()
+        self.page.wait_for_selector("#machineForm", state="visible", timeout=5_000)
+        # Precondition: the picker must show the transport it was actually
+        # saved with, not just the placeholder -- otherwise this test would
+        # pass even if the edit path never populated the picker at all.
+        options = self.page.eval_on_selector_all(
+            "#machineTransport option", "opts => opts.map(o => [o.value, o.textContent])"
+        )
+        release_value = next(val for val, text in options if "ReleaseBox" in text)
+        current = self.page.eval_on_selector("#machineTransport", "el => el.value")
+        self.assertEqual(current, release_value, "precondition: picker preselects its transport")
+
+        self.page.select_option("#machineTransport", "")
+        self.page.click("#saveMachine")
+        self.page.wait_for_selector("#machineForm", state="hidden", timeout=10_000)
+        self.page.wait_for_timeout(500)
+
+        dump = self._machine_list_dump()
+        card_idx = next(
+            i for i, item in enumerate(dump) if "Released Backend" in item["text"]
+        )
+        first_header_idx = next(
+            (i for i, item in enumerate(dump) if item["cls"] == "chat-section-label"),
+            None,
+        )
+        if first_header_idx is not None:
+            self.assertLess(
+                card_idx, first_header_idx,
+                "a backend edited back to 'This server' must render in the "
+                "local/ungrouped section, before every transport header",
+            )
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorBrowserTests(_BrowserFixture):
     """The orchestrator section, driven the way the user drives it.
 

@@ -21,13 +21,13 @@ export async function loadTransports() {
   }
 }
 
-/** Fill the "Executes on" dropdown with "This server" + every transport. */
+/** Fill the "Transport" dropdown with "Direct" + every transport. */
 export function populateTransportPicker(selectedId) {
   const picker = byId('machineTransport');
   if (!picker) return;
   const local = document.createElement('option');
   local.value = '';
-  local.textContent = 'This server';
+  local.textContent = 'Direct';
   const options = [local];
   _transports.forEach(t => {
     const option = document.createElement('option');

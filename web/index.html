@@ -33,7 +33,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.14.0</span>
+    <span class="ver" id="ver">0.15.0</span>
     <button class="btn-icon" id="orchestratorBtn" aria-label="Open orchestrator" title="Orchestrator">📡</button>
 <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
@@ -65,7 +65,7 @@
            .strip-right's own right edge put it past the status dot instead of
            under the info button. -->
       <button class="btn-icon strip-action queue-toggle" id="queueToggleTop"
-              aria-label="Show queued prompts" title="Queued prompts" aria-pressed="false" hidden>📋</button>
+              aria-label="Show queued prompts" title="Queued prompts" aria-pressed="false">📋</button>
       <span class="auto-answer-group">
         <button class="btn-icon strip-action auto-answer-toggle" id="autoAnswerToggle"
                 aria-label="Auto-approve permission prompts for this conversation"
@@ -141,7 +141,7 @@
       <button class="btn-icon voice-control" id="voiceStopBtn" title="Stop" aria-label="Stop voice conversation" hidden>⏹</button>
       <button class="btn-send" id="sendBtn" aria-label="Send message">➜</button>
     </div>
-    <div class="composer-meta"><span class="composer-left"><span class="composer-hint" id="composerChatName"></span><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span></span><span><button type="button" class="queue-toggle" id="queueToggle" hidden aria-label="Show queued prompts" title="Show queued prompts"></button> <button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
+    <div class="composer-meta"><span class="composer-left"><span class="composer-hint" id="composerChatName"></span><span class="composer-status" id="composerStatus" role="status" aria-live="polite"></span></span><span><button type="button" class="queue-toggle" id="queueToggle" aria-label="Show queued prompts" title="Show queued prompts"></button> <button class="retry-btn" id="retryBtn">Retry</button> <span class="composer-hint">Enter to send · Shift+Enter for newline</span></span></div>
   </section>
   <!-- The orchestrator is its own page. Embedded rather than navigated to, so the
        conversation list stays put and you can leave again without a reload. -->
@@ -228,7 +228,8 @@
             <option value="claude_code">Thru claude code</option>
             <option value="direct">Direct</option>
           </select>
-          <div id="machineProxyFields">
+          <!-- Host field — hidden by _syncMachineProviderFields. Direct provider shows it; claude_code hides it. -->
+          <div id="machineProxyFields" hidden>
             <label for="machineHost">Host</label>
             <input id="machineHost" maxlength="253" placeholder="e.g. 10.0.0.1 or hostname">
           </div>
@@ -354,6 +355,11 @@
           <span class="setting-hint" id="webconsoleHint">The public-facing URL of this WebConsole instance. Used to build shareable report links.</span>
         </div>
         <div class="app-setting-row">
+          <label for="voiceBackendSelect">Voice backend</label>
+          <select id="voiceBackendSelect"></select>
+          <span class="setting-hint">Choose the AI machine that provides voice synthesis. Models listed in Voice model are filtered to that machine's active models.</span>
+        </div>
+        <div class="app-setting-row">
           <label for="voiceModelSelect">Voice conversation model</label>
           <select id="voiceModelSelect"></select>
           <span class="setting-hint">Fetched from the voice AI machine's active models, each labeled with its average reply time from real usage. Separate from the model used in regular text chats — voice cares more about reply speed.</span>
@@ -380,9 +386,9 @@
 <script type="module" src="/assets/machines.js?v=5"></script>
 <script type="module" src="/assets/orchestrator.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
-<script type="module" src="/assets/voice-settings.js?v=1"></script>
-<script type="module" src="/assets/app.js?v=38"></script>
-<script type="module" src="/assets/voice-conversation.js?v=1"></script>
+<script type="module" src="/assets/voice-settings.js?v=3"></script>
+<script type="module" src="/assets/app.js?v=42"></script>
+<script type="module" src="/assets/voice-conversation.js?v=2"></script>
 <script type="module" src="/assets/transcript.js"></script>
 </body>
 </html>

@@ -76,28 +76,24 @@ def release_sse_slot(owner: str) -> None:
 
 
 def backend_kind(machine: dict | None) -> str:
-    """Classify a backend as ``anthropic``, ``anthropic-compatible`` or ``proxy``.
+    """Classify a backend as ``through_claude_code``, ``direct`` or ``ssh-proxy``.
 
-    The stored ``provider`` column only says which wire protocol a machine
-    speaks, so a self-hosted gateway reads ``anthropic`` there too. This is the
-    finer distinction that actually matters: whether requests reach the official
-    API. Single source of truth for both usage accounting (where it decides
-    whether the CLI's cost figure is trustworthy) and the machine API, so the
-    two surfaces cannot drift apart.
+    The stored ``provider`` column encodes the wire protocol (claude_code or
+    direct); an ssh transport is tracked via the ``transport_id`` column and
+    overrides the display kind to ``ssh-proxy`` so the SSH route is visible
+    even when the underlying provider is claude_code. This function is the
+    single source of truth for both usage accounting (which gates cost figures
+    on claude_code paths) and the machine API, so the two surfaces cannot
+    drift apart.
     """
     if not machine:
-        return "proxy"
-    prov = machine.get("provider")
-    if prov == "ssh_proxy":
+        return "proxy"  # fallback for legacy / unknown rows
+    if machine.get("transport_id"):
         return "ssh-proxy"
-    if prov != "anthropic":
-        return "proxy"
-    base_url = (machine.get("base_url") or "").strip()
-    if not base_url:
-        # No override means the CLI's own default: the official API.
-        return "anthropic"
-    host = base_url.split("://", 1)[-1].split("/")[0].split(":")[0].lower()
-    return "anthropic" if host in ("api.anthropic.com", "") else "anthropic-compatible"
+    prov = machine.get("provider")
+    if prov == "direct":
+        return "direct"
+    return "through_claude_code"
 
 
 # Safe messages for SSE errors so internal details never leak. The first two are

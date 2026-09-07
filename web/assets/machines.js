@@ -586,20 +586,20 @@ async function _deleteMachine(id) {
   }
 }
 
-// claude_code and direct are configured by endpoint (base_url + api_key),
-// proxy by host — only one group is relevant. "Executes on" (transport) is
-// independent of provider and always visible, so it is not gated here.
+// Provider (through_claude_code | direct) and transport (direct | ssh-proxy)
+// are independent dimensions. This function shows/hides fields that only
+// matter for certain provider values. Transport is always visible because
+// the two dimensions combine to four real configurations.
 // Exported: app.js wires this as the 'change' listener on #machineProvider.
 export function _syncMachineProviderFields() {
   const provider = byId('machineProvider').value;
-  const isClaude = provider === 'claude_code';
   const isDirect = provider === 'direct';
-  byId('machineProxyFields').hidden = !isDirect;
-  byId('machineAnthropicFields').hidden = !(isClaude || isDirect);
-  byId('machineApiKeyFields').hidden = !(isClaude || isDirect);
-  byId('machineModel').placeholder = isClaude
-    ? 'claude-opus-5'
-    : isDirect ? 'vllm/Qwen3.6-35B-A3B-NVFP4' : 'claude-sonnet-5';
+  byId('machineProxyFields').hidden = !isDirect;  // Host field for direct only
+  byId('machineAnthropicFields').hidden = !(provider === 'claude_code' || isDirect);
+  byId('machineApiKeyFields').hidden = !(provider === 'claude_code' || isDirect);
+  byId('machineModel').placeholder = isDirect
+    ? 'vllm/Qwen3.6-35B-A3B-NVFP4'
+    : 'claude-opus-5';
 }
 
 export function _editMachine(id) {
@@ -633,7 +633,12 @@ export async function _saveMachine() {
   const transport_id = byId('machineTransport').value || null;
 
   if (!name) { byId('machineName').focus(); return; }
-  if (!isClaude && provider !== 'direct' && !host) { byId('machineHost').focus(); return; }
+  // Host is required for direct provider but optional for claude_code.
+  // When a transport is selected the host field is irrelevant — skip validation.
+  if (!isClaude && provider !== 'direct' && !host) {
+    byId('machineHost').focus(); return;
+  }
+  if (isDirect && !host) { byId('machineHost').focus(); return; }
 
   const save = byId('saveMachine');
   save.disabled = true;

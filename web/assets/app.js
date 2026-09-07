@@ -10,7 +10,7 @@ import {createChatListController} from './chat-list.js?v=3';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=5';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
-import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=1';
+import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=2';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -29,6 +29,7 @@ export const state = {
   // shared object's properties can be assigned across modules.
   previousFocus: null,
 };
+window.state = state;
 
 // Exported for machines.js, same circular-import argument as `state` above --
 // machines.js only reads these inside function bodies, never at its own
@@ -318,6 +319,7 @@ async function loadStats(force = false) {
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
 import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=1';
+export { notifyResult, setStatus };
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1';
 
@@ -566,9 +568,10 @@ export function backendKindLabel(kind) {
     'anthropic': 'Anthropic API',
     'anthropic-compatible': 'Anthropic-compatible',
     'through_claude_code': 'Thru claude code',
-    'direct': 'Direct',
+    'direct': 'API connection',
     'ssh-proxy': 'SSH proxy',
     'proxy': 'Claude Code proxy',
+    'ssh_proxy': 'SSH proxy',  // legacy provider value, kept for old rows
   }[kind] || kind || '';
 }
 
@@ -1534,7 +1537,15 @@ async function loadSettings() {
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
       if (data.webconsole_url) byId('webconsoleUrl').value = data.webconsole_url;
-      renderVoiceSettingsFields(data);
+      renderVoiceSettingsFields(data, async (backendId) => {
+        const resp = await apiFetch('/api/settings');
+        if (resp.ok) {
+          const fresh = await resp.json();
+          _loadedSettings = fresh;
+          populateModelOptions(byId('voiceModelSelect'), fresh.voice_model, fresh.voice_model_options, fresh.voice_backend_id);
+          populateModelPicker();
+        }
+      });
       // The global default is only a fallback for when no backend is active;
       // it is still worth offering in the picker.
       _modelOptions = [data.default_model];
@@ -1939,9 +1950,9 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('autoAnswerInfo').addEventListener('click', toggleAutoAnswerMenu);
   byId('questionDismiss')?.addEventListener('click', _dismissQuestion);
   byId('settingsBtn').addEventListener('click', openSettingsDialog);
-  byId('supervisorBtn')?.addEventListener('click', openSupervisorPane);
-  byId('supervisorPaneTitle')?.addEventListener('click', openSupervisorPane);
-  byId('supervisorPaneClose')?.addEventListener('click', closeSupervisorPane);
+  byId('orchestratorBtn')?.addEventListener('click', openSupervisorPane);
+  byId('orchestratorPaneTitle')?.addEventListener('click', openSupervisorPane);
+  byId('orchestratorPaneClose')?.addEventListener('click', closeSupervisorPane);
   byId('settingsCancel').addEventListener('click', closeSettingsDialog);
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });

@@ -1562,7 +1562,7 @@ class SupervisorListEscapingBrowserTests(_BrowserFixture):
         stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
-            "INSERT INTO supervisors (id,title,description,owner_id,status,"
+            "INSERT INTO orchestrators (id,title,description,owner_id,status,"
             "created_at,updated_at) VALUES (?,?,NULL,'admin',?,?,?)",
             (sup_id, title, status, stamp, stamp),
         )

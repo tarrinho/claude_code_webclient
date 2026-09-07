@@ -695,7 +695,7 @@ button{touch-action:manipulation}
 .orchestrator-pane-title{flex:1;font:600 12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
 /* flex:1 is what gives the frame its height, and height is what the embedded
    page's own `100vh` layout is measured against. See the note above. */
-#supervisorFrame{flex:1;width:100%;border:0;background:var(--bg)}
+#orchestratorFrame{flex:1;width:100%;border:0;background:var(--bg)}
 
 /* A failing agent reads as a failure, not as a question waiting on you. */
 .orchestrator-item.failed{box-shadow:inset 2px 0 var(--bad)}

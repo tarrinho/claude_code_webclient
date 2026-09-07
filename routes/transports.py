@@ -68,6 +68,11 @@ async def handle_transport_patch(request: Request, transport_id: str):
     allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path"}
     if not data or not set(data).issubset(allowed):
         raise HTTPException(status_code=400, detail="No valid fields to update")
+    # Reject non-string text fields up front: the validators below call .strip()
+    # and regex methods that would otherwise raise and surface as a 500.
+    for field in allowed:
+        if field in data and data[field] is not None and not isinstance(data[field], str):
+            raise HTTPException(status_code=400, detail=f"{field} must be text or null")
     if "ssh_host" in data and data["ssh_host"] is not None:
         host = data["ssh_host"].strip()
         if not host:
@@ -100,6 +105,19 @@ async def handle_transport_patch(request: Request, transport_id: str):
 @router.delete("/api/transports/{transport_id}")
 async def handle_transport_delete(request: Request, transport_id: str):
     session = request.state.session
+    # ai_machines has no foreign key on transport_id, so a delete here would
+    # otherwise leave any referencing backend permanently broken -- its
+    # tunnel connect fails forever with "no transport row". Refuse instead.
+    machines = await db.ai_machines_list(session["user"])
+    referencing = [m for m in machines if m.get("transport_id") == transport_id]
+    if referencing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{len(referencing)} backend(s) still use this transport -- "
+                "delete or repoint them first"
+            ),
+        )
     deleted = await db.ssh_transport_delete(transport_id, session["user"])
     if not deleted:
         raise HTTPException(status_code=404, detail="Transport not found")
@@ -112,8 +130,13 @@ async def handle_transport_test_raw(request: Request):
     from tunnel_manager_ssh import test_ssh_connection
 
     data = await request.json()
+    ssh_host = (data.get("ssh_host") or "").strip()
+    if ssh_host and not _HOST_PATTERN_LOCAL.fullmatch(ssh_host):
+        raise HTTPException(status_code=400, detail="Enter a valid hostname or IP address")
+    if ssh_host:
+        _validate_host(ssh_host)
     result = await test_ssh_connection(
-        (data.get("ssh_host") or "").strip(),
+        ssh_host,
         (data.get("ssh_user") or "kali").strip(),
         (data.get("ssh_key_path") or "").strip(),
     )

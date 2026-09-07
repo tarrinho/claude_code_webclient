@@ -165,3 +165,72 @@ class TransportsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200)
         got = client.get(f"/api/transports/{created['id']}", headers=headers).json()
         self.assertEqual(got["ssh_user"], "ubuntu")
+
+    async def test_patch_rejects_non_string_field(self):
+        """PATCH {"ssh_host": 123} must 400, not 500 -- handle_transport_patch
+        used to call .strip() with no type check first, and an int has no
+        .strip(), so this raised an unhandled AttributeError."""
+        client, headers = self._login()
+        created = client.post(
+            "/api/transports",
+            json={"name": "Kali3", "ssh_host": "h", "ssh_user": "kali", "ssh_key_path": "k"},
+            headers=headers,
+        ).json()
+        resp = client.patch(
+            f"/api/transports/{created['id']}", json={"ssh_host": 123}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+
+    async def test_test_route_rejects_ssrf_target(self):
+        """POST /api/transports/test must run ssh_host through the same
+        SSRF/private-address check its sibling create route already does.
+        169.254.169.254 is the canonical cloud-metadata SSRF target -- a
+        perfectly valid hostname *shape*, so only the SSRF/private-address
+        check (not the format check alone) catches it. asyncSetUp mocks
+        _validate_host globally for the other tests in this class; this one
+        needs the real check, so it stops that patch for its own duration."""
+        client, headers = self._login()
+        self.validate_patch.stop()
+        try:
+            resp = client.post(
+                "/api/transports/test",
+                json={"ssh_host": "169.254.169.254", "ssh_user": "kali", "ssh_key_path": "k"},
+                headers=headers,
+            )
+            self.assertIn(resp.status_code, (400, 403), resp.text)
+        finally:
+            self.validate_patch.start()
+
+    async def test_delete_refuses_when_a_backend_references_it(self):
+        """Deleting a transport a backend still points at must 409, not
+        silently orphan that backend's tunnel routing forever (no FK
+        constraint enforces this at the DB layer)."""
+        client, headers = self._login()
+        created = client.post(
+            "/api/transports",
+            json={"name": "Kali3", "ssh_host": "h", "ssh_user": "kali", "ssh_key_path": "k"},
+            headers=headers,
+        ).json()
+        transport_id = created["id"]
+        resp = client.post(
+            "/api/machines",
+            json={
+                "name": "Via Kali3", "provider": "claude_code",
+                "transport_id": transport_id, "model": "claude-sonnet-5",
+            },
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        machine_id = resp.json()["id"]
+
+        resp = client.delete(f"/api/transports/{transport_id}", headers=headers)
+        self.assertEqual(resp.status_code, 409, resp.text)
+        # Still there.
+        resp = client.get(f"/api/transports/{transport_id}", headers=headers)
+        self.assertEqual(resp.status_code, 200)
+
+        # Delete the referencing backend first, then the transport can go.
+        resp = client.delete(f"/api/machines/{machine_id}", headers=headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        resp = client.delete(f"/api/transports/{transport_id}", headers=headers)
+        self.assertEqual(resp.status_code, 200, resp.text)

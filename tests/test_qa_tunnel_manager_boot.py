@@ -185,14 +185,17 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
         """
         import tunnel_manager_ssh
 
+        transport_id = "q" * 32
+        await db.ssh_transport_create(
+            transport_id, "Reachability Transport", "admin",
+            "host.invalid", "kali", "/tmp/definitely-does-not-exist-qa-key",
+        )
         machine_id = "n" * 32
         await db.ai_machine_create(
             machine_id, "Reachability Test", "", 0, None,
             "claude-sonnet-5", None, None, "admin",
-            provider="ssh_proxy",
-            ssh_host="host.invalid",
-            ssh_user="kali",
-            ssh_key_path="/tmp/definitely-does-not-exist-qa-key",
+            provider="claude_code",
+            transport_id=transport_id,
         )
         await db.ssh_tunnel_create(machine_id=machine_id, local_port=19001)
         # _fail() (what a failed connect() reports through) only records
@@ -205,7 +208,7 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
             "error_msg": None, "connected_at": None, "last_check": None,
         }
 
-        ok, ssh_client, transport, local_port, ssh_port, forward_server = (
+        ok, ssh_client, transport, local_port, ssh_port, forward_server, ret_transport_id = (
             await tunnel_manager_ssh.connect(machine_id)
         )
         self.assertFalse(ok)
@@ -241,14 +244,17 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
         key_path.write_text("not a real key -- connect() is faked below\n")
         key_path.chmod(0o600)
 
+        transport_id = "r" * 32
+        await db.ssh_transport_create(
+            transport_id, "Fake Success Transport", "admin",
+            "host.invalid", "kali", str(key_path),
+        )
         machine_id = "o" * 32
         await db.ai_machine_create(
             machine_id, "Fake Success Test", "", 0, None,
             "claude-sonnet-5", None, None, "admin",
-            provider="ssh_proxy",
-            ssh_host="host.invalid",
-            ssh_user="kali",
-            ssh_key_path=str(key_path),
+            provider="claude_code",
+            transport_id=transport_id,
         )
         await db.ssh_tunnel_create(machine_id=machine_id, local_port=19002)
 
@@ -264,7 +270,7 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
         forward_server = None
         try:
             with patch("paramiko.SSHClient", return_value=fake_client):
-                ok, ssh_client, transport, local_port, ssh_port, forward_server = (
+                ok, ssh_client, transport, local_port, ssh_port, forward_server, ret_transport_id = (
                     await tunnel_manager_ssh.connect(machine_id)
                 )
 

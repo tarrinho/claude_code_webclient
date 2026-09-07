@@ -549,7 +549,7 @@ async function _testMachine(id, btn) {
     const resp = await apiFetch(`/api/machines/${encodeURIComponent(id)}/test`, {method: 'POST'});
     const data = await resp.json().catch(() => ({}));
     const machine = _machines.find(m => m.id === id);
-    if (machine && machine.provider === 'ssh_proxy') {
+    if (machine && machine.transport_id) {
       if (data.ok || data.tunnel_up) {
         notifyResult(`SSH tunnel connected on port ${data.local_port || '?'}`);
       } else {

@@ -78,6 +78,20 @@ class FrontendStructureTests(unittest.TestCase):
         self.assertNotIn(".machine-action:nth-child(", self.machines)
         self.assertNotIn(".machine-card:nth-child(", self.machines)
 
+    def test_test_machine_tunnel_messaging_keys_on_transport(self):
+        """_testMachine's SSH-tunnel-specific messaging must key on
+        transport_id, not the retired provider='ssh_proxy' value.
+
+        Before this fix the branch checked machine.provider === 'ssh_proxy',
+        a value no machine can ever have after the ssh-transport/backend
+        split -- so a transport-routed machine's Test button silently fell
+        through to the generic host:port messaging instead of reporting
+        tunnel status ("SSH tunnel connected on port N" / "SSH tunnel:
+        disconnected").
+        """
+        self.assertIn("machine.transport_id", self.machines)
+        self.assertNotIn("machine.provider === 'ssh_proxy'", self.machines)
+
     def test_machine_test_toast_uses_fields_the_api_returns(self):
         """POST /api/machines/{id}/test returns {ok,status,error} only.
 

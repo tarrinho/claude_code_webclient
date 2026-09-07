@@ -625,6 +625,7 @@ export async function _saveMachine() {
   const name = byId('machineName').value.trim();
   const provider = byId('machineProvider').value;
   const isClaude = provider === 'claude_code';
+  const isDirect = provider === 'direct';
   const host = byId('machineHost').value.trim();
   const base_url = byId('machineBaseUrl').value.trim();
   const model = (byId('machineModel').value || '').trim()
@@ -638,7 +639,6 @@ export async function _saveMachine() {
   if (!isClaude && provider !== 'direct' && !host) {
     byId('machineHost').focus(); return;
   }
-  if (isDirect && !host) { byId('machineHost').focus(); return; }
 
   const save = byId('saveMachine');
   save.disabled = true;

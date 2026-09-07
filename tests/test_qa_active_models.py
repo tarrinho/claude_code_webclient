@@ -83,7 +83,7 @@ async def _teardown(tc):
 async def _gateway(machine_id="m1", active=True, model="claude-opus-5"):
     await db.ai_machine_create(
         machine_id, "Gateway", "gw.example.com", 443, "sk-test", model,
-        "https://gw.example.com", None, "admin", provider="anthropic",
+        "https://gw.example.com", None, "admin", provider="claude_code",
     )
     if active:
         await db.ai_machine_activate(machine_id, "admin")
@@ -192,7 +192,7 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
         await _gateway("m1", active=True)
         await db.ai_machine_create(
             "m2", "Second", "other.example.com", 443, "sk-2", "claude-sonnet-5",
-            "https://other.example.com", None, "admin", provider="anthropic",
+            "https://other.example.com", None, "admin", provider="claude_code",
         )
         data = await self._get({"machine_id": "m2"})
         self.assertEqual(data["machine_id"], "m2")
@@ -210,7 +210,7 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
         """A proxy publishes no list, but its default is still meaningful."""
         await db.ai_machine_create(
             "p1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5",
-            None, None, "admin",
+            None, None, "admin", provider="proxy",
         )
         await db.ai_machine_activate("p1", "admin")
         data = await self._get()

@@ -23,7 +23,7 @@ def test_paramiko_in_requirements():
 
 
 def test_backend_kind_ssh_proxy():
-    """backend_kind returns 'ssh-proxy' for ssh_proxy provider."""
+    """backend_kind returns 'ssh-proxy' for machines with an SSH transport."""
     from shared import backend_kind
-    machine = {"provider": "ssh_proxy"}
+    machine = {"provider": "claude_code", "transport_id": "my-ssh-transport"}
     assert backend_kind(machine) == "ssh-proxy"

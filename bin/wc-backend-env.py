@@ -100,6 +100,20 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
     if owner:
         rows = [r for r in rows if str(r.get("owner_id") or "").strip() == owner]
 
+    # A shelved backend is offered to nobody, including a terminal.
+    #
+    # This is the terminal path, and the reason the filter lives here as well
+    # as in the console: every interactive `claude` on this host runs through
+    # bin/wc-claude.sh, which asks this helper which backend to use. Returning
+    # a disabled machine would launch a session against a backend the operator
+    # shelved -- silently, and possibly against the wrong endpoint, which is
+    # the failure CLAUDE.md 0.1 exists to prevent.
+    #
+    # `.get("enabled", 1)` defaults to enabled: this helper deliberately does
+    # SELECT * so it keeps working against a database predating a column, the
+    # same reason active_models is read through .get().
+    rows = [r for r in rows if int(r.get("enabled", 1) or 0) == 1]
+
     if profile:
         # Slugified, not merely lowercased. The selector a caller types is
         # very often the machine's display name -- that is what the console
@@ -212,6 +226,13 @@ def _resolve_model(db: Path, model: str) -> int:
     owner = _owner_scope(rows)
     if owner:
         rows = [r for r in rows if str(r.get("owner_id") or "").strip() == owner]
+
+    # Same filter as machine_for: a shelved backend must not be inferred from
+    # a model id either. wc-claude.sh's check_model calls --resolve-model and
+    # *switches the session* to whatever it names, so without this a bare
+    # `--model azure_ai/...` could route a terminal onto a backend the
+    # operator had disabled.
+    rows = [r for r in rows if int(r.get("enabled", 1) or 0) == 1]
     # Keyed by id, not by slug. Keying by slug let two same-named machines
     # collapse into one entry, so a genuinely ambiguous model looked decided.
     matching = [

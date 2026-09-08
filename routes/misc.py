@@ -767,7 +767,7 @@ async def handle_settings_get(request: Request):
     # Save and a reopen.
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, active_models FROM ai_machines "
-        "WHERE owner_id = ? ORDER BY active DESC, name ASC",
+        "WHERE owner_id = ? AND enabled = 1 ORDER BY active DESC, name ASC",
         (owner_id,),
     )
     rows = await cur.fetchall()

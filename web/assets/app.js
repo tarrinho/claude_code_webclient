@@ -268,11 +268,11 @@ async function _openMap() {
     const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=2');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=3');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
   } catch {
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=2');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -286,7 +286,7 @@ async function _closeMap() {
   if (panel) panel.hidden = true;
   const main = document.querySelector('main');
   if (main) main.hidden = false;
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=2');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
   closeSupervisorMap();
 }
 

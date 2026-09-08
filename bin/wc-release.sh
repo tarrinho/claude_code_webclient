@@ -77,7 +77,7 @@ verify() {
         WC_DB_PATH="$probe/db" WC_PROJECTS_ROOT="$probe/p" \
         WC_LOG_FILE="$probe/log" WC_SESSION_SECRET="verify-only-not-a-secret" \
         WC_PROXY_TOKEN="verify-only-not-a-secret" \
-            "$REPO/.venv/bin/python" -c "import app, db, config, supervisor" \
+            "$REPO/.venv/bin/python" -c "import app, db, config, routes.supervisor_map" \
             >"$probe/out" 2>&1
     )
     local rc=$?

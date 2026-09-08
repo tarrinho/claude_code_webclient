@@ -2595,6 +2595,13 @@ class ChatRowMenuBrowserTests(_BrowserFixture):
         )
 
 
+# Both guards, matching every other class in this file. Without them this
+# suite raised FileNotFoundError for each of its tests on a host with no
+# playwright driver while the guarded suites skipped cleanly -- the exact
+# failure tests/test_qa_browser_fixture.py exists to catch, and it was
+# catching it.
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class SupervisorMapBrowserTests(_BrowserFixture):
     """Browser tests for the supervisor map panel."""
 

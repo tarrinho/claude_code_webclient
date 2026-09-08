@@ -453,6 +453,13 @@ button{touch-action:manipulation}
 .machine-action{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid var(--line);border-radius:5px;background:none;color:var(--muted);padding:3px 8px;cursor:pointer;min-height:28px;min-width:34px}
 .machine-action:hover{color:var(--fg);border-color:var(--muted)}
 .machine-action-danger:hover{color:var(--bad);border-color:var(--bad)}
+/* Edit/Delete on a transport group header. Same shape as .machine-action --
+   these sit in a .chat-section-label, which is uppercase letter-spaced text,
+   so they need their own normal-case type rather than inheriting it. The
+   header is not a flex row, hence the inline-block + margin instead of gap. */
+.transport-action{display:inline-block;margin-left:6px;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:none;letter-spacing:normal;border:1px solid var(--line);border-radius:5px;background:none;color:var(--muted);padding:2px 7px;cursor:pointer;min-height:24px}
+.transport-action:hover{color:var(--fg);border-color:var(--muted)}
+.transport-action-danger:hover{color:var(--bad);border-color:var(--bad)}
 .machine-form{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:8px;background:var(--panel)}
 .machine-form h3{font-size:14px;margin-bottom:10px}
 .machine-form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}

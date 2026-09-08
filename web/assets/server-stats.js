@@ -103,5 +103,20 @@ export function setStatus(text, type) {
   const el = byId('settingsStatus');
   el.textContent = text;
   el.className = type ? `toast ${type}` : '';
-  if (type === 'success') setTimeout(() => { el.textContent = ''; el.className = ''; }, 2000);
+  if (type === 'success') {
+    setTimeout(() => {
+      // Only clear the message THIS call put there. The clear used to be
+      // unconditional, so a success scheduled it and then wiped whatever the
+      // element held 2s later -- including an error raised in between, which
+      // is exactly the sequence a user hits: save a backend (success, clear
+      // armed), then delete a transport that is still in use (409). The
+      // refusal appeared and vanished within two seconds, leaving a failed
+      // delete looking like nothing happened at all. Found while testing the
+      // transport delete: the message was written and erased before it could
+      // be read.
+      if (el.textContent !== text) return;
+      el.textContent = '';
+      el.className = '';
+    }, 2000);
+  }
 }

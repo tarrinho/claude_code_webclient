@@ -540,7 +540,12 @@ class TransportUIBrowserTests(_BrowserFixture):
         self.page.fill("#transportSshUser", "kali")
         self.page.fill("#transportSshKeyPath", "/tmp/does-not-exist-key")
         self.page.click("#saveTransport")
-        self.page.wait_for_selector("#transportForm", state="hidden", timeout=10_000)
+        # 20s, not 10s: several agent sessions share this host and a save that
+        # normally lands in well under a second has been measured taking longer
+        # than 10s under that contention -- observed twice here as a timeout in
+        # this helper while every assertion it feeds was correct. The class runs
+        # more saves than it used to, so it meets the contention more often.
+        self.page.wait_for_selector("#transportForm", state="hidden", timeout=20_000)
         self.page.wait_for_timeout(500)
 
     def _add_backend_on_transport(self, machine_name: str, transport_name: str) -> None:
@@ -554,7 +559,8 @@ class TransportUIBrowserTests(_BrowserFixture):
         transport_value = next(val for val, text in options if transport_name in text)
         self.page.select_option("#machineTransport", transport_value)
         self.page.click("#saveMachine")
-        self.page.wait_for_selector("#machineForm", state="hidden", timeout=10_000)
+        # Same contention headroom as _add_transport above.
+        self.page.wait_for_selector("#machineForm", state="hidden", timeout=20_000)
         self.page.wait_for_timeout(500)
 
     def _machine_list_dump(self) -> list[dict]:
@@ -658,6 +664,116 @@ class TransportUIBrowserTests(_BrowserFixture):
                 "a backend edited back to 'This server' must render in the "
                 "local/ungrouped section, before every transport header",
             )
+
+    # ── Editing and deleting an existing transport ───────────────────────
+    #
+    # PATCH and DELETE existed server-side from the start, and _saveTransport
+    # already branched on `_transportEditing` to use PATCH -- but that variable
+    # was only ever assigned `null`, in three places, so the branch was
+    # unreachable and an added transport could not be changed or removed at
+    # all. Nothing static could see it: the code reads as a complete
+    # create/edit/delete feature. Only driving the header controls proves the
+    # entry point exists and the round trip lands.
+
+    def _transport_header(self, name: str) -> dict | None:
+        return next(
+            (item for item in self._machine_list_dump()
+             if item["cls"] == "chat-section-label" and name in item["text"]),
+            None,
+        )
+
+    def test_editing_a_transport_prefills_the_form_with_its_current_values(self):
+        """A blank form would be worse than no form: PATCH sends all four
+        fields, so saving one would blank the rest and the server would refuse
+        it ("SSH host cannot be empty")."""
+        self._open_backends()
+        self._add_transport("PrefillBox")
+        self.page.click('button[aria-label="Edit transport PrefillBox"]')
+        self.page.wait_for_selector("#transportForm", state="visible", timeout=5_000)
+
+        self.assertEqual(self.page.input_value("#transportName"), "PrefillBox")
+        self.assertEqual(self.page.input_value("#transportSshHost"), "localhost")
+        self.assertEqual(self.page.input_value("#transportSshUser"), "kali")
+        self.assertEqual(
+            self.page.input_value("#transportSshKeyPath"), "/tmp/does-not-exist-key",
+        )
+        self.assertEqual(
+            self.page.inner_text("#transportFormTitle"), "Edit transport",
+            "the form must say it is editing, not adding",
+        )
+
+    def test_an_edit_persists_and_renames_the_group_header(self):
+        self._open_backends()
+        self._add_transport("RenameFromBox")
+        self.page.click('button[aria-label="Edit transport RenameFromBox"]')
+        self.page.wait_for_selector("#transportForm", state="visible", timeout=5_000)
+        self.page.fill("#transportName", "RenamedToBox")
+        self.page.click("#saveTransport")
+        self.page.wait_for_selector("#transportForm", state="hidden", timeout=10_000)
+        self.page.wait_for_timeout(600)
+
+        self.assertIsNotNone(
+            self._transport_header("RenamedToBox"),
+            "the edited name must appear as its group header -- if the PATCH "
+            "branch is unreachable this silently creates nothing and the old "
+            "name stays",
+        )
+        self.assertIsNone(
+            self._transport_header("RenameFromBox"),
+            "the old name must be gone: an edit must not leave the original "
+            "behind, which is what a POST-instead-of-PATCH would do",
+        )
+
+    def test_deleting_an_unused_transport_removes_its_header(self):
+        self._open_backends()
+        self._add_transport("DeleteMeBox")
+        self.assertIsNotNone(self._transport_header("DeleteMeBox"), "precondition")
+
+        # Playwright dismisses dialogs unless told otherwise, and the delete is
+        # behind a confirm() -- without accepting, the request never goes out
+        # and the test would pass against a broken delete for the wrong reason.
+        self.page.once("dialog", lambda d: d.accept())
+        self.page.click('button[aria-label="Delete transport DeleteMeBox"]')
+        self.page.wait_for_timeout(1200)
+
+        self.assertIsNone(
+            self._transport_header("DeleteMeBox"),
+            "the transport's header must be gone after deleting it",
+        )
+
+    def test_a_transport_still_in_use_refuses_deletion_and_says_why(self):
+        """The server answers 409 with a count, because ai_machines has no
+        foreign key on transport_id -- deleting a referenced transport would
+        leave those backends permanently unable to connect. The point of this
+        test is that the reason reaches the user rather than a bare status."""
+        self._open_backends()
+        self._add_transport("InUseBox")
+        self._add_backend_on_transport("BackendOnInUse", "InUseBox")
+
+        self.page.once("dialog", lambda d: d.accept())
+        self.page.click('button[aria-label="Delete transport InUseBox"]')
+        self.page.wait_for_timeout(1200)
+
+        self.assertIsNotNone(
+            self._transport_header("InUseBox"),
+            "a transport still referenced by a backend must survive the "
+            "delete attempt",
+        )
+        # #settingsStatus is where notifyResult lands while Settings is open.
+        # wait_for_function, not a fixed sleep: the message is written when the
+        # 409 lands, and a sleep long enough to be safe was also long enough for
+        # the bug this uncovered (a previous success's scheduled clear wiping it)
+        # to erase it again before it could be read.
+        self.page.wait_for_function(
+            "() => (document.getElementById('settingsStatus').textContent || '')"
+            ".includes('still use this transport')",
+            timeout=8000)
+        status = self.page.text_content("#settingsStatus")
+        self.assertIn(
+            "still use this transport", status,
+            "the server's 409 explanation must be surfaced -- reporting only "
+            "the status code leaves the user to guess why it refused",
+        )
 
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")

@@ -52,6 +52,61 @@ export function _showAddTransport() {
   byId('transportName').focus();
 }
 
+/** Open the same form against an existing transport.
+ *
+ * The PATCH half of `_saveTransport` has been here since transports shipped,
+ * but `_transportEditing` was only ever assigned `null` -- three times -- so
+ * nothing could reach it and an added transport could not be changed at all.
+ * This is the missing entry point, not new machinery.
+ *
+ * Fields are pre-filled from the record rather than blanked: a PATCH sends all
+ * four, so a blank form would rewrite the untouched ones to empty and the
+ * server would refuse it ("SSH host cannot be empty") -- or worse, silently
+ * accept a name-only edit that dropped the rest if that validation ever
+ * loosened.
+ */
+export function _showEditTransport(transport) {
+  if (!transport) return;
+  _transportEditing = transport.id;
+  byId('transportFormTitle').textContent = 'Edit transport';
+  byId('transportName').value = transport.name || '';
+  byId('transportSshHost').value = transport.ssh_host || '';
+  byId('transportSshUser').value = transport.ssh_user || 'kali';
+  byId('transportSshKeyPath').value = transport.ssh_key_path || '';
+  byId('transportTestResult').textContent = '';
+  byId('transportForm').hidden = false;
+  byId('addTransportBtn').hidden = true;
+  byId('transportName').focus();
+}
+
+/** Delete a transport, surfacing the server's refusal when it is still in use.
+ *
+ * The reason for reading `detail` rather than reporting the status: the server
+ * refuses with 409 and a count ("2 backend(s) still use this transport --
+ * delete or repoint them first") because ai_machines has no foreign key on
+ * transport_id, so removing a referenced transport would leave those backends
+ * permanently unable to connect. That message is the entire value of the
+ * guard; a bare "Could not delete (409)" would leave the user to guess why.
+ */
+export async function _deleteTransport(transport, onDeleted) {
+  if (!transport) return;
+  const label = transport.name || 'this transport';
+  if (!window.confirm(`Delete ${label}? Backends using it must be repointed first.`)) return;
+  try {
+    const resp = await apiFetch(`/api/transports/${encodeURIComponent(transport.id)}`,
+                                {method: 'DELETE'});
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.detail || body.error || `Could not delete transport (${resp.status})`);
+    }
+    await loadTransports();
+    if (onDeleted) onDeleted();
+    notifyResult('Transport deleted');
+  } catch (error) {
+    notifyResult(error.message, 'error');
+  }
+}
+
 export function _cancelTransportForm() {
   byId('transportForm').hidden = true;
   byId('addTransportBtn').hidden = false;

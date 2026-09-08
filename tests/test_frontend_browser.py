@@ -2358,5 +2358,132 @@ class QueuePanelBrowserTests(_BrowserFixture):
 # SSH tunnel badge. See web/assets/transports.js and machines.js's grouped
 # _renderMachineList.
 
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class ChatRowMenuBrowserTests(_BrowserFixture):
+    """The per-conversation ⋯ menu must open on a click and stay open.
+
+    Reported as "the 3 dots next to each chat isn't working", and the failure
+    mode is the reason this is a browser test rather than a static one: the
+    menu opened and closed again within the same click, so every selector,
+    every handler and every CSS rule read as correct in the source. A
+    MutationObserver on the menu's class attribute showed `chat-menu open`
+    followed immediately by `chat-menu`.
+
+    The cause was two click listeners on the same list. app.js's
+    DOMContentLoaded block calls createChatListController once, but index.html
+    referenced `app.js?v=44` while nine importing modules still said `?v=43` --
+    and the browser keys a module by its full URL, query string included, so
+    app.js was evaluated twice and its whole setup block ran twice. The first
+    listener opened the menu; the second read it as already open
+    (`opening = false`), called closeMenus(), and did not reopen it.
+
+    tests/test_qa_asset_module_versions.py guards the *cause* statically and
+    was red at the time. This guards the *symptom*, because double-attachment
+    has other routes -- any future re-invocation of that setup block would do
+    the same thing with every version string in agreement. That version split
+    has now recurred three times in one day (fixed in e292bc0 and ac28d11
+    before this), which is what makes the behavioural half worth its runtime.
+    """
+
+    DESKTOP = "#chatListDesktop"
+
+    def _seed_chat(self) -> str:
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"menu-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (chat_id, "MenuRowChat", stamp, stamp),
+        )
+        con.commit()
+        con.close()
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_selector(
+            f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"]', timeout=20_000,
+        )
+        return chat_id
+
+    def test_clicking_the_dots_opens_the_menu_and_it_stays_open(self):
+        chat_id = self._seed_chat()
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"]'
+        self.page.click(f'{row} button[data-action="menu"]')
+        # A settle wait, deliberately: the bug closed the menu inside the same
+        # click, so asserting immediately would have passed against it.
+        self.page.wait_for_timeout(500)
+
+        self.assertEqual(
+            self.page.eval_on_selector_all(".chat-menu.open", "els => els.length"), 1,
+            "the ⋯ menu is not open after clicking it -- if it opened and shut "
+            "again within the click, two listeners are attached to the list "
+            "and the second one closed what the first opened",
+        )
+        self.assertEqual(
+            self.page.get_attribute(f'{row} button[data-action="menu"]',
+                                    "aria-expanded"), "true",
+        )
+        # Rendered, not merely un-hidden: display:grid with real dimensions is
+        # what "the menu works" means to the person clicking it.
+        box = self.page.eval_on_selector(f'{row} .chat-menu',
+                                         "el => el.getBoundingClientRect().toJSON()")
+        self.assertGreater(box["width"], 100, f"menu has no width: {box}")
+        self.assertGreater(box["height"], 50, f"menu has no height: {box}")
+        self.assertEqual(self.errors, [])
+
+    def test_the_menu_offers_the_row_actions(self):
+        """Guards the menu's contents, so an empty popover cannot pass the
+        open/size assertions above."""
+        chat_id = self._seed_chat()
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"]'
+        self.page.click(f'{row} button[data-action="menu"]')
+        self.page.wait_for_timeout(400)
+
+        actions = self.page.eval_on_selector_all(
+            f'{row} .chat-menu button', "els => els.map(e => e.dataset.action)")
+        for expected in ("rename", "fork", "export", "archive", "delete"):
+            self.assertIn(expected, actions, f"{expected} missing from {actions}")
+
+    def test_a_second_click_closes_it_again(self):
+        """The toggle must still toggle: the fix must not turn 'always closed'
+        into 'cannot be closed'."""
+        chat_id = self._seed_chat()
+        trigger = (f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] '
+                   f'button[data-action="menu"]')
+        self.page.click(trigger)
+        self.page.wait_for_timeout(400)
+        self.assertEqual(
+            self.page.eval_on_selector_all(".chat-menu.open", "els => els.length"), 1,
+            "precondition: it opened",
+        )
+
+        self.page.click(trigger)
+        self.page.wait_for_timeout(400)
+        self.assertEqual(
+            self.page.eval_on_selector_all(".chat-menu.open", "els => els.length"), 0,
+            "clicking the ⋯ again must close the menu",
+        )
+
+    def test_clicking_elsewhere_closes_it(self):
+        chat_id = self._seed_chat()
+        row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"]'
+        self.page.click(f'{row} button[data-action="menu"]')
+        self.page.wait_for_timeout(400)
+        self.assertEqual(
+            self.page.eval_on_selector_all(".chat-menu.open", "els => els.length"), 1,
+            "precondition: it opened",
+        )
+
+        self.page.click("#topbarTitle")
+        self.page.wait_for_timeout(400)
+        self.assertEqual(
+            self.page.eval_on_selector_all(".chat-menu.open", "els => els.length"), 0,
+            "a click outside .chat-actions must dismiss the menu",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

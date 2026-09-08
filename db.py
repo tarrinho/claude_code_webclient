@@ -288,6 +288,10 @@ async def init() -> None:
             base_url      TEXT,
             description   TEXT,
             active        INTEGER NOT NULL DEFAULT 0,
+            -- May this backend be used at all. `active` above means "is the
+            -- default"; these are separate questions. See _ensure_chat_columns
+            -- for why the names read oddly.
+            enabled       INTEGER NOT NULL DEFAULT 1,
             owner_id      TEXT NOT NULL DEFAULT 'admin',
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL
@@ -1121,6 +1125,25 @@ async def _ensure_chat_columns() -> None:
     if ma_columns and "transport_id" not in ma_columns:
         await db_conn.execute(
             "ALTER TABLE ai_machines ADD COLUMN transport_id TEXT"
+        )
+
+    # Whether a backend may be used at all -- a different question from
+    # `active`, which on this table means "is the default".
+    #
+    # DEFAULT 1 is what makes this additive migration safe on a live host:
+    # every backend that already exists stays usable, and a database predating
+    # the column behaves exactly as it did before. There is no backfill and so
+    # nothing to get wrong on a host that is mid-work.
+    #
+    # The column names disagree with the interface's vocabulary (Default /
+    # Active / Inactive) deliberately. Renaming `active` would flip the
+    # meaning of a column seven separate resolvers read, and any resolver
+    # missed would then see active=1 for every backend and silently pick an
+    # arbitrary one -- a routing bug with no error anywhere. The rename happens
+    # in the UI, where it costs a label. See the spec's "Naming" section.
+    if ma_columns and "enabled" not in ma_columns:
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"
         )
 
     # ssh_tunnels: one row per active ssh_proxy machine.

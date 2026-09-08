@@ -21,7 +21,8 @@ async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
     if db.db_conn is None:
         raise sqlite3.Error("database not connected")
     cur = await db.db_conn.execute(
-        "SELECT id, name, provider, host, port, model, active_models, base_url, description, active "
+        "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
+        "active, enabled "
         "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
         (owner_id,),
     )
@@ -33,6 +34,7 @@ async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
+        "CASE WHEN enabled = 1 THEN 1 ELSE 0 END AS enabled, "
         "created_at, updated_at, transport_id "
         "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
         (owner_id,),
@@ -49,6 +51,7 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint, transport_id, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
+        "CASE WHEN enabled = 1 THEN 1 ELSE 0 END AS enabled, "
         "CASE WHEN api_key IS NOT NULL AND TRIM(api_key) <> '' THEN 1 ELSE 0 END "
         "AS has_api_key, "
         "created_at, updated_at "

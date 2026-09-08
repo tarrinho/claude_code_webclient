@@ -86,6 +86,7 @@ def __getattr__(name: str):
         "bump_chat_updated_at": "routes.db_chats",
         "chat_set_model": "routes.db_chats",
         "chat_set_title": "routes.db_chats",
+        "chats_pinned_to_machine": "routes.db_chats",
         "chat_mark_degraded": "routes.db_chats",
         "chat_clear_degraded": "routes.db_chats",
         "_ALLOWED_CHAT_FIELDS": "routes.db_chats",

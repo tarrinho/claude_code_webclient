@@ -808,3 +808,39 @@ async def chat_clear_degraded(chat_id: str, kind: str) -> None:
         await db.db_conn.commit()
     except Exception:
         _log.exception("chat_clear_degraded failed chat_id=%s kind=%s", chat_id, kind)
+
+
+async def chats_pinned_to_machine(
+    machine_id: str, owner_id: str, limit: int = 8
+) -> dict[str, Any]:
+    """Conversations pinned to *machine_id*, named rather than counted.
+
+    `total` is the real count; `titles` is capped at *limit* so a refusal
+    message stays readable when a popular backend has forty. A count alone
+    sends the reader hunting through the sidebar for which forty, which is
+    the hunt the refusal exists to save them.
+
+    Archived conversations count. Archived is not deleted -- it can be
+    restored, and it would then be pinned to a backend shelved underneath it.
+
+    Deleted ones do not: `chat_delete` writes a `deleted_at` tombstone rather
+    than removing the row, and that conversation is not coming back.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT COUNT(*) AS n FROM chats "
+        "WHERE ai_machine_id = ? AND owner_id = ? AND deleted_at IS NULL",
+        (machine_id, owner_id),
+    )
+    total = (await cur.fetchone())["n"]
+    cur = await db.db_conn.execute(
+        "SELECT id, title FROM chats "
+        "WHERE ai_machine_id = ? AND owner_id = ? AND deleted_at IS NULL "
+        "ORDER BY updated_at DESC LIMIT ?",
+        (machine_id, owner_id, int(limit)),
+    )
+    rows = await cur.fetchall()
+    return {
+        "total": total,
+        "titles": [r["title"] for r in rows],
+        "ids": [r["id"] for r in rows],
+    }

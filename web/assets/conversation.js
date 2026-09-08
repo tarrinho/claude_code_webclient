@@ -942,7 +942,15 @@ export function createConversationController(dependencies) {
       showToast(error.message, 'error');
       return;
     }
-    if (!rows.length) showToast('Nothing is queued in this conversation');
+    if (!rows.length) {
+      showToast('Nothing is queued in this conversation');
+      return;
+    }
+    // Open the overlay panel.
+    const overlay = elements.queueBar;
+    const backdrop = elements.queueBackdrop;
+    if (overlay) overlay.hidden = false;
+    if (backdrop) backdrop.setAttribute('aria-hidden', 'false');
   }
 
   async function refreshQueue(chatId) {
@@ -961,6 +969,7 @@ export function createConversationController(dependencies) {
   function hideQueue(resetToggle = false) {
     if (!elements.queueBar) return;
     elements.queueBar.hidden = true;
+    if (elements.queueBackdrop) elements.queueBackdrop.setAttribute('aria-hidden', 'true');
     if (elements.queueList) elements.queueList.textContent = '';
     // A row's tooltip has no meaning once the row it points at is gone.
     closeQueueTooltip();
@@ -1012,21 +1021,14 @@ export function createConversationController(dependencies) {
       return hideQueue();
     }
     const held = rows.filter(row => row.state === 'held').length;
-    // Signature, not a plain boolean: a close must stay closed across
-    // identical polls, but a *new* held prompt (or a new count) while
-    // closed is exactly the case a silent badge-only sidebar update is not
-    // enough for -- so it breaks back through.
-    const signature = `${rows.length}:${held}`;
-    if (_queueManuallyHidden) {
-      if (signature === _queueSignature) return;
-      _queueManuallyHidden = false;
-    }
-    _queueSignature = signature;
+    _queueSignature = `${rows.length}:${held}`;
     // The 5-6s poll calls this again while a tooltip may still be open --
     // replacing the list below would leave it pointing at a detached node,
     // the same hazard renderAutoAnswerMenu already guards against.
     closeQueueTooltip();
-    elements.queueBar.hidden = false;
+    // No auto-open — the overlay is only shown when the user clicks the
+    // queue toggle button.  renderQueue here only updates badge and list
+    // content so it stays fresh when the panel opens next.
     elements.queueBar.dataset.held = held ? 'yes' : 'no';
     elements.queueTag.textContent = held
       ? `${held} held`
@@ -1419,6 +1421,11 @@ export function createConversationController(dependencies) {
   elements.queueToggle?.addEventListener('click', () => openQueuePanel());
   // Topbar button: opens the same queue panel from anywhere.
   elements.queueToggleTop?.addEventListener('click', () => openQueuePanel());
+  // Backdrop click closes the overlay (clicking on queue content does not).
+  elements.queueBackdrop?.addEventListener('click', () => {
+    if (elements.queueBar?.hidden) return;
+    hideQueue();
+  });
 
   setStreamState('ready');
   return {selectChat, send, stop, retry, restoreDraft, persistDraft, refreshCurrent, destroy, setStreamState};

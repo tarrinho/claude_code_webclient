@@ -154,13 +154,13 @@ button{touch-action:manipulation}
 .usage-origin-note{margin:4px 0 8px;font-size:.72rem;color:var(--muted);line-height:1.4}
 .usage-unsplit-flag{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font:9.5px system-ui,-apple-system,sans-serif;text-transform:uppercase;letter-spacing:.06em;background:var(--panel2,rgba(127,127,127,.18));color:var(--muted)}
 /* Queue overlay — fixed panel above the composer, opens only on click */
-.queue-overlay-backdrop{position:fixed;inset:0;z-index:100;display:none;cursor:pointer}
-.queue-overlay-backdrop.open{display:block}
-.queue-overlay{position:fixed;bottom:0;left:0;right:0;z-index:101;display:none;border-top:1px solid var(--line);background:var(--panel);padding:8px 16px 12px;box-shadow:0 -4px 24px rgba(0,0,0,.2);border-radius:12px 12px 0 0}
-.queue-overlay.open{display:block}
+.queue-backdrop{position:fixed;inset:0;z-index:99;display:none;cursor:pointer;background:rgba(0,0,0,.25)}
+.queue-backdrop[aria-hidden="false"]{display:block}
+#queueBar{position:fixed;bottom:0;left:0;right:0;z-index:100;background:var(--panel);padding:12px 16px 16px;box-shadow:0 -4px 24px rgba(0,0,0,.25);border-top:1px solid var(--line);border-radius:12px 12px 0 0;transform:translateY(100%);transition:transform .2s ease;pointer-events:none}
+#queueBar[aria-hidden="false"]{transform:translateY(0);pointer-events:auto}
 /* Prompts waiting behind the running turn. Held ones are warned, because they
    need a decision rather than just patience. */
-.queue-bar{margin:0;padding:0;background:none;border:none}
+.queue-bar[data-held="yes"]{border-top-color:var(--warn,var(--accent))}
 .queue-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
 .queue-tag{font:600 10px system-ui,-apple-system,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);flex:0 0 auto}
 .queue-bar[data-held="yes"] .queue-tag{color:var(--warn,var(--accent))}

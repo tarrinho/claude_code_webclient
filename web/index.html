@@ -120,6 +120,7 @@
     </section>
     <!-- Prompts waiting behind the running turn. Sits above the composer
          because it is about what you already sent, not what you are typing. -->
+    <div class="queue-backdrop" id="queueBackdrop" hidden aria-hidden="true"></div>
     <section class="queue-bar" id="queueBar" aria-live="polite" hidden>
       <div class="queue-head">
         <span class="queue-tag" id="queueTag"></span>
@@ -431,14 +432,14 @@
 <script type="module" src="/assets/machines.js?v=6"></script>
 <script type="module" src="/assets/orchestrator.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
-<script type="module" src="/assets/voice-settings.js?v=7"></script>
-<script type="module" src="/assets/app.js?v=50"></script>
+<script type="module" src="/assets/voice-settings.js?v=8"></script>
+<script type="module" src="/assets/app.js?v=52"></script>
 <script type="module" src="/assets/voice-conversation.js?v=3"></script>
 <script type="module" src="/assets/transcript.js"></script>
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=1"></script>
+<script type="module" src="/assets/supervisor-map.js?v=2"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" class="panel" hidden>

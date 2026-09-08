@@ -10,7 +10,7 @@ import {createChatListController} from './chat-list.js?v=4';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=6';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
-import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5';
+import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=7';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -89,6 +89,7 @@ let _usageFetchedFor = null;    // range the payload was fetched for
 let _skillsData = null;          // last successful /api/skills payload
 let _skillsFetchedFor = null;    // chat id the payload was fetched for
 let _skillDebounce = null;
+let _mapLoading = false;         // guard against double-click opening twice
 
 // Exported for orchestrator.js, which reports add-to-orchestrator results with it.
 export function showToast(message, type = '') {
@@ -251,32 +252,42 @@ function closeSettingsDialog() {
 
 async function _openMap() {
   const panel = byId('supervisorMapPanel');
-  const btn = byId('supervisorMapBtn');
   if (!panel) return;
+  if (_mapLoading) return;        // guard against double-click
   if (!panel.hidden) { _closeMap(); return; }
+  _mapLoading = true;
   // Remove attribute and set property to guarantee open state
   panel.removeAttribute('hidden');
   panel.hidden = false;
+  // Hide main content while panel is open — main creates a stacking context
+  // that visually covers the panel's SVG nodes, making them unclickable.
+  const main = document.querySelector('main');
+  if (main) main.hidden = true;
 
   try {
-    const res = await fetch('/api/supervisor-map');
+    const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=1');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=3');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
   } catch {
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=1');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
+  } finally {
+    _mapLoading = false;
   }
 }
 
 async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=1');
+  // Restore main content
+  const main = document.querySelector('main');
+  if (main) main.hidden = false;
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
   closeSupervisorMap();
 }
 
@@ -2230,6 +2241,8 @@ document.addEventListener('DOMContentLoaded', () => {
       queueTag: byId('queueTag'), queueNote: byId('queueNote'),
       queueClose: byId('queueClose'), queueToggle: byId('queueToggle'),
       queueToggleTop: byId('queueToggleTop'),
+      queueBackdrop: byId('queueBackdrop'),
+      queueBackdrop: byId('queueBackdrop'),
       lastCommandBar: byId('lastCommandBar'),
       lastCommandText: byId('lastCommandText'),
       lastCommandWhen: byId('lastCommandWhen'),

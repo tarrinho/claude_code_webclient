@@ -44,6 +44,7 @@ router = APIRouter()
 
 
 _MACHINE_ALLOWED_FIELDS = {
+    "enabled",
     "name",
     "provider",
     "host",
@@ -226,6 +227,68 @@ async def handle_machine_patch(request: Request, machine_id: str):
     for field in _MACHINE_TEXT_FIELDS:
         if field in data and data[field] is not None and not isinstance(data[field], str):
             raise HTTPException(status_code=400, detail=f"{field} must be text or null")
+    # `enabled` is handled here and popped, because it has its own setter and
+    # its own refusal rules -- it is not one of the plain columns
+    # ai_machine_update writes.
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            raise HTTPException(
+                status_code=400, detail="enabled must be true or false")
+        wanted = data.pop("enabled")
+        machine = await db.ai_machine_get(machine_id, session["user"])
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        # Enabling is never refused: a backend returning to service breaks
+        # nothing that depends on it.
+        if not wanted:
+            pins = await db.chats_pinned_to_machine(machine_id, session["user"])
+            is_default = bool(machine.get("active"))
+            if is_default or pins["total"]:
+                # Named, not counted. "8 conversations are pinned" sends the
+                # reader hunting through the sidebar for which eight, and
+                # making the dependency visible is the entire reason this
+                # refuses rather than silently repointing those chats.
+                parts = []
+                if is_default:
+                    parts.append("it is the default backend")
+                if pins["total"]:
+                    shown = " · ".join(pins["titles"])
+                    more = pins["total"] - len(pins["titles"])
+                    if more > 0:
+                        shown += f" · … ({more} more)"
+                    parts.append(
+                        f"{pins['total']} conversation(s) are pinned to it: {shown}")
+                _log.info(
+                    "ai_machine disable refused user=%s id=%s default=%s pinned=%d",
+                    session["user"], machine_id, is_default, pins["total"],
+                )
+                return JSONResponse(
+                    {
+                        "error": f"Cannot disable {machine['name']} — "
+                                 + "; ".join(parts)
+                                 + ". Repoint them, or make another backend "
+                                   "the default first.",
+                        "is_default": is_default,
+                        "pinned_total": pins["total"],
+                        "pinned_chats": [
+                            {"id": i, "title": t}
+                            for i, t in zip(pins["ids"], pins["titles"])
+                        ],
+                    },
+                    status_code=409,
+                )
+
+        await db.ai_machine_set_enabled(machine_id, session["user"], wanted)
+        _log.info(
+            "ai_machine %s user=%s id=%s",
+            "enabled" if wanted else "disabled", session["user"], machine_id,
+        )
+        # A request carrying only `enabled` is complete; anything else in
+        # `data` falls through to the normal update path below.
+        if not data:
+            return JSONResponse({"ok": True, "enabled": wanted})
+
     # Validate port
     if "port" in data and data["port"] is not None:
         try:

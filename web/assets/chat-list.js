@@ -736,7 +736,10 @@ export function createChatListController(dependencies) {
   function render(chats = lastChats, currentId = lastCurrentId) {
     lastChats = chats;
     lastCurrentId = currentId;
-    const filtered = filterChats(chats, query);
+    // Hide voice temp child chats — ephemeral, rendered inside the overlay,
+    // and clicking them would replace the parent, which is wrong.
+    const visible = chats.filter(c => !c.is_temporary);
+    const filtered = filterChats(visible, query);
     const groups = groupChats(filtered);
     const cli = query ? cliSessions.filter(session =>
       (session.name || '').toLowerCase().includes(query) ||

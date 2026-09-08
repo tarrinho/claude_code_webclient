@@ -261,7 +261,11 @@ async def init() -> None:
             voice_mode    INTEGER NOT NULL DEFAULT 0,
             -- 'normal' | 'brainstorming'. Voice-mode chats are forced
             -- to 'brainstorming' at creation and cannot be changed.
-            type          TEXT NOT NULL DEFAULT 'normal'
+            type          TEXT NOT NULL DEFAULT 'normal',
+            -- Voice conversations can link to a parent chat (handoff).
+            parent_chat_id TEXT,
+            -- 1 if this chat was created as a temporary voice brainstorm.
+            is_temporary  INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS ai_machines (
@@ -1002,10 +1006,17 @@ async def _ensure_chat_columns() -> None:
             # Voice-mode chats are forced to 'brainstorming' and locked.
             "ALTER TABLE chats ADD COLUMN type TEXT NOT NULL DEFAULT 'normal'"
         ),
+        "parent_chat_id": "ALTER TABLE chats ADD COLUMN parent_chat_id TEXT",
+        "is_temporary": "ALTER TABLE chats ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 0",
     }
     for name, sql in migrations.items():
         if name not in columns:
             await db_conn.execute(sql)
+
+    # Index on parent_chat_id for handoff lookup (parent → children).
+    await db_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chats_parent ON chats(parent_chat_id)"
+    )
 
     # Backfill: voice-mode chats that existed before the `type` column was
     # created default to 'normal' (the column DEFAULT).  Promote them all

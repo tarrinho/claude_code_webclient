@@ -44,6 +44,21 @@ if not os.environ.get("WC_SESSION_DB_PATH"):
     _sdir = pathlib.Path(tempfile.gettempdir()) / "wc-test-sessions"
     os.environ["WC_SESSION_DB_PATH"] = str(_sdir / "sessions.db")
 
+# The resource guard refuses a turn when the host is short of memory, which is
+# correct in production and makes a test suite depend on how much RAM happened
+# to be free while it ran. Measured on this host: `test_app.py`'s
+# StreamPersistenceTests passed earlier in the day and failed hours later with
+# 522 MB available against a 400 MB floor -- the turn was refused, so nothing
+# persisted and the assertions read as a persistence bug. Nothing about those
+# tests concerns memory.
+#
+# Off by default for the suite, and only when the caller has not spoken:
+# tests/test_qa_resource_guard.py is the one place that must see the real rule,
+# and it is already immune -- it passes its own `env=` dict (`_CLEAN`) precisely
+# so a developer's shell variable cannot make it pass for the wrong reason.
+if not os.environ.get("WC_RESOURCE_GUARD"):
+    os.environ["WC_RESOURCE_GUARD"] = "off"
+
 
 # ── Capability guard ─────────────────────────────────────────────────────────
 #

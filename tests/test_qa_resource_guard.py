@@ -229,10 +229,21 @@ class CliTests(unittest.TestCase):
         # A floor larger than any real host has: refusal is guaranteed without
         # depending on what this machine happens to have free right now.
         os.environ["WC_RESOURCE_FLOOR_MB"] = "99999999"
+        # And the override cleared for the duration. `main()` reads os.environ
+        # rather than taking an `env=` dict, so unlike the tests above it is
+        # NOT covered by _CLEAN: any ambient WC_RESOURCE_GUARD=off turns the
+        # refusal this asserts into an admission and the exit code into 0.
+        # conftest.py sets exactly that for the suite (so unrelated tests do
+        # not depend on the host's free memory), and a developer with it in
+        # their shell would have defeated this test even before that -- the
+        # same hazard _CLEAN exists to prevent, one env-reading path over.
+        previous = os.environ.pop("WC_RESOURCE_GUARD", None)
         try:
             self.assertEqual(resource_guard.main(["--cost-mb", "1", "--quiet"]), 1)
         finally:
             os.environ.pop("WC_RESOURCE_FLOOR_MB", None)
+            if previous is not None:
+                os.environ["WC_RESOURCE_GUARD"] = previous
 
 
 if __name__ == "__main__":

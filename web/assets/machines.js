@@ -101,6 +101,36 @@ function _providerLabel(machine) {
   return backendKindLabel(machine.backend_kind);
 }
 
+// ── Transport group status ─────────────────────────────────────────────────
+// Three states, derived entirely from data already fetched -- no schema
+// change, no new endpoint. "Active" means a turn could actually run on this
+// group right now; "Disabled" is deliberate (every machine on it turned
+// off); "Uninitialized" is everything else -- added but never Checked/Inited,
+// or a transport with no machine assigned to it yet.
+const TRANSPORT_STATUS_ORDER = {active: 0, uninitialized: 1, disabled: 2};
+const TRANSPORT_STATUS_LABEL = {
+  active: 'Active', uninitialized: 'Uninitialized', disabled: 'Disabled',
+};
+
+export function _transportStatus(machines, tunnelStatusCache = {}) {
+  if (!machines.length) return 'uninitialized';
+  // enabled defaults true server-side; explicit false is the only way a
+  // machine reads as off. Disabled wins over everything else on this group --
+  // a deliberately-off backend must never read as "Active" just because its
+  // tunnel happens to still be up from before it was disabled.
+  if (!machines.some(m => m.enabled !== false)) return 'disabled';
+  // Local/direct machines have no tunnel to check -- enabled is the whole
+  // answer for them, and every machine here shares that fate (a local group
+  // is never split between transported and not).
+  const withTransport = machines.filter(m => m.transport_id);
+  if (!withTransport.length) return 'active';
+  // One shared tunnel per transport (Task 5): starting it for one machine
+  // brings the whole connection up for all of them, so the first machine's
+  // status speaks for the group.
+  const status = tunnelStatusCache[withTransport[0].id];
+  return status && status.proxy_ok ? 'active' : 'uninitialized';
+}
+
 // ── SSH Tunnel toggle ──────────────────────────────────────────────
 let _tunnelStatusCache = {};
 
@@ -506,16 +536,66 @@ function _buildMachineCard(m) {
     return card;
 }
 
-// One transport's group header, with a tunnel-toggle badge -- reusing the
-// existing _toggleSshTunnel, keyed by the FIRST machine in the group (since
-// starting the tunnel for one machine on a shared transport brings the whole
-// connection up for all of them, per Task 5). Omitted when the group is
-// empty: there is no machine id to start a tunnel for yet.
-function _buildTransportHeader(label, machines, transport = null) {
+// Collapsed groups, by group key ('direct' or a transport id). A plain Set,
+// same pattern supervisor-map.js already uses for its own collapsible nodes --
+// one convention for "remembers which groups you closed" across this codebase.
+let _collapsedGroups = new Set();
+// Group keys seeded with their status-based default collapse state exactly
+// once. Without this, re-deriving "should this start collapsed" on every
+// render would re-collapse a Disabled group the user had just opened back up.
+let _seededGroups = new Set();
+
+function _toggleGroupCollapse(key) {
+  if (_collapsedGroups.has(key)) _collapsedGroups.delete(key);
+  else _collapsedGroups.add(key);
+  _renderMachineList();
+}
+
+// One transport's group header: collapse toggle, status + count, a
+// tunnel-toggle badge -- reusing the existing _toggleSshTunnel, keyed by the
+// FIRST machine in the group (since starting the tunnel for one machine on a
+// shared transport brings the whole connection up for all of them, per Task
+// 5) -- and the transport actions. `key` is 'direct' for the local group or
+// the transport's own id; both need a stable identity to collapse by.
+function _buildTransportHeader(label, machines, transport, key) {
+  const status = _transportStatus(machines, _tunnelStatusCache);
+  if (!_seededGroups.has(key)) {
+    _seededGroups.add(key);
+    // Least urgent, so it starts out of the way; everything else starts open
+    // so nothing is hidden on first load.
+    if (status === 'disabled') _collapsedGroups.add(key);
+  }
+  const collapsed = _collapsedGroups.has(key);
+
   const header = document.createElement('div');
-  header.className = 'chat-section-label';
-  header.textContent = label;
-  if (machines.length) {
+  header.className = `transport-group-header transport-status-${status}`;
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'transport-collapse-toggle';
+  toggle.textContent = collapsed ? '▸' : '▾';
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  toggle.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${label}`);
+  toggle.addEventListener('click', () => _toggleGroupCollapse(key));
+  header.appendChild(toggle);
+
+  const text = document.createElement('span');
+  text.className = 'chat-section-label';
+  text.textContent = label;
+  header.appendChild(text);
+
+  const statusBadge = document.createElement('span');
+  statusBadge.className = `transport-status-badge transport-status-badge-${status}`;
+  statusBadge.textContent = TRANSPORT_STATUS_LABEL[status];
+  header.appendChild(statusBadge);
+
+  const count = document.createElement('span');
+  count.className = 'transport-count';
+  count.textContent = `${machines.length} machine${machines.length === 1 ? '' : 's'}`;
+  header.appendChild(count);
+
+  // The Direct group is local: no SSH tunnel exists for it to toggle.
+  if (machines.length && key !== 'direct') {
     const badge = document.createElement('span');
     badge.className = 'machine-badge machine-badge-ssh';
     badge.title = 'Click to start tunnel';
@@ -589,27 +669,50 @@ export function _renderMachineList() {
     byTransport.get(m.transport_id).push(m);
   });
 
+  // Direct is pinned first regardless of status -- it is where a fresh
+  // account's own backend lives, and it is never what someone is hunting
+  // for. Everything past it earns its position: real transports sorted by
+  // status (Active first, Disabled last -- the ones needing attention over
+  // the ones deliberately parked) and alphabetically within a status.
   if (local.length) {
-    local.forEach(m => list.appendChild(_buildMachineCard(m)));
+    list.appendChild(_buildTransportHeader('Direct', local, null, 'direct'));
+    if (!_collapsedGroups.has('direct')) {
+      local.forEach(m => list.appendChild(_buildMachineCard(m)));
+    }
   }
 
   // Every known transport gets a header, even one with no backend pointed at
   // it yet -- a transport just created should read as "via <name>" right
   // away, not only once a machine is assigned to it.
   const renderedTransportIds = new Set();
-  _transports.forEach(transport => {
+  const sortedTransports = [..._transports].sort((a, b) => {
+    const sa = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a.id) || [], _tunnelStatusCache)];
+    const sb = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b.id) || [], _tunnelStatusCache)];
+    return sa !== sb ? sa - sb : a.name.localeCompare(b.name);
+  });
+  sortedTransports.forEach(transport => {
     renderedTransportIds.add(transport.id);
     const machines = byTransport.get(transport.id) || [];
-    list.appendChild(_buildTransportHeader(`via ${transport.name}`, machines, transport));
-    machines.forEach(m => list.appendChild(_buildMachineCard(m)));
+    list.appendChild(_buildTransportHeader(`via ${transport.name}`, machines, transport, transport.id));
+    if (!_collapsedGroups.has(transport.id)) {
+      machines.forEach(m => list.appendChild(_buildMachineCard(m)));
+    }
   });
   // A machine pointed at a transport that no longer exists must not silently
-  // vanish from the list.
-  for (const [transportId, machines] of byTransport) {
-    if (renderedTransportIds.has(transportId)) continue;
-    list.appendChild(_buildTransportHeader('via (unknown transport)', machines));
-    machines.forEach(m => list.appendChild(_buildMachineCard(m)));
-  }
+  // vanish from the list. Sorted after every real transport, same status
+  // ordering, since there is no transport row to prioritise by name.
+  const orphanIds = [...byTransport.keys()].filter(id => !renderedTransportIds.has(id));
+  orphanIds
+    .sort((a, b) => TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a), _tunnelStatusCache)]
+      - TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b), _tunnelStatusCache)])
+    .forEach(transportId => {
+      const machines = byTransport.get(transportId);
+      const key = `unknown:${transportId}`;
+      list.appendChild(_buildTransportHeader('via (unknown transport)', machines, null, key));
+      if (!_collapsedGroups.has(key)) {
+        machines.forEach(m => list.appendChild(_buildMachineCard(m)));
+      }
+    });
 
   const total = byId('mapTotal');
   if (total) {

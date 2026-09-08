@@ -478,6 +478,18 @@ button{touch-action:manipulation}
 .transport-action{display:inline-block;margin-left:6px;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:none;letter-spacing:normal;border:1px solid var(--line);border-radius:5px;background:none;color:var(--muted);padding:2px 7px;cursor:pointer;min-height:24px}
 .transport-action:hover{color:var(--fg);border-color:var(--muted)}
 .transport-action-danger:hover{color:var(--bad);border-color:var(--bad)}
+/* The group header itself: a visibly heavier block than a plain label, so a
+   transport ("the server") reads as a distinct thing from the machine cards
+   nested under it rather than one more line in the same list. */
+.transport-group-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;margin:10px 0 6px;border-radius:8px;background:var(--panel2,var(--panel));border:1px solid var(--line)}
+.transport-group-header .chat-section-label{padding:0}
+.transport-collapse-toggle{background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;line-height:1;padding:2px 4px;min-height:24px;min-width:24px;border-radius:4px}
+.transport-collapse-toggle:hover{color:var(--fg);background:rgba(139,148,158,.12)}
+.transport-status-badge{font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;padding:2px 7px;border-radius:10px;white-space:nowrap}
+.transport-status-badge-active{color:var(--ok);background:rgba(63,185,80,.12)}
+.transport-status-badge-uninitialized{color:var(--warn);background:rgba(210,153,34,.12)}
+.transport-status-badge-disabled{color:var(--muted);background:rgba(139,148,158,.12)}
+.transport-count{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 .machine-form{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:8px;background:var(--panel)}
 .machine-form h3{font-size:14px;margin-bottom:10px}
 .machine-form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}

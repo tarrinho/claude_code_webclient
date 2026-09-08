@@ -528,6 +528,14 @@ button{touch-action:manipulation}
 .model-row{margin-bottom:10px}
 .app-setting-row{margin-bottom:12px}
 .setting-hint{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin-top:3px;display:block}
+/* Toggle knob — true/false knob used in Settings → App tab */
+.toggle-knob{position:relative;min-height:auto;padding:0;border:1px solid var(--line);border-radius:20px;background:var(--input-bg);cursor:pointer;width:44px;transition:border-color .15s}
+.toggle-knob:hover{border-color:var(--muted)}.toggle-knob[aria-pressed="true"]{border-color:var(--accent);background:rgba(88,166,255,.12)}
+.toggle-knob .knob-track{display:block;width:36px;height:22px;margin:2px;position:relative;background:var(--line);border-radius:11px}
+.toggle-knob[aria-pressed="true"] .knob-track{background:var(--accent)}
+.toggle-knob .knob-thumb{position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .15s}
+.toggle-knob[aria-pressed="true"] .knob-thumb{left:16px}
+.toggle-knob .knob-label{display:none}
 .settings-footer{border-top:1px solid var(--line);padding-top:12px;margin-top:16px}
 
 /* Pending question from a linked terminal session, answerable in place */

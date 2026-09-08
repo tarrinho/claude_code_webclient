@@ -1710,3 +1710,55 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
             "needle": needle,
         }
     return None
+
+
+# Auto-reply to another Claude session by writing a <cross-session-message>
+# record into its transcript file.  The CLI's MCP server picks up pending
+# cross-session records on its next read cycle (typically within a few
+# seconds) without any additional signal.
+def agent_reply_to(session_id: str, text: str) -> dict[str, Any]:
+    """Inject a cross-session message into the given session's transcript.
+
+    Returns {"ok": True, "path": "/…"} on success, or {"ok": False, "reason": "..."}
+    if the session could not be located or the file could not be written.
+    """
+    # Locate the transcript file by scanning all active sessions and finding the
+    # one whose name matches *session_id*.  _session_names_sync gives us
+    # session_id -> name; we invert that map.
+    by_session, _ = _session_names_sync()
+    name_map: dict[str, str] = {}
+    for sid, name in by_session.items():
+        name_map.setdefault(name, []).append(sid)
+
+    candidates = name_map.get(session_id)
+    if not candidates:
+        return {"ok": False, "reason": f"no session named '{session_id}'"}
+
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.gmtime())
+    record = json.dumps({
+        "type": "user",
+        "timestamp": timestamp,
+        "message": {
+            "role": "user",
+            "content": (
+                f'<cross-session-message from="webconsole" '
+                f'from-name="auto-reply" from-mode="auto-reply">\n'
+                f'{text}\n'
+                f'</cross-session-message>'
+            ),
+        },
+    })
+
+    last_error: str | None = None
+    for cand in candidates:
+        path = transcript_path(cand)
+        if path is None:
+            continue
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(record + "\n")
+            return {"ok": True, "path": str(path)}
+        except OSError as exc:
+            last_error = str(exc)
+
+    return {"ok": False, "reason": last_error or "no transcript file found"}

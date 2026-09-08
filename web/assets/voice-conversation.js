@@ -179,6 +179,7 @@ let voiceParentState = null;
 let voiceTempChatId = null;
 let voiceStreamDone = false;
 let voiceConversationComplete = false;
+let _voiceAssistantDiv = null;   // single div that accumulates assistant text during a stream
 
 // ── Open voice tooltip: creates a temp chat, captures parent state ──
 async function openVoiceTooltip() {
@@ -445,44 +446,6 @@ voiceTooltipLive.addEventListener('click', startVoiceLive);
 
 voiceStopBtn.addEventListener('click', () => performVoiceStop(true));
 
-// Override window.voiceConversation hooks to also render in tooltip
-const _origOnReplyChunk = window.voiceConversation?.onReplyChunk;
-const _origOnReplyDone = window.voiceConversation?.onReplyDone;
-const _origOnReplyError = window.voiceConversation?.onReplyError;
-
-window.voiceConversation = {
-  refreshControls() {
-    updateVoiceButtonVisibility();
-  },
-  onReplyChunk(text) {
-    // Render in tooltip if active
-    if (!voiceOverlay?.hidden && text) {
-      const div = document.createElement('div');
-      div.className = 'voice-assistant';
-      div.textContent = text;
-      voiceTooltipMessages.appendChild(div);
-      voiceTooltipMessages.scrollTop = voiceTooltipMessages.scrollHeight;
-    }
-    _origOnReplyChunk?.(text);
-  },
-  onReplyDone() {
-    voiceStreamDone = true;
-    if (voiceTempChatId) {
-      voiceConversationComplete = true;
-      voiceTooltipConclusion.hidden = false;
-    }
-    _origOnReplyDone?.();
-  },
-  onReplyError() {
-    voiceStreamDone = true;
-    _origOnReplyError?.();
-  },
-};
-
-// ── Original voice button visibility (for non-tooltip use) ──
-// Already defined above at line 30; window.voiceConversation.refreshControls
-// calls it at line 475 — no duplicate declaration needed.
-
 function speakSentence(sentence) {
   const trimmed = sentence.trim();
   if (!trimmed) return;
@@ -510,6 +473,21 @@ function flushSpeechBuffer(finalFlush) {
   if (finalFlush && speechBuffer.trim()) { speakSentence(speechBuffer); speechBuffer = ''; }
 }
 
+// ── Voice overlay: single accumulating div for assistant replies, TTS, conclusion ──
+
+function _ensureAssistantDiv() {
+  if (!_voiceAssistantDiv) {
+    _voiceAssistantDiv = document.createElement('div');
+    _voiceAssistantDiv.className = 'voice-assistant';
+    voiceTooltipMessages.appendChild(_voiceAssistantDiv);
+  }
+  return _voiceAssistantDiv;
+}
+
+function _clearAssistantDiv() {
+  _voiceAssistantDiv = null;
+}
+
 window.voiceConversation = {
   /** Re-read the open conversation and show or hide the voice controls.
    *
@@ -522,17 +500,34 @@ window.voiceConversation = {
   },
   onReplyChunk(text) {
     if (!window.state?.currentChat?.voice_mode) return;
+    // Render in tooltip: accumulate in a single div (streaming), never create
+    // a new div per chunk which would read as jumpy fragments.
+    if (text && voiceOverlay && !voiceOverlay.hidden) {
+      _ensureAssistantDiv().textContent += text;
+      voiceTooltipMessages.scrollTop = voiceTooltipMessages.scrollHeight;
+    }
+    // TTS pipeline
     setVoiceStatus('speaking');
     speechBuffer += text;
     flushSpeechBuffer(false);
   },
   onReplyDone() {
     if (!window.state?.currentChat?.voice_mode) return;
+    voiceStreamDone = true;
+    // Flush remaining buffer
     flushSpeechBuffer(true);
+    // Close the stream div and show conclusion buttons
+    _clearAssistantDiv();
+    if (voiceTempChatId) {
+      voiceConversationComplete = true;
+      voiceTooltipConclusion.hidden = false;
+    }
   },
   onReplyError() {
     if (!window.state?.currentChat?.voice_mode) return;
+    voiceStreamDone = true;
     speechBuffer = '';
+    _clearAssistantDiv();
     if (pendingSpeechCount === 0) setVoiceStatus('idle');
   },
 };

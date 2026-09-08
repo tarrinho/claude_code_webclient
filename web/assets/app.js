@@ -1617,6 +1617,7 @@ async function loadSettings() {
     if (response.ok) {
       const data = await response.json();
       _loadedSettings = data;
+      state.settings = data;
       byId('ver').textContent = data.version || '';
       if (data.session_ttl_s) byId('sessionTtl').value = data.session_ttl_s;
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;

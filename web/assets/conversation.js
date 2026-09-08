@@ -1298,7 +1298,7 @@ export function createConversationController(dependencies) {
             }
             fullText += event.content || '';
             window.voiceConversation?.onReplyChunk(event.content || '');
-            if (viewingChatId === chatId) {
+            if (viewingChatId === chatId && !window.state?.currentChat?.voice_mode) {
               renderSafeText(assistantBubble, fullText);
               setStreamState('responding');
               followNewContent(shouldFollow);

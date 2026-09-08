@@ -7,10 +7,10 @@
 
 import {apiFetch} from './api.js?v=1';
 
-const voiceMicBtn = document.getElementById('voiceMicBtn');
-const voiceLiveBtn = document.getElementById('voiceLiveBtn');
-const voiceStopBtn = document.getElementById('voiceStopBtn');
-const voiceSendBtn = document.getElementById('sendBtn');
+let voiceMicBtn = document.getElementById('voiceMicBtn');
+let voiceLiveBtn = document.getElementById('voiceLiveBtn');
+let voiceStopBtn = document.getElementById('voiceStopBtn');
+let voiceSendBtn = document.getElementById('sendBtn');
 
 const SILENCE_TIMEOUT_MS = 1000;
 let recognition = null;
@@ -251,12 +251,6 @@ async function openVoiceTooltip() {
   accumulatedText = '';
   lastFinalChunk = '';
 
-  // Wire up voice buttons inside tooltip (listeners must be bound after
-  // these elements exist; variable reassignment alone does not move listeners).
-  voiceMicBtn = voiceTooltipMic;
-  voiceLiveBtn = voiceTooltipLive;
-  voiceStopBtn = voiceTooltipStop;
-  voiceSendBtn = voiceTooltipSend;
   setVoiceStatus('idle');
   updateVoiceButtonVisibility();
 }

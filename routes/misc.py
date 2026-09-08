@@ -477,7 +477,7 @@ async def handle_usage_get(request: Request):
             )
     totals = await db.usage_totals(owner, days)
     for row in totals:
-        if row.get("provider") != "claude_code":
+        if row.get("provider") != "through_claude_code":
             row["cost_usd"] = None
             # Prefer the CLI's own assessment when it gave one: that is a
             # statement from the tool, not an inference from our base_url.
@@ -488,7 +488,7 @@ async def handle_usage_get(request: Request):
             )
     recent = await db.usage_recent(owner, limit)
     for row in recent:
-        if row.get("provider") != "claude_code":
+        if row.get("provider") != "through_claude_code":
             row["cost_usd"] = None
 
     return JSONResponse(
@@ -540,7 +540,7 @@ async def handle_usage_series_get(request: Request):
     # turn with Anthropic's rates, so a gateway's figure is arithmetic on the
     # wrong number. Blanked here for the same reason /api/usage blanks it.
     for row in series:
-        if row.get("provider") != "claude_code":
+        if row.get("provider") != "through_claude_code":
             row["cost_usd"] = None
 
     return JSONResponse(

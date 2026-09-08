@@ -206,9 +206,7 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
     if not parent_id:
         return None
 
-    # Read all voice chat messages
-    messages_data, _ = await db.messages_page(parent_id, limit=2000)
-    # Read voice chat messages
+    # Read voice chat messages (the child/temp chat)
     voice_msgs, _ = await db.messages_page(chat_id, limit=2000)
     if not voice_msgs:
         return None
@@ -229,7 +227,13 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
 
     parent_model = parent.get("model") or ""
     if not parent_model:
-        return None
+        # Normal chat may not have a pinned model; fall back to the global default.
+        try:
+            parent_model = await runner.get_default_model()
+            if not parent_model:
+                return None
+        except Exception:
+            return None
 
     # Query the parent's backend for the summary generation
     parent_backend = None
@@ -243,6 +247,17 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
             )
     except Exception:
         pass
+
+    # Fallback: if parent has no pinned machine, try the active default.
+    if not parent_backend:
+        try:
+            default_machine = await db.ai_machine_active(owner)
+            if default_machine:
+                parent_backend = await db_machines.ai_machine_backend_by_id(
+                    default_machine["id"], owner
+                )
+        except Exception:
+            pass
 
     parent_base_url = (parent_backend or {}).get("base_url")
     parent_api_key = (parent_backend or {}).get("api_key")

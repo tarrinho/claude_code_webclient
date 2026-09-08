@@ -30,6 +30,15 @@ export const state = {
   previousFocus: null,
 };
 window.state = state;
+// Expose a refresh hook for voice handoff and other external consumers.
+window.__webConsoleRefresh = async (chatId) => {
+  try {
+    await refreshChats();
+    if (chatId && chatId === state.currentChat?.id) {
+      conversationController?.refreshCurrent();
+    }
+  } catch {}
+};
 
 // Exported for machines.js, same circular-import argument as `state` above --
 // machines.js only reads these inside function bodies, never at its own
@@ -245,6 +254,8 @@ async function _openMap() {
   const btn = byId('supervisorMapBtn');
   if (!panel) return;
   if (!panel.hidden) { _closeMap(); return; }
+  // Remove attribute and set property to guarantee open state
+  panel.removeAttribute('hidden');
   panel.hidden = false;
 
   try {

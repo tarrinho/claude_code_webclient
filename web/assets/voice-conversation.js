@@ -276,6 +276,7 @@ function closeVoiceTooltip() {
 async function voiceHandoffAgree() {
   if (!voiceTempChatId) return;
   voiceAgreeBtn.disabled = true;
+  const parentId = voiceParentState?.id;
   try {
     const response = await apiFetch(`/api/chats/${voiceTempChatId}/voice/handoff`, {
       method: 'POST',
@@ -288,11 +289,18 @@ async function voiceHandoffAgree() {
       return;
     }
     showToast('Voice conversation applied to parent chat');
-    // Restore parent and continue
+    // Restore parent, refresh its messages (handoff appended summary)
     closeVoiceTooltip();
+    // Refresh sidebar (temp chat deleted) + parent chat messages
+    if (parentId && window.__webConsoleRefresh) {
+      window.__webConsoleRefresh(parentId);
+    }
   } catch {
     showToast('Could not handoff to parent chat', 'error');
     closeVoiceTooltip();
+    if (parentId && window.__webConsoleRefresh) {
+      window.__webConsoleRefresh(parentId);
+    }
   } finally {
     voiceAgreeBtn.disabled = false;
   }
@@ -304,6 +312,7 @@ async function voiceHandoffReject() {
     closeVoiceTooltip();
     return;
   }
+  const parentId = voiceParentState?.id;
   voiceRejectBtn.disabled = true;
   try {
     await apiFetch(`/api/chats/${voiceTempChatId}`, {
@@ -312,6 +321,7 @@ async function voiceHandoffReject() {
   } catch { /* ignore */ }
   showToast('Voice conversation discarded');
   closeVoiceTooltip();
+  if (parentId) window.__webConsoleRefresh?.(parentId);
   voiceRejectBtn.disabled = false;
 }
 
@@ -321,11 +331,13 @@ voiceTooltipClose.addEventListener('click', () => {
     // Post-conclusion: force reject (discard)
     voiceHandoffReject();
   } else if (voiceTempChatId) {
-    // Mid-conversation: delete temp, restore parent
+    // Mid-conversation: delete temp, restore parent, refresh sidebar
+    const parentId = voiceParentState?.id;
     apiFetch(`/api/chats/${voiceTempChatId}`, {
       method: 'DELETE',
     }).catch(() => {});
     closeVoiceTooltip();
+    window.__webConsoleRefresh?.(parentId);
   } else {
     closeVoiceTooltip();
   }

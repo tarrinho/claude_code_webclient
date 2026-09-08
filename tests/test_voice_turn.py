@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import auth
 import config
 import db
-import runner
+import routes.db_machines as db_machines
 
 HTTPS = "https://testserver"
 

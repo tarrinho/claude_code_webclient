@@ -2543,5 +2543,97 @@ class ChatRowMenuBrowserTests(_BrowserFixture):
         )
 
 
+class SupervisorMapBrowserTests(_BrowserFixture):
+    """Browser tests for the supervisor map panel."""
+
+    def _load(self):
+        """Open the page on the test server."""
+        self.page.goto(f"{self.base}", timeout=10_000)
+        self.page.wait_for_load_state("domcontentloaded")
+        self.page.evaluate("() => new Promise(r => setTimeout(r, 500))")
+
+    def test_panel_opens_closes(self):
+        """Clicking the map icon opens the panel, close hides it."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        btn = self.page.query_selector("#supervisorMapBtn")
+        self.assertIsNotNone(btn, "supervisorMapBtn must exist")
+        btn.click()
+        self.page.wait_for_timeout(2000)  # fetch + D3 render
+
+        panel = self.page.query_selector("#supervisorMapPanel")
+        self.assertIsNotNone(panel)
+        self.assertEqual(panel.get_attribute("hidden"), None,
+                         "panel must not be hidden")
+
+        close_btn = self.page.query_selector("#supervisorMapClose")
+        self.assertIsNotNone(close_btn)
+        close_btn.click()
+        self.page.wait_for_timeout(300)
+
+        self.assertEqual(panel.get_attribute("hidden"), "",
+                         "panel must be hidden after close")
+
+    def test_zoom_controls_exist(self):
+        """Zoom buttons are present in the panel header."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(2000)
+
+        self.assertIsNotNone(
+            self.page.query_selector("#mapFitBtn"),
+            "fit-to-view button must exist",
+        )
+        self.assertIsNotNone(
+            self.page.query_selector("#mapZoomOutBtn"),
+            "zoom-out button must exist",
+        )
+        self.assertIsNotNone(
+            self.page.query_selector("#mapZoomInBtn"),
+            "zoom-in button must exist",
+        )
+
+    def test_drawer_element_exists(self):
+        """The detail drawer DOM node is created."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(2000)
+
+        self.assertIsNotNone(
+            self.page.query_selector("#mapDetailDrawer"),
+            "detail drawer must exist",
+        )
+
+    def test_svg_exists(self):
+        """The D3 SVG container is created even when no agents exist."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(2000)
+
+        self.assertIsNotNone(
+            self.page.query_selector("#supervisorMapSvg"),
+            "D3 SVG container must exist",
+        )
+
+    def test_no_script_errors(self):
+        """Opening the map panel produces zero console errors."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.errors.clear()
+
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(2000)
+
+        self.assertEqual(self.errors, [],
+                         f"supervisor map panel caused console errors: {self.errors}")
+
+
 if __name__ == "__main__":
     unittest.main()

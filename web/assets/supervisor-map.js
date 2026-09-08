@@ -25,6 +25,31 @@ const RADIUS = Math.min(WIDTH, HEIGHT) / 2 - 50;
 
 export function renderSupervisorMap(data) {
   _data = data;
+
+  if (!data || !data.children || data.children.length === 0) {
+    // Always create the SVG element so the DOM query for it succeeds.
+    _svg = d3.select("#supervisorMapSvg")
+      .attr("width", WIDTH)
+      .attr("height", HEIGHT);
+    if (!_svg || _svg.node() === null) {
+      // The SVG element doesn't exist in DOM yet — this shouldn't happen
+      // but guard anyway.
+      const statusEl = document.getElementById("mapStatusEmpty");
+      if (statusEl) statusEl.hidden = false;
+    } else {
+      _svg.selectAll("*").remove();
+      _zoom = d3.zoom().scaleExtent([0.2, 5]);
+      _svg.call(_zoom);
+    }
+    const statusEl = document.getElementById("mapStatusEmpty");
+    if (statusEl) statusEl.hidden = false;
+    return;
+  }
+
+  // Hide empty-state message
+  const statusEl = document.getElementById("mapStatusEmpty");
+  if (statusEl) statusEl.hidden = true;
+
   _svg = d3.select("#supervisorMapSvg")
     .attr("width", WIDTH)
     .attr("height", HEIGHT);

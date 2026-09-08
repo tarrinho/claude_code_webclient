@@ -783,6 +783,10 @@ button{touch-action:manipulation}
 #supervisorMapPanel .map-detail-meta {
   color: #999; font-size: 10px;
 }
+#supervisorMapPanel .map-empty {
+  padding: 20px; text-align: center; color: #999;
+  font-size: 14px;
+}
 /* Node hover */
 #supervisorMapPanel .node:hover circle {
   stroke: var(--fg, #1a1a2e); stroke-width: 2px;

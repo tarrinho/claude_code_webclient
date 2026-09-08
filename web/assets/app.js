@@ -232,28 +232,25 @@ async function _openMap() {
   if (!panel) return;
   if (!panel.hidden) { _closeMap(); return; }
   panel.hidden = false;
-  btn?.removeAttribute('hidden');
 
   try {
     const res = await fetch('/api/supervisor-map');
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    if (!data.children || data.children.length === 0) {
-      byId('mapBody').innerHTML = '<p style="padding:20px;text-align:center;color:#999">No agents running.</p>';
-      return;
-    }
-    const { renderSupervisorMap } = await import('./supervisor-map.js?v=1');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=1');
+    if (closeMap) closeMap();
     renderSupervisorMap(data);
   } catch {
-    byId('mapBody').innerHTML = '<p style="padding:20px;text-align:center;color:#999">Connection error.</p>';
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=1');
+    if (closeSupervisorMap) closeSupervisorMap();
+    byId('mapStatusEmpty').textContent = 'Connection error.';
+    byId('mapStatusEmpty').hidden = false;
   }
 }
 
 async function _closeMap() {
   const panel = byId('supervisorMapPanel');
-  const btn = byId('supervisorMapBtn');
   if (panel) panel.hidden = true;
-  if (btn) btn.setAttribute('hidden', '');
   const { closeSupervisorMap } = await import('./supervisor-map.js?v=1');
   closeSupervisorMap();
 }

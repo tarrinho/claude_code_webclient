@@ -1823,7 +1823,8 @@ export async function loadModelsFor(machineId, force = false) {
   // call _refreshServedModels() themselves.
   if (!force && _modelsByMachine.has(machineId)) return;
   try {
-    const response = await apiFetch(`/api/models?machine_id=${encodeURIComponent(machineId)}`);
+    const url = `/api/models?machine_id=${encodeURIComponent(machineId)}${force ? '&force=1' : ''}`;
+    const response = await apiFetch(url);
     if (!response.ok) throw new Error('Could not load models');
     const data = await response.json();
     _modelsByMachine.set(machineId, {

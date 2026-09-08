@@ -54,7 +54,8 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
         "CASE WHEN enabled = 1 THEN 1 ELSE 0 END AS enabled, "
         "CASE WHEN api_key IS NOT NULL AND TRIM(api_key) <> '' THEN 1 ELSE 0 END "
         "AS has_api_key, "
-        "created_at, updated_at "
+        "created_at, updated_at, "
+        "models_list, models_updated_at "
         "FROM ai_machines WHERE id = ? AND owner_id = ?",
         (id, owner_id),
     )
@@ -245,6 +246,19 @@ async def ai_machine_set_models(
         "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?",
         [*vals, machine_id, owner_id],
     )  # nosec B608: column names are literals, values parameterised
+    await db.db_conn.commit()
+    return cur.rowcount > 0
+
+
+async def ai_machine_set_models_list(
+    machine_id: str, owner_id: str, models_list: str, models_updated_at: str
+) -> bool:
+    """Persist the full model list (JSON) and its timestamp for a machine."""
+    cur = await db.db_conn.execute(
+        "UPDATE ai_machines SET models_list = ?, models_updated_at = ? "
+        "WHERE id = ? AND owner_id = ?",
+        (models_list, models_updated_at, machine_id, owner_id),
+    )
     await db.db_conn.commit()
     return cur.rowcount > 0
 

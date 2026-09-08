@@ -722,9 +722,18 @@ async def handle_models_list(request: Request):
     Defaults to the active machine. ``?machine_id=`` inspects another one
     without activating it, so choosing which models a backend offers does not
     require making it live first.
+
+    ``?force=1`` re-probes the provider endpoint, stores the result in DB,
+    and serves from the probe (cache + DB entries are invalidated).
+
+    Normal load serves from the in-memory cache (60s TTL) first, then from
+    the persisted ``models_list`` column on disk. This way page loads never
+    hit the provider endpoint unless the force flag is set or the cache
+    has expired.
     """
     session = request.state.session
     machine_id = (request.query_params.get("machine_id") or "").strip()
+    force = request.query_params.get("force", "0") == "1"
     if machine_id:
         machine = await db.ai_machine_get(machine_id, session["user"])
         if not machine:
@@ -743,6 +752,8 @@ async def handle_models_list(request: Request):
         config.ANTHROPIC_BASE_URL
     )
     now = time.monotonic()
+
+    # Check in-memory cache (fast path within a process lifetime).
     cached = _models_cache.get(base_url)
     if cached and now - cached[0] < _MODELS_CACHE_TTL_S:
         return JSONResponse(
@@ -754,6 +765,29 @@ async def handle_models_list(request: Request):
                 **_machine_model_selection(machine),
             }
         )
+
+    # Force: probe provider, store in DB + cache, serve from probe.
+    if force:
+        _models_cache.pop(base_url, None)  # Invalidate cache so we record fresh data below.
+
+    # Normal load: fall back to persisted models_list column when cache is stale.
+    if not force:
+        stored = machine.get("models_list")
+        if stored:
+            try:
+                models = json.loads(stored)
+                return JSONResponse(
+                    {
+                        "models": models,
+                        "source": "db",
+                        "endpoint": base_url,
+                        "reason": None,
+                        **_machine_model_selection(machine),
+                    }
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                _log.warning("models_list corrupted for %s, re-probing", base_url)
+
     host = _base_url_host(base_url)
     # Same SSRF blocklist the transport path applies before connecting out.
     _resolve_host(host)
@@ -795,6 +829,16 @@ async def handle_models_list(request: Request):
     if not models:
         return _builtin_models("The endpoint listed no models.", base_url, machine)
     _models_cache[base_url] = (now, models)
+
+    # Persist the fresh model list in DB so future page loads don't re-probe.
+    if force:
+        try:
+            await db.ai_machine_set_models_list(
+                machine["id"], session["user"], json.dumps(models), db._now()
+            )
+        except Exception:
+            _log.warning("Failed to persist models_list for %s", base_url, exc_info=True)
+
     return JSONResponse(
         {
             "models": models,

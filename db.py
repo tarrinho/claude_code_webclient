@@ -287,6 +287,11 @@ async def init() -> None:
             -- model the backend serves is offered, so the feature is opt-in
             -- and an untouched machine can never present an empty picker.
             active_models TEXT NOT NULL DEFAULT '[]',
+            -- Full model list from the provider probe (JSON dump of {id,
+            -- display_name} entries). Populated by a probe + persisted so
+            -- page loads serve from DB rather than hitting the endpoint.
+            models_list   TEXT,
+            models_updated_at TEXT,
             base_url      TEXT,
             description   TEXT,
             active        INTEGER NOT NULL DEFAULT 0,
@@ -623,6 +628,7 @@ async def init() -> None:
         CREATE INDEX IF NOT EXISTS idx_system_samples_at ON system_samples(created_at);
     """)
     await _ensure_chat_columns()
+    await _ensure_machines_columns()
     await _migrate_ssh_proxy_machines_to_transports()
     await _clear_dangling_machine_pins()
     await _ensure_usage_columns()
@@ -1042,16 +1048,6 @@ async def _ensure_chat_columns() -> None:
     except Exception:
         _log.warning("type_backfill failed (non-fatal)")
 
-    # Migrate ai_machines table for existing databases
-    try:
-        ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
-        ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
-    except Exception:
-        ma_columns = set()
-    if "owner_id" not in ma_columns:
-        await db_conn.execute(
-            "ALTER TABLE ai_machines ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
-        )
     # usage_events gained cost_basis after first release.
     try:
         ue_cursor = await db_conn.execute("PRAGMA table_info(usage_events)")
@@ -1066,18 +1062,6 @@ async def _ensure_chat_columns() -> None:
         # renders a blank title beside real numbers.
         await db_conn.execute("ALTER TABLE usage_events ADD COLUMN session_id TEXT")
 
-    if ma_columns and "provider" not in ma_columns:
-        # Existing rows are all claude_proxy hosts -- the default matches them.
-        await db_conn.execute(
-            "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude_code'"
-        )
-    # Rename old provider literals to the canonical set.
-    await db_conn.execute(
-        "UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'anthropic'"
-    )
-    await db_conn.execute(
-        "UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'proxy'"
-    )
     try:
         rm_cursor = await db_conn.execute("PRAGMA table_info(read_marks)")
         rm_columns = {row["name"] for row in await rm_cursor.fetchall()}
@@ -1085,6 +1069,42 @@ async def _ensure_chat_columns() -> None:
         rm_columns = set()
     if rm_columns and "dismissed_at" not in rm_columns:
         await db_conn.execute("ALTER TABLE read_marks ADD COLUMN dismissed_at TEXT")
+
+
+async def _ensure_machines_columns() -> None:
+    """Additive column migrations for the ai_machines table.
+
+    Called from init() after the main tables are created so that a fresh
+    database never attempts ALTERs.  Also creates the ssh_tunnels table on
+    first boot.
+    """
+    try:
+        ma_cursor = await db_conn.execute("PRAGMA table_info(ai_machines)")
+        ma_columns = {row["name"] for row in await ma_cursor.fetchall()}
+    except Exception:
+        ma_columns = set()
+
+    if ma_columns and "provider" not in ma_columns:
+        # Existing rows are all claude_proxy hosts -- the default matches them.
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude_code'"
+        )
+    # models_list/models_updated_at: cache the full model list per backend.
+    if ma_columns and "models_list" not in ma_columns:
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN models_list TEXT"
+        )
+        await db_conn.execute(
+            "ALTER TABLE ai_machines ADD COLUMN models_updated_at TEXT"
+        )
+
+    # Rename old provider literals to the canonical set.
+    await db_conn.execute(
+        "UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'anthropic'"
+    )
+    await db_conn.execute(
+        "UPDATE ai_machines SET provider = 'claude_code' WHERE provider = 'proxy'"
+    )
 
     if ma_columns and "active_models" not in ma_columns:
         # '[]' means "offer everything served", which is what existing rows did.

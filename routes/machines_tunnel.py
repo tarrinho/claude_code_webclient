@@ -144,6 +144,22 @@ async def tunnel_status_endpoint(req: Request):
         if m.get("transport_id"):
             mid = m["id"]
             status = await tunnel_manager.tunnel_status(mid)
+            if not status:
+                # Tunnel manager in-memory state may be empty if the manager
+                # hasn't been started yet but the DB record says the tunnel is
+                # up (e.g. a tunnel was started externally or the manager
+                # process restarted). Fall back to the persisted row.
+                db_row = await db.ssh_tunnel_get(mid)
+                if db_row:
+                    status = {
+                        "state": db_row.get("state"),
+                        "tunnel_up": db_row.get("tunnel_up"),
+                        "proxy_ok": db_row.get("proxy_ok"),
+                        "local_port": db_row.get("local_port", 0),
+                        "error_msg": db_row.get("error_msg"),
+                        "connected_at": db_row.get("connected_at"),
+                        "last_check": db_row.get("last_check"),
+                    }
             if status:
                 result[mid] = {
                     "state": status.get("state"),

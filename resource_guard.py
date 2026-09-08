@@ -31,7 +31,12 @@ _log = logging.getLogger("wc.resource_guard")
 # "The rule"). Environment variables rather than constants because they are
 # expected to need tuning within a week of real use, and tuning should not need
 # a code change or a restart of anything that has not already restarted.
-_DEFAULT_COST_MB = 320      # measured mean agent RSS 310 MB, rounded up
+# Re-measured 2026-09-08 across 6 live agents: mean 337 MB, median 349 MB,
+# range 242-386 MB. The old 320 came from a 310 MB mean and was an *under*
+# estimate, so the projection was optimistic everywhere it was used -- worth
+# knowing, because the guard was disabled on the agent path in the belief that
+# it over-stated the cost. It did the opposite.
+_DEFAULT_COST_MB = 350
 _DEFAULT_FLOOR_MB = 400     # headroom for the OS, the console and the proxy
 _DEFAULT_SWAP_MIN_RATIO = 0.40
 
@@ -348,11 +353,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--cost-mb", type=int, default=None,
                         help="megabytes the work about to start will need")
+    # Callers do not all want the same floor. The floor protects the OS, the
+    # console and the proxy from the OOM killer, and how much protection is
+    # warranted depends on what is being started: a test suite that can simply
+    # be retried should yield to a live service earlier than an interactive
+    # session someone is waiting on. Without this flag the only way to move the
+    # floor was an environment variable, so the agent path could not ask for a
+    # different one than the suite runner -- and it was commented out instead.
+    parser.add_argument("--floor-mb", type=int, default=None,
+                        help="megabytes that must remain after the work starts")
     parser.add_argument("--quiet", action="store_true",
                         help="decide silently; report only via the exit code")
     args = parser.parse_args(argv)
 
-    verdict = check(args.cost_mb)
+    verdict = check(args.cost_mb, floor_mb=args.floor_mb)
     if not args.quiet:
         print(explain(verdict), file=sys.stderr)
     return 0 if verdict.ok else 1

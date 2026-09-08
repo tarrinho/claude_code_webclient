@@ -1531,6 +1531,68 @@ async def _api_chat_auto_answer_get(request: Request, chat_id: str):
     return await handle_chat_auto_answer_get(request, chat_id)
 
 
+@router.post("/api/chats/{chat_id}/agent-reply")
+async def _api_chat_agent_reply(request: Request, chat_id: str):
+    """Reply to an agent that messaged this session.
+
+    Writes a <cross-session-message> record into the target session's
+    transcript and fires a wake-up turn through the proxy so the CLI's
+    MCP picks it up promptly.
+    """
+    body = await request.json()
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    chat = await db.chat_get(chat_id, session["user"])
+    target = str(body.get("to") or "").strip()
+
+    # 1. Write the cross-session message into the target's transcript.
+    result = await asyncio.to_thread(transcripts.agent_reply_to, target, text)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("reason", "unknown error"))
+
+    # 2. Fire a wake-up turn through the proxy so the CLI's MCP
+    #    processes the pending cross-session message queue.  A bare
+    #    newline is enough to trigger another read of the transcript.
+    target_session_id = _resolve_session_id(target)
+    if target_session_id and config.PROXY_ENABLED:
+        try:
+            await _fire_wake_up(target_session_id, chat["work_dir"], chat_id, session.get("user"))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "wake-up failed for agent-reply to %s: %s",
+                target, exc,
+            )
+
+    return JSONResponse({"ok": True, "path": result.get("path", ""), "to": target})
+
+
+async def _resolve_session_id(name: str) -> str | None:
+    """Resolve a session name to its UUID for proxy turn delivery."""
+    by_session, _ = transcripts._session_names_sync()
+    return by_session.get(name)
+
+
+async def _fire_wake_up(
+    session_id: str, work_dir: str, chat_id: str, owner: str | None,
+) -> None:
+    """Send a minimal turn through the proxy to wake the target session.
+
+    The CLI's MCP reads cross-session message queues on every transcript
+    append. A fresh turn forces a new read, which surfaces pending
+    <cross-session-message> records.
+    """
+    await runner._proxy_turn(
+        " ",  # minimal whitespace-only prompt
+        session_id,
+        work_dir,
+        chat_id,
+        None,  # model — falls back to default
+        owner,
+    )
+
+
 @router.get("/api/chats/{chat_id}/live")
 async def _api_chat_live(request: Request, chat_id: str):
     return await handle_chat_live(request, chat_id)

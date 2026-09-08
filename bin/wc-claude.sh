@@ -116,11 +116,37 @@ resolve_claude_bin
 # See docs/superpowers/specs/2026-09-08-resource-guard-design.md. Refusal is
 # hard -- no prompt, no y/N -- and WC_RESOURCE_GUARD=off is the documented,
 # logged way past it.
-#PTif ! guard_output="$(python3 -m resource_guard --cost-mb "${WC_AGENT_COST_MB:-320}" 2>&1)"; then
-#PT    echo "wc-claude: refused to start — not enough memory on this host." >&2
-#PT    printf '%s\n' "$guard_output" >&2
-#PT    exit 75  # EX_TEMPFAIL: a retry later may well succeed
-#PTfi
+# This check WARNS. It does not block, and that is deliberate.
+#
+# It shipped as a hard refusal (exit 75). Pedro commented it out, and when it
+# was restored with a lower floor he asked for the blockage removed outright --
+# reaffirmed after the trade-off below was put to him, so it is a settled
+# decision rather than an oversight. Do not turn it back into a refusal without
+# asking him.
+#
+# The reasoning against blocking, which is sound: a refusal here stops the
+# operator from starting the session they need in order to *fix* the overloaded
+# host. It fails in the worst direction -- the fuller the box gets, the more
+# certainly it locks you out of the one tool that could free it. A warning
+# carries the same information and leaves the judgement with the human, who can
+# see which sessions are disposable and which are mid-task; this script cannot.
+#
+# What is lost is real and worth stating: nothing now prevents an OOM kill of
+# webconsole.service, which has happened before. The thresholds stay honest so
+# the warning is worth reading -- re-measured 2026-09-08 across 6 live agents,
+# mean RSS 337 MB, median 349 MB, so the previous 320 MB cost was an
+# UNDER-estimate. On a 3816 MB host, six agents at ~340 MB leave no room for a
+# seventh whatever any threshold says; when this warns, the honest fix is to
+# close a session.
+#
+# WC_AGENT_COST_MB / WC_AGENT_FLOOR_MB tune the numbers.
+# WC_RESOURCE_GUARD=off silences it entirely.
+if ! guard_output="$(python3 -m resource_guard \
+        --cost-mb "${WC_AGENT_COST_MB:-350}" \
+        --floor-mb "${WC_AGENT_FLOOR_MB:-250}" 2>&1)"; then
+    echo "wc-claude: warning — this host is short of memory; starting anyway." >&2
+    printf '%s\n' "$guard_output" >&2
+fi
 
 # --wc-profile <name> pins this session to one backend for its whole life,
 # instead of following whatever the console is currently routing to. Consumed

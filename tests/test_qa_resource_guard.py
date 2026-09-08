@@ -224,6 +224,48 @@ class CliTests(unittest.TestCase):
         finally:
             os.environ.pop("WC_RESOURCE_FLOOR_MB", None)
 
+    def test_the_floor_can_be_set_on_the_command_line(self):
+        """--floor-mb exists so two callers can want different reserves.
+
+        Added when the agent-spawn check in bin/wc-claude.sh was found
+        commented out: the only way to move the floor was an environment
+        variable, so that path could not ask for a lower reserve than the
+        suite runner and was switched off instead of tuned. A flag that is
+        parsed but not passed to check() would leave that exactly as it was,
+        so this asserts the value actually reaches the verdict.
+        """
+        import os
+
+        previous = os.environ.pop("WC_RESOURCE_GUARD", None)
+        try:
+            self.assertEqual(
+                resource_guard.main(["--cost-mb", "0", "--floor-mb", "0", "--quiet"]), 0)
+            self.assertEqual(
+                resource_guard.main(
+                    ["--cost-mb", "0", "--floor-mb", "99999999", "--quiet"]), 1,
+                "--floor-mb was accepted but never reached check()")
+        finally:
+            if previous is not None:
+                os.environ["WC_RESOURCE_GUARD"] = previous
+
+    def test_the_flag_beats_the_environment_variable(self):
+        """An explicit flag is a caller stating its own requirement; an env var
+        is ambient. If the variable won, a shell that had exported a permissive
+        floor would silently relax every caller that had chosen a strict one.
+        """
+        import os
+
+        previous = os.environ.pop("WC_RESOURCE_GUARD", None)
+        os.environ["WC_RESOURCE_FLOOR_MB"] = "0"
+        try:
+            self.assertEqual(
+                resource_guard.main(
+                    ["--cost-mb", "0", "--floor-mb", "99999999", "--quiet"]), 1)
+        finally:
+            os.environ.pop("WC_RESOURCE_FLOOR_MB", None)
+            if previous is not None:
+                os.environ["WC_RESOURCE_GUARD"] = previous
+
     def test_exit_one_when_refused(self):
         import os
 

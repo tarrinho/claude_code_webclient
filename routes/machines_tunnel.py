@@ -161,10 +161,17 @@ async def tunnel_status_endpoint(req: Request):
                         "last_check": db_row.get("last_check"),
                     }
             if status:
+                # When in-memory state is missing (manager loop not running),
+                # the DB record may have a stale proxy_ok=0 even though the
+                # tunnel is actually connected. Infer proxy_ok from
+                # tunnel_up+state when the in-memory probe hasn't updated it.
+                proxy_ok = bool(status.get("proxy_ok"))
+                if not proxy_ok and status.get("state") == "connected" and status.get("tunnel_up"):
+                    proxy_ok = True
                 result[mid] = {
                     "state": status.get("state"),
                     "tunnel_up": bool(status.get("tunnel_up")),
-                    "proxy_ok": bool(status.get("proxy_ok")),
+                    "proxy_ok": proxy_ok,
                     "local_port": status.get("local_port", 0),
                     "error_msg": status.get("error_msg"),
                     "connected_at": status.get("connected_at"),

@@ -156,3 +156,110 @@ async def handle_transport_test_saved(request: Request, transport_id: str):
         transport["ssh_host"], transport["ssh_user"], transport["ssh_key_path"],
     )
     return JSONResponse(result)
+
+
+@router.post("/api/transports/{transport_id}/check")
+async def handle_transport_check(request: Request, transport_id: str):
+    """Is the far side ready to serve turns, and if not, what is missing?
+
+    Read-only. SSH succeeding says nothing about whether turns can flow: the
+    host also needs claude_proxy.py listening on config.PROXY_PORT with the
+    same token this database holds, and the claude CLI and python3 for it to
+    use. Adding a transport creates none of that, and its absence surfaces as
+    "Cannot connect to proxy at 127.0.0.1:<port>" on every turn -- which reads
+    as a local fault and is not one.
+
+    Deliberately not tunnel_manager_ssh.probe_remote: that needs an
+    established tunnel, and a cold transport is exactly when these questions
+    matter most.
+    """
+    import config
+    import transport_readiness
+
+    session = request.state.session
+    transport = await db.ssh_transport_get(transport_id, session["user"])
+    if not transport:
+        raise HTTPException(status_code=404, detail="Transport not found")
+
+    token = (await db.setting_get("proxy_token") or "").strip()
+    result = await transport_readiness.check_transport(
+        transport["ssh_host"], transport["ssh_user"], transport["ssh_key_path"],
+        port=config.PROXY_PORT, local_token=token,
+    )
+    _log.info(
+        "transport_check name=%s ready=%s reachable=%s",
+        transport["name"], result.ready, result.reachable,
+    )
+    return JSONResponse(result.as_dict())
+
+
+@router.post("/api/transports/{transport_id}/init")
+async def handle_transport_init(request: Request, transport_id: str):
+    """Install and start claude_proxy.py on the transport host.
+
+    Separate from /check, and separately clicked, because this one writes: it
+    copies files, installs a token, writes a systemd --user unit and enables a
+    service on a machine this console does not own. Everything else the
+    console does to a transport only reads.
+
+    Shells out to bin/wc-deploy-proxy.sh rather than reimplementing the six
+    steps here. One implementation, for the reason backend_env.deltas exists:
+    the script reads the port from config.PROXY_PORT and the token from this
+    database, and those two facts are precisely what the earlier hand-written
+    deploy scripts got wrong -- a proxy started on 9002 while the tunnel
+    forwarded to 9000, and a token pasted in as a literal that went stale.
+    A second implementation would be a second thing that has to agree.
+
+    Idempotent: re-running redeploys the current code and restarts the
+    service, so the button is safe to press again after a change here.
+    """
+    import asyncio
+    from pathlib import Path
+
+    session = request.state.session
+    transport = await db.ssh_transport_get(transport_id, session["user"])
+    if not transport:
+        raise HTTPException(status_code=404, detail="Transport not found")
+
+    root = Path(__file__).resolve().parent.parent
+    script = root / "bin" / "wc-deploy-proxy.sh"
+    if not script.is_file():
+        raise HTTPException(status_code=500, detail="deploy script missing")
+
+    _log.info("transport_init_start name=%s", transport["name"])
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", str(script), transport["name"],
+            cwd=str(root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+    except asyncio.TimeoutError:
+        _log.warning("transport_init_timeout name=%s", transport["name"])
+        return JSONResponse(
+            {"ok": False, "error": "deploy timed out after 180s", "output": ""},
+            status_code=504,
+        )
+    except OSError as exc:
+        _log.exception("transport_init_spawn_failed name=%s", transport["name"])
+        return JSONResponse(
+            {"ok": False, "error": f"could not run the deploy script: {exc}"},
+            status_code=500,
+        )
+
+    # Tail, not the whole thing: the interesting part of a failure is the end,
+    # and the script prints remote systemctl status on failure.
+    output = raw.decode("utf-8", "replace")
+    tail = "\n".join(output.splitlines()[-20:])
+    ok = proc.returncode == 0
+    _log.info(
+        "transport_init_done name=%s rc=%s ok=%s",
+        transport["name"], proc.returncode, ok,
+    )
+    # A non-zero exit is reported as a failure rather than a cheerful success:
+    # "ran the command, must be fine" is the whole failure mode here.
+    return JSONResponse(
+        {"ok": ok, "returncode": proc.returncode, "output": tail},
+        status_code=200 if ok else 502,
+    )

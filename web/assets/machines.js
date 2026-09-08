@@ -23,7 +23,9 @@ import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
 import {_transports, loadTransports, populateTransportPicker,
   // The transport group header offers these; see _buildTransportHeader.
-  _showEditTransport, _deleteTransport} from './transports.js?v=2';
+  _showEditTransport, _deleteTransport,
+  // Check / Init on the transport header -- see _buildTransportHeader.
+  _checkTransport, _initTransport} from './transports.js?v=3';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -472,6 +474,30 @@ function _buildTransportHeader(label, machines, transport = null) {
     editBtn.setAttribute('aria-label', `Edit transport ${transport.name}`);
     editBtn.addEventListener('click', () => _showEditTransport(transport));
     header.appendChild(editBtn);
+
+    // Check before Init, in that order, because that is the order they should
+    // be used: SSH succeeding says nothing about whether the far side can
+    // serve a turn, and Check names which of the four prerequisites is
+    // missing. Init is the only control here that writes to another host.
+    const checkBtn = document.createElement('button');
+    checkBtn.type = 'button';
+    checkBtn.className = 'transport-action';
+    checkBtn.textContent = 'Check';
+    checkBtn.title = 'Is the far side ready to serve turns?';
+    checkBtn.setAttribute('aria-label', `Check transport ${transport.name}`);
+    checkBtn.addEventListener(
+      'click', () => _checkTransport(transport, header, checkBtn));
+    header.appendChild(checkBtn);
+
+    const initBtn = document.createElement('button');
+    initBtn.type = 'button';
+    initBtn.className = 'transport-action';
+    initBtn.textContent = 'Init';
+    initBtn.title = 'Install and start the WebConsole proxy on this host';
+    initBtn.setAttribute('aria-label', `Initialise transport ${transport.name}`);
+    initBtn.addEventListener(
+      'click', () => _initTransport(transport, header, initBtn));
+    header.appendChild(initBtn);
 
     const delBtn = document.createElement('button');
     delBtn.type = 'button';

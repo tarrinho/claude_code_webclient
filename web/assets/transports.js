@@ -107,6 +107,101 @@ export async function _deleteTransport(transport, onDeleted) {
   }
 }
 
+// ── Readiness: Check, then Init ───────────────────────────────────────────
+//
+// Two buttons rather than one, and the split is deliberate. Check only reads
+// the far side; Init copies files, installs a token and enables a systemd
+// service on a host this console does not own. Everything else the console
+// does to a transport reads, so the one operation that writes gets its own
+// deliberate click.
+//
+// They live on the transport group header, not on a machine card: there is
+// one proxy per host, and machines share transports. Two Init buttons acting
+// on the same host would make the second look broken because the first
+// already did the work.
+
+// Report lines are appended to the header rather than shown in an alert: the
+// point of Check is a four-line breakdown, and "not ready" without saying
+// which of the four failed sends the reader hunting -- which is exactly the
+// hunt this whole feature exists to remove.
+function _renderReadiness(header, data) {
+  header.querySelectorAll('.transport-readiness').forEach(n => n.remove());
+  const box = document.createElement('div');
+  box.className = 'transport-readiness';
+
+  if (!data.reachable) {
+    const line = document.createElement('div');
+    line.className = 'transport-check error';
+    line.textContent = `unreachable: ${data.error || 'SSH failed'}`;
+    box.appendChild(line);
+    header.appendChild(box);
+    return;
+  }
+  (data.checks || []).forEach(c => {
+    const line = document.createElement('div');
+    line.className = `transport-check ${c.ok ? 'ok' : 'error'}`;
+    // textContent throughout: detail carries remote output (a path, a
+    // systemctl state) and must never be parsed as markup.
+    line.textContent = `${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`;
+    if (!c.ok && c.remedy) line.title = c.remedy;
+    box.appendChild(line);
+  });
+  header.appendChild(box);
+}
+
+export async function _checkTransport(transport, header, btn) {
+  if (!transport) return;
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  try {
+    const resp = await apiFetch(
+      `/api/transports/${encodeURIComponent(transport.id)}/check`, {method: 'POST'});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || data.error || `Check failed (${resp.status})`);
+    }
+    _renderReadiness(header, data);
+    notifyResult(data.ready ? `${transport.name} is ready`
+                            : `${transport.name} is not ready — see the checks`,
+                 data.ready ? '' : 'error');
+  } catch (error) {
+    notifyResult(error.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+export async function _initTransport(transport, header, btn) {
+  if (!transport) return;
+  // Confirmed because it writes to another machine. Idempotent, so re-running
+  // is safe -- but "safe to repeat" is not "safe to trigger by accident".
+  if (!window.confirm(
+        `Install and start the WebConsole proxy on ${transport.name}?\n\n`
+        + 'This copies files and enables a systemd service on that host.')) return;
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Initialising…'; }
+  try {
+    const resp = await apiFetch(
+      `/api/transports/${encodeURIComponent(transport.id)}/init`, {method: 'POST'});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) {
+      // The tail of the deploy output is the useful part of a failure, so it
+      // goes to the console rather than being swallowed by a one-line toast.
+      if (data.output) console.error('[transport init]', data.output);
+      throw new Error(data.error || data.detail
+                      || `Init failed (exit ${data.returncode ?? resp.status})`);
+    }
+    notifyResult(`${transport.name} initialised`);
+    // Immediately re-check, so the buttons never leave the reader guessing
+    // whether it worked.
+    await _checkTransport(transport, header, null);
+  } catch (error) {
+    notifyResult(error.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
 export function _cancelTransportForm() {
   byId('transportForm').hidden = true;
   byId('addTransportBtn').hidden = false;

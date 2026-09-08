@@ -18,9 +18,10 @@ const NS = 'http://www.w3.org/2000/svg';
 // Terminal dwarfs the website by three orders of magnitude on a real machine,
 // so these are never stacked into one series.
 const SOURCES = [
-  {key: 'cli', label: 'Terminal', slot: 1},
-  {key: 'anthropic', label: 'Anthropic API', slot: 2},
-  {key: 'anthropic-compatible', label: 'Website', slot: 3},
+  {key: 'through_claude_code', label: 'Thru Claude Code', slot: 1},
+  {key: 'direct', label: 'API Connection', slot: 2},
+  {key: 'ssh-proxy', label: 'SSH Proxy', slot: 3},
+  {key: 'proxy', label: 'Proxy', slot: 4},
 ];
 
 function svg(tag, attrs = {}) {

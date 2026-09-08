@@ -1761,7 +1761,11 @@ export async function loadModelsFor(machineId, force = false) {
       reason: data.reason,
       endpoint: data.endpoint,
     });
-  } catch {
+  } catch (err) {
+    // Session expired redirects to /login (apiFetch). Do not overwrite
+    // the in-memory state so the existing content or the cached "Loading
+    // models…" stays on screen rather than vanishing on redirect.
+    if (err instanceof Error && err.message === 'Session expired') return;
     _modelsByMachine.set(machineId, {
       models: [],
       active: [],

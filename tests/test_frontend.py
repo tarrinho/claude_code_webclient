@@ -1,4 +1,5 @@
 import re
+import pathlib
 import unittest
 from pathlib import Path
 
@@ -243,10 +244,19 @@ class FrontendStructureTests(unittest.TestCase):
 
     def test_backend_state_is_worded_not_only_a_border(self):
         """Which backend is live was a 3px border — the panel's most important
-        fact encoded as its least visible element."""
+        fact encoded as its least visible element.
+
+        The wording moved from LIVE/STANDBY to Default/Active/Inactive when
+        "may this backend be used at all" became a separate question from
+        "which one is the default". STANDBY covered both and so distinguished
+        neither: a shelved backend rendered identically to one merely not in
+        use. This test keeps asserting the original property -- the state is
+        words, not only a border -- against the current vocabulary.
+        """
         self.assertIn("machine-state-live", self.machines)
-        self.assertIn("'LIVE'", self.machines)
-        self.assertIn("'STANDBY'", self.machines)
+        self.assertIn("'Default'", self.machines)
+        self.assertIn("'Active'", self.machines)
+        self.assertIn("'Inactive'", self.machines)
         self.assertIn(".machine-state-live{", self.css)
 
     def test_model_columns_are_labelled(self):
@@ -645,6 +655,48 @@ class FrontendStructureTests(unittest.TestCase):
         body = self.main_js_supervisor.split("export function esc(str)")[1].split("\n\n")[0]
         self.assertIn('.replace(/"/g,', body)
         self.assertIn(".replace(/'/g,", body)
+
+
+class BackendEnabledCardTests(unittest.TestCase):
+    """The three card states must be distinguishable.
+
+    `active` in the payload means "is the default" -- the column keeps that
+    meaning deliberately (see the spec's Naming section), and only the label
+    changed. So Default / Active / Inactive all have to be present and
+    distinct, or the panel says "LIVE" for a shelved backend.
+
+    Asserted on the source rather than a rendered DOM because no browser test
+    opens the Backends panel with a disabled backend. A source assertion
+    catches a deleted feature but not a broken render -- named as a gap in the
+    plan's self-review, not an oversight.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        cls.machines_js = (root / "web/assets/machines.js").read_text()
+        cls.styles_css = (root / "web/assets/styles.css").read_text()
+
+    def test_the_default_card_says_default(self):
+        self.assertIn("'Default'", self.machines_js)
+
+    def test_a_disabled_card_is_marked_inactive(self):
+        self.assertIn("machine-disabled", self.machines_js)
+        self.assertIn("'Inactive'", self.machines_js)
+
+    def test_disable_and_enable_are_both_offered(self):
+        self.assertIn("'Disable'", self.machines_js)
+        self.assertIn("'Enable'", self.machines_js)
+
+    def test_make_default_replaces_activate(self):
+        self.assertIn("'Make default'", self.machines_js)
+
+    def test_the_disabled_state_is_styled(self):
+        self.assertIn(".machine-disabled", self.styles_css)
+
+    def test_the_disable_button_carries_its_obstacle(self):
+        """A button that will 409 should say so before it is pressed."""
+        self.assertIn("_disableObstacle", self.machines_js)
 
 
 if __name__ == "__main__":

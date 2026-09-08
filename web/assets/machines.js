@@ -359,19 +359,46 @@ export function _drawMapWires() {
   wires.appendChild(svg);
 }
 
+// Why Disable would be refused, or '' when it would succeed.
+//
+// The server refuses with 409 either way; this only lets the button say so
+// before it is pressed. The 409 path still exists for the race where a
+// conversation is pinned between render and click.
+//
+// Only the default case is knowable from the list payload -- pin counts are
+// not carried there, so a pinned non-default backend still learns its fate
+// from the server. Reporting the obstacle we *can* see beats reporting none.
+function _disableObstacle(m) {
+  if (m.active) return 'This is the default backend — make another the default first.';
+  return '';
+}
+
 function _buildMachineCard(m) {
     const card = document.createElement('div');
     card.className = 'machine-card';
     if (m.active) card.classList.add('machine-active');
+    if (!m.enabled) card.classList.add('machine-disabled');
 
     const top = document.createElement('div');
     top.className = 'machine-card-top';
 
     // Which backend is live was previously a 3px border. It is the single most
     // important fact on this panel, so it is stated in words.
+    // Three states now, not two. `m.active` means "is the default" -- the
+    // column keeps that meaning deliberately (renaming it would flip a column
+    // seven resolvers read); only the wording changed. A shelved backend used
+    // to render as STANDBY, indistinguishable from one merely not in use.
     const state = document.createElement('span');
-    state.className = m.active ? 'machine-state machine-state-live' : 'machine-state';
-    state.textContent = m.active ? 'LIVE' : 'STANDBY';
+    if (!m.enabled) {
+      state.className = 'machine-state machine-state-off';
+      state.textContent = 'Inactive';
+    } else if (m.active) {
+      state.className = 'machine-state machine-state-live';
+      state.textContent = 'Default';
+    } else {
+      state.className = 'machine-state';
+      state.textContent = 'Active';
+    }
     top.appendChild(state);
 
     const ident = document.createElement('div');
@@ -410,14 +437,28 @@ function _buildMachineCard(m) {
     const actions = document.createElement('div');
     actions.className = 'machine-actions';
 
-    if (!m.active) {
-      const activateBtn = document.createElement('button');
-      activateBtn.type = 'button';
-      activateBtn.className = 'machine-action';
-      activateBtn.textContent = 'Activate';
-      activateBtn.addEventListener('click', () => _activateMachine(m.id));
-      actions.appendChild(activateBtn);
+    if (m.enabled && !m.active) {
+      const defaultBtn = document.createElement('button');
+      defaultBtn.type = 'button';
+      defaultBtn.className = 'machine-action';
+      defaultBtn.textContent = 'Make default';
+      defaultBtn.addEventListener('click', () => _activateMachine(m.id));
+      actions.appendChild(defaultBtn);
     }
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'machine-action';
+    toggleBtn.textContent = m.enabled ? 'Disable' : 'Enable';
+    if (m.enabled) {
+      const obstacle = _disableObstacle(m);
+      if (obstacle) {
+        toggleBtn.disabled = true;
+        toggleBtn.title = obstacle;
+      }
+    }
+    toggleBtn.addEventListener('click', () => _setMachineEnabled(m, !m.enabled));
+    actions.appendChild(toggleBtn);
 
     const testBtn = document.createElement('button');
     testBtn.type = 'button';
@@ -559,6 +600,36 @@ export function _renderMachineList() {
   }
   // Layout has to settle before the cards can be measured.
   requestAnimationFrame(_drawMapWires);
+}
+
+/** Enable or disable a backend, surfacing the server's refusal in full.
+ *
+ * The 409 body carries the pinned conversations by name. Rendering them is the
+ * point: "8 conversations are pinned" sends the reader hunting through the
+ * sidebar for which eight, and making the dependency visible is the whole
+ * reason disabling refuses rather than silently repointing those chats.
+ */
+export async function _setMachineEnabled(machine, enabled) {
+  try {
+    const resp = await apiFetch(`/api/machines/${encodeURIComponent(machine.id)}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      if (resp.status === 409) {
+        notifyResult(data.error || 'Cannot disable this backend', 'error');
+        return;
+      }
+      throw new Error(data.error || data.detail || `Failed (${resp.status})`);
+    }
+    await loadMachines(true);
+    _renderMachineList();
+    notifyResult(enabled ? `${machine.name} enabled` : `${machine.name} disabled`);
+  } catch (error) {
+    notifyResult(error.message, 'error');
+  }
 }
 
 export async function _activateMachine(id) {

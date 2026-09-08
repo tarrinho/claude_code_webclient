@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import unittest
+import unittest.mock
 
 import resource_guard
 
@@ -244,6 +245,90 @@ class CliTests(unittest.TestCase):
             os.environ.pop("WC_RESOURCE_FLOOR_MB", None)
             if previous is not None:
                 os.environ["WC_RESOURCE_GUARD"] = previous
+
+
+
+
+
+class CapacityTests(unittest.TestCase):
+    """existing vs total, the pair the supervisor map shows per node.
+
+    Deliberately built on the same injection points as HeadroomRuleTests
+    (meminfo=, env=) plus one more (load=), so a real host is never read here
+    -- report()'s own docstring says it belongs on a refusal path, and a test
+    suite calling it for real on every run is exactly "frequent".
+    """
+
+    def _load(self, interactive=0, turns=0):
+        return resource_guard.Load(interactive_count=interactive, turn_count=turns)
+
+    def test_todays_real_numbers(self):
+        """The numbers this feature exists to show, pinned as a regression:
+        six interactive agents, 686 MB available, nothing more fits."""
+        result = resource_guard.capacity(
+            320, floor_mb=400, meminfo=_meminfo(686), env=_CLEAN,
+            load=self._load(interactive=6),
+        )
+        self.assertEqual(result, {
+            "existing": 6, "total": 6,
+            "cost_mb": 320, "floor_mb": 400, "available_mb": 686,
+        })
+
+    def test_room_for_more_extends_the_total_past_existing(self):
+        result = resource_guard.capacity(
+            320, floor_mb=400, meminfo=_meminfo(2000), env=_CLEAN,
+            load=self._load(interactive=2),
+        )
+        # (2000 - 400) // 320 = 5 more fit on top of the 2 already running.
+        self.assertEqual(result["existing"], 2)
+        self.assertEqual(result["total"], 7)
+
+    def test_interactive_and_turn_agents_both_count_as_existing(self):
+        result = resource_guard.capacity(
+            320, floor_mb=400, meminfo=_meminfo(2000), env=_CLEAN,
+            load=self._load(interactive=2, turns=3),
+        )
+        self.assertEqual(result["existing"], 5)
+
+    def test_an_empty_host_still_reports_zero_existing(self):
+        result = resource_guard.capacity(
+            320, floor_mb=400, meminfo=_meminfo(2000), env=_CLEAN, load=self._load(),
+        )
+        self.assertEqual(result["existing"], 0)
+        self.assertEqual(result["total"], 5)
+
+    def test_unmeasurable_reports_a_total_of_none_not_a_guess(self):
+        """The fails-open case check() has, carried through rather than
+        papered over with a number nothing backs up."""
+        result = resource_guard.capacity(
+            320, floor_mb=400, meminfo={"MemTotal": 1}, env=_CLEAN,
+            load=self._load(interactive=6),
+        )
+        self.assertIsNone(result["total"])
+        self.assertIsNone(result["available_mb"])
+        # Existing is a live process count, not a projection -- it is not
+        # unmeasurable just because meminfo could not be read.
+        self.assertEqual(result["existing"], 6)
+
+    def test_the_override_also_withholds_a_total(self):
+        """WC_RESOURCE_GUARD=off marks check()'s verdict unmeasured, and
+        capacity() must not quietly disagree by reporting a total anyway."""
+        result = resource_guard.capacity(
+            320, floor_mb=400, meminfo=_meminfo(2000),
+            env={"WC_RESOURCE_GUARD": "off"}, load=self._load(interactive=1),
+        )
+        self.assertIsNone(result["total"])
+
+    def test_report_is_not_called_when_load_is_supplied(self):
+        """The /proc scan is the expensive half; a caller that already has a
+        Load must not pay for a second one."""
+        def _boom():
+            raise AssertionError("report() was called despite load= being given")
+        with unittest.mock.patch.object(resource_guard, "report", _boom):
+            resource_guard.capacity(
+                320, floor_mb=400, meminfo=_meminfo(2000), env=_CLEAN,
+                load=self._load(interactive=1),
+            )
 
 
 if __name__ == "__main__":

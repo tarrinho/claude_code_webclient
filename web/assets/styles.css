@@ -426,7 +426,14 @@ button{touch-action:manipulation}
 #settingsStatus{min-height:20px;margin-top:8px;font-size:12px}
 #settingsStatus.toast{margin-bottom:10px}
 .btn-secondary,.btn-primary{min-height:38px;border-radius:6px;padding:7px 13px;cursor:pointer}.btn-secondary{border:1px solid var(--line);background:transparent;color:var(--fg)}.btn-primary{border:1px solid var(--accent);background:var(--accent);color:#fff}.btn-danger{border-color:var(--bad);background:var(--bad)}
-.btn-add-machine{margin-top:12px;min-height:36px;font-size:13px;width:100%}
+/* Both add buttons, one rule. They were previously a rule and an absence of a
+   rule: .btn-add-machine set width:100%/36px/13px and .btn-add-transport set
+   nothing, so it fell through to bare .btn-secondary at 38px and auto width.
+   Three differences from one missing selector, which is why they share this
+   one. flex-wrap keeps the full-width stacking on a narrow screen that the old
+   width:100% existed for. */
+.backend-add-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.btn-add-transport,.btn-add-machine{min-height:36px;font-size:13px;flex:1 1 auto}
 .dialog.settings-dialog{width:min(1037px,100%)}
 /* Per-chat edit: voice-mode checkbox rows laid out as inline row. */
 #voiceModeLabel{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin:6px 0 0;cursor:pointer}
@@ -500,6 +507,27 @@ button{touch-action:manipulation}
    backends. The gutter is a plain grid column so the SVG can be sized from its
    measured box rather than guessed at. */
 .backend-map{display:grid;grid-template-columns:118px 34px minmax(0,1fr);align-items:start;margin-bottom:12px}
+/* Three columns: From | wires | Transports | wires | Run On. The transport
+   column is narrow on purpose -- it carries a name and a status badge, and
+   everything you can *do* to a transport lives in its Run On group header. */
+.backend-map-3col{grid-template-columns:118px 30px 132px 30px minmax(0,1fr)}
+.transport-spine{display:flex;flex-direction:column;gap:6px}
+/* A spine entry is a button because it does something (expands and scrolls to
+   its group), but it must not read as one of the actions in the Run On header
+   -- hence flat, quiet, and no border until hovered. */
+.spine-entry{display:flex;flex-direction:column;gap:3px;align-items:flex-start;width:100%;
+  background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:7px 8px;
+  cursor:pointer;text-align:left;min-height:0;color:var(--fg)}
+.spine-entry:hover{border-color:var(--muted)}
+.spine-entry b{font:600 11px system-ui,-apple-system,sans-serif;display:block;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+/* Direct is not a transport. It is the absence of one, and saying so in the
+   column is what the two-column map had no way to express. */
+.spine-entry-direct b{font-style:italic;color:var(--muted)}
+.spine-entry-current{border-color:var(--accent)}
+/* Flashed on the Run On group header a spine click scrolled to, so the eye
+   knows where it was taken. */
+.transport-group-flash{outline:2px solid var(--accent);outline-offset:2px}
 .map-col{font:600 9.5px system-ui,-apple-system,sans-serif;letter-spacing:.13em;text-transform:uppercase;
   color:var(--muted);padding-bottom:9px;border-bottom:1px solid var(--line);margin-bottom:11px}
 .map-src{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center}
@@ -520,6 +548,12 @@ button{touch-action:manipulation}
 @media(max-width:620px){
   .backend-map{grid-template-columns:minmax(0,1fr)}
   .map-from,.map-wires{display:none}
+  /* The transport column goes with them. Wires are what made the middle
+     column mean anything, and with no wires a bare list of transport names
+     above the groups that already name them is pure duplication. Run On keeps
+     its group headers, so nothing is actually lost on a phone. */
+  .backend-map-3col{grid-template-columns:minmax(0,1fr)}
+  .map-via{display:none}
 }
 /* The rail runs down a live backend and terminates in a node on its default
    row, so "this backend, this model" reads as one path rather than two facts

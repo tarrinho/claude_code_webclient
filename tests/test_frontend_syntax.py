@@ -59,6 +59,16 @@ def _parse(source: str) -> None:
         src,
         flags=re.MULTILINE | re.DOTALL,
     )
+    # `export default <expr>;` is a third module-only form the two patterns
+    # above do not touch -- neither is a declaration keyword (function/class/
+    # const/...) nor a `{ name, ... }` re-export list, so a file whose only
+    # remaining export is `export default { a, b };` reached QuickJS unstripped
+    # and failed as "unsupported keyword: export". Bodies are typically object
+    # literals or identifiers, both of which can themselves contain braces, so
+    # this drops only the `export default ` prefix rather than trying to
+    # balance braces -- QuickJS then parses whatever expression is left,
+    # exactly as it does for every other bare statement in the file.
+    src = re.sub(r"^\s*export\s+default\s+", "", src, flags=re.MULTILINE)
     quickjs.Context().eval("(function(){\n" + src + "\n})")
 
 
@@ -92,6 +102,15 @@ class JavaScriptParsesTests(unittest.TestCase):
         guards is worse than no gate.
         """
         _parse("try { risky(); } catch { fallback(); }")
+
+    def test_gate_strips_export_default(self):
+        """supervisor-map.js's real shape: named exports plus one
+        `export default { ... }` at the end. Neither of the two existing
+        strip patterns touches a default export, so this file reached
+        QuickJS unstripped and failed with "unsupported keyword: export"
+        until the stripping gained a third pattern for it.
+        """
+        _parse("function a() {}\nfunction b() {}\nexport default { a, b };")
         _parse("const value = state?.chat?.model ?? 'none';")
 
 

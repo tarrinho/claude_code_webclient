@@ -354,39 +354,111 @@ function _buildModelRow(machine, model, entry, offersAll) {
 // have been laid out. Measured after render and again on resize; if the
 // measurement fails the map still reads, since the LIVE chip carries the same
 // fact in words.
-export function _drawMapWires() {
-  const wires = byId('mapWires');
-  const map = byId('backendMap');
-  const src = document.querySelector('.map-src');
-  if (!wires || !map || !src) return;
-  wires.replaceChildren();
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
-  const cards = Array.from(document.querySelectorAll('#machineList .machine-card'));
-  if (!cards.length) return;
-  const base = wires.getBoundingClientRect();
-  if (!base.height) return;   // panel is hidden; nothing to measure against
-  const from = src.getBoundingClientRect();
-  const startY = from.top + from.height / 2 - base.top;
+/** One bezier in a wire gutter, from *startY* on the left edge to *endY* on
+ *  the right. `live` is the only styling input: a route that carries turns is
+ *  solid and accented, one that merely exists is thin and dashed -- a standby
+ *  route exists but carries nothing, which is what a dashed line says and a
+ *  thin solid one does not. */
+function _wire(svg, w, startY, endY, live) {
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', `M0 ${startY} C${w * 0.55} ${startY} ${w * 0.45} ${endY} ${w} ${endY}`);
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', live ? 'var(--ok)' : 'var(--line)');
+  path.setAttribute('stroke-width', live ? '2.5' : '1.5');
+  if (!live) path.setAttribute('stroke-dasharray', '3 3');
+  svg.appendChild(path);
+}
 
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+function _wireSvg(gutter) {
+  const base = gutter.getBoundingClientRect();
+  if (!base.height) return null;   // panel is hidden; nothing to measure
+  const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${base.width} ${base.height}`);
   svg.setAttribute('preserveAspectRatio', 'none');
-  cards.forEach(card => {
-    const box = card.getBoundingClientRect();
-    const endY = box.top + 22 - base.top;      // the card's header row
-    const live = card.classList.contains('machine-active');
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const w = base.width;
-    path.setAttribute('d', `M0 ${startY} C${w * 0.55} ${startY} ${w * 0.45} ${endY} ${w} ${endY}`);
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', live ? 'var(--ok)' : 'var(--line)');
-    path.setAttribute('stroke-width', live ? '2.5' : '1.5');
-    // A standby route exists but carries nothing, which is what a dashed line
-    // says and a thin solid one does not.
-    if (!live) path.setAttribute('stroke-dasharray', '3 3');
-    svg.appendChild(path);
+  return {svg, base};
+}
+
+const _midY = (el, base) => {
+  const box = el.getBoundingClientRect();
+  return box.top + box.height / 2 - base.top;
+};
+
+/** Draw the two wire gutters: From -> Transports, then Transports -> Run On.
+ *
+ * Two gaps rather than one, because the path a turn takes has two hops and the
+ * old single-gutter map could not show where the middle one was -- or that for
+ * a direct backend there is no middle hop at all.
+ *
+ * The second gutter aims at each machine card when a group is expanded and at
+ * the group header when it is collapsed: a collapsed group has no cards to aim
+ * at, and dropping its wire entirely would make a transport look unreachable
+ * rather than merely folded up.
+ *
+ * Falls back to the original single-gutter behaviour when the transport column
+ * is absent, which is the case below 620px where the CSS hides it.
+ */
+export function _drawMapWires() {
+  const g1 = byId('mapWires');
+  const g2 = byId('mapWires2');
+  const src = document.querySelector('.map-src');
+  if (!g1 || !src) return;
+  g1.replaceChildren();
+  if (g2) g2.replaceChildren();
+
+  const spine = Array.from(document.querySelectorAll('#transportSpine .spine-entry'));
+  const cards = Array.from(document.querySelectorAll('#machineList .machine-card'));
+
+  // No transport column rendered (narrow viewport): keep the two-column map.
+  if (!g2 || !spine.length) {
+    if (!cards.length) return;
+    const made = _wireSvg(g1);
+    if (!made) return;
+    const startY = _midY(src, made.base);
+    cards.forEach(card => _wire(
+      made.svg, made.base.width, startY,
+      card.getBoundingClientRect().top + 22 - made.base.top,
+      card.classList.contains('machine-active')));
+    g1.appendChild(made.svg);
+    return;
+  }
+
+  // Gutter 1: the composer to each transport entry.
+  const first = _wireSvg(g1);
+  if (first) {
+    const startY = _midY(src, first.base);
+    spine.forEach(entry => _wire(
+      first.svg, first.base.width, startY, _midY(entry, first.base),
+      entry.classList.contains('spine-entry-current')));
+    g1.appendChild(first.svg);
+  }
+
+  // Gutter 2: each transport entry to the backends reachable through it.
+  const second = _wireSvg(g2);
+  if (!second) return;
+  spine.forEach(entry => {
+    const key = entry.dataset.group;
+    const startY = _midY(entry, second.base);
+    const header = document.querySelector(
+      `#machineList .transport-group-header[data-group="${CSS.escape(key)}"]`);
+    // Cards belonging to this group are the siblings between its header and
+    // the next one. Reading the DOM rather than re-deriving membership keeps
+    // this honest about what is actually on screen, collapsed or not.
+    const owned = [];
+    for (let el = header && header.nextElementSibling; el; el = el.nextElementSibling) {
+      if (el.classList.contains('transport-group-header')) break;
+      if (el.classList.contains('machine-card')) owned.push(el);
+    }
+    const targets = owned.length ? owned : (header ? [header] : []);
+    targets.forEach(target => _wire(
+      second.svg, second.base.width, startY,
+      target.getBoundingClientRect().top
+        + (target === header ? target.getBoundingClientRect().height / 2 : 22)
+        - second.base.top,
+      target.classList.contains('machine-active')));
   });
-  wires.appendChild(svg);
+  g2.appendChild(second.svg);
 }
 
 // Why Disable would be refused, or '' when it would succeed.
@@ -650,17 +722,19 @@ function _buildTransportHeader(label, machines, transport, key) {
   return header;
 }
 
-export function _renderMachineList() {
-  const list = byId('machineList');
-  list.replaceChildren();
-  if (!_machines.length && !_transports.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sidebar-empty';
-    empty.textContent = 'No machines yet. Add one below.';
-    list.appendChild(empty);
-    return;
-  }
-
+/** The ordered groups the Backends panel shows, computed once.
+ *
+ * Both columns render from this. The transport column has to sit in the same
+ * order as the Run On list or the wires between them cross, which is a worse
+ * picture than the two-column map it replaces -- and a second copy of this
+ * ordering would be a copy that drifts. `backendKindLabel` is imported rather
+ * than re-tabulated in this file for exactly that reason.
+ *
+ * Each group: {key, label, spineLabel, machines, transport, status, direct}.
+ * `key` is what _collapsedGroups is keyed by and what a spine entry carries in
+ * data-group to find its header.
+ */
+export function _machineGroups() {
   const local = _machines.filter(m => !m.transport_id);
   const byTransport = new Map();
   _machines.forEach(m => {
@@ -669,50 +743,128 @@ export function _renderMachineList() {
     byTransport.get(m.transport_id).push(m);
   });
 
+  const groups = [];
   // Direct is pinned first regardless of status -- it is where a fresh
   // account's own backend lives, and it is never what someone is hunting
   // for. Everything past it earns its position: real transports sorted by
   // status (Active first, Disabled last -- the ones needing attention over
   // the ones deliberately parked) and alphabetically within a status.
   if (local.length) {
-    list.appendChild(_buildTransportHeader('Direct', local, null, 'direct'));
-    if (!_collapsedGroups.has('direct')) {
-      local.forEach(m => list.appendChild(_buildMachineCard(m)));
-    }
+    groups.push({
+      key: 'direct', label: 'Direct', spineLabel: 'direct',
+      machines: local, transport: null, direct: true,
+      status: _transportStatus(local, _tunnelStatusCache),
+    });
   }
 
   // Every known transport gets a header, even one with no backend pointed at
   // it yet -- a transport just created should read as "via <name>" right
   // away, not only once a machine is assigned to it.
   const renderedTransportIds = new Set();
-  const sortedTransports = [..._transports].sort((a, b) => {
+  [..._transports].sort((a, b) => {
     const sa = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a.id) || [], _tunnelStatusCache)];
     const sb = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b.id) || [], _tunnelStatusCache)];
     return sa !== sb ? sa - sb : a.name.localeCompare(b.name);
-  });
-  sortedTransports.forEach(transport => {
+  }).forEach(transport => {
     renderedTransportIds.add(transport.id);
     const machines = byTransport.get(transport.id) || [];
-    list.appendChild(_buildTransportHeader(`via ${transport.name}`, machines, transport, transport.id));
-    if (!_collapsedGroups.has(transport.id)) {
-      machines.forEach(m => list.appendChild(_buildMachineCard(m)));
-    }
+    groups.push({
+      key: transport.id, label: `via ${transport.name}`,
+      spineLabel: transport.name, machines, transport, direct: false,
+      status: _transportStatus(machines, _tunnelStatusCache),
+    });
   });
+
   // A machine pointed at a transport that no longer exists must not silently
   // vanish from the list. Sorted after every real transport, same status
   // ordering, since there is no transport row to prioritise by name.
-  const orphanIds = [...byTransport.keys()].filter(id => !renderedTransportIds.has(id));
-  orphanIds
+  [...byTransport.keys()]
+    .filter(id => !renderedTransportIds.has(id))
     .sort((a, b) => TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a), _tunnelStatusCache)]
       - TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b), _tunnelStatusCache)])
     .forEach(transportId => {
       const machines = byTransport.get(transportId);
-      const key = `unknown:${transportId}`;
-      list.appendChild(_buildTransportHeader('via (unknown transport)', machines, null, key));
-      if (!_collapsedGroups.has(key)) {
-        machines.forEach(m => list.appendChild(_buildMachineCard(m)));
-      }
+      groups.push({
+        key: `unknown:${transportId}`, label: 'via (unknown transport)',
+        spineLabel: '(unknown)', machines, transport: null, direct: false,
+        status: _transportStatus(machines, _tunnelStatusCache),
+      });
     });
+
+  return groups;
+}
+
+/** The read-only transport column.
+ *
+ * Deliberately carries no actions. Edit/Delete/Check/Init live in the Run On
+ * group header and nowhere else, so there is one home per action; this column
+ * exists to anchor the wires and to be a way of finding a group. Clicking an
+ * entry expands its group if collapsed and scrolls to it.
+ */
+function _renderTransportSpine(groups) {
+  const spine = byId('transportSpine');
+  if (!spine) return;                  // two-column markup, or a partial page
+  spine.replaceChildren();
+  groups.forEach(group => {
+    const entry = document.createElement('button');
+    entry.type = 'button';
+    entry.className = 'spine-entry' + (group.direct ? ' spine-entry-direct' : '');
+    if (group.machines.some(m => m.active)) entry.classList.add('spine-entry-current');
+    entry.dataset.group = group.key;
+    const name = document.createElement('b');
+    // "direct" rather than a transport name: the absence of a hop is the fact
+    // this column exists to state, and the two-column map could not say it.
+    name.textContent = group.spineLabel;
+    entry.appendChild(name);
+    const badge = document.createElement('span');
+    badge.className = `transport-status-badge transport-status-badge-${group.status}`;
+    badge.textContent = TRANSPORT_STATUS_LABEL[group.status];
+    entry.appendChild(badge);
+    entry.title = `${group.label} — ${group.machines.length} backend(s)`;
+    entry.addEventListener('click', () => _revealGroup(group.key));
+    spine.appendChild(entry);
+  });
+}
+
+/** Expand, scroll to and flash the Run On group a spine entry points at. */
+function _revealGroup(key) {
+  if (_collapsedGroups.has(key)) {
+    _collapsedGroups.delete(key);
+    _renderMachineList();              // rebuilds the header we are about to find
+  }
+  const header = document.querySelector(
+    `#machineList .transport-group-header[data-group="${CSS.escape(key)}"]`);
+  if (!header) return;
+  header.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+  header.classList.add('transport-group-flash');
+  setTimeout(() => header.classList.remove('transport-group-flash'), 1200);
+}
+
+export function _renderMachineList() {
+  const list = byId('machineList');
+  list.replaceChildren();
+  if (!_machines.length && !_transports.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sidebar-empty';
+    empty.textContent = 'No machines yet. Add one below.';
+    list.appendChild(empty);
+    _renderTransportSpine([]);
+    return;
+  }
+
+  const groups = _machineGroups();
+  groups.forEach(group => {
+    const header = _buildTransportHeader(
+      group.label, group.machines, group.transport, group.key);
+    // How a spine entry finds its partner. Set here rather than inside
+    // _buildTransportHeader so that function keeps its current signature.
+    header.dataset.group = group.key;
+    list.appendChild(header);
+    if (!_collapsedGroups.has(group.key)) {
+      group.machines.forEach(m => list.appendChild(_buildMachineCard(m)));
+    }
+  });
+  _renderTransportSpine(groups);
 
   const total = byId('mapTotal');
   if (total) {

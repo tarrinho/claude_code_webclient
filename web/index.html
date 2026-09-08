@@ -218,7 +218,14 @@
         <p>Each backend is somewhere Claude Code can run. The active one serves the models offered when starting a turn.</p>
         <!-- The map: where a turn starts, the wire it follows, and the
              backends it can land on. -->
-        <div class="backend-map" id="backendMap">
+        <!-- Three columns, and the middle one is the point: a turn reaches a
+             backend either straight out of this host or through a named SSH
+             transport, and the two-column version had no place to say which.
+             The transport column is a read-only spine -- every action on a
+             transport lives in its Run On group header, so there is one home
+             per action. It exists to anchor the wires and to be clickable as a
+             way to find its group. -->
+        <div class="backend-map backend-map-3col" id="backendMap">
           <div class="map-from">
             <div class="map-col">From</div>
             <div class="map-src">
@@ -227,13 +234,26 @@
             </div>
           </div>
           <div class="map-wires" id="mapWires" aria-hidden="true"></div>
+          <div class="map-via">
+            <div class="map-col">Transports</div>
+            <div class="transport-spine" id="transportSpine"></div>
+          </div>
+          <div class="map-wires" id="mapWires2" aria-hidden="true"></div>
           <div class="map-to">
-            <div class="map-col">Runs on</div>
+            <div class="map-col">Run On</div>
             <div class="machine-list" id="machineList"></div>
           </div>
         </div>
         <datalist id="modelSuggestions"></datalist>
-        <button class="btn-secondary btn-add-transport" id="addTransportBtn">＋ Add transport</button>
+        <!-- Both add buttons on one row, above both forms. They used to sit
+             either side of the whole transport form, and only one of them had
+             a CSS rule -- so they differed in height, width and font size and
+             could never share a line. One shared rule now, so they cannot
+             drift apart again. -->
+        <div class="backend-add-actions">
+          <button class="btn-secondary btn-add-transport" id="addTransportBtn">＋ Add transport</button>
+          <button class="btn-secondary btn-add-machine" id="addMachineBtn">＋ Add machine</button>
+        </div>
         <div class="transport-form" id="transportForm" hidden>
           <h3 id="transportFormTitle">Add transport</h3>
           <label for="transportName">Name</label>
@@ -254,7 +274,6 @@
             <button class="btn-primary" id="saveTransport">Save</button>
           </div>
         </div>
-        <button class="btn-secondary btn-add-machine" id="addMachineBtn">＋ Add machine</button>
         <div class="machine-form" id="machineForm" hidden>
           <h3 id="machineFormTitle">Add machine</h3>
           <label for="machineName">Name</label>
@@ -414,6 +433,17 @@
             <span class="knob-label"></span>
           </button>
           <span class="setting-hint">Show debug information in the browser console.</span>
+        </div>
+        <div class="app-setting-row">
+          <label for="crossSessionInbound">Cross-session peer messages</label>
+          <select id="crossSessionInbound">
+            <option value="accept">Auto-approve all</option>
+            <option value="prompt">Review each message</option>
+          </select>
+          <span class="setting-hint" id="crossSessionHint">
+            When Auto-approve, peer messages from other Claude Code sessions are delivered without a review step.
+            <b>Auto-approve is a trust boundary:</b> any session with access to this WebConsole can send you messages that will be executed by your active session.
+          </span>
         </div>
       </div>
     </div>

@@ -9,7 +9,6 @@ Split boundary: tunnel state management (tunnel_manager) <-> SSH transport
 from __future__ import annotations
 
 import logging
-import time
 
 _log = logging.getLogger("wc.tunnel.health")
 

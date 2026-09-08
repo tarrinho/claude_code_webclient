@@ -157,6 +157,11 @@ VOICE_AI_MACHINE_ID_DEFAULT = _str("WC_VOICE_AI_MACHINE_ID_DEFAULT", None)
 VOICE_MODEL_DEFAULT = _str("WC_VOICE_MODEL_DEFAULT", "azure_ai/gpt-5.6-luna")
 VOICE_SPEECH_RATE_DEFAULT = _float("WC_VOICE_SPEECH_RATE_DEFAULT", 1.0)
 
+# --- cross-session peer messaging ------------------------------------------
+# Default to "accept" so webconsole sessions can message each other without
+# approval prompts (the whole point of the webconsole cluster).
+CROSS_SESSION_INBOUND_DEFAULT = _str("WC_CROSS_SESSION_INBOUND_DEFAULT", "accept")
+
 # --- usage accounting ------------------------------------------------------
 # How long per-turn usage rows are kept. Pruned once per startup; 0 disables
 # pruning and keeps everything.

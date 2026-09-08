@@ -268,11 +268,11 @@ async function _openMap() {
     const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=3');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=2');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
   } catch {
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=2');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -284,10 +284,9 @@ async function _openMap() {
 async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
-  // Restore main content
   const main = document.querySelector('main');
   if (main) main.hidden = false;
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=2');
   closeSupervisorMap();
 }
 
@@ -400,7 +399,7 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires } from './machines.js?v=6';
+  _drawMapWires } from './machines.js?v=7';
 
 import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=3';
 
@@ -425,6 +424,10 @@ async function saveSettings(event) {
     const debugPressed = byId('debugConsole')?.getAttribute('aria-pressed') === 'true';
     if (debugPressed !== _loadedSettings?.debug_console) {
       body.debug_console = debugPressed;
+    }
+    const crossInbound = byId('crossSessionInbound')?.value;
+    if (crossInbound && crossInbound !== _loadedSettings?.cross_session_inbound) {
+      body.cross_session_inbound = crossInbound;
     }
     collectVoiceSettingsFields(body, _loadedSettings);
     if (!Object.keys(body).length) {
@@ -1622,6 +1625,9 @@ async function loadSettings() {
       if (data.debug_console !== undefined) {
         const el = byId('debugConsole');
         if (el) el.setAttribute('aria-pressed', String(data.debug_console));
+      }
+      if (data.cross_session_inbound) {
+        byId('crossSessionInbound').value = data.cross_session_inbound;
       }
       // The model dropdown is repopulated inside renderVoiceSettingsFields
       // from the chosen backend's own `models`, so this callback no longer

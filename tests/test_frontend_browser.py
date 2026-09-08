@@ -252,6 +252,19 @@ class _BrowserFixture(unittest.TestCase):
         # against the wrong document.
         page.wait_for_selector("#settingsBtn", timeout=15_000)
 
+    def _open_settings(self):
+        """Click the settings button and wait for the dialog."""
+        self.page.click("#settingsBtn")
+        self.page.wait_for_selector("#settingsDialog", timeout=10_000)
+        self.page.wait_for_timeout(800)
+
+    def _close_settings_and_reopen(self):
+        """Close the dialog, refresh, re-open — validates load flow."""
+        self.page.click("#settingsCancel")
+        self.page.wait_for_selector("#settingsDialog", is_hidden=True, timeout=5_000)
+        self._load()  # fresh page load
+        self._open_settings()
+
     def _open_backends(self):
         self.page.click("#settingsBtn")
         self.page.wait_for_selector(".machine-card", timeout=10_000)
@@ -316,6 +329,33 @@ class BackendsPanelBrowserTests(_BrowserFixture):
         # The old standalone Models tab is what got merged into Backends; a
         # backend and the models it serves are one thing.
         self.assertIsNone(self.page.query_selector("#panelModels"))
+
+    def test_cross_session_inbound_setting(self):
+        """The App tab offers a cross-session peer messages select with
+        accept / prompt options, loads the server value, and persists it."""
+        self._open_settings()
+        self.page.click('[data-tab="app"]')
+        self.page.wait_for_selector('#crossSessionInbound', timeout=5_000)
+        select = self.page.query_selector('#crossSessionInbound')
+        self.assertIsNotNone(select)
+        values = select.evaluate(
+            'el => [...el.options].map(o => o.value)'
+        )
+        self.assertIn("accept", values)
+        self.assertIn("prompt", values)
+        initial = select.evaluate('el => el.value')
+        self.assertIn(initial, ("accept", "prompt"))
+        # Change, save, reopen, and verify persisted.
+        select.select_option("prompt")
+        self.page.click("#settingsSave")
+        self.page.wait_for_timeout(2_000)
+        self._close_settings_and_reopen()
+        self.page.click('[data-tab="app"]')
+        self.page.wait_for_timeout(300)
+        new_val = self.page.query_selector('#crossSessionInbound').evaluate(
+            'el => el.value'
+        )
+        self.assertEqual(new_val, "prompt")
 
     def test_seeded_backend_renders_with_its_models(self):
         self._open_backends()
@@ -590,9 +630,18 @@ class TransportUIBrowserTests(_BrowserFixture):
         self._open_backends()
         self._add_transport("HeaderOnlyBox")
         dump = self._machine_list_dump()
+        # A group header's own class moved from a bare "chat-section-label"
+        # onto the outer transport-group-header div, with the label text now
+        # in a child span (status badge, count, and actions as siblings, all
+        # still inside this same element -- so its own textContent, checked
+        # below, still carries everything a header contains). Matched by
+        # substring rather than a fixed full string, since the real class
+        # attribute also carries a status suffix, e.g.
+        # "transport-group-header transport-status-uninitialized".
         headers = [
             item for item in dump
-            if item["cls"] == "chat-section-label" and "HeaderOnlyBox" in item["text"]
+            if "transport-group-header" in item["cls"].split()
+            and "HeaderOnlyBox" in item["text"]
         ]
         self.assertTrue(headers, f"expected a 'via HeaderOnlyBox' header, got: {dump}")
         for header in headers:
@@ -612,8 +661,11 @@ class TransportUIBrowserTests(_BrowserFixture):
         card_idx = next(
             i for i, item in enumerate(dump) if "Assigned Backend" in item["text"]
         )
+        # Same class move as the test above: the header is the
+        # transport-group-header div, not a "chat-section-label" element.
         header_idx = max(
-            i for i in range(card_idx) if dump[i]["cls"] == "chat-section-label"
+            i for i in range(card_idx)
+            if "transport-group-header" in dump[i]["cls"].split()
         )
         self.assertIn(
             "AssignBox", dump[header_idx]["text"],
@@ -2547,33 +2599,44 @@ class SupervisorMapBrowserTests(_BrowserFixture):
     """Browser tests for the supervisor map panel."""
 
     def _load(self):
-        """Open the page on the test server."""
-        self.page.goto(f"{self.base}", timeout=10_000)
-        self.page.wait_for_load_state("domcontentloaded")
-        self.page.evaluate("() => new Promise(r => setTimeout(r, 500))")
+        """Open the page on the test server — must login first."""
+        self._login()
+        self.page.goto(f"{self.base}", timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.wait_for_timeout(3000)  # let ES module listeners attach
 
     def test_panel_opens_closes(self):
         """Clicking the map icon opens the panel, close hides it."""
         self._load()
-        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.wait_for_timeout(2000)  # let ES module listeners attach
+
+        # Collect console messages and errors
+        console_msgs = []
+        self.page.on("console", lambda m: console_msgs.append(f"[{m.type}] {m.text}"))
+        self.errors.clear()
 
         btn = self.page.query_selector("#supervisorMapBtn")
         self.assertIsNotNone(btn, "supervisorMapBtn must exist")
-        btn.click()
-        self.page.wait_for_timeout(2000)  # fetch + D3 render
+
+        # Dispatch click directly to avoid Playwright click queuing issues
+        self.page.evaluate("document.getElementById('supervisorMapBtn').click()")
+        self.page.wait_for_timeout(4000)  # fetch + D3 render
 
         panel = self.page.query_selector("#supervisorMapPanel")
         self.assertIsNotNone(panel)
-        self.assertEqual(panel.get_attribute("hidden"), None,
-                         "panel must not be hidden")
+
+        is_hidden = panel.evaluate("el => el.hidden")
+        if is_hidden:
+            msgs = "\n".join(console_msgs[:10])
+            self.fail(f"panel is still hidden. Page errors: {self.errors[:3]}. Console: {msgs}")
 
         close_btn = self.page.query_selector("#supervisorMapClose")
         self.assertIsNotNone(close_btn)
         close_btn.click()
         self.page.wait_for_timeout(300)
 
-        self.assertEqual(panel.get_attribute("hidden"), "",
-                         "panel must be hidden after close")
+        self.assertTrue(panel.evaluate("el => el.hidden"),
+                        "panel must be hidden after close")
 
     def test_zoom_controls_exist(self):
         """Zoom buttons are present in the panel header."""
@@ -2633,6 +2696,37 @@ class SupervisorMapBrowserTests(_BrowserFixture):
 
         self.assertEqual(self.errors, [],
                          f"supervisor map panel caused console errors: {self.errors}")
+
+    def test_a_machine_node_shows_its_capacity_in_the_drawer(self):
+        """Clicking a real machine node renders the pair the backend attaches
+        to it -- not just that db_supervisor_map.py's dict has the keys
+        (already pinned in tests/test_qa_supervisor_map.py), but that a click
+        in a real browser reaches them through fetch, D3's data join, and
+        showDetail()'s own string-building. No manual seeding needed: a fresh
+        account already has one direct machine (see
+        BackendsPanelBrowserTests.test_seeded_backend_renders_with_its_models),
+        so its node is on the map as soon as the panel opens.
+        """
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(2000)
+
+        # Selects by node type, not by backend_kind()'s exact label string --
+        # there is exactly one machine node on a fresh account, and depending
+        # on that count is sturdier than depending on what that function
+        # currently returns.
+        machine_node = self.page.locator('g.node[aria-label^="machine"]').first
+        machine_node.click()
+        self.page.wait_for_timeout(300)
+
+        meta = self.page.inner_text("#mapDetailMeta")
+        self.assertIn(
+            "Capacity:", meta,
+            f"machine node detail did not show a capacity line: {meta!r}",
+        )
+        self.assertEqual(self.errors, [])
 
 
 if __name__ == "__main__":

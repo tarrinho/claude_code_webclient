@@ -26,6 +26,13 @@ churn.
 
 - **QA test coverage** — 5 new test files (82 tests) covering 22 previously uncovered route handlers: SSH transport CRUD (7 handlers), API tokens (3), session deletion (2), queue operations (3), and orchestrator sub-routes (5). All tests verify auth requirements, owner scoping, and input validation.
 
+### Fixed
+
+- **The supervisor map crashed on every request.** `routes/db_supervisor_map.py` imported `turns as _turns` and then called `turns.running_ids`, and used `backend_kind` without importing it — two `NameError`s on the same code path, in a route that had already shipped. Found by the flake8 stage of a `rules.md` run rather than by anyone loading the page.
+- **Orchestrator spend showed no cost.** The engine stored the machine's raw `provider` column on its usage rows, but a usage row's `provider` is a display kind from `shared.backend_kind`; the usage API blanks cost for anything that is not `through_claude_code`, so every orchestrator turn was priced as if it had run on a gateway. It now uses the same helper as the conversation path, so the two agree.
+- **A turn-refusal was unlogged.** `resource_guard`'s logger was never declared in `logging.conf`, so the only record that a request had been turned away for lack of memory reached the file only by propagating to root, outside this project's per-logger levels.
+- **Dead imports removed** from `rate_limit.py` (left by the move from `BaseHTTPMiddleware` to pure ASGI), `routes/supervisor_map.py` and `tunnel_manager_health.py`.
+
 ## [0.15.2] — 2026-09-06
 
 ### Changed

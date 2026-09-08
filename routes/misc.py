@@ -745,8 +745,9 @@ async def handle_settings_get(request: Request):
     debug_console = await db.setting_get("debug_console")
     debug_console = debug_console == "1"
 
-    debug_console = await db.setting_get("debug_console")
-    debug_console = debug_console == "1"
+    cross_session_inbound = await db.setting_get("cross_session_inbound")
+    if cross_session_inbound not in ("accept", "prompt"):
+        cross_session_inbound = config.CROSS_SESSION_INBOUND_DEFAULT
 
     from routes.db_machines import parse_active_models
     from routes.voice import voice_model_timing_averages
@@ -826,6 +827,7 @@ async def handle_settings_get(request: Request):
             "voice_model": voice_model,
             "voice_speech_rate": voice_speech_rate,
             "voice_model_options": voice_model_options,
+            "cross_session_inbound": cross_session_inbound,
         }
     )
 
@@ -910,6 +912,15 @@ async def handle_settings_patch(request: Request):
         if not isinstance(value, bool):
             raise HTTPException(status_code=400, detail="debug_console must be a boolean")
         await db.setting_set("debug_console", "1" if value else "0")
+
+    if "cross_session_inbound" in data:
+        value = data.get("cross_session_inbound")
+        if value not in ("accept", "prompt"):
+            raise HTTPException(
+                status_code=400,
+                detail="cross_session_inbound must be 'accept' or 'prompt'",
+            )
+        await db.setting_set("cross_session_inbound", value)
 
     # Boot secrets – these live in the DB so the app can run without .env.
     boot_secrets = {

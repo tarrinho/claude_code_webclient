@@ -215,6 +215,57 @@ def check(
     )
 
 
+def capacity(
+    cost_mb: int | None = None,
+    *,
+    floor_mb: int | None = None,
+    meminfo: dict[str, int] | None = None,
+    env: dict[str, str] | None = None,
+    load: "Load | None" = None,
+) -> dict[str, int | None]:
+    """How many agent-equivalents are running now, and how many this host
+    could hold in total.
+
+    Composes the other two functions rather than re-deriving either:
+    ``report()`` for who is running now, ``check()`` for the headroom formula.
+    *total* is the same ceiling ``check()`` would apply to a start attempted
+    right now, projected forward one agent at a time --
+
+        total = existing + floor((available_mb - floor_mb) / cost_mb)
+
+    which is exactly what running ``check()`` in a loop, letting each accepted
+    start consume *cost_mb*, would converge to: this host's projections and its
+    live admission decisions are the same arithmetic, so this function does not
+    get to disagree with ``check()`` about when the host is full.
+
+    *total* is ``None`` when the inputs cannot be measured -- the same
+    fails-open case ``check()`` has, and for the same reason: a number this
+    function cannot back up is worse than admitting it does not know.
+    """
+    cost_mb = _int_env("WC_RESOURCE_COST_MB", _DEFAULT_COST_MB) if cost_mb is None else cost_mb
+    floor_mb = _int_env("WC_RESOURCE_FLOOR_MB", _DEFAULT_FLOOR_MB) if floor_mb is None else floor_mb
+    if load is None:
+        load = report()
+    existing = load.interactive_count + load.turn_count
+
+    # cost_mb=0: this asks what is available, not whether a start of a
+    # particular size fits -- reusing check()'s own measurement rather than
+    # reading meminfo a second time, so the two can never disagree about it.
+    verdict = check(0, floor_mb=floor_mb, meminfo=meminfo, env=env)
+    if not verdict.measured:
+        return {
+            "existing": existing, "total": None,
+            "cost_mb": cost_mb, "floor_mb": floor_mb, "available_mb": None,
+        }
+
+    more = max(0, (verdict.available_mb - floor_mb) // cost_mb)
+    return {
+        "existing": existing, "total": existing + more,
+        "cost_mb": cost_mb, "floor_mb": floor_mb,
+        "available_mb": verdict.available_mb,
+    }
+
+
 def _rss_mb(pid: str) -> int | None:
     try:
         for line in (_PROC / pid / "status").read_text(encoding="utf-8").splitlines():

@@ -16,10 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import defaultdict
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import config

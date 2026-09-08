@@ -229,7 +229,7 @@ async function openVoiceTooltip() {
   }
 
   // Update global state
-  window.state.currentChat = { ...chat, voice_mode: true, is_temporary: true };
+  window.state.currentChat = { ...chat, voice_mode: true, is_temporary: true, id: voiceTempChatId };
   window.state.streamState = 'ready';
 
   // Pause parent: stop any running turn

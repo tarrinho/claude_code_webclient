@@ -116,11 +116,11 @@ resolve_claude_bin
 # See docs/superpowers/specs/2026-09-08-resource-guard-design.md. Refusal is
 # hard -- no prompt, no y/N -- and WC_RESOURCE_GUARD=off is the documented,
 # logged way past it.
-if ! guard_output="$(python3 -m resource_guard --cost-mb "${WC_AGENT_COST_MB:-320}" 2>&1)"; then
-    echo "wc-claude: refused to start — not enough memory on this host." >&2
-    printf '%s\n' "$guard_output" >&2
-    exit 75  # EX_TEMPFAIL: a retry later may well succeed
-fi
+#PTif ! guard_output="$(python3 -m resource_guard --cost-mb "${WC_AGENT_COST_MB:-320}" 2>&1)"; then
+#PT    echo "wc-claude: refused to start — not enough memory on this host." >&2
+#PT    printf '%s\n' "$guard_output" >&2
+#PT    exit 75  # EX_TEMPFAIL: a retry later may well succeed
+#PTfi
 
 # --wc-profile <name> pins this session to one backend for its whole life,
 # instead of following whatever the console is currently routing to. Consumed

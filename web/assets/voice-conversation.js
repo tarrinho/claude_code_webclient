@@ -258,6 +258,10 @@ function closeVoiceTooltip() {
   if (voiceParentState) {
     window.state.currentChat = voiceParentState;
     window.state.streamState = voiceParentState.streamState || 'ready';
+    // Restore lastAttempt so retry works after voice session
+    if (voiceParentState.lastAttempt && window.conversationController) {
+      window.conversationController.lastAttempt = voiceParentState.lastAttempt;
+    }
     voiceParentState = null;
   }
   voiceTempChatId = null;
@@ -277,13 +281,12 @@ async function voiceHandoffAgree() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
       showToast(data.error || 'Could not handoff to parent chat', 'error');
       closeVoiceTooltip();
       return;
     }
-    const data = await response.json();
     showToast('Voice conversation applied to parent chat');
     // Restore parent and continue
     closeVoiceTooltip();

@@ -125,12 +125,32 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     output_tokens = 0
     failed = False
     try:
+        # Build the message list: system prompt, parent context (if any),
+        # and the current voice prompt. The parent context lets the model
+        # understand the conversation before the voice session started, so
+        # follow-ups and clarifications stay grounded in the existing thread.
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": VOICE_SYSTEM_PROMPT},
+        ]
+        parent_id = chat.get("parent_chat_id")
+        if parent_id:
+            parent_msgs = await db.messages_get(parent_id)
+            # Only the most recent messages to stay within context limits:
+            # a sliding window of the last N turns (user+assistant pairs).
+            if parent_msgs:
+                # Take the last ~6 turns (up to 12 messages, 6 pairs).
+                # 6 pairs ≈ a couple of minutes of conversation — enough
+                # context without blowing the token budget.
+                recent = parent_msgs[-12:] if len(parent_msgs) > 12 else parent_msgs
+                for msg in recent:
+                    content = msg.get("content") or ""
+                    if content.strip():
+                        messages.append({"role": msg["role"], "content": content})
+        messages.append({"role": "user", "content": prompt})
+
         stream = await client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": VOICE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
             stream=True,
             # Asks an OpenAI-compatible gateway to attach a usage object to
             # the final chunk. Not every gateway honours it -- chunk.usage

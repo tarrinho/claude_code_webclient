@@ -193,6 +193,16 @@ async function openVoiceTooltip() {
     lastAttempt: window.conversationController?.lastAttempt || null,
   };
 
+  // Show "loading context" feedback IMMEDIATELY so the user sees something
+  // is happening before the async API call even starts.
+  voiceOverlay.hidden = false;
+  voiceTooltipMessages.innerHTML = '';
+  voiceTooltipTitle.textContent = `Voice: ${chat.title}`;
+  const loadingMsg = document.createElement('div');
+  loadingMsg.className = 'voice-assistant';
+  loadingMsg.textContent = 'Bringing up conversation context…';
+  voiceTooltipMessages.appendChild(loadingMsg);
+
   // Create temp voice chat with parent context
   try {
     const response = await apiFetch('/api/chats', {
@@ -207,12 +217,14 @@ async function openVoiceTooltip() {
     });
     if (!response.ok) {
       showToast('Could not start voice conversation', 'error');
+      voiceTooltipMessages.innerHTML = '';
       return;
     }
     const data = await response.json();
     voiceTempChatId = data.id;
   } catch {
     showToast('Could not start voice conversation', 'error');
+    voiceTooltipMessages.innerHTML = '';
     return;
   }
 
@@ -225,23 +237,27 @@ async function openVoiceTooltip() {
     window.conversationController.stop();
   }
 
-  // Reset voice UI
-  voiceOverlay.hidden = false;
+  // Replace loading with "waiting for input" message
   voiceTooltipMessages.innerHTML = '';
-  voiceTooltipTitle.textContent = `Voice: ${chat.title}`;
+  const idleMsg = document.createElement('div');
+  idleMsg.className = 'voice-assistant';
+  idleMsg.textContent = 'Waiting for your voice input…';
+  voiceTooltipMessages.appendChild(idleMsg);
+
   voiceTooltipInput.value = '';
   voiceTooltipConclusion.hidden = true;
   voiceConversationComplete = false;
   voiceStreamDone = false;
   accumulatedText = '';
   lastFinalChunk = '';
-  setVoiceStatus('idle');
 
-  // Wire up voice buttons inside tooltip
+  // Wire up voice buttons inside tooltip (listeners must be bound after
+  // these elements exist; variable reassignment alone does not move listeners).
   voiceMicBtn = voiceTooltipMic;
   voiceLiveBtn = voiceTooltipLive;
   voiceStopBtn = voiceTooltipStop;
   voiceSendBtn = voiceTooltipSend;
+  setVoiceStatus('idle');
   updateVoiceButtonVisibility();
 }
 
@@ -365,30 +381,74 @@ voiceTooltipSend.addEventListener('click', () => {
   }
 });
 
-// Mic button: if voice_mode is on, open tooltip and start listening
-voiceMicBtn.addEventListener('click', async () => {
+// ── Mic / Live button handlers (dual binding) ──
+// Bug fix: the tooltip mic/live buttons need their OWN click handlers in
+// addition to the page buttons. Listeners attached to page buttons at load
+// time don't follow when voiceMicBtn is reassigned to the tooltip element.
+// Both buttons share the same handler via closures over voiceTempChatId.
+
+// Called from the page mic button (opens tooltip if not in voice mode, else listens)
+// and from the tooltip mic button (goes straight to listening).
+function startVoiceFromMic() {
   if (voiceStatus !== 'idle') return;
   const chat = window.state?.currentChat;
   if (!chat) return;
 
-  // If voice_mode is off, open the tooltip (create temp chat with parent)
-  if (!chat.voice_mode) {
-    await openVoiceTooltip();
-    if (!voiceTempChatId) return;
+  if (chat.voice_mode && voiceTempChatId) {
+    // Already in voice tooltip — go straight to listening.
+    voiceTooltipMessages.innerHTML = '';
+    const msg = document.createElement('div');
+    msg.className = 'voice-assistant';
+    msg.textContent = 'Listening…';
+    voiceTooltipMessages.appendChild(msg);
+    startListening(false);
+  } else {
+    // Open tooltip first, then listen once the temp chat is created.
+    openVoiceTooltip().then(() => {
+      if (voiceTempChatId) {
+        voiceTooltipMessages.innerHTML = '';
+        const msg = document.createElement('div');
+        msg.className = 'voice-assistant';
+        msg.textContent = 'Listening…';
+        voiceTooltipMessages.appendChild(msg);
+        startListening(false);
+      }
+    });
   }
-  startListening(false);
-});
+}
 
-voiceLiveBtn.addEventListener('click', () => {
-  if (voiceStatus === 'idle') {
-    // If in tooltip, start listening; otherwise open tooltip first
-    if (!voiceTempChatId) {
-      openVoiceTooltip().then(() => { if (voiceTempChatId) startListening(true); });
-    } else {
-      startListening(true);
-    }
+// Page button: wired at load time.
+voiceMicBtn.addEventListener('click', startVoiceFromMic);
+// Tooltip button: wired at load time so it works regardless of voice_mode state.
+voiceTooltipMic.addEventListener('click', startVoiceFromMic);
+
+// Live button: same dual binding — open tooltip if not in voice mode, else listen.
+function startVoiceLive() {
+  if (voiceStatus !== 'idle') return;
+  if (voiceTempChatId) {
+    voiceTooltipMessages.innerHTML = '';
+    const msg = document.createElement('div');
+    msg.className = 'voice-assistant';
+    msg.textContent = 'Listening (hands-free)…';
+    voiceTooltipMessages.appendChild(msg);
+    startListening(true);
+  } else {
+    openVoiceTooltip().then(() => {
+      if (voiceTempChatId) {
+        voiceTooltipMessages.innerHTML = '';
+        const msg = document.createElement('div');
+        msg.className = 'voice-assistant';
+        msg.textContent = 'Listening (hands-free)…';
+        voiceTooltipMessages.appendChild(msg);
+        startListening(true);
+      }
+    });
   }
-});
+}
+
+voiceLiveBtn.addEventListener('click', startVoiceLive);
+voiceTooltipLive.addEventListener('click', startVoiceLive);
+
 voiceStopBtn.addEventListener('click', () => performVoiceStop(true));
 
 // Override window.voiceConversation hooks to also render in tooltip
@@ -426,16 +486,8 @@ window.voiceConversation = {
 };
 
 // ── Original voice button visibility (for non-tooltip use) ──
-function updateVoiceButtonVisibility() {
-  const inTurn = voiceStatus !== 'idle';
-  const active = Boolean(window.state?.currentChat?.voice_mode);
-  voiceMicBtn.hidden = !active;
-  voiceLiveBtn.hidden = !active;
-  voiceMicBtn.disabled = inTurn;
-  voiceLiveBtn.disabled = inTurn;
-  voiceStopBtn.hidden = !inTurn;
-  voiceSendBtn.hidden = inTurn;
-}
+// Already defined above at line 30; window.voiceConversation.refreshControls
+// calls it at line 475 — no duplicate declaration needed.
 
 function speakSentence(sentence) {
   const trimmed = sentence.trim();

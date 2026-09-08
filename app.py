@@ -55,6 +55,7 @@ from routes.machines_tunnel import router as machines_tunnel_router
 # routes/orchestrators.py with that helper when the prefix is extracted.
 from routes.misc import router as misc_router
 from routes.orchestrators import router as orchestrators_router
+from routes.supervisor_map import router as supervisor_map_router
 from routes.transports import router as transports_router
 
 
@@ -465,6 +466,7 @@ app.include_router(machines_tunnel_router)
 app.include_router(machines_router)
 app.include_router(chats_router)
 app.include_router(orchestrators_router)
+app.include_router(supervisor_map_router)
 app.include_router(misc_router)
 app.include_router(transports_router)
 

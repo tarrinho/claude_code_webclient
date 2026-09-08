@@ -226,6 +226,38 @@ function closeSettingsDialog() {
   if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
+async function _openMap() {
+  const panel = byId('supervisorMapPanel');
+  const btn = byId('supervisorMapBtn');
+  if (!panel) return;
+  if (!panel.hidden) { _closeMap(); return; }
+  panel.hidden = false;
+  btn?.removeAttribute('hidden');
+
+  try {
+    const res = await fetch('/api/supervisor-map');
+    if (!res.ok) throw new Error('Data unavailable');
+    const data = await res.json();
+    if (!data.children || data.children.length === 0) {
+      byId('mapBody').innerHTML = '<p style="padding:20px;text-align:center;color:#999">No agents running.</p>';
+      return;
+    }
+    const { renderSupervisorMap } = await import('./supervisor-map.js?v=1');
+    renderSupervisorMap(data);
+  } catch {
+    byId('mapBody').innerHTML = '<p style="padding:20px;text-align:center;color:#999">Connection error.</p>';
+  }
+}
+
+async function _closeMap() {
+  const panel = byId('supervisorMapPanel');
+  const btn = byId('supervisorMapBtn');
+  if (panel) panel.hidden = true;
+  if (btn) btn.setAttribute('hidden', '');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=1');
+  closeSupervisorMap();
+}
+
 function _switchTab(tab) {
   _currentTab = tab;
   document.querySelectorAll('.settings-tab').forEach(t => {
@@ -1972,6 +2004,8 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('orchestratorBtn')?.addEventListener('click', openSupervisorPane);
   byId('orchestratorPaneTitle')?.addEventListener('click', openSupervisorPane);
   byId('orchestratorPaneClose')?.addEventListener('click', closeSupervisorPane);
+  byId('supervisorMapBtn')?.addEventListener('click', _openMap);
+  byId('supervisorMapClose')?.addEventListener('click', _closeMap);
   byId('settingsCancel').addEventListener('click', closeSettingsDialog);
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });

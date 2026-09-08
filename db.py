@@ -110,6 +110,7 @@ def __getattr__(name: str):
         "ai_machine_update": "routes.db_machines",
         "ai_machine_clear_transport": "routes.db_machines",
         "ai_machine_activate": "routes.db_machines",
+        "ai_machine_set_enabled": "routes.db_machines",
         "ai_machine_delete": "routes.db_machines",
         "ai_machine_set_models": "routes.db_machines",
         "ai_machine_api_key": "routes.db_machines",

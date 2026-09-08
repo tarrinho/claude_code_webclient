@@ -173,6 +173,20 @@ async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
     UPDATE below opens its own implicit transaction, which already
     covers atomicity up to the commit/rollback below.
     """
+    # Refuse before touching anything. A disabled backend must not become the
+    # default: that would route every unpinned turn to a backend the operator
+    # shelved, while the flag still said disabled.
+    #
+    # Checked before the deactivate-everything UPDATE below, not after: a
+    # refusal that had already run that statement would leave the owner with
+    # no default at all, which is worse than the state it declined to leave.
+    cur = await db.db_conn.execute(
+        "SELECT enabled FROM ai_machines WHERE id = ? AND owner_id = ?",
+        (machine_id, owner_id),
+    )
+    row = await cur.fetchone()
+    if not row or not row["enabled"]:
+        return False
     try:
         await db.db_conn.execute(
             "UPDATE ai_machines SET active = 0 WHERE owner_id = ?",
@@ -389,3 +403,23 @@ def parse_active_models(raw: Any) -> list[str]:
             seen.add(entry.strip())
             models.append(entry.strip()[:200])
     return models
+
+
+async def ai_machine_set_enabled(
+    machine_id: str, owner_id: str, enabled: bool
+) -> bool:
+    """Shelve a backend, or bring it back. True when a row changed.
+
+    Its own function rather than a field on ai_machine_update: that builder
+    only writes a field when the value is not None, so a bare False reads
+    ambiguously beside eight text fields -- and the callers that must refuse
+    (routes/machines.handle_machine_patch) need one obvious entry point to
+    guard rather than a value buried in a dict.
+    """
+    cur = await db.db_conn.execute(
+        "UPDATE ai_machines SET enabled = ?, updated_at = ? "
+        "WHERE id = ? AND owner_id = ?",
+        (1 if enabled else 0, db._now(), machine_id, owner_id),
+    )
+    await db.db_conn.commit()
+    return cur.rowcount > 0

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 from openai import AsyncOpenAI
@@ -125,27 +126,111 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     output_tokens = 0
     failed = False
     try:
-        # Build the message list: system prompt, parent context (if any),
-        # and the current voice prompt. The parent context lets the model
-        # understand the conversation before the voice session started, so
-        # follow-ups and clarifications stay grounded in the existing thread.
+        # Build the message list: system prompt, structured parent context
+        # (a lightweight pre-summary of goal, status, decisions, open
+        # questions, and named entities), and the current voice prompt.
+        # The structured summary is much cheaper than dumping raw messages
+        # and gives the model a usable picture of what was discussed before
+        # the voice session started.
         messages: list[dict[str, str]] = [
             {"role": "system", "content": VOICE_SYSTEM_PROMPT},
         ]
         parent_id = chat.get("parent_chat_id")
         if parent_id:
             parent_msgs = await db.messages_get(parent_id)
-            # Only the most recent messages to stay within context limits:
-            # a sliding window of the last N turns (user+assistant pairs).
             if parent_msgs:
                 # Take the last ~6 turns (up to 12 messages, 6 pairs).
-                # 6 pairs ≈ a couple of minutes of conversation — enough
-                # context without blowing the token budget.
                 recent = parent_msgs[-12:] if len(parent_msgs) > 12 else parent_msgs
+
+                # Build compact structured context from the raw history.
+                # Instead of passing every raw message we distill the
+                # conversation into goal, current status, key decisions,
+                # open questions, and notable names/constraints.  This is
+                # a lightweight inline heuristic — no extra model call —
+                # that gives the voice model a clear frame of reference.
+                lines: list[str] = []
+
+                goal_parts: list[str] = []
+                status_parts: list[str] = []
+                decisions_parts: list[str] = []
+                open_parts: list[str] = []
+                entities: dict[str, str] = {}
+
                 for msg in recent:
                     content = msg.get("content") or ""
-                    if content.strip():
-                        messages.append({"role": msg["role"], "content": content})
+                    if not content.strip():
+                        continue
+                    role = msg.get("role", "user")
+                    cl = content.strip()[:300]  # cap per-msg length
+
+                    # Heuristics for categorisation (case-insensitive).
+                    cl_lower = cl.lower()
+                    if any(kw in cl_lower for kw in (
+                        "goal", "objective", "trying", "need to",
+                        "looking for", "working on", "building",
+                    )) and role == "user":
+                        goal_parts.append(cl)
+                    elif any(kw in cl_lower for kw in (
+                        "open question", "unresolved", "unclear",
+                        "not sure", "decide between", "consider",
+                        "should we",
+                    )) and role == "user":
+                        open_parts.append(cl)
+                    elif any(kw in cl_lower for kw in (
+                        "decided", "go with", "chose", "settled",
+                        "final decision",
+                    )) and role == "assistant":
+                        decisions_parts.append(cl)
+                    else:
+                        status_parts.append(cl)
+
+                    # Extract quoted names, paths, URLs, and model names.
+                    for match in re.findall(
+                        r'"([^"]{2,60})"', cl
+                    ):
+                        if len(entities) < 20 and match not in entities:
+                            entities[match] = match
+
+                if goal_parts:
+                    lines.append(
+                        f"  GOAL: {goal_parts[0]}"
+                    )
+                if status_parts:
+                    lines.append(
+                        "  STATUS: " + "; ".join(
+                            s for s in status_parts[:4]
+                        )
+                    )
+                if decisions_parts:
+                    lines.append(
+                        "  DECISIONS: " + "; ".join(
+                            d for d in decisions_parts[:3]
+                        )
+                    )
+                if open_parts:
+                    lines.append(
+                        "  OPEN QUESTIONS: " + "; ".join(
+                            o for o in open_parts[:3]
+                        )
+                    )
+                if entities:
+                    lines.append(
+                        f"  NAMES / CONSTRAINTS: "
+                        f"{', '.join(entities.values())}"
+                    )
+
+                if lines:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Here is a structured summary of the ongoing "
+                            "conversation before this voice session started. "
+                            "Use it as context for your responses; do not "
+                            "read it back verbatim.\n\n"
+                            + "\n".join(lines)
+                        ),
+                    })
+
         messages.append({"role": "user", "content": prompt})
 
         stream = await client.chat.completions.create(

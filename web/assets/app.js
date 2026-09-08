@@ -502,9 +502,44 @@ async function saveChatDialog(event) {
         body: JSON.stringify({title, description, voice_mode: voiceMode}),
       });
       if (!response.ok) throw new Error('Could not save conversation');
+      const data = await response.json();
       closeDialog();
-      await refreshChats();
-      if (state.currentChat?.id === editedId) await selectChat(editedId);
+      // Update the sidebar row in-place so refreshChats / selectChat are not
+      // needed.  The PATCH response carries the fields the sidebar reads, so
+      // a full GET /api/chats (which stats every transcript and every Claude
+      // session JSON) is no longer required for a title change.
+      if (data.chat) {
+        const row = findChat(editedId);
+        if (row) {
+          row.title = data.chat.title;
+          row.description = data.chat.description;
+          row.voice_mode = data.chat.voice_mode;
+          row.pinned = data.chat.pinned;
+          row.archived = data.chat.archived;
+        }
+        listController.render(state.chats, state.currentChat?.id);
+        if (state.currentChat?.id === editedId) {
+          state.currentChat.title = data.chat.title;
+          state.currentChat.description = data.chat.description;
+          state.currentChat.voice_mode = data.chat.voice_mode;
+          state.currentChat.pinned = data.chat.pinned;
+          state.currentChat.archived = data.chat.archived;
+          // Only the parts that actually changed after an edit:
+          // strip, composer name, pinned model, backend picker.
+          updateModelDisplay(state.currentChat.model || state.currentChat.last_model_used);
+          populateBackendPicker(state.currentChat);
+          ensurePinnedModels(state.currentChat);
+          byId('topbarTitle').textContent = 'WebConsole';
+          byId('workspaceName').textContent = data.chat.title;
+          byId('workspaceName').title = data.chat.title;
+          byId('composerChatName').textContent = data.chat.title;
+          byId('composerChatName').title = data.chat.title;
+        }
+      } else {
+        // Server didn't return chat object (old server) — fall back.
+        await refreshChats();
+        if (state.currentChat?.id === editedId) await selectChat(editedId);
+      }
     }
   } catch (error) {
     showToast(error.message, 'error');

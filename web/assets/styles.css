@@ -895,7 +895,7 @@ button{touch-action:manipulation}
   white-space:pre-wrap; word-break:break-word;
 }
 .voice-tooltip-messages .voice-user { color:var(--user-bg); font-weight:600; }
-.voice-tooltip-messages .voice-assistant { color:var(--assistant-bg); }
+.voice-tooltip-messages .voice-assistant { color:var(--fg); }
 .voice-tooltip-messages .voice-status { color:#fff; font-style:italic; opacity:0.7; }
 .voice-tooltip-composer {
   display:flex; gap:4px; padding:8px 14px; border-top:1px solid var(--line);

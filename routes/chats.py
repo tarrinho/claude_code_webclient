@@ -183,6 +183,9 @@ async def handle_chats_list(request: Request):
                     "terminal_busy": bool(
                         c.get("session_id") and c["session_id"] in busy_sessions
                     ),
+                    "voice_mode": bool(c.get("voice_mode")),
+                    "parent_chat_id": c.get("parent_chat_id"),
+                    "is_temporary": bool(c.get("is_temporary")),
                 }
                 for c in chats
             ],

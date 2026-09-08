@@ -265,7 +265,6 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
 
     if not parent_base_url or not parent_api_key:
         # Fallback: delete the voice chat without handoff summary
-        await db.messages_delete_for_chat(chat_id)
         await db.chat_delete(chat_id, owner)
         return None
 
@@ -304,14 +303,12 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
         # Insert summary as an assistant message in the parent chat
         await db.messages_batch(parent_id, [("assistant", summary)])
 
-        # Delete the voice chat and all its messages
-        await db.messages_delete_for_chat(chat_id)
+        # chat_delete removes the chat's messages and their FTS entries too.
         await db.chat_delete(chat_id, owner)
 
         return summary
     except Exception:
         _log.exception("voice_handoff failed for chat_id=%s", chat_id)
         # Still delete the voice chat even if handoff failed
-        await db.messages_delete_for_chat(chat_id)
         await db.chat_delete(chat_id, owner)
         return None

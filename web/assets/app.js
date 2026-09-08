@@ -10,7 +10,7 @@ import {createChatListController} from './chat-list.js?v=4';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=6';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
-import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=7';
+import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=8';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot

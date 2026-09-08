@@ -60,6 +60,43 @@ if not os.environ.get("WC_RESOURCE_GUARD"):
     os.environ["WC_RESOURCE_GUARD"] = "off"
 
 
+# ── Rate limiter isolation ───────────────────────────────────────────────────
+#
+# `_Ratelimiter._buckets` is a ClassVar, so it is one dict for the whole
+# process and a fresh instance inherits it. Every in-process TestClient login
+# arrives as ip "testclient" on path "/login", so the suite spends one shared
+# budget of RATE_LIMIT_MAX (120) per RATE_LIMIT_WINDOW (60s) across every test
+# module that logs in.
+#
+# What that looks like when it runs out is the reason this is worth a fixture:
+# the limiter answers 429 to the *fixture* login, so the failure is reported
+# against whichever test happened to be holding the 121st login, with an
+# assertion about the thing that test was really checking. Measured:
+# `test_qa_session_delete.py::test_refuses_to_delete_non_webconsole_file`
+# passed alone and failed after `test_qa_rate_limit.py` with
+# "429 != 200 : fixture must log in" -- nothing to do with deleting sessions,
+# and it moves to a different test as soon as the file order changes.
+#
+# Clearing before each test rather than after: a test that fails part-way
+# through still leaves its buckets behind, and "after" would skip the cleanup
+# on exactly the runs that need it most. tests/test_qa_rate_limit.py is
+# unaffected -- it builds the state it asserts on inside a single test, and
+# starting each of its tests from empty is what it already assumes.
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Empty the process-global bucket map before each test."""
+    try:
+        import rate_limit
+    except Exception:  # pragma: no cover - a run that cannot import the app
+        yield
+        return
+    rate_limit._Ratelimiter._buckets.clear()
+    yield
+
+
 # ── Capability guard ─────────────────────────────────────────────────────────
 #
 # Refuses a run that would silently skip a whole layer of the suite because of

@@ -113,6 +113,7 @@ def __getattr__(name: str):
         "ai_machine_set_enabled": "routes.db_machines",
         "ai_machine_delete": "routes.db_machines",
         "ai_machine_set_models": "routes.db_machines",
+        "ai_machine_set_models_list": "routes.db_machines",
         "ai_machine_api_key": "routes.db_machines",
         "ai_machine_seed_anthropic": "routes.db_machines",
         "chat_owner": "routes.db_machines",

@@ -46,8 +46,29 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ASSETS = REPO / "web" / "assets"
 
-PRIVATE = re.compile(r"\b(_[A-Za-z][A-Za-z0-9_]*)\b")
+# The lookbehind excludes member accesses. `d._children` is a property on an
+# object -- here, d3's own collapse idiom on a hierarchy node -- and a property
+# is never a module-scope identifier, so it can neither be a cross-module read
+# nor be fixed by an import. Without this, supervisor-map.js reported
+# `_children` on the strength of eleven uses, all eleven of them `._children`.
+# The bug this file was written for (`_skillFilter`) is a bare identifier and is
+# still caught.
+PRIVATE = re.compile(r"(?<![.\w$])(_[A-Za-z][A-Za-z0-9_]*)\b")
 DECLARED = "const|let|var|function|class"
+
+
+def _modules() -> list[Path]:
+    """Every module this check owns, which excludes vendored bundles.
+
+    A minified third-party bundle is one long line with its declarations inside
+    function scopes this file's line-oriented patterns cannot see, so every
+    private name in it reads as undeclared. d3.min.js alone reported four
+    (`_intern`, `_key`, `_n`, `_partials`) — all of them real declarations d3
+    makes and uses correctly. Vendored code is also not code we can fix, so a
+    finding against it is noise either way, and noise is what gets a check
+    switched off.
+    """
+    return [p for p in sorted(ASSETS.glob("*.js")) if not p.name.endswith(".min.js")]
 
 
 def _code_only(source: str) -> str:
@@ -88,7 +109,7 @@ def _is_available(name: str, code: str) -> bool:
 def offenders() -> dict[str, list[str]]:
     """Module file name -> private names it uses but does not have."""
     found: dict[str, list[str]] = {}
-    for path in sorted(ASSETS.glob("*.js")):
+    for path in _modules():
         code = _code_only(path.read_text(encoding="utf-8"))
         missing = [name for name in sorted(set(PRIVATE.findall(code)))
                    if not _is_available(name, code)]
@@ -100,7 +121,7 @@ def offenders() -> dict[str, list[str]]:
 def _defined_in(name: str) -> list[str]:
     """Where *name* is actually declared, to name the fix in the failure."""
     homes = []
-    for path in sorted(ASSETS.glob("*.js")):
+    for path in _modules():
         code = _code_only(path.read_text(encoding="utf-8"))
         if re.search(rf"\b(?:{DECLARED})\s+{re.escape(name)}\b", code):
             homes.append(path.name)
@@ -117,7 +138,7 @@ class NoCrossModulePrivateReadsTests(unittest.TestCase):
         code, every assertion below passes against nothing — which is the same
         silent-pass this file exists to prevent.
         """
-        modules = list(ASSETS.glob("*.js"))
+        modules = _modules()
         self.assertGreaterEqual(len(modules), 5, "found almost no modules")
         seen = set()
         for path in modules:

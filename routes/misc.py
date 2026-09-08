@@ -742,6 +742,12 @@ async def handle_settings_get(request: Request):
     if not webconsole_url and config.WC_WEBCONSOLE_URL:
         webconsole_url = config.WC_WEBCONSOLE_URL
 
+    debug_console = await db.setting_get("debug_console")
+    debug_console = debug_console == "1"
+
+    debug_console = await db.setting_get("debug_console")
+    debug_console = debug_console == "1"
+
     from routes.db_machines import parse_active_models
     from routes.voice import voice_model_timing_averages
 
@@ -811,6 +817,7 @@ async def handle_settings_get(request: Request):
             "session_ttl_s": session_ttl,
             "turn_timeout_s": turn_timeout,
             "prompt_max": prompt_max,
+            "debug_console": debug_console,
             "voice_backend_id": voice_backend_id,
             # Compatibility key for older clients; both values are the same
             # owner-scoped selection and never expose another user's machine.
@@ -897,6 +904,12 @@ async def handle_settings_patch(request: Request):
         if not (0.5 <= rate <= 5.0):
             raise HTTPException(status_code=400, detail="Voice speech rate must be between 0.5 and 5")
         await db.setting_set("voice_speech_rate", str(rate))
+
+    if "debug_console" in data:
+        value = data.get("debug_console")
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="debug_console must be a boolean")
+        await db.setting_set("debug_console", "1" if value else "0")
 
     # Boot secrets – these live in the DB so the app can run without .env.
     boot_secrets = {

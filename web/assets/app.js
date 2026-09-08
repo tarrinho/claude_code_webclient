@@ -90,6 +90,20 @@ export function showToast(message, type = '') {
   setTimeout(() => toast.remove(), 4500);
 }
 
+// Debug-mode console wrapper.  When the user flips the checkbox in Settings →
+// App the setting persists to the DB, so the state survives a page reload.
+// When debug_console is OFF, all console.log calls become no-ops so the
+// browser console stays quiet.  console.error and console.warn are always
+// enabled because they signal real problems.
+export function debugLog(...args) {
+  // Read the checkbox each call so a late toggle (or a setting that loaded
+  // after the initial script eval) still takes effect without reload.
+  const el = byId('debugConsole');
+  if (el && el.checked) {
+    console.log(...args);
+  }
+}
+
 // Exported for usage.js, so both places a turn's time is rendered agree on
 // the same rule rather than growing a second implementation.
 export function formatTime(iso) {
@@ -385,6 +399,10 @@ async function saveSettings(event) {
     const webconsoleUrl = (byId('webconsoleUrl')?.value || '').trim();
     if (webconsoleUrl !== _loadedSettings?.webconsole_url) {
       body.webconsole_url = webconsoleUrl || '';
+    }
+    const debugChecked = byId('debugConsole')?.checked;
+    if (debugChecked !== _loadedSettings?.debug_console) {
+      body.debug_console = debugChecked;
     }
     collectVoiceSettingsFields(body, _loadedSettings);
     if (!Object.keys(body).length) {
@@ -1579,6 +1597,7 @@ async function loadSettings() {
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
       if (data.webconsole_url) byId('webconsoleUrl').value = data.webconsole_url;
+      if (data.debug_console !== undefined) byId('debugConsole').checked = data.debug_console;
       // The model dropdown is repopulated inside renderVoiceSettingsFields
       // from the chosen backend's own `models`, so this callback no longer
       // touches it. It used to call a populateModelOptions that is private

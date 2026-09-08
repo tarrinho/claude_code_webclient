@@ -3,6 +3,8 @@
 // (already 2254 lines, over this project's 300-line-per-file cap) rather
 // than added to it — see rules.md's "no big files" rule.
 
+import { debugLog } from './app.js?v=44';
+
 export function renderVoiceSettingsFields(data, onBackendChange) {
   const backendSelect = document.getElementById('voiceBackendSelect');
   const modelSelect = document.getElementById('voiceModelSelect');
@@ -14,8 +16,7 @@ export function renderVoiceSettingsFields(data, onBackendChange) {
   if (backendSelect) {
     backendSelect.innerHTML = '';
     const backends = data.voice_backend_options || [];
-    // Debug: log what we got
-    console.log('[voice-settings] renderVoiceSettingsFields:', {
+    debugLog('[voice-settings] renderVoiceSettingsFields:', {
       has_backend_select: !!backendSelect,
       has_model_select: !!modelSelect,
       voice_backend_id: data.voice_backend_id,

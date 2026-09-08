@@ -199,8 +199,8 @@ async function openVoiceTooltip() {
   voiceTooltipMessages.innerHTML = '';
   voiceTooltipTitle.textContent = `Voice: ${chat.title}`;
   const loadingMsg = document.createElement('div');
-  loadingMsg.className = 'voice-assistant';
-  loadingMsg.textContent = 'Bringing up conversation context…';
+  loadingMsg.className = 'voice-status';
+  loadingMsg.textContent = 'Using pre-existing conversation context in voice chat…';
   voiceTooltipMessages.appendChild(loadingMsg);
 
   // Create temp voice chat with parent context
@@ -240,7 +240,7 @@ async function openVoiceTooltip() {
   // Replace loading with "waiting for input" message
   voiceTooltipMessages.innerHTML = '';
   const idleMsg = document.createElement('div');
-  idleMsg.className = 'voice-assistant';
+  idleMsg.className = 'voice-status';
   idleMsg.textContent = 'Waiting for your voice input…';
   voiceTooltipMessages.appendChild(idleMsg);
 
@@ -392,7 +392,7 @@ function startVoiceFromMic() {
     // Already in voice tooltip — go straight to listening.
     voiceTooltipMessages.innerHTML = '';
     const msg = document.createElement('div');
-    msg.className = 'voice-assistant';
+    msg.className = 'voice-status';
     msg.textContent = 'Listening…';
     voiceTooltipMessages.appendChild(msg);
     startListening(false);
@@ -402,7 +402,7 @@ function startVoiceFromMic() {
       if (voiceTempChatId) {
         voiceTooltipMessages.innerHTML = '';
         const msg = document.createElement('div');
-        msg.className = 'voice-assistant';
+        msg.className = 'voice-status';
         msg.textContent = 'Listening…';
         voiceTooltipMessages.appendChild(msg);
         startListening(false);
@@ -422,7 +422,7 @@ function startVoiceLive() {
   if (voiceTempChatId) {
     voiceTooltipMessages.innerHTML = '';
     const msg = document.createElement('div');
-    msg.className = 'voice-assistant';
+    msg.className = 'voice-status';
     msg.textContent = 'Listening (hands-free)…';
     voiceTooltipMessages.appendChild(msg);
     startListening(true);
@@ -431,7 +431,7 @@ function startVoiceLive() {
       if (voiceTempChatId) {
         voiceTooltipMessages.innerHTML = '';
         const msg = document.createElement('div');
-        msg.className = 'voice-assistant';
+        msg.className = 'voice-status';
         msg.textContent = 'Listening (hands-free)…';
         voiceTooltipMessages.appendChild(msg);
         startListening(true);

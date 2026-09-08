@@ -336,22 +336,45 @@ def _probe_anthropic(url: str, api_key: str | None, *, provider: str = "claude_c
 
     For "claude_code" / "anthropic" providers the endpoint expects
     *anthropic-version* + *x-api-key* headers.  For "direct" (OpenAI-compatible)
-    endpoints the key is sent as *Authorization: Bearer*.
+    endpoints the key is sent as *Authorization: Bearer*.  When the API key is
+    stored and the Anthropic headers get a 401/403/404, retry with OpenAI-style
+    auth so that an endpoint that is actually OpenAI-compatible but labelled
+    "claude_code" still works.
     """
-    headers: dict[str, str] = {}
+    headers_anthropic: dict[str, str] = {}
+    headers_openai: dict[str, str] = {}
+    if api_key:
+        headers_openai["Authorization"] = f"Bearer {api_key}"
+    headers_anthropic["anthropic-version"] = _ANTHROPIC_API_VERSION
+    if api_key:
+        headers_anthropic["x-api-key"] = api_key
+
+    # Try OpenAI-style auth first so that endpoints labelled "claude_code"
+    # but actually OpenAI-compatible still work.  Anthropic's own endpoint
+    # ignores the Bearer header and returns 401, so we fall back to the
+    # native Anthropic headers below.  "direct" providers only need one shot.
     if provider == "direct":
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        auth_headers = headers_openai
     else:
-        headers["anthropic-version"] = _ANTHROPIC_API_VERSION
-        if api_key:
-            headers["x-api-key"] = api_key
-    req = urllib.request.Request(url, headers=headers, method="GET")
+        auth_headers = headers_openai or headers_anthropic  # try Bearer first when key present
+
+    req = urllib.request.Request(url, headers=auth_headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:  # nosec B310: scheme checked
             return resp.status, resp.read(_MODELS_BODY_MAX)
-    except urllib.error.HTTPError as exc:
-        return exc.code, b""
+    except urllib.error.HTTPError:
+        pass
+
+    if provider != "direct" and api_key:
+        # Bearer failed — try native Anthropic headers.
+        req2 = urllib.request.Request(url, headers=headers_anthropic, method="GET")
+        try:
+            with urllib.request.urlopen(req2, timeout=8) as resp:  # nosec B310: scheme checked
+                return resp.status, resp.read(_MODELS_BODY_MAX)
+        except urllib.error.HTTPError as exc:
+            return exc.code, b""
+
+    return 401, b""  # no key or both auth styles failed
 
 
 _PROBE_PROMPT = "Reply with exactly: ok"

@@ -21,7 +21,9 @@ import {
 } from './app.js?v=43';
 import {apiFetch} from './api.js?v=1';
 import {notifyResult, setStatus} from './server-stats.js?v=1';
-import {_transports, loadTransports, populateTransportPicker} from './transports.js?v=1';
+import {_transports, loadTransports, populateTransportPicker,
+  // The transport group header offers these; see _buildTransportHeader.
+  _showEditTransport, _deleteTransport} from './transports.js?v=2';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -150,7 +152,7 @@ function _buildModelSection(machine) {
   const section = document.createElement('div');
   section.className = 'machine-models';
 
-  if (machine.provider !== 'claude_code') {
+  if (machine.provider !== 'claude_code' && machine.provider !== 'direct') {
     const note = document.createElement('p');
     note.className = 'machine-hint';
     note.textContent = 'A Claude Code proxy does not publish a model list.';
@@ -447,7 +449,7 @@ function _buildMachineCard(m) {
 // starting the tunnel for one machine on a shared transport brings the whole
 // connection up for all of them, per Task 5). Omitted when the group is
 // empty: there is no machine id to start a tunnel for yet.
-function _buildTransportHeader(label, machines) {
+function _buildTransportHeader(label, machines, transport = null) {
   const header = document.createElement('div');
   header.className = 'chat-section-label';
   header.textContent = label;
@@ -458,6 +460,26 @@ function _buildTransportHeader(label, machines) {
     badge.textContent = 'SSH';
     badge.addEventListener('click', () => _toggleSshTunnel(machines[0].id, badge));
     header.appendChild(badge);
+  }
+  // Optional because one caller has no transport record to offer: the
+  // "(unknown transport)" group exists for machines whose transport_id points
+  // at a row that is gone, and there is nothing there to edit or delete.
+  if (transport) {
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'transport-action';
+    editBtn.textContent = 'Edit';
+    editBtn.setAttribute('aria-label', `Edit transport ${transport.name}`);
+    editBtn.addEventListener('click', () => _showEditTransport(transport));
+    header.appendChild(editBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'transport-action transport-action-danger';
+    delBtn.textContent = 'Delete';
+    delBtn.setAttribute('aria-label', `Delete transport ${transport.name}`);
+    delBtn.addEventListener('click', () => _deleteTransport(transport, _renderMachineList));
+    header.appendChild(delBtn);
   }
   return header;
 }
@@ -492,7 +514,7 @@ export function _renderMachineList() {
   _transports.forEach(transport => {
     renderedTransportIds.add(transport.id);
     const machines = byTransport.get(transport.id) || [];
-    list.appendChild(_buildTransportHeader(`via ${transport.name}`, machines));
+    list.appendChild(_buildTransportHeader(`via ${transport.name}`, machines, transport));
     machines.forEach(m => list.appendChild(_buildMachineCard(m)));
   });
   // A machine pointed at a transport that no longer exists must not silently

@@ -2735,6 +2735,99 @@ class SupervisorMapBrowserTests(_BrowserFixture):
         )
         self.assertEqual(self.errors, [])
 
+    def test_the_tree_is_rendered_at_a_visible_size(self):
+        """The geometry regression this pins down, measured rather than
+        reasoned about.
+
+        d3.tree() was created without .size(), so it defaulted to size([1, 1])
+        and every node's radius was a fraction of one unit: a machine node's
+        own transform read `rotate(-61.35deg) translate(1,0)`. The whole tree
+        rendered inside about one square pixel near the SVG's origin, and
+        since the SVG carried no viewBox and the tree is laid out polar about
+        (0,0), three of its four quadrants were at negative coordinates --
+        outside the drawable area, with no working zoom or pan to bring them
+        back. Every headless assertion still passed, because the elements
+        existed and Playwright resolved them; only their rendered size was
+        wrong.
+
+        So this asserts pixels: nodes spread over a real distance, and each
+        one lands inside the box the SVG occupies.
+        """
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        box = self.page.evaluate(
+            "() => document.getElementById('supervisorMapSvg')"
+            ".getBoundingClientRect().toJSON()"
+        )
+        # The circles, not the `g.node` groups. A group's bounding box includes
+        # its text label, which is tens of pixels wide whatever the layout
+        # does -- measuring those made this test pass with the layout collapsed
+        # to a single point, which is the exact regression it exists to catch.
+        points = self.page.evaluate("""
+          () => Array.from(
+            document.querySelectorAll('#supervisorMapSvg g.node > circle')
+          ).map(c => {
+            const r = c.getBoundingClientRect();
+            return {x: r.left + r.width / 2, y: r.top + r.height / 2,
+                    w: r.width};
+          })
+        """)
+        self.assertGreaterEqual(
+            len(points), 2, "a fresh account has a centre and at least one group",
+        )
+        for point in points:
+            self.assertGreater(
+                point["w"], 2,
+                f"a node is {point['w']}px across -- on screen but too small "
+                f"to click: {point}",
+            )
+            # 2px of tolerance: a stroke can sit a fraction outside the box.
+            self.assertGreaterEqual(point["x"], box["left"] - 2, point)
+            self.assertLessEqual(point["x"], box["right"] + 2, point)
+            self.assertGreaterEqual(point["y"], box["top"] - 2, point)
+            self.assertLessEqual(point["y"], box["bottom"] + 2, point)
+        # Spread, not a cluster: with size() missing, every node sat within a
+        # pixel or two of every other one.
+        spread = max(
+            abs(a["x"] - b["x"]) + abs(a["y"] - b["y"])
+            for a in points for b in points
+        )
+        self.assertGreater(
+            spread, 40,
+            f"the furthest two nodes are {spread:.1f}px apart -- the tree is "
+            f"a dot, not a map: {points}",
+        )
+
+    def test_the_zoom_in_button_moves_the_view(self):
+        """d3.zoom() was built with no `.on("zoom", ...)` handler, so nothing
+        was subscribed to the transform it computed and every zoom control was
+        inert. Asserted through the DOM the browser actually rendered, because
+        the button, the zoom behaviour and the transform all existed before --
+        what was missing was the one line connecting them."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        read = ("() => { const g = document.querySelector('#supervisorMapSvg "
+                "g.map-viewport'); return g ? g.getAttribute('transform') : null; }")
+        before = self.page.evaluate(read)
+        self.assertIsNotNone(
+            before, "there is no map-viewport group for zoom to transform",
+        )
+
+        self.page.click("#mapZoomInBtn")
+        self.page.wait_for_timeout(1000)
+
+        self.assertNotEqual(
+            self.page.evaluate(read), before,
+            "clicking zoom in left the viewport transform untouched",
+        )
+        self.assertEqual(self.errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

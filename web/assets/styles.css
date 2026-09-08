@@ -736,3 +736,54 @@ button{touch-action:manipulation}
 .remote-stat-item{display:flex;justify-content:space-between}
 .remote-stat-time{font-size:11px;color:var(--muted)}
 
+/* ── Supervisor Map Panel ──────────────────────────────────────── */
+#supervisorMapPanel {
+  position: fixed; right: 12px; top: 56px;
+  width: 420px; height: calc(100vh - 68px);
+  background: var(--panel2, #fff);
+  border: 1px solid var(--line, #ddd);
+  border-radius: 8px;
+  display: flex; flex-direction: column;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+#supervisorMapPanel .panel-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line, #ddd);
+  font-weight: 600; font-size: 14px; flex-shrink: 0;
+}
+#supervisorMapPanel .zoom-controls {
+  margin-left: auto; display: flex; gap: 2px;
+}
+#supervisorMapPanel .map-body {
+  flex: 1; position: relative; overflow: hidden; padding: 20px;
+}
+#supervisorMapPanel svg { display: block; width: 100%; height: 100%; }
+#supervisorMapPanel .map-tooltip {
+  position: fixed; background: var(--fg, #1a1a2e); color: var(--bg, #fff);
+  padding: 4px 8px; border-radius: 4px; font-size: 11px;
+  pointer-events: none; white-space: nowrap; z-index: 200;
+}
+#supervisorMapPanel .map-detail {
+  position: absolute; right: 0; top: 0; width: 200px; height: 100%;
+  background: var(--panel-bg, #f8f8f8);
+  border-left: 1px solid var(--line, #ddd);
+  padding: 12px; overflow-y: auto; font-size: 12px;
+}
+#supervisorMapPanel .map-detail-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+}
+#supervisorMapPanel .map-detail-title { font-weight: 600; }
+#supervisorMapPanel .map-detail-status { margin: 4px 0; font-weight: 500; }
+#supervisorMapPanel .map-detail-message {
+  margin: 8px 0; color: #666; font-size: 11px;
+}
+#supervisorMapPanel .map-detail-meta {
+  color: #999; font-size: 10px;
+}
+/* Node hover */
+#supervisorMapPanel .node:hover circle {
+  stroke: var(--fg, #1a1a2e); stroke-width: 2px;
+}

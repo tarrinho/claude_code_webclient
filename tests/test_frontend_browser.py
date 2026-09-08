@@ -2484,6 +2484,64 @@ class ChatRowMenuBrowserTests(_BrowserFixture):
             "a click outside .chat-actions must dismiss the menu",
         )
 
+    def test_a_low_row_on_a_phone_opens_its_menu_on_screen(self):
+        """The second half of the same report, and the half a desktop viewport
+        cannot see.
+
+        Measured at 390x680 before the fix: a row near the bottom of the
+        sidebar opened its menu at y=637 with a height of 391, ending at 1028
+        -- 348px below the fold. The menu was open and entirely off screen,
+        which to the person tapping it is the same as broken. `.chat-menu` is
+        now height-capped and chat-list.js flips it above the trigger when
+        there is more room there.
+        """
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        target = f"low-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        # Filler above it, so the row of interest sits low in the list. Ordering
+        # is by recency, so the target is inserted last to land at the bottom.
+        for i in range(8):
+            con.execute(
+                "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+                "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+                (f"{target}-f{i}", f"Filler {i}", stamp, stamp),
+            )
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (target, "LowRowChat", stamp, stamp),
+        )
+        con.commit()
+        con.close()
+
+        self.page.set_viewport_size({"width": 390, "height": 680})
+        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_timeout(800)
+        self.page.click("#menuBtn")
+        self.page.wait_for_timeout(600)
+
+        row = f'#chatList .chat-item[data-chat-id="{target}"]'
+        self.page.wait_for_selector(row, timeout=20_000)
+        self.page.click(f'{row} button[data-action="menu"]')
+        self.page.wait_for_timeout(500)
+
+        box = self.page.eval_on_selector(
+            f'{row} .chat-menu', "el => el.getBoundingClientRect().toJSON()")
+        viewport = self.page.viewport_size
+        self.assertGreater(box["height"], 50, f"the menu did not render: {box}")
+        self.assertLessEqual(
+            round(box["bottom"]), viewport["height"] + 1,
+            f"the menu ends {round(box['bottom']) - viewport['height']}px below "
+            f"the fold on a {viewport['width']}x{viewport['height']} screen -- "
+            f"it is open but cannot be reached: {box}",
+        )
+        self.assertGreaterEqual(
+            round(box["top"]), -1,
+            f"flipping it up pushed it off the top instead: {box}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,9 +160,32 @@ export function createChatListController(dependencies) {
     commitOrder(row.parentElement, row.dataset.section);
   }
 
+  // Open upwards when the menu would otherwise hang below the fold. Measured
+  // after `.open` is set, because a display:none element has no height to
+  // measure -- which is also why this cannot be done in CSS: the decision
+  // needs the menu's rendered height against the space left under its trigger.
+  //
+  // Reported as "the 3 dots isn't working": on a 390x680 phone, a row low in
+  // the sidebar opened its menu at y=637 with a height of 391, so it ended at
+  // 1028 -- 348px past the bottom of the screen. It was open, and invisible.
+  //
+  // Flipped only when above is genuinely roomier, so a row near the top (where
+  // flipping would push the menu off the *other* edge) keeps opening downward
+  // and relies on the max-height cap instead.
+  function placeMenu(button, menu) {
+    menu.classList.remove('flip-up');
+    const rect = menu.getBoundingClientRect();
+    const trigger = button.getBoundingClientRect();
+    const overflowsBelow = rect.bottom > window.innerHeight;
+    const roomAbove = trigger.top;
+    const roomBelow = window.innerHeight - trigger.bottom;
+    if (overflowsBelow && roomAbove > roomBelow) menu.classList.add('flip-up');
+  }
+
   function closeMenus(restoreFocus = false) {
     for (const menu of document.querySelectorAll('.chat-menu.open')) {
       menu.classList.remove('open');
+      menu.classList.remove('flip-up');
       const trigger = menu.previousElementSibling;
       if (trigger) trigger.setAttribute('aria-expanded', 'false');
     }
@@ -875,6 +898,7 @@ export function createChatListController(dependencies) {
       closeMenus();
       if (opening) {
         menu.classList.add('open');
+        placeMenu(button, menu);
         button.setAttribute('aria-expanded', 'true');
         openTrigger = button;
         menu.querySelector('button')?.focus();

@@ -70,8 +70,15 @@ button{touch-action:manipulation}
 .chat-snippet{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chat-snippet mark{background:rgba(88,166,255,.25);color:var(--fg);border-radius:2px;padding:0 2px}
 .chat-actions{position:relative}
-.chat-menu{display:none;position:absolute;right:0;top:34px;z-index:50;min-width:190px;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 8px 28px rgba(0,0,0,.3)}
+/* max-height/overflow mirror .auto-answer-menu: this menu is 391px tall with
+   eleven actions, which is more than half of a 680px phone screen. Without a
+   cap, a row low in the list opened it 348px below the fold -- measured at
+   390x680, bottom 1028 -- so it was on screen only in the sense that the DOM
+   said so. .flip-up is added by chat-list.js when there is more room above
+   than below; the cap alone would still hang off the bottom for the last row. */
+.chat-menu{display:none;position:absolute;right:0;top:34px;z-index:50;min-width:190px;max-height:min(60vh,360px);overflow-y:auto;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 8px 28px rgba(0,0,0,.3)}
 .chat-menu.open{display:grid}
+.chat-menu.flip-up{top:auto;bottom:34px}
 .chat-menu button{border:0;border-radius:5px;background:transparent;color:var(--fg);padding:8px 10px;text-align:left;white-space:nowrap;cursor:pointer}
 .chat-menu button:hover,.chat-menu button:focus-visible{background:var(--panel2)}
 /* Favouriting is a single click on the row rather than a menu item. */

@@ -189,3 +189,114 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         is_error=failed,
         origin="voice",
     )
+
+
+async def voice_handoff(chat_id: str, owner: str) -> str | None:
+    """Generate a handoff summary from a voice chat's messages, append to parent.
+
+    Returns the id of the created summary message on success, or None on
+    failure.  Deletes the voice chat and all its messages after handoff.
+    """
+    import routes.db_chats as db_chats
+
+    voice_chat = await db.chat_get(chat_id, owner)
+    if not voice_chat:
+        return None
+    parent_id = voice_chat.get("parent_chat_id")
+    if not parent_id:
+        return None
+
+    # Read all voice chat messages
+    messages_data, _ = await db.messages_page(parent_id, limit=2000)
+    # Read voice chat messages
+    voice_msgs, _ = await db.messages_page(chat_id, limit=2000)
+    if not voice_msgs:
+        return None
+
+    # Build context from voice chat messages for summarization
+    voice_text_parts = []
+    for msg in voice_msgs:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if content:
+            voice_text_parts.append(f"{role}: {content}")
+    voice_summary = "\n".join(voice_text_parts)[:2000]
+
+    # Get parent's model and backend for summarization
+    parent = await db.chat_get(parent_id, owner)
+    if not parent:
+        return None
+
+    parent_model = parent.get("model") or ""
+    if not parent_model:
+        return None
+
+    # Query the parent's backend for the summary generation
+    parent_backend = None
+    try:
+        parent_routing = await db_machines.chat_routing(parent_id)
+        if parent_routing.get("pinned") and parent_routing.get("machine"):
+            parent_backend = parent_routing["machine"]
+        elif parent.get("ai_machine_id"):
+            parent_backend = await db_machines.ai_machine_backend_by_id(
+                parent.get("ai_machine_id"), owner
+            )
+    except Exception:
+        pass
+
+    parent_base_url = (parent_backend or {}).get("base_url")
+    parent_api_key = (parent_backend or {}).get("api_key")
+    parent_provider = (parent_backend or {}).get("provider", "claude_code")
+
+    if not parent_base_url or not parent_api_key:
+        # Fallback: delete the voice chat without handoff summary
+        await db.messages_delete_for_chat(chat_id)
+        await db.chat_delete(chat_id, owner)
+        return None
+
+    # Normalize URL for OpenAI-compatible client
+    if not parent_base_url.rstrip("/").endswith("/v1"):
+        parent_base_url = parent_base_url.rstrip("/") + "/v1"
+
+    try:
+        client = AsyncOpenAI(base_url=parent_base_url, api_key=parent_api_key)
+        summary_prompt = (
+            "Summarize the following voice conversation in 2-4 concise sentences. "
+            "Focus on the key points, decisions, and any action items. "
+            "Do not include conversational filler. Output only the summary text.\n\n"
+            f"VOICE CONVERSATION:\n{voice_summary}"
+        )
+
+        response = await client.chat.completions.create(
+            model=parent_model,
+            messages=[{"role": "user", "content": summary_prompt}],
+            stream=False,
+        )
+
+        summary = None
+        if response.choices and response.choices[0].message.content:
+            summary = response.choices[0].message.content.strip()
+
+        if not summary:
+            # Fallback: create a basic summary from the voice messages
+            user_msgs = [m for m in voice_msgs if m.get("role") == "user"]
+            if user_msgs:
+                summary = f"Voice conversation with {len(user_msgs)} exchanges concluded. " \
+                    f"Key topics: {'; '.join(m.get('content', '')[:100] for m in user_msgs[:3])}"
+            else:
+                summary = "Voice conversation concluded."
+
+        # Insert summary as an assistant message in the parent chat
+        await db.messages_batch(parent_id, [("assistant", summary)])
+
+        # Delete the voice chat and all its messages
+        await db.messages_delete_for_chat(chat_id)
+        await db.chat_delete(chat_id, owner)
+
+        return summary
+    except Exception:
+        _log.exception("voice_handoff failed for chat_id=%s", chat_id)
+        # Still delete the voice chat even if handoff failed
+        await db.messages_delete_for_chat(chat_id)
+        await db.chat_delete(chat_id, owner)
+        return None

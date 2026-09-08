@@ -29,7 +29,7 @@ import runner
 import transcripts
 import turns
 from classification import _asks_a_question
-from routes.voice import stream_voice_turn
+from routes.voice import stream_voice_turn, voice_handoff as voice_handoff_fn
 from shared import (
     _MODEL_RE,
     _SSE_INTERNAL,
@@ -225,6 +225,8 @@ async def handle_chat_create(request: Request):
     )
     _log.info("chat_created chat_id=%s work_dir=%s", chat_id, work_dir)
     voice_mode = bool(data.get("voice_mode"))
+    is_temporary = bool(data.get("is_temporary", False))
+    parent_chat_id = data.get("parent_chat_id") or None
     if voice_mode:
         voice_backend_id = (
             await db.setting_get("voice_backend_id")
@@ -240,6 +242,20 @@ async def handle_chat_create(request: Request):
             voice_mode=1, model=voice_model, ai_machine_id=voice_backend_id,
             type="brainstorming",
         )
+    # Temp voice chat with parent context
+    if parent_chat_id:
+        parent = await db.chat_get(parent_chat_id, session["user"])
+        if not parent:
+            raise HTTPException(status_code=404, detail="Parent chat not found")
+        await db.chat_update(
+            chat_id, session["user"],
+            parent_chat_id=parent_chat_id,
+            is_temporary=1,
+        )
+        # Set title to match parent so the tooltip knows its source
+        if title == "Untitled":
+            title = (parent.get("title") or "Untitled")[:200]
+            await db.chat_update(chat_id, session["user"], title=title)
     return JSONResponse(
         {"id": chat_id, "title": title, "work_dir": work_dir, "created_at": now}
     )
@@ -461,6 +477,15 @@ async def handle_chat_patch(request: Request, chat_id: str):
     if not updated:
         raise HTTPException(status_code=404, detail="Chat not found")
     return JSONResponse({"ok": True})
+
+
+async def handle_voice_handoff(request: Request, chat_id: str):
+    """POST /api/chats/{id}/voice/handoff -- summarize voice chat, append to parent, delete temp chat."""
+    session = request.state.session
+    result = await voice_handoff_fn(chat_id, session["user"])
+    if result is None:
+        raise HTTPException(status_code=400, detail="Could not generate handoff summary")
+    return JSONResponse({"ok": True, "summary": result})
 
 
 async def handle_chats_reorder(request: Request):
@@ -1438,6 +1463,11 @@ async def _api_chats_list(request: Request):
 @router.post("/api/chats")
 async def _api_chat_create(request: Request):
     return await handle_chat_create(request)
+
+
+@router.post("/api/chats/{chat_id}/voice/handoff")
+async def _api_voice_handoff(request: Request, chat_id: str):
+    return await handle_voice_handoff(request, chat_id)
 
 
 # Registered before /api/chats/{chat_id} so "order" is never captured as an id.

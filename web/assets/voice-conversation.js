@@ -157,34 +157,270 @@ function startListening(handsFree) {
   catch { handsFreeMode = false; setVoiceStatus('idle'); }
 }
 
+// ── Voice tooltip: creates a temp chat from the parent, pauses it, shows
+//    an overlay with mic/live/stop, and offers Agree / Reject on close ───
+const voiceOverlay = document.getElementById('voiceOverlay');
+const voiceTooltip = document.getElementById('voiceTooltip');
+const voiceTooltipTitle = document.getElementById('voiceTooltipTitle');
+const voiceTooltipClose = document.getElementById('voiceTooltipClose');
+const voiceTooltipMessages = document.getElementById('voiceTooltipMessages');
+const voiceTooltipInput = document.getElementById('voiceTooltipInput');
+const voiceTooltipSend = document.getElementById('voiceTooltipSend');
+const voiceTooltipFooter = document.getElementById('voiceTooltipFooter');
+const voiceTooltipConclusion = document.getElementById('voiceTooltipConclusion');
+const voiceTooltipMic = document.getElementById('voiceTooltipMic');
+const voiceTooltipLive = document.getElementById('voiceTooltipLive');
+const voiceTooltipStop = document.getElementById('voiceTooltipStop');
+const voiceAgreeBtn = document.getElementById('voiceAgreeBtn');
+const voiceRejectBtn = document.getElementById('voiceRejectBtn');
+
+// Parent chat state captured when voice opens.
+let voiceParentState = null;
+let voiceTempChatId = null;
+let voiceStreamDone = false;
+let voiceConversationComplete = false;
+
+// ── Open voice tooltip: creates a temp chat, captures parent state ──
+async function openVoiceTooltip() {
+  const chat = window.state?.currentChat;
+  if (!chat) return;
+
+  // Pause parent: stop current stream, save state
+  voiceParentState = {
+    id: chat.id,
+    title: chat.title,
+    streamState: window.state?.streamState || 'ready',
+    lastAttempt: window.conversationController?.lastAttempt || null,
+  };
+
+  // Create temp voice chat with parent context
+  try {
+    const response = await apiFetch('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: chat.title,
+        voice_mode: true,
+        is_temporary: true,
+        parent_chat_id: chat.id,
+      }),
+    });
+    if (!response.ok) {
+      showToast('Could not start voice conversation', 'error');
+      return;
+    }
+    const data = await response.json();
+    voiceTempChatId = data.id;
+  } catch {
+    showToast('Could not start voice conversation', 'error');
+    return;
+  }
+
+  // Update global state
+  window.state.currentChat = { ...chat, voice_mode: true, is_temporary: true };
+  window.state.streamState = 'ready';
+
+  // Pause parent: stop any running turn
+  if (window.conversationController?.stop) {
+    window.conversationController.stop();
+  }
+
+  // Reset voice UI
+  voiceOverlay.hidden = false;
+  voiceTooltipMessages.innerHTML = '';
+  voiceTooltipTitle.textContent = `Voice: ${chat.title}`;
+  voiceTooltipInput.value = '';
+  voiceTooltipConclusion.hidden = true;
+  voiceConversationComplete = false;
+  voiceStreamDone = false;
+  accumulatedText = '';
+  lastFinalChunk = '';
+  setVoiceStatus('idle');
+
+  // Wire up voice buttons inside tooltip
+  voiceMicBtn = voiceTooltipMic;
+  voiceLiveBtn = voiceTooltipLive;
+  voiceStopBtn = voiceTooltipStop;
+  voiceSendBtn = voiceTooltipSend;
+  updateVoiceButtonVisibility();
+}
+
+// ── Close voice tooltip ──
+function closeVoiceTooltip() {
+  voiceOverlay.hidden = true;
+  window.speechSynthesis.cancel();
+  pendingSpeechCount = 0;
+  if (recognition && recognizing) {
+    intentionalStop = true;
+    recognition.stop();
+  }
+  // Restore parent chat
+  if (voiceParentState) {
+    window.state.currentChat = voiceParentState;
+    window.state.streamState = voiceParentState.streamState || 'ready';
+    voiceParentState = null;
+  }
+  voiceTempChatId = null;
+  voiceMicBtn = document.getElementById('voiceMicBtn');
+  voiceLiveBtn = document.getElementById('voiceLiveBtn');
+  voiceStopBtn = document.getElementById('voiceStopBtn');
+  voiceSendBtn = document.getElementById('sendBtn');
+  updateVoiceButtonVisibility();
+}
+
+// ── Handoff: Agree & Apply ──
+async function voiceHandoffAgree() {
+  if (!voiceTempChatId) return;
+  voiceAgreeBtn.disabled = true;
+  try {
+    const response = await apiFetch(`/api/chats/${voiceTempChatId}/voice/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      showToast(data.error || 'Could not handoff to parent chat', 'error');
+      closeVoiceTooltip();
+      return;
+    }
+    const data = await response.json();
+    showToast('Voice conversation applied to parent chat');
+    // Restore parent and continue
+    closeVoiceTooltip();
+  } catch {
+    showToast('Could not handoff to parent chat', 'error');
+    closeVoiceTooltip();
+  } finally {
+    voiceAgreeBtn.disabled = false;
+  }
+}
+
+// ── Reject: just close and discard ──
+async function voiceHandoffReject() {
+  if (!voiceTempChatId) {
+    closeVoiceTooltip();
+    return;
+  }
+  voiceRejectBtn.disabled = true;
+  try {
+    await apiFetch(`/api/chats/${voiceTempChatId}`, {
+      method: 'DELETE',
+    });
+  } catch { /* ignore */ }
+  showToast('Voice conversation discarded');
+  closeVoiceTooltip();
+  voiceRejectBtn.disabled = false;
+}
+
+// ── Button handlers ──
+voiceTooltipClose.addEventListener('click', () => {
+  if (voiceConversationComplete) {
+    // Post-conclusion: force reject (discard)
+    voiceHandoffReject();
+  } else if (voiceTempChatId) {
+    // Mid-conversation: delete temp, restore parent
+    apiFetch(`/api/chats/${voiceTempChatId}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+    closeVoiceTooltip();
+  } else {
+    closeVoiceTooltip();
+  }
+});
+
+voiceAgreeBtn.addEventListener('click', voiceHandoffAgree);
+voiceRejectBtn.addEventListener('click', voiceHandoffReject);
+
+// Type to send in voice tooltip
+voiceTooltipInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const text = voiceTooltipInput.value.trim();
+    if (text) {
+      window.__webConsoleSend?.(text);
+      voiceTooltipInput.value = '';
+    }
+  }
+});
+voiceTooltipSend.addEventListener('click', () => {
+  const text = voiceTooltipInput.value.trim();
+  if (text) {
+    window.__webConsoleSend?.(text);
+    voiceTooltipInput.value = '';
+  }
+});
+
+// Mic button: if voice_mode is on, open tooltip and start listening
 voiceMicBtn.addEventListener('click', async () => {
   if (voiceStatus !== 'idle') return;
   const chat = window.state?.currentChat;
   if (!chat) return;
+
+  // If voice_mode is off, open the tooltip (create temp chat with parent)
   if (!chat.voice_mode) {
-    // Enable voice mode on the current chat so the server routes through
-    // stream_voice_turn. Goes through apiFetch, not a bare fetch(): that is
-    // what attaches the X-CSRF-Token header CsrfMiddleware requires on every
-    // mutating request, and fetch() alone does not reject on a 4xx/5xx, so a
-    // rejected PATCH would otherwise look identical to a saved one here.
-    try {
-      const response = await apiFetch(`/api/chats/${chat.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_mode: true }),
-      });
-      if (!response.ok) return; // server rejected — leave mic disabled briefly
-      // Refresh the chat in state so voice-mode UI reacts.
-      window.state.currentChat = { ...chat, voice_mode: true };
-      updateVoiceButtonVisibility();
-    } catch {
-      return; // network error — leave mic disabled briefly
-    }
+    await openVoiceTooltip();
+    if (!voiceTempChatId) return;
   }
   startListening(false);
 });
-voiceLiveBtn.addEventListener('click', () => { if (voiceStatus === 'idle') startListening(true); });
+
+voiceLiveBtn.addEventListener('click', () => {
+  if (voiceStatus === 'idle') {
+    // If in tooltip, start listening; otherwise open tooltip first
+    if (!voiceTempChatId) {
+      openVoiceTooltip().then(() => { if (voiceTempChatId) startListening(true); });
+    } else {
+      startListening(true);
+    }
+  }
+});
 voiceStopBtn.addEventListener('click', () => performVoiceStop(true));
+
+// Override window.voiceConversation hooks to also render in tooltip
+const _origOnReplyChunk = window.voiceConversation?.onReplyChunk;
+const _origOnReplyDone = window.voiceConversation?.onReplyDone;
+const _origOnReplyError = window.voiceConversation?.onReplyError;
+
+window.voiceConversation = {
+  refreshControls() {
+    updateVoiceButtonVisibility();
+  },
+  onReplyChunk(text) {
+    // Render in tooltip if active
+    if (!voiceOverlay?.hidden && text) {
+      const div = document.createElement('div');
+      div.className = 'voice-assistant';
+      div.textContent = text;
+      voiceTooltipMessages.appendChild(div);
+      voiceTooltipMessages.scrollTop = voiceTooltipMessages.scrollHeight;
+    }
+    _origOnReplyChunk?.(text);
+  },
+  onReplyDone() {
+    voiceStreamDone = true;
+    if (voiceTempChatId) {
+      voiceConversationComplete = true;
+      voiceTooltipConclusion.hidden = false;
+    }
+    _origOnReplyDone?.();
+  },
+  onReplyError() {
+    voiceStreamDone = true;
+    _origOnReplyError?.();
+  },
+};
+
+// ── Original voice button visibility (for non-tooltip use) ──
+function updateVoiceButtonVisibility() {
+  const inTurn = voiceStatus !== 'idle';
+  const active = Boolean(window.state?.currentChat?.voice_mode);
+  voiceMicBtn.hidden = !active;
+  voiceLiveBtn.hidden = !active;
+  voiceMicBtn.disabled = inTurn;
+  voiceLiveBtn.disabled = inTurn;
+  voiceStopBtn.hidden = !inTurn;
+  voiceSendBtn.hidden = inTurn;
+}
 
 function speakSentence(sentence) {
   const trimmed = sentence.trim();

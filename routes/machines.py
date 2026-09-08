@@ -102,6 +102,14 @@ async def handle_machines_list(request: Request):
     # for accounts created before the provider column existed.
     await db.ai_machine_seed_anthropic(session["user"])
     machines = await db.ai_machines_list(session["user"])
+    # How many conversations depend on each backend. Disabling one is refused
+    # while anything is pinned to it, and without this count the client can only
+    # pre-empt the *default* case -- so the Disable button on a pinned backend
+    # looked live, and the refusal arrived as a 409 after the click. A 4xx is
+    # also logged by the browser as a failed request whatever the handler does,
+    # so the request that was always going to fail is the thing to remove.
+    # One GROUP BY for the whole list, not one query per machine.
+    pinned = await db.chats_pinned_counts(session["user"])
     # Don't leak API keys in the listing
     return JSONResponse(
         {
@@ -109,7 +117,8 @@ async def handle_machines_list(request: Request):
                 # backend_kind is derived, not stored: clients should not have to
                 # reimplement the provider/base_url rule to label a backend.
                 {**{k: v for k, v in m.items() if k != "api_key"},
-                 "backend_kind": backend_kind(m)}
+                 "backend_kind": backend_kind(m),
+                 "pinned_total": pinned.get(m["id"], 0)}
                 for m in machines
             ],
         }

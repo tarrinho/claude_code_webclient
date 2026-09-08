@@ -368,8 +368,27 @@ export function _drawMapWires() {
 // Only the default case is knowable from the list payload -- pin counts are
 // not carried there, so a pinned non-default backend still learns its fate
 // from the server. Reporting the obstacle we *can* see beats reporting none.
+/** Why this backend cannot be disabled, or '' if it can.
+ *
+ * Both reasons the server refuses are checked here, so the button is greyed out
+ * with the reason in its tooltip rather than accepting a click and reporting a
+ * 409. That is not only tidier: a 4xx response is written to the browser
+ * console as a failed request no matter how completely the handler deals with
+ * it, so a refusal that is entirely expected still reads as an exception, with
+ * a stack. The only way to not log it is to not send the request.
+ *
+ * The 409 handler in _setMachineEnabled stays. This check is derived from a
+ * list loaded earlier, so a conversation pinned in another tab in between
+ * leaves the button live -- and a real race is exactly what a 409 is for.
+ */
 function _disableObstacle(m) {
   if (m.active) return 'This is the default backend — make another the default first.';
+  const pinned = Number(m.pinned_total) || 0;
+  if (pinned > 0) {
+    return pinned === 1
+      ? 'One conversation is pinned to this backend — repoint or delete it first.'
+      : `${pinned} conversations are pinned to this backend — repoint or delete them first.`;
+  }
   return '';
 }
 

@@ -844,3 +844,34 @@ async def chats_pinned_to_machine(
         "titles": [r["title"] for r in rows],
         "ids": [r["id"] for r in rows],
     }
+
+
+async def chats_pinned_counts(owner_id: str) -> dict[str, int]:
+    """Machine id -> number of conversations pinned to it, for one owner.
+
+    The listing counterpart to `chats_pinned_to_machine`. That one names the
+    conversations for a refusal message and is asked about a single backend;
+    this one answers "how many" for every backend at once, so the settings
+    panel can grey out a Disable button that would be refused instead of
+    letting it be clicked.
+
+    One GROUP BY rather than a query per machine: the panel lists every backend
+    the owner has, and the per-machine version would turn one page load into as
+    many round trips.
+
+    Same inclusion rule as `chats_pinned_to_machine`, and it has to stay that
+    way -- archived conversations count, tombstoned ones do not. If the two
+    disagree, the button and the server disagree, and the user is either
+    stopped from doing something that would have worked or invited to do
+    something that will not.
+
+    Machines with no pinned conversations are absent rather than zero; callers
+    read this with `.get(id, 0)`.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT ai_machine_id AS mid, COUNT(*) AS n FROM chats "
+        "WHERE owner_id = ? AND deleted_at IS NULL AND ai_machine_id IS NOT NULL "
+        "GROUP BY ai_machine_id",
+        (owner_id,),
+    )
+    return {row["mid"]: row["n"] for row in await cur.fetchall()}

@@ -13,7 +13,7 @@ import time
 from openai import AsyncOpenAI
 
 import db
-import runner
+import routes.db_machines as db_machines
 from shared import backend_kind
 
 _log = logging.getLogger("wc.voice")
@@ -91,9 +91,23 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     """
     chat_id = chat["id"]
     model = chat.get("model") or ""
-    backend = await runner.get_backend(chat_id, owner)
-    base_url = backend.get("base_url")
-    api_key = backend.get("api_key")
+    # runner.get_backend() only works for claude_code provider (it returns
+    # {} for everything else). Voice mode uses provider='direct' backends,
+    # so we query the DB directly: first get the chat's ai_machine_id from
+    # chat_routing, then fetch the machine's base_url/api_key by id.
+    machine = None
+    try:
+        routing = await db_machines.chat_routing(chat_id)
+        if routing.get("pinned") and routing.get("machine"):
+            machine = routing["machine"]
+        elif chat.get("ai_machine_id"):
+            machine = await db_machines.ai_machine_backend_by_id(
+                chat["ai_machine_id"], owner
+            )
+    except Exception:
+        pass
+    base_url = (machine or {}).get("base_url")
+    api_key = (machine or {}).get("api_key")
     if not base_url or not model:
         yield f"data: {json.dumps({'type': 'error', 'error': 'Voice chat has no configured model/backend'})}\n\n"
         return

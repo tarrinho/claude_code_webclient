@@ -252,6 +252,8 @@ async def handle_chat_create(request: Request):
             parent_chat_id=parent_chat_id,
             is_temporary=1,
         )
+        # Prevent the parent's auto_answer from blocking voice turns.
+        await db.chat_auto_answer_set(chat_id, session["user"], False, False)
         # Set title to match parent so the tooltip knows its source
         if title == "Untitled":
             title = (parent.get("title") or "Untitled")[:200]
@@ -447,6 +449,16 @@ async def handle_chat_patch(request: Request, chat_id: str):
             voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
             fields["ai_machine_id"] = voice_machine_id
             fields["model"] = voice_model
+            # Disarm auto-answer on the way in. This is the ordering that
+            # actually happened: the PUT handler's old gate stopped you arming
+            # an already-voice chat, but nothing stopped you arming a normal
+            # one and converting it, and the flag then rode along into a mode
+            # where it does nothing. Two of seven voice chats reached that
+            # state and could not take a single turn. Both halves of the knob,
+            # or `accept_recommended` survives and re-arms if the chat is ever
+            # switched back. Cleared only on the way in -- turning voice off
+            # must not invent a value for a chat that was never armed.
+            await db.chat_auto_answer_set(chat_id, session["user"], False, False)
 
     if "type" in data:
         if data["type"] not in ("normal", "brainstorming"):
@@ -476,7 +488,28 @@ async def handle_chat_patch(request: Request, chat_id: str):
     updated = await db.chat_update(chat_id, session["user"], **fields)
     if not updated:
         raise HTTPException(status_code=404, detail="Chat not found")
-    return JSONResponse({"ok": True})
+
+    # Return the full chat object so the caller can update the sidebar
+    # row in-place without re-fetching the entire list or re-rendering the
+    # conversation.  Only the fields the sidebar and workspace strips read
+    # are included — anything heavier is not worth shipping here.
+    return JSONResponse(
+        {
+            "ok": True,
+            "chat": {
+                "id": chat["id"],
+                "title": chat.get("title", ""),
+                "description": chat.get("description"),
+                "voice_mode": bool(chat.get("voice_mode")),
+                "pinned": bool(chat.get("pinned")),
+                "archived": bool(chat.get("archived")),
+                "session_id": chat.get("session_id"),
+                "work_dir": chat.get("work_dir"),
+                "ai_machine_id": chat.get("ai_machine_id"),
+                "model": chat.get("model") or "",
+            },
+        }
+    )
 
 
 async def handle_voice_handoff(request: Request, chat_id: str):
@@ -1170,13 +1203,20 @@ async def stream_handler(request: Request, chat_id: str):
         raise HTTPException(status_code=400, detail="Prompt is too long")
 
     if chat.get("voice_mode"):
-        # Belt-and-suspenders: reject if auto_answer is somehow enabled.
-        # The set() handler blocks it, but the DB could have stale data.
-        if await db.chat_auto_answer_get(chat_id, session["user"]):
-            raise HTTPException(
-                status_code=400,
-                detail="auto-answer cannot be used with voice conversations",
-            )
+        # A stored auto_answer used to be rejected here. It made the chat
+        # unusable rather than safe: arming the knob on a normal chat and then
+        # switching it to voice was reachable, the flag was never cleared, and
+        # every turn afterwards died on a 400 -- with the GET handler reporting
+        # `enabled: False`, so the knob rendered as off while being the thing
+        # blocking you. Two of seven voice chats were in that state.
+        #
+        # The flag is inert on this path, not dangerous: auto_answer answers
+        # Claude Code CLI permission prompts, read via prompts.read_prompt and
+        # the CLI's transcript. A voice turn never spawns the CLI (see
+        # routes/voice.py, which drives an OpenAI-compatible client directly),
+        # so there is no prompt for it to answer. Ignoring it is correct;
+        # refusing the turn was not.
+        #
         # Same cap every other stream respects (checked before the
         # StreamingResponse is built, for the same reason the non-voice path
         # below does it here: a rejection has to raise before the response
@@ -1539,6 +1579,7 @@ async def _api_chat_agent_reply(request: Request, chat_id: str):
     transcript and fires a wake-up turn through the proxy so the CLI's
     MCP picks it up promptly.
     """
+    session = request.state.session
     body = await request.json()
     text = str(body.get("text") or "").strip()
     if not text:
@@ -1555,7 +1596,7 @@ async def _api_chat_agent_reply(request: Request, chat_id: str):
     # 2. Fire a wake-up turn through the proxy so the CLI's MCP
     #    processes the pending cross-session message queue.  A bare
     #    newline is enough to trigger another read of the transcript.
-    target_session_id = _resolve_session_id(target)
+    target_session_id = await _resolve_session_id(target)
     if target_session_id and config.PROXY_ENABLED:
         try:
             await _fire_wake_up(target_session_id, chat["work_dir"], chat_id, session.get("user"))
@@ -1954,19 +1995,13 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
             status_code=400, detail="accept_recommended must be a boolean"
         )
 
-    # Fetch the chat so the voice_mode gate fires before we touch the db
-    # write.  This double-checks before committing to the change: if the chat
-    # is voice-mode, reject immediately instead of writing then rolling back.
-    chat = await db.chat_get(chat_id, session["user"])
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
-
-    if chat.get("voice_mode"):
-        raise HTTPException(
-            status_code=400,
-            detail="auto-answer is not allowed for voice conversations",
-        )
-
+    # A voice-mode chat used to be refused here. It is allowed now: the flag
+    # does nothing on the voice path rather than anything unsafe, and refusing
+    # it here never prevented the state it was guarding against -- arming a
+    # normal chat and *then* switching it to voice went around this check
+    # entirely, and that is how two chats ended up unable to take a turn. The
+    # voice_mode branch of handle_chat_update now clears the flag instead,
+    # which is the ordering that actually occurs.
     ok = await db.chat_auto_answer_set(
         chat_id, session["user"], enabled, accept_recommended,
     )
@@ -1992,15 +2027,13 @@ async def handle_chat_auto_answer_get(request: Request, chat_id: str):
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    # Voice-mode chats cannot use auto_answer: surface that fact so the UI
-    # can hide/disable the knob even if the stored value is stale.
-    if chat.get("voice_mode"):
-        return JSONResponse({
-            "enabled": False,
-            "accept_recommended": False,
-            "log": [],
-            "voice_mode_blocked": True,
-        })
+    # A voice-mode chat used to get a hardcoded `enabled: False` plus a
+    # `voice_mode_blocked: True` flag here. That was the reason the resulting
+    # breakage was undiagnosable: a chat with a stored `true` was failing every
+    # turn on a 400 naming auto-answer, while this endpoint told the UI the
+    # knob was off. Nothing under web/assets ever read `voice_mode_blocked`
+    # either, so the flag bought nothing and the lie cost real debugging time.
+    # Every chat now reports what is actually stored.
     enabled = await db.chat_auto_answer_get(chat_id, session["user"])
     accept_recommended = await db.chat_auto_answer_recommend_get(
         chat_id, session["user"],

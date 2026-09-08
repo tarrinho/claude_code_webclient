@@ -187,12 +187,32 @@ async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
 
 
 async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
+    """Delete a backend, and unpin any conversation that named it.
+
+    The unpin is the point: `chats.ai_machine_id` has no foreign key (nothing
+    in this schema does), so deleting a machine used to leave every chat pinned
+    to it pointing at an id that resolves to nothing. The frontend then asked
+    `/api/models?machine_id=<gone>` on every open of such a conversation and got
+    a 404 -- five chats on this deployment were in that state, all naming the
+    same deleted machine.
+
+    NULL means "follow whichever backend is active", which is the picker's own
+    default, so an unpinned conversation keeps working. `db._clear_dangling_machine_pins`
+    repairs rows written before this; this stops new ones being created.
+    """
     cur = await db.db_conn.execute(
         "DELETE FROM ai_machines WHERE id = ? AND owner_id = ?",
         (machine_id, owner_id),
     )
+    deleted = cur.rowcount > 0
+    if deleted:
+        await db.db_conn.execute(
+            "UPDATE chats SET ai_machine_id = NULL "
+            "WHERE ai_machine_id = ? AND owner_id = ?",
+            (machine_id, owner_id),
+        )
     await db.db_conn.commit()
-    return cur.rowcount > 0
+    return deleted
 
 
 async def ai_machine_set_models(

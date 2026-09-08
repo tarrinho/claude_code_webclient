@@ -614,6 +614,7 @@ async def init() -> None:
     """)
     await _ensure_chat_columns()
     await _migrate_ssh_proxy_machines_to_transports()
+    await _clear_dangling_machine_pins()
     await _ensure_usage_columns()
     await _ensure_orchestrator_columns()
     await _backfill_orchestrators_from_supervisors()
@@ -819,6 +820,38 @@ async def _ensure_orchestrator_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE orchestrator_messages ADD COLUMN metadata TEXT"
         )
+
+
+async def _clear_dangling_machine_pins() -> None:
+    """Unpin chats whose pinned backend no longer exists. Idempotent.
+
+    `chats.ai_machine_id` pins a conversation to one backend, and there is no
+    foreign key on it (this schema has none anywhere), so deleting a machine
+    left every chat that named it pointing at an id that resolves to nothing.
+    The frontend's `ensurePinnedModels` then asked
+    `/api/models?machine_id=<gone>` every time such a conversation was opened,
+    and the server answered 404 "Machine not found" -- observed live on this
+    deployment: five chats pinned to one deleted machine, each open logging an
+    error.
+
+    NULL is the correct repair rather than a guess at a replacement: an empty
+    pin already means "follow whichever backend is active", which is the
+    picker's own default ("Follow active"). Choosing a substitute backend would
+    silently route an old conversation somewhere its author never picked, and
+    §0.1 of CLAUDE.md is about exactly how badly that reads when the model ids
+    do not match.
+
+    Runs every startup because it is a repair, not a one-shot: `ai_machine_delete`
+    now clears these at the source, but a row written by an older build -- or by
+    any future path that deletes a machine without going through it -- would
+    otherwise sit dangling indefinitely.
+    """
+    cur = await db_conn.execute(
+        "UPDATE chats SET ai_machine_id = NULL WHERE ai_machine_id IS NOT NULL "
+        "AND ai_machine_id NOT IN (SELECT id FROM ai_machines)"
+    )
+    if cur.rowcount:
+        _log.info("cleared %d dangling chat->machine pin(s)", cur.rowcount)
 
 
 async def _migrate_ssh_proxy_machines_to_transports() -> None:

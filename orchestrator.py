@@ -1,4 +1,4 @@
-# orchestrator.py -- AI orchestrator orchestration engine for WebConsole 0.15.0
+# orchestrator.py -- AI orchestrator orchestration engine for WebConsole
 #
 # Provides the PlanParser, ModelRouter, TaskGraph, ProgressTracker,
 # and OrchestratorEngine that coordinate multi-agent task decomposition,
@@ -539,11 +539,17 @@ class OrchestratorEngine:
             import db
             import runner  # circular import at module level
 
-            # Get the provider from the backend so the usage row is attributed
-            # to the right kind (claude_code, direct, ssh_proxy) rather than
-            # guessing from config flags.
+            # The usage row's `provider` is a *display kind*, not the machine's
+            # provider column: `shared.backend_kind` maps them, and the usage
+            # API blanks cost for anything that is not `through_claude_code`.
+            # Storing the raw column here wrote `claude_code`, which is not one
+            # of those kinds -- so every orchestrator turn's cost was
+            # suppressed as if it had run on a gateway. Same helper as
+            # routes/chats.py's `_record_turn_usage`, so the two agree.
+            from shared import backend_kind
+
             backend = await runner.get_backend(chat_id)
-            provider = backend.get("provider", "claude_code") if isinstance(backend, dict) else "claude_code"
+            provider = backend_kind(backend if isinstance(backend, dict) else None)
 
             # `take_last_usage` carries only the attempt runner.run_turn kept.
             # An attempt a content-quality retry discarded still spent real

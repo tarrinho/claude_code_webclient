@@ -403,10 +403,19 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["totals"], [])
         self.assertEqual(body["recent"], [])
 
+    # `provider` on a usage row is the *display kind* from
+    # `shared.backend_kind` -- `through_claude_code`, `direct`, `ssh-proxy`,
+    # `proxy` -- not the machine's `provider` column, which says `claude_code`.
+    # These three used the column value, so they asserted that a row labelled
+    # `claude_code` shows its cost. The API blanks anything that is not
+    # `through_claude_code`, and rightly: comparing against the column let every
+    # gateway's cost leak to the frontend until it was fixed in 5161ba1. Written
+    # with the kind the recorders actually store, so the tests exercise the real
+    # vocabulary rather than pinning a value nothing writes.
     async def test_cost_is_hidden_for_a_gateway_and_shown_for_the_official_api(self):
         await db.usage_record("c1", "admin", "vllm/Q", "anthropic-compatible",
                               input_tokens=10, cost_usd=0.078)
-        await db.usage_record("c1", "admin", "claude-opus-5", "claude_code",
+        await db.usage_record("c1", "admin", "claude-opus-5", "through_claude_code",
                               input_tokens=10, cost_usd=1.25)
         rows = {r["model"]: r for r in (await self._get())["totals"]}
         self.assertIsNone(rows["vllm/Q"]["cost_usd"])
@@ -415,10 +424,21 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cost_note", rows["claude-opus-5"])
 
     async def test_cost_is_visible_for_claude_code_rows(self):
-        await db.usage_record("c1", "admin", "m", "claude_code",
+        await db.usage_record("c1", "admin", "m", "through_claude_code",
                               input_tokens=10, cost_usd=9.99)
         self.assertAlmostEqual((await self._get())["totals"][0]["cost_usd"], 9.99)
         self.assertAlmostEqual((await self._get())["recent"][0]["cost_usd"], 9.99)
+
+    async def test_the_machine_provider_column_is_not_a_display_kind(self):
+        """The leak 5161ba1 closed, pinned so it cannot reopen.
+
+        A row carrying the raw column value must have its cost blanked: it is
+        not a statement that the turn ran through Claude Code, and treating it
+        as one is what showed Anthropic-priced figures for gateway spend.
+        """
+        await db.usage_record("c1", "admin", "m", "claude_code",
+                              input_tokens=10, cost_usd=9.99)
+        self.assertIsNone((await self._get())["totals"][0]["cost_usd"])
 
     async def test_cost_is_hidden_for_non_claude_code_rows(self):
         await db.usage_record("c1", "admin", "m", "direct",
@@ -454,7 +474,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     async def test_an_unknown_basis_never_suppresses_a_trusted_cost(self):
         # cost_basis explains; base_url decides. An official-API row keeps its
         # cost even if the CLI happened to report an unknown basis.
-        await db.usage_record("c1", "admin", "m", "claude_code",
+        await db.usage_record("c1", "admin", "m", "through_claude_code",
                               input_tokens=1, cost_usd=2.50, cost_basis="unknown")
         self.assertAlmostEqual((await self._get())["totals"][0]["cost_usd"], 2.50)
 

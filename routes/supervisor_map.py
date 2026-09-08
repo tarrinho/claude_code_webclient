@@ -5,7 +5,6 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-import db
 from routes.db_supervisor_map import supervisor_map
 
 _log = logging.getLogger("wc.app")

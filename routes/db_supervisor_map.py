@@ -25,7 +25,12 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
     4 grandchildren per child.
     """
     import db  # noqa: local import — avoids cyclic import when loaded
-    import turns as _turns
+    # Bound as `turns`, not `turns as _turns`: line 40 below calls
+    # `turns.running_ids`, so the aliased name left `turns` undefined and every
+    # request to this route raised NameError. flake8 saw it both ways at once --
+    # F401 for the unused alias and F821 for the undefined use.
+    import turns
+    from shared import backend_kind  # used for each machine's display kind
     from classification import _classify_cli_session, _cli_maps, classify_chat  # noqa
 
     # ── Fetch all sources ──────────────────────────────────────────

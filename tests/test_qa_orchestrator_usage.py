@@ -121,8 +121,18 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
 
     async def test_the_provider_comes_from_the_backend(self):
+        """And it is the display kind, not the machine's provider column.
+
+        This asserted `claude_code`, the raw column value, which is not one of
+        the kinds `shared.backend_kind` produces -- and the usage API blanks
+        cost for anything that is not `through_claude_code`. So the orchestrator
+        recorded real spend and the page then priced it as a gateway's,
+        reporting no cost for every fan-out turn. The intent of this test is
+        unchanged (the provider is derived from the backend rather than guessed
+        from config flags); only the vocabulary is corrected.
+        """
         rows = await self._record(self._frame())
-        self.assertEqual(rows[0]["provider"], "claude_code")
+        self.assertEqual(rows[0]["provider"], "through_claude_code")
 
     async def test_a_write_failure_marks_the_supervisor_degraded(self):
         async def failing_usage_record(**kwargs):

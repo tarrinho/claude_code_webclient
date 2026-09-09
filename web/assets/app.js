@@ -244,6 +244,7 @@ function updateVoiceToggleIcon() {
 }
 
 async function toggleChatVoiceMode() {
+  updateVoiceToggleIcon();
   const chat = state.currentChat;
   if (!chat || !chat.id) return;
   const btn = byId('voiceModeToggleBtn');
@@ -267,6 +268,9 @@ async function toggleChatVoiceMode() {
       chat.type = isVoice ? 'brainstorming' : chat.type || 'normal';
     } else {
       chat.voice_mode = isVoice;
+      chat.ai_machine_id = isVoice ? null : chat.ai_machine_id;
+      chat.model = isVoice ? '' : chat.model;
+      chat.type = isVoice ? 'brainstorming' : chat.type || 'normal';
     }
     populateBackendPicker(chat);
     if (!chat.voice_mode) {

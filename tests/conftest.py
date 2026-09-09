@@ -69,36 +69,115 @@ if not os.environ.get("WC_RESOURCE_GUARD"):
 #
 # Two sources, chosen by the Settings dialog's "Enforce testing default
 # model" knob, read once from the production database -- read-only, a single
-# SELECT, never db.init() against it (CLAUDE.md rule 9):
+# SELECT, never db.init() against it (CLAUDE.md rule 9). Both are VERIFIED
+# reachable before being trusted -- a configured or resolved model id is
+# worthless if nothing actually serves it, which is exactly the trap
+# CLAUDE.md 0.1 documents: a model id sent to the wrong (or no) backend
+# answers 429 "No deployments available" rather than anything that names the
+# real problem.
 #
 #   enforced (the default): the fixed value configured in Settings -> App, or
-#     config.TESTING_MODEL_DEFAULT if never set.
+#     config.TESTING_MODEL_DEFAULT if never set. Verified with
+#     _served_by_any_enabled_machine -- an existence check ("does at least
+#     one enabled machine serve this"), deliberately not
+#     bin/wc-backend-env.py's own --resolve-model, which answers the
+#     stricter "exactly one" (for routing a bare `--model` flag
+#     unambiguously) and refuses on ambiguity. Measured live during this
+#     design: four enabled machines all legitimately serve the same
+#     configured model, and --resolve-model correctly refuses to pick one --
+#     which would have looked identical to "nobody serves this" to a caller
+#     that could not tell the two failure shapes apart.
 #   not enforced: the model actually in effect for *this* agent session,
 #     resolved the same way bin/wc-claude.sh does --
 #     `bin/wc-backend-env.py --profile "$WC_PROFILE" --json`'s own "model"
-#     field. Confirmed live during design: this resolves to "claude-sonnet-5"
-#     for a session pinned to the anthropic-oauth profile.
+#     field, then verified with `--check-model` against that same profile
+#     (the same verification bin/wc-claude.sh's own real session startup
+#     already trusts) -- because that field is the backend's own configured
+#     default, unverified, and a machine's default can drift out of its own
+#     active_models list.
 #
-# Every failure mode here (no production DB yet, WC_PROFILE unset, the script
-# missing, a timeout) falls back to the configured/default value rather than
-# raising -- a broken resolution must not be the reason a test run cannot
-# start, the same reasoning resource_guard's own fail-open follows.
+# Either source failing verification falls through to the other, and if both
+# fail, to the bare code default (config.TESTING_MODEL_DEFAULT's value) --
+# unverified at that point, because a broken resolution must not be the
+# reason a whole test run cannot start, the same fail-open reasoning
+# resource_guard already follows.
 if not os.environ.get("WC_TESTING_MODEL"):
-    def _resolve_testing_model() -> str:
+    def _served_by_any_enabled_machine(model: str, db_path: str) -> bool:
+        """Does at least one enabled machine serve *model* -- by its own
+        default `model` column or its declared `active_models` list?
+        Existence, not uniqueness; see the module comment above for why
+        --resolve-model is the wrong tool for this question."""
         import json
         import sqlite3
+
+        try:
+            con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT model, active_models FROM ai_machines WHERE enabled = 1"
+            ).fetchall()
+            con.close()
+        except Exception:
+            return False  # cannot verify -- treat as not confirmed, not as served
+        for row in rows:
+            if (row["model"] or "").strip() == model:
+                return True
+            raw = row["active_models"]
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, list) and model in parsed:
+                return True
+        return False
+
+    def _resolve_via_current_agent(repo_root, profile: str | None) -> str:
+        """The model bin/wc-claude.sh would actually route this session to,
+        verified reachable on that same backend. Empty string on any
+        failure -- unset WC_PROFILE, no backend, the script missing, a
+        timeout, or the resolved model failing --check-model."""
+        import json
         import subprocess
 
+        if not profile:
+            return ""
+        script = repo_root / "bin" / "wc-backend-env.py"
+        python = str(repo_root / ".venv" / "bin" / "python")
+        try:
+            proc = subprocess.run(
+                [python, str(script), "--profile", profile, "--json"],
+                capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            )
+            resolved = json.loads(proc.stdout).get("model")
+        except Exception:
+            return ""
+        if not resolved:
+            return ""
+        try:
+            check = subprocess.run(
+                [python, str(script), "--profile", profile,
+                 "--check-model", resolved],
+                capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            )
+        except Exception:
+            return ""
+        return resolved if check.returncode == 0 else ""
+
+    def _resolve_testing_model() -> str:
         repo_root = pathlib.Path(__file__).resolve().parent.parent
         default = os.environ.get("WC_TESTING_MODEL_DEFAULT", "claude-opus-5")
         enforce_default = os.environ.get(
             "WC_TESTING_MODEL_ENFORCE_DEFAULT", "1") == "1"
+        db_path = os.environ.get(
+            "WC_PROD_DB_PATH_FOR_TESTING_MODEL",
+            str(repo_root / "data" / "webconsole.db"))
 
         configured, enforce = default, enforce_default
         try:
-            db_path = os.environ.get(
-                "WC_PROD_DB_PATH_FOR_TESTING_MODEL",
-                str(repo_root / "data" / "webconsole.db"))
+            import sqlite3
+
             con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
             con.row_factory = sqlite3.Row
             rows = {
@@ -113,23 +192,25 @@ if not os.environ.get("WC_TESTING_MODEL"):
         except Exception:
             pass  # no production DB yet, or unreadable -- use the defaults above
 
-        if enforce:
-            return configured
-
         profile = os.environ.get("WC_PROFILE")
-        if not profile:
-            return configured
-        try:
-            script = repo_root / "bin" / "wc-backend-env.py"
-            proc = subprocess.run(
-                [str(repo_root / ".venv" / "bin" / "python"), str(script),
-                 "--profile", profile, "--json"],
-                capture_output=True, text=True, timeout=5, cwd=str(repo_root),
-            )
-            resolved = json.loads(proc.stdout).get("model")
-            return resolved or configured
-        except Exception:
-            return configured
+
+        if enforce:
+            # Deliberately does NOT fall through to _resolve_via_current_agent
+            # on failure: the whole point of "enforce" is a fixed value that
+            # does not depend on which session or backend happens to be
+            # running the suite. Falling back to the environment here would
+            # make "enforce" silently stop meaning that the moment the
+            # configured value drifted out of every machine's declared list.
+            if configured and _served_by_any_enabled_machine(configured, db_path):
+                return configured
+            return default
+        else:
+            resolved = _resolve_via_current_agent(repo_root, profile)
+            if resolved:
+                return resolved
+            if configured and _served_by_any_enabled_machine(configured, db_path):
+                return configured
+            return default
 
     os.environ["WC_TESTING_MODEL"] = _resolve_testing_model()
 

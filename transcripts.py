@@ -1633,12 +1633,30 @@ async def list_recent(limit: int = 50) -> list[dict[str, Any]]:
     return await asyncio.to_thread(_list_sync, limit)
 
 
+# Same shape and the same soundness argument as _question_scan_cache above:
+# (size_at_last_scan, result), and a size match is sound rather than
+# approximate because a new question and an answer are both *appended*
+# records -- neither can change this answer without the file growing.
+#
+# Measured on 2026-09-09, which is why this exists: the scan below is 1,709 ms
+# on cweb2's 86 MB transcript, and it was run on every poll -- every 4s per
+# open conversation (app.js QUESTION_POLL_MS) and again every 5s server-side
+# for every armed chat (auto_answer's loop, through routes.chats._pending_prompt).
+# 86 MB re-read and json.loads()'d line by line every 4 seconds, to reach the
+# same verdict as a moment earlier. An unchanged transcript now costs one
+# stat() instead.
+_pending_question_cache: dict[str, tuple[int, dict[str, Any] | None]] = {}
+
+
 def pending_question(session_id: str) -> dict[str, Any] | None:
     """Return the question *session_id* is still waiting on, or None.
 
     A question is pending when its tool_use has no matching tool_result. The
     whole transcript is scanned rather than a tail, because a session can sit on
-    a prompt for a long time while nothing else is appended.
+    a prompt for a long time while nothing else is appended -- so the repeat
+    cost is removed by caching on file size (see _pending_question_cache),
+    never by reading less of the file, which would miss exactly the
+    sat-on-for-ages prompt this is for.
 
     ``needle`` is the question text, used to confirm the prompt really is on
     screen before a keystroke is delivered to that window.
@@ -1646,14 +1664,31 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
     path = transcript_path(session_id)
     if path is None:
         return None
+
+    key = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    cached = _pending_question_cache.get(key)
+    if cached is not None and cached[0] == size:
+        # Shallow copy, as _scan_questions_sync does: callers must not be able
+        # to mutate what the next caller reads back.
+        return dict(cached[1]) if cached[1] is not None else None
+
     paths = [path]
     asked: dict[str, dict[str, Any]] = {}
     answered: set[str] = set()
+    scanned = -1
     for path in paths:
         try:
             raw = path.read_bytes()
         except OSError:
             continue
+        # Cached under the size actually read, not the stat() above: the file
+        # can grow between the two, and keying on what was really parsed is
+        # what keeps the next call's comparison honest.
+        scanned = len(raw)
         for line in raw.split(b"\n"):
             text = line.strip()
             if not text:
@@ -1688,6 +1723,7 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
                 elif block.get("type") == "tool_result" and block.get("tool_use_id"):
                     answered.add(str(block["tool_use_id"]))
 
+    result: dict[str, Any] | None = None
     for qid, built in reversed(list(asked.items())):
         if qid in answered:
             continue
@@ -1704,13 +1740,21 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
         # unanswered prompt.
         needle = "" if built.get("approval") else str(
             first.get("question") or "").strip()
-        return {
+        result = {
             "id": qid,
             "questions": built.get("questions") or [],
             "approval": bool(built.get("approval")),
             "needle": needle,
         }
-    return None
+        break
+
+    # Only cache a scan that actually read the file. A failed read leaves
+    # scanned at -1 and falls through to "no question" for this call, but must
+    # not be remembered as the verdict for that size -- the next call should
+    # try again rather than trust a result no bytes backed.
+    if scanned >= 0:
+        _pending_question_cache[key] = (scanned, result)
+    return dict(result) if result is not None else None
 
 
 # Auto-reply to another Claude session by writing a <cross-session-message>

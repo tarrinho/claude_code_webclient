@@ -35,6 +35,7 @@ _TRANSPORT_LOCKS: dict[str, asyncio.Lock] = {}
 # refcount for only one machine actually in use.
 _CONNECTING: set[str] = set()
 _queue: asyncio.Queue = asyncio.Queue()
+_port_lock: asyncio.Lock = asyncio.Lock()
 _task: asyncio.Task | None = None
 _running: bool = False
 

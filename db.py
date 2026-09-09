@@ -130,12 +130,19 @@ def __getattr__(name: str):
         "ssh_transport_create": "routes.db_transports",
         "ssh_transport_get": "routes.db_transports",
         "ssh_transports_list": "routes.db_transports",
+        "ssh_transports_list_all": "routes.db_transports",
         "ssh_transport_update": "routes.db_transports",
         "ssh_transport_delete": "routes.db_transports",
         "ssh_transport_set_host_key_fingerprint": "routes.db_transports",
+        "ssh_transport_set_last_synced_sha": "routes.db_transports",
         # agent-reply audit trail + cooldown
         "agent_reply_log_add": "routes.db_agent_reply",
         "agent_reply_cooldown_check": "routes.db_agent_reply",
+        # transport project sync -- approval queue + audit trail
+        "sync_request_create": "routes.db_transport_sync",
+        "sync_request_get": "routes.db_transport_sync",
+        "sync_request_list_pending": "routes.db_transport_sync",
+        "sync_request_resolve": "routes.db_transport_sync",
         # users
         "user_get_by_name": "routes.db_users",
         "user_create": "routes.db_users",
@@ -320,6 +327,7 @@ async def init() -> None:
             ssh_key_path              TEXT NOT NULL DEFAULT '',
             ssh_host_key_fingerprint  TEXT NOT NULL DEFAULT '',
             remote_path               TEXT NOT NULL DEFAULT '~/wc-proxy',
+            last_synced_sha           TEXT NOT NULL DEFAULT '',
             created_at                TEXT NOT NULL,
             updated_at                TEXT NOT NULL
         );
@@ -338,6 +346,24 @@ async def init() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_agent_reply_log_cooldown
             ON agent_reply_log(chat_id, target, created_at);
+
+        -- Approval queue + audit trail for transport_sync.py pushes. Every
+        -- sync (human-clicked or agent-requested) is a row here, unified
+        -- rather than split, matching agent_reply_log's precedent. See
+        -- docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
+        CREATE TABLE IF NOT EXISTS transport_sync_requests (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            transport_id  TEXT NOT NULL,
+            owner_id      TEXT NOT NULL,
+            requested_by  TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'pending',
+            files_changed INTEGER,
+            reason        TEXT,
+            created_at    TEXT NOT NULL,
+            resolved_at   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_transport_sync_requests_transport
+            ON transport_sync_requests(transport_id, id);
 
         CREATE TABLE IF NOT EXISTS messages (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1292,6 +1318,13 @@ async def _ensure_transport_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE ssh_transports ADD COLUMN remote_path TEXT NOT NULL "
             "DEFAULT '~/wc-proxy'"
+        )
+        await db_conn.commit()
+
+    if columns and "last_synced_sha" not in columns:
+        await db_conn.execute(
+            "ALTER TABLE ssh_transports ADD COLUMN last_synced_sha TEXT NOT NULL "
+            "DEFAULT ''"
         )
         await db_conn.commit()
 

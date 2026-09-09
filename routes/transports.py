@@ -63,6 +63,16 @@ async def handle_transports_list(request: Request):
     return JSONResponse({"transports": transports})
 
 
+# Registered before /api/transports/{transport_id} so "sync-requests" is
+# never captured as a transport_id -- same reasoning as chats.py's "order"
+# literal ahead of /api/chats/{chat_id}.
+@router.get("/api/transports/sync-requests/pending")
+async def handle_sync_requests_pending(request: Request):
+    session = request.state.session
+    requests = await db.sync_request_list_pending(session["user"])
+    return JSONResponse({"requests": requests})
+
+
 @router.get("/api/transports/{transport_id}")
 async def handle_transport_get(request: Request, transport_id: str):
     session = request.state.session
@@ -351,3 +361,129 @@ async def handle_transport_init(request: Request, transport_id: str):
          "tunnel_started": tunnel_started},
         status_code=200,
     )
+
+
+async def _machine_for_transport(transport_id: str, owner: str) -> str | None:
+    """The machine tunnel_status/exec_command/open_sftp key on for this
+    transport. Mirrors _start_tunnel_for_transport's own choice ("the
+    first machine's status speaks for the group") -- one shared tunnel per
+    transport, so any machine on it addresses the same connection."""
+    machines = [
+        m for m in await db.ai_machines_list(owner)
+        if m.get("transport_id") == transport_id
+    ]
+    return machines[0]["id"] if machines else None
+
+
+async def _run_sync(transport: dict, machine_id: str, request_id: int) -> dict:
+    """Run transport_sync.sync_transport and resolve *request_id* to its
+    outcome. Shared by the UI-triggered and approve paths -- one lifecycle,
+    not two, per the design doc's decision to unify rather than split."""
+    import transport_sync
+
+    result = await transport_sync.sync_transport(
+        machine_id, transport.get("remote_path") or "~/wc-proxy",
+        transport.get("last_synced_sha") or "",
+    )
+    if result["ok"]:
+        if result["head_sha"]:
+            await db.ssh_transport_set_last_synced_sha(
+                transport["id"], result["head_sha"])
+        await db.sync_request_resolve(
+            request_id, "done", result["files_changed"], result.get("reason", ""))
+    else:
+        await db.sync_request_resolve(
+            request_id, "failed", 0, result.get("reason", ""))
+    return result
+
+
+@router.post("/api/transports/{transport_id}/sync")
+async def handle_transport_sync(request: Request, transport_id: str):
+    """Human-triggered sync: push this checkout's git-tracked files (or the
+    diff since the last sync) to the transport's remote checkout.
+
+    Inserts the request row at status='approved' -- the click is the
+    approval -- and resolves it before responding. See
+    docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
+    """
+    import tunnel_manager
+
+    session = request.state.session
+    owner = session["user"]
+    transport = await db.ssh_transport_get(transport_id, owner)
+    if not transport:
+        raise HTTPException(status_code=404, detail="Transport not found")
+
+    machine_id = await _machine_for_transport(transport_id, owner)
+    if not machine_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No backend is assigned to this transport yet",
+        )
+    status = await tunnel_manager.tunnel_status(machine_id)
+    if not status or not status.get("tunnel_up"):
+        # Same "live only" rule as agent-reply resolution: never open a
+        # fresh connection just to sync.
+        raise HTTPException(
+            status_code=409,
+            detail="Tunnel is not up -- press Check or Init first",
+        )
+
+    request_id = await db.sync_request_create(transport_id, owner, "ui", status="approved")
+    result = await _run_sync(transport, machine_id, request_id)
+    _log.info(
+        "transport_sync name=%s ok=%s files_changed=%s",
+        transport["name"], result["ok"], result["files_changed"],
+    )
+    return JSONResponse(result, status_code=200 if result["ok"] else 502)
+
+
+@router.post("/api/transports/{transport_id}/sync-requests/{request_id}/approve")
+async def handle_sync_request_approve(request: Request, transport_id: str, request_id: int):
+    """Approve a pending, agent-requested sync. Runs it immediately and
+    resolves to done/failed -- see _run_sync."""
+    import tunnel_manager
+
+    session = request.state.session
+    owner = session["user"]
+    transport = await db.ssh_transport_get(transport_id, owner)
+    if not transport:
+        raise HTTPException(status_code=404, detail="Transport not found")
+    sync_request = await db.sync_request_get(request_id, owner)
+    if not sync_request or sync_request["transport_id"] != transport_id:
+        raise HTTPException(status_code=404, detail="Sync request not found")
+    if sync_request["status"] != "pending":
+        raise HTTPException(
+            status_code=409, detail=f"Request is already {sync_request['status']}")
+
+    machine_id = await _machine_for_transport(transport_id, owner)
+    if not machine_id:
+        raise HTTPException(
+            status_code=400, detail="No backend is assigned to this transport")
+    status = await tunnel_manager.tunnel_status(machine_id)
+    if not status or not status.get("tunnel_up"):
+        raise HTTPException(
+            status_code=409, detail="Tunnel is not up -- press Check or Init first")
+
+    result = await _run_sync(transport, machine_id, request_id)
+    _log.info(
+        "transport_sync_approved name=%s request_id=%s ok=%s",
+        transport["name"], request_id, result["ok"],
+    )
+    return JSONResponse(result, status_code=200 if result["ok"] else 502)
+
+
+@router.post("/api/transports/{transport_id}/sync-requests/{request_id}/reject")
+async def handle_sync_request_reject(request: Request, transport_id: str, request_id: int):
+    """Reject a pending, agent-requested sync. Pushes nothing."""
+    session = request.state.session
+    owner = session["user"]
+    sync_request = await db.sync_request_get(request_id, owner)
+    if not sync_request or sync_request["transport_id"] != transport_id:
+        raise HTTPException(status_code=404, detail="Sync request not found")
+    if sync_request["status"] != "pending":
+        raise HTTPException(
+            status_code=409, detail=f"Request is already {sync_request['status']}")
+
+    await db.sync_request_resolve(request_id, "rejected")
+    return JSONResponse({"ok": True})

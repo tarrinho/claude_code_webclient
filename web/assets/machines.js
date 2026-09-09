@@ -25,7 +25,9 @@ import {_transports, loadTransports, populateTransportPicker,
   // The transport group header offers these; see _buildTransportHeader.
   _showEditTransport, _deleteTransport,
   // Check / Init on the transport header -- see _buildTransportHeader.
-  _checkTransport, _initTransport} from './transports.js?v=3';
+  _checkTransport, _initTransport,
+  // Sync + its pending-request queue; see _buildTransportHeader.
+  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=4';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -633,6 +635,22 @@ function _toggleGroupCollapse(key) {
   _renderMachineList();
 }
 
+/** Every transport group starts expanded when the Backends panel opens.
+ *
+ * Pedro's rule: on open, every collapse toggle is false -- including a
+ * Disabled group, which _buildTransportHeader would otherwise auto-collapse
+ * on first sight. Marking every current key as already-seeded stops that
+ * from firing on the render this triggers, not just clearing the visible
+ * state -- clearing _collapsedGroups alone would still let a
+ * never-before-seen Disabled group re-collapse itself in the same pass.
+ * Called from loadBackends(), so it runs every time the panel opens or the
+ * user switches back to the Backends tab, not only on first load.
+ */
+export function _expandAllTransportGroups() {
+  _collapsedGroups.clear();
+  _machineGroups().forEach(g => _seededGroups.add(g.key));
+}
+
 // One transport's group header: collapse toggle, status + count, a
 // tunnel-toggle badge -- reusing the existing _toggleSshTunnel, keyed by the
 // FIRST machine in the group (since starting the tunnel for one machine on a
@@ -720,6 +738,18 @@ function _buildTransportHeader(label, machines, transport, key) {
     initBtn.addEventListener(
       'click', () => _initTransport(transport, header, initBtn));
     header.appendChild(initBtn);
+
+    // Safe to click repeatedly, unlike Init -- a no-op sync costs one diff
+    // computation and pushes nothing, so no confirm() dialog gates it.
+    const syncBtn = document.createElement('button');
+    syncBtn.type = 'button';
+    syncBtn.className = 'transport-action';
+    syncBtn.textContent = 'Sync';
+    syncBtn.title = "Push this checkout's git-tracked files to this host";
+    syncBtn.setAttribute('aria-label', `Sync transport ${transport.name}`);
+    syncBtn.addEventListener(
+      'click', () => _syncTransport(transport, header, syncBtn));
+    header.appendChild(syncBtn);
 
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
@@ -884,6 +914,54 @@ export function _renderMachineList() {
   }
   // Layout has to settle before the cards can be measured.
   requestAnimationFrame(_drawMapWires);
+  // Fire-and-forget: appended after the headers exist, same pattern
+  // _checkTransport's readiness box already uses, rather than making this
+  // whole (frequently-called, synchronous) function async.
+  _renderPendingSyncRequests();
+}
+
+// ── Pending sync requests: an agent asked, a human decides ────────────────
+//
+// One fetch per render pass, not one per transport -- matched against the
+// headers already in the DOM by header.dataset.group, which _renderMachineList
+// sets to the transport's own id. See
+// docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
+async function _renderPendingSyncRequests() {
+  const requests = await _loadPendingSyncRequests();
+  document.querySelectorAll('.transport-sync-request').forEach(n => n.remove());
+  if (!requests.length) return;
+
+  for (const req of requests) {
+    const header = document.querySelector(
+      `.transport-group-header[data-group="${CSS.escape(req.transport_id)}"]`);
+    if (!header) continue;
+
+    const box = document.createElement('div');
+    box.className = 'transport-sync-request';
+    const label = document.createElement('span');
+    // textContent: requested_by carries a peer session's own name, never
+    // rendered as markup.
+    label.textContent = `Sync requested by ${req.requested_by}`;
+    box.appendChild(label);
+
+    const approveBtn = document.createElement('button');
+    approveBtn.type = 'button';
+    approveBtn.className = 'transport-action';
+    approveBtn.textContent = 'Approve';
+    approveBtn.addEventListener('click', () => _resolveSyncRequest(
+      req.transport_id, req.id, 'approve', _renderMachineList));
+    box.appendChild(approveBtn);
+
+    const rejectBtn = document.createElement('button');
+    rejectBtn.type = 'button';
+    rejectBtn.className = 'transport-action';
+    rejectBtn.textContent = 'Reject';
+    rejectBtn.addEventListener('click', () => _resolveSyncRequest(
+      req.transport_id, req.id, 'reject', _renderMachineList));
+    box.appendChild(rejectBtn);
+
+    header.appendChild(box);
+  }
 }
 
 /** Enable or disable a backend, surfacing the server's refusal in full.

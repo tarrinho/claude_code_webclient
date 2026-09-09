@@ -293,6 +293,17 @@ async def exec_command(machine_id: str, cmd: str, timeout: int = 10):
     return state["ssh_client"].exec_command(cmd, timeout=timeout)
 
 
+async def open_sftp(machine_id: str):
+    """Open an SFTP session over the same live SSH connection exec_command
+    uses. Used by transport_sync.py to push/remove files -- no new
+    connection, no new credential, same trust tier as everything else
+    built on this tunnel."""
+    state = tunnel_manager._STATE.get(machine_id)
+    if not state or not state.get("ssh_client"):
+        raise RuntimeError("tunnel not connected")
+    return state["ssh_client"].open_sftp()
+
+
 def _fail(machine_id: str, error_msg: str):
     """Return failure tuple and set error_msg on state."""
     state = tunnel_manager._STATE.get(machine_id)

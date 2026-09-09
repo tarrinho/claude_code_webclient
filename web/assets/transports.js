@@ -180,6 +180,71 @@ export async function _checkTransport(transport, header, btn) {
   }
 }
 
+// ── Sync: push this checkout's git-tracked files to the transport ────────
+//
+// Same trust tier as Init: it writes to a host this console does not own.
+// Unlike Init, it is safe to click repeatedly -- a no-op sync (nothing
+// changed since the last one) costs one diff computation and pushes
+// nothing, so no confirm() dialog gates it the way Init's does.
+
+export async function _syncTransport(transport, header, btn) {
+  if (!transport) return;
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    const resp = await apiFetch(
+      `/api/transports/${encodeURIComponent(transport.id)}/sync`, {method: 'POST'});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) {
+      throw new Error(data.reason || data.detail || `Sync failed (${resp.status})`);
+    }
+    notifyResult(
+      data.files_changed > 0
+        ? `${transport.name}: synced ${data.files_changed} file(s)`
+        : `${transport.name}: already up to date`);
+  } catch (error) {
+    notifyResult(error.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+// ── Pending sync requests: an agent asked, a human decides ────────────────
+//
+// SYNC_REQUEST messages from sync_request_watcher.py land here as
+// status='pending' rows -- nothing is pushed until approve() is called.
+// See docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
+
+export async function _loadPendingSyncRequests() {
+  try {
+    const resp = await apiFetch('/api/transports/sync-requests/pending');
+    if (!resp.ok) return [];
+    const data = await resp.json().catch(() => ({}));
+    return data.requests || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function _resolveSyncRequest(transportId, requestId, action, onDone) {
+  try {
+    const resp = await apiFetch(
+      `/api/transports/${encodeURIComponent(transportId)}/sync-requests/`
+      + `${encodeURIComponent(requestId)}/${action}`, {method: 'POST'});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || data.reason || `${action} failed (${resp.status})`);
+    }
+    notifyResult(
+      action === 'approve'
+        ? (data.ok ? `Sync approved — ${data.files_changed ?? 0} file(s)` : (data.reason || 'Sync failed'))
+        : 'Sync request rejected');
+    if (onDone) onDone();
+  } catch (error) {
+    notifyResult(error.message, 'error');
+  }
+}
+
 export async function _initTransport(transport, header, btn) {
   if (!transport) return;
   // Confirmed because it writes to another machine. Idempotent, so re-running

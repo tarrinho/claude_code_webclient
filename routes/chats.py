@@ -1697,7 +1697,7 @@ async def _find_live_transports(owner: str) -> list[dict[str, Any]]:
         out.append({
             "machine_id": machine["id"],
             "transport_id": transport_id,
-            "remote_path": transport.get("remote_path") or "~/projects/claude-code-webconsole",
+            "remote_path": transport.get("remote_path") or "~/wc-proxy",
             "local_port": int(status["local_port"]),
         })
     return out

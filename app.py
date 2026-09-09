@@ -30,6 +30,7 @@ import auto_answer
 import config
 import db
 import rate_limit
+import sync_request_watcher
 import sysstats
 import turns
 from middleware import (  # registered below; the order of add_middleware
@@ -444,12 +445,17 @@ async def lifespan(app: FastAPI):
     rate_limit.start_cleanup(interval_s=300.0)
     # Auto-answer cooldown cleanup background task.
     await auto_answer._start_cooldown_cleanup()
+    # Watches incoming agent traffic for a SYNC_REQUEST marker and queues a
+    # pending transport_sync_requests row for a human to approve. See
+    # docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
+    sync_request_watcher.start()
     yield
     # Stopped before db.close(): the sampler writes through the connection.
     await rate_limit.stop_cleanup()
     await auto_answer._stop_cooldown_cleanup()
     await sysstats.stop()
     await auto_answer.stop()
+    await sync_request_watcher.stop()
     await tunnel_manager.stop()
     # Before db.close(): a turn cancelled here still runs its `finish`, which
     # needs the connection. Leaving them to be torn down with the loop instead

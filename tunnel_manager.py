@@ -344,7 +344,14 @@ async def _tick(store_fn, now_fn) -> None:
 
 
 def _try_connect(machine_id: str) -> None:
-    """Attempt SSH connect and port forward. Calls into tunnel_manager_ssh."""
+    """Attempt SSH connect and port forward. Calls into tunnel_manager_ssh.
+
+    Allocates a local port under _port_lock (serializes across all
+    transports) so that the port is reserved before the ~10s SSH handshake
+    begins.  This prevents two machines on different transports from both
+    probing the same port, both SSH-connecting, and then colliding at
+    bind-time.
+    """
     import asyncio
 
     if machine_id in _CONNECTING:
@@ -360,8 +367,11 @@ def _try_connect(machine_id: str) -> None:
         from tunnel_manager_ssh import connect as _connect
 
         try:
+            from tunnel_manager_ssh import _find_available_port as _find_port
+
+            assigned_port = await _find_port()
             ok, client, transport, local_port, ssh_port, forward_server, transport_id = (
-                await _connect(machine_id)
+                await _connect(machine_id, assigned_port)
             )
             if machine_id not in _STATE:
                 # Stopped/removed while this connect was in flight (e.g.

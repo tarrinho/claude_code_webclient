@@ -77,7 +77,7 @@ class _PinnedHostKeyPolicy:
         # Matches the pinned value: accepting means doing nothing here.
 
 
-async def connect(machine_id: str):
+async def connect(machine_id: str, assigned_port: int = 0):
     """Attempt SSH connect + port forward for *machine_id*.
 
     Returns (ok, ssh_client, transport, local_port, ssh_port, forward_server,
@@ -140,17 +140,12 @@ async def connect(machine_id: str):
     # simply awaits it, then takes the fast reuse path once it sees the
     # now-populated registry -- no wasted handshake, no clobbered entry.
     async with tunnel_manager._transport_lock(transport_id):
-        # Port allocation must be inside a global lock: machines on different
-        # transports (Pentester, Kali3, AppSec Tools) each have their own
-        # transport lock and can call _find_available_port() simultaneously.
-        # Without a global lock both can grab the same port and one
-        # start_forward() silently fails — the DB stays "connected" but
-        # proxy_ok stays 0, so the Backends panel shows Uninitialized.
-        async with tunnel_manager._port_lock:
-            try:
-                local_port = await _find_available_port()
-            except Exception as exc:
-                return _fail(machine_id, str(exc))
+        # Port was pre-allocated in tunnel_manager._try_connect() under a
+        # single global lock — always use the caller's assigned_port.
+        # The reuse path no longer reads from the DB (which would return the
+        # first machine's port); the assigned_port is the one reserved under
+        # _port_lock and guaranteed unique across all transports.
+        local_port = assigned_port
 
         shared = tunnel_manager._TRANSPORT_CONNECTIONS.get(transport_id)
         if shared:

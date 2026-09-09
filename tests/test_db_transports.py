@@ -28,7 +28,7 @@ class SshTransportsSchemaTests(unittest.IsolatedAsyncioTestCase):
             columns,
             {
                 "id", "name", "owner_id", "ssh_host", "ssh_user",
-                "ssh_key_path", "ssh_host_key_fingerprint",
+                "ssh_key_path", "ssh_host_key_fingerprint", "remote_path",
                 "created_at", "updated_at",
             },
         )
@@ -45,6 +45,7 @@ class SshTransportsSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["ssh_user"], "kali")
         self.assertEqual(row["ssh_key_path"], "~/.ssh/id_ed25519")
         self.assertEqual(row["ssh_host_key_fingerprint"], "")
+        self.assertEqual(row["remote_path"], "~/wc-proxy")
 
     async def test_get_is_owner_scoped(self):
         await db.ssh_transport_create("t2", "Kali3", "admin", "h", "kali", "k")

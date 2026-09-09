@@ -18,6 +18,7 @@ the search or walk out of the projects directory.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -1719,8 +1720,12 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
 def agent_reply_to(session_id: str, text: str) -> dict[str, Any]:
     """Inject a cross-session message into the given session's transcript.
 
-    Returns {"ok": True, "path": "/…"} on success, or {"ok": False, "reason": "..."}
-    if the session could not be located or the file could not be written.
+    Returns {"ok": True, "path": "/…", "session_id": "<uuid>"} on success, or
+    {"ok": False, "reason": "..."} if the session could not be located or the
+    file could not be written. session_id is the resolved UUID (session_id
+    here is actually the session *name*, e.g. "cweb6") -- callers that need
+    to address this session directly (a wake-up turn's --resume) use it
+    rather than re-resolving the name themselves.
     """
     # Locate the transcript file by scanning all active sessions and finding the
     # one whose name matches *session_id*.  _session_names_sync gives us
@@ -1757,8 +1762,31 @@ def agent_reply_to(session_id: str, text: str) -> dict[str, Any]:
         try:
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(record + "\n")
-            return {"ok": True, "path": str(path)}
+            return {"ok": True, "path": str(path), "session_id": cand}
         except OSError as exc:
             last_error = str(exc)
 
     return {"ok": False, "reason": last_error or "no transcript file found"}
+
+
+def build_remote_reply_command(remote_path: str, target: str, text: str) -> str:
+    """Build the one-liner routes/chats.py runs on a remote host via
+    tunnel_manager.exec_command to relay a cross-session message there.
+
+    *target*/*text* are never interpolated into the shell string directly --
+    they are JSON-encoded then base64'd, and only the base64 blob (alphabet
+    A-Za-z0-9+/=, no shell metacharacters) is embedded. The remote side
+    decodes it and calls this same module's agent_reply_to(), so the
+    resolve+append logic -- including its session-name-to-path safety
+    checks -- runs identically to the local case, just on the far host.
+    See docs/superpowers/specs/2026-09-08-transport-aware-agent-reply-design.md.
+    """
+    payload = base64.b64encode(
+        json.dumps({"to": target, "text": text}).encode("utf-8")
+    ).decode("ascii")
+    script = (
+        "import base64,json,transcripts;"
+        f"d=json.loads(base64.b64decode('{payload}'));"
+        "print(json.dumps(transcripts.agent_reply_to(d['to'], d['text'])))"
+    )
+    return f"cd {remote_path} && python3 -c \"{script}\""

@@ -11,8 +11,10 @@ import db
 
 _TRANSPORT_COLUMNS = (
     "id, name, owner_id, ssh_host, ssh_user, ssh_key_path, "
-    "ssh_host_key_fingerprint, created_at, updated_at"
+    "ssh_host_key_fingerprint, remote_path, created_at, updated_at"
 )
+
+_DEFAULT_REMOTE_PATH = "~/wc-proxy"
 
 
 async def ssh_transport_create(
@@ -22,14 +24,16 @@ async def ssh_transport_create(
     ssh_host: str,
     ssh_user: str,
     ssh_key_path: str,
+    remote_path: str = _DEFAULT_REMOTE_PATH,
 ) -> str:
     now = db._now()
     await db.db_conn.execute(
         "INSERT INTO ssh_transports "
         "(id, name, owner_id, ssh_host, ssh_user, ssh_key_path, "
-        " ssh_host_key_fingerprint, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)",
-        (transport_id, name, owner_id, ssh_host, ssh_user, ssh_key_path, now, now),
+        " ssh_host_key_fingerprint, remote_path, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)",
+        (transport_id, name, owner_id, ssh_host, ssh_user, ssh_key_path,
+         remote_path or _DEFAULT_REMOTE_PATH, now, now),
     )
     await db.db_conn.commit()
     return now
@@ -55,7 +59,7 @@ async def ssh_transports_list(owner_id: str) -> list[dict[str, Any]]:
 
 
 async def ssh_transport_update(transport_id: str, owner_id: str, **fields: Any) -> bool:
-    allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path"}
+    allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path", "remote_path"}
     pairs = [(k, v) for k, v in fields.items() if k in allowed and v is not None]
     if not pairs:
         return False

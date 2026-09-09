@@ -93,7 +93,7 @@ async def handle_transport_create(request: Request):
     transport_id = uuid.uuid4().hex
     await db.ssh_transport_create(
         transport_id, name, session["user"], ssh_host, ssh_user, ssh_key_path,
-        remote_path=remote_path or "~/projects/claude-code-webconsole",
+        remote_path=remote_path or "~/wc-proxy",
     )
     _log.info("ssh_transport created by user=%s name=%s", session["user"], name)
     return JSONResponse({"ok": True, "id": transport_id, "name": name})
@@ -239,6 +239,7 @@ async def handle_transport_check(request: Request, transport_id: str):
     result = await transport_readiness.check_transport(
         transport["ssh_host"], transport["ssh_user"], transport["ssh_key_path"],
         port=config.PROXY_PORT, local_token=token,
+        remote_path=transport.get("remote_path") or "~/wc-proxy",
     )
     _log.info(
         "transport_check name=%s ready=%s reachable=%s",

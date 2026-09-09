@@ -36,6 +36,8 @@ _log = logging.getLogger("wc.transport_readiness")
 # used %(port)d and raised "not enough arguments for format string" on every
 # call -- caught only because the template is exercised directly in a test.
 _PORT_MARKER = "__PORT__"
+# remote_path follows the same rule -- see _PORT_MARKER above.
+_REMOTE_PATH_MARKER = "__REMOTE_PATH__"
 
 _PROBE = r"""
 printf 'claude=%s\n' "$( [ -x "$HOME/.local/bin/claude" ] && echo "$HOME/.local/bin/claude" \
@@ -46,12 +48,20 @@ printf 'listening=%s\n' "$( (ss -tln 2>/dev/null || netstat -tln 2>/dev/null) \
 printf 'token_len=%s\n' "$(wc -c < ~/wc-proxy/proxy_token.txt 2>/dev/null || echo 0)"
 printf 'token_sha=%s\n' "$(sha256sum ~/wc-proxy/proxy_token.txt 2>/dev/null | cut -c1-16 || echo none)"
 printf 'service=%s\n' "$(systemctl --user is-active wc-proxy.service 2>/dev/null || echo absent)"
+printf 'proxy_cwd=%s\n' "$(readlink -f /proc/$(pgrep -f 'claude_proxy[.]py' | head -1)/cwd 2>/dev/null || echo unknown)"
+printf 'expected_path=%s\n' "$(readlink -f __REMOTE_PATH__ 2>/dev/null || echo __REMOTE_PATH__)"
 """
 
 
-def probe_script(port: int) -> str:
-    """The probe with the port filled in. See _PORT_MARKER for why replace()."""
-    return _PROBE.replace(_PORT_MARKER, str(int(port)))
+def probe_script(port: int, remote_path: str = "~/wc-proxy") -> str:
+    """The probe with the port and remote_path filled in.
+
+    See _PORT_MARKER for why .replace() rather than %-formatting or .format().
+    """
+    return (
+        _PROBE.replace(_PORT_MARKER, str(int(port)))
+        .replace(_REMOTE_PATH_MARKER, remote_path or "~/wc-proxy")
+    )
 
 
 @dataclass
@@ -108,6 +118,8 @@ def parse_probe(raw: str, *, port: int, local_token: str) -> list[Check]:
     listening = fields.get("listening", "0")
     service = fields.get("service", "absent")
     remote_sha = fields.get("token_sha", "none")
+    proxy_cwd = fields.get("proxy_cwd", "unknown")
+    expected_path = fields.get("expected_path", "")
 
     import hashlib
 
@@ -150,6 +162,26 @@ def parse_probe(raw: str, *, port: int, local_token: str) -> list[Check]:
             "matches this host's token" if remote_sha == local_sha and local_sha
             else f"differs or absent (remote {remote_sha})",
             remedy="press Init; it rewrites the token from the database",
+        ),
+        # Caught a real, shipped bug: the stored remote_path defaulted to a
+        # value that never matched any live host (see
+        # docs/superpowers/specs/2026-09-08-transport-aware-agent-reply-design.md's
+        # 2026-09-09 correction). Comparing the configured path against where
+        # claude_proxy.py is actually running catches that class of drift
+        # instead of trusting an unverified value indefinitely.
+        Check(
+            "remote_path matches the running proxy",
+            proxy_cwd != "unknown" and proxy_cwd == expected_path,
+            (
+                f"proxy is running from {proxy_cwd}"
+                if proxy_cwd != "unknown"
+                else "no claude_proxy.py process found to compare against"
+            ),
+            remedy=(
+                f"update this transport's remote_path to {proxy_cwd}"
+                if proxy_cwd not in ("unknown", "", expected_path)
+                else "press Init, or run bin/wc-deploy-proxy.sh <transport>"
+            ),
         ),
     ]
     return checks
@@ -265,7 +297,8 @@ async def _probe_forward(
 
 
 async def check_transport(
-    ssh_host: str, ssh_user: str, ssh_key_path: str, *, port: int, local_token: str
+    ssh_host: str, ssh_user: str, ssh_key_path: str, *, port: int, local_token: str,
+    remote_path: str = "~/wc-proxy",
 ) -> Readiness:
     """Run the probe over a one-shot SSH connection and report.
 
@@ -286,7 +319,7 @@ async def check_transport(
         result.error = f"ssh key not readable: {ssh_key_path}"
         return result
 
-    script = probe_script(port)
+    script = probe_script(port, remote_path)
     argv = [
         "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
         "-i", key, f"{ssh_user or 'kali'}@{ssh_host}", script,

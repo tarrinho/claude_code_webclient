@@ -567,16 +567,26 @@ async def _proxy_turn(
     chat_id: str,
     model: str | None = None,
     owner: str | None = None,
+    *,
+    proxy_target: tuple[str, int] | None = None,
 ) -> tuple[list[str], str | None]:
     """Execute one turn over TCP to the host claude_proxy.
 
     Sends a single JSON message to the proxy, reads back NDJSON chunks,
     and returns (text_chunks, session_id).
+
+    proxy_target, when given, bypasses get_proxy_target's chat/owner-based
+    resolution and connects there directly. Needed by the agent-reply
+    wake-up turn: that call's chat_id/owner describe the *replying* chat,
+    not the *target* session's host, and get_proxy_target would otherwise
+    resolve to the wrong (or merely coincidentally-right, for local-only
+    traffic) proxy. See
+    docs/superpowers/specs/2026-09-08-transport-aware-agent-reply-design.md.
     """
     sem = _get_sem()
     async with sem:
         return await _execute_proxy(prompt, session_id, work_dir, chat_id, model,
-                                    owner)
+                                    owner, proxy_target=proxy_target)
 
 
 async def _execute_proxy(
@@ -586,6 +596,8 @@ async def _execute_proxy(
     chat_id: str,
     model: str | None = None,
     owner: str | None = None,
+    *,
+    proxy_target: tuple[str, int] | None = None,
 ) -> tuple[list[str], str | None]:
     """Core proxy turn: connect → send turn → read NDJSON → disconnect."""
     connect_timeout = config.PROXY_CONNECT_TIMEOUT_S
@@ -600,7 +612,7 @@ async def _execute_proxy(
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
-    proxy_host, proxy_port = await get_proxy_target(chat_id, owner)
+    proxy_host, proxy_port = proxy_target or await get_proxy_target(chat_id, owner)
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(proxy_host, proxy_port),

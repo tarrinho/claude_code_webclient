@@ -163,11 +163,19 @@ One column on `ssh_transports`, self-migrating like the rest of `db.py`'s
 
 ```sql
 ALTER TABLE ssh_transports ADD COLUMN remote_path TEXT NOT NULL
-  DEFAULT '~/projects/claude-code-webconsole';
+  DEFAULT '~/wc-proxy';
 ```
 
 Editable through the existing transport edit form (same shape as
 `ssh_host`/`ssh_user`/`ssh_key_path`) — no new endpoint.
+
+**Correction (2026-09-09):** the default originally shipped as
+`~/projects/claude-code-webconsole`, assumed to match this host's own
+layout without checking. It was wrong on every live transport — verified
+via each host's `claude_proxy.py` process's own `/proc/<pid>/cwd`, the
+real path is `~/wc-proxy` on all four configured transports (Kali3,
+Kali_Mac, AppSec Tools, Node1-Appsec). Default and existing rows corrected
+to `~/wc-proxy`.
 
 One new table for the cooldown/audit trail from the security section. Not
 folded into `chats.auto_answer_log`, because an agent-reply isn't scoped to

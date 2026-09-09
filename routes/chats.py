@@ -1580,52 +1580,182 @@ async def _api_chat_agent_reply(request: Request, chat_id: str):
 
     Writes a <cross-session-message> record into the target session's
     transcript and fires a wake-up turn through the proxy so the CLI's
-    MCP picks it up promptly.
+    MCP picks it up promptly. The target may be local (today's path) or
+    live behind an ssh_transports connection -- see
+    docs/superpowers/specs/2026-09-08-transport-aware-agent-reply-design.md.
     """
     session = request.state.session
+    owner = session["user"]
     body = await request.json()
     text = str(body.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
-
-    chat = await db.chat_get(chat_id, session["user"])
+    if len(text) > config.PROMPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text too long ({len(text)} chars, max {config.PROMPT_MAX_CHARS})",
+        )
     target = str(body.get("to") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="to is required")
 
-    # 1. Write the cross-session message into the target's transcript.
+    chat = await db.chat_get(chat_id, owner)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    if not await db.agent_reply_cooldown_check(chat_id, target):
+        raise HTTPException(
+            status_code=429,
+            detail="Already replied to this target recently — try again shortly",
+        )
+
+    # 1. Try local resolution first (today's path, unchanged).
     result = await asyncio.to_thread(transcripts.agent_reply_to, target, text)
+    via = "local"
+    # Mirrors get_proxy_target's own local fallback (get_proxy_host() + the
+    # global port), not a bare config constant, so a deployment that
+    # overrides ai_machine_host still gets that override here too.
+    proxy_target: tuple[str, int] | None = (await runner.get_proxy_host(), config.PROXY_PORT)
+
+    # 2. Not found locally -- try live transports, one at a time, stopping at
+    #    the first success. Never opens a fresh SSH connection just to
+    #    check whether a name exists over there (only tunnel_up=1 transports
+    #    are candidates).
+    if not result.get("ok"):
+        proxy_target = None
+        for candidate in await _find_live_transports(owner):
+            cmd = transcripts.build_remote_reply_command(
+                candidate["remote_path"], target, text)
+            try:
+                remote_result = await _remote_agent_reply(candidate["machine_id"], cmd)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "agent-reply remote exec failed transport=%s: %s",
+                    candidate["transport_id"], exc,
+                )
+                continue
+            if remote_result.get("ok"):
+                result = remote_result
+                via = candidate["transport_id"]
+                proxy_target = ("127.0.0.1", candidate["local_port"])
+                break
+            # Keep the most recent remote failure reason if every candidate
+            # (and the local attempt) comes up empty.
+            result = remote_result
+
+    await db.agent_reply_log_add(
+        chat_id, owner, target, via, bool(result.get("ok")),
+        result.get("reason", ""),
+    )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("reason", "unknown error"))
 
-    # 2. Fire a wake-up turn through the proxy so the CLI's MCP
-    #    processes the pending cross-session message queue.  A bare
-    #    newline is enough to trigger another read of the transcript.
-    target_session_id = await _resolve_session_id(target)
-    if target_session_id and config.PROXY_ENABLED:
+    # 3. Fire a wake-up turn through the proxy so the CLI's MCP processes the
+    #    pending cross-session message queue. proxy_target addresses the
+    #    session's own host directly -- never inferred from this chat's own
+    #    backend pin, which is unrelated to where the target actually lives.
+    target_session_id = result.get("session_id")
+    if target_session_id and proxy_target and config.PROXY_ENABLED:
         try:
-            await _fire_wake_up(target_session_id, chat["work_dir"], chat_id, session.get("user"))
+            await _fire_wake_up(
+                target_session_id, chat["work_dir"], chat_id, owner, proxy_target,
+            )
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "wake-up failed for agent-reply to %s: %s",
                 target, exc,
             )
 
-    return JSONResponse({"ok": True, "path": result.get("path", ""), "to": target})
+    return JSONResponse({
+        "ok": True, "path": result.get("path", ""), "to": target, "via": via,
+    })
 
 
-async def _resolve_session_id(name: str) -> str | None:
-    """Resolve a session name to its UUID for proxy turn delivery."""
-    by_session, _ = transcripts._session_names_sync()
-    return by_session.get(name)
+async def _find_live_transports(owner: str) -> list[dict[str, Any]]:
+    """Live (tunnel_up=1) transports for *owner*, one entry per transport.
+
+    Resolving an agent-reply target never opens a fresh SSH connection just
+    to probe whether a name exists there -- only transports whose tunnel is
+    already up are candidates. Several machines can share one transport_id
+    (tunnel_manager reuses the connection); each transport is tried once.
+    """
+    from tunnel_manager import tunnel_status
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for machine in await db.ai_machines_list(owner):
+        transport_id = machine.get("transport_id")
+        if not transport_id or transport_id in seen:
+            continue
+        status = await tunnel_status(machine["id"])
+        if not status or not status.get("tunnel_up") or not status.get("local_port"):
+            continue
+        transport = await db.ssh_transport_get(transport_id, owner)
+        if not transport:
+            continue
+        seen.add(transport_id)
+        out.append({
+            "machine_id": machine["id"],
+            "transport_id": transport_id,
+            "remote_path": transport.get("remote_path") or "~/projects/claude-code-webconsole",
+            "local_port": int(status["local_port"]),
+        })
+    return out
+
+
+async def _remote_agent_reply(
+    machine_id: str, cmd: str, timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Run *cmd* (built by transcripts.build_remote_reply_command) over the
+    machine's live SSH tunnel and parse its JSON stdout.
+
+    Remote output is data, never instruction: parsed strictly with
+    json.loads, never eval/exec'd, and any unexpected shape becomes an
+    error result rather than a crash.
+    """
+    from tunnel_manager_ssh import exec_command
+
+    try:
+        _, stdout, stderr = await asyncio.wait_for(
+            exec_command(machine_id, cmd, timeout=int(timeout)), timeout=timeout,
+        )
+    except (RuntimeError, OSError, asyncio.TimeoutError) as exc:
+        return {"ok": False, "reason": f"exec failed: {exc}"}
+
+    def _read() -> tuple[bytes, bytes]:
+        return stdout.read(), stderr.read()
+
+    try:
+        out_bytes, err_bytes = await asyncio.wait_for(
+            asyncio.to_thread(_read), timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        return {"ok": False, "reason": "remote command timed out"}
+
+    out = out_bytes.decode("utf-8", errors="replace").strip()
+    try:
+        parsed = json.loads(out)
+    except (json.JSONDecodeError, ValueError):
+        err = err_bytes.decode("utf-8", errors="replace").strip()
+        return {"ok": False, "reason": f"unexpected remote output: {(out or err or 'empty')[:200]}"}
+    if not isinstance(parsed, dict):
+        return {"ok": False, "reason": "unexpected remote output shape"}
+    return parsed
 
 
 async def _fire_wake_up(
-    session_id: str, work_dir: str, chat_id: str, owner: str | None,
+    session_id: str,
+    work_dir: str,
+    chat_id: str,
+    owner: str | None,
+    proxy_target: tuple[str, int],
 ) -> None:
     """Send a minimal turn through the proxy to wake the target session.
 
     The CLI's MCP reads cross-session message queues on every transcript
     append. A fresh turn forces a new read, which surfaces pending
-    <cross-session-message> records.
+    <cross-session-message> records. proxy_target is always the resolved
+    target session's own host -- never this chat's backend pin.
     """
     await runner._proxy_turn(
         " ",  # minimal whitespace-only prompt
@@ -1634,6 +1764,7 @@ async def _fire_wake_up(
         chat_id,
         None,  # model — falls back to default
         owner,
+        proxy_target=proxy_target,
     )
 
 

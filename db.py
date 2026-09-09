@@ -133,6 +133,9 @@ def __getattr__(name: str):
         "ssh_transport_update": "routes.db_transports",
         "ssh_transport_delete": "routes.db_transports",
         "ssh_transport_set_host_key_fingerprint": "routes.db_transports",
+        # agent-reply audit trail + cooldown
+        "agent_reply_log_add": "routes.db_agent_reply",
+        "agent_reply_cooldown_check": "routes.db_agent_reply",
         # users
         "user_get_by_name": "routes.db_users",
         "user_create": "routes.db_users",
@@ -316,9 +319,25 @@ async def init() -> None:
             ssh_user                  TEXT NOT NULL DEFAULT 'kali',
             ssh_key_path              TEXT NOT NULL DEFAULT '',
             ssh_host_key_fingerprint  TEXT NOT NULL DEFAULT '',
+            remote_path               TEXT NOT NULL DEFAULT '~/wc-proxy',
             created_at                TEXT NOT NULL,
             updated_at                TEXT NOT NULL
         );
+
+        -- Audit trail + cooldown source for transcripts.agent_reply_to relays.
+        -- See docs/superpowers/specs/2026-09-08-transport-aware-agent-reply-design.md.
+        CREATE TABLE IF NOT EXISTS agent_reply_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id    TEXT NOT NULL,
+            owner_id   TEXT NOT NULL,
+            target     TEXT NOT NULL,
+            via        TEXT NOT NULL,   -- 'local' | transport_id
+            ok         INTEGER NOT NULL,
+            reason     TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_reply_log_cooldown
+            ON agent_reply_log(chat_id, target, created_at);
 
         CREATE TABLE IF NOT EXISTS messages (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -635,6 +654,7 @@ async def init() -> None:
     """)
     await _ensure_chat_columns()
     await _ensure_machines_columns()
+    await _ensure_transport_columns()
     await _migrate_ssh_proxy_machines_to_transports()
     await _clear_dangling_machine_pins()
     await _ensure_usage_columns()
@@ -1250,6 +1270,30 @@ async def _ensure_machines_columns() -> None:
             )  # nosec B608: column names are static literals
 
     await db_conn.commit()
+
+
+async def _ensure_transport_columns() -> None:
+    """Additive column migration for ssh_transports.
+
+    remote_path: where the remote host's own webconsole checkout lives, so
+    transcripts.agent_reply_to can exec_command a one-liner over there.
+    '~/wc-proxy' is verified against every transport configured before this
+    column existed (checked via each host's claude_proxy.py process's own
+    /proc/<pid>/cwd, not assumed) -- it is not this host's own layout, which
+    would have been wrong: this checkout lives elsewhere.
+    """
+    try:
+        cursor = await db_conn.execute("PRAGMA table_info(ssh_transports)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+    except Exception:
+        columns = set()
+
+    if columns and "remote_path" not in columns:
+        await db_conn.execute(
+            "ALTER TABLE ssh_transports ADD COLUMN remote_path TEXT NOT NULL "
+            "DEFAULT '~/wc-proxy'"
+        )
+        await db_conn.commit()
 
 
 async def _ensure_usage_columns() -> None:

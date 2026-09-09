@@ -45,6 +45,8 @@ def _raw(**over) -> str:
         "token_len": "43",
         "token_sha": _sha16(_TOKEN),
         "service": "active",
+        "proxy_cwd": "/home/u/wc-proxy",
+        "expected_path": "/home/u/wc-proxy",
     }
     fields.update(over)
     return "\n".join(f"{k}={v}" for k, v in fields.items())
@@ -128,6 +130,35 @@ class MissingPiecesTests(unittest.TestCase):
         self.assertFalse(checks["proxy token matches"].ok)
 
 
+class RemotePathDriftTests(unittest.TestCase):
+    """The bug this check exists to catch: a stored remote_path that never
+    matched any live host, shipped as the default and only found by hand.
+    See docs/superpowers/specs/2026-09-08-transport-aware-agent-reply-design.md's
+    2026-09-09 correction."""
+
+    def test_matching_path_passes(self):
+        checks = _by_name(_raw(proxy_cwd="/home/u/wc-proxy",
+                                expected_path="/home/u/wc-proxy"))
+        self.assertTrue(checks["remote_path matches the running proxy"].ok)
+
+    def test_mismatched_path_fails_and_names_the_real_one(self):
+        """This is the exact shape of the bug found by hand: configured
+        ~/projects/claude-code-webconsole, actual ~/wc-proxy."""
+        checks = _by_name(_raw(
+            proxy_cwd="/home/u/wc-proxy",
+            expected_path="/home/u/projects/claude-code-webconsole",
+        ))
+        check = checks["remote_path matches the running proxy"]
+        self.assertFalse(check.ok)
+        self.assertIn("/home/u/wc-proxy", check.remedy)
+
+    def test_no_proxy_process_found_is_not_a_silent_pass(self):
+        checks = _by_name(_raw(proxy_cwd="unknown", expected_path="/home/u/wc-proxy"))
+        check = checks["remote_path matches the running proxy"]
+        self.assertFalse(check.ok)
+        self.assertIn("no claude_proxy.py process found", check.detail)
+
+
 class ReadinessShapeTests(unittest.TestCase):
     def test_unreachable_is_not_ready_even_with_no_failing_checks(self):
         """Kali3 is offline: no checks ran at all, which must not read as
@@ -142,7 +173,7 @@ class ReadinessShapeTests(unittest.TestCase):
                                                local_token=_TOKEN))
         payload = r.as_dict()
         self.assertTrue(payload["ready"])
-        self.assertEqual(len(payload["checks"]), 4)
+        self.assertEqual(len(payload["checks"]), 5)
         self.assertEqual(
             {"name", "ok", "detail", "remedy"}, set(payload["checks"][0]))
 

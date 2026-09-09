@@ -25,6 +25,7 @@ var STUB = {
   currentTransform: null,
   elHandlers: {},
   buttonHandlers: [],
+  focusCalls: [],
 };
 
 /* ── DOM ─────────────────────────────────────────────────────────────── */
@@ -46,6 +47,14 @@ function FakeEl(id) {
     },
     scrollIntoView: function () {},
     getAttribute: function () { return null; },
+    // Focus tracking, for the drawer's focus handling. A test seeds
+    // __focusables on the element it is about to query.
+    __focusables: [],
+    tabIndex: 0,
+    disabled: false,
+    focus: function () { document.activeElement = el; STUB.focusCalls.push(id); },
+    querySelectorAll: function () { return el.__focusables; },
+    contains: function (other) { return el.__focusables.indexOf(other) !== -1; },
     addEventListener: function (type, fn) {
       STUB.elHandlers[id] = STUB.elHandlers[id] || {};
       STUB.elHandlers[id][type] = fn;
@@ -57,7 +66,8 @@ function FakeEl(id) {
 var _els = {};
 
 var document = {
-  body: {},
+  body: null,   // replaced below, once FakeEl exists
+  activeElement: null,
   getElementById: function (id) {
     if (!_els[id]) _els[id] = FakeEl(id);
     return _els[id];
@@ -78,6 +88,18 @@ var document = {
     STUB.elHandlers["document"][type] = fn;
   },
 };
+
+/* The module dispatches one of these to ask app.js to open a conversation --
+ * app.js imports it, so importing back would be a cycle. */
+function CustomEvent(type, init) {
+  this.type = type;
+  this.detail = (init && init.detail) || null;
+}
+
+// document.body has to be a real fake element: the module asks it for
+// computed styles and uses body.contains() to decide whether the element it
+// wants to hand focus back to is still in the page.
+document.body = FakeEl("body");
 
 function getComputedStyle() {
   return {getPropertyValue: function () { return ""; }};
@@ -195,6 +217,15 @@ function _hierarchy(data, childrenAccessor) {
     if (kids.length) {
       n.children = kids.map(function (k) { return build(k, depth + 1, n); });
     }
+    // Real hierarchy nodes carry each(); the module under test walks the tree
+    // with it to re-apply collapsed branches before layout.
+    n.each = function (fn) {
+      (function walk(node) {
+        fn(node);
+        (node.children || []).forEach(walk);
+      })(n);
+      return n;
+    };
     return n;
   }
   var root = build(data, 0, null);

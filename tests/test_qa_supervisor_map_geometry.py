@@ -338,6 +338,536 @@ class MapNodeKindTests(unittest.TestCase):
 
 
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class MapCollapseTests(unittest.TestCase):
+    """Collapsing a node used to be impossible rather than temporary.
+
+    The click handler recorded the id in `_collapsed`, moved the node's
+    children aside and re-rendered -- and the re-render cleared `_collapsed`
+    and rebuilt the hierarchy from the data with every child present. So the
+    only effect of clicking a branch was a full redraw that changed nothing,
+    which reads exactly like an unresponsive control.
+    """
+
+    def _collapse_first_branch(self) -> str:
+        return """
+          renderSupervisorMap(DATA);
+          var nodeSel = stubFindNodeSelection();
+          var before = nodeSel.__data.length;
+          // The transport node: the first datum with children under the root.
+          var branch = nodeSel.__data.filter(function (d) {
+            return d.depth === 1 && d.children;
+          })[0];
+          nodeSel.__handlers.click.call(null, {stopPropagation: function () {}}, branch);
+          var after = stubFindNodeSelection().__data.length;
+        """
+
+    def test_a_collapsed_branch_stays_collapsed_through_the_re_render(self):
+        out = _run(self._collapse_first_branch() + """
+          JSON.stringify({before: before, after: after});
+        """)
+        self.assertLess(
+            out["after"], out["before"],
+            "collapsing removed no nodes from the tree",
+        )
+
+    def test_a_collapsed_branch_stays_collapsed_through_a_refresh(self):
+        """The map now refreshes itself on a timer. A refresh that silently
+        re-expanded everything would undo the user's choice every few
+        seconds."""
+        out = _run(self._collapse_first_branch() + """
+          renderSupervisorMap(DATA);   // what the poll does
+          var refreshed = stubFindNodeSelection().__data.length;
+          JSON.stringify({after: after, refreshed: refreshed});
+        """)
+        self.assertEqual(out["refreshed"], out["after"])
+
+    def test_clicking_it_again_expands_it(self):
+        out = _run(self._collapse_first_branch() + """
+          var again = stubFindNodeSelection().__data.filter(function (d) {
+            return d.depth === 1 && d._children;
+          })[0];
+          stubFindNodeSelection().__handlers.click.call(
+            null, {stopPropagation: function () {}}, again);
+          JSON.stringify({before: before, reopened: stubFindNodeSelection().__data.length});
+        """)
+        self.assertEqual(out["reopened"], out["before"])
+
+    def test_closing_the_map_forgets_what_was_collapsed(self):
+        """Reopening is a fresh look at the tree, not a resumed session."""
+        out = _run(self._collapse_first_branch() + """
+          closeSupervisorMap();
+          renderSupervisorMap(DATA);
+          JSON.stringify({before: before,
+                          reopened: stubFindNodeSelection().__data.length});
+        """)
+        self.assertEqual(out["reopened"], out["before"])
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class MapViewPersistenceTests(unittest.TestCase):
+    """The view survives a refresh but not a close."""
+
+    def test_a_refresh_keeps_the_readers_own_zoom(self):
+        """Re-fitting on every poll tick would yank someone who has zoomed
+        into a branch back out to the whole tree, every few seconds, without
+        being asked."""
+        out = _run("""
+          renderSupervisorMap(DATA);
+          _zoom.transform(stubSvg(), d3.zoomIdentity.translate(70, 40).scale(2.5));
+          var chosen = STUB.transforms[STUB.transforms.length - 1];
+          renderSupervisorMap(DATA);   // what the poll does
+          var after = STUB.transforms[STUB.transforms.length - 1];
+          JSON.stringify({chosen: chosen, after: after});
+        """)
+        self.assertEqual(out["after"]["k"], out["chosen"]["k"])
+        self.assertEqual(out["after"]["x"], out["chosen"]["x"])
+        self.assertEqual(out["after"]["y"], out["chosen"]["y"])
+
+    def test_reopening_the_map_fits_the_tree_again(self):
+        """The one place a view is deliberately forgotten."""
+        out = _run("""
+          renderSupervisorMap(DATA);
+          _zoom.transform(stubSvg(), d3.zoomIdentity.translate(70, 40).scale(2.5));
+          var chosen = STUB.transforms[STUB.transforms.length - 1];
+          closeSupervisorMap();
+          renderSupervisorMap(DATA);
+          var after = STUB.transforms[STUB.transforms.length - 1];
+          JSON.stringify({chosen: chosen, after: after});
+        """)
+        self.assertNotEqual(out["after"]["k"], out["chosen"]["k"])
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class MapDrawerActionTests(unittest.TestCase):
+    """Which actions the drawer offers, per node kind.
+
+    Offering the wrong one is not cosmetic: a task's id is a task id, so
+    "Open conversation" on a task node would request a conversation that does
+    not exist, and Stop posts to a per-conversation endpoint.
+    """
+
+    def _actions_for(self, node_js: str) -> dict:
+        return _run(f"""
+          renderSupervisorMap(DATA);
+          showDetail({node_js});
+          JSON.stringify({{
+            open: document.getElementById("mapDetailOpen").hidden,
+            stop: document.getElementById("mapDetailStop").hidden
+          }});
+        """)
+
+    def test_a_running_conversation_offers_both(self):
+        out = self._actions_for('{id: "c1", type: "chat", status: "running", label: "C"}')
+        self.assertFalse(out["open"])
+        self.assertFalse(out["stop"])
+
+    def test_an_idle_conversation_cannot_be_stopped(self):
+        """There is nothing to stop, and a button that reports "Nothing was
+        running" every time is noise."""
+        out = self._actions_for('{id: "c1", type: "chat", status: "idle", label: "C"}')
+        self.assertFalse(out["open"])
+        self.assertTrue(out["stop"])
+
+    def test_a_task_offers_neither(self):
+        out = self._actions_for('{id: "t1", type: "task", status: "busy", label: "T"}')
+        self.assertTrue(out["open"])
+        self.assertTrue(out["stop"])
+
+    def test_a_machine_offers_neither(self):
+        out = self._actions_for('{id: "m1", type: "machine", status: "running", label: "M"}')
+        self.assertTrue(out["open"])
+        self.assertTrue(out["stop"])
+
+    def test_a_terminal_session_offers_neither(self):
+        """It lives in a terminal; the console has no conversation for it."""
+        out = self._actions_for('{id: "s1", type: "session", status: "running", label: "S"}')
+        self.assertTrue(out["open"])
+        self.assertTrue(out["stop"])
+
+    def test_opening_a_conversation_asks_app_js_by_event(self):
+        """app.js imports this module, so importing selectChat back would be
+        a cycle. The event is the seam, and it must carry the id."""
+        out = _run("""
+          var seen = null;
+          document.dispatchEvent = function (e) { seen = e; };
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          STUB.elHandlers["mapDetailOpen"].click();
+          JSON.stringify({type: seen && seen.type, id: seen && seen.detail.id});
+        """)
+        self.assertEqual(out["type"], "wc:map-open-chat")
+        self.assertEqual(out["id"], "c1")
+
+    def test_closing_the_drawer_forgets_which_node_it_described(self):
+        """A stale node would let a later button press act on whatever was
+        open last."""
+        out = _run("""
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          var during = _detailNode && _detailNode.id;
+          hideDetail();
+          JSON.stringify({during: during, after: _detailNode});
+        """)
+        self.assertEqual(out["during"], "c1")
+        self.assertIsNone(out["after"])
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class MapThemeTests(unittest.TestCase):
+    """Colours come from CSS variables, not from literals.
+
+    The map was the one SVG in this app that ignored the theme. Its node
+    outlines were `#fff` -- a white ring on a white panel in light mode, so
+    invisible on exactly the theme where an outline matters most.
+    """
+
+    def _with_theme(self, values: dict[str, str], probe: str) -> dict:
+        table = json.dumps(values)
+        return _run(f"""
+          var THEME = {table};
+          getComputedStyle = function () {{
+            return {{getPropertyValue: function (name) {{
+              return THEME[name] || "";
+            }}}};
+          }};
+          {probe}
+        """)
+
+    def test_a_status_colour_is_read_from_its_variable(self):
+        out = self._with_theme(
+            {"--map-running": " #abcdef "},
+            'JSON.stringify({running: statusColor("running")});',
+        )
+        self.assertEqual(out["running"], "#abcdef")
+
+    def test_an_unset_variable_falls_back_to_the_literal(self):
+        """A stylesheet that has not loaded must not produce empty fills."""
+        out = self._with_theme(
+            {}, 'JSON.stringify({running: statusColor("running")});',
+        )
+        self.assertEqual(out["running"], "#10b981")
+
+    def test_an_unknown_status_uses_the_idle_colour(self):
+        out = self._with_theme(
+            {"--map-idle": "#123456"},
+            'JSON.stringify({odd: statusColor("no-such-status")});',
+        )
+        self.assertEqual(out["odd"], "#123456")
+
+    def test_node_outlines_follow_the_theme(self):
+        """The specific literal that was wrong."""
+        out = self._with_theme({"--map-outline": "#222222"}, """
+          renderSupervisorMap(DATA);
+          var strokes = [];
+          (stubFindNodeSelection().__children || []).forEach(function (per) {
+            (per.__children || []).forEach(function (c) {
+              if (c.__attrs.stroke) strokes.push(c.__attrs.stroke);
+            });
+          });
+          JSON.stringify({strokes: strokes});
+        """)
+        self.assertIn("#222222", out["strokes"])
+        self.assertNotIn("#fff", out["strokes"])
+
+    def test_the_colours_are_re_read_on_every_render(self):
+        """The theme toggle changes the variables under a page that is already
+        loaded, so reading them once at module load would leave the map on the
+        colours of whichever theme happened to be active first."""
+        out = self._with_theme({"--map-outline": "#111111"}, """
+          renderSupervisorMap(DATA);
+          THEME["--map-outline"] = "#999999";
+          renderSupervisorMap(DATA);
+          var strokes = [];
+          (stubFindNodeSelection().__children || []).forEach(function (per) {
+            (per.__children || []).forEach(function (c) {
+              if (c.__attrs.stroke) strokes.push(c.__attrs.stroke);
+            });
+          });
+          JSON.stringify({strokes: strokes});
+        """)
+        self.assertIn("#999999", out["strokes"])
+        self.assertNotIn("#111111", out["strokes"])
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class MapMachineCountTests(unittest.TestCase):
+    """The centre tooltip's machine count.
+
+    It filtered the root's direct children and took `.length`, so it counted
+    transport groups that contain a machine rather than machines: three
+    backends behind one transport reported "1 machine". Underreporting
+    capacity is the wrong direction for a number whose whole job is telling
+    the user how much of the fleet is in play.
+    """
+
+    FLEET = """
+      var FLEET = {
+        id: "root", label: "You", status: "running", type: "center",
+        children: [
+          {id: "t1", label: "T1", status: "idle", type: "transport", children: [
+            {id: "m1", label: "M1", status: "idle", type: "machine"},
+            {id: "m2", label: "M2", status: "idle", type: "machine"},
+            {id: "m3", label: "M3", status: "idle", type: "machine"}
+          ]},
+          {id: "direct", label: "Direct", status: "idle", type: "transport", children: [
+            {id: "m4", label: "M4", status: "idle", type: "machine"},
+            {id: "c1", label: "Chat", status: "idle", type: "chat"}
+          ]}
+        ]
+      };
+    """
+
+    def _tooltip(self, extra: str = "") -> str:
+        out = _run(self.FLEET + f"""
+          renderSupervisorMap(FLEET);
+          var nodeSel = stubFindNodeSelection();
+          var root = nodeSel.__data.filter(function (d) {{ return d.depth === 0; }})[0];
+          {extra}
+          nodeSel.__handlers.mouseenter.call(
+            null, {{pageX: 0, pageY: 0}}, root);
+          JSON.stringify({{text: document.getElementById("mapTooltip").textContent}});
+        """)
+        return out["text"]
+
+    def test_every_machine_is_counted_not_every_group(self):
+        self.assertIn("4 machines", self._tooltip())
+
+    def test_the_group_count_is_separate_from_the_machine_count(self):
+        text = self._tooltip()
+        self.assertIn("2 groups", text)
+        self.assertIn("4 machines", text)
+
+    def test_collapsing_a_branch_does_not_lose_its_machines(self):
+        """A count that dropped when the user collapsed something would read
+        as the map losing track of the fleet."""
+        text = self._tooltip("""
+          var branch = nodeSel.__data.filter(function (d) {
+            return d.depth === 1 && d.children;
+          })[0];
+          nodeSel.__handlers.click.call(null, {stopPropagation: function () {}}, branch);
+          nodeSel = stubFindNodeSelection();
+          root = nodeSel.__data.filter(function (d) { return d.depth === 0; })[0];
+        """)
+        self.assertIn("4 machines", text)
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class MapAccessibilityTests(unittest.TestCase):
+    """What a screen reader and a keyboard reach."""
+
+    def test_the_figure_names_itself(self):
+        """Without role and aria-label the map arrives as a stack of
+        unlabelled groups with no statement of what the figure is. Each node
+        already carries its own label; only the figure can say how big it is."""
+        out = _run("""
+          renderSupervisorMap(DATA);
+          JSON.stringify({role: stubSvg().__attrs.role,
+                          label: stubSvg().__attrs["aria-label"]});
+        """)
+        self.assertEqual(out["role"], "tree")
+        self.assertIn("Supervisor map", out["label"])
+        self.assertIn("2 groups", out["label"])
+
+    def test_an_empty_map_is_labelled_too(self):
+        out = _run("""
+          renderSupervisorMap({id: "root", children: []});
+          JSON.stringify({role: stubSvg().__attrs.role,
+                          label: stubSvg().__attrs["aria-label"]});
+        """)
+        self.assertEqual(out["role"], "tree")
+        self.assertIn("nothing running", out["label"])
+
+    def test_zoom_animations_are_dropped_under_reduced_motion(self):
+        """styles.css already neutralises CSS transitions, but d3 animates
+        attributes from JavaScript and that rule cannot reach it -- so the
+        zoom controls kept animating for a reader who had asked them not to."""
+        out = _run("""
+          globalThis.window = {matchMedia: function () { return {matches: true}; }};
+          JSON.stringify({reduced: _motionMs(300)});
+        """)
+        self.assertEqual(out["reduced"], 0)
+
+    def test_animations_are_kept_when_motion_is_not_restricted(self):
+        out = _run("""
+          globalThis.window = {matchMedia: function () { return {matches: false}; }};
+          JSON.stringify({normal: _motionMs(300)});
+        """)
+        self.assertEqual(out["normal"], 300)
+
+    def test_a_browser_without_matchmedia_still_animates(self):
+        """Failing closed here would silently remove the animation for
+        everyone on an older browser."""
+        out = _run('JSON.stringify({fallback: _motionMs(300)});')
+        self.assertEqual(out["fallback"], 300)
+
+    def test_opening_the_drawer_moves_focus_into_it(self):
+        """It used to open with focus left wherever it was, so a keyboard
+        reader had to Tab through the whole map to reach a panel that had just
+        appeared in front of them."""
+        out = _run("""
+          var drawer = document.getElementById("mapDetailDrawer");
+          var closeBtn = document.getElementById("mapDetailClose");
+          drawer.__focusables = [closeBtn];
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          JSON.stringify({focused: STUB.focusCalls});
+        """)
+        self.assertIn("mapDetailClose", out["focused"])
+
+    def test_closing_the_drawer_returns_focus_to_where_it_was(self):
+        out = _run("""
+          var drawer = document.getElementById("mapDetailDrawer");
+          var closeBtn = document.getElementById("mapDetailClose");
+          var origin = document.getElementById("someNode");
+          drawer.__focusables = [closeBtn];
+          document.body.__focusables = [origin, closeBtn];
+          document.activeElement = origin;
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          STUB.focusCalls = [];
+          hideDetail();
+          JSON.stringify({focused: STUB.focusCalls});
+        """)
+        self.assertEqual(out["focused"], ["someNode"])
+
+    def test_focus_is_not_handed_to_an_element_that_left_the_page(self):
+        """A re-render replaces every node, so the element the drawer was
+        opened from may no longer exist by the time it closes."""
+        out = _run("""
+          var drawer = document.getElementById("mapDetailDrawer");
+          var closeBtn = document.getElementById("mapDetailClose");
+          var origin = document.getElementById("goneNode");
+          drawer.__focusables = [closeBtn];
+          document.body.__focusables = [closeBtn];   // origin is not in it
+          document.activeElement = origin;
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          STUB.focusCalls = [];
+          hideDetail();
+          JSON.stringify({focused: STUB.focusCalls});
+        """)
+        self.assertEqual(out["focused"], [])
+
+    def test_tab_at_the_last_control_wraps_to_the_first(self):
+        """Tab used to walk straight out of the drawer into the map behind
+        it, which is still on screen."""
+        out = _run("""
+          var drawer = document.getElementById("mapDetailDrawer");
+          var first = document.getElementById("mapDetailClose");
+          var last = document.getElementById("mapDetailStop");
+          drawer.__focusables = [first, last];
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          document.activeElement = last;
+          var prevented = false;
+          STUB.focusCalls = [];
+          STUB.elHandlers["mapDetailDrawer"].keydown({
+            key: "Tab", shiftKey: false,
+            preventDefault: function () { prevented = true; }
+          });
+          JSON.stringify({prevented: prevented, focused: STUB.focusCalls});
+        """)
+        self.assertTrue(out["prevented"])
+        self.assertEqual(out["focused"], ["mapDetailClose"])
+
+    def test_shift_tab_at_the_first_control_wraps_to_the_last(self):
+        out = _run("""
+          var drawer = document.getElementById("mapDetailDrawer");
+          var first = document.getElementById("mapDetailClose");
+          var last = document.getElementById("mapDetailStop");
+          drawer.__focusables = [first, last];
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          document.activeElement = first;
+          STUB.focusCalls = [];
+          STUB.elHandlers["mapDetailDrawer"].keydown({
+            key: "Tab", shiftKey: true, preventDefault: function () {}
+          });
+          JSON.stringify({focused: STUB.focusCalls});
+        """)
+        self.assertEqual(out["focused"], ["mapDetailStop"])
+
+    def test_tab_between_controls_is_left_to_the_browser(self):
+        """Only the two edges are redirected; the browser already moves focus
+        correctly in between, and intercepting that would fight it."""
+        out = _run("""
+          var drawer = document.getElementById("mapDetailDrawer");
+          var first = document.getElementById("mapDetailClose");
+          var mid = document.getElementById("mapDetailOpen");
+          var last = document.getElementById("mapDetailStop");
+          drawer.__focusables = [first, mid, last];
+          renderSupervisorMap(DATA);
+          showDetail({id: "c1", type: "chat", status: "running", label: "C"});
+          document.activeElement = mid;
+          var prevented = false;
+          STUB.focusCalls = [];
+          STUB.elHandlers["mapDetailDrawer"].keydown({
+            key: "Tab", shiftKey: false,
+            preventDefault: function () { prevented = true; }
+          });
+          JSON.stringify({prevented: prevented, focused: STUB.focusCalls});
+        """)
+        self.assertFalse(out["prevented"])
+        self.assertEqual(out["focused"], [])
+
+
+class MapThemeStylesheetTests(unittest.TestCase):
+    """The other half of the theme change, which no JS test can see.
+
+    supervisor-map.js falls back to its old dark literals when a variable is
+    unset -- deliberately, so a stylesheet that has not loaded does not
+    produce empty fills. That fallback also means a missing light-theme value
+    fails silently: the map keeps drawing dark-theme greens on a white panel
+    and every JS test still passes. So the stylesheet is checked here.
+    """
+
+    CSS = ROOT / "web" / "assets" / "styles.css"
+    INDEX = ROOT / "web" / "index.html"
+    # --map-error and --map-done point at existing semantic variables (--bad,
+    # --muted) which the light theme already redefines, so they are declared
+    # once in :root and correctly absent from the light block.
+    LIGHT_OVERRIDES = (
+        "--map-running", "--map-busy", "--map-waiting", "--map-idle",
+        "--map-transport", "--map-machine",
+    )
+
+    def _block(self, selector: str) -> str:
+        css = self.CSS.read_text(encoding="utf-8")
+        start = css.index(selector)
+        return css[start:css.index("}", start)]
+
+    def test_every_variable_the_map_reads_is_declared(self):
+        root = self._block(":root {")
+        source = (ROOT / "web" / "assets" / "supervisor-map.js").read_text(
+            encoding="utf-8"
+        )
+        for name in sorted(set(re.findall(r'"(--map-[a-z-]+)"', source))):
+            with self.subTest(variable=name):
+                self.assertIn(name, root, f"{name} is read by the map but never declared")
+
+    def test_the_light_theme_overrides_the_status_colours(self):
+        """The dark greens and ambers are chosen against #1c2230 and are too
+        light on a white panel; an automatic flip is not what this needs."""
+        light = self._block('html[data-theme="light"] {')
+        for name in self.LIGHT_OVERRIDES:
+            with self.subTest(variable=name):
+                self.assertIn(name, light)
+
+    def test_the_stylesheet_cache_bust_covers_this_change(self):
+        """A browser holding an older styles.css would get the new JS reading
+        variables that its cached stylesheet does not define -- and the
+        fallback would hide it."""
+        html = self.INDEX.read_text(encoding="utf-8")
+        match = re.search(r"styles\.css\?v=(\d+)", html)
+        self.assertIsNotNone(match, "styles.css is loaded without a cache-bust")
+        self.assertGreaterEqual(
+            int(match.group(1)), 40,
+            "styles.css?v= must be at least 40 -- the version that first "
+            "declared the --map-* variables supervisor-map.js reads",
+        )
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
 class MapTeardownTests(unittest.TestCase):
 
     def test_closing_the_map_drops_the_viewport_handle(self):

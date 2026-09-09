@@ -1197,6 +1197,9 @@ export function createConversationController(dependencies) {
 
   async function refreshCurrent() {
     if (!state.currentChat) return;
+    // Voice temp chats live only in the tooltip overlay — never render
+    // their messages in the right-panel workspace.
+    if (state.currentChat?.voice_mode) return;
     const response = await apiFetch(`/api/chats/${encodeURIComponent(state.currentChat.id)}`);
     if (!response.ok) return;
     const data = await response.json();

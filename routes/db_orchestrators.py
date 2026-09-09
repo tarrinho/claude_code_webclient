@@ -305,7 +305,9 @@ async def orchestrator_messages_get(
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def orchestrator_members_list(orchestrator_id: str) -> list[dict[str, Any]]:
+async def orchestrator_members_list(
+    orchestrator_id: str, owner_id: str | None = None
+) -> list[dict[str, Any]]:
     """The chats a orchestrator watches, newest addition last.
 
     Joined against ``chats`` so a member whose conversation was deleted simply
@@ -317,15 +319,28 @@ async def orchestrator_members_list(orchestrator_id: str) -> list[dict[str, Any]
     which already decides working/waiting/failed for every chat and session; a
     second definition here would agree with it only by coincidence, and the two
     would drift the first time either changed.
+
+    ``owner_id`` is optional and scopes the join when given. It is optional
+    because every existing caller already passes an orchestrator id it read
+    out of that owner's own ``orchestrator_list``, so requiring it would be
+    churn with no bug behind it -- but the safety in those callers lives in
+    the caller, and the argument lets a caller move it into the query. Compare
+    ``orchestrator_tasks_get``, which was written with exactly this argument,
+    ignored it, and returned any account's task titles and agent output to any
+    authenticated caller for as long as it did.
     """
+    scope = " AND c.owner_id = ?" if owner_id else ""
+    params: list[Any] = [orchestrator_id]
+    if owner_id:
+        params.append(owner_id)
     cur = await db.db_conn.execute(
-        "SELECT m.orchestrator_id, m.chat_id, m.added_at, "
+        "SELECT m.orchestrator_id, m.chat_id, m.added_at, "  # nosec B608: static
         "       c.title, c.session_id, c.work_dir "
         "FROM orchestrator_members m "
         "JOIN chats c ON c.id = m.chat_id AND c.deleted_at IS NULL "
-        "WHERE m.orchestrator_id = ? "
+        f"WHERE m.orchestrator_id = ?{scope} "
         "ORDER BY m.added_at ASC, m.chat_id ASC",
-        (orchestrator_id,),
+        tuple(params),
     )
     return [dict(r) for r in await cur.fetchall()]
 

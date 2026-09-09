@@ -14,41 +14,29 @@ router = APIRouter()
 
 @router.get("/api/supervisor-map")
 async def handle_supervisor_map(request: Request):
-    """Return the supervisor map tree for the logged-in user."""
+    """Return the supervisor map tree for the logged-in user.
+
+    There used to be an ``_enrich_messages`` pass here that walked the finished
+    tree and ran ``db.messages_last(node["id"])`` once per chat node, to attach
+    the preview the detail drawer shows. It is gone, and the preview now comes
+    from ``chat_last_activity`` inside ``supervisor_map`` -- a single grouped
+    query that was already being run to classify every conversation, and which
+    already returns the same first 200 characters.
+
+    Two things made the old pass worth deleting rather than tuning. It was one
+    query per conversation on a panel that now refreshes itself every ten
+    seconds, so a dozen conversations meant a dozen extra reads every tick. And
+    ``messages_last`` takes no owner: the ids it was given came from the
+    owner's own chat list, so nothing leaked, but the safety lived in the
+    caller rather than in the query. Reading from the owner-scoped query
+    removes both at once.
+    """
     session = request.state.session
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required")
     try:
         tree = await supervisor_map(session["user"])
-        # Enrich leaf chat nodes with last message preview
-        tree = await _enrich_messages(tree)
         return JSONResponse(content=tree)
     except Exception:
         _log.exception("supervisor_map failed")
         raise HTTPException(status_code=500, detail="Data unavailable")
-
-
-async def _enrich_messages(tree: dict) -> dict:
-    """Walk the tree and fetch the last message for each chat leaf node.
-
-    Returns a new tree dict with ``last_message`` (max 200 chars)
-    added to every node that has ``type == "chat"``.
-    """
-    import db  # noqa: local import — avoids cyclic import
-
-    async def _walk(node: dict) -> dict:
-        children = node.get("children")
-        if children:
-            node["children"] = [await _walk(c) for c in children]
-        if node.get("type") == "chat":
-            try:
-                msgs = await db.messages_last(node["id"], count=1)
-                if msgs:
-                    content = msgs[0].get("content") or ""
-                    node["last_message"] = (
-                        content[:200] + "…" if len(content) > 200 else content
-                    )
-                    node["updated_at"] = msgs[0].get("created_at", "")
-            except Exception:
-                pass
-        return node
-
-    return await _walk(tree)

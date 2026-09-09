@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=39">
+<link rel="stylesheet" href="/assets/styles.css?v=40">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -459,17 +459,17 @@
 <script type="module" src="/assets/usage.js?v=1"></script>
 <script type="module" src="/assets/server-stats.js?v=1"></script>
 <script type="module" src="/assets/skills.js?v=1"></script>
-<script type="module" src="/assets/machines.js?v=7"></script>
+<script type="module" src="/assets/machines.js?v=8"></script>
 <script type="module" src="/assets/orchestrator.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
 <script type="module" src="/assets/voice-settings.js?v=8"></script>
-<script type="module" src="/assets/app.js?v=52"></script>
+<script type="module" src="/assets/app.js?v=53"></script>
 <script type="module" src="/assets/voice-conversation.js?v=6"></script>
 <script type="module" src="/assets/transcript.js"></script>
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=3"></script>
+<script type="module" src="/assets/supervisor-map.js?v=4"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" class="panel" hidden>
@@ -499,6 +499,11 @@
       <div id="mapDetailStatus" class="map-detail-status"></div>
       <div id="mapDetailMessage" class="map-detail-message"></div>
       <div id="mapDetailMeta" class="map-detail-meta"></div>
+      <div class="map-detail-actions">
+        <button class="btn" id="mapDetailOpen" hidden>Open conversation</button>
+        <button class="btn" id="mapDetailStop" hidden>Stop</button>
+      </div>
+      <div id="mapDetailActionStatus" class="map-detail-meta" hidden></div>
     </div>
   </div>
 </div>

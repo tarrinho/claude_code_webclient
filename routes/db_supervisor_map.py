@@ -111,7 +111,9 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
     # orchestrator on the map cost two identical queries.
     members_by_orch: dict[str, list[dict]] = {}
     for orch in orchestrators:
-        members_by_orch[orch["id"]] = await db.orchestrator_members_list(orch["id"])
+        members_by_orch[orch["id"]] = await db.orchestrator_members_list(
+            orch["id"], owner_id,
+        )
 
     chat_to_orch: dict[str, str] = {}
     for orch_id, members in members_by_orch.items():
@@ -200,12 +202,14 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
                     cid = member.get("chat_id")
                     if not cid or cid in task_ids:
                         continue
-                    orch_children.append({
+                    member_node = {
                         "id": cid,
                         "label": member.get("title") or "Chat",
                         "status": _normalise(chat_status.get(cid)),
                         "type": "chat",
-                    })
+                    }
+                    _attach_last_message(member_node, activity.get(cid))
+                    orch_children.append(member_node)
 
                 if orch_children:
                     # Enrich orchestrator node with chat-level metadata for the detail drawer
@@ -231,9 +235,9 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
                         })
                     orchestrator_nodes.append(orch_node)
             elif "__chat" in item:
-                direct_chats.append(
-                    _chat_node(item["chat"], chat_status, queued, machine_by_id)
-                )
+                direct_chats.append(_chat_node(
+                    item["chat"], chat_status, queued, machine_by_id, activity,
+                ))
             elif "__session" in item:
                 session_nodes.append(item["node"])
             else:
@@ -291,6 +295,24 @@ def _capped(nodes: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     }]
 
 
+def _attach_last_message(node: dict[str, Any], last: dict | None) -> None:
+    """Attach the drawer's preview from an already-fetched activity row.
+
+    ``chat_last_activity`` returns ``substr(content, 1, 200)`` for the newest
+    message of every one of the owner's conversations, in one grouped query
+    that this module already runs to classify them. The route used to ignore
+    that and read the same 200 characters again, one query per node.
+    """
+    if not isinstance(last, dict):
+        return
+    preview = last.get("preview")
+    if preview:
+        node["last_message"] = preview
+    updated = last.get("created_at")
+    if updated:
+        node["updated_at"] = updated
+
+
 def _chat_transport(chat: dict, machine_by_id: dict[str, dict]) -> str | None:
     """Which transport group a conversation belongs in.
 
@@ -311,6 +333,7 @@ def _chat_node(
     chat_status: dict[str, str],
     queued: dict,
     machine_by_id: dict[str, dict],
+    activity: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """One direct-chat node, carrying the three states the map used to drop."""
     from shared import backend_kind
@@ -324,6 +347,7 @@ def _chat_node(
         "type": "chat",
         "machine_label": backend_kind(machine) if machine else "unknown",
     }
+    _attach_last_message(node, (activity or {}).get(cid))
     # A degraded conversation is an error whatever it is otherwise doing.
     # classify_chat does not look at the column, so without this the map
     # showed a conversation the app had already given up on as plain idle.

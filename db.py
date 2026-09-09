@@ -528,7 +528,9 @@ async def init() -> None:
             progress_pct REAL NOT NULL DEFAULT 0.0,
             created_at   TEXT NOT NULL,
             updated_at   TEXT NOT NULL,
-            completed_at TEXT
+            completed_at TEXT,
+            -- See the migration of the same name for why this is stored.
+            planner_chat_id TEXT
         );
 
         -- description, model, result, parent_task_id and depends_on are all
@@ -799,6 +801,15 @@ async def _ensure_orchestrator_columns() -> None:
         "completed_at": "ALTER TABLE orchestrators ADD COLUMN completed_at TEXT",
         "degraded": "ALTER TABLE orchestrators ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
         "degraded_reason": "ALTER TABLE orchestrators ADD COLUMN degraded_reason TEXT",
+        # The synthetic chat id the planning turn ran under. Every other turn a
+        # orchestrator spends is attributable without this -- a task's usage
+        # rows are keyed `subtask_<task id>`, and the task ids are in
+        # orchestrator_tasks -- but the planner's is `str(uuid.uuid4())`, with
+        # nothing tying it back. So the planning turn's tokens were recorded,
+        # correctly attributed to the owner, and then unreachable from the
+        # orchestrator that spent them. It is the first and often the largest
+        # turn of a run.
+        "planner_chat_id": "ALTER TABLE orchestrators ADD COLUMN planner_chat_id TEXT",
     }
     for name, sql in sup_migrations.items():
         if name not in sup_columns:

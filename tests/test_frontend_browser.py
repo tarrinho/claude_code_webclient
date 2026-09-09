@@ -15,6 +15,7 @@ without them still runs the rest of the suite.
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -2799,6 +2800,283 @@ class SupervisorMapBrowserTests(_BrowserFixture):
             spread, 40,
             f"the furthest two nodes are {spread:.1f}px apart -- the tree is "
             f"a dot, not a map: {points}",
+        )
+
+    def test_opening_the_map_does_not_blank_the_page(self):
+        """`main.hidden = true` was a workaround for nodes that could not be
+        clicked, commented as "main creates a stacking context that visually
+        covers the panel's SVG nodes". The real causes were elsewhere -- the
+        tree rendered about one pixel across, and the SVG had no viewBox -- so
+        the workaround cost the whole conversation view for nothing.
+
+        Both halves are asserted together on purpose: dropping it is only
+        correct if nodes stay clickable without it, and asserting visibility
+        alone would pass just as well with the map unusable underneath.
+        """
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        self.assertFalse(
+            self.page.evaluate("() => document.querySelector('main').hidden"),
+            "opening the map hid the rest of the page",
+        )
+        self.page.locator('g.node[aria-label^="machine"]').first.click()
+        self.page.wait_for_timeout(400)
+        self.assertFalse(
+            self.page.evaluate(
+                "() => document.getElementById('mapDetailDrawer').hidden"
+            ),
+            "a node click did not reach the map with the page still visible",
+        )
+
+    def test_a_connection_error_does_not_outlive_the_failure(self):
+        """The error text is written into the empty-state element, which
+        nothing ever reset. One failed fetch and every later empty map read
+        "Connection error." for the rest of the session -- reporting a
+        connection problem that had already gone away."""
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        self.page.route("**/api/supervisor-map", lambda route: route.abort())
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(2000)
+        self.assertEqual(
+            self.page.inner_text("#mapStatusEmpty"), "Connection error.",
+            "the failure path did not report the failure",
+        )
+
+        self.page.click("#supervisorMapClose")
+        self.page.wait_for_timeout(300)
+        self.page.unroute("**/api/supervisor-map")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        self.assertNotEqual(
+            self.page.inner_text("#mapStatusEmpty"), "Connection error.",
+            "the stale error message survived a successful load",
+        )
+
+    def test_the_map_refreshes_itself_but_not_under_an_open_drawer(self):
+        """The map was fetched once on open and never again, so a panel whose
+        whole job is showing what is running now went stale the moment it was
+        drawn.
+
+        The second half is the constraint that makes the first safe: a refresh
+        rebuilds every node, so polling under an open drawer would replace the
+        node the user is reading about mid-read. Both are asserted here
+        because the interval is one mechanism -- splitting them would let a
+        version that never polls at all pass the second test.
+        """
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+
+        hits = []
+        self.page.on(
+            "request",
+            lambda r: hits.append(r.url) if "/api/supervisor-map" in r.url else None,
+        )
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+        after_open = len(hits)
+        self.assertGreaterEqual(after_open, 1, "opening the map fetched nothing")
+
+        # One poll interval is 10s; 13 covers it without depending on when in
+        # the interval the click landed.
+        self.page.wait_for_timeout(13_000)
+        self.assertGreater(
+            len(hits), after_open,
+            "the map never refreshed itself while open",
+        )
+
+        self.page.locator('g.node[aria-label^="machine"]').first.click()
+        self.page.wait_for_selector("#mapDetailDrawer", state="visible", timeout=5_000)
+        with_drawer = len(hits)
+        self.page.wait_for_timeout(13_000)
+        self.assertEqual(
+            len(hits), with_drawer,
+            "the map refreshed under an open drawer, replacing the node being read",
+        )
+
+    def test_open_conversation_reaches_the_conversation(self):
+        """The drawer was read-only: it could report a stuck conversation and
+        offer no way to get to it. The button dispatches an event because
+        app.js imports this module and importing selectChat back would be a
+        cycle -- so this asserts the whole path, not the dispatch."""
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_id = f"map-{secrets.token_hex(4)}"
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO chats (id,title,description,work_dir,owner_id,"
+            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            (chat_id, f"Map {chat_id}", stamp, stamp),
+        )
+        con.commit()
+        con.close()
+
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        node = self.page.locator(f'g.node[aria-label*="{chat_id}"]')
+        if node.count() == 0:
+            # Nodes are labelled by title, not id.
+            node = self.page.locator(f'g.node[aria-label*="Map {chat_id}"]')
+        node.first.click()
+        self.page.wait_for_timeout(400)
+        self.page.click("#mapDetailOpen")
+        self.page.wait_for_timeout(1500)
+
+        self.assertTrue(
+            self.page.evaluate(
+                "() => document.getElementById('supervisorMapPanel').hidden"
+            ),
+            "the map stayed open after asking to open a conversation",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_stop_posts_to_the_conversation_and_reports_what_happened(self):
+        """The Stop button's own request path.
+
+        The tree is served from a stub rather than seeded, because the button
+        only appears for a conversation whose turn is running -- and a running
+        turn lives in the server's memory, not in a table a test can write to.
+        Stubbing the tree keeps this test about the button; which nodes get
+        the button at all is pinned in
+        tests/test_qa_supervisor_map_geometry.py.
+        """
+        tree = json.dumps({
+            "center": "You",
+            "children": [{
+                "id": "direct", "label": "Direct", "status": "running",
+                "type": "transport",
+                "children": [{
+                    "id": "chat-running", "label": "Busy one",
+                    "status": "running", "type": "chat",
+                }],
+            }],
+        })
+        self.page.route(
+            "**/api/supervisor-map",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=tree,
+            ),
+        )
+        posted = []
+
+        def stop_handler(route):
+            posted.append(route.request.url)
+            route.fulfill(
+                status=200, content_type="application/json",
+                body='{"ok": true, "stopped": true, "held": 0}',
+            )
+
+        self.page.route("**/api/chats/*/stop", stop_handler)
+
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        self.page.locator('g.node[aria-label*="Busy one"]').first.click()
+        self.page.wait_for_selector("#mapDetailStop", state="visible", timeout=5_000)
+        self.page.click("#mapDetailStop")
+        self.page.wait_for_timeout(800)
+
+        self.assertEqual(len(posted), 1, f"stop requests: {posted}")
+        self.assertIn("/api/chats/chat-running/stop", posted[0])
+        self.assertEqual(
+            self.page.inner_text("#mapDetailActionStatus"), "Stopped.",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_stop_does_not_claim_a_turn_that_had_already_finished(self):
+        """`stopped: false` means the turn ended between the map being drawn
+        and the button being pressed. Reporting "Stopped." there would claim
+        an action that did not happen."""
+        tree = json.dumps({
+            "center": "You",
+            "children": [{
+                "id": "direct", "label": "Direct", "status": "running",
+                "type": "transport",
+                "children": [{
+                    "id": "chat-done", "label": "Already finished",
+                    "status": "running", "type": "chat",
+                }],
+            }],
+        })
+        self.page.route(
+            "**/api/supervisor-map",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=tree,
+            ),
+        )
+        self.page.route(
+            "**/api/chats/*/stop",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body='{"ok": true, "stopped": false, "held": 0}',
+            ),
+        )
+
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        self.page.locator('g.node[aria-label*="Already finished"]').first.click()
+        self.page.wait_for_selector("#mapDetailStop", state="visible", timeout=5_000)
+        self.page.click("#mapDetailStop")
+        self.page.wait_for_timeout(800)
+
+        self.assertEqual(
+            self.page.inner_text("#mapDetailActionStatus"), "Nothing was running.",
+        )
+
+    def test_the_nodes_follow_the_theme(self):
+        """The map was the one SVG here that ignored the theme: its status
+        colours, its neutral machine fill and every node outline were
+        literals, and the outline literal was `#fff` -- a white ring on a
+        white panel in light mode.
+
+        Asserted in a browser because the JS falls back to those same
+        literals when a variable is unset, so a stylesheet that never defined
+        them would leave every headless test passing and the light theme
+        broken. This resolves the variables for real.
+        """
+        self._load()
+        self.page.wait_for_selector("#orchestratorBtn")
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        read_stroke = (
+            "() => { const c = document.querySelector("
+            "'#supervisorMapSvg g.node circle[stroke]'); "
+            "return c ? getComputedStyle(c).stroke : null; }"
+        )
+        dark = self.page.evaluate(read_stroke)
+        self.assertIsNotNone(dark, "no outlined node circle to measure")
+
+        self.page.click("#supervisorMapClose")
+        self.page.wait_for_timeout(300)
+        self.page.click("#themeToggle")
+        self.page.wait_for_timeout(300)
+        self.assertEqual(
+            self.page.evaluate("() => document.documentElement.dataset.theme"),
+            "light", "the toggle did not reach the light theme",
+        )
+        self.page.click("#supervisorMapBtn")
+        self.page.wait_for_timeout(3000)
+
+        light = self.page.evaluate(read_stroke)
+        self.assertNotEqual(
+            light, dark,
+            f"node outlines are identical in both themes ({dark}) -- the map "
+            f"is still drawing hardcoded colours",
         )
 
     def test_the_zoom_in_button_moves_the_view(self):

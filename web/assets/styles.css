@@ -11,6 +11,16 @@
      "Other" rather than inventing a hue. */
   --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500;
   --series-5:#d55181; --series-6:#008300; --series-7:#9085e9; --series-8:#e66767;
+  /* Supervisor map node colours. Here rather than as literals in
+     supervisor-map.js because the map is the one SVG in this app that ignored
+     the theme: its status colours, its neutral machine fill and its node
+     outlines were all hardcoded, so light mode drew white-outlined nodes on a
+     white panel. Reused from the existing semantic variables where one
+     already means the right thing. */
+  --map-running:#10b981; --map-busy:#f59e0b; --map-waiting:#f97316;
+  --map-idle:#3b82f6; --map-error:var(--bad); --map-done:var(--muted);
+  --map-transport:#9ca3af; --map-machine:#9ca3af;
+  --map-outline:var(--panel2); --map-label:var(--fg);
 }
 html[data-theme="light"] {
   --bg:#f6f8fa; --panel:#fff; --panel2:#eaeef2; --line:#d0d7de;
@@ -24,6 +34,11 @@ html[data-theme="light"] {
      always-on legend and a table -- the relief rule, not a dismissable warn. */
   --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#eda100;
   --series-5:#e87ba4; --series-6:#008300; --series-7:#4a3aa7; --series-8:#e34948;
+  /* Darker map steps: the dark-theme greens and ambers sit on #1c2230 and are
+     too light against a white panel. --map-outline flips from a dark surface
+     to a light one, which is the whole reason the white literal was wrong. */
+  --map-running:#0f8c63; --map-busy:#b26a00; --map-waiting:#c2571a;
+  --map-idle:#1f66c4; --map-transport:#6b7280; --map-machine:#6b7280;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -849,6 +864,10 @@ button{touch-action:manipulation}
 #supervisorMapPanel .map-detail-meta {
   color: #999; font-size: 10px;
 }
+#supervisorMapPanel .map-detail-actions {
+  display: flex; gap: 6px; margin-top: 8px;
+}
+#supervisorMapPanel .map-detail-actions .btn { font-size: 11px; padding: 3px 8px; }
 #supervisorMapPanel .map-empty {
   padding: 20px; text-align: center; color: #999;
   font-size: 14px;

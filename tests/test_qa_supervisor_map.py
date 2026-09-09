@@ -479,10 +479,10 @@ class MapAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("c-local", ids)
 
     async def test_an_orchestrator_task_is_typed_as_a_task(self):
-        """Tasks were typed "chat", so the route's _enrich_messages queried
-        messages_last() with a task id on every request -- always finding
-        nothing -- and the drawer offered conversation actions for a row that
-        has no conversation."""
+        """Tasks were typed "chat", so the route's since-deleted enrichment
+        pass queried messages_last() with a task id on every request -- always
+        finding nothing -- and the drawer offered conversation actions for a
+        row that has no conversation."""
         await db.orchestrator_create("o-1", "Build it", None, "admin")
         await db.orchestrator_task_create("o-1", "task-1", "Do the thing", None)
 
@@ -593,6 +593,80 @@ class MapAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_machine_node(tree, "m-local")["status"], "idle")
 
+    async def _message(self, chat_id: str, content: str) -> None:
+        await db.messages_batch(chat_id, [("assistant", content)])
+
+    async def test_the_drawer_preview_comes_from_the_grouped_query(self):
+        """The route used to attach this in a second pass, one
+        `messages_last()` per chat node. `chat_last_activity` -- already run
+        here to classify every conversation -- returns the same first 200
+        characters in one grouped, owner-scoped query."""
+        await self._chat_on("c-1", None)
+        await self._message("c-1", "the last thing it said")
+
+        tree = await supervisor_map("admin")
+
+        node = next(
+            n for n in self._group(tree, "direct")["children"]
+            if n["id"] == "c-1"
+        )
+        self.assertEqual(node["last_message"], "the last thing it said")
+        self.assertTrue(node["updated_at"])
+
+    async def test_the_map_makes_no_per_conversation_message_query(self):
+        """The reason for folding it in: this panel now refreshes every ten
+        seconds, so a query per conversation per tick is a real cost."""
+        for i in range(4):
+            await self._chat_on(f"c-{i}", None)
+            await self._message(f"c-{i}", f"message {i}")
+
+        with patch.object(db, "messages_last") as messages_last:
+            await supervisor_map("admin")
+
+        messages_last.assert_not_called()
+
+    async def test_a_conversation_with_no_messages_has_no_preview(self):
+        """An absent key, not an empty string: the drawer falls back to the
+        timestamp, and "" would make it show a blank message instead."""
+        await self._chat_on("c-quiet", None)
+
+        tree = await supervisor_map("admin")
+
+        node = next(
+            n for n in self._group(tree, "direct")["children"]
+            if n["id"] == "c-quiet"
+        )
+        self.assertNotIn("last_message", node)
+
+    async def test_another_owners_conversation_cannot_join_an_orchestrator(self):
+        """`orchestrator_members_list` took no owner, and
+        `orchestrator_member_add`'s own docstring says it stores what it is
+        given and leaves the check to its caller. The map now passes an owner
+        so the scope lives in the query.
+
+        Note what this is and is not: at this call site the orchestrator id
+        already came from `orchestrator_list(owner_id)`, so nothing was
+        leaking. It is the same shape as the hole
+        `orchestrator_tasks_get` shipped with -- an owner argument accepted
+        and ignored -- so it is worth closing before a caller relies on it.
+        """
+        await db.user_create("other", None, auth.hash_password(secrets.token_urlsafe(16)))
+        await db.chat_create("c-theirs", "Theirs", None, "/tmp", "other")
+        await self._message("c-theirs", "another account's agent output")
+        await db.orchestrator_create("o-1", "Mine", None, "admin")
+        await db.orchestrator_member_add("o-1", "c-theirs")
+        await db.orchestrator_task_create("o-1", "task-1", "T", None)
+
+        tree = await supervisor_map("admin")
+
+        found = [
+            node["id"]
+            for group in tree.get("children", [])
+            for parent in group.get("children", [])
+            for node in parent.get("children", []) or []
+        ]
+        self.assertNotIn("c-theirs", found, tree)
+
     async def test_no_group_silently_drops_a_node(self):
         """The three `[:4]` slices are gone. Above the cap the tree says how
         many it left out instead of looking complete."""
@@ -624,12 +698,13 @@ class SupervisorMapEndpointTests(unittest.IsolatedAsyncioTestCase):
     it was never written: every other test in this file, and in
     CapacityOnMachineNodesTests above, calls ``supervisor_map()`` directly,
     which never passes through the route's session handling or its
-    ``_enrich_messages`` post-processing pass. That pass mutates every chat
-    node's dict in place -- ``node["last_message"] = ...`` -- rather than
-    rebuilding the tree, so it happens not to disturb a machine node's
-    ``capacity_*`` keys, but nothing previously checked that this route
-    delivers what the function produces rather than something
-    ``_enrich_messages`` quietly reshaped or a stale session silently emptied.
+    session handling. It also used to run an ``_enrich_messages``
+    post-processing pass that rewrote every chat node; that pass is gone (the
+    preview now comes from the grouped ``chat_last_activity`` query inside
+    ``supervisor_map``), but the reason for testing the route rather than only
+    the function has not changed: nothing else checks that this endpoint
+    delivers what the function produced, rather than something a later pass
+    reshaped or a stale session silently emptied.
     """
 
     async def asyncSetUp(self):
@@ -676,8 +751,8 @@ class SupervisorMapEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(response.status_code, (401, 303))
 
     async def test_a_direct_machines_capacity_survives_the_route(self):
-        """The gap this class exists for: capacity_* reaching the client
-        through _enrich_messages, not just through supervisor_map()."""
+        """The gap this class exists for: capacity_* reaching the client over
+        the wire, not just out of supervisor_map()."""
         password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(password))
         await db.ai_machine_create(

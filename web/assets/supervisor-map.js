@@ -1,5 +1,22 @@
 /** Supervisor Map — D3 radial mind map renderer. */
-const STATUS_COLOR = {
+
+// Every colour here is read from a CSS custom property, with the old literal
+// kept as the fallback argument. The map was the one SVG in this app that
+// ignored the theme: statuses, the neutral machine fill and every node outline
+// were hardcoded, and the outline literal was `#fff` -- a white ring on a
+// white panel in light mode, i.e. invisible on exactly the theme where it was
+// most needed. Read per render rather than once at module load, because the
+// theme toggle changes the variables under a page that is already loaded.
+const STATUS_VAR = {
+  running: "--map-running",
+  busy: "--map-busy",
+  waiting: "--map-waiting",
+  idle: "--map-idle",
+  error: "--map-error",
+  done: "--map-done",
+  transport: "--map-transport",
+};
+const STATUS_FALLBACK = {
   running: "#10b981",
   busy: "#f59e0b",
   waiting: "#f97316",
@@ -8,6 +25,40 @@ const STATUS_COLOR = {
   done: "#6b7280",
   transport: "#9ca3af",
 };
+
+/** Zoom transition length, or 0 when the reader has asked for less motion.
+ *
+ *  styles.css already neutralises CSS transitions under
+ *  prefers-reduced-motion, but d3's `.transition().duration(300)` animates
+ *  attributes from JavaScript and that rule cannot reach it -- so the map's
+ *  Fit, +/- and percentage buttons kept animating regardless. Reading the
+ *  query per call rather than caching it: a reader can change the setting
+ *  without reloading the page.
+ */
+function _motionMs(ms) {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : ms;
+  } catch (_) {
+    return ms;
+  }
+}
+
+/** One theme variable, with a literal fallback for a stylesheet that has not
+ *  loaded (or a test environment with no computed styles at all). */
+function _cssVar(name, fallback) {
+  try {
+    const value = getComputedStyle(document.body).getPropertyValue(name);
+    const trimmed = value ? value.trim() : "";
+    return trimmed || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function statusColor(status) {
+  const key = STATUS_VAR[status] ? status : "idle";
+  return _cssVar(STATUS_VAR[key], STATUS_FALLBACK[key]);
+}
 const STATUS_LABEL = {
   running: "Running",
   busy: "Busy",
@@ -18,7 +69,17 @@ const STATUS_LABEL = {
   transport: "Transport",
 };
 
-let _svg, _zoom, _data, _tree, _root, _viewport, _collapsed = new Set();
+// _tree is gone from this list: it held the layout only so that zoomToFit
+// could call `_tree.bounds()`, which is not a d3 API and always threw. The
+// layout is now a local, and the bounds are computed from _root's own nodes.
+let _svg, _zoom, _data, _root, _viewport, _collapsed = new Set();
+// The zoom transform in force, kept across re-renders so a background refresh
+// does not reset the reader's view. Null means "no view chosen yet", which is
+// what makes the first render after an open fit to the tree.
+let _lastTransform = null;
+// The node the detail drawer is currently describing, so its action buttons
+// know what they act on.
+let _detailNode = null;
 // The viewBox dimensions the current render used. zoomToFit must reason in
 // those units, not in whatever getBoundingClientRect reports now: the two agree
 // at render time and diverge as soon as the panel is resized, and using the
@@ -43,17 +104,41 @@ function _canvasSize(svgEl) {
   return {w, h};
 }
 
+/** A one-line description of the whole figure, for the SVG's aria-label. */
+function _mapSummary(data) {
+  let nodes = 0;
+  (function count(node) {
+    nodes += 1;
+    (node.children || []).forEach(count);
+  })(data);
+  const groups = (data.children || []).length;
+  return `Supervisor map: ${groups} group${groups === 1 ? "" : "s"}, `
+    + `${nodes - 1} node${nodes - 1 === 1 ? "" : "s"}`;
+}
+
 export function renderSupervisorMap(data) {
   _data = data;
   _root = null;
-  _collapsed = new Set();  // clear stale collapsed state on each render
+  // _collapsed deliberately survives this call. It used to be cleared here,
+  // which made collapsing impossible rather than temporary: the click handler
+  // records the id, mutates the node's children and re-renders, and the
+  // re-render rebuilt the hierarchy from `data` with every child present and
+  // an empty set to check against. So the only visible effect of collapsing a
+  // node was a full redraw that changed nothing. closeSupervisorMap clears it.
+  //
+  // The current view survives too, for the same kind of reason: the map now
+  // refreshes itself every few seconds, and re-fitting on each tick would
+  // yank a zoomed-in reader back to the whole tree without being asked.
+  const restoreTransform = _lastTransform;
 
   if (!data || !data.children || data.children.length === 0) {
     _svg = d3.select("#supervisorMapSvg");
     if (_svg && _svg.node()) {
       const {w, h} = _canvasSize(_svg.node());
       _svg.attr("viewBox", `0 0 ${w} ${h}`)
-        .attr("preserveAspectRatio", "xMidYMid meet");
+        .attr("preserveAspectRatio", "xMidYMid meet")
+        .attr("role", "tree")
+        .attr("aria-label", "Supervisor map: nothing running");
       _svg.selectAll("*").remove();
       _viewport = null;
       _zoom = d3.zoom().scaleExtent([0.2, 5]);
@@ -76,6 +161,12 @@ export function renderSupervisorMap(data) {
   // area -- unreachable, because zoom did not work either (below).
   _svg.attr("viewBox", `0 0 ${CANVAS_W} ${CANVAS_H}`)
     .attr("preserveAspectRatio", "xMidYMid meet");
+  // Without these the figure reaches a screen reader as a stack of unlabelled
+  // groups with no statement of what it is. Each node already carries its own
+  // aria-label; this names the whole thing and counts what is in it, which is
+  // the part no individual node can say.
+  _svg.attr("role", "tree")
+    .attr("aria-label", _mapSummary(data));
   _canvas = {w: CANVAS_W, h: CANVAS_H};
 
   _svg.selectAll("*").remove();
@@ -83,7 +174,7 @@ export function renderSupervisorMap(data) {
   // underlying main-content elements (empty-state, chat messages) from stealing
   // clicks that land inside the SVG viewport. Sized to the measured box, not
   // to 400x400, or it covers only the top region of a tall panel.
-  const bgFill = getComputedStyle(document.body).getPropertyValue("--panel2").trim() || "#fff";
+  const bgFill = _cssVar("--panel2", "#fff");
   _svg.append("rect")
     .attr("class", "map-bg")
     .attr("x", 0).attr("y", 0)
@@ -110,6 +201,7 @@ export function renderSupervisorMap(data) {
       // Fit, +/- and the percentage buttons all mutate this transform, and
       // nothing else writes to the viewport's transform.
       _viewport.attr("transform", event.transform);
+      _lastTransform = event.transform;
     });
   _svg.call(_zoom);
   // Centring is expressed as the initial zoom transform rather than as a fixed
@@ -119,8 +211,16 @@ export function renderSupervisorMap(data) {
   _svg.call(_zoom.transform, d3.zoomIdentity.translate(CANVAS_W / 2, CANVAS_H / 2));
 
   const root = d3.hierarchy(data, d => d.children || []);
-  root.x0 = 0;
-  root.y0 = 0;
+  // Re-apply what the user collapsed. This has to happen before the layout
+  // runs: d3.tree() assigns positions to whatever is in `children` at the
+  // time, so collapsing after the fact would leave gaps where the hidden
+  // branches were.
+  root.each(d => {
+    if (d.children && _collapsed.has(d.data.id)) {
+      d._children = d.children;
+      d.children = null;
+    }
+  });
 
   // .size([2*PI, RADIUS]) is not optional for a radial layout: d3.tree()
   // defaults to size([1, 1]) absent this call, so every node's angle (d.x)
@@ -137,10 +237,10 @@ export function renderSupervisorMap(data) {
   // instead of over a 400x400 corner. The 40 leaves room for leaf labels,
   // which are drawn outside their node's radius.
   const RADIUS = Math.max(40, Math.min(CANVAS_W, CANVAS_H) / 2 - 40);
-  _tree = d3.tree()
+  const tree = d3.tree()
     .size([2 * Math.PI, RADIUS])
     .separation((a, b) => a.parent === b.parent ? 1 : 1.2);
-  _tree(root);
+  tree(root);
   _root = root;
 
   // Depth map: center=0, transport=1, machine=2, orchestrator=2, chat=3
@@ -174,14 +274,16 @@ export function renderSupervisorMap(data) {
   node.each(function(d) {
     const g = d3.select(this);
     const r = nodeRadius(d);
-    const fillColor = STATUS_COLOR[d.data.status] || STATUS_COLOR.idle;
+    const fillColor = statusColor(d.data.status);
+    const outline = _cssVar("--map-outline", "#fff");
+    const neutral = _cssVar("--map-machine", "#9ca3af");
 
     // Glow ring for expandable nodes
     if (d._children || d.children) {
       g.append("circle")
         .attr("r", r + 3)
         .attr("fill", "none")
-        .attr("stroke", "#fff")
+        .attr("stroke", outline)
         .attr("stroke-width", 1.5)
         .attr("stroke-dasharray", "2 2");
     }
@@ -191,8 +293,8 @@ export function renderSupervisorMap(data) {
       // Center node
       g.append("circle")
         .attr("r", 8)
-        .attr("fill", getComputedStyle(document.body).getPropertyValue("--fg").trim() || "#1a1a2e")
-        .attr("stroke", STATUS_COLOR.running)
+        .attr("fill", _cssVar("--map-label", "#1a1a2e"))
+        .attr("stroke", statusColor("running"))
         .attr("stroke-width", 2);
     } else if (d.data.type === "transport") {
       // Transport: medium ring
@@ -205,8 +307,8 @@ export function renderSupervisorMap(data) {
       // Machine: medium filled neutral
       g.append("circle")
         .attr("r", r)
-        .attr("fill", "#9ca3af")
-        .attr("stroke", "#fff")
+        .attr("fill", neutral)
+        .attr("stroke", outline)
         .attr("stroke-width", 1);
     } else if (d.data.type === "more") {
       // Overflow marker: hollow and dashed, so it does not read as a thing
@@ -215,7 +317,7 @@ export function renderSupervisorMap(data) {
       g.append("circle")
         .attr("r", r)
         .attr("fill", "none")
-        .attr("stroke", "#9ca3af")
+        .attr("stroke", neutral)
         .attr("stroke-width", 1)
         .attr("stroke-dasharray", "2 2");
     } else if (d.data.type === "session") {
@@ -226,14 +328,14 @@ export function renderSupervisorMap(data) {
         .attr("x", -r).attr("y", -r)
         .attr("width", r * 2).attr("height", r * 2)
         .attr("fill", fillColor)
-        .attr("stroke", "#fff")
+        .attr("stroke", outline)
         .attr("stroke-width", 1);
     } else {
       // Orchestrator or chat: small filled
       g.append("circle")
         .attr("r", r)
         .attr("fill", fillColor)
-        .attr("stroke", d._children || d.children ? "#fff" : "none")
+        .attr("stroke", d._children || d.children ? outline : "none")
         .attr("stroke-width", 1);
     }
   });
@@ -249,10 +351,7 @@ export function renderSupervisorMap(data) {
       return name.length > 20 ? name.slice(0, 18) + "…" : name;
     })
     .attr("font-size", "11px")
-    .attr("fill", d => {
-      const bg = getComputedStyle(document.body).getPropertyValue("--fg").trim();
-      return bg || "#1a1a2e";
-    });
+    .attr("fill", () => _cssVar("--map-label", "#1a1a2e"));
 
   // ── Tooltip (hover) ─────────────────────────────────────────────
   node.on("mouseenter", function(event, d) {
@@ -263,9 +362,21 @@ export function renderSupervisorMap(data) {
       if (d.depth === 0) {
         const totalChildren = (d.children?.length || 0) + (d._children?.length || 0);
         text += ` · ${totalChildren} group${totalChildren !== 1 ? 's' : ''}`;
-        const machineCount = (d.children || d._children || [])
-          .filter(c => c.data.type === 'machine' || c.children?.some?.(gc => gc.data.type === 'machine'))
-          .length;
+        // Count machines, not groups that contain one. This filtered the
+        // root's direct children and took `.length`, so three backends behind
+        // one transport reported "1 machine" -- a number that is wrong in the
+        // direction that matters, since underreporting capacity is the thing
+        // this tooltip exists to avoid.
+        let machineCount = 0;
+        (function countMachines(node) {
+          if (!node) return;
+          if (node.data && node.data.type === "machine") machineCount += 1;
+          // Both lists: a collapsed branch's machines are still there, and a
+          // count that changed when the user collapsed something would look
+          // like the map losing track of the fleet.
+          (node.children || []).forEach(countMachines);
+          (node._children || []).forEach(countMachines);
+        })(d);
         if (machineCount) text += ` · ${machineCount} machine${machineCount !== 1 ? 's' : ''}`;
       }
       tooltip.textContent = text;
@@ -337,8 +448,13 @@ export function renderSupervisorMap(data) {
     }
   });
 
-  // Zoom to fit after render
-  zoomToFit();
+  // Fit on the first render of an open panel; restore the reader's own view
+  // on every refresh after that.
+  if (restoreTransform) {
+    _svg.call(_zoom.transform, restoreTransform);
+  } else {
+    zoomToFit();
+  }
 }
 
 /** Node kinds with something to show in the drawer. "more" is excluded on
@@ -365,7 +481,7 @@ async function showDetail(nodeData) {
   document.getElementById("mapDetailTitle").textContent = nodeData.label;
   const statusEl = document.getElementById("mapDetailStatus");
   statusEl.textContent = STATUS_LABEL[nodeData.status] || nodeData.status;
-  statusEl.style.color = STATUS_COLOR[nodeData.status] || STATUS_COLOR.idle;
+  statusEl.style.color = statusColor(nodeData.status);
 
   // Fill detail fields from node metadata
   const metaEl = document.getElementById("mapDetailMeta");
@@ -413,12 +529,123 @@ async function showDetail(nodeData) {
     msgEl.hidden = true;
   }
 
+  _detailNode = nodeData;
+  _renderDetailActions(nodeData);
   drawer.hidden = false;
+  _trapFocus(drawer);
 }
+
+// ── Drawer focus ───────────────────────────────────────────────────────
+// The drawer opened with focus left wherever it was -- on the SVG node, or
+// nowhere at all after a mouse click -- so a keyboard reader had to Tab
+// forwards through the whole map to reach a drawer that had just appeared in
+// front of them, and Tab from inside it walked straight back out into the map
+// behind. Escape was already handled; this is the rest of it.
+let _drawerReturnFocus = null;
+
+function _drawerFocusables(drawer) {
+  return Array.from(
+    drawer.querySelectorAll("button, [href], input, select, textarea, [tabindex]")
+  ).filter(el => !el.hidden && el.tabIndex !== -1 && !el.disabled);
+}
+
+function _trapFocus(drawer) {
+  _drawerReturnFocus = document.activeElement;
+  const focusable = _drawerFocusables(drawer);
+  if (focusable.length) focusable[0].focus();
+}
+
+document.getElementById("mapDetailDrawer")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const drawer = document.getElementById("mapDetailDrawer");
+  if (!drawer || drawer.hidden) return;
+  const focusable = _drawerFocusables(drawer);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  // Only the two edges are redirected. Tabbing between the drawer's own
+  // controls is left to the browser, which already does it correctly.
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+/** Show only the actions that apply to this node kind, and say plainly why
+ *  the drawer is otherwise read-only: a map that can report a stuck turn but
+ *  not reach it or stop it makes the user find the conversation by hand. */
+function _renderDetailActions(nodeData) {
+  const openBtn = document.getElementById("mapDetailOpen");
+  const stopBtn = document.getElementById("mapDetailStop");
+  const status = document.getElementById("mapDetailActionStatus");
+  if (status) { status.textContent = ""; status.hidden = true; }
+  // Only a conversation has a conversation to open. A task's id is a task id,
+  // a machine is not a conversation, and a terminal session lives in a
+  // terminal -- offering "Open" for any of them would 404 or do nothing.
+  if (openBtn) openBtn.hidden = nodeData.type !== "chat";
+  // Stop is offered only where there is something to stop. The endpoint is
+  // per-conversation, so a running task is not stoppable from here either.
+  const busy = nodeData.status === "running" || nodeData.status === "busy";
+  if (stopBtn) {
+    stopBtn.hidden = !(nodeData.type === "chat" && busy);
+    stopBtn.disabled = false;
+    stopBtn.textContent = "Stop";
+  }
+}
+
+function _setActionStatus(text) {
+  const status = document.getElementById("mapDetailActionStatus");
+  if (!status) return;
+  status.textContent = text;
+  status.hidden = !text;
+}
+
+document.getElementById("mapDetailOpen")?.addEventListener("click", () => {
+  if (!_detailNode || _detailNode.type !== "chat") return;
+  // Dispatched rather than imported: app.js imports this module, so importing
+  // its selectChat back would be a cycle.
+  document.dispatchEvent(new CustomEvent("wc:map-open-chat", {
+    detail: {id: _detailNode.id, type: _detailNode.type},
+  }));
+});
+
+document.getElementById("mapDetailStop")?.addEventListener("click", async () => {
+  const node = _detailNode;
+  if (!node || node.type !== "chat") return;
+  const btn = document.getElementById("mapDetailStop");
+  if (btn) { btn.disabled = true; btn.textContent = "Stopping…"; }
+  try {
+    const res = await fetch(`/api/chats/${encodeURIComponent(node.id)}/stop`, {
+      method: "POST", credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const body = await res.json();
+    // "stopped: false" is not a failure -- the turn finished between the map
+    // being drawn and the button being pressed. Saying "Stopped" there would
+    // claim an action that did not happen.
+    _setActionStatus(body.stopped ? "Stopped." : "Nothing was running.");
+    if (btn) btn.hidden = true;
+  } catch {
+    _setActionStatus("Could not stop it. Try again.");
+    if (btn) { btn.disabled = false; btn.textContent = "Stop"; }
+  }
+});
 
 function hideDetail() {
   const drawer = document.getElementById("mapDetailDrawer");
   if (drawer) drawer.hidden = true;
+  _detailNode = null;
+  // Back where they were, not to the top of the document: closing a drawer
+  // should leave a keyboard reader on the node they were reading about.
+  if (_drawerReturnFocus && typeof _drawerReturnFocus.focus === "function"
+      && document.body && document.body.contains
+      && document.body.contains(_drawerReturnFocus)) {
+    _drawerReturnFocus.focus();
+  }
+  _drawerReturnFocus = null;
 }
 
 export function closeSupervisorMap() {
@@ -427,6 +654,9 @@ export function closeSupervisorMap() {
   hideDetail();
   _data = null;
   _collapsed.clear();
+  // Closing the panel is the one place a view is deliberately forgotten:
+  // reopening the map should fit the tree, not restore a zoom from earlier.
+  _lastTransform = null;
 }
 
 export function zoomToFit() {
@@ -457,7 +687,7 @@ export function zoomToFit() {
     const scale = Math.min(box.w / width, box.h / height, 2);
     const tx = box.w / 2 - ((minX + maxX) / 2) * scale;
     const ty = box.h / 2 - ((minY + maxY) / 2) * scale;
-    _svg.transition().duration(300)
+    _svg.transition().duration(_motionMs(300))
       .call(_zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
   } catch (_) {
     // Graceful degrade: scroll into view if zoom-to-fit fails
@@ -491,7 +721,7 @@ document.querySelectorAll(".mapZoomPct").forEach(btn => {
     // expressed in scaled pixels (currentTransform.x) by the target scale and
     // subtracted it from the box centre, which is not a meaningful quantity --
     // pressing 100% from a panned view threw the map off-screen.
-    _svg.transition().duration(300).call(_zoom.scaleTo, target);
+    _svg.transition().duration(_motionMs(300)).call(_zoom.scaleTo, target);
   });
 });
 document.getElementById("mapZoomInBtn")?.addEventListener("click", () => {

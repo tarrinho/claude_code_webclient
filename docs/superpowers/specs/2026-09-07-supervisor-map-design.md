@@ -197,3 +197,54 @@ reuses existing message/query patterns already in the codebase.
 The map is a read-only observability tool, not a management interface. That's
 an intentional boundary — future management features (stop an agent, send
 a prompt) are separate requests.
+
+---
+
+## Changes since this spec (2026-09-09)
+
+This section is appended rather than edited into the text above: the document
+is a dated design record, and rewriting it would erase what was decided on
+2026-09-07. Where the two disagree, this section is what the code does.
+
+**Node types.** The spec lists three (`transport`, `orchestrator`, `chat`).
+There are now seven. `machine` (a backend, carrying `capacity_existing` /
+`capacity_total` when the host serving it is this one), `task` (an
+orchestrator task; it was being emitted as `chat`, which made the route query
+`messages_last()` with a task id on every request and offered conversation
+actions for a row with no conversation), `session` (a terminal session,
+drawn as a square — the registry was already being read here and discarded,
+so these had never appeared), and `more` (an overflow marker, below).
+
+**Children per node.** The spec's "max 4 top-level children and max 4
+grandchildren" was implemented as three silent `[:4]` slices, so a host with
+six backends showed four and the map gave no sign it had left anything out.
+The cap is now 12 and the tail is replaced by a `type: "more"` node carrying
+`hidden_count`. Aggregate status is still computed over the *full* group, so a
+failure in a hidden node still colours its parent.
+
+**Grouping.** Direct conversations were grouped on `chat["transport_id"]`, a
+column the `chats` table does not have — so it was `None` for every
+conversation ever created and everything fell into the "Direct" group whatever
+backend served it. Resolved through the machine now.
+
+**Refresh.** The non-goal "real-time streaming updates (polls on the same
+interval as the existing supervisor endpoint)" was read as "does not poll at
+all": the map was fetched once on open and never again. It now refreshes every
+10 seconds while open, skipped under an open drawer, and a refresh keeps the
+reader's current zoom rather than re-fitting.
+
+**Read-only is no longer the boundary.** The spec's closing paragraph reserves
+"stop an agent" for a separate request. The detail drawer now has *Open
+conversation* and *Stop*, shown only for the node kinds they apply to. That was
+a deliberate later decision, not an oversight in this document.
+
+**Not in the spec at all, and worth recording because each was a live defect.**
+`d3.tree()` was created without `.size()`, so the whole tree rendered inside
+about one square pixel; `d3.zoom()` was created with no `.on("zoom", ...)`
+handler, so every zoom control was inert; `zoomToFit()` called
+`_tree.bounds()`, which is not a d3 API and always threw; the root node was
+pinned to a hardcoded `translate(200,200)` away from its own children; the SVG
+had no `viewBox`; collapsing a branch cleared the collapsed set on the
+re-render it triggered, so it could not work; and opening the panel set
+`main.hidden = true`, blanking the rest of the page as a workaround for the
+click problems the above caused.

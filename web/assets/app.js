@@ -250,29 +250,48 @@ function closeSettingsDialog() {
   if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
+// The empty-state element's own message. Held as a constant because the error
+// path overwrites the same element's text and nothing used to put it back: one
+// failed fetch left "Connection error." on screen permanently, so a map that
+// was merely empty afterwards kept reporting a connection that was fine.
+const MAP_EMPTY_TEXT = 'No agents running.';
+const MAP_POLL_MS = 10000;
+let _mapTimer = null;
+
 async function _openMap() {
   const panel = byId('supervisorMapPanel');
   if (!panel) return;
   if (_mapLoading) return;        // guard against double-click
   if (!panel.hidden) { _closeMap(); return; }
-  _mapLoading = true;
   // Remove attribute and set property to guarantee open state
   panel.removeAttribute('hidden');
   panel.hidden = false;
-  // Hide main content while panel is open — main creates a stacking context
-  // that visually covers the panel's SVG nodes, making them unclickable.
-  const main = document.querySelector('main');
-  if (main) main.hidden = true;
+  await _loadMap();
+  _startMapPolling();
+}
 
+/**
+ * Fetch the map and render it.
+ *
+ * @param {boolean} quiet A background refresh. It leaves the previous tree on
+ *   screen if the fetch fails, for the reason server-stats.js states for its
+ *   own quiet reloads: a panel that blanks itself on a dropped poll looks like
+ *   a panel that keeps breaking.
+ */
+async function _loadMap(quiet = false) {
+  if (_mapLoading) return;
+  _mapLoading = true;
   try {
     const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=3');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=4');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
+    byId('mapStatusEmpty').textContent = MAP_EMPTY_TEXT;
   } catch {
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
+    if (quiet) return;
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=4');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -281,14 +300,42 @@ async function _openMap() {
   }
 }
 
+function _startMapPolling() {
+  if (_mapTimer) return;   // never stack intervals on repeated opens
+  _mapTimer = setInterval(() => {
+    // A hidden tab is not being read, and this endpoint scans /proc.
+    if (document.visibilityState !== 'visible') return;
+    if (byId('supervisorMapPanel')?.hidden !== false) return;
+    // Never re-render under an open drawer: the refresh rebuilds every node,
+    // so the thing the user is reading about would be replaced mid-read.
+    if (byId('mapDetailDrawer')?.hidden === false) return;
+    _loadMap(true);
+  }, MAP_POLL_MS);
+}
+
+function _stopMapPolling() {
+  if (!_mapTimer) return;
+  clearInterval(_mapTimer);
+  _mapTimer = null;
+}
+
 async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
-  const main = document.querySelector('main');
-  if (main) main.hidden = false;
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=3');
+  _stopMapPolling();
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=4');
   closeSupervisorMap();
 }
+
+// The map's drawer asks for a conversation by dispatching this rather than
+// importing selectChat: app.js imports supervisor-map.js, so the reverse
+// import would be a cycle.
+document.addEventListener('wc:map-open-chat', (event) => {
+  const chatId = event.detail && event.detail.id;
+  if (!chatId) return;
+  _closeMap();
+  selectChat(chatId);
+});
 
 function _switchTab(tab) {
   _currentTab = tab;
@@ -399,7 +446,7 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires } from './machines.js?v=7';
+  _drawMapWires, _pollTunnelStatus } from './machines.js?v=8';
 
 import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=3';
 
@@ -1815,6 +1862,9 @@ async function loadBackends() {
   await loadTransports();
   await loadTurnCounts();
   _renderMachineList();
+  // Start (or stop) 5s tunnel status polling so transport badges update live.
+  const hasSsh = _machines.some(m => m.backend_kind === 'ssh_proxy');
+  _pollTunnelStatus(hasSsh);
   await Promise.all(
     _machines
       .filter(machine => machine.provider === 'claude_code')
@@ -2038,6 +2088,8 @@ async function loadInitialData() {
     await refreshChats();
     await refreshSessions();
     await loadMachines();
+    // Start tunnel status polling at boot so transport badges update live.
+    _pollTunnelStatus(_machines.some(m => m.backend_kind === 'ssh_proxy'));
     // Only the active backend's models are needed to fill the picker at boot;
     // the rest load when the Backends tab is opened.
     const active = _machines.find(machine => machine.active);

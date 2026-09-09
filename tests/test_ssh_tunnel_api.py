@@ -102,6 +102,44 @@ def test_tunnel_status_returns_dict(client):
     assert isinstance(data, dict)
 
 
+def test_tunnel_status_survives_no_in_memory_state(client):
+    """The regression this file's empty-case test above could not catch: it
+    exercises zero transport-routed machines, so the loop body in
+    routes/machines_tunnel.py never runs at all.
+
+    A real transport-routed machine with a persisted ssh_tunnels row but no
+    tunnel_manager in-memory state -- exactly what every such machine looks
+    like after a restart, per the RECONNECT-at-boot gap -- used to 500 here:
+    the DB fallback built its status dict from a bare aiosqlite Row and read
+    it back with `.get()`, which Row does not support. Pedro hit this live:
+    Check passed every one of AppSec Tools' checks, but the badge never
+    updated, because this endpoint was crashing on every single poll.
+    """
+    machine_id = _create_machine_with_transport(client)
+
+    import asyncio
+    import db
+
+    asyncio.get_event_loop().run_until_complete(
+        db.ssh_tunnel_create(machine_id, local_port=9000))
+    asyncio.get_event_loop().run_until_complete(
+        db.ssh_tunnel_update(machine_id, state="connected", tunnel_up=1,
+                             proxy_ok=1))
+
+    # tunnel_manager's in-memory _STATE has no entry for this machine --
+    # nothing in this test process ever called START_TUNNEL/RECONNECT for it
+    # -- so the route must fall through to the DB row above, not the
+    # in-memory branch.
+    import tunnel_manager
+    assert machine_id not in tunnel_manager._STATE
+
+    resp = client.get("/api/tunnel/status")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data[machine_id]["state"] == "connected"
+    assert data[machine_id]["proxy_ok"] is True
+
+
 def test_init_ssh_test_no_host(client):
     """POST /api/init/ssh-test with empty ssh_host returns 400."""
     resp = client.post("/api/init/ssh-test", json={})

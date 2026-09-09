@@ -1399,7 +1399,16 @@ async def ssh_tunnel_get(machine_id: str) -> dict | None:
     rows = await cursor.fetchall()
     if not rows:
         return None
-    return rows[0]
+    # dict(), not the bare Row: the declared return type is `dict | None` and
+    # one caller (routes/machines_tunnel.py's /api/tunnel/status fallback)
+    # trusted that and called .get() on it, which Row does not support --
+    # AttributeError on every request for a machine with no in-memory tunnel
+    # state, which per the RECONNECT-at-boot gap is every transport-routed
+    # machine after every restart until something connects in that process's
+    # lifetime. That turned this route's own read-only status poll into a 500
+    # the client's poll loop swallows silently, so the Backends panel's status
+    # badges stopped updating with no visible error anywhere.
+    return dict(rows[0])
 
 
 async def ssh_tunnel_list_active() -> list[dict]:

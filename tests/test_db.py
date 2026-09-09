@@ -365,5 +365,43 @@ class SshProxyMigrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class SshTunnelGetTests(unittest.IsolatedAsyncioTestCase):
+    """ssh_tunnel_get's declared return type is `dict | None`. It returned the
+    bare aiosqlite Row instead, which every caller so far happened to only
+    index with brackets or truthiness -- until routes/machines_tunnel.py's
+    GET /api/tunnel/status fallback trusted the type hint and called
+    `.get()`, which Row does not support. AttributeError on every request for
+    a machine with no in-memory tunnel_manager state, which per the
+    RECONNECT-at-boot gap is every transport-routed machine after every
+    restart until something reconnects in that process's lifetime -- so this
+    silently 500'd the poll the Backends panel's status badges depend on.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(db.config, "DB_PATH", f"{self.tmp.name}/webconsole.db")
+        self.root_patch = patch.object(db.config, "PROJECTS_ROOT", f"{self.tmp.name}/projects")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_it_returns_a_real_dict_not_a_bare_row(self):
+        await db.ssh_tunnel_create("m-1", local_port=9000)
+        await db.ssh_tunnel_update("m-1", state="connected", tunnel_up=1)
+        row = await db.ssh_tunnel_get("m-1")
+        self.assertIsInstance(row, dict)
+        # The exact call that crashed: Row has no .get(), a plain dict does.
+        self.assertEqual(row.get("state"), "connected")
+
+    async def test_a_missing_row_is_still_none(self):
+        self.assertIsNone(await db.ssh_tunnel_get("no-such-machine"))
+
+
 if __name__ == "__main__":
     unittest.main()

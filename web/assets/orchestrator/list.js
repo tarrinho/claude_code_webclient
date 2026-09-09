@@ -7,7 +7,7 @@ import { $, el } from "./dom.js";
 import { esc, showScrollBtn } from "./main.js";
 import { connectSSE } from "./stream.js";
 import { loadMembers } from "./members.js";
-import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./tasks.js";
+import { renderRunCost, renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./tasks.js";
 
   // ── Orchestrator list ──────────────────────────────────────────────────
   // Sort order for the orchestrator list. Default "newest first" (by id,
@@ -284,11 +284,18 @@ import { renderTaskTree, updateOverallProgress, updatePauseResumeBtn } from "./t
 
     if (taskData.status === "fulfilled") {
       state.tasks = taskData.value.tasks || [];
+      state.cost = taskData.value.cost || null;
       renderTaskTree();
       updateOverallProgress();
+      renderRunCost();
     } else {
       state.tasks = [];
+      // Cleared too, or the previously selected orchestrator's spend stays on
+      // screen labelled as this one's -- the figure is per run, so a stale one
+      // is not merely old, it is wrong.
+      state.cost = null;
       renderTaskTree();
+      renderRunCost();
     }
 
     // Start SSE stream

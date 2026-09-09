@@ -1,5 +1,6 @@
+import { abbrevTokens } from './format.js?v=1';
 import {apiFetch} from './api.js?v=1';
-import {formatTime, formatAbsoluteTime} from './app.js?v=52';
+import {formatTime, formatAbsoluteTime} from './app.js?v=53';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share top-level
@@ -10,13 +11,10 @@ let _usageData = null;          // last GET /api/usage payload
 let _usageFetchedFor = null;    // range the payload was fetched for
 
 /** Compact a token count, keeping the exact value for the title attribute. */
-function _abbrev(n) {
-  const value = Number(n) || 0;
-  if (value >= 1e9) return `${(value / 1e9).toFixed(1)} B`;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(1)} M`;
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)} K`;
-  return String(value);
-}
+// Was a private copy here. Moved to format.js when the orchestrator page
+// needed the same rule: two definitions of how to print a token count would
+// agree only until one of them was touched.
+const _abbrev = abbrevTokens;
 
 function _cell(text, className, title) {
   const cell = document.createElement('span');

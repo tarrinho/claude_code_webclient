@@ -608,6 +608,8 @@ export function createConversationController(dependencies) {
   }
 
   function renderMessages(messages, hasMore = false) {
+    // Voice temp chats: only the tooltip, never the workspace right-panel.
+    if (state.currentChat?.voice_mode) return;
     elements.messages.replaceChildren();
     oldestLoadedId = messages.length ? messages[0].id : null;
     hasOlderMessages = Boolean(hasMore);
@@ -1138,6 +1140,10 @@ export function createConversationController(dependencies) {
   }
 
   function attach(chatId, since) {
+    // Voice temp chats render only in the tooltip overlay — skip the
+    // live SSE workspace feed so voice conversation never bleeds into
+    // the right panel.
+    if (state.currentChat?.voice_mode) return;
     detach();
     let bubble = null;
     let text = '';
@@ -1229,10 +1235,15 @@ export function createConversationController(dependencies) {
     elements.retryButton.style.display = 'none';
     const empty = elements.messages.querySelector('.empty-state');
     if (empty) empty.remove();
+    // Voice temp chats: never render user/assistant text in the workspace —
+    // tooltip only.
+    const isVoice = state.currentChat?.voice_mode;
     const sentAt = new Date().toISOString();
-    elements.messages.appendChild(createMessage('user', content, sentAt));
-    pushRequest(content, sentAt);
-    scrollToBottom();
+    if (!isVoice) {
+      elements.messages.appendChild(createMessage('user', content, sentAt));
+      pushRequest(content, sentAt);
+      scrollToBottom();
+    }
     setStreamState('connecting');
     viewingChatId = chatId;
     detaching = false;
@@ -1294,14 +1305,14 @@ export function createConversationController(dependencies) {
           }
           if (event.type === 'text') {
             const shouldFollow = isNearBottom();
-            if (!assistantRow) {
-              assistantRow = createMessage('assistant', '', '');
-              assistantBubble = assistantRow.querySelector('.msg-bubble');
-              elements.messages.appendChild(assistantRow);
-            }
-            fullText += event.content || '';
             window.voiceConversation?.onReplyChunk(event.content || '');
-            if (viewingChatId === chatId && !window.state?.currentChat?.voice_mode) {
+            if (viewingChatId === chatId && !isVoice) {
+              if (!assistantRow) {
+                assistantRow = createMessage('assistant', '', '');
+                assistantBubble = assistantRow.querySelector('.msg-bubble');
+                elements.messages.appendChild(assistantRow);
+              }
+              fullText += event.content || '';
               renderSafeText(assistantBubble, fullText);
               setStreamState('responding');
               followNewContent(shouldFollow);

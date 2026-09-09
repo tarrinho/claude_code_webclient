@@ -801,6 +801,17 @@ class OrchestratorEngine:
         try:
             plan_chat_id = str(uuid.uuid4())
             self._planner_chat_id = plan_chat_id
+            # Persisted, not just held on the instance. The planner's usage
+            # rows are keyed on this id, and it is a bare uuid4 with nothing
+            # tying it to this run -- so once the engine object went away, the
+            # first and often largest turn of the run was recorded, correctly
+            # attributed to the owner, and unreachable from the orchestrator
+            # that spent it. Written before the turn runs, so a crash mid-turn
+            # still leaves the spend attributable.
+            import db
+            await db.orchestrator_set_planner_chat(
+                self.orchestrator_id, plan_chat_id
+            )
             self.tracker.record(ProgressEvent(
                 event_type="plan",
                 task_id=None,

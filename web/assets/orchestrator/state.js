@@ -16,6 +16,10 @@ export const state = {
   activeSupervisorId: null,
   activeSupervisor: null,
   tasks: [],
+  // The run's spend, as returned alongside the task list. Null until the
+  // first successful load: "not fetched yet" and "nothing spent" render
+  // differently, and a orchestrator really can have spent nothing.
+  cost: null,
   activeTaskId: null,
   chatMessages: [],
   eventLog: [],

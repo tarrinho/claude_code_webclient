@@ -517,6 +517,24 @@
             background: #e2e8f0;
             flex-shrink: 0;
         }
+        .run-cost {
+            flex-shrink: 0;
+            padding: 3px 12px;
+            font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+            color: #64748b;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            gap: 10px;
+            align-items: baseline;
+        }
+        .run-cost[data-partial="yes"] .run-cost-usd::after {
+            /* An incomplete total says so on the figure itself, not only in a
+               tooltip: a number that quietly omits some of the run's turns is
+               worse than one marked as partial. */
+            content: "*";
+            margin-left: 1px;
+        }
+        .run-cost-errors { color: #b91c1c; }
         #overall-progress-fill {
             height: 100%;
             background: linear-gradient(90deg, #3b82f6, #10b981);
@@ -1080,6 +1098,11 @@
                 <button class="panel-btn" data-max="center" title="Maximize">&#9633;</button>
             </div>
             <div id="overall-progress"><div id="overall-progress-fill"></div></div>
+            <!-- What the run has spent. Under the progress bar because it
+                 answers the question the progress bar raises. Hidden until
+                 there is a turn to report, so a orchestrator that has not
+                 started does not show a row of zeros. -->
+            <div id="run-cost" class="run-cost" hidden></div>
             <div id="start-screen">
                 <h1>Orchestrator Orchestration</h1>
                 <p>Above, create or select a orchestrator. Then send it a task prompt and watch the AI break it down into sub-tasks and execute them.</p>
@@ -1142,6 +1165,6 @@
             </div>
     </div>
 
-    <script type="module" src="/assets/orchestrator/main.js?v=7"></script>
+    <script type="module" src="/assets/orchestrator/main.js?v=8"></script>
 </body>
 </html>

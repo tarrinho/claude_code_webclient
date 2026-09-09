@@ -620,9 +620,20 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
 
 
 async def handle_orchestrator_tasks_get(supervisor_id: str, owner_id: str):
-    """GET /api/supervisors/{id}/tasks — list tasks for a orchestrator."""
+    """GET /api/supervisors/{id}/tasks — list tasks for a orchestrator.
+
+    Carries the run's spend alongside its tasks rather than in an endpoint of
+    its own: the page that shows progress is the page that should be able to
+    say what the progress cost, and it already polls this one. A second
+    endpoint would be a second poll for a figure derived from the same task
+    list this response is built from.
+    """
     tasks = await db.orchestrator_tasks_get(supervisor_id, owner_id)
-    return JSONResponse({"tasks": tasks, "count": len(tasks)})
+    return JSONResponse({
+        "tasks": tasks,
+        "count": len(tasks),
+        "cost": await db.orchestrator_cost(supervisor_id, owner_id),
+    })
 
 
 async def handle_orchestrator_messages_get(request: Request, supervisor_id: str):

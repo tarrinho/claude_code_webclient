@@ -44,6 +44,8 @@ def __getattr__(name: str):
         "orchestrator_messages_append": "routes.db_orchestrators",
         "orchestrator_messages_get": "routes.db_orchestrators",
         "orchestrator_progress": "routes.db_orchestrators",
+        "orchestrator_cost": "routes.db_orchestrators",
+        "orchestrator_set_planner_chat": "routes.db_orchestrators",
         "orchestrator_task_create": "routes.db_orchestrators",
         "orchestrator_task_get": "routes.db_orchestrators",
         "orchestrator_task_update": "routes.db_orchestrators",

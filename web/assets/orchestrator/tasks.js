@@ -2,6 +2,7 @@
 
 import { state } from "./state.js";
 import { apiFetch, formatTime } from "./api.js";
+import { abbrevTokens, formatUsd } from "../format.js?v=1";
 import { showGoalBanner } from "./banners.js";
 import { $, el } from "./dom.js";
 import { addChatMessage, loadSupervisors, showActiveSupervisor } from "./list.js";
@@ -258,6 +259,68 @@ import { renderRail } from "./rail.js";
     el.progressBarFill.style.width = Math.min(100, Math.round(avg)) + "%";
   }
 
+  /** Render what the run has spent, from the figure the tasks endpoint
+   *  returns alongside the task list.
+   *
+   *  The engine has always recorded usage for every turn it spends -- one row
+   *  per model, `origin="orchestrator"`, keyed on the synthetic chat id -- and
+   *  nothing ever read it back per run, so the page showing a orchestrator's
+   *  progress could not say what that progress had cost.
+   */
+  export function renderRunCost() {
+    if (!el.runCost) return;
+    const cost = state.cost;
+    // No turns yet is not a figure worth a row: an unstarted orchestrator
+    // showing "0 turns · $0.0000" is noise, and the element reappears the
+    // moment the planning turn lands.
+    if (!cost || !cost.turns) {
+      el.runCost.hidden = true;
+      el.runCost.replaceChildren();
+      return;
+    }
+    const parts = [];
+    parts.push(_costPart(
+      `${cost.turns} turn${cost.turns === 1 ? "" : "s"}`, "run-cost-turns",
+    ));
+    parts.push(_costPart(
+      `${abbrevTokens(cost.input_tokens)} in`, "run-cost-tokens",
+      `${cost.input_tokens} input tokens`,
+    ));
+    parts.push(_costPart(
+      `${abbrevTokens(cost.output_tokens)} out`, "run-cost-tokens",
+      `${cost.output_tokens} output tokens`,
+    ));
+    const money = formatUsd(cost.cost_usd);
+    if (money !== null) {
+      parts.push(_costPart(money, "run-cost-usd", cost.cost_note || undefined));
+    }
+    if (cost.errors) {
+      parts.push(_costPart(
+        `${cost.errors} failed`, "run-cost-errors",
+        "Turns that errored. They spent tokens and are counted here.",
+      ));
+    }
+    el.runCost.replaceChildren(...parts);
+    // Drives the asterisk in the stylesheet, and carries the explanation for
+    // it on the row rather than only on the figure.
+    if (cost.cost_partial) {
+      el.runCost.dataset.partial = "yes";
+      el.runCost.title = cost.cost_note || "This total is incomplete.";
+    } else {
+      delete el.runCost.dataset.partial;
+      el.runCost.removeAttribute("title");
+    }
+    el.runCost.hidden = false;
+  }
+
+  function _costPart(text, className, title) {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = text;
+    if (title) span.title = title;
+    return span;
+  }
+
   // ── Sending prompts ─────────────────────────────────────────────────
   export async function sendPrompt() {
     const text = el.promptInput.value.trim();
@@ -305,8 +368,10 @@ import { renderRail } from "./rail.js";
         "/api/orchestrators/" + state.activeSupervisorId + "/tasks"
       );
       state.tasks = data.tasks || [];
+      state.cost = data.cost || null;
       renderTaskTree();
       updateOverallProgress();
+      renderRunCost();
       if (state.activeTaskId) {
         const task = state.tasks.find((t) => t.id === state.activeTaskId);
         if (task) renderTaskDetail(task.id);

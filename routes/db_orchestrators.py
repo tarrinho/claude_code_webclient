@@ -23,11 +23,144 @@ async def orchestrator_list(owner_id: str) -> list[dict[str, Any]]:
     return [dict(r) for r in await cur.fetchall()]
 
 
+async def orchestrator_set_planner_chat(
+    orchestrator_id: str, chat_id: str
+) -> None:
+    """Record which synthetic chat id the planning turn ran under.
+
+    Never raises. This is accounting, and a run must not fail because its
+    bookkeeping did -- the same rule ``orchestrator_mark_degraded`` and
+    ``db.usage_record`` both state for themselves. The consequence of losing
+    it is a run whose planning turn is missing from its cost, which is
+    reported as a partial figure rather than passed off as a total.
+    """
+    try:
+        await db.db_conn.execute(
+            "UPDATE orchestrators SET planner_chat_id = ? WHERE id = ?",
+            (chat_id, orchestrator_id),
+        )
+        await db.db_conn.commit()
+    except Exception:
+        _log.exception(
+            "orchestrator_set_planner_chat failed orchestrator_id=%s",
+            orchestrator_id,
+        )
+
+
+async def orchestrator_cost(
+    orchestrator_id: str, owner_id: str
+) -> dict[str, Any]:
+    """What one orchestrator run has spent, from the usage rows it wrote.
+
+    The engine already records usage for every turn it spends, with
+    ``origin="orchestrator"`` and the synthetic chat id as the key -- but
+    nothing read it back per run, so the page that shows a orchestrator's
+    progress could not say what that progress had cost. The rows were there
+    the whole time.
+
+    Two id shapes are summed: ``subtask_<task id>`` for each task in this
+    run, and the planner's own id from ``planner_chat_id``. They are gathered
+    in Python and passed as parameters rather than matched with a LIKE: a
+    task id is user-visible text, and ``LIKE 'subtask_%'`` would also match
+    another run's tasks, since the ids are globally unique but carry no
+    orchestrator in them.
+
+    ``cost_usd`` sums only rows whose provider is ``through_claude_code``,
+    matching how routes/misc.py blanks cost everywhere else it is shown: the
+    figure is priced with Anthropic rates and means nothing for a gateway
+    backend. When rows were left out, ``cost_partial`` says so and
+    ``cost_note`` says why -- a total that silently omits half a run's turns
+    is worse than one labelled incomplete. Tokens are summed over every row,
+    because those are counts and are meaningful whatever served them.
+    """
+    # Three scopes, and it is worth being precise about which one carries the
+    # weight: the usage query below filters on owner_id, and
+    # orchestrator_tasks_get is scoped by join, so either alone already keeps
+    # one account's spend out of another's figure. This call is the third, and
+    # it is defence in depth rather than the load-bearing one -- a mutation
+    # that unscopes it changes no result, because there is no arrangement of
+    # rows where the other two both pass and this one would have refused. It
+    # stays because the alternative is a function that reads any account's
+    # orchestrator row to decide what to sum.
+    orchestrator = await orchestrator_get(orchestrator_id, owner_id)
+    if not orchestrator:
+        return _empty_cost()
+    tasks = await orchestrator_tasks_get(orchestrator_id, owner_id)
+    chat_ids = [f"subtask_{t['id']}" for t in tasks if t.get("id")]
+    planner = orchestrator.get("planner_chat_id")
+    if planner:
+        chat_ids.append(planner)
+    if not chat_ids:
+        return _empty_cost(planner_missing=not planner)
+
+    placeholders = ",".join("?" for _ in chat_ids)
+    cur = await db.db_conn.execute(
+        "SELECT provider, "  # nosec B608: placeholders are generated, not input
+        "       SUM(input_tokens) AS input_tokens, "
+        "       SUM(output_tokens) AS output_tokens, "
+        "       SUM(cache_read_tokens) AS cache_read_tokens, "
+        "       SUM(cache_creation_tokens) AS cache_creation_tokens, "
+        "       SUM(COALESCE(cost_usd, 0)) AS cost_usd, "
+        "       COUNT(*) AS rows_n, "
+        "       SUM(is_error) AS errors "
+        "FROM usage_events "
+        f"WHERE owner_id = ? AND chat_id IN ({placeholders}) "
+        "GROUP BY provider",
+        (owner_id, *chat_ids),
+    )
+    result = _empty_cost(planner_missing=not planner)
+    for row in await cur.fetchall():
+        result["input_tokens"] += row["input_tokens"] or 0
+        result["output_tokens"] += row["output_tokens"] or 0
+        result["cache_read_tokens"] += row["cache_read_tokens"] or 0
+        result["cache_creation_tokens"] += row["cache_creation_tokens"] or 0
+        result["turns"] += row["rows_n"] or 0
+        result["errors"] += row["errors"] or 0
+        if row["provider"] == "through_claude_code":
+            result["cost_usd"] = (result["cost_usd"] or 0) + (row["cost_usd"] or 0)
+        else:
+            result["cost_partial"] = True
+    if result["cost_partial"]:
+        result["cost_note"] = (
+            "Some turns ran on a backend where the reported cost is not "
+            "meaningful, and are counted in the tokens but not the cost."
+        )
+    elif result["planner_missing"] and result["turns"]:
+        result["cost_partial"] = True
+        result["cost_note"] = (
+            "The planning turn could not be attributed to this run, so its "
+            "tokens and cost are not included."
+        )
+    return result
+
+
+def _empty_cost(planner_missing: bool = False) -> dict[str, Any]:
+    """A run that has spent nothing yet.
+
+    ``cost_usd`` is 0.0 rather than None: a orchestrator with no turns has
+    provably spent nothing, which is a different statement from "we cannot
+    say", and the UI renders the two differently.
+    """
+    return {
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "turns": 0,
+        "errors": 0,
+        "cost_partial": False,
+        "cost_note": "",
+        "planner_missing": planner_missing,
+    }
+
+
 async def orchestrator_get(orchestrator_id: str, owner_id: str) -> dict[str, Any] | None:
     """Fetch one orchestrator, owner-scoped."""
     cur = await db.db_conn.execute(
         "SELECT id, title, description, config, status, plan, progress_pct, "
-        "created_at, updated_at, completed_at, degraded, degraded_reason "
+        "created_at, updated_at, completed_at, degraded, degraded_reason, "
+        "planner_chat_id "
         "FROM orchestrators WHERE id = ? AND owner_id = ?",
         (orchestrator_id, owner_id),
     )

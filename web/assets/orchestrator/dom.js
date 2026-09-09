@@ -26,6 +26,7 @@
     supervisorChat: $("#orchestrator-chat"),
     detailContent: $("#detail-content"),
     progressBarFill: $("#overall-progress-fill"),
+    runCost: $("#run-cost"),
     newSupervisorBtn: $("#new-orchestrator-btn"),
     topbarInfo: $("#topbar-info"),
     goalBanner: $("#goal-banner"),

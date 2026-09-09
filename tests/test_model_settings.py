@@ -15,6 +15,7 @@ import net_validation
 import runner
 from routes import machines as machine_routes
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 
 class _FakeRequest:
@@ -82,9 +83,9 @@ class ModelMigrationTests(unittest.IsolatedAsyncioTestCase):
         work_dir = f"{self.tmp.name}/projects/{chat_id}"
         Path(work_dir).mkdir(parents=True)
         await db.chat_create(chat_id, "Model Chat", None, work_dir, "admin")
-        await db.chat_set_model(chat_id, "claude-opus-5")
+        await db.chat_set_model(chat_id, TESTING_MODEL)
         chat = await db.chat_get(chat_id, "admin")
-        self.assertEqual(chat["model"], "claude-opus-5")
+        self.assertEqual(chat["model"], TESTING_MODEL)
 
     async def test_chat_set_model_updates(self):
         chat_id = "model-update"
@@ -176,11 +177,11 @@ class ModelExtractionTests(unittest.TestCase):
     def test_real_model_is_returned(self):
         root = _write_transcript("sess-2", [
             {"type": "assistant", "sessionId": "sess-2",
-             "message": {"role": "assistant", "model": "claude-opus-5"}},
+             "message": {"role": "assistant", "model": TESTING_MODEL}},
         ])
         with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertEqual(
-                db._extract_model_from_transcript("sess-2"), "claude-opus-5"
+                db._extract_model_from_transcript("sess-2"), TESTING_MODEL
             )
 
     def test_last_model_wins(self):
@@ -201,7 +202,7 @@ class ModelExtractionTests(unittest.TestCase):
         # a different sessionId -- so the per-line check is what must reject it.
         root = _write_transcript("sess-different", [
             {"type": "assistant", "sessionId": "sess-99",
-             "message": {"role": "assistant", "model": "claude-opus-5"}},
+             "message": {"role": "assistant", "model": TESTING_MODEL}},
         ])
         with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertIsNone(db._extract_model_from_transcript("sess-different"))
@@ -209,7 +210,7 @@ class ModelExtractionTests(unittest.TestCase):
     def test_no_file_for_session_returns_none(self):
         root = _write_transcript("sess-other", [
             {"type": "assistant", "sessionId": "sess-other",
-             "message": {"role": "assistant", "model": "claude-opus-5"}},
+             "message": {"role": "assistant", "model": TESTING_MODEL}},
         ])
         with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertIsNone(db._extract_model_from_transcript("sess-absent"))
@@ -232,13 +233,13 @@ class ModelExtractionTests(unittest.TestCase):
         ]
         root = _write_transcript("sess-5", filler + [
             {"type": "assistant", "sessionId": "sess-5",
-             "message": {"role": "assistant", "model": "claude-opus-5"}},
+             "message": {"role": "assistant", "model": TESTING_MODEL}},
         ])
         size = (root / "-home-kali-projects-demo" / "sess-5.jsonl").stat().st_size
         self.assertGreater(size, db._TRANSCRIPT_TAIL_BYTES)
         with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertEqual(
-                db._extract_model_from_transcript("sess-5"), "claude-opus-5"
+                db._extract_model_from_transcript("sess-5"), TESTING_MODEL
             )
 
     def test_full_scan_fallback_when_tail_has_no_model(self):
@@ -246,7 +247,7 @@ class ModelExtractionTests(unittest.TestCase):
         # the full-scan fallback can find it.
         head = [
             {"type": "assistant", "sessionId": "sess-6",
-             "message": {"role": "assistant", "model": "claude-haiku-4-20250514"}},
+             "message": {"role": "assistant", "model": TESTING_MODEL}},
         ]
         filler = [
             {"type": "user", "sessionId": "sess-6",
@@ -257,7 +258,7 @@ class ModelExtractionTests(unittest.TestCase):
         with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             self.assertEqual(
                 db._extract_model_from_transcript("sess-6"),
-                "claude-haiku-4-20250514",
+                TESTING_MODEL,
             )
 
     def test_session_id_cannot_traverse_out_of_projects_dir(self):
@@ -273,20 +274,20 @@ class SessionModelLookupTests(unittest.TestCase):
     """_lookup_session_model uses transcript when session file lacks model."""
 
     def test_cached_result_returned(self):
-        db._model_cache["cached-sess"] = "claude-opus-5"
+        db._model_cache["cached-sess"] = TESTING_MODEL
         with patch.object(db, "_extract_model_from_transcript", return_value=None):
             result = db._lookup_session_model("cached-sess")
-            self.assertEqual(result, "claude-opus-5")
+            self.assertEqual(result, TESTING_MODEL)
 
     def test_transcript_lookup_fallback(self):
         root = _write_transcript("fallback-sess", [
             {"type": "assistant", "sessionId": "fallback-sess",
-             "message": {"role": "assistant", "model": "claude-sonnet-4-20250514"}},
+             "message": {"role": "assistant", "model": TESTING_MODEL}},
         ])
         db._model_cache.pop("fallback-sess", None)
         with patch.object(db, "_CLAUDE_PROJECTS_DIR", root):
             result = db._lookup_session_model("fallback-sess")
-            self.assertEqual(result, "claude-sonnet-4-20250514")
+            self.assertEqual(result, TESTING_MODEL)
 
 
 # ── App: settings endpoints ────────────────────────────────────────────────────
@@ -342,10 +343,10 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_settings_patch_updates_models(self):
         handler = misc_routes.handle_settings_patch
-        req = _FakeRequest(json_data={"default_model": "claude-opus-5"})
+        req = _FakeRequest(json_data={"default_model": TESTING_MODEL})
         resp = await handler(req)
         self.assertTrue(json.loads(resp.body.decode())["ok"])
-        self.assertEqual(await db.setting_get("default_model"), "claude-opus-5")
+        self.assertEqual(await db.setting_get("default_model"), TESTING_MODEL)
 
     async def test_settings_patch_ignores_the_removed_fallback_model(self):
         """fallback_model was stored but never read -- a control implying a
@@ -355,9 +356,9 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await db.setting_get("fallback_model"))
 
     async def test_settings_get_returns_models(self):
-        await db.setting_set("default_model", "claude-opus-5")
+        await db.setting_set("default_model", TESTING_MODEL)
         body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
-        self.assertEqual(body["default_model"], "claude-opus-5")
+        self.assertEqual(body["default_model"], TESTING_MODEL)
 
     async def test_settings_get_no_longer_reports_a_fallback_model(self):
         body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
@@ -515,11 +516,11 @@ class ModelFrameTests(unittest.TestCase):
 
     def test_init_frame_emits_model(self):
         obj = {"type": "system", "subtype": "init",
-               "session_id": "sess-10", "model": "claude-opus-5"}
+               "session_id": "sess-10", "model": TESTING_MODEL}
         events = runner._normalise_cli_frame(obj)
         model_events = [e for e in events if e.get("type") == "model"]
         self.assertEqual(len(model_events), 1)
-        self.assertEqual(model_events[0]["model"], "claude-opus-5")
+        self.assertEqual(model_events[0]["model"], TESTING_MODEL)
 
     def test_init_frame_without_model(self):
         obj = {"type": "system", "subtype": "init",
@@ -560,9 +561,9 @@ class ChatModelFieldTest(unittest.IsolatedAsyncioTestCase):
         work_dir = f"{self.tmp.name}/projects/{chat_id}"
         Path(work_dir).mkdir(parents=True)
         await db.chat_create(chat_id, "Model Test", None, work_dir, "admin")
-        await db.chat_set_model(chat_id, "claude-haiku-4-20250514")
+        await db.chat_set_model(chat_id, TESTING_MODEL)
         chat = await db.chat_get(chat_id, "admin")
-        self.assertEqual(chat["model"], "claude-haiku-4-20250514")
+        self.assertEqual(chat["model"], TESTING_MODEL)
 
     async def test_model_is_none_when_not_set(self):
         chat_id = "empty-model"

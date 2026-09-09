@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import db
+from tests.testing_model import TESTING_MODEL
 
 
 def _write(sessions_dir: Path, filename: str, **overrides) -> Path:
@@ -28,7 +29,7 @@ def _write(sessions_dir: Path, filename: str, **overrides) -> Path:
         "name": "session",
         "startedAt": 1_700_000_000_000,
         "updatedAt": 1_700_000_000_000,
-        "model": "claude-sonnet-5",
+        "model": TESTING_MODEL,
     }
     payload.update(overrides)
     path = sessions_dir / filename

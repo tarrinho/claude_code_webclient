@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, patch
 
 import config
 import runner
+from tests.testing_model import TESTING_MODEL
 
 OWNER = "pedro"
 # Deliberately not a conversation id. This is the shape the orchestrator uses, and
@@ -101,7 +102,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             return {"provider": "claude_code", "base_url": "", "api_key": ""}
 
         async def fake_default_model(chat_id=None, owner=None):
-            return "claude-sonnet-5"
+            return TESTING_MODEL
 
         # Fail immediately after resolution, so nothing is spawned and no proxy
         # is contacted. The error path still yields, so the generator is drained.

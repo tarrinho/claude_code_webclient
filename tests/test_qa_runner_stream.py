@@ -31,6 +31,7 @@ import auth
 import config
 import db
 import runner
+from tests.testing_model import TESTING_MODEL
 
 CHAT = "chat-stream-1"
 
@@ -119,7 +120,7 @@ class ProxyStreamTests(unittest.IsolatedAsyncioTestCase):
     async def _drain(self, *frames):
         with patch.object(runner, "_read_lines", _stream_of(*frames)):
             return [event async for event in runner._do_proxy_stream(
-                "hi", None, "/tmp", CHAT, "claude-opus-5")]
+                "hi", None, "/tmp", CHAT, TESTING_MODEL)]
 
     async def test_handshake_precedes_the_turn(self):
         await self._drain({"type": "done"})
@@ -132,7 +133,7 @@ class ProxyStreamTests(unittest.IsolatedAsyncioTestCase):
         await self._drain({"type": "done"})
         turn = self.writer.sent()[1]
         self.assertEqual(turn["prompt"], "hi")
-        self.assertEqual(turn["model"], "claude-opus-5")
+        self.assertEqual(turn["model"], TESTING_MODEL)
         self.assertEqual(turn["work_dir"], "/tmp")
 
     async def test_no_backend_key_when_no_machine_is_active(self):
@@ -143,7 +144,7 @@ class ProxyStreamTests(unittest.IsolatedAsyncioTestCase):
         """Without it a chat on a custom gateway failed on every streamed turn
         while the same prompt through the blocking path succeeded."""
         await db.ai_machine_create(
-            "m1", "Gateway", "gw.example.com", 443, "sk-test", "claude-opus-5",
+            "m1", "Gateway", "gw.example.com", 443, "sk-test", TESTING_MODEL,
             "https://gw.example.com", None, "admin", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
@@ -156,7 +157,7 @@ class ProxyStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_conversational_frames_are_relayed(self):
         events = await self._drain(
             {"type": "session_id", "session_id": "s1"},
-            {"type": "model", "model": "claude-opus-5"},
+            {"type": "model", "model": TESTING_MODEL},
             {"type": "text", "content": "hello"},
             {"type": "done"},
         )
@@ -322,8 +323,8 @@ class CollectChunksTests(unittest.IsolatedAsyncioTestCase):
         """A stale model must not be reported against a later turn."""
         await self._collect(
             json.dumps({"type": "system", "subtype": "init",
-                        "session_id": "s", "model": "claude-opus-5"}).encode())
-        self.assertEqual(runner.take_last_model(CHAT), "claude-opus-5")
+                        "session_id": "s", "model": TESTING_MODEL}).encode())
+        self.assertEqual(runner.take_last_model(CHAT), TESTING_MODEL)
         self.assertEqual(runner.take_last_model(CHAT), "")
 
     async def test_non_json_lines_are_skipped(self):

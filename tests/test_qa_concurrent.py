@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import db
 import transcripts
+from tests.testing_model import TESTING_MODEL
 
 SESSION = "99999999-8888-7777-6666-555555555555"
 
@@ -32,7 +33,7 @@ def _record(text: str, role: str = "user") -> str:
     if role == "assistant":
         message = {
             "role": "assistant",
-            "model": "claude-opus-5",
+            "model": TESTING_MODEL,
             "content": [{"type": "text", "text": text}],
         }
     else:

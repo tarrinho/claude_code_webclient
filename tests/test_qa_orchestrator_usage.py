@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, patch
 import config
 import runner
 import orchestrator
+from tests.testing_model import TESTING_MODEL
 
 
 class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
@@ -39,7 +40,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         return {
             "type": "usage",
             "models": models if models is not None else {
-                "claude-sonnet-5": {
+                TESTING_MODEL: {
                     "input_tokens": 1200, "output_tokens": 300,
                     "cache_read_tokens": 900, "cache_creation_tokens": 100,
                     "cost_basis": "api",
@@ -50,7 +51,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             "is_error": is_error,
         }
 
-    async def _record(self, frame, chat_id="subtask_t001", model="claude-sonnet-5"):
+    async def _record(self, frame, chat_id="subtask_t001", model=TESTING_MODEL):
         async def fake_usage_record(**kwargs):
             self.rows.append(kwargs)
             return len(self.rows)
@@ -69,7 +70,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
         row = rows[0]
         self.assertEqual(row["chat_id"], "subtask_t001")
         self.assertEqual(row["owner_id"], "pedro")
-        self.assertEqual(row["model"], "claude-sonnet-5")
+        self.assertEqual(row["model"], TESTING_MODEL)
         self.assertEqual(row["input_tokens"], 1200)
         self.assertEqual(row["output_tokens"], 300)
         self.assertEqual(row["cache_read_tokens"], 900)
@@ -118,7 +119,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             patch.object(runner, "take_last_usage", return_value=self._frame()),
             patch("db.usage_record", exploding_record),
         ):
-            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+            await self.engine._record_usage("subtask_t001", TESTING_MODEL)
 
     async def test_the_provider_comes_from_the_backend(self):
         """And it is the display kind, not the machine's provider column.
@@ -144,7 +145,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             patch("db.usage_record", failing_usage_record),
             patch("db.orchestrator_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
         ):
-            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+            await self.engine._record_usage("subtask_t001", TESTING_MODEL)
         self.assertEqual(len(marks), 1)
         self.assertEqual(marks[0][0], "sup-1")
         self.assertEqual(marks[0][1], "usage")
@@ -159,7 +160,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             patch("db.usage_record", exploding_record),
             patch("db.orchestrator_mark_degraded", AsyncMock(side_effect=lambda *a: marks.append(a))),
         ):
-            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+            await self.engine._record_usage("subtask_t001", TESTING_MODEL)
         self.assertEqual(len(marks), 1)
 
     async def test_an_empty_frame_neither_marks_nor_clears(self):
@@ -172,7 +173,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             patch("db.orchestrator_mark_degraded", AsyncMock(side_effect=lambda *a: calls.append(("mark", a)))),
             patch("db.orchestrator_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(("clear", a)))),
         ):
-            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+            await self.engine._record_usage("subtask_t001", TESTING_MODEL)
         self.assertEqual(calls, [])
 
     async def test_a_successful_write_clears_a_prior_degraded_flag(self):
@@ -182,7 +183,7 @@ class UsageRecordingTests(unittest.IsolatedAsyncioTestCase):
             patch("db.usage_record", AsyncMock(return_value=1)),
             patch("db.orchestrator_clear_degraded", AsyncMock(side_effect=lambda *a: calls.append(a))),
         ):
-            await self.engine._record_usage("subtask_t001", "claude-sonnet-5")
+            await self.engine._record_usage("subtask_t001", TESTING_MODEL)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0], ("sup-1", "usage"))
 

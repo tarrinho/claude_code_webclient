@@ -44,6 +44,7 @@ import runner
 from routes import chats as chat_routes
 from routes import machines as machine_routes
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -189,11 +190,11 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_fork_preserves_model(self):
         chat_id = "fork-model"
         await db.chat_create(chat_id, "Model Fork", None, f"{self.tmpdir.name}/p", "admin")
-        await db.chat_set_model(chat_id, "claude-opus-4-20250514")
+        await db.chat_set_model(chat_id, TESTING_MODEL)
         fork_resp = await chat_routes.handle_chat_fork(self._req(chat_id), chat_id)
         fork_id = json.loads(fork_resp.body)["id"]
         forked = await db.chat_get(fork_id, "admin")
-        self.assertEqual(forked["model"], "claude-opus-4-20250514")
+        self.assertEqual(forked["model"], TESTING_MODEL)
 
 
 # ── Chat Search ────────────────────────────────────────────────────────────
@@ -1430,7 +1431,7 @@ class SettingsPatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_settings_patch_valid_model(self):
-        req = self._make_request({"default_model": "claude-sonnet-4-20250514"})
+        req = self._make_request({"default_model": TESTING_MODEL})
         resp = await misc_routes.handle_settings_patch(req)
         data = json.loads(resp.body)
         self.assertTrue(data["ok"])
@@ -1697,14 +1698,14 @@ class SubmitMessageModelTests(unittest.IsolatedAsyncioTestCase):
         cid = await self._create_chat()
         mock_runner = AsyncMock(return_value=([], None))
         with patch.object(runner, "run_turn", mock_runner):
-            req = self._make_request({"content": "hello", "model": "claude-opus-4-20250514"})
+            req = self._make_request({"content": "hello", "model": TESTING_MODEL})
             resp = await chat_routes.handle_submit_message(req, cid)
             self.assertEqual(resp.status_code, 200)
             data = json.loads(resp.body)
             self.assertIn("response", data)
             mock_runner.assert_called_once()
             call_args = mock_runner.call_args
-            self.assertEqual(call_args[0][4], "claude-opus-4-20250514")
+            self.assertEqual(call_args[0][4], TESTING_MODEL)
 
     async def test_submit_invalid_model_name(self):
         req = self._make_request({"content": "hello", "model": "bad/model!"})
@@ -1969,13 +1970,13 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
             received_model.append(args[4] if len(args) > 4 else kwargs.get("model"))
             yield {"type": "done"}
         with patch.object(runner, "stream_turn", _capture_stream):
-            req = self._make_request({"content": "hello", "model": "claude-opus-4"})
+            req = self._make_request({"content": "hello", "model": TESTING_MODEL})
             resp = await chat_routes.stream_handler(req, cid)
             # StreamingResponse is lazy: the generator -- and therefore
             # stream_turn -- only runs once the body is consumed.
             async for _chunk in resp.body_iterator:
                 pass
-            self.assertEqual(received_model[0], "claude-opus-4")
+            self.assertEqual(received_model[0], TESTING_MODEL)
 
 
 if __name__ == "__main__":

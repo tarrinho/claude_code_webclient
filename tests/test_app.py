@@ -19,6 +19,7 @@ import turns
 from routes import chats as chat_routes
 from routes import machines as machine_routes
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -587,7 +588,7 @@ class MachineTests(unittest.IsolatedAsyncioTestCase):
         request = self._make_request(
             json=AsyncMock(return_value={
                 "name": "GCP", "host": "10.0.1.5", "port": 9001,
-                "model": "claude-sonnet-4-20250514",
+                "model": TESTING_MODEL,
             }),
         )
         resp = await machine_routes.handle_machine_create(request)

@@ -20,13 +20,14 @@ import db
 import shared
 import transcripts
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 
 def _turn(role, text, sidechain=False, kind="text"):
     return {
         "role": role,
         "timestamp": "2026-08-29T10:00:00Z",
-        "model": "claude-sonnet-5" if role == "assistant" else "",
+        "model": TESTING_MODEL if role == "assistant" else "",
         "blocks": [{"kind": kind, "text": text}],
         "sidechain": sidechain,
     }

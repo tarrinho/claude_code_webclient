@@ -12,6 +12,7 @@ import config
 import db
 from routes import chats as chat_routes
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 
 class ChatSearchTests(unittest.IsolatedAsyncioTestCase):
@@ -180,11 +181,11 @@ class ChatForkTests(unittest.IsolatedAsyncioTestCase):
         work_dir = Path(self.tmp.name) / "proj"
         work_dir.mkdir(parents=True)
         await db.chat_create(chat_id, "Model Chat", None, str(work_dir), "admin")
-        await db.chat_set_model(chat_id, "claude-opus-4-20250514")
+        await db.chat_set_model(chat_id, TESTING_MODEL)
         await db.chat_fork(chat_id, "admin")
         new_chats = [c for c in await db.chat_list("admin") if c["title"].endswith("(fork)")]
         self.assertEqual(len(new_chats), 1)
-        self.assertEqual(new_chats[0]["model"], "claude-opus-4-20250514")
+        self.assertEqual(new_chats[0]["model"], TESTING_MODEL)
 
     async def test_fork_unknown_chat_returns_none(self):
         result = await db.chat_fork("nonexistent", "admin")

@@ -18,6 +18,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.testing_model import TESTING_MODEL
+
 
 def _fresh_db() -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="wc-enabled-")) / "wc.db"
@@ -70,7 +72,7 @@ class EnabledColumnTests(unittest.IsolatedAsyncioTestCase):
                 "(id, name, provider, host, port, model, owner_id, active, "
                 " created_at, updated_at) "
                 "VALUES ('m-old','Old','claude_code','api.anthropic.com',443,"
-                "'claude-opus-5','admin',1,'2026-01-01T00:00:00Z',"
+                f"'{TESTING_MODEL}','admin',1,'2026-01-01T00:00:00Z',"
                 "'2026-01-01T00:00:00Z')"
             )
             con.commit()
@@ -84,7 +86,7 @@ class EnabledColumnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_readers_all_return_enabled(self):
         await self.db.ai_machine_create(
-            "m-1", "One", "api.anthropic.com", 443, None, "claude-opus-5",
+            "m-1", "One", "api.anthropic.com", 443, None, TESTING_MODEL,
             "https://api.anthropic.com", None, "admin", provider="claude_code",
         )
         await self.db.ai_machine_activate("m-1", "admin")

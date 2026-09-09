@@ -35,6 +35,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import db
+from tests.testing_model import TESTING_MODEL
 
 
 def _session_file(root: Path, filename: str, **fields) -> Path:
@@ -217,7 +218,7 @@ class ReadClaudeSessionsTests(unittest.IsolatedAsyncioTestCase):
     # ── model resolution ────────────────────────────────────────────────
 
     async def test_model_taken_from_the_record_without_a_transcript_read(self):
-        _session_file(self.root, "m.json", model="claude-opus-5")
+        _session_file(self.root, "m.json", model=TESTING_MODEL)
         self._model_patch.stop()
         try:
             with patch.object(db, "_lookup_session_model") as lookup:
@@ -225,19 +226,19 @@ class ReadClaudeSessionsTests(unittest.IsolatedAsyncioTestCase):
             lookup.assert_not_called()
         finally:
             self._model_patch.start()
-        self.assertEqual(row["model"], "claude-opus-5")
+        self.assertEqual(row["model"], TESTING_MODEL)
 
     async def test_model_looked_up_from_the_transcript_when_absent(self):
         _session_file(self.root, "m.json", sessionId="sess-lookup")
         self._model_patch.stop()
         try:
             with patch.object(
-                db, "_lookup_session_model", return_value="claude-sonnet-5"
+                db, "_lookup_session_model", return_value=TESTING_MODEL
             ):
                 row = (await db.read_claude_sessions())[0]
         finally:
             self._model_patch.start()
-        self.assertEqual(row["model"], "claude-sonnet-5")
+        self.assertEqual(row["model"], TESTING_MODEL)
 
     async def test_model_is_empty_when_nothing_knows_it(self):
         _session_file(self.root, "m.json")
@@ -269,19 +270,19 @@ class ModelFromLinesGuardTests(unittest.TestCase):
     def test_blank_lines_ignored(self):
         line = json.dumps({
             "type": "assistant", "sessionId": "s1",
-            "message": {"role": "assistant", "model": "claude-opus-5"},
+            "message": {"role": "assistant", "model": TESTING_MODEL},
         })
         self.assertEqual(
-            db._model_from_lines(["", "   ", line], "s1"), "claude-opus-5"
+            db._model_from_lines(["", "   ", line], "s1"), TESTING_MODEL
         )
 
     def test_malformed_json_ignored(self):
         line = json.dumps({
             "type": "assistant", "sessionId": "s1",
-            "message": {"role": "assistant", "model": "claude-opus-5"},
+            "message": {"role": "assistant", "model": TESTING_MODEL},
         })
         self.assertEqual(
-            db._model_from_lines([line, "{not json"], "s1"), "claude-opus-5"
+            db._model_from_lines([line, "{not json"], "s1"), TESTING_MODEL
         )
 
     def test_non_dict_message_ignored(self):
@@ -295,7 +296,7 @@ class ModelFromLinesGuardTests(unittest.TestCase):
     def test_user_role_inside_an_assistant_record_ignored(self):
         line = json.dumps({
             "type": "assistant", "sessionId": "s1",
-            "message": {"role": "user", "model": "claude-opus-5"},
+            "message": {"role": "user", "model": TESTING_MODEL},
         })
         self.assertIsNone(db._model_from_lines([line], "s1"))
 

@@ -52,6 +52,7 @@ import auth
 import config
 import db
 import runner
+from tests.testing_model import TESTING_MODEL
 
 
 class ActivateBackendTestsBase(unittest.IsolatedAsyncioTestCase):
@@ -77,11 +78,11 @@ class AnthropicActivateWorksTests(ActivateBackendTestsBase):
 
     async def test_get_backend_follows_the_newly_activated_machine(self):
         await db.ai_machine_create(
-            "m1", "First", "a.example", 443, "key-one", "claude-opus-5",
+            "m1", "First", "a.example", 443, "key-one", TESTING_MODEL,
             "https://one.example", None, "alice", provider="claude_code",
         )
         await db.ai_machine_create(
-            "m2", "Second", "b.example", 443, "key-two", "claude-opus-5",
+            "m2", "Second", "b.example", 443, "key-two", TESTING_MODEL,
             "https://two.example", None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")
@@ -199,7 +200,7 @@ class ProxyActivateFollowsTheMachineTests(ActivateBackendTestsBase):
         an anthropic row must not be mistaken for a proxy target.
         """
         await db.ai_machine_create(
-            "m1", "Anthropic", "a.example", 443, "key", "claude-opus-5",
+            "m1", "Anthropic", "a.example", 443, "key", TESTING_MODEL,
             "https://one.example", None, "alice", provider="claude_code",
         )
         await db.ai_machine_activate("m1", "alice")

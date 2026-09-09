@@ -27,6 +27,7 @@ from unittest.mock import patch
 import config
 import db
 from routes import chats as chat_routes
+from tests.testing_model import TESTING_MODEL
 
 
 def assistant(text: str, session_id: str) -> dict:
@@ -35,7 +36,7 @@ def assistant(text: str, session_id: str) -> dict:
         "sessionId": session_id,
         "message": {
             "role": "assistant",
-            "model": "claude-opus-5",
+            "model": TESTING_MODEL,
             "content": [{"type": "text", "text": text}],
         },
     }

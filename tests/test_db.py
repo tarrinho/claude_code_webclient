@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import config
 import db
+from tests.testing_model import TESTING_MODEL
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -204,7 +205,7 @@ class AiMachinesTransportIdTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_without_transport_id_defaults_to_null(self):
         await db.ai_machine_create(
             "m2", "Anthropic API", "api.anthropic.com", 443, None,
-            "claude-sonnet-5", "https://api.anthropic.com", None, "admin",
+            TESTING_MODEL, "https://api.anthropic.com", None, "admin",
             provider="claude_code",
         )
         row = await db.ai_machine_get("m2", "admin")

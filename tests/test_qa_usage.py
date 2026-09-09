@@ -30,6 +30,7 @@ import shared
 from routes import chats as chat_routes
 from routes import machines as machine_routes
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 # A real `result` frame, captured from Claude Code 2.1.251 against a LiteLLM
 # gateway. Trimmed to the fields the parser reads.
@@ -127,17 +128,20 @@ class UnitQA(unittest.TestCase):
                              15531, label)
 
     def test_multiple_models_are_attributed_separately(self):
+        # Two distinct models on purpose -- TESTING_MODEL and the gateway id
+        # must stay different values, or this stops proving separate
+        # attribution and starts proving a dict has one key.
         frame = {
             "type": "result",
             "modelUsage": {
-                "claude-opus-5": {"inputTokens": 100, "outputTokens": 10},
+                TESTING_MODEL: {"inputTokens": 100, "outputTokens": 10},
                 "vllm/Qwen3.6-35B-A3B-NVFP4": {"inputTokens": 200, "outputTokens": 20},
             },
         }
         for label, parse in self.parsers():
             models = parse(frame)["models"]
             self.assertEqual(len(models), 2, label)
-            self.assertEqual(models["claude-opus-5"]["input_tokens"], 100, label)
+            self.assertEqual(models[TESTING_MODEL]["input_tokens"], 100, label)
             self.assertEqual(
                 models["vllm/Qwen3.6-35B-A3B-NVFP4"]["output_tokens"], 20, label
             )
@@ -213,12 +217,12 @@ class UnitQA(unittest.TestCase):
     def test_unknown_model_is_resolved_from_the_session(self):
         runner._models_by_chat.pop("c-resolve", None)
         runner._usage_by_chat.pop("c-resolve", None)
-        runner._models_by_chat["c-resolve"] = "claude-opus-5"
+        runner._models_by_chat["c-resolve"] = TESTING_MODEL
         runner.record_usage_frame(
             "c-resolve", {"type": "usage", "models": {"": {"input_tokens": 5}}}
         )
         stored = runner.take_last_usage("c-resolve")
-        self.assertEqual(list(stored["models"]), ["claude-opus-5"])
+        self.assertEqual(list(stored["models"]), [TESTING_MODEL])
         runner._models_by_chat.pop("c-resolve", None)
 
     def test_unknown_model_without_a_session_is_labelled_not_dropped(self):
@@ -413,15 +417,20 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
     # with the kind the recorders actually store, so the tests exercise the real
     # vocabulary rather than pinning a value nothing writes.
     async def test_cost_is_hidden_for_a_gateway_and_shown_for_the_official_api(self):
+        # The distinction under test is the provider kind, stated in the
+        # comment above -- not which model id the through_claude_code row
+        # uses, so that one is TESTING_MODEL. "vllm/Q" stays hardcoded: it
+        # must read as a gateway model, which TESTING_MODEL by construction
+        # does not.
         await db.usage_record("c1", "admin", "vllm/Q", "anthropic-compatible",
                               input_tokens=10, cost_usd=0.078)
-        await db.usage_record("c1", "admin", "claude-opus-5", "through_claude_code",
+        await db.usage_record("c1", "admin", TESTING_MODEL, "through_claude_code",
                               input_tokens=10, cost_usd=1.25)
         rows = {r["model"]: r for r in (await self._get())["totals"]}
         self.assertIsNone(rows["vllm/Q"]["cost_usd"])
         self.assertIn("Anthropic rates", rows["vllm/Q"]["cost_note"])
-        self.assertAlmostEqual(rows["claude-opus-5"]["cost_usd"], 1.25)
-        self.assertNotIn("cost_note", rows["claude-opus-5"])
+        self.assertAlmostEqual(rows[TESTING_MODEL]["cost_usd"], 1.25)
+        self.assertNotIn("cost_note", rows[TESTING_MODEL])
 
     async def test_cost_is_visible_for_claude_code_rows(self):
         await db.usage_record("c1", "admin", "m", "through_claude_code",
@@ -570,11 +579,13 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.take_last_usage("c1"), {})
 
     async def test_a_turn_with_two_models_writes_two_rows(self):
+        # Two distinct models, deliberately -- the point is two rows from
+        # one turn, which needs two different keys in modelUsage.
         frame = runner.usage_frame({
             "type": "result",
             "total_cost_usd": 0.5,
             "modelUsage": {
-                "claude-opus-5": {"inputTokens": 10, "outputTokens": 1},
+                TESTING_MODEL: {"inputTokens": 10, "outputTokens": 1},
                 "vllm/Q": {"inputTokens": 20, "outputTokens": 2},
             },
         })

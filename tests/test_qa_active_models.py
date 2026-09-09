@@ -35,6 +35,7 @@ import config
 import db
 import runner
 from routes import machines as machine_routes
+from tests.testing_model import TESTING_MODEL
 
 GATEWAY_BODY = json.dumps(
     {
@@ -80,7 +81,7 @@ async def _teardown(tc):
     tc.tmpdir.cleanup()
 
 
-async def _gateway(machine_id="m1", active=True, model="claude-opus-5"):
+async def _gateway(machine_id="m1", active=True, model=TESTING_MODEL):
     await db.ai_machine_create(
         machine_id, "Gateway", "gw.example.com", 443, "sk-test", model,
         "https://gw.example.com", None, "admin", provider="claude_code",
@@ -145,7 +146,7 @@ class SetModelsTests(unittest.IsolatedAsyncioTestCase):
         """Editing the offered set must not silently reset the default."""
         await db.ai_machine_set_models("m1", "admin", ["a", "b"], None)
         self.assertEqual(
-            (await db.ai_machine_get("m1", "admin"))["model"], "claude-opus-5"
+            (await db.ai_machine_get("m1", "admin"))["model"], TESTING_MODEL
         )
 
     async def test_unknown_machine_returns_false(self):
@@ -180,7 +181,7 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
         data = await self._get()
         self.assertEqual(data["machine_id"], "m1")
         self.assertEqual(data["active"], ["azure_ai/gpt-5-mini"])
-        self.assertEqual(data["default"], "claude-opus-5")
+        self.assertEqual(data["default"], TESTING_MODEL)
 
     async def test_empty_active_is_reported_as_empty(self):
         """The UI reads empty as all-checked; the API must not invent a list."""
@@ -209,14 +210,14 @@ class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_proxy_machine_still_reports_its_selection(self):
         """A proxy publishes no list, but its default is still meaningful."""
         await db.ai_machine_create(
-            "p1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5",
+            "p1", "Box", "10.0.0.9", 9000, None, TESTING_MODEL,
             None, None, "admin", provider="proxy",
         )
         await db.ai_machine_activate("p1", "admin")
         data = await self._get()
         self.assertEqual(data["source"], "builtin")
         self.assertEqual(data["machine_id"], "p1")
-        self.assertEqual(data["default"], "claude-sonnet-5")
+        self.assertEqual(data["default"], TESTING_MODEL)
 
 
 class SetModelsEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -303,32 +304,32 @@ class DefaultModelResolutionTests(unittest.IsolatedAsyncioTestCase):
         await _teardown(self)
 
     async def test_machine_default_wins_over_the_global_setting(self):
-        await db.setting_set("default_model", "claude-sonnet-5")
+        await db.setting_set("default_model", TESTING_MODEL)
         await _gateway(model="vllm/Qwen3.6-35B-A3B-NVFP4")
         self.assertEqual(
             await runner.get_default_model("c1"), "vllm/Qwen3.6-35B-A3B-NVFP4"
         )
 
     async def test_global_setting_used_when_no_machine_is_active(self):
-        await db.setting_set("default_model", "claude-sonnet-5")
-        self.assertEqual(await runner.get_default_model("c1"), "claude-sonnet-5")
+        await db.setting_set("default_model", TESTING_MODEL)
+        self.assertEqual(await runner.get_default_model("c1"), TESTING_MODEL)
 
     async def test_config_used_when_nothing_is_set(self):
         self.assertEqual(await runner.get_default_model("c1"), config.MODEL_NAME)
 
     async def test_unknown_chat_falls_back_to_the_global_setting(self):
-        await db.setting_set("default_model", "claude-sonnet-5")
+        await db.setting_set("default_model", TESTING_MODEL)
         await _gateway(model="vllm/Qwen3.6-35B-A3B-NVFP4")
-        self.assertEqual(await runner.get_default_model("no-such-chat"), "claude-sonnet-5")
+        self.assertEqual(await runner.get_default_model("no-such-chat"), TESTING_MODEL)
 
     async def test_no_chat_id_falls_back_to_the_global_setting(self):
-        await db.setting_set("default_model", "claude-sonnet-5")
+        await db.setting_set("default_model", TESTING_MODEL)
         await _gateway(model="vllm/Qwen3.6-35B-A3B-NVFP4")
-        self.assertEqual(await runner.get_default_model(), "claude-sonnet-5")
+        self.assertEqual(await runner.get_default_model(), TESTING_MODEL)
 
     async def test_proxy_machine_default_also_applies(self):
         """The machine default is about the backend, not the provider kind."""
-        await db.setting_set("default_model", "claude-sonnet-5")
+        await db.setting_set("default_model", TESTING_MODEL)
         await db.ai_machine_create(
             "p1", "Box", "10.0.0.9", 9000, None, "claude-haiku-4-5",
             None, None, "admin",

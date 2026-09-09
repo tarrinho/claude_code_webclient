@@ -26,6 +26,7 @@ from fastapi import HTTPException
 import config
 import db
 from routes import orchestrators as supervisor_routes
+from tests.testing_model import TESTING_MODEL
 
 
 class SupervisorConfigBoundTests(unittest.TestCase):
@@ -35,7 +36,7 @@ class SupervisorConfigBoundTests(unittest.TestCase):
         self.assertIsNone(supervisor_routes._validated_supervisor_config(None))
 
     def test_a_small_config_is_accepted_unchanged(self):
-        value = {"model": "claude-opus-5", "tasks": [1, 2, 3]}
+        value = {"model": TESTING_MODEL, "tasks": [1, 2, 3]}
         self.assertEqual(supervisor_routes._validated_supervisor_config(value), value)
 
     def test_a_config_at_the_limit_is_accepted(self):

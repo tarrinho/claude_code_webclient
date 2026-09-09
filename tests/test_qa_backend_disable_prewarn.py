@@ -32,6 +32,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.testing_model import TESTING_MODEL
+
 ROOT = Path(__file__).resolve().parents[1]
 MACHINES_JS = ROOT / "web" / "assets" / "machines.js"
 
@@ -54,7 +56,7 @@ class PinnedCountsQueryTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         for mid, name in (("m-1", "One"), ("m-2", "Two")):
             await db.ai_machine_create(
-                mid, name, "api.anthropic.com", 443, None, "claude-opus-5",
+                mid, name, "api.anthropic.com", 443, None, TESTING_MODEL,
                 "https://api.anthropic.com", None, "admin",
                 provider="claude_code",
             )

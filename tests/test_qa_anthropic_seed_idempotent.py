@@ -26,6 +26,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.testing_model import TESTING_MODEL
+
 
 class _SeedFixture(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -102,7 +104,7 @@ class SeedSurvivesTheProviderMigrationTests(_SeedFixture):
         this function, whatever they named it."""
         await self.db.ai_machine_create(
             "mine", "My Anthropic", "api.anthropic.com", 443, None,
-            "claude-opus-5", "https://api.anthropic.com", None, "admin",
+            TESTING_MODEL, "https://api.anthropic.com", None, "admin",
             provider="claude_code",
         )
         returned = await self.db.ai_machine_seed_anthropic("admin")

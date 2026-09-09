@@ -31,6 +31,7 @@ import db
 import runner
 import transcripts
 import turns
+from tests.testing_model import TESTING_MODEL
 from routes import chats as chat_routes
 
 # ── Unit: what counts as a prompt boundary ────────────────────────────────────
@@ -134,7 +135,7 @@ class TranscriptReadingQA(unittest.TestCase):
                 handle.write(json.dumps(record) + "\n")
 
     @staticmethod
-    def _assistant(model="claude-opus-5", cache=True, inp=100, out=10, when="2026-08-30T10:00:00Z"):
+    def _assistant(model=TESTING_MODEL, cache=True, inp=100, out=10, when="2026-08-30T10:00:00Z"):
         usage = {"input_tokens": inp, "output_tokens": out}
         if cache:
             usage["cache_read_input_tokens"] = 90
@@ -212,7 +213,7 @@ class TranscriptReadingQA(unittest.TestCase):
     def test_unsplit_context_is_flagged_per_model(self):
         self._write([
             self._assistant(model="gw/model", cache=False, inp=106769),
-            self._assistant(model="claude-opus-5", cache=True, inp=200_000),
+            self._assistant(model=TESTING_MODEL, cache=True, inp=200_000),
         ])
         rows, _end = transcripts._usage_since_sync(self.path, 0)
         self.assertEqual([r["context_unsplit"] for r in rows], [True, False])

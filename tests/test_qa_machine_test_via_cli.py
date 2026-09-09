@@ -34,6 +34,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from routes import machines as machine_routes
+from tests.testing_model import TESTING_MODEL
 
 
 class _Stdout:
@@ -74,7 +75,7 @@ RETRY_401 = ('{"type": "system", "subtype": "api_retry", "attempt": 1, '
 ANTHROPIC_HOST_LOGIN = {
     "provider": "claude_code",
     "base_url": "https://api.anthropic.com",
-    "model": "claude-sonnet-5",
+    "model": TESTING_MODEL,
 }
 
 CF_GATEWAY = {

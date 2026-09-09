@@ -47,6 +47,7 @@ import config
 import db
 import shared
 import orchestrator
+from tests.testing_model import TESTING_MODEL
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HTTPS = "https://testserver"
@@ -231,14 +232,14 @@ class ModelArgumentInjectionTests(unittest.TestCase):
         plan = "<<PLAN\n" + "\n".join(
             f"Task {n}: Task {n} - description [:{value}]"
             for n, value in enumerate(self.FLAG_SHAPED, start=1)
-        ) + "\nTask 9: Legitimate - description [:claude-opus-5]\n>>\n"
+        ) + f"\nTask 9: Legitimate - description [:{TESTING_MODEL}]\n>>\n"
         tasks = orchestrator.PlanParser.parse(plan)
         self.assertEqual(len(tasks), len(self.FLAG_SHAPED) + 1, tasks)
         self.assertEqual(
             [t.model for t in tasks[:-1]], [None] * len(self.FLAG_SHAPED),
             "a flag-shaped model must not survive plan parsing",
         )
-        self.assertEqual(tasks[-1].model, "claude-opus-5",
+        self.assertEqual(tasks[-1].model, TESTING_MODEL,
                          "and a real one must still be honoured")
 
     def test_both_paths_share_one_rule(self):
@@ -290,7 +291,7 @@ class ModelArgumentInjectionTests(unittest.TestCase):
         # And a real one is still accepted, so the guard is a filter rather
         # than a wall.
         ok = client.patch(
-            "/api/chats/c1", json={"model": "claude-opus-5"}, headers=headers
+            "/api/chats/c1", json={"model": TESTING_MODEL}, headers=headers
         )
         self.assertEqual(ok.status_code, 200, ok.text)
 

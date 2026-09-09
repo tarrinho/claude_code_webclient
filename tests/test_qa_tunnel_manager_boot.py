@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import config
 import db
+from tests.testing_model import TESTING_MODEL
 import tunnel_manager
 
 REPO = Path(__file__).resolve().parent.parent
@@ -193,7 +194,7 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
         machine_id = "n" * 32
         await db.ai_machine_create(
             machine_id, "Reachability Test", "", 0, None,
-            "claude-sonnet-5", None, None, "admin",
+            TESTING_MODEL, None, None, "admin",
             provider="claude_code",
             transport_id=transport_id,
         )
@@ -252,7 +253,7 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
         machine_id = "o" * 32
         await db.ai_machine_create(
             machine_id, "Fake Success Test", "", 0, None,
-            "claude-sonnet-5", None, None, "admin",
+            TESTING_MODEL, None, None, "admin",
             provider="claude_code",
             transport_id=transport_id,
         )

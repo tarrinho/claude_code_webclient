@@ -33,6 +33,7 @@ import config
 import db
 import runner
 from routes import machines as machine_routes
+from tests.testing_model import TESTING_MODEL
 
 
 def _make_admin_session():
@@ -86,7 +87,7 @@ class MachineSchemaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_created_machine_defaults_to_proxy(self):
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin"
+            "m1", "Box", "10.0.0.9", 9000, None, TESTING_MODEL, None, None, "admin"
         )
         machine = await db.ai_machine_get("m1", "admin")
         self.assertEqual(machine["provider"], "claude_code")
@@ -98,19 +99,19 @@ class MachineSchemaTests(unittest.IsolatedAsyncioTestCase):
         # Rebuild the table without `provider`, as an older release wrote it.
         legacy = sqlite3.connect(path)
         legacy.executescript(
-            """
+            f"""
             DROP TABLE ai_machines;
             CREATE TABLE ai_machines (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
                 port INTEGER NOT NULL DEFAULT 9000, api_key TEXT,
-                model TEXT NOT NULL DEFAULT 'claude-sonnet-5', base_url TEXT,
+                model TEXT NOT NULL DEFAULT '{TESTING_MODEL}', base_url TEXT,
                 description TEXT, active INTEGER NOT NULL DEFAULT 0,
                 owner_id TEXT NOT NULL DEFAULT 'admin',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             INSERT INTO ai_machines
                 (id, name, host, port, model, active, owner_id, created_at, updated_at)
-            VALUES ('old', 'Legacy', '10.0.0.1', 9000, 'claude-sonnet-5', 1, 'admin',
+            VALUES ('old', 'Legacy', '10.0.0.1', 9000, '{TESTING_MODEL}', 1, 'admin',
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
             """
         )
@@ -164,7 +165,7 @@ class MachineSeedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_listing_never_exposes_api_key(self):
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, "sk-secret", "claude-sonnet-5",
+            "m1", "Box", "10.0.0.9", 9000, "sk-secret", TESTING_MODEL,
             None, None, "admin",
         )
         request = _make_request()
@@ -256,7 +257,7 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
                 "name": "CF AI Machine (via Kali3)",
                 "provider": "claude_code",
                 "transport_id": "t1",
-                "model": "claude-sonnet-5",
+                "model": TESTING_MODEL,
             }
         )
         import json as _json
@@ -288,7 +289,7 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await _setup_db(self)
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin"
+            "m1", "Box", "10.0.0.9", 9000, None, TESTING_MODEL, None, None, "admin"
         )
 
     async def asyncTearDown(self):
@@ -455,7 +456,7 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         await _setup_db(self)
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, "sk-test",
-            "claude-opus-5", "https://api.anthropic.com", None, "admin",
+            TESTING_MODEL, "https://api.anthropic.com", None, "admin",
             provider="claude_code",
         )
         self._resolve = patch.object(machine_routes, "_resolve_host", return_value="160.79.104.10")
@@ -497,7 +498,7 @@ class AnthropicProbeTests(unittest.IsolatedAsyncioTestCase):
         spawn.assert_awaited_once()
         args, kwargs = spawn.call_args
         self.assertIn("--model", args)
-        self.assertEqual(args[args.index("--model") + 1], "claude-opus-5")
+        self.assertEqual(args[args.index("--model") + 1], TESTING_MODEL)
         expected = backend_env.deltas(
             {"provider": "claude_code", "base_url": "https://api.anthropic.com",
              "api_key": "sk-test"}
@@ -614,7 +615,7 @@ class MachineTestButtonTransportRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         await db.ai_machine_create(
             "m-transport", "Via Transport", "", 0, None,
-            "claude-sonnet-5", None, None, "admin",
+            TESTING_MODEL, None, None, "admin",
             provider="claude_code", transport_id="t1",
         )
 
@@ -652,7 +653,7 @@ class GetBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_proxy_machine_is_empty(self):
         """A ssh_proxy machine must not rewrite the CLI's provider environment."""
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, "k", "claude-sonnet-5", None, None, "admin",
+            "m1", "Box", "10.0.0.9", 9000, "k", TESTING_MODEL, None, None, "admin",
             provider="ssh_proxy"
         )
         await db.ai_machine_activate("m1", "admin")
@@ -661,7 +662,7 @@ class GetBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_anthropic_machine(self):
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, "sk-test",
-            "claude-opus-5", "https://api.anthropic.com", None, "admin",
+            TESTING_MODEL, "https://api.anthropic.com", None, "admin",
             provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
@@ -674,7 +675,7 @@ class GetBackendTests(unittest.IsolatedAsyncioTestCase):
         """An empty ANTHROPIC_API_KEY would break the host-login fallback."""
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, None,
-            "claude-opus-5", "https://api.anthropic.com", None, "admin",
+            TESTING_MODEL, "https://api.anthropic.com", None, "admin",
             provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
@@ -804,7 +805,7 @@ class TurnPayloadTests(unittest.IsolatedAsyncioTestCase):
         await db.chat_create("c1", "Chat", None, "/tmp", "admin")
         await db.ai_machine_create(
             "m1", "Anthropic", "api.anthropic.com", 443, "sk-test",
-            "claude-opus-5", "https://api.anthropic.com", None, "admin",
+            TESTING_MODEL, "https://api.anthropic.com", None, "admin",
             provider="claude_code",
         )
         await db.ai_machine_activate("m1", "admin")
@@ -842,7 +843,7 @@ class TurnPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(runner.asyncio, "open_connection", _open), \
                 patch.object(runner, "_read_lines", _lines):
-            await runner._execute_proxy("hi", None, "/tmp", "c1", "claude-opus-5")
+            await runner._execute_proxy("hi", None, "/tmp", "c1", TESTING_MODEL)
 
         frames = [_json.loads(b.decode()) for b in written]
         turn = next(f for f in frames if f.get("type") == "turn")

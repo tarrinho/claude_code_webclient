@@ -8,6 +8,7 @@ import auth
 import config
 import db
 from routes import transports as transports_routes
+from tests.testing_model import TESTING_MODEL
 
 
 def _client():
@@ -216,7 +217,7 @@ class TransportsApiTests(unittest.IsolatedAsyncioTestCase):
             "/api/machines",
             json={
                 "name": "Via Kali3", "provider": "claude_code",
-                "transport_id": transport_id, "model": "claude-sonnet-5",
+                "transport_id": transport_id, "model": TESTING_MODEL,
             },
             headers=headers,
         )

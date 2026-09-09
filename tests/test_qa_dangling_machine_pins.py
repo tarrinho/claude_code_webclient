@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import config
 import db
+from tests.testing_model import TESTING_MODEL
 
 
 async def _sandbox(tc):
@@ -45,7 +46,7 @@ async def _teardown(tc):
 async def _machine(machine_id: str, owner: str = "admin") -> None:
     await db.ai_machine_create(
         machine_id, f"Box {machine_id}", "gateway.example.com", 443, None,
-        "claude-opus-5", "https://gateway.example.com", None, owner,
+        TESTING_MODEL, "https://gateway.example.com", None, owner,
         provider="claude_code",
     )
 

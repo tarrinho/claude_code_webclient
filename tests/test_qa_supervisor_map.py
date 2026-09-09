@@ -30,6 +30,7 @@ from routes.db_supervisor_map import (
     _MAX_CHILDREN, _aggregate_status, _capped, _chat_node, _chat_transport,
     _machine_status, _normalise, _task_status, supervisor_map,
 )
+from tests.testing_model import TESTING_MODEL
 
 HTTPS = "https://testserver"
 
@@ -363,7 +364,7 @@ class CapacityOnMachineNodesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_direct_machine_node_carries_the_host_capacity(self):
         await db.ai_machine_create(
-            "m-direct", "Anthropic API", "", 0, None, "claude-opus-5",
+            "m-direct", "Anthropic API", "", 0, None, TESTING_MODEL,
             None, None, "admin", provider="claude_code",
         )
         tree = await supervisor_map("admin")
@@ -373,7 +374,7 @@ class CapacityOnMachineNodesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_ssh_proxied_machine_node_carries_no_capacity(self):
         await db.ai_machine_create(
-            "m-remote", "Kali3", "", 0, None, "claude-opus-5",
+            "m-remote", "Kali3", "", 0, None, TESTING_MODEL,
             None, None, "admin", provider="claude_code",
             transport_id="t-1",
         )
@@ -386,11 +387,11 @@ class CapacityOnMachineNodesTests(unittest.IsolatedAsyncioTestCase):
         """One /proc scan for the whole map, not one per node -- both direct
         machines must report the identical pair from that single call."""
         await db.ai_machine_create(
-            "m-a", "A", "", 0, None, "claude-opus-5", None, None, "admin",
+            "m-a", "A", "", 0, None, TESTING_MODEL, None, None, "admin",
             provider="claude_code",
         )
         await db.ai_machine_create(
-            "m-b", "B", "", 0, None, "claude-sonnet-5", None, None, "admin",
+            "m-b", "B", "", 0, None, TESTING_MODEL, None, None, "admin",
             provider="claude_code",
         )
         tree = await supervisor_map("admin")
@@ -454,7 +455,7 @@ class MapAssemblyTests(unittest.IsolatedAsyncioTestCase):
         """The headline defect: grouping read a column `chats` does not have,
         so every conversation landed in "Direct" regardless of its backend."""
         await db.ai_machine_create(
-            "m-remote", "Kali3", "", 0, None, "claude-opus-5", None, None,
+            "m-remote", "Kali3", "", 0, None, TESTING_MODEL, None, None,
             "admin", provider="claude_code", transport_id="t-1",
         )
         await self._chat_on("c-remote", "m-remote")
@@ -468,7 +469,7 @@ class MapAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_chat_with_no_machine_stays_in_the_direct_group(self):
         await db.ai_machine_create(
-            "m-local", "Anthropic API", "", 0, None, "claude-opus-5", None,
+            "m-local", "Anthropic API", "", 0, None, TESTING_MODEL, None,
             None, "admin", provider="claude_code",
         )
         await self._chat_on("c-local", None)
@@ -570,7 +571,7 @@ class MapAssemblyTests(unittest.IsolatedAsyncioTestCase):
         tests pass whether or not anything uses it.
         """
         await db.ai_machine_create(
-            "m-local", "Anthropic API", "", 0, None, "claude-opus-5", None,
+            "m-local", "Anthropic API", "", 0, None, TESTING_MODEL, None,
             None, "admin", provider="claude_code",
         )
         await self._chat_on("c-bad", "m-local")
@@ -584,7 +585,7 @@ class MapAssemblyTests(unittest.IsolatedAsyncioTestCase):
         """The other half of the pair: without it the test above would pass
         just as well against a machine hardcoded to "error"."""
         await db.ai_machine_create(
-            "m-local", "Anthropic API", "", 0, None, "claude-opus-5", None,
+            "m-local", "Anthropic API", "", 0, None, TESTING_MODEL, None,
             None, "admin", provider="claude_code",
         )
         await self._chat_on("c-ok", "m-local")
@@ -756,7 +757,7 @@ class SupervisorMapEndpointTests(unittest.IsolatedAsyncioTestCase):
         password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(password))
         await db.ai_machine_create(
-            "m-direct", "Anthropic API", "", 0, None, "claude-opus-5",
+            "m-direct", "Anthropic API", "", 0, None, TESTING_MODEL,
             None, None, "admin", provider="claude_code",
         )
         client = self._login("admin", password)
@@ -771,7 +772,7 @@ class SupervisorMapEndpointTests(unittest.IsolatedAsyncioTestCase):
         password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(password))
         await db.ai_machine_create(
-            "m-remote", "Kali3", "", 0, None, "claude-opus-5",
+            "m-remote", "Kali3", "", 0, None, TESTING_MODEL,
             None, None, "admin", provider="claude_code",
             transport_id="t-1",
         )

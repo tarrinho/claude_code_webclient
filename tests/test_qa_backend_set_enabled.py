@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.testing_model import TESTING_MODEL
+
 
 class SetEnabledTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -31,7 +33,7 @@ class SetEnabledTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         for mid, name in (("m-1", "One"), ("m-2", "Two")):
             await db.ai_machine_create(
-                mid, name, "api.anthropic.com", 443, None, "claude-opus-5",
+                mid, name, "api.anthropic.com", 443, None, TESTING_MODEL,
                 "https://api.anthropic.com", None, "admin",
                 provider="claude_code",
             )

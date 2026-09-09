@@ -19,6 +19,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.testing_model import TESTING_MODEL
+
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "bin" / "wc-backend-env.py"
 
@@ -39,7 +41,7 @@ def _db_with(machines: list[tuple[str, str, int, int]]) -> Path:
             "INSERT INTO ai_machines (id,name,provider,host,port,api_key,model,"
             "base_url,description,active,enabled,owner_id,created_at,updated_at,"
             "active_models) VALUES (?,?,'claude_code','api.anthropic.com',443,"
-            "NULL,'claude-opus-5','https://api.anthropic.com',NULL,?,?,'admin',"
+            f"NULL,'{TESTING_MODEL}','https://api.anthropic.com',NULL,?,?,'admin',"
             "'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','[]')",
             (mid, name, active, enabled),
         )
@@ -102,7 +104,7 @@ class MachineForTests(unittest.TestCase):
         con.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
         con.execute(
             "INSERT INTO ai_machines VALUES ('m-1','Old','claude_code',"
-            "'api.anthropic.com',443,NULL,'claude-opus-5',"
+            f"'api.anthropic.com',443,NULL,'{TESTING_MODEL}',"
             "'https://api.anthropic.com',NULL,1,'admin',"
             "'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')"
         )

@@ -51,6 +51,7 @@ import config
 import db
 import runner
 import orchestrator
+from tests.testing_model import TESTING_MODEL
 
 
 class PlanParsingTests(unittest.TestCase):
@@ -88,8 +89,8 @@ class PlanParsingTests(unittest.TestCase):
     def test_a_real_model_suggestion_is_still_honoured(self):
         """The placeholder guard must not swallow a genuine choice."""
         tasks = orchestrator.PlanParser.parse(
-            "<<PLAN\nTask 1: Big one - think hard [:claude-opus-5]\n>>")
-        self.assertEqual(tasks[0].model, "claude-opus-5")
+            f"<<PLAN\nTask 1: Big one - think hard [:{TESTING_MODEL}]\n>>")
+        self.assertEqual(tasks[0].model, TESTING_MODEL)
 
     def test_a_line_with_no_dash_is_all_title(self):
         """It used to raise AttributeError on a None description group."""

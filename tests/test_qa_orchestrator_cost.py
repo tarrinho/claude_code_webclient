@@ -24,6 +24,7 @@ from unittest.mock import patch
 import auth
 import config
 import db
+from tests.testing_model import TESTING_MODEL
 
 HTTPS = "https://testserver"
 
@@ -63,7 +64,7 @@ class OrchestratorCostTests(unittest.IsolatedAsyncioTestCase):
         await db.usage_record(
             chat_id=chat_id,
             owner_id=owner,
-            model="claude-opus-5",
+            model=TESTING_MODEL,
             provider=provider,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -315,7 +316,7 @@ class OrchestratorCostEndpointTests(unittest.IsolatedAsyncioTestCase):
         await db.orchestrator_create("o-1", "Build it", None, "admin")
         await db.orchestrator_set_planner_chat("o-1", "plan-uuid")
         await db.usage_record(
-            chat_id="plan-uuid", owner_id="admin", model="claude-opus-5",
+            chat_id="plan-uuid", owner_id="admin", model=TESTING_MODEL,
             provider="through_claude_code", input_tokens=1200,
             output_tokens=300, cost_usd=0.07, origin="orchestrator",
         )

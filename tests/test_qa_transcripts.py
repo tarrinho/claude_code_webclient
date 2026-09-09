@@ -31,11 +31,12 @@ import config
 import db
 import transcripts
 from routes import misc as misc_routes
+from tests.testing_model import TESTING_MODEL
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def assistant(text, session_id="s1", model="claude-opus-5", **extra):
+def assistant(text, session_id="s1", model=TESTING_MODEL, **extra):
     record = {
         "type": "assistant",
         "sessionId": session_id,
@@ -106,7 +107,7 @@ class RecordParsingTests(unittest.TestCase):
         turn = transcripts._turn_from_record(assistant("hello"))
         self.assertEqual(turn["role"], "assistant")
         self.assertEqual(turn["blocks"], [{"kind": "text", "text": "hello"}])
-        self.assertEqual(turn["model"], "claude-opus-5")
+        self.assertEqual(turn["model"], TESTING_MODEL)
 
     def test_user_text_becomes_a_turn(self):
         turn = transcripts._turn_from_record(user("do the thing"))
@@ -1074,7 +1075,7 @@ class TranscriptRepairTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCas
 # ── Usage from terminal sessions ─────────────────────────────────────────────
 
 
-def spent(model="claude-opus-5", inp=100, out=20, read=5, create=7, **extra):
+def spent(model=TESTING_MODEL, inp=100, out=20, read=5, create=7, **extra):
     record = {
         "type": "assistant", "timestamp": "2026-08-28T09:00:00Z",
         "message": {"role": "assistant", "model": model,
@@ -1101,7 +1102,7 @@ class CliUsageExtractionTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestC
         write_transcript(self.root, "u1", [spent()])
         rows, offset = await transcripts.usage_since("u1")
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["model"], "claude-opus-5")
+        self.assertEqual(rows[0]["model"], TESTING_MODEL)
         self.assertEqual(rows[0]["input_tokens"], 100)
         self.assertEqual(rows[0]["output_tokens"], 20)
         self.assertEqual(rows[0]["cache_read_tokens"], 5)
@@ -1184,7 +1185,7 @@ class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase)
         imported = await misc_routes._import_cli_usage("admin")
         self.assertEqual(imported, 1)
         totals = await db.usage_totals("admin", days=None)
-        row = next(t for t in totals if t["model"] == "claude-opus-5")
+        row = next(t for t in totals if t["model"] == TESTING_MODEL)
         self.assertEqual(row["input_tokens"], 500)
 
     async def test_importing_twice_does_not_double_the_totals(self):
@@ -1193,7 +1194,7 @@ class CliUsageImportTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase)
         again = await misc_routes._import_cli_usage("admin")
         self.assertEqual(again, 0, "a second import must add nothing")
         totals = await db.usage_totals("admin", days=None)
-        row = next(t for t in totals if t["model"] == "claude-opus-5")
+        row = next(t for t in totals if t["model"] == TESTING_MODEL)
         self.assertEqual(row["input_tokens"], 500, "totals must not climb on a re-run")
 
     async def test_the_turns_keep_the_time_they_happened(self):

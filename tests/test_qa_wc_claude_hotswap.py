@@ -17,6 +17,8 @@ import time
 import unittest
 from pathlib import Path
 
+from tests.testing_model import TESTING_MODEL
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "bin" / "wc-claude.sh"
 
@@ -137,14 +139,14 @@ class DryRunResolutionTests(unittest.TestCase):
         _make_db(db, machines=[{
             "name": "Anthropic API", "provider": "claude_code",
             "base_url": "", "api_key": "sk-test-key-value",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         result = self._run(db, "--resume", "test1")
         self.assertEqual(result.returncode, 0)
         self.assertIn("ANTHROPIC_API_KEY = <set, 17 chars>", result.stdout)
         self.assertNotIn("FAKE-CLAUDE-RAN", result.stdout,
                          "dry run must not start claude")
-        self.assertIn("--model claude-opus-5", result.stdout)
+        self.assertIn(f"--model {TESTING_MODEL}", result.stdout)
 
     def test_gateway_machine_unsets_anthropic_vars(self):
         db = str(Path(self.tmp.name) / "db.sqlite")
@@ -158,10 +160,16 @@ class DryRunResolutionTests(unittest.TestCase):
         self.assertIn("ANTHROPIC_API_KEY = (unset)", result.stdout)
 
     def test_explicit_model_flag_always_wins(self):
+        # Two distinct models on purpose: the DB's TESTING_MODEL must not
+        # survive against the CLI's explicit --model override. "claude-haiku-
+        # 4-5" stays hardcoded as the override -- it only has to differ from
+        # TESTING_MODEL, and haiku can never collide with either of
+        # TESTING_MODEL's two possible values (the configured default or the
+        # current session's resolved model).
         db = str(Path(self.tmp.name) / "db.sqlite")
         _make_db(db, machines=[{
             "name": "Anthropic API", "provider": "claude_code",
-            "api_key": "sk-test", "model": "claude-opus-5", "active": True,
+            "api_key": "sk-test", "model": TESTING_MODEL, "active": True,
         }])
         result = self._run(db, "--resume", "test1", "--model", "claude-haiku-4-5")
         # Registry #81: "would exec:" always names the fully-resolved binary
@@ -172,7 +180,7 @@ class DryRunResolutionTests(unittest.TestCase):
         self.assertIn("--resume test1 --model claude-haiku-4-5",
                      result.stdout.replace("\n", " "))
         self.assertIn("would exec:", result.stdout)
-        self.assertNotIn("--model claude-opus-5", result.stdout)
+        self.assertNotIn(f"--model {TESTING_MODEL}", result.stdout)
 
 
 class PollerTests(unittest.TestCase):
@@ -213,7 +221,7 @@ class PollerTests(unittest.TestCase):
     def test_a_real_change_signals_the_target(self):
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         # write_backend_state needs PROVIDER/BASE_URL/API_KEY/MODEL set, as
         # resolve_backend would set them at startup.
@@ -241,7 +249,7 @@ stop_poller
     def test_no_change_does_not_signal(self):
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         body = f'''
 export WC_CLAUDE_POLL_S=1
@@ -261,7 +269,7 @@ stop_poller
         trigger a restart into a broken state."""
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         body = f'''
 export WC_CLAUDE_POLL_S=1
@@ -292,7 +300,7 @@ stop_poller
         notice a real change ever again."""
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         body = f'''
 export WC_CLAUDE_POLL_S=1
@@ -316,7 +324,7 @@ con.execute(
 con.execute("CREATE TABLE settings (key TEXT, value TEXT)")
 con.execute(
     "INSERT INTO ai_machines (name, provider, api_key, model, active) "
-    "VALUES ('one', 'anthropic', 'key-two', 'claude-opus-5', 1)")
+    "VALUES ('one', 'anthropic', 'key-two', {TESTING_MODEL!r}, 1)")
 con.commit()
 con.close()
 PY
@@ -334,7 +342,7 @@ stop_poller
     def test_stop_poller_leaves_no_process_behind(self):
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         body = f'''
 export WC_CLAUDE_POLL_S=1
@@ -534,7 +542,7 @@ sys.exit(0)
         (bindir / "claude").chmod(0o755)
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         result = subprocess.run(
             [str(SCRIPT), "--resume", "test-session"],
@@ -545,7 +553,7 @@ sys.exit(0)
     def test_the_poller_and_child_are_cleaned_up_on_exit(self):
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         proc = subprocess.Popen(
             [str(SCRIPT), "--resume", "test-session"],
@@ -580,7 +588,7 @@ sys.exit(0)
         """
         _make_db(self.db, machines=[{
             "name": "one", "provider": "claude_code", "api_key": "key-one",
-            "model": "claude-opus-5", "active": True,
+            "model": TESTING_MODEL, "active": True,
         }])
         proc = subprocess.Popen(
             [str(SCRIPT), "--resume", "test-session"],

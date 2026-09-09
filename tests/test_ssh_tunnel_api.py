@@ -7,6 +7,8 @@ be available in all environments, so they are skipped gracefully.
 """
 import pytest
 
+from tests.testing_model import TESTING_MODEL
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -190,7 +192,7 @@ def _create_machine_with_transport(client, name="Test SSH Box"):
         "name": name,
         "provider": "claude_code",
         "transport_id": transport_id,
-        "model": "claude-sonnet-5",
+        "model": TESTING_MODEL,
     })
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
@@ -226,7 +228,7 @@ def test_creating_a_non_ssh_machine_does_not_violate_not_null(client):
     resp = client.post("/api/machines", json={
         "name": "Plain Anthropic Machine",
         "provider": "claude_code",
-        "model": "claude-sonnet-5",
+        "model": TESTING_MODEL,
     })
     assert resp.status_code == 200, resp.text
     assert resp.json().get("id")

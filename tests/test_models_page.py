@@ -29,6 +29,7 @@ import config
 import db
 import shared
 from routes import machines as machine_routes
+from tests.testing_model import TESTING_MODEL
 
 ANTHROPIC_BODY = json.dumps(
     {
@@ -88,7 +89,7 @@ async def _teardown_db(tc):
 async def _add_anthropic_machine(base_url="https://gateway.example.com", key="sk-test"):
     await db.ai_machine_create(
         "m1", "Gateway", "gateway.example.com", 443, key,
-        "claude-opus-5", base_url, None, "admin", provider="claude_code",
+        TESTING_MODEL, base_url, None, "admin", provider="claude_code",
     )
     await db.ai_machine_activate("m1", "admin")
 
@@ -253,7 +254,7 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_retired_provider_falls_back_instead_of_crashing(self):
         await db.ai_machine_create(
-            "m1", "Box", "10.0.0.9", 9000, None, "claude-sonnet-5", None, None, "admin",
+            "m1", "Box", "10.0.0.9", 9000, None, TESTING_MODEL, None, None, "admin",
             provider="ssh_proxy"
         )
         await db.ai_machine_activate("m1", "admin")

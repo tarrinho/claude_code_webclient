@@ -26,6 +26,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.testing_model import TESTING_MODEL
+
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "bin" / "wc-claude.sh"
 BACKEND_ENV = ROOT / "bin" / "wc-backend-env.py"
@@ -120,7 +122,7 @@ class WrapperTests(unittest.TestCase):
         """No base_url means the official API -- registry #68's exact shape."""
         make_db(self.db, machines=[{
             "id": "m1", "name": "Anthropic", "base_url": "",
-            "api_key": "", "model": "claude-opus-5", "active": 1}])
+            "api_key": "", "model": TESTING_MODEL, "active": 1}])
         out = self.run_wrapper()
         self.assertIn("ANTHROPIC_BASE_URL = (unset)", out)
 
@@ -128,7 +130,7 @@ class WrapperTests(unittest.TestCase):
         """CLAUDE_CODE_SIMPLE must go, or the CLI refuses to read the login."""
         make_db(self.db, machines=[{
             "id": "m1", "name": "Anthropic", "base_url": "",
-            "api_key": "", "model": "claude-opus-5", "active": 1}])
+            "api_key": "", "model": TESTING_MODEL, "active": 1}])
         out = self.run_wrapper(env_extra={"CLAUDE_CODE_SIMPLE": "1"})
         self.assertIn("ANTHROPIC_API_KEY = (unset)", out)
         self.assertIn("CLAUDE_CODE_SIMPLE = (unset)", out)

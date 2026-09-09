@@ -913,7 +913,7 @@ button{touch-action:manipulation}
   font-size:13px; line-height:1.5; color:var(--fg);
   white-space:pre-wrap; word-break:break-word;
 }
-.voice-tooltip-messages .voice-user { color:var(--user-bg); font-weight:600; }
+.voice-tooltip-messages .voice-user { color:var(--user-fg); font-weight:600; }
 .voice-tooltip-messages .voice-assistant { color:var(--fg); }
 .voice-tooltip-messages .voice-status { color:#fff; font-style:italic; opacity:0.7; }
 .voice-tooltip-composer {

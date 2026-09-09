@@ -162,6 +162,22 @@ VOICE_SPEECH_RATE_DEFAULT = _float("WC_VOICE_SPEECH_RATE_DEFAULT", 1.0)
 # approval prompts (the whole point of the webconsole cluster).
 CROSS_SESSION_INBOUND_DEFAULT = _str("WC_CROSS_SESSION_INBOUND_DEFAULT", "accept")
 
+# --- testing default model --------------------------------------------------
+# What a test file should write instead of hardcoding "claude-opus-5" (or any
+# other literal) wherever the test needs a real model id and the specific
+# value is not itself the thing under test. Settings dialog can override at
+# runtime via the generic settings table, same as the voice defaults above.
+# Deliberately not config.MODEL_NAME: that is the production application's own
+# default for a real turn, already asserted against by tests
+# (test_qa_active_models.py, test_qa_model_choice_sticks.py) -- conflating the
+# two would make a Settings-dialog change to one silently change what the
+# other verifies.
+TESTING_MODEL_DEFAULT = _str("WC_TESTING_MODEL_DEFAULT", "claude-opus-5")
+# Off = tests/conftest.py resolves the model actually in effect for the
+# current agent session (bin/wc-backend-env.py --profile "$WC_PROFILE" --json)
+# instead of the fixed default above. See tests/conftest.py for the resolver.
+TESTING_MODEL_ENFORCE_DEFAULT = _bool("WC_TESTING_MODEL_ENFORCE_DEFAULT", True)
+
 # --- usage accounting ------------------------------------------------------
 # How long per-turn usage rows are kept. Pruned once per startup; 0 disables
 # pruning and keeps everything.

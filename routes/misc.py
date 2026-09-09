@@ -749,6 +749,15 @@ async def handle_settings_get(request: Request):
     if cross_session_inbound not in ("accept", "prompt"):
         cross_session_inbound = config.CROSS_SESSION_INBOUND_DEFAULT
 
+    testing_default_model = (
+        await db.setting_get("testing_default_model") or config.TESTING_MODEL_DEFAULT
+    )
+    testing_model_enforce = await db.setting_get("testing_model_enforce")
+    testing_model_enforce = (
+        config.TESTING_MODEL_ENFORCE_DEFAULT if testing_model_enforce is None
+        else testing_model_enforce == "1"
+    )
+
     from routes.db_machines import parse_active_models
     from routes.voice import voice_model_timing_averages
 
@@ -828,6 +837,8 @@ async def handle_settings_get(request: Request):
             "voice_speech_rate": voice_speech_rate,
             "voice_model_options": voice_model_options,
             "cross_session_inbound": cross_session_inbound,
+            "testing_default_model": testing_default_model,
+            "testing_model_enforce": testing_model_enforce,
         }
     )
 
@@ -921,6 +932,22 @@ async def handle_settings_patch(request: Request):
                 detail="cross_session_inbound must be 'accept' or 'prompt'",
             )
         await db.setting_set("cross_session_inbound", value)
+
+    if "testing_default_model" in data:
+        value = data.get("testing_default_model")
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=400, detail="testing_default_model must be non-empty text"
+            )
+        await db.setting_set("testing_default_model", value.strip())
+
+    if "testing_model_enforce" in data:
+        value = data.get("testing_model_enforce")
+        if not isinstance(value, bool):
+            raise HTTPException(
+                status_code=400, detail="testing_model_enforce must be a boolean"
+            )
+        await db.setting_set("testing_model_enforce", "1" if value else "0")
 
     # Boot secrets – these live in the DB so the app can run without .env.
     boot_secrets = {

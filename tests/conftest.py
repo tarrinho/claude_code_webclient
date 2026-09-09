@@ -60,6 +60,80 @@ if not os.environ.get("WC_RESOURCE_GUARD"):
     os.environ["WC_RESOURCE_GUARD"] = "off"
 
 
+# ── Testing default model ────────────────────────────────────────────────────
+#
+# Resolved once, here, before any test file is collected -- every test that
+# needs "a" model id imports tests.testing_model.TESTING_MODEL instead of
+# hardcoding "claude-opus-5" (or any other literal) wherever the specific
+# value is not itself the thing under test.
+#
+# Two sources, chosen by the Settings dialog's "Enforce testing default
+# model" knob, read once from the production database -- read-only, a single
+# SELECT, never db.init() against it (CLAUDE.md rule 9):
+#
+#   enforced (the default): the fixed value configured in Settings -> App, or
+#     config.TESTING_MODEL_DEFAULT if never set.
+#   not enforced: the model actually in effect for *this* agent session,
+#     resolved the same way bin/wc-claude.sh does --
+#     `bin/wc-backend-env.py --profile "$WC_PROFILE" --json`'s own "model"
+#     field. Confirmed live during design: this resolves to "claude-sonnet-5"
+#     for a session pinned to the anthropic-oauth profile.
+#
+# Every failure mode here (no production DB yet, WC_PROFILE unset, the script
+# missing, a timeout) falls back to the configured/default value rather than
+# raising -- a broken resolution must not be the reason a test run cannot
+# start, the same reasoning resource_guard's own fail-open follows.
+if not os.environ.get("WC_TESTING_MODEL"):
+    def _resolve_testing_model() -> str:
+        import json
+        import sqlite3
+        import subprocess
+
+        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        default = os.environ.get("WC_TESTING_MODEL_DEFAULT", "claude-opus-5")
+        enforce_default = os.environ.get(
+            "WC_TESTING_MODEL_ENFORCE_DEFAULT", "1") == "1"
+
+        configured, enforce = default, enforce_default
+        try:
+            db_path = os.environ.get(
+                "WC_PROD_DB_PATH_FOR_TESTING_MODEL",
+                str(repo_root / "data" / "webconsole.db"))
+            con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+            con.row_factory = sqlite3.Row
+            rows = {
+                r["key"]: r["value"] for r in con.execute(
+                    "SELECT key, value FROM settings WHERE key IN "
+                    "('testing_default_model', 'testing_model_enforce')")
+            }
+            con.close()
+            configured = rows.get("testing_default_model") or default
+            raw = rows.get("testing_model_enforce")
+            enforce = enforce_default if raw is None else raw == "1"
+        except Exception:
+            pass  # no production DB yet, or unreadable -- use the defaults above
+
+        if enforce:
+            return configured
+
+        profile = os.environ.get("WC_PROFILE")
+        if not profile:
+            return configured
+        try:
+            script = repo_root / "bin" / "wc-backend-env.py"
+            proc = subprocess.run(
+                [str(repo_root / ".venv" / "bin" / "python"), str(script),
+                 "--profile", profile, "--json"],
+                capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            )
+            resolved = json.loads(proc.stdout).get("model")
+            return resolved or configured
+        except Exception:
+            return configured
+
+    os.environ["WC_TESTING_MODEL"] = _resolve_testing_model()
+
+
 # ── Rate limiter isolation ───────────────────────────────────────────────────
 #
 # `_Ratelimiter._buckets` is a ClassVar, so it is one dict for the whole

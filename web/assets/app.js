@@ -531,6 +531,15 @@ async function saveSettings(event) {
     if (crossInbound && crossInbound !== _loadedSettings?.cross_session_inbound) {
       body.cross_session_inbound = crossInbound;
     }
+    const testingModel = (byId('testingDefaultModel')?.value || '').trim();
+    if (testingModel && testingModel !== _loadedSettings?.testing_default_model) {
+      body.testing_default_model = testingModel;
+    }
+    const testingEnforcePressed =
+      byId('testingModelEnforce')?.getAttribute('aria-pressed') === 'true';
+    if (testingEnforcePressed !== _loadedSettings?.testing_model_enforce) {
+      body.testing_model_enforce = testingEnforcePressed;
+    }
     collectVoiceSettingsFields(body, _loadedSettings);
     if (!Object.keys(body).length) {
       setStatus('No changes to save', 'success');
@@ -1774,6 +1783,13 @@ async function loadSettings() {
       if (data.cross_session_inbound) {
         byId('crossSessionInbound').value = data.cross_session_inbound;
       }
+      if (data.testing_default_model) {
+        byId('testingDefaultModel').value = data.testing_default_model;
+      }
+      if (data.testing_model_enforce !== undefined) {
+        const el = byId('testingModelEnforce');
+        if (el) el.setAttribute('aria-pressed', String(data.testing_model_enforce));
+      }
       // The model dropdown is repopulated inside renderVoiceSettingsFields
       // from the chosen backend's own `models`, so this callback no longer
       // touches it. It used to call a populateModelOptions that is private
@@ -2215,6 +2231,11 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('settingsSave').addEventListener('click', saveSettings);
   byId('debugConsole')?.addEventListener('click', () => {
     const el = byId('debugConsole');
+    const on = el.getAttribute('aria-pressed') === 'true';
+    el.setAttribute('aria-pressed', String(!on));
+  });
+  byId('testingModelEnforce')?.addEventListener('click', () => {
+    const el = byId('testingModelEnforce');
     const on = el.getAttribute('aria-pressed') === 'true';
     el.setAttribute('aria-pressed', String(!on));
   });

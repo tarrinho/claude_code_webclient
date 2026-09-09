@@ -447,6 +447,21 @@
             <b>Auto-approve is a trust boundary:</b> any session with access to this WebConsole can send you messages that will be executed by your active session.
           </span>
         </div>
+        <div class="app-setting-row">
+          <label for="testingDefaultModel">Testing default model</label>
+          <input id="testingDefaultModel" type="text" placeholder="claude-opus-5">
+          <span class="setting-hint">Model id the QA test suite uses wherever a test needs one and the specific value is not itself under test.</span>
+        </div>
+        <div class="app-setting-row">
+          <label>Enforce testing default model</label>
+          <button type="button" id="testingModelEnforce" class="toggle-knob" aria-pressed="false" aria-label="Toggle enforcing the testing default model">
+            <span class="knob-track">
+              <span class="knob-thumb"></span>
+            </span>
+            <span class="knob-label"></span>
+          </button>
+          <span class="setting-hint">On: tests use the model above. Off: tests use whatever model the current agent session is actually running as.</span>
+        </div>
       </div>
     </div>
     <div class="settings-footer">

@@ -409,6 +409,54 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
             await misc_routes.handle_settings_patch(req)
         self.assertEqual(ctx.exception.status_code, 400)
 
+    # ── Testing default model ────────────────────────────────────────────
+
+    async def test_settings_get_reports_the_config_default_when_unset(self):
+        body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
+        self.assertEqual(body["testing_default_model"], config.TESTING_MODEL_DEFAULT)
+        self.assertEqual(body["testing_model_enforce"], config.TESTING_MODEL_ENFORCE_DEFAULT)
+
+    async def test_settings_patch_updates_the_testing_model(self):
+        req = _FakeRequest(json_data={"testing_default_model": "claude-sonnet-5"})
+        resp = await misc_routes.handle_settings_patch(req)
+        self.assertTrue(json.loads(resp.body.decode())["ok"])
+        self.assertEqual(
+            await db.setting_get("testing_default_model"), "claude-sonnet-5")
+
+    async def test_settings_get_reflects_a_saved_testing_model(self):
+        await db.setting_set("testing_default_model", "claude-sonnet-5")
+        body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
+        self.assertEqual(body["testing_default_model"], "claude-sonnet-5")
+
+    async def test_settings_patch_rejects_an_empty_testing_model(self):
+        req = _FakeRequest(json_data={"testing_default_model": "   "})
+        with self.assertRaises(HTTPException) as ctx:
+            await misc_routes.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_settings_patch_rejects_a_non_string_testing_model(self):
+        req = _FakeRequest(json_data={"testing_default_model": 5})
+        with self.assertRaises(HTTPException) as ctx:
+            await misc_routes.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_settings_patch_updates_the_enforce_knob(self):
+        req = _FakeRequest(json_data={"testing_model_enforce": False})
+        resp = await misc_routes.handle_settings_patch(req)
+        self.assertTrue(json.loads(resp.body.decode())["ok"])
+        self.assertEqual(await db.setting_get("testing_model_enforce"), "0")
+
+    async def test_settings_get_reflects_the_enforce_knob_off(self):
+        await db.setting_set("testing_model_enforce", "0")
+        body = json.loads((await misc_routes.handle_settings_get(_FakeRequest())).body.decode())
+        self.assertFalse(body["testing_model_enforce"])
+
+    async def test_settings_patch_rejects_a_non_boolean_enforce_knob(self):
+        req = _FakeRequest(json_data={"testing_model_enforce": "yes"})
+        with self.assertRaises(HTTPException) as ctx:
+            await misc_routes.handle_settings_patch(req)
+        self.assertEqual(ctx.exception.status_code, 400)
+
 
 # ── App: hostname/IP validation ───────────────────────────────────────────────
 

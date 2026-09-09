@@ -231,6 +231,18 @@ function closeDialog() {
   if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
+function updateVoiceToggleIcon() {
+  const chat = state.currentChat;
+  if (!chat) return;
+  const btn = byId('voiceModeToggleBtn');
+  if (!btn) return;
+  if (!chat.voice_mode) {
+    btn.title = 'Enable voice mode';
+  } else {
+    btn.title = 'Disable voice mode';
+  }
+}
+
 async function toggleChatVoiceMode() {
   const chat = state.currentChat;
   if (!chat || !chat.id) return;

@@ -635,20 +635,24 @@ function _toggleGroupCollapse(key) {
   _renderMachineList();
 }
 
-/** Every transport group starts expanded when the Backends panel opens.
+/** Every transport group starts collapsed when the Backends panel opens.
  *
- * Pedro's rule: on open, every collapse toggle is false -- including a
- * Disabled group, which _buildTransportHeader would otherwise auto-collapse
- * on first sight. Marking every current key as already-seeded stops that
- * from firing on the render this triggers, not just clearing the visible
- * state -- clearing _collapsedGroups alone would still let a
- * never-before-seen Disabled group re-collapse itself in the same pass.
- * Called from loadBackends(), so it runs every time the panel opens or the
- * user switches back to the Backends tab, not only on first load.
+ * Pedro's rule: on open, every collapse toggle is true, whatever the
+ * operator left it as, or whatever status-based default
+ * _buildTransportHeader would otherwise have seeded it to (only Disabled
+ * groups start collapsed on first sight -- this forces every group there
+ * regardless of status). Seeding every key here too, not just collapsing it,
+ * means a group never rendered before this call does not get a second,
+ * separate collapse decision from _buildTransportHeader's own seed-once
+ * logic -- one decision, made here. Called from loadBackends(), so it runs
+ * every time the panel opens or the user switches back to the Backends tab,
+ * not only on first load.
  */
-export function _expandAllTransportGroups() {
-  _collapsedGroups.clear();
-  _machineGroups().forEach(g => _seededGroups.add(g.key));
+export function _collapseAllTransportGroups() {
+  _machineGroups().forEach(g => {
+    _collapsedGroups.add(g.key);
+    _seededGroups.add(g.key);
+  });
 }
 
 // One transport's group header: collapse toggle, status + count, a

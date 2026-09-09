@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import unittest
 
@@ -118,8 +119,18 @@ class JavaScriptErrorHandlingTests(unittest.TestCase):
     """Static analysis: verify JS files contain error-handling patterns."""
 
     @property
-    def web_dir(self) -> str:
-        return "/home/kali/projects/claude-code-webconsole/web/assets"
+    def web_dir(self) -> Path:
+        """Resolved from this file, not hardcoded.
+
+        This was the absolute path of one developer's checkout, so the four
+        tests below read that tree whatever tree was under test. Run anywhere
+        else they do not merely fail -- they fail for the wrong reason: on a
+        remote QA node the path exists and belongs to another user, so the
+        two "handles fetch errors" cases raised PermissionError while the two
+        "exists" cases asserted False, and none of them had looked at the
+        checkout they were invoked against.
+        """
+        return Path(__file__).resolve().parents[1] / "web" / "assets"
 
     def test_app_js_exists(self):
         self.assertTrue(os.path.exists(f"{self.web_dir}/app.js"))

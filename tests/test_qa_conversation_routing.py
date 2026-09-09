@@ -234,8 +234,19 @@ class ComponentAPIQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         await self.close_temp_db()
 
     async def test_patch_sets_the_backend(self):
+        """The response's contract, not its exact shape.
+
+        This asserted `== {"ok": True}`, which stopped being true when PATCH
+        started returning the updated chat so the sidebar row could be
+        refreshed in place instead of re-fetching the whole list. That is a
+        deliberate change, and an equality assertion on a response body makes
+        every future addition to it a test failure -- while pinning none of
+        what this test is actually about, which is that the routing moved.
+        """
         resp = await self.patch_chat("c1", {"ai_machine_id": "gw"})
-        self.assertEqual(json.loads(resp.body), {"ok": True})
+        body = json.loads(resp.body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["chat"]["id"], "c1")
         self.assertEqual((await db.chat_routing("c1"))["machine"]["id"], "gw")
 
     async def test_patch_clears_the_backend_with_null(self):

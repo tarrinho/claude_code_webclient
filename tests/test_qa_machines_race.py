@@ -29,6 +29,25 @@ import unittest
 from tests.test_frontend_browser import CHROMIUM, DRIVER_OK, DRIVER_WHY, _BrowserFixture
 
 
+def _expand_first_transport_group(page, timeout: int = 8_000):
+    """Open the first Backends group so its cards are in the DOM.
+
+    Every transport group now starts collapsed each time the panel opens (an
+    explicit product decision), and a collapsed group does not render its
+    cards at all -- `_renderMachineList` skips them rather than hiding them.
+    So `.machine-card` is simply absent until something is expanded, and three
+    browser tests that waited for it timed out on a panel that was working
+    exactly as intended.
+
+    Expanding here rather than asserting on the header keeps each test about
+    what it was written for: one fetch shared by concurrent loads, and a
+    failed refresh not erasing a list that had already loaded.
+    """
+    page.wait_for_selector(".transport-collapse-toggle", timeout=timeout)
+    page.click(".transport-collapse-toggle")
+    page.wait_for_selector(".machine-card", timeout=timeout)
+
+
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class ConcurrentLoadsShareOneFetchTests(_BrowserFixture):
@@ -69,7 +88,7 @@ class ConcurrentLoadsShareOneFetchTests(_BrowserFixture):
         # which is exactly the window the boot-time call was still pending in
         # when this was caught live.
         self.page.click("#settingsBtn")
-        self.page.wait_for_selector(".machine-card", timeout=8_000)
+        _expand_first_transport_group(self.page)
         self.assertEqual(
             self._machine_calls, 1,
             "two independent /api/machines requests were made -- the "
@@ -90,7 +109,7 @@ class FailedRefreshDoesNotEraseAPriorSuccessTests(_BrowserFixture):
 
     def test_reopening_settings_after_a_failed_refresh_keeps_the_card(self):
         self.page.click("#settingsBtn")
-        self.page.wait_for_selector(".machine-card", timeout=8_000)
+        _expand_first_transport_group(self.page)
 
         self.page.click("#settingsCancel")
         self.page.wait_for_timeout(300)
@@ -101,7 +120,11 @@ class FailedRefreshDoesNotEraseAPriorSuccessTests(_BrowserFixture):
 
         self.page.route("**/api/machines", fail_once)
         self.page.click("#settingsBtn")
-        self.page.wait_for_timeout(1_500)
+        # Reopening re-collapses every group, so the card has to be expanded
+        # back into view before asking whether it survived. The distinction
+        # this test cares about is intact: an erased list has no group header
+        # to expand and no card behind it, while a surviving one has both.
+        _expand_first_transport_group(self.page)
 
         self.assertTrue(
             self.page.query_selector(".machine-card"),

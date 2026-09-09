@@ -57,11 +57,21 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await db.init()
         self.password = secrets.token_urlsafe(16)
-        await auth.user_create("admin", None, auth.hash_password(self.password))
+        # db.user_create, not auth.user_create: `auth` owns password hashing
+        # and session handling, and has never had a user_create. Every test in
+        # this class raised AttributeError in asyncSetUp, so all eight failed
+        # before reaching a single assertion -- the file has never passed.
+        await db.user_create("admin", None, auth.hash_password(self.password))
         self.client = _client()
 
     def _headers(self):
-        """Authenticate and return the CSRF + session headers."""
+        """Authenticate and return the CSRF + session headers.
+
+        Every caller used to invoke this for its login side effect and drop
+        the return value, so each POST went out with a session cookie and no
+        CSRF header and was refused with 403 -- eight tests failing on the
+        harness rather than on anything they assert.
+        """
         resp = self.client.post("/login", json={
             "username": "admin", "password": self.password,
         })
@@ -72,13 +82,13 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_child_gets_parent_chat_id(self):
         """POST /api/chats with parent_chat_id must persist it."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
         await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
 
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
             "voice_mode": True,
             "is_temporary": True,
@@ -92,13 +102,13 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_child_is_temporary(self):
         """is_temporary must be set to 1 so sidebar can distinguish it."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
         await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
 
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
             "voice_mode": True,
             "is_temporary": True,
@@ -111,13 +121,13 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_child_is_voice_mode(self):
         """voice_mode must be set so the composer shows voice icons."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
         await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
 
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
             "voice_mode": True,
             "is_temporary": True,
@@ -130,7 +140,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_parent_chat_not_modified(self):
         """Creating a voice child must not alter the parent chat."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
@@ -142,7 +152,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_temp_before = parent_before.get("is_temporary", 0)
 
         # Create voice child
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
             "voice_mode": True,
             "is_temporary": True,
@@ -167,13 +177,13 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_both_chats_appear_in_chat_list(self):
         """Parent and child must both show up in the chat list."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
         await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
 
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
             "voice_mode": True,
             "is_temporary": True,
@@ -189,13 +199,13 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_child_title_inherits_parent(self):
         """When title is 'Untitled', inherit parent's title."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
         await db.chat_create(parent_id, "My Workspace", None, wd, "admin")
 
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Untitled",
             "voice_mode": True,
             "is_temporary": True,
@@ -208,13 +218,13 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_child_has_own_workspace_dir(self):
         """Each chat must get its own work_dir."""
-        self._headers()
+        headers = self._headers()
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
         await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
 
-        resp = self.client.post("/api/chats", json={
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
             "voice_mode": True,
             "is_temporary": True,
@@ -227,8 +237,8 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_child_without_parent_is_regular_voice_chat(self):
         """A voice_mode chat without parent_chat_id must be a regular voice chat."""
-        self._headers()
-        resp = self.client.post("/api/chats", json={
+        headers = self._headers()
+        resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Standalone Voice",
             "voice_mode": True,
         })

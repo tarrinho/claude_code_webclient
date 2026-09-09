@@ -10,12 +10,11 @@ import unittest
 
 import secrets
 import tempfile
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import auth
 import config
 import db
-import turns
 
 HTTPS = "https://testserver"
 
@@ -54,6 +53,25 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
         self.chat_id = "q-chat-1"
         await db.chat_create(self.chat_id, "Queue test", None,
                             f"{self.tmp.name}/p", "alice")
+
+        # No test in this file is about what a turn does -- they are about
+        # status codes, owner scoping and what the queue looks like
+        # afterwards. Releasing a held prompt with nothing running, though,
+        # calls `_start_turn` for real, and that spawns a turn against the
+        # proxy which outlives the test: the fixture tears its database down
+        # and the turn is still connected. Twice that left a full-suite run
+        # sitting at 62% for over half an hour with no output, which reads as
+        # a hung suite rather than as a leaked turn.
+        #
+        # Patched for the whole class rather than per test, so a release added
+        # here later cannot reintroduce it.
+        from routes import chats as chat_routes
+        self.start_turn = AsyncMock()
+        self.start_turn_patch = patch.object(
+            chat_routes, "_start_turn", self.start_turn,
+        )
+        self.start_turn_patch.start()
+        self.addCleanup(self.start_turn_patch.stop)
 
     def _login(self, who: str):
         client = _client()
@@ -160,7 +178,13 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
     # ── queue_release ───────────────────────────────────────────────────
 
     async def test_release_returns_ok_when_not_running(self):
-        """When nothing is running, release starts immediately."""
+        """When nothing is running, release starts immediately.
+
+        Asserts the turn was actually started, not only that the request
+        succeeded: `{"ok": True, "started": False}` is also a 200, so the
+        original assertion could not tell "released and started" from
+        "released and quietly left in the queue".
+        """
         client, headers = self._login("alice")
         row_id = await self._insert_queue_item("release-me", "alice")
 
@@ -168,6 +192,9 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
                        headers=headers)
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["ok"])
+        self.assertTrue(r.json()["started"])
+        self.start_turn.assert_awaited_once()
+        self.assertEqual(self.start_turn.await_args.args[2], "release-me")
 
     def test_release_returns_404_for_unknown_queue_id(self):
         client, headers = self._login("alice")

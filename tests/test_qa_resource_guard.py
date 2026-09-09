@@ -215,6 +215,35 @@ class CliTests(unittest.TestCase):
     nothing, and would do so silently.
     """
 
+    def setUp(self):
+        """Neutralise the swap rule for the whole class.
+
+        These tests are about the exit code and about `--floor-mb` reaching
+        `check()`. The swap rule is an independent reason to refuse -- "only
+        36% of swap is free (minimum 40%)" -- so on a host that is swapping,
+        `--cost-mb 0 --floor-mb 0` returns 1 for a reason that has nothing to
+        do with what is being asserted. That is not hypothetical: it is what
+        this machine does under a full suite run, and it failed
+        `test_the_floor_can_be_set_on_the_command_line` while the flag it
+        tests worked perfectly.
+
+        Set for the class rather than per test, because
+        `test_exit_zero_when_there_is_room` has the same exposure and only
+        avoided it by which second it ran in.
+        """
+        import os
+
+        self._previous_swap = os.environ.get("WC_RESOURCE_SWAP_MIN_RATIO")
+        os.environ["WC_RESOURCE_SWAP_MIN_RATIO"] = "0"
+
+    def tearDown(self):
+        import os
+
+        if self._previous_swap is None:
+            os.environ.pop("WC_RESOURCE_SWAP_MIN_RATIO", None)
+        else:
+            os.environ["WC_RESOURCE_SWAP_MIN_RATIO"] = self._previous_swap
+
     def test_exit_zero_when_there_is_room(self):
         import os
 

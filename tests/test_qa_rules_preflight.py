@@ -335,6 +335,202 @@ class SlicesCoverEveryTestFileTests(unittest.TestCase):
         )
 
 
+class TheTwoPassSplitIsCompleteTests(unittest.TestCase):
+    """§14 runs the suite across two hosts. Neither may drop a file.
+
+    The whole risk of a split is the one the slice-coverage check above exists
+    for, doubled: two lists to forget instead of one. So only ONE list is
+    hand-maintained -- `LOCAL_ONLY`, the files whose assumptions are this box --
+    and the remote pass is derived as everything else. A file added to tests/
+    joins the remote pass by construction; the only way the scheme can lie is a
+    `LOCAL_ONLY` entry that no longer matches a file, and that is checked here
+    and by the block itself.
+    """
+
+    def setUp(self):
+        self.source = RULES.read_text(encoding="utf-8")
+        self.files = {p.name for p in (ROOT / "tests").glob("test_*.py")}
+        self.local_only = self._local_only()
+
+    def _local_only(self) -> list[str]:
+        block = _block("local-only-block")
+        inside = block.split('LOCAL_ONLY="', 1)[1].split('"', 1)[0]
+        return [line.strip() for line in inside.splitlines() if line.strip()]
+
+    def test_the_list_is_declared_and_not_empty(self):
+        self.assertTrue(self.local_only, "LOCAL_ONLY parsed as empty")
+
+    def test_every_named_file_exists(self):
+        for name in self.local_only:
+            with self.subTest(file=name):
+                self.assertTrue(
+                    (ROOT / name).is_file(),
+                    f"{name} is named in LOCAL_ONLY but is not a file; it would "
+                    f"run remotely while this list says it ran here",
+                )
+
+    def test_the_block_itself_refuses_a_name_that_is_not_a_file(self):
+        """The check has to run, not be remembered -- so it is executed here."""
+        block = _block("local-only-block")
+        broken = block.replace(
+            self.local_only[0], "tests/test_qa_this_does_not_exist.py", 1)
+        result = subprocess.run(
+            ["bash", "-c", f"set -uo pipefail\n{broken}"],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("do not exist", result.stdout + result.stderr)
+
+    def test_the_two_passes_partition_the_suite(self):
+        """Union is everything, intersection is empty -- stated as a test
+        rather than left as a property of how the lists were written."""
+        local = {name.replace("tests/", "") for name in self.local_only}
+        remote = self.files - local
+        self.assertEqual(local | remote, self.files, "a file is in neither pass")
+        self.assertEqual(local & remote, set(), "a file is in both passes")
+        self.assertTrue(remote, "the remote pass is empty")
+
+    def test_the_remote_pass_is_derived_not_listed(self):
+        """A second hand-written list is the defect this scheme avoids. The
+        remote invocation must build its exclusions from LOCAL_ONLY."""
+        block = _block("remote-suite-block")
+        self.assertIn("for f in $LOCAL_ONLY", block)
+        self.assertIn("--ignore=$f", block)
+
+    def test_the_browser_layer_is_in_the_local_pass(self):
+        """It is the largest consumer and the reason the local box copes: one
+        file at a time, here, where the browser actually is."""
+        for name in ("tests/test_frontend_browser.py",
+                     "tests/test_qa_voice_conversation_browser.py"):
+            self.assertIn(name, self.local_only)
+
+    def test_the_host_coupled_files_are_in_the_local_pass(self):
+        """Each of these fails on a remote node for a reason that is not a
+        defect: rules.md is gitignored and not shipped, test_qa_head_consistency
+        needs a real git checkout, and the bench and reclaim tests need the
+        claude CLI on PATH. Measured on 2026-09-09 -- they were exactly the
+        remote failures once the browser files were excluded."""
+        for name in ("tests/test_qa_rules_preflight.py",
+                     "tests/test_qa_head_consistency.py",
+                     "tests/test_qa_bench_harness.py",
+                     "tests/test_qa_launch_reclaim.py"):
+            self.assertIn(name, self.local_only)
+
+
+class TheLocalPassIsOneLineTests(unittest.TestCase):
+    """PYTEST_SLICE has to be a single space-separated line.
+
+    LOCAL_ONLY is newline-separated for readability. Assigned to PYTEST_SLICE
+    unchanged, those newlines survive into the capped block's `CMD`, so
+    `bash -c` reads the first line as the pytest invocation and every later
+    line as a command of its own -- and pytest, given no paths on that first
+    line, runs the whole suite. Measured: the local pass became a whole-suite
+    run and was at 29% before anyone noticed. A slice that turns into a
+    different run is the failure §14 has been bitten by twice.
+    """
+
+    def setUp(self):
+        self.source = RULES.read_text(encoding="utf-8")
+        self.stage = self.source.split("### The suite can run on a transport", 1)[1]
+
+    def test_the_local_pass_collapses_the_list(self):
+        assignments = [
+            line for line in self.stage.splitlines()
+            if line.startswith("PYTEST_SLICE=") and "LOCAL_ONLY" in line
+        ]
+        self.assertEqual(len(assignments), 1, assignments)
+        self.assertIn("$(echo $LOCAL_ONLY)", assignments[0])
+        self.assertNotEqual(
+            assignments[0].split("=", 1)[1].strip(), '"$LOCAL_ONLY"',
+            "PYTEST_SLICE is set to the newline-separated list unchanged",
+        )
+
+    def test_the_collapsed_list_is_one_line_and_complete(self):
+        """Executed, not read: the point is what the shell produces."""
+        block = _block("local-only-block")
+        result = subprocess.run(
+            ["bash", "-c",
+             f"set -uo pipefail\n{block}\nPYTEST_SLICE=\"$(echo $LOCAL_ONLY)\"\n"
+             "printf '%s' \"$PYTEST_SLICE\""],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        slice_line = result.stdout.split("LOCAL_ONLY OK")[0].strip() or result.stdout.strip()
+        slice_line = result.stdout.splitlines()[-1]
+        self.assertNotIn("\n", slice_line)
+        self.assertIn("tests/test_frontend_browser.py", slice_line)
+        self.assertEqual(
+            len(slice_line.split()), 10,
+            f"expected all ten LOCAL_ONLY files on one line: {slice_line!r}",
+        )
+
+
+class NodeSelectionTests(unittest.TestCase):
+    """Choosing the node, and the two bugs the first version of it had."""
+
+    def setUp(self):
+        self.block = _block("node-pick-block")
+
+    def test_the_probe_does_not_eat_the_loops_stdin(self):
+        """`ssh` without -n consumes the while-read loop's input, so only the
+        first transport is ever probed -- and the output looks identical to
+        "only one qualified". Caught by running the block, not by reading it."""
+        self.assertIn("ssh -n", self.block)
+
+    def test_an_older_python_is_refused(self):
+        """A node on 3.8 or 3.10 cannot run this codebase; a failure there
+        would be indistinguishable from a real one."""
+        self.assertIn('[ "$minor" -ge 13 ]', self.block)
+
+    def test_a_node_matching_the_venv_beats_a_bigger_one(self):
+        """Read from the venv rather than hardcoded, and preferred over more
+        memory: a different minor can resolve a package differently."""
+        self.assertIn("WANT_MINOR=$(.venv/bin/python", self.block)
+        self.assertIn('[ "$exact" -gt "$best_exact" ]', self.block)
+
+    def test_no_node_is_hardcoded(self):
+        """Losing a transport must degrade to the local slices, not fail."""
+        self.assertIn("none qualified", self.block)
+        for hostname in ("pentester.tail850c40.ts.net", "kali-3.tail850c40.ts.net"):
+            self.assertNotIn(hostname, self.block)
+
+
+class RemoteSuiteBlockTests(unittest.TestCase):
+    """The two things that silently broke a remote run before."""
+
+    def setUp(self):
+        self.block = _block("remote-suite-block")
+
+    def test_the_manifest_comes_from_git_ls_files(self):
+        """transport_sync.py's stated security property, and it holds here for
+        the same reason: a caller may trigger that a sync happens, never what
+        is sent."""
+        self.assertIn("git ls-files -z | tar", self.block)
+
+    def test_every_pip_invocation_disables_pip_user(self):
+        """PIP_USER is set on at least one transport. pip then refuses every
+        venv install with "Can not perform a '--user' install", reports it, and
+        carries on -- so the suite fails later on missing imports rather than
+        on anything real.
+
+        Every invocation, not one of them: this asserted only that the string
+        appeared somewhere in the block, and the block has two pip lines, so
+        dropping it from the first one left the test green while the runtime
+        dependencies silently failed to install.
+        """
+        pip_lines = [
+            line for line in self.block.splitlines()
+            if "pip install" in line
+        ]
+        self.assertTrue(pip_lines, "no pip install in the block at all")
+        for line in pip_lines:
+            with self.subTest(line=line.strip()[:60]):
+                self.assertIn("PIP_USER=0", line)
+
+    def test_the_run_survives_a_dropped_channel(self):
+        self.assertIn("setsid nohup", self.block)
+
+
 class TheRuleIsStatedTests(unittest.TestCase):
     """The prose has to carry the instruction; the code cannot say "stop" to a
     reader who is deciding whether to run the next stage."""

@@ -20,6 +20,45 @@ churn.
 
 ---
 
+## [0.15.4] — 2026-09-09
+
+`config.VERSION` was moved to 0.15.4 on 2026-09-08 and nothing else was: no
+section here, and five surfaces still displaying 0.15.3. This section is
+written after the fact, from the 44 commits between that bump and now, by
+several sessions working in parallel — so it groups by area rather than
+claiming a single intent, and where a fix's cause is not obvious from its
+title it is left as the title rather than guessed at.
+
+### Added
+
+- **Enabled/disabled backends, distinct from active-as-default.** `ai_machines.enabled` with a `PATCH` that refuses while a backend is still depended on, disabled backends offered to no picker (terminals included), Default / Active / Inactive states on the backend cards, and a Disable button greyed out where the request would be refused rather than 409-ing on click.
+- **Backends transport groups** in Settings show status (Active / Uninitialized / Disabled), a machine count, and collapse. Grouping is by transport, sorted by status then name, with Direct pinned first.
+- **Per-node capacity on the supervisor map.** `resource_guard.capacity()` composes the existing admission check into an existing-vs-total agent count, attached to the machine nodes this host actually serves — an SSH-proxied machine is another host's memory, which `resource_guard` is deliberately scoped not to claim to measure.
+- **Per-run orchestrator cost.** The engine had been recording usage for every turn it spends since the fix that added `_record_usage`, and nothing read it back per run. `orchestrators.planner_chat_id` makes the planning turn attributable (its usage rows are keyed on a bare `uuid4`, unlike a task's `subtask_<id>`), and `GET /api/orchestrators/{id}/tasks` now carries turns, tokens, cost and failures for the run. Cost sums only turns on a backend where the figure means something, and marks itself partial with a reason rather than presenting an incomplete total as a total.
+- **Voice conversations** gained a parent-context injection, a structured handoff summary in place of a raw message dump, speech rate from settings, and temp child chats hidden from the sidebar and the workspace right-panel.
+- **Cross-session agent reply** — `agent_reply_to()` writing to a transcript plus a proxy wake-up, with a design spec for the transport-aware form.
+- **Model list persisted in the database**, so a page load serves from cache and `?force=1` re-probes.
+- **Terminal sessions on the supervisor map**, as their own node type. The session registry was already being read there and discarded.
+
+### Changed
+
+- **Init and Check split cleanly** for SSH transports: Init starts the tunnel, Check verifies the forward it would use, and a fully-passing Check now starts the tunnel instead of proving it works and discarding it. Transport badges poll for live status, falling back to the database when `tunnel_manager` has no in-memory state.
+- **The supervisor map's node vocabulary** grew from three types to seven (`machine`, `task`, `session` and an overflow marker joined `transport`, `orchestrator`, `chat`), and the map refreshes itself while open instead of being fetched once. See the "Changes since this spec" section appended to `docs/superpowers/specs/2026-09-07-supervisor-map-design.md`.
+- **Queue panel is an overlay**, opened only by its toggle.
+- **A chat edit saves in place**, skipping `refreshChats`/`selectChat` — two requests become one.
+
+### Fixed
+
+- **The supervisor map rendered inside about one square pixel.** `d3.tree()` was created without `.size()`, so every node's angle and radius were fractions between 0 and 1. Compounding it: `d3.zoom()` had no `.on("zoom", ...)` handler at all, so every zoom control was inert; `zoomToFit()` called `_tree.bounds()`, which is not a d3 API and always threw; the root node was pinned to a hardcoded `translate(200,200)` away from its own children; and the SVG carried no `viewBox`. Opening the panel also set `main.hidden = true`, blanking the rest of the page as a workaround for the click problems those caused.
+- **Direct conversations were grouped by a column that does not exist.** `routes/db_supervisor_map.py` read `chat["transport_id"]`; `chats` has no such column, and `.get` on a missing key is indistinguishable from a real NULL, so every conversation landed in the "Direct" group whichever backend served it.
+- **The map hid nodes silently.** Three `[:4]` slices dropped children with nothing on screen to say so, so a host with six backends showed four and looked complete. The cap is now 12 and states what it left out.
+- **Machine nodes were always idle** (`_aggregate_status([])`), so a backend with a failing conversation on it looked exactly like an unused one.
+- **Settings and the App page were empty.** `handle_settings_get` used `session["user"]` for owner scoping without ever assigning `session`, which was a 500 on every request.
+- **Duplicated chat messages**, from three separate causes: concurrent linked-chat syncs with no serialisation, a re-read that did not account for its own offset, and a tail comparison that could re-store what was already there.
+- **The queue icon did nothing when clicked** — it now opens the panel, or says plainly that nothing is queued.
+- **The version was displayed as 0.15.3 in five places** while `config.VERSION` said 0.15.4, and this file had no section for the release at all. Both halves of the half-landed bump, which is what `tests/test_qa_version_consistency.py` exists to catch.
+- Several smaller ones: a voice-handoff `ReferenceError` on `showToast`, `const` reassignments crashing the voice tooltip, `auto_answer` left enabled on temp voice chats, `is_temporary` missing from the chat list API, two ES-module splits and a run of cache-buster misalignments, a shared rate-limit budget, and two dangling `db` names.
+
 ## [0.15.3] — 2026-09-07
 
 ### Added

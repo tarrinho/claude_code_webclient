@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, patch
 import auth
 import config
 import db
-import routes.db_machines as db_machines
 
 HTTPS = "https://testserver"
 
@@ -160,10 +159,46 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         response = client.get("/api/settings", headers=headers)
         self.assertEqual(response.json()["voice_speech_rate"], 1.8)
 
+    async def _voice_chat_on_a_real_backend(self, chat_id: str) -> dict:
+        """A voice chat pinned to a machine row that actually exists.
+
+        These tests used to patch ``runner.get_backend`` and point the chat at
+        the id ``"fake-machine-id"``. That stopped being the seam:
+        ``stream_voice_turn`` resolves the backend through
+        ``db_machines.chat_routing`` / ``ai_machine_backend_by_id``, because
+        ``runner.get_backend`` returns ``{}`` for anything that is not the
+        claude_code provider and voice runs on a direct one. So the patch
+        applied to a function the code no longer calls, the lookup found no
+        machine, and every one of these turns ended on "Voice chat has no
+        configured model/backend" before reaching the model.
+
+        Three tests failed loudly at that. The fourth --
+        ``test_stream_voice_turn_error_frame_omits_raw_exception_text`` --
+        passed, and that is the worse outcome: it asserts an error frame
+        exists and does not contain the gateway URL, and a
+        "no configured backend" frame satisfies both while never exercising
+        the leak it exists to prevent.
+
+        Seeding a real row rather than patching the new seam, so the next
+        change of internals fails visibly instead of silently passing.
+        """
+        await db.ai_machine_create(
+            f"m-{chat_id}", "Test gateway", "", 0, "fake-key",
+            "azure_ai/gpt-5.6-luna", "https://example.test", None, "admin",
+            provider="direct",
+        )
+        await db.chat_create(
+            chat_id, "Voice Chat", None, f"{self.tmp.name}/p/{chat_id}", "admin",
+        )
+        await db.chat_update(
+            chat_id, "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
+            ai_machine_id=f"m-{chat_id}",
+        )
+        return await db.chat_get(chat_id, "admin")
+
     async def test_stream_voice_turn_yields_matching_sse_frames(self):
         from types import SimpleNamespace
         from routes import voice
-        import runner
 
         class _FakeStream:
             def __init__(self, chunks):
@@ -178,14 +213,8 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                         choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
                     )
 
-        await db.chat_create("c5", "Voice Chat", None, f"{self.tmp.name}/p/c5", "admin")
-        await db.chat_update("c5", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
-                              ai_machine_id="fake-machine-id")
-        chat = await db.chat_get("c5", "admin")
+        chat = await self._voice_chat_on_a_real_backend("c5")
 
-        async def fake_get_backend(cid, owner=None):
-            return {"provider": "claude_code", "base_url": "https://example.test",
-                    "api_key": "fake-key"}
 
         created_kwargs = {}
 
@@ -193,8 +222,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             created_kwargs.update(kwargs)
             return _FakeStream(["Hello", ", ", "there."])
 
-        with patch.object(runner, "get_backend", fake_get_backend), \
-                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+        with patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
                 patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
                     completions=SimpleNamespace(create=fake_create)), create=True), \
                 patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
@@ -218,24 +246,16 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         """
         from types import SimpleNamespace
         from routes import voice
-        import runner
 
-        await db.chat_create("c6", "Voice Chat", None, f"{self.tmp.name}/p/c6", "admin")
-        await db.chat_update("c6", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
-                              ai_machine_id="fake-machine-id")
-        chat = await db.chat_get("c6", "admin")
+        chat = await self._voice_chat_on_a_real_backend("c6")
 
         sentinel_base_url = "https://internal-gateway.fake.example:9443/v1"
 
-        async def fake_get_backend(cid, owner=None):
-            return {"provider": "claude_code", "base_url": sentinel_base_url,
-                    "api_key": "fake-key"}
 
         async def fake_create(**kwargs):
             raise ConnectionError(f"Connection error connecting to {sentinel_base_url}")
 
-        with patch.object(runner, "get_backend", fake_get_backend), \
-                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+        with patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
                 patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
                     completions=SimpleNamespace(create=fake_create)), create=True), \
                 patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
@@ -253,7 +273,6 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         """
         from types import SimpleNamespace
         from routes import voice
-        import runner
 
         class _FakeStream:
             def __init__(self, chunks):
@@ -269,22 +288,15 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                         usage=None,
                     )
 
-        await db.chat_create("c8", "Voice Chat", None, f"{self.tmp.name}/p/c8", "admin")
-        await db.chat_update("c8", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
-                              ai_machine_id="fake-machine-id")
-        chat = await db.chat_get("c8", "admin")
+        chat = await self._voice_chat_on_a_real_backend("c8")
 
-        async def fake_get_backend(cid, owner=None):
-            return {"provider": "claude_code", "base_url": "https://example.test",
-                    "api_key": "fake-key"}
 
         async def fake_create(**kwargs):
             # No content deltas at all -- e.g. the model's whole reply landed
             # in a reasoning block never surfaced as text.
             return _FakeStream([None, ""])
 
-        with patch.object(runner, "get_backend", fake_get_backend), \
-                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+        with patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
                 patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
                     completions=SimpleNamespace(create=fake_create)), create=True), \
                 patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
@@ -314,7 +326,6 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_voice_turn_records_usage_on_success(self):
         from types import SimpleNamespace
         from routes import voice
-        import runner
 
         class _FakeStream:
             def __init__(self, chunks):
@@ -334,20 +345,13 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                     usage=SimpleNamespace(prompt_tokens=12, completion_tokens=7),
                 )
 
-        await db.chat_create("c9", "Voice Chat", None, f"{self.tmp.name}/p/c9", "admin")
-        await db.chat_update("c9", "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
-                              ai_machine_id="fake-machine-id")
-        chat = await db.chat_get("c9", "admin")
+        chat = await self._voice_chat_on_a_real_backend("c9")
 
-        async def fake_get_backend(cid, owner=None):
-            return {"provider": "claude_code", "base_url": "https://example.test",
-                    "api_key": "fake-key"}
 
         async def fake_create(**kwargs):
             return _FakeStream(["Hi", " there."])
 
-        with patch.object(runner, "get_backend", fake_get_backend), \
-                patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
+        with patch.object(voice.AsyncOpenAI, "__init__", lambda self, **kw: None), \
                 patch.object(voice.AsyncOpenAI, "chat", SimpleNamespace(
                     completions=SimpleNamespace(create=fake_create)), create=True), \
                 patch.object(voice.AsyncOpenAI, "close", AsyncMock()):
@@ -367,7 +371,6 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["origin"], "voice")
 
     async def test_stream_handler_uses_voice_path_for_voice_chats(self):
-        from routes import voice
         from routes import chats
 
         password = await self._make_admin_and_chat("c6", voice_mode=True)

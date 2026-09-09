@@ -103,6 +103,15 @@ class AppShellConsoleTests(_ConsoleFixture):
 
     def test_opening_settings_does_not_throw(self):
         self.page.click("#settingsBtn")
+        # Every transport group now starts collapsed each time the panel
+        # opens, and a collapsed group does not render its cards at all -- so
+        # `.machine-card` is absent until one is expanded, and waiting for it
+        # timed out on a panel that was working as intended. Expanding is also
+        # the more thorough check for this test's actual subject: it exercises
+        # the header's own toggle handler and the re-render it triggers, both
+        # of which run inside the dialog this asserts is error-free.
+        self.page.wait_for_selector(".transport-collapse-toggle", timeout=10_000)
+        self.page.click(".transport-collapse-toggle")
         self.page.wait_for_selector(".machine-card", timeout=10_000)
         self.page.wait_for_timeout(1_000)
         self.assert_clean("the settings dialog")

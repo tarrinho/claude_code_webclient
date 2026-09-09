@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
 from typing import Final
 
@@ -35,7 +36,7 @@ _TRANSPORT_LOCKS: dict[str, asyncio.Lock] = {}
 # refcount for only one machine actually in use.
 _CONNECTING: set[str] = set()
 _queue: asyncio.Queue = asyncio.Queue()
-_port_lock: asyncio.Lock = asyncio.Lock()
+_port_lock = threading.Lock()
 _task: asyncio.Task | None = None
 _running: bool = False
 
@@ -352,7 +353,7 @@ def _try_connect(machine_id: str) -> None:
     probing the same port, both SSH-connecting, and then colliding at
     bind-time.
     """
-    import asyncio
+    import socket
 
     if machine_id in _CONNECTING:
         # Already connecting -- a second RECONNECT/START_TUNNEL for the same
@@ -367,11 +368,23 @@ def _try_connect(machine_id: str) -> None:
     # all four machines (even on different transports) so the port is reserved
     # before the ~10s SSH handshake begins — preventing the classic race where
     # two machines both probe the same free port, both SSH-connect, then
-    # collide at bind-time.
-    async with _port_lock:
-        from tunnel_manager_ssh import _find_available_port as _find_port
+    # collide at bind-time.  Uses a simple blocking socket probe (not the
+    # async version) so we stay within the sync entry point.
+    def _find_port_sync(low: int = 9000, high: int = 10000) -> int:
+        for port in range(low, high):
+            try:
+                s = socket.create_connection(("127.0.0.1", port), timeout=0.5)
+                s.close()
+            except ConnectionRefusedError:
+                return port
+            except TimeoutError:
+                continue
+            except OSError:
+                continue
+        raise OSError(f"No available port in range {low}-{high}")
 
-        assigned_port = await _find_port()
+    with _port_lock:
+        assigned_port = _find_port_sync()
 
     async def _run():
         from tunnel_manager_ssh import connect as _connect

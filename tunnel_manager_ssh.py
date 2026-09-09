@@ -140,15 +140,17 @@ async def connect(machine_id: str):
     # simply awaits it, then takes the fast reuse path once it sees the
     # now-populated registry -- no wasted handshake, no clobbered entry.
     async with tunnel_manager._transport_lock(transport_id):
-        # Port allocation must be inside the lock: if two machines on the
-        # same transport both call _find_available_port() before either
-        # creates its forward, they can grab the same port and one forward
-        # silently fails to bind -- the DB stays "connected" but proxy_ok
-        # stays 0, so the Backends panel shows Uninitialized forever.
-        try:
-            local_port = await _find_available_port()
-        except Exception as exc:
-            return _fail(machine_id, str(exc))
+        # Port allocation must be inside a global lock: machines on different
+        # transports (Pentester, Kali3, AppSec Tools) each have their own
+        # transport lock and can call _find_available_port() simultaneously.
+        # Without a global lock both can grab the same port and one
+        # start_forward() silently fails — the DB stays "connected" but
+        # proxy_ok stays 0, so the Backends panel shows Uninitialized.
+        async with tunnel_manager._port_lock:
+            try:
+                local_port = await _find_available_port()
+            except Exception as exc:
+                return _fail(machine_id, str(exc))
 
         shared = tunnel_manager._TRANSPORT_CONNECTIONS.get(transport_id)
         if shared:

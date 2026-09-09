@@ -13,7 +13,7 @@ let voiceLiveBtn = document.getElementById('voiceLiveBtn');
 let voiceStopBtn = document.getElementById('voiceStopBtn');
 let voiceSendBtn = document.getElementById('sendBtn');
 
-const SILENCE_TIMEOUT_MS = 1000;
+const SILENCE_TIMEOUT_MS = 2000;
 let recognition = null;
 let bargeInRecognition = null;
 let recognizing = false;
@@ -173,6 +173,7 @@ const voiceTooltipMic = document.getElementById('voiceTooltipMic');
 const voiceTooltipLive = document.getElementById('voiceTooltipLive');
 const voiceTooltipStop = document.getElementById('voiceTooltipStop');
 const voiceAgreeBtn = document.getElementById('voiceAgreeBtn');
+const voiceSummarizeBtn = document.getElementById('voiceSummarizeBtn');
 const voiceRejectBtn = document.getElementById('voiceRejectBtn');
 
 // Parent chat state captured when voice opens.
@@ -262,19 +263,23 @@ function closeVoiceTooltip() {
   voiceOverlay.hidden = true;
   window.speechSynthesis.cancel();
   pendingSpeechCount = 0;
-  if (recognition && recognizing) {
+  if (recognition && (recognizing || voiceStatus === 'listening')) {
     intentionalStop = true;
     recognition.stop();
   }
   // Restore parent chat
   if (voiceParentState) {
-    window.state.currentChat = voiceParentState;
+    window.state.currentChat = { ...voiceParentState, voice_mode: false };
     window.state.streamState = voiceParentState.streamState || 'ready';
     // Restore lastAttempt so retry works after voice session
     if (voiceParentState.lastAttempt && window.conversationController) {
       window.conversationController.lastAttempt = voiceParentState.lastAttempt;
     }
     voiceParentState = null;
+  }
+  // Re-render sidebar so voice-mode badge clears
+  if (window.__webConsoleRefresh) {
+    window.__webConsoleRefresh(window.state.currentChat?.id);
   }
   voiceTempChatId = null;
   voiceMicBtn = document.getElementById('voiceMicBtn');
@@ -318,6 +323,45 @@ async function voiceHandoffAgree() {
   }
 }
 
+// ── Summarize Only: handoff the summary, display it in tooltip ──
+async function voiceHandoffSummarize() {
+  if (!voiceTempChatId) return;
+  voiceSummarizeBtn.disabled = true;
+  voiceTooltipConclusion.innerHTML = '';
+  const loading = document.createElement('div');
+  loading.className = 'voice-status';
+  loading.textContent = 'Generating summary…';
+  voiceTooltipConclusion.appendChild(loading);
+  voiceTooltipConclusion.hidden = false;
+  try {
+    const response = await apiFetch(`/api/chats/${voiceTempChatId}/voice/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) throw new Error('Handoff failed');
+    // Backend returns the summary as a plain string, not JSON
+    const summary = await response.text().catch(() => '');
+    voiceTooltipConclusion.innerHTML = '';
+    const summaryDiv = document.createElement('div');
+    summaryDiv.className = 'voice-assistant';
+    summaryDiv.textContent = summary || 'Summary generated from voice conversation.';
+    voiceTooltipConclusion.appendChild(summaryDiv);
+    voiceTooltipConclusion.hidden = false;
+    showToast('Summary generated and appended to parent chat');
+  } catch (err) {
+    voiceTooltipConclusion.innerHTML = '';
+    const errDiv = document.createElement('div');
+    errDiv.className = 'voice-status';
+    errDiv.style.color = '#f87171';
+    errDiv.textContent = `Summarize failed: ${err.message}`;
+    voiceTooltipConclusion.appendChild(errDiv);
+    voiceTooltipConclusion.hidden = false;
+    showToast('Summarize failed', 'error');
+  } finally {
+    voiceSummarizeBtn.disabled = false;
+  }
+}
+
 // ── Reject: just close and discard ──
 async function voiceHandoffReject() {
   if (!voiceTempChatId) {
@@ -356,6 +400,7 @@ voiceTooltipClose.addEventListener('click', () => {
 });
 
 voiceAgreeBtn.addEventListener('click', voiceHandoffAgree);
+voiceSummarizeBtn.addEventListener('click', voiceHandoffSummarize);
 voiceRejectBtn.addEventListener('click', voiceHandoffReject);
 
 // Type to send in voice tooltip

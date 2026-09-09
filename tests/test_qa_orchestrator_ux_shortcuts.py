@@ -82,6 +82,7 @@ DRIVER_OK, DRIVER_WHY = _driver_status()
 ROOT = Path(__file__).resolve().parents[1]
 SUPERVISOR_HTML = ROOT / "web" / "orchestrator.html"
 SUPERVISOR_JS = ROOT / "web" / "assets" / "orchestrator" / "main.js"
+ASSETS_DIR = ROOT / "web" / "assets"
 CHROMIUM = (shutil.which("chromium") or shutil.which("chromium-browser")
             or shutil.which("google-chrome"))
 
@@ -161,9 +162,20 @@ class _SupervisorPage(unittest.TestCase):
             #
             # Resolving by name also means the eight-way split needs no edit
             # here: a new module is simply another file in the directory.
-            match = re.search(r"/assets/orchestrator/([\w.-]+\.js)", url)
+            # Any .js under /assets, at any depth -- not just
+            # /assets/orchestrator/. In production StaticFiles is mounted on
+            # /assets and serves the whole tree, so a harness that serves only
+            # one subdirectory of it is narrower than the thing it stands in
+            # for. That gap cost real debugging time twice: once when the
+            # eight-way module split 404'd `state.js` (the comment above), and
+            # again when a module in this directory imported
+            # `../format.js` -- a file the page loads perfectly in production.
+            # The import failed, the page rendered its markup with no
+            # behaviour, and 27 tests timed out waiting for selectors while
+            # none of them said a script had failed to load.
+            match = re.search(r"/assets/((?:[\w.-]+/)*[\w.-]+\.js)", url)
             if match:
-                target = SUPERVISOR_JS.parent / match.group(1)
+                target = ASSETS_DIR / match.group(1)
                 if target.is_file():
                     route.fulfill(status=200,
                                   body=target.read_text(encoding="utf-8"),

@@ -24,6 +24,7 @@ Two cases exist because the first implementation got them wrong:
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 
 import transport_readiness as tr
 
@@ -150,6 +151,219 @@ class ReadinessShapeTests(unittest.TestCase):
                          checks=tr.parse_probe(_raw(), port=9000,
                                                local_token=_TOKEN))
         self.assertNotIn(_TOKEN, str(r.as_dict()))
+
+
+class _FakeSshHandle:
+    """Stands in for the ssh -N -L subprocess.
+
+    `_probe_forward` reads two things off this object: `.returncode` (None
+    means still running, so the forward "worked") and, on a failed bind,
+    `.stderr.read()`. It never sends the process any input and only calls
+    terminate/kill/wait, all stubbed here.
+    """
+
+    def __init__(self, returncode=None, stderr=b""):
+        self.returncode = returncode
+        self.stderr = _Stream(stderr)
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    async def wait(self):
+        self.returncode = 0
+        return 0
+
+
+class _Stream:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    async def read(self):
+        return self._data
+
+
+class ProbeForwardTests(unittest.IsolatedAsyncioTestCase):
+    """`_probe_forward`: can this host actually open a working -L forward,
+    right now -- the one thing the other four checks cannot see.
+
+    Real asyncio TCP servers stand in for claude_proxy.py; only the `ssh`
+    subprocess itself is stubbed, since a unit test has no SSH host to reach.
+    The mocked `create_subprocess_exec` reads the chosen local port straight
+    out of the real `-L` argument the function built, then starts a listener
+    on that exact port before the function's own connection attempt runs --
+    so the handshake path below is exercised for real, not asserted by
+    inspecting arguments.
+    """
+
+    async def _run_with_fake_proxy(self, server_handler, *, ssh_handle=None):
+        """Patch ssh; start *server_handler* on the port -L names; run the probe."""
+        import asyncio
+        import re
+
+        server_holder = {}
+
+        async def _fake_exec(*argv, **kwargs):
+            fwd = next(a for a in argv if a.startswith("127.0.0.1:") and ":127.0.0.1:" in a)
+            local_port = int(re.match(r"127\.0\.0\.1:(\d+):", fwd).group(1))
+            server_holder["server"] = await asyncio.start_server(
+                server_handler, "127.0.0.1", local_port)
+            return ssh_handle if ssh_handle is not None else _FakeSshHandle()
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", _fake_exec):
+            try:
+                return await tr._probe_forward(
+                    "example.net", "kali", "/dev/null",
+                    port=9000, local_token=_TOKEN,
+                )
+            finally:
+                server = server_holder.get("server")
+                if server:
+                    server.close()
+                    await server.wait_closed()
+
+    async def test_the_proxy_accepting_the_handshake_is_ready(self):
+        import asyncio
+        import json
+
+        async def _ack(reader, writer):
+            raw = await reader.readuntil(b"\n")
+            frame = json.loads(raw)
+            self.assertEqual(frame["type"], "handshake")
+            self.assertEqual(frame["protocol"], "webconsole-v1")
+            self.assertEqual(frame["token"], _TOKEN)
+            writer.write((json.dumps({"type": "ack"}) + "\n").encode())
+            await writer.drain()
+            writer.close()
+
+        check = await self._run_with_fake_proxy(_ack)
+        self.assertEqual(check.name, "tunnel forward")
+        self.assertTrue(check.ok, check.detail)
+
+    async def test_a_reply_that_is_not_ack_is_not_ready(self):
+        """The proxy is there and answers, but not the way a real handshake
+        accept looks -- a bad token, for instance, closes without an ack."""
+        import json
+
+        async def _wrong_reply(reader, writer):
+            await reader.readuntil(b"\n")
+            writer.write((json.dumps({"type": "error"}) + "\n").encode())
+            await writer.drain()
+            writer.close()
+
+        check = await self._run_with_fake_proxy(_wrong_reply)
+        self.assertFalse(check.ok)
+        self.assertIn("not with ack", check.detail)
+
+    async def test_the_connection_closing_with_no_reply_is_not_ready(self):
+        """A bad or missing handshake: claude_proxy.py closes the socket
+        without writing anything back (see claude_proxy.py's own handshake
+        rejection path) -- must read as a failure, not hang or crash."""
+        async def _silence(reader, writer):
+            await reader.readuntil(b"\n")
+            writer.close()
+
+        check = await self._run_with_fake_proxy(_silence)
+        self.assertFalse(check.ok)
+
+    async def test_ssh_exiting_before_the_forward_opens_is_not_ready(self):
+        """ExitOnForwardFailure=yes: the remote refused to bind the forward
+        (e.g. AllowTcpForwarding no) and ssh has already exited nonzero --
+        there is no listener to connect to at all."""
+        import asyncio
+
+        async def _fake_exec(*argv, **kwargs):
+            return _FakeSshHandle(
+                returncode=255, stderr=b"open failed: administratively prohibited")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", _fake_exec):
+            check = await tr._probe_forward(
+                "example.net", "kali", "/dev/null", port=9000, local_token=_TOKEN)
+        self.assertEqual(check.name, "tunnel forward")
+        self.assertFalse(check.ok)
+        self.assertIn("administratively prohibited", check.detail)
+        self.assertIn("AllowTcpForwarding", check.remedy)
+
+    async def test_the_ssh_process_is_always_terminated(self):
+        """Transient by construction: nothing is left running after the
+        check, success or failure -- this module's whole read-only claim
+        depends on it."""
+        import json
+
+        async def _ack(reader, writer):
+            await reader.readuntil(b"\n")
+            writer.write((json.dumps({"type": "ack"}) + "\n").encode())
+            await writer.drain()
+            writer.close()
+
+        handle = _FakeSshHandle()
+        await self._run_with_fake_proxy(_ack, ssh_handle=handle)
+        self.assertTrue(handle.terminated)
+
+    async def test_nothing_listening_at_all_is_not_ready(self):
+        """ssh reports itself alive (forward bound) but nothing is behind it
+        -- the proxy process is not running, distinct from the forward
+        itself being refused."""
+        import asyncio
+
+        async def _fake_exec(*argv, **kwargs):
+            return _FakeSshHandle()   # "alive"; no server ever started
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", _fake_exec):
+            check = await tr._probe_forward(
+                "example.net", "kali", "/dev/null", port=9000, local_token=_TOKEN)
+        self.assertFalse(check.ok)
+
+
+class CheckTransportIncludesTheForwardTests(unittest.IsolatedAsyncioTestCase):
+    """check_transport wires the new check in -- gated the way the docstring
+    promises, not run unconditionally."""
+
+    async def test_no_local_token_skips_the_forward_probe_entirely(self):
+        """An empty token means 'token matches' has already failed and
+        explained why; attempting a handshake with nothing to send would
+        just add a second, more confusing failure about the same cause."""
+        called = unittest.mock.AsyncMock()
+        with unittest.mock.patch.object(tr, "_probe_forward", called), \
+                unittest.mock.patch(
+                    "asyncio.create_subprocess_exec",
+                    unittest.mock.AsyncMock(
+                        return_value=_ProcStub(0, _raw().encode()))):
+            result = await tr.check_transport(
+                "example.net", "kali", __file__, port=9000, local_token="")
+        called.assert_not_awaited()
+        self.assertNotIn(
+            "tunnel forward", [c.name for c in result.checks])
+
+    async def test_a_real_token_runs_the_forward_probe_and_appends_it(self):
+        forward_check = tr.Check("tunnel forward", True, "ok")
+        called = unittest.mock.AsyncMock(return_value=forward_check)
+        with unittest.mock.patch.object(tr, "_probe_forward", called), \
+                unittest.mock.patch(
+                    "asyncio.create_subprocess_exec",
+                    unittest.mock.AsyncMock(
+                        return_value=_ProcStub(0, _raw().encode()))):
+            result = await tr.check_transport(
+                "example.net", "kali", __file__, port=9000, local_token=_TOKEN)
+        called.assert_awaited_once()
+        self.assertIn(forward_check, result.checks)
+
+
+class _ProcStub:
+    """Stands in for the diagnostic ssh subprocess in check_transport itself
+    (distinct from _FakeSshHandle, which stands in for the forward's own ssh
+    process) -- returns a fixed exit code and combined stdout."""
+
+    def __init__(self, returncode: int, out: bytes):
+        self.returncode = returncode
+        self._out = out
+
+    async def communicate(self):
+        return self._out, b""
 
 
 if __name__ == "__main__":

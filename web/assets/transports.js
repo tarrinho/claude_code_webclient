@@ -191,7 +191,14 @@ export async function _initTransport(transport, header, btn) {
       throw new Error(data.error || data.detail
                       || `Init failed (exit ${data.returncode ?? resp.status})`);
     }
-    notifyResult(`${transport.name} initialised`);
+    notifyResult(data.tunnel_started
+      ? `${transport.name} initialised and connecting…`
+      : `${transport.name} initialised — assign a backend to it to connect`);
+    if (data.tunnel_started) {
+      // machines.js listens for this to refresh the status badge immediately
+      // rather than leaving it stale for up to 5s until the next poll tick.
+      document.dispatchEvent(new CustomEvent('wc:tunnel-init-started'));
+    }
     // Immediately re-check, so the buttons never leave the reader guessing
     // whether it worked.
     await _checkTransport(transport, header, null);

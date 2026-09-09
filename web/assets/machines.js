@@ -156,22 +156,31 @@ async function _toggleSshTunnel(machineId, badge) {
 // Poll tunnel status every 5s when any ssh_proxy machine exists.
 let _tunnelPollId = null;
 
+async function _refreshTunnelStatus() {
+  try {
+    const resp = await apiFetch('/api/tunnel/status');
+    if (resp.ok) {
+      _tunnelStatusCache = await resp.json();
+      _renderMachineList();
+    }
+  } catch (_) { /* ignore */ }
+}
+
 export function _pollTunnelStatus(active) {
   if (active && !_tunnelPollId) {
-    _tunnelPollId = setInterval(async () => {
-      try {
-        const resp = await apiFetch('/api/tunnel/status');
-        if (resp.ok) {
-          _tunnelStatusCache = await resp.json();
-          _renderMachineList();
-        }
-      } catch (_) { /* ignore */ }
-    }, 5000);
+    _tunnelPollId = setInterval(_refreshTunnelStatus, 5000);
   } else if (!active && _tunnelPollId) {
     clearInterval(_tunnelPollId);
     _tunnelPollId = null;
   }
 }
+
+// transports.js dispatches this after Init starts a tunnel, so the badge does
+// not sit on stale data for up to 5s -- a custom event rather than an import,
+// because machines.js already imports FROM transports.js (Edit/Delete/Check/
+// Init) and the reverse import would be a cycle. Same decoupling app.js uses
+// for supervisor-map.js's "open this chat" callback.
+document.addEventListener('wc:tunnel-init-started', _refreshTunnelStatus);
 
 // Per-machine model state, keyed by machine id: {models, active, default,
 // source, reason, endpoint}. Fetched lazily so opening Settings does not

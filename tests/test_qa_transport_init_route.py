@@ -79,9 +79,11 @@ class OwnerScopingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InitOutcomeTests(unittest.IsolatedAsyncioTestCase):
-    async def _init(self, proc):
+    async def _init(self, proc, machines=()):
         with patch.object(tr.db, "ssh_transport_get",
                           AsyncMock(return_value=dict(_TRANSPORT))), \
+                patch.object(tr.db, "ai_machines_list",
+                             AsyncMock(return_value=list(machines))), \
                 patch("asyncio.create_subprocess_exec",
                       AsyncMock(return_value=proc)) as spawn:
             response = await tr.handle_transport_init(_Request(), "t-1")
@@ -136,6 +138,57 @@ class InitOutcomeTests(unittest.IsolatedAsyncioTestCase):
             response = await tr.handle_transport_init(_Request(), "t-1")
         self.assertEqual(response.status_code, 504)
         self.assertFalse(_body(response)["ok"])
+
+
+class InitStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
+    """Pedro's request: Init does everything needed to become Active, not
+    just the remote deploy half of it."""
+
+    async def _init(self, proc, machines=()):
+        with patch.object(tr.db, "ssh_transport_get",
+                          AsyncMock(return_value=dict(_TRANSPORT))), \
+                patch.object(tr.db, "ai_machines_list",
+                             AsyncMock(return_value=list(machines))), \
+                patch("asyncio.create_subprocess_exec",
+                      AsyncMock(return_value=proc)) as spawn, \
+                patch("tunnel_manager.queue_command",
+                      AsyncMock()) as queue_command:
+            response = await tr.handle_transport_init(_Request(), "t-1")
+        return response, spawn, queue_command
+
+    async def test_a_successful_deploy_starts_the_tunnel(self):
+        machines = [{"id": "m-1", "transport_id": "t-1"}]
+        response, _, queue_command = await self._init(_Proc(0), machines)
+        self.assertTrue(_body(response)["tunnel_started"])
+        queue_command.assert_awaited_once_with("m-1", "START_TUNNEL")
+
+    async def test_only_machines_on_this_transport_are_considered(self):
+        """A machine on a different transport must not be picked -- that
+        would start a tunnel to the wrong host."""
+        machines = [
+            {"id": "m-other", "transport_id": "t-2"},
+            {"id": "m-1", "transport_id": "t-1"},
+        ]
+        response, _, queue_command = await self._init(_Proc(0), machines)
+        self.assertTrue(_body(response)["tunnel_started"])
+        queue_command.assert_awaited_once_with("m-1", "START_TUNNEL")
+
+    async def test_a_transport_with_no_machine_deploys_without_a_tunnel(self):
+        """Nothing to start is not a failure -- deploy still succeeds, and the
+        response says plainly that nothing was connected."""
+        response, _, queue_command = await self._init(_Proc(0), machines=())
+        self.assertTrue(_body(response)["ok"])
+        self.assertFalse(_body(response)["tunnel_started"])
+        queue_command.assert_not_awaited()
+
+    async def test_a_failed_deploy_does_not_start_a_tunnel(self):
+        """Connecting to a host whose proxy deploy just failed would put the
+        badge on a tunnel with nothing behind it."""
+        machines = [{"id": "m-1", "transport_id": "t-1"}]
+        response, _, queue_command = await self._init(_Proc(1, b"NOT listening\n"), machines)
+        self.assertFalse(_body(response)["ok"])
+        self.assertFalse(_body(response)["tunnel_started"])
+        queue_command.assert_not_awaited()
 
 
 if __name__ == "__main__":

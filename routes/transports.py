@@ -44,6 +44,7 @@ async def handle_transport_create(request: Request):
     ssh_host = (data.get("ssh_host") or "").strip()
     ssh_user = (data.get("ssh_user") or "kali").strip()
     ssh_key_path = (data.get("ssh_key_path") or "").strip()
+    remote_path = (data.get("remote_path") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     if not ssh_host:
@@ -56,6 +57,7 @@ async def handle_transport_create(request: Request):
     transport_id = uuid.uuid4().hex
     await db.ssh_transport_create(
         transport_id, name, session["user"], ssh_host, ssh_user, ssh_key_path,
+        remote_path=remote_path or "~/projects/claude-code-webconsole",
     )
     _log.info("ssh_transport created by user=%s name=%s", session["user"], name)
     return JSONResponse({"ok": True, "id": transport_id, "name": name})
@@ -65,7 +67,7 @@ async def handle_transport_create(request: Request):
 async def handle_transport_patch(request: Request, transport_id: str):
     session = request.state.session
     data = await request.json()
-    allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path"}
+    allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path", "remote_path"}
     if not data or not set(data).issubset(allowed):
         raise HTTPException(status_code=400, detail="No valid fields to update")
     # Reject non-string text fields up front: the validators below call .strip()
@@ -96,6 +98,11 @@ async def handle_transport_patch(request: Request, transport_id: str):
         if not name:
             raise HTTPException(status_code=400, detail="Name cannot be empty")
         data["name"] = name
+    if "remote_path" in data and data["remote_path"] is not None:
+        remote_path = data["remote_path"].strip()
+        if not remote_path:
+            raise HTTPException(status_code=400, detail="Remote path cannot be empty")
+        data["remote_path"] = remote_path
     updated = await db.ssh_transport_update(transport_id, session["user"], **data)
     if not updated:
         raise HTTPException(status_code=404, detail="Transport not found")
@@ -212,6 +219,16 @@ async def handle_transport_init(request: Request, transport_id: str):
 
     Idempotent: re-running redeploys the current code and restarts the
     service, so the button is safe to press again after a change here.
+
+    On a successful deploy, also starts the tunnel for a machine on this
+    transport -- Pedro's request that Init "does everything needed to become
+    active" rather than leaving a second, easy-to-miss click (the SSH badge in
+    the Backends list) as the only way to actually connect. Fire-and-forget,
+    the same call the badge itself makes: tunnel_manager.queue_command runs
+    the connect asynchronously, and the panel's 5s poll picks up the real
+    state once it lands. A transport with no machine assigned yet has nothing
+    to start -- deploy still succeeds, and the response says so rather than
+    silently doing nothing.
     """
     import asyncio
     from pathlib import Path
@@ -259,7 +276,34 @@ async def handle_transport_init(request: Request, transport_id: str):
     )
     # A non-zero exit is reported as a failure rather than a cheerful success:
     # "ran the command, must be fine" is the whole failure mode here.
+    if not ok:
+        return JSONResponse(
+            {"ok": False, "returncode": proc.returncode, "output": tail,
+             "tunnel_started": False},
+            status_code=502,
+        )
+
+    # Same choice the SSH badge makes (machines.js: "the first machine's
+    # status speaks for the group") -- one shared tunnel per transport, so
+    # starting it for any one machine on this transport brings the whole
+    # connection up for all of them.
+    machines = [
+        m for m in await db.ai_machines_list(session["user"])
+        if m.get("transport_id") == transport_id
+    ]
+    tunnel_started = False
+    if machines:
+        import tunnel_manager
+        await tunnel_manager.queue_command(machines[0]["id"], "START_TUNNEL")
+        tunnel_started = True
+    else:
+        _log.info(
+            "transport_init_no_machine name=%s -- deployed but nothing to "
+            "connect until a machine is assigned to it", transport["name"],
+        )
+
     return JSONResponse(
-        {"ok": ok, "returncode": proc.returncode, "output": tail},
-        status_code=200 if ok else 502,
+        {"ok": True, "returncode": proc.returncode, "output": tail,
+         "tunnel_started": tunnel_started},
+        status_code=200,
     )

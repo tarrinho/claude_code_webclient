@@ -155,6 +155,115 @@ def parse_probe(raw: str, *, port: int, local_token: str) -> list[Check]:
     return checks
 
 
+async def _probe_forward(
+    ssh_host: str, ssh_user: str, key: str, *, port: int, local_token: str,
+) -> Check:
+    """Can THIS host actually open a working `-L` forward to *port*, right now?
+
+    The four checks in `parse_probe` predict success but cannot prove it: SSH
+    reaching the host and the far side listening on the right port with a
+    matching token all say nothing about whether the remote sshd will actually
+    let this connection *forward* traffic. `AllowTcpForwarding no` (or an
+    equivalent restriction) passes every one of those checks and then refuses
+    every real tunnel -- invisible until now, because nothing before this
+    attempted a forward at all.
+
+    A second, dedicated SSH connection (`-N`, no remote command) rather than
+    piggy-backing on the diagnostic one above: that one's script prints its
+    output and exits, which would tear the forward down before anything on
+    this end could use it. `ExitOnForwardFailure=yes` makes ssh exit
+    immediately, non-zero, if the remote refuses to bind the forward, rather
+    than sitting there looking healthy with nothing to show for it.
+
+    Transient by construction: the forward exists only for the handshake
+    below, and the ssh process is always killed in `finally`. Nothing is left
+    running, matching this module's read-only contract -- opening and closing
+    a connection is not "creating" anything the way Init's deploy is.
+    """
+    import contextlib
+    import json
+    import socket
+
+    # ssh -L needs a literal port; bind-then-close is the standard way to ask
+    # the OS for one that is free right now. The gap between closing this
+    # socket and ssh binding the same number is the same race every such
+    # allocator accepts -- and losing it fails this one check, not a real
+    # tunnel.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_sock:
+        probe_sock.bind(("127.0.0.1", 0))
+        local_port = probe_sock.getsockname()[1]
+
+    ssh_proc = None
+    try:
+        ssh_proc = await asyncio.create_subprocess_exec(
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "ExitOnForwardFailure=yes",
+            "-N", "-L", f"127.0.0.1:{local_port}:127.0.0.1:{port}",
+            "-i", key, f"{ssh_user or 'kali'}@{ssh_host}",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.sleep(1.0)   # give it a moment to bind, or fail fast
+        if ssh_proc.returncode is not None:
+            stderr = (await ssh_proc.stderr.read()).decode("utf-8", "replace").strip()
+            return Check(
+                "tunnel forward", False,
+                stderr[:200] or "ssh exited before the forward opened",
+                remedy="check AllowTcpForwarding in the remote sshd_config",
+            )
+
+        # The forward exists; confirm claude_proxy.py actually answers through
+        # it, with the exact frame a real tunnel sends -- a bound socket that
+        # nothing useful is behind is not a working tunnel.
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", local_port), timeout=5)
+        try:
+            frame = {"type": "handshake", "protocol": "webconsole-v1", "token": local_token}
+            writer.write((json.dumps(frame) + "\n").encode())
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
+            reply = json.loads(raw)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+        if reply.get("type") == "ack":
+            return Check(
+                "tunnel forward", True,
+                "forward opens and the proxy accepted the handshake",
+            )
+        return Check(
+            "tunnel forward", False, f"proxy responded but not with ack: {reply}",
+            remedy="press Init; it rewrites the token from the database",
+        )
+    except asyncio.TimeoutError:
+        return Check(
+            "tunnel forward", False,
+            "forward opened but the proxy did not respond in time",
+            remedy="check wc-proxy.service logs on the remote host",
+        )
+    except (ConnectionError, OSError, ValueError, EOFError) as exc:
+        # ValueError covers a malformed (non-JSON, or no trailing newline)
+        # reply -- the proxy answered but not sensibly, which is still a real
+        # finding and not this function's own bug. EOFError (its concrete
+        # subclass here, asyncio.IncompleteReadError) is claude_proxy.py's own
+        # rejection path: a bad or missing handshake closes the socket with
+        # zero bytes written, and readuntil() reports that as EOF rather than
+        # a connection error -- caught here or a bad-token forward reads as
+        # this function crashing instead of the real finding it is.
+        return Check(
+            "tunnel forward", False, f"forward did not reach a working proxy: {exc}",
+            remedy="check AllowTcpForwarding in the remote sshd_config",
+        )
+    finally:
+        if ssh_proc and ssh_proc.returncode is None:
+            ssh_proc.terminate()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(ssh_proc.wait(), timeout=5)
+            if ssh_proc.returncode is None:
+                ssh_proc.kill()
+
+
 async def check_transport(
     ssh_host: str, ssh_user: str, ssh_key_path: str, *, port: int, local_token: str
 ) -> Readiness:
@@ -163,7 +272,8 @@ async def check_transport(
     Read-only by construction: the probe runs `command -v`, `python3 -V`,
     `ss`, `wc`, `sha256sum` and `systemctl is-active`. It creates nothing and
     starts nothing -- installing is Init's job, deliberately a separate,
-    separately-clicked operation.
+    separately-clicked operation. The one exception is the forward test below,
+    and it is transient by construction: see `_probe_forward`.
     """
     import os
 
@@ -205,4 +315,25 @@ async def check_transport(
     result.checks = parse_probe(
         raw.decode("utf-8", "replace"), port=port, local_token=local_token
     )
+
+    # Only meaningful once SSH itself is proven (reachable=True, just set) and
+    # there is a real token to hand over -- with none configured, "token
+    # matches" above has already failed and correctly explains why, and
+    # attempting a handshake with an empty token would just add a second,
+    # more confusing failure about the same missing prerequisite.
+    if local_token:
+        try:
+            forward_check = await asyncio.wait_for(
+                _probe_forward(
+                    ssh_host, ssh_user, key, port=port, local_token=local_token,
+                ),
+                timeout=20,
+            )
+        except asyncio.TimeoutError:
+            forward_check = Check(
+                "tunnel forward", False, "forward probe timed out after 20s",
+                remedy="check AllowTcpForwarding in the remote sshd_config",
+            )
+        result.checks.append(forward_check)
+
     return result

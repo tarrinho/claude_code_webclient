@@ -126,6 +126,25 @@ PROXY_CONNECT_TIMEOUT_S = _int("WC_PROXY_CONNECT_TIMEOUT_S", 10)
 PROXY_TURN_TIMEOUT_S = _int("WC_PROXY_TURN_TIMEOUT_S", 300)
 PROXY_TOKEN = _str("WC_PROXY_TOKEN")
 
+# --- Sync-request watcher (transport project sync) --------------------------
+# OFF, and it must stay off until transcripts._agent_events_sync tail-reads
+# instead of whole-file reading. Measured on 2026-09-09, the day this shipped:
+# one transcripts.agent_traffic(scan_files=12) call is 31.4s wall and 603MB
+# peak RSS, because it read_bytes() + decode() + splitlines() the 12 newest
+# transcripts (86, 50, 49, 48, 44, 40, 31, 13MB...) -- three full in-memory
+# copies each. On a 10s interval that measured 417MB of disk read per 20s and
+# 76% of one core, permanently, on a 3.7GB host that was already 2.7GB into
+# swap. Before the watcher existed, agent_traffic() ran only when someone
+# opened the "Messages between sessions" panel (transcript.js showTraffic,
+# one-shot, never polled), so this turned a rare 30s request into a
+# continuous loop. The UI-triggered half of transport sync (the Sync button)
+# is unaffected by this flag and still works.
+SYNC_REQUEST_WATCHER_ENABLED = _bool("WC_SYNC_REQUEST_WATCHER", False)
+# Interval when it is enabled. 10s was the shipped value and is far too
+# aggressive for the current whole-file implementation; defence in depth for
+# whoever flips the flag before the redesign lands.
+SYNC_REQUEST_WATCHER_INTERVAL_S = _int("WC_SYNC_REQUEST_WATCHER_INTERVAL_S", 300)
+
 # --- Anthropic API (Claude Code's native backend) ---------------------------
 # The CLI talks to https://api.anthropic.com unless ANTHROPIC_BASE_URL says
 # otherwise, and authenticates with ANTHROPIC_API_KEY if set, falling back to

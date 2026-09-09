@@ -47,6 +47,37 @@ class MarkerRegexTests(unittest.TestCase):
         self.assertEqual(m.group(1), "Kali3")
 
 
+class WatcherIsOffByDefaultTests(unittest.TestCase):
+    """The hotfix, pinned. One agent_traffic() pass was measured at 31.4s
+    wall / 603MB peak RSS (it whole-file reads the 12 newest transcripts),
+    which on a 10s interval was 417MB of disk read per 20s and 76% of a core
+    on the live host, permanently. It must stay off until
+    transcripts._agent_events_sync tail-reads."""
+
+    def test_disabled_by_default(self):
+        import config
+        self.assertFalse(
+            config.SYNC_REQUEST_WATCHER_ENABLED,
+            "the watcher re-reads ~450MB of transcripts per pass -- it must "
+            "stay off until _agent_events_sync tail-reads",
+        )
+
+    def test_default_interval_is_not_the_aggressive_shipped_value(self):
+        import config
+        self.assertGreaterEqual(
+            config.SYNC_REQUEST_WATCHER_INTERVAL_S, 60,
+            "10s was the shipped value and is far too aggressive for a pass "
+            "that re-reads ~450MB",
+        )
+
+    def test_start_has_a_conservative_signature_default_too(self):
+        """app.py passes the config value, but a direct caller (a test, a
+        future entry point) must not get the old 10s by omission."""
+        import inspect
+        default = inspect.signature(watcher.start).parameters["interval_s"].default
+        self.assertGreaterEqual(default, 60)
+
+
 class PassTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -37,7 +37,12 @@ _log = logging.getLogger("wc.sync_request_watcher")
 _MARKER_RE = re.compile(r"^SYNC_REQUEST\s+(\S+)", re.ASCII)
 
 _task: asyncio.Task | None = None
-def start(interval_s: float = 10.0) -> None:
+def start(interval_s: float = 300.0) -> None:
+    """Start the poll loop. app.py passes
+    config.SYNC_REQUEST_WATCHER_INTERVAL_S and only calls this when
+    config.SYNC_REQUEST_WATCHER_ENABLED -- which is off, see the measurement
+    recorded there. The 10s default this shipped with was far too aggressive
+    for a pass that re-reads ~450MB of transcripts."""
     global _task
     if _task and not _task.done():
         return

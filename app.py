@@ -448,7 +448,17 @@ async def lifespan(app: FastAPI):
     # Watches incoming agent traffic for a SYNC_REQUEST marker and queues a
     # pending transport_sync_requests row for a human to approve. See
     # docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
-    sync_request_watcher.start()
+    #
+    # Off by default, and deliberately so -- see the measurement recorded at
+    # config.SYNC_REQUEST_WATCHER_ENABLED. Its poll re-reads ~450MB of
+    # transcripts per pass, which on this host was 417MB of disk read per 20s
+    # and 76% of a core, permanently. Re-enable once
+    # transcripts._agent_events_sync tail-reads. The Sync button (the other
+    # half of transport sync) does not go through here and is unaffected.
+    if config.SYNC_REQUEST_WATCHER_ENABLED:
+        sync_request_watcher.start(config.SYNC_REQUEST_WATCHER_INTERVAL_S)
+    else:
+        _log.info("sync_request_watcher disabled (config.SYNC_REQUEST_WATCHER_ENABLED)")
     yield
     # Stopped before db.close(): the sampler writes through the connection.
     await rate_limit.stop_cleanup()

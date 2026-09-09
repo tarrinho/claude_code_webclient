@@ -24,7 +24,6 @@ var STUB = {
   zoomAttached: 0,
   currentTransform: null,
   elHandlers: {},
-  buttonHandlers: [],
   focusCalls: [],
 };
 
@@ -73,14 +72,6 @@ var document = {
     return _els[id];
   },
   querySelectorAll: function (selector) {
-    if (selector === ".mapZoomPct") {
-      var btn = FakeEl("zoomPct100");
-      btn.dataset.zoom = "1";
-      btn.addEventListener = function (type, fn) {
-        STUB.buttonHandlers.push({selector: selector, type: type, fn: fn, el: btn});
-      };
-      return [btn];
-    }
     return [];
   },
   addEventListener: function (type, fn) {

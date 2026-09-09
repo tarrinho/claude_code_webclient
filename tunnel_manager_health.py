@@ -56,7 +56,7 @@ async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
 
     if store_fn:
         try:
-            store_fn(machine_id, stats)
+            store_fn(stats)
         except Exception as exc:
             _log.error("store remote stats failed: %s", exc)
     return stats

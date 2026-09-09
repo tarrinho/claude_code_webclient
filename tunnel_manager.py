@@ -180,6 +180,17 @@ def _handle_command(action: str, machine_id: str, now_fn=None) -> None:
     elif action == "RECONNECT":
         state = _STATE.get(machine_id)
         if not state:
+            # Startup scan seeds RECONNECTs into an empty _STATE — create
+            # the entry so _try_connect() can attempt the connection.
+            _STATE[machine_id] = {
+                "state": "connecting",
+                "tunnel_up": 0,
+                "proxy_ok": 0,
+                "error_msg": None,
+                "connected_at": None,
+                "last_check": now,
+            }
+            _try_connect(machine_id)
             return
         # Release this machine's own prior claim on a shared transport (if
         # any) before reconnecting -- reconnecting without releasing first

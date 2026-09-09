@@ -707,23 +707,11 @@ document.getElementById("supervisorMapClose")
 // Detail close
 document.getElementById("mapDetailClose")?.addEventListener("click", hideDetail);
 
-// Zoom buttons (Fix 3: full set)
+// Zoom buttons: fit-to-view plus the continuous in/out pair. The five
+// explicit-percentage presets (50/100/150/200/500%) were removed at Pedro's
+// request -- fit-to-view and +/- cover the same range without a five-button
+// row, and scaleTo/scaleBy below are what those presets called anyway.
 document.getElementById("mapFitBtn")?.addEventListener("click", zoomToFit);
-// Explicit zoom percentage buttons
-document.querySelectorAll(".mapZoomPct").forEach(btn => {
-  btn.addEventListener("click", () => {
-    if (!_svg || !_zoom) return;
-    const target = parseFloat(btn.dataset.zoom);
-    if (!(target >= 0.2 && target <= 5)) return;
-    // data-zoom is an absolute zoom level ("50%", "100%"), so scaleTo is the
-    // right call: it sets k to the target and keeps the viewport's centre
-    // fixed. The previous arithmetic multiplied a translation already
-    // expressed in scaled pixels (currentTransform.x) by the target scale and
-    // subtracted it from the box centre, which is not a meaningful quantity --
-    // pressing 100% from a panned view threw the map off-screen.
-    _svg.transition().duration(_motionMs(300)).call(_zoom.scaleTo, target);
-  });
-});
 document.getElementById("mapZoomInBtn")?.addEventListener("click", () => {
   if (_svg) _svg.transition().call(_zoom.scaleBy, 1.5);
 });

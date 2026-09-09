@@ -150,26 +150,11 @@ class MapZoomWiringTests(unittest.TestCase):
             self.assertEqual(call["onClass"], "map-viewport")
         self.assertTrue(out["foundUnderViewport"])
 
-    def test_the_percentage_buttons_set_an_absolute_scale(self):
-        """Defect 4: data-zoom is an absolute level, so the call must be
-        scaleTo(target) and must not synthesise a translation from it."""
-        out = _run("""
-          renderSupervisorMap(DATA);
-          // Pan somewhere first: the old arithmetic only misbehaved from a
-          // panned view, which is why it survived manual testing.
-          _zoom.transform(stubSvg(), d3.zoomIdentity.translate(500, -300).scale(2));
-          var btn = STUB.buttonHandlers[0];
-          btn.fn.call(btn.el, {});
-          var last = STUB.transforms[STUB.transforms.length - 1];
-          JSON.stringify({scaleTo: STUB.scaleToCalls, last: last});
-        """)
-        self.assertEqual(out["scaleTo"], [1.0])
-        self.assertEqual(out["last"]["k"], 1.0)
-        for axis in ("x", "y"):
-            self.assertEqual(
-                out["last"][axis], {"x": 500, "y": -300}[axis],
-                "an absolute zoom level must not move the view",
-            )
+    # test_the_percentage_buttons_set_an_absolute_scale removed with the
+    # five explicit-percentage zoom buttons (50/100/150/200/500%) at Pedro's
+    # request. Fit-to-view plus the continuous +/- pair covers the same
+    # range; see web/index.html's zoom-controls and supervisor-map.js's
+    # button wiring.
 
 
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")

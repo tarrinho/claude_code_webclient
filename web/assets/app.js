@@ -231,6 +231,45 @@ function closeDialog() {
   if (state.previousFocus && document.body.contains(state.previousFocus)) state.previousFocus.focus();
 }
 
+async function toggleChatVoiceMode() {
+  const chat = state.currentChat;
+  if (!chat || !chat.id) return;
+  const btn = byId('voiceModeToggleBtn');
+  const isVoice = !chat.voice_mode;
+  btn.disabled = true;
+  btn.title = isVoice ? 'Enabling voice mode…' : 'Disabling voice mode…';
+  try {
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({voice_mode: isVoice}),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || data.detail || 'Could not toggle voice mode');
+    }
+    const result = await response.json();
+    if (result.chat) {
+      chat.voice_mode = result.chat.voice_mode;
+      chat.ai_machine_id = result.chat.ai_machine_id;
+      chat.model = result.chat.model || '';
+      chat.type = isVoice ? 'brainstorming' : chat.type || 'normal';
+    } else {
+      chat.voice_mode = isVoice;
+    }
+    populateBackendPicker(chat);
+    if (!chat.voice_mode) {
+      ensurePinnedModels(chat);
+    }
+    updateModelDisplay(chat.model || chat.last_model_used);
+    listController.render(state.chats, chat.id);
+    showToast(isVoice ? 'Voice mode enabled' : 'Voice mode disabled');
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function openSettingsDialog() {
   state.previousFocus = document.activeElement;
   byId('settingsStatus').textContent = '';
@@ -575,7 +614,12 @@ async function saveChatDialog(event) {
           // strip, composer name, pinned model, backend picker.
           updateModelDisplay(state.currentChat.model || state.currentChat.last_model_used);
           populateBackendPicker(state.currentChat);
-          ensurePinnedModels(state.currentChat);
+          // Voice-mode chats talk to a different backend (often OpenAI-compatible)
+          // which does not expose a /models list via this app's endpoint. Skip the
+          // fetch for them — the model is already set by the PATCH handler.
+          if (!state.currentChat?.voice_mode) {
+            ensurePinnedModels(state.currentChat);
+          }
           byId('topbarTitle').textContent = 'WebConsole';
           byId('workspaceName').textContent = data.chat.title;
           byId('workspaceName').title = data.chat.title;
@@ -692,6 +736,7 @@ function updateCurrentUi(chat) {
   byId('composerChatName').title = chat.title;
   byId('workspaceStrip').style.display = 'flex';
   byId('editChatBtn').hidden = false;
+  byId('voiceModeToggleBtn').hidden = false;
   // Only a chat linked to a CLI session has a transcript to refresh from.
   byId('syncBtn').hidden = !chat.session_id;
   byId('composerArea').style.display = 'block';
@@ -1548,6 +1593,7 @@ function showWelcome() {
   const lastBar = byId('lastCommandBar');
   if (lastBar) lastBar.hidden = true;
   byId('editChatBtn').hidden = true;
+  byId('voiceModeToggleBtn').hidden = true;
   byId('syncBtn').hidden = true;
   byId('autoAnswerToggle').hidden = true;
   byId('autoAnswerInfo').hidden = true;
@@ -2136,6 +2182,7 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('sidebarOverlay').addEventListener('click', closeSidebar);
   byId('logoutBtn').addEventListener('click', logout);
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
+  byId('voiceModeToggleBtn').addEventListener('click', toggleChatVoiceMode);
   byId('syncBtn').addEventListener('click', () => syncTranscript({announce: true}));
   byId('autoAnswerToggle').addEventListener('click', toggleAutoAnswer);
   byId('autoAnswerInfo').addEventListener('click', toggleAutoAnswerMenu);

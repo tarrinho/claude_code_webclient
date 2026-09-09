@@ -363,13 +363,20 @@ def _try_connect(machine_id: str) -> None:
         return
     _CONNECTING.add(machine_id)
 
+    # Allocate the port under _port_lock BEFORE spawning _run(). This serializes
+    # all four machines (even on different transports) so the port is reserved
+    # before the ~10s SSH handshake begins — preventing the classic race where
+    # two machines both probe the same free port, both SSH-connect, then
+    # collide at bind-time.
+    async with _port_lock:
+        from tunnel_manager_ssh import _find_available_port as _find_port
+
+        assigned_port = await _find_port()
+
     async def _run():
         from tunnel_manager_ssh import connect as _connect
 
         try:
-            from tunnel_manager_ssh import _find_available_port as _find_port
-
-            assigned_port = await _find_port()
             ok, client, transport, local_port, ssh_port, forward_server, transport_id = (
                 await _connect(machine_id, assigned_port)
             )

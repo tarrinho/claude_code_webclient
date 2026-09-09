@@ -36,12 +36,17 @@ htmlcov/
 *.sqlite3
 *.log
 
-# Local build/review instructions
-/rules.md
+# rules.md was here. It is tracked now, deliberately: it is the build/review
+# runbook, and the §14 machinery in it (the two-pass suite split, the transport
+# probe) is real work that existed on exactly one machine. Checked before
+# un-ignoring -- it carries no credentials, and the two operational identifiers
+# in it (this host's Tailscale name and the default SSH key path) are already
+# in Caddyfile, tests/test_db.py and two design docs.
 
 # Pedro's running request log + the hook/settings that populate it. Private,
-# same reasoning as CLAUDE.md/rules.md below: operational log of this
-# deployment's owner, not something a reader of the source needs.
+# same reasoning as CLAUDE.md below: operational log of this deployment's
+# owner, not something a reader of the source needs. (rules.md used to be
+# named here too; it is tracked now -- see above.)
 /PT_request.md
 /.claude/settings.local.json
 # Agent instructions for this checkout. Deliberately not published: it describes
@@ -52,7 +57,7 @@ htmlcov/
 
 # Pedro's own running log of requests made to this project and their outcomes.
 # Personal/operational, not project documentation -- same reasoning as
-# CLAUDE.md/rules.md above.
+# CLAUDE.md above.
 /requests-log.md
 
 # Security scan output

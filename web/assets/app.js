@@ -446,9 +446,9 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus } from './machines.js?v=8';
+  _drawMapWires, _pollTunnelStatus, _expandAllTransportGroups } from './machines.js?v=9';
 
-import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=3';
+import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=4';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();
@@ -1861,6 +1861,10 @@ async function loadBackends() {
   await loadMachines();
   await loadTransports();
   await loadTurnCounts();
+  // Every transport group starts expanded on open -- runs every time this
+  // panel is shown, not only on first load, so switching away and back
+  // resets it too.
+  _expandAllTransportGroups();
   _renderMachineList();
   // Start (or stop) 5s tunnel status polling so transport badges update live.
   const hasSsh = _machines.some(m => m.backend_kind === 'ssh_proxy');

@@ -20,6 +20,42 @@ _log = logging.getLogger("wc.app")
 router = APIRouter()
 
 
+async def _start_tunnel_for_transport(transport_id: str, owner: str) -> bool:
+    """Start the tunnel for a machine on *transport_id*, unless one is
+    already up. Returns whether a start was actually queued.
+
+    Shared by Init and a fully-passing Check -- both are "this transport just
+    proved (or was just made) ready, so connect it" and neither should
+    reimplement machine selection or the current-state guard separately.
+
+    Machine choice mirrors the SSH badge (machines.js: "the first machine's
+    status speaks for the group") -- one shared tunnel per transport, so
+    starting it for any one machine on this transport brings the whole
+    connection up for all of them.
+
+    The current-state guard is Check-specific in spirit but applied to both:
+    an operator clicking Check on an already-Active transport must not bounce
+    a working connection, and Init redeploying an already-Active one should
+    not force an unnecessary reconnect either.
+    """
+    import tunnel_manager
+
+    machines = [
+        m for m in await db.ai_machines_list(owner)
+        if m.get("transport_id") == transport_id
+    ]
+    if not machines:
+        return False
+
+    machine_id = machines[0]["id"]
+    status = await tunnel_manager.tunnel_status(machine_id)
+    if status and status.get("proxy_ok"):
+        return False   # already connected -- nothing to start
+
+    await tunnel_manager.queue_command(machine_id, "START_TUNNEL")
+    return True
+
+
 @router.get("/api/transports")
 async def handle_transports_list(request: Request):
     session = request.state.session
@@ -169,16 +205,27 @@ async def handle_transport_test_saved(request: Request, transport_id: str):
 async def handle_transport_check(request: Request, transport_id: str):
     """Is the far side ready to serve turns, and if not, what is missing?
 
-    Read-only. SSH succeeding says nothing about whether turns can flow: the
-    host also needs claude_proxy.py listening on config.PROXY_PORT with the
-    same token this database holds, and the claude CLI and python3 for it to
-    use. Adding a transport creates none of that, and its absence surfaces as
+    The probe itself is read-only -- SSH succeeding says nothing about
+    whether turns can flow: the host also needs claude_proxy.py listening on
+    config.PROXY_PORT with the same token this database holds, the claude CLI
+    and python3 for it to use, and (the fifth check, transport_readiness's
+    own _probe_forward) a working -L forward the way a real tunnel would use.
+    Adding a transport creates none of that, and its absence surfaces as
     "Cannot connect to proxy at 127.0.0.1:<port>" on every turn -- which reads
     as a local fault and is not one.
 
     Deliberately not tunnel_manager_ssh.probe_remote: that needs an
     established tunnel, and a cold transport is exactly when these questions
     matter most.
+
+    A fully-passing result DOES have a side effect: it starts the tunnel.
+    Reported by an operator running Check, getting every check green, and the
+    Backends panel still showing Uninitialized with no explanation why --
+    _probe_forward already opened a real forward and got a real ack, then
+    discarded it by design, so a "ready" verdict was proof the connection
+    works with nothing to show for the proof. Holding it open instead of
+    discarding it is what closes that gap; see _start_tunnel_for_transport for
+    the guard against bouncing an already-Active one.
     """
     import config
     import transport_readiness
@@ -197,7 +244,14 @@ async def handle_transport_check(request: Request, transport_id: str):
         "transport_check name=%s ready=%s reachable=%s",
         transport["name"], result.ready, result.reachable,
     )
-    return JSONResponse(result.as_dict())
+
+    payload = result.as_dict()
+    tunnel_started = False
+    if result.ready:
+        tunnel_started = await _start_tunnel_for_transport(
+            transport_id, session["user"])
+    payload["tunnel_started"] = tunnel_started
+    return JSONResponse(payload)
 
 
 @router.post("/api/transports/{transport_id}/init")
@@ -283,23 +337,12 @@ async def handle_transport_init(request: Request, transport_id: str):
             status_code=502,
         )
 
-    # Same choice the SSH badge makes (machines.js: "the first machine's
-    # status speaks for the group") -- one shared tunnel per transport, so
-    # starting it for any one machine on this transport brings the whole
-    # connection up for all of them.
-    machines = [
-        m for m in await db.ai_machines_list(session["user"])
-        if m.get("transport_id") == transport_id
-    ]
-    tunnel_started = False
-    if machines:
-        import tunnel_manager
-        await tunnel_manager.queue_command(machines[0]["id"], "START_TUNNEL")
-        tunnel_started = True
-    else:
+    tunnel_started = await _start_tunnel_for_transport(transport_id, session["user"])
+    if not tunnel_started:
         _log.info(
-            "transport_init_no_machine name=%s -- deployed but nothing to "
-            "connect until a machine is assigned to it", transport["name"],
+            "transport_init_no_tunnel_start name=%s -- deployed; nothing "
+            "queued (no machine assigned yet, or already connected)",
+            transport["name"],
         )
 
     return JSONResponse(

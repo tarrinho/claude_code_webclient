@@ -161,9 +161,18 @@ export async function _checkTransport(transport, header, btn) {
       throw new Error(data.detail || data.error || `Check failed (${resp.status})`);
     }
     _renderReadiness(header, data);
-    notifyResult(data.ready ? `${transport.name} is ready`
-                            : `${transport.name} is not ready — see the checks`,
-                 data.ready ? '' : 'error');
+    if (data.ready && data.tunnel_started) {
+      notifyResult(`${transport.name} is ready and connecting…`);
+      // machines.js listens for this to refresh the status badge immediately
+      // rather than leaving it stale for up to 5s until the next poll tick.
+      document.dispatchEvent(new CustomEvent('wc:tunnel-start-queued'));
+    } else if (data.ready) {
+      // ready === true, tunnel_started === false: either already connected
+      // (nothing to start) or nothing is assigned to this transport yet.
+      notifyResult(`${transport.name} is ready`);
+    } else {
+      notifyResult(`${transport.name} is not ready — see the checks`, 'error');
+    }
   } catch (error) {
     notifyResult(error.message, 'error');
   } finally {
@@ -197,7 +206,7 @@ export async function _initTransport(transport, header, btn) {
     if (data.tunnel_started) {
       // machines.js listens for this to refresh the status badge immediately
       // rather than leaving it stale for up to 5s until the next poll tick.
-      document.dispatchEvent(new CustomEvent('wc:tunnel-init-started'));
+      document.dispatchEvent(new CustomEvent('wc:tunnel-start-queued'));
     }
     // Immediately re-check, so the buttons never leave the reader guessing
     // whether it worked.

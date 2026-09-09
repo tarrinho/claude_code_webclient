@@ -12,8 +12,15 @@ asserting rather than trusting:
   the remote service does not come up, and that has to reach the caller as an
   error, not as a 200 with discouraging text in it.
 
-Check is asserted to stay read-only in the companion file
-(test_qa_transport_readiness.py), where the probe script itself is inspected.
+Check's probe itself is read-only and asserted so in the companion file
+(test_qa_transport_readiness.py), where the probe script is inspected. The
+route wrapping it is not purely read-only any more: a fully-passing Check
+also starts the tunnel (Pedro reported running Check, seeing every check
+green, and the transport still reading Uninitialized with nothing explaining
+why -- the forward probe had already proved a working connection and thrown
+it away). CheckStartsTheTunnelTests below covers that; it mirrors
+InitStartsTheTunnelTests because the two routes now share
+_start_tunnel_for_transport.
 """
 from __future__ import annotations
 
@@ -187,6 +194,73 @@ class InitStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
         machines = [{"id": "m-1", "transport_id": "t-1"}]
         response, _, queue_command = await self._init(_Proc(1, b"NOT listening\n"), machines)
         self.assertFalse(_body(response)["ok"])
+        self.assertFalse(_body(response)["tunnel_started"])
+        queue_command.assert_not_awaited()
+
+
+class CheckStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
+    """Pedro reported this exactly: ran Check, every check came back green,
+    and the transport still read Uninitialized with nothing explaining why.
+    _probe_forward had already opened a real forward and gotten a real ack,
+    then discarded it by design -- a "ready" verdict was proof the connection
+    works with nothing kept from the proof. A fully-passing Check now starts
+    the tunnel instead of throwing that proof away.
+    """
+
+    def _readiness(self, *, ok: bool):
+        import transport_readiness as treadi
+
+        return treadi.Readiness(
+            reachable=True,
+            checks=[treadi.Check("claude CLI", ok, "detail")],
+        )
+
+    async def _check(self, *, ready: bool, machines=(), already_active=False):
+        import transport_readiness as treadi
+
+        with patch.object(tr.db, "ssh_transport_get",
+                          AsyncMock(return_value=dict(_TRANSPORT))), \
+                patch.object(tr.db, "setting_get", AsyncMock(return_value="tok")), \
+                patch.object(treadi, "check_transport",
+                             AsyncMock(return_value=self._readiness(ok=ready))), \
+                patch.object(tr.db, "ai_machines_list",
+                             AsyncMock(return_value=list(machines))), \
+                patch("tunnel_manager.queue_command", AsyncMock()) as queue_command, \
+                patch("tunnel_manager.tunnel_status", AsyncMock(
+                    return_value={"proxy_ok": True} if already_active else None)):
+            response = await tr.handle_transport_check(_Request(), "t-1")
+        return response, queue_command
+
+    async def test_a_fully_passing_check_starts_the_tunnel(self):
+        machines = [{"id": "m-1", "transport_id": "t-1"}]
+        response, queue_command = await self._check(ready=True, machines=machines)
+        self.assertTrue(_body(response)["ready"])
+        self.assertTrue(_body(response)["tunnel_started"])
+        queue_command.assert_awaited_once_with("m-1", "START_TUNNEL")
+
+    async def test_a_failing_check_does_not_start_anything(self):
+        """The whole point of Check: a red check must never have a side
+        effect that makes the badge lie about what was actually verified."""
+        machines = [{"id": "m-1", "transport_id": "t-1"}]
+        response, queue_command = await self._check(ready=False, machines=machines)
+        self.assertFalse(_body(response)["ready"])
+        self.assertFalse(_body(response)["tunnel_started"])
+        queue_command.assert_not_awaited()
+
+    async def test_a_transport_with_no_machine_is_ready_but_starts_nothing(self):
+        response, queue_command = await self._check(ready=True, machines=())
+        self.assertTrue(_body(response)["ready"])
+        self.assertFalse(_body(response)["tunnel_started"])
+        queue_command.assert_not_awaited()
+
+    async def test_an_already_active_transport_is_not_bounced(self):
+        """Clicking Check on a transport that is already connected must not
+        reset a working tunnel -- that would be strictly worse than doing
+        nothing."""
+        machines = [{"id": "m-1", "transport_id": "t-1"}]
+        response, queue_command = await self._check(
+            ready=True, machines=machines, already_active=True)
+        self.assertTrue(_body(response)["ready"])
         self.assertFalse(_body(response)["tunnel_started"])
         queue_command.assert_not_awaited()
 

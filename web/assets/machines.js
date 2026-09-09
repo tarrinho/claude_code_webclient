@@ -175,12 +175,13 @@ export function _pollTunnelStatus(active) {
   }
 }
 
-// transports.js dispatches this after Init starts a tunnel, so the badge does
-// not sit on stale data for up to 5s -- a custom event rather than an import,
-// because machines.js already imports FROM transports.js (Edit/Delete/Check/
-// Init) and the reverse import would be a cycle. Same decoupling app.js uses
-// for supervisor-map.js's "open this chat" callback.
-document.addEventListener('wc:tunnel-init-started', _refreshTunnelStatus);
+// transports.js dispatches this after Init, or a fully-passing Check, queues
+// a tunnel start -- so the badge does not sit on stale data for up to 5s.
+// A custom event rather than an import, because machines.js already imports
+// FROM transports.js (Edit/Delete/Check/Init) and the reverse import would be
+// a cycle. Same decoupling app.js uses for supervisor-map.js's "open this
+// chat" callback.
+document.addEventListener('wc:tunnel-start-queued', _refreshTunnelStatus);
 
 // Per-machine model state, keyed by machine id: {models, active, default,
 // source, reason, endpoint}. Fetched lazily so opening Settings does not

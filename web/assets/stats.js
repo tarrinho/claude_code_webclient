@@ -481,6 +481,39 @@ export function renderStats(container, payload) {
       },
     });
     seriesTable(container, models, {labelFor: k => k, caption: 'Tokens by model'});
+
+    // Cumulative totals: each point is the running sum from the window start.
+    // Lets the user see total spend to date rather than a snapshot per period.
+    const cumulative = {
+      buckets: models.buckets,
+      series: models.series.map(s => ({
+        key: s.key,
+        values: (() => {
+        const acc = [];
+        let sum = 0;
+        for (let i = 0; i < s.values.length; i++) {
+          sum += s.values[i] || 0;
+          acc.push(sum);
+        }
+        return acc;
+      })(),
+        total: 0, // not used in legend when cumulative is true
+      })),
+    };
+    lineChart(container, cumulative, {
+      title: 'Accumulated tokens by model',
+      colorFor: modelColor, labelFor: k => k,
+      formatValue: abbrev, formatTip: exact,
+      summarize: entry => `${abbrev(cumulative.series.find(s => s.key === entry.key)?.values?.at(-1) ?? 0)} total`,
+      titleFor: entry => {
+        const ids = [...(mergedIds.get(entry.key) || [])];
+        return ids.length > 1 ? `Merged from: ${ids.join(', ')}` : (ids[0] || '');
+      },
+    });
+    seriesTable(container, cumulative, {
+      labelFor: k => k, caption: 'Accumulated tokens by model',
+      formatCell: exact,
+    });
   }
 
   // Per agent: which conversation or terminal session spent it. The chart the

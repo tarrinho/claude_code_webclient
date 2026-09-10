@@ -29,6 +29,12 @@ var STUB = {
   // one of the two calls does nothing while the code reads as though both
   // apply.
   treeCalls: [],
+  // The tree-layout methods this stub really implements. Declared rather than
+  // inferred, because the proxy below answers *every* method name with a
+  // throwing function, so `typeof layout.foo === "function"` can no longer
+  // tell present from absent -- this list is what the fidelity tests check
+  // against.
+  treeImplemented: ["size", "nodeSize", "separation"],
   zoomAttached: 0,
   currentTransform: null,
   elHandlers: {},
@@ -268,6 +274,13 @@ function _tree() {
     STUB.treeNodeSize = layout.__nodeSize ? layout.__nodeSizeVal : null;
     return root;
   };
+  // Declared before the setters so each can return it. Returning the raw
+  // `layout` instead lets a chain escape the proxy: the module calls
+  // `.separation(...).nodeSize(...)`, so `separation` handing back the target
+  // put `.nodeSize` back on an unwrapped object and the descriptive error
+  // below never fired -- the failure was still a bare TypeError. Found by
+  // replaying the original incident against this stub.
+  var proxy;
   // d3-hierarchy's tree layout carries ONE flag for these two setters:
   // `size` clears it, `nodeSize` sets it, and the accessor that is called
   // last wins while the other's value is ignored. Reproduced faithfully on
@@ -278,20 +291,58 @@ function _tree() {
     STUB.treeCalls.push("size");
     layout.__size = s;
     layout.__nodeSize = false;
-    return layout;
+    return proxy;
   };
   layout.nodeSize = function (s) {
     STUB.treeCalls.push("nodeSize");
     layout.__nodeSizeVal = s;
     layout.__nodeSize = true;
-    return layout;
+    return proxy;
   };
   layout.separation = function (f) {
     STUB.treeCalls.push("separation");
     layout.__separation = f;
-    return layout;
+    return proxy;
   };
-  return layout;
+  // Say what is missing, instead of "TypeError: not a function".
+  //
+  // This stub deliberately implements only the d3 surface the module actually
+  // uses, and failing loudly when the module reaches past it is the intended
+  // behaviour. What was not intended: on 2026-09-10 the map gained a
+  // `.nodeSize()` call, and all 35 tests in
+  // test_qa_supervisor_map_geometry.py died inside renderSupervisorMap with a
+  // bare TypeError carrying no hint of which method or which file was at
+  // fault. They read as 35 behavioural regressions from the layout
+  // restructure and stayed that way for a week, because nothing in the
+  // failure pointed at the harness.
+  //
+  // The proxy keeps the loud failure and makes it self-describing. Anything
+  // not implemented above is still an error at the moment it is called -- it
+  // is not silently accepted, which would be far worse -- but the message
+  // names the method, this file, and what to do about it.
+  proxy = new Proxy(layout, {
+    get: function (target, key) {
+      if (key in target) return target[key];
+      // Symbols and the internal __-prefixed fields must read as absent, or
+      // `layout.__size ? ... : ...` starts seeing a function and every
+      // truthiness test in here inverts.
+      if (typeof key !== "string" || key.slice(0, 2) === "__") {
+        return target[key];
+      }
+      return function () {
+        throw new Error(
+          "d3_dom_stub: d3.tree()." + key + "() is not implemented by this "
+          + "stub. The module under test calls it. Add it to _tree() in "
+          + "tests/js/d3_dom_stub.js with d3-hierarchy's real semantics, and "
+          + "pin those semantics in tests/test_qa_d3_stub_fidelity.py -- a "
+          + "stub more permissive than d3 makes the tests agree with code "
+          + "that behaves differently in a browser. Implemented here: "
+          + STUB.treeImplemented.join(", ") + "."
+        );
+      };
+    },
+  });
+  return proxy;
 }
 
 /* ── d3 namespace ────────────────────────────────────────────────────── */

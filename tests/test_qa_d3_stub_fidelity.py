@@ -194,16 +194,135 @@ class TheStubProvidesWhatTheModuleCallsTests(unittest.TestCase):
         # The methods chained onto d3.tree() in the module's own source.
         chain = set(re.findall(r"\.(size|nodeSize|separation)\(", module))
         self.assertTrue(chain, "found no tree-layout chain in supervisor-map.js")
+        # Checked against the stub's declared list, not `typeof`. The layout is
+        # wrapped in a proxy that answers every method name with a function
+        # that throws a descriptive error, so `typeof layout.foo === "function"`
+        # is now true for anything at all and a typeof check here would pass
+        # for a method the stub does not implement -- which is the exact gap
+        # this test exists to close.
+        implemented = set(_eval(
+            "JSON.stringify({names: STUB.treeImplemented})")["names"])
         for name in sorted(chain):
             with self.subTest(method=name):
-                out = _eval(
-                    "JSON.stringify({ok: typeof d3.tree()[%r] === 'function'})"
-                    % name)
-                self.assertTrue(
-                    out["ok"],
+                self.assertIn(
+                    name, implemented,
                     f"d3.tree().{name}() is called by supervisor-map.js but is "
-                    f"not a function on the stub's layout",
+                    f"not implemented by the stub; it is declared as "
+                    f"{sorted(implemented)}",
                 )
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs to evaluate the stub")
+class AnUnimplementedMethodSaysSoTests(unittest.TestCase):
+    """Reaching past the stub must still fail -- but say what is missing.
+
+    Asked for by the stub's author after the 2026-09-10 incident: the intended
+    behaviour is a loud failure, and that part worked. What did not work is
+    attribution. All 35 tests in test_qa_supervisor_map_geometry.py died with a
+    bare "TypeError: not a function" naming no method and no file, so they read
+    as 35 behavioural regressions from the layout restructure and stayed
+    unattributed for a week.
+    """
+
+    def test_calling_an_unimplemented_layout_method_still_throws(self):
+        """The loud failure is the point and must survive. A stub that
+        silently accepted an unknown method would let the suite agree with
+        code that breaks in a browser -- strictly worse than the TypeError."""
+        out = _eval("""
+          var threw = false, msg = '';
+          try { d3.tree().somethingNobodyImplemented([1, 2]); }
+          catch (e) { threw = true; msg = e.message; }
+          JSON.stringify({threw: threw, msg: msg});
+        """)
+        self.assertTrue(out["threw"], "an unimplemented method was accepted")
+
+    def test_the_error_names_the_method_the_file_and_the_fix(self):
+        out = _eval("""
+          var msg = '';
+          try { d3.tree().somethingNobodyImplemented([1, 2]); }
+          catch (e) { msg = e.message; }
+          JSON.stringify({msg: msg});
+        """)
+        msg = out["msg"]
+        self.assertIn("somethingNobodyImplemented", msg, "names the method")
+        self.assertIn("d3_dom_stub", msg, "names the file to edit")
+        self.assertIn("nodeSize", msg,
+                      "lists what is implemented, so the gap is obvious")
+        self.assertNotEqual(
+            msg, "not a function",
+            "this is the message the incident produced; it is what the proxy "
+            "exists to replace",
+        )
+
+    def test_the_implemented_methods_are_not_shadowed_by_the_proxy(self):
+        """The proxy must pass real methods through untouched, or it converts
+        a working stub into one that throws on everything."""
+        out = _eval(_HIERARCHY + """
+          var t = d3.tree().nodeSize([20, 160]).separation(function () { return 1; });
+          t(root);
+          JSON.stringify({nodeSize: STUB.treeNodeSize, placed: root.descendants().length});
+        """)
+        self.assertEqual(out["nodeSize"], [20, 160])
+        self.assertEqual(out["placed"], 4)
+
+    def test_the_message_survives_a_chained_call(self):
+        """The hole in the first version of this, and the one that matters:
+        the module reaches the unimplemented method *through a chain*.
+
+        `supervisor-map.js` calls `.separation(...).nodeSize(...)`. When the
+        setters returned the raw layout instead of the proxy, `separation`
+        handed back an unwrapped object and `.nodeSize` on it threw a bare
+        `TypeError: not a function` again -- so the descriptive error existed
+        and the real incident still could not reach it. Found by replaying the
+        incident rather than by reading the code.
+        """
+        out = _eval("""
+          var msg = '';
+          try {
+            d3.tree()
+              .separation(function () { return 1; })
+              .stillNotImplemented([1, 2]);
+          } catch (e) { msg = e.message; }
+          JSON.stringify({msg: msg});
+        """)
+        self.assertIn(
+            "stillNotImplemented", out["msg"],
+            "a chained call escaped the proxy and produced a bare TypeError; "
+            "every setter must return the proxy, not the layout",
+        )
+
+    def test_the_message_survives_two_chained_setters(self):
+        """Same property one step further out, since the real chain is three
+        calls long and a single-setter test would pass on a proxy that only
+        re-wraps once."""
+        out = _eval("""
+          var msg = '';
+          try {
+            d3.tree()
+              .nodeSize([20, 30])
+              .separation(function () { return 1; })
+              .alsoNotImplemented();
+          } catch (e) { msg = e.message; }
+          JSON.stringify({msg: msg});
+        """)
+        self.assertIn("alsoNotImplemented", out["msg"])
+
+    def test_internal_fields_still_read_as_absent(self):
+        """`layout.__size ? ... : ...` runs inside the stub. If the proxy
+        answered __-prefixed reads with a function, every such truthiness test
+        would invert and the layout would silently pick the wrong mode."""
+        out = _eval("""
+          var t = d3.tree();
+          JSON.stringify({
+            size: typeof t.__size,
+            nodeSize: typeof t.__nodeSize,
+            val: typeof t.__nodeSizeVal
+          });
+        """)
+        self.assertEqual(
+            [out["size"], out["nodeSize"], out["val"]],
+            ["undefined", "undefined", "undefined"],
+        )
 
 
 if __name__ == "__main__":

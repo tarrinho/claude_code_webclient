@@ -507,7 +507,15 @@ async def lifespan(app: FastAPI):
     # Awaited rather than spawned, so exactly one pass runs at a time, and on
     # an interval that reflects what is being watched: a list of CLI sessions
     # on other machines does not change every three seconds.
+    #
+    # Only starts when remote session discovery is enabled; otherwise the
+    # cache is never populated at startup and read_claude_sessions() falls
+    # through to the local read, keeping tests that patch a sessions dir
+    # from being poisoned by the pre-warmed cache.
     import routes.db_sessions as _db_sessions
+    if not config.REMOTE_SESSIONS:
+        yield
+        return
     _cache_interval = config.REMOTE_SESSION_CACHE_S
 
     async def _cache_refresh_loop() -> None:

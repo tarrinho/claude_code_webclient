@@ -536,3 +536,84 @@ class AgentSeriesTests(unittest.TestCase):
         work."""
         fn = self.src[self.src.index("async def agent_series"):]
         self.assertIn("rows.get(stamp, 0)", fn)
+
+
+class DetailActionsTests(unittest.TestCase):
+    """Step 5's actions, and the endpoints they drive.
+
+    Every one maps onto an endpoint the console already had. That is worth a
+    test: a parallel API for the dashboard would be a second way to do the
+    same thing, free to drift from the first.
+    """
+
+    def setUp(self):
+        self.js = MAP_JS.read_text(encoding="utf-8")
+
+    def test_the_model_switch_patches_the_chat(self):
+        self.assertRegex(self.js, r'method:\s*"PATCH"')
+        self.assertIn('JSON.stringify({model})', self.js)
+
+    def test_an_option_reply_answers_by_index(self):
+        """A prompt with numbered choices cannot be answered with free text --
+        typing "yes" at a menu does nothing -- so options are buttons and the
+        text box is for the open-ended case."""
+        self.assertIn("JSON.stringify({index})", self.js)
+        self.assertIn("/question", self.js)
+
+    def test_a_text_reply_posts_a_message(self):
+        self.assertIn("JSON.stringify({content: text})", self.js)
+        self.assertIn("/messages", self.js)
+
+    def test_the_reply_control_is_only_offered_to_a_waiting_agent(self):
+        """An always-visible box invites typing at agents that are mid-turn,
+        where the message queues behind work the operator cannot see."""
+        self.assertRegex(
+            self.js, r'agent_state\s*===\s*"waiting_for_input"')
+
+    def test_pause_is_labelled_stop_because_that_is_what_happens(self):
+        """The spec says "pause". This console can stop a turn and cannot
+        suspend one, and a button promising a state the backend does not have
+        is worse than the honest verb."""
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        detail = html[html.index('id="mapDetailDrawer"'):html.index('id="mapDetailActionStatus"')]
+        self.assertNotIn(">Pause<", detail)
+        self.assertIn('id="mapDetailStop"', detail)
+
+    def test_the_raw_log_button_hides_without_a_session(self):
+        """A conversation with no linked terminal session has no raw log, and
+        a button that opens an empty panel teaches the operator to stop
+        trusting the buttons."""
+        self.assertRegex(
+            self.js,
+            r"logs\.hidden\s*=\s*!\(nodeData\.type === \"chat\" && nodeData\.session_id\)")
+
+    def test_actions_ask_the_page_to_refresh_rather_than_refetching(self):
+        """app.js owns the fetching and the polling. Two owners for the map's
+        data is how the panel and the poller end up disagreeing."""
+        self.assertIn('"wc:map-refresh"', self.js)
+
+    def test_the_events_use_the_existing_prefix(self):
+        """app.js already listens on wc:map-*. A second family of names for
+        the same panel is a rename waiting to be missed."""
+        self.assertNotIn("wc:supervisor-map-", self.js)
+
+
+class ActionEndpointsExistTests(unittest.TestCase):
+    """The other half: the routes the panel calls have to be real. A test that
+    only reads the frontend would pass against a button wired to nothing."""
+
+    def setUp(self):
+        self.routes = (ROOT / "routes" / "chats.py").read_text(encoding="utf-8")
+
+    def test_the_chat_patch_route_exists_and_accepts_model(self):
+        self.assertIn('@router.patch("/api/chats/{chat_id}")', self.routes)
+        self.assertRegex(self.routes, r'allowed = \{[^}]*"model"')
+
+    def test_the_question_answer_route_exists(self):
+        self.assertIn('@router.post("/api/chats/{chat_id}/question")', self.routes)
+
+    def test_the_message_route_exists(self):
+        self.assertIn('@router.post("/api/chats/{chat_id}/messages")', self.routes)
+
+    def test_the_stop_route_exists(self):
+        self.assertIn('@router.post("/api/chats/{chat_id}/stop")', self.routes)

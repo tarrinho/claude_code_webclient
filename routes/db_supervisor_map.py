@@ -646,6 +646,11 @@ def _chat_node(
     counts = totals.get(chat.get("session_id") or "") or totals.get(cid) or {}
     node["turns"] = counts.get("turns", 0)
     node["tokens"] = counts.get("tokens", 0)
+    # Whether there is a terminal transcript behind this conversation at all.
+    # The detail panel's raw-log button hides itself when there is not, rather
+    # than opening an empty viewer.
+    if chat.get("session_id"):
+        node["session_id"] = chat["session_id"]
     return node
 
 

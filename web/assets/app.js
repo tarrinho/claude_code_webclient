@@ -340,13 +340,13 @@ async function _loadMap(quiet = false) {
     const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=7795691');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=16108987');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
     byId('mapStatusEmpty').textContent = MAP_EMPTY_TEXT;
   } catch {
     if (quiet) return;
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=7795691');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=16108987');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -378,13 +378,36 @@ async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
   _stopMapPolling();
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=7795691');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=16108987');
   closeSupervisorMap();
 }
 
 // The map's drawer asks for a conversation by dispatching this rather than
 // importing selectChat: app.js imports supervisor-map.js, so the reverse
 // import would be a cycle.
+// The map's detail actions ask for these rather than reaching into app.js's
+// own state: the panel owns what it shows, this file owns the fetching and
+// the polling, and one of them has to be the caller. Same decoupling the
+// open-conversation action already uses.
+document.addEventListener('wc:map-refresh', () => {
+  // Force, not the polling path: an action just changed something and the
+  // operator is looking at the result, so the 10s tick is too slow to be
+  // the feedback for a button they pressed.
+  _loadMap(true);
+});
+document.addEventListener('wc:map-open-transcript', () => {
+  // Opens the transcript viewer through its own launcher, which is the only
+  // entry point it has: transcript.js mounts a self-contained panel keyed by
+  // terminal *session* and exposes no "show session X" function. So this is
+  // honestly partial -- it opens the raw-log panel, it does not preselect the
+  // agent's session inside it. Reaching into that module to add a selection
+  // API is a change to a 567-line file this work does not otherwise touch,
+  // and inventing a per-chat log view here would mean a second log renderer.
+  // The button is hidden for nodes with no session, so it is never offered
+  // where there would be nothing to open.
+  document.getElementById('txLaunch')?.click();
+});
+
 document.addEventListener('wc:map-open-chat', (event) => {
   const chatId = event.detail && event.detail.id;
   if (!chatId) return;

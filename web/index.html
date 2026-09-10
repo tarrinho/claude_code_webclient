@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=12361553">
+<link rel="stylesheet" href="/assets/styles.css?v=14017384">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -510,7 +510,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=7745989"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=3339281"></script>
+<script type="module" src="/assets/app.js?v=3235823"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>
@@ -518,7 +518,7 @@
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=7795691"></script>
+<script type="module" src="/assets/supervisor-map.js?v=16108987"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" role="dialog" aria-modal="true" aria-labelledby="supervisorMapTitle" hidden>
@@ -573,9 +573,27 @@
            preserveAspectRatio="none" aria-hidden="true"></svg>
       <div id="mapDetailMessage" class="map-detail-message"></div>
       <div id="mapDetailMeta" class="map-detail-meta"></div>
+      <label class="map-detail-label" id="mapDetailModelLabel" hidden>Model
+        <select id="mapDetailModel" class="map-detail-model"></select>
+      </label>
+      <div class="map-detail-reply" id="mapDetailReplyWrap" hidden>
+        <div id="mapDetailOptions" class="map-detail-options"></div>
+        <div class="map-detail-reply-row">
+          <input type="text" id="mapDetailReply" class="map-detail-reply-input"
+                 placeholder="Reply to this agent…" aria-label="Reply to this agent">
+          <button class="btn" id="mapDetailSend" title="Send reply">Send</button>
+          <button class="btn-icon" id="mapDetailVoice" title="Reply by voice"
+                  aria-label="Reply by voice" hidden>&#x1F3A4;</button>
+        </div>
+      </div>
       <div class="map-detail-actions">
         <button class="btn" id="mapDetailOpen" hidden>Open conversation</button>
-        <button class="btn" id="mapDetailStop" hidden>Stop</button>
+        <button class="btn-icon" id="mapDetailStop" title="Stop this turn"
+                aria-label="Stop this turn" hidden>&#x23F9;</button>
+        <button class="btn-icon" id="mapDetailRestart" title="Re-send the last prompt"
+                aria-label="Re-send the last prompt" hidden>&#x21BB;</button>
+        <button class="btn-icon" id="mapDetailLogs" title="View raw transcript"
+                aria-label="View raw transcript" hidden>&#x1F5CE;</button>
       </div>
       <div id="mapDetailActionStatus" class="map-detail-meta" hidden></div>
     </div>

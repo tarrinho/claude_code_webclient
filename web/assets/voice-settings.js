@@ -3,7 +3,7 @@
 // (already 2254 lines, over this project's 300-line-per-file cap) rather
 // than added to it — see rules.md's "no big files" rule.
 
-import { debugLog } from './app.js?v=3339281';
+import { debugLog } from './app.js?v=3235823';
 
 export function renderVoiceSettingsFields(data, onBackendChange) {
   const backendSelect = document.getElementById('voiceBackendSelect');

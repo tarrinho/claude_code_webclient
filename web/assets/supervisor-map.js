@@ -766,6 +766,197 @@ async function _loadSparkline(agentId) {
   }
 }
 
+// ── Detail-panel actions ────────────────────────────────────────────────
+// Everything here drives an endpoint that already exists. Nothing new was
+// added server-side, which is worth stating: the spec's actions map onto the
+// console's own API, and inventing parallel ones would give the dashboard a
+// second way to do the same thing that could drift from the first.
+//
+//   model switch  -> PATCH /api/chats/{id}          {model}
+//   option reply  -> POST  /api/chats/{id}/question {index}
+//   text reply    -> POST  /api/chats/{id}/messages {content}
+//   stop          -> POST  /api/chats/{id}/stop
+//   raw logs      -> GET   /api/transcripts/{session_id}
+//
+// "Pause" from the spec is deliberately labelled Stop. This console can stop
+// a turn and cannot suspend one -- a paused CLI turn is not a state that
+// exists here -- and a button promising something the backend cannot do is
+// worse than the honest verb. Orchestrators do have a real pause endpoint,
+// but an orchestrator is not an agent node.
+
+async function _reportAction(text, ok = true) {
+  const el = document.getElementById("mapDetailActionStatus");
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = text;
+  el.style.color = ok ? "" : statusColor("error");
+}
+
+/** Populate the inline model switcher for the selected agent. */
+async function _fillModelSwitcher(nodeData) {
+  const wrap = document.getElementById("mapDetailModelLabel");
+  const select = document.getElementById("mapDetailModel");
+  if (!wrap || !select) return;
+  // Only for conversations: a hub, a backend or a task has no model of its
+  // own to change, and offering the control there would imply otherwise.
+  if (nodeData.type !== "chat") { wrap.hidden = true; return; }
+  select.innerHTML = "";
+  try {
+    const resp = await fetch("/api/models", {credentials: "same-origin"});
+    const data = resp.ok ? await resp.json() : {};
+    const models = data.models || data.active || [];
+    const current = nodeData.model_label || "";
+    // The agent's current model first and always present, even when the
+    // backend no longer advertises it: a select that silently drops the
+    // current value shows the wrong model as selected.
+    const names = [current, ...models.map(m => (typeof m === "string" ? m : m.id))]
+      .filter((v, i, a) => v && a.indexOf(v) === i);
+    for (const name of names) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      if (name === current) opt.selected = true;
+      select.appendChild(opt);
+    }
+    wrap.hidden = names.length < 2;
+  } catch (_) {
+    wrap.hidden = true;
+  }
+}
+
+/** Show a reply control for an agent that is waiting, and its options. */
+async function _fillReply(nodeData) {
+  const wrap = document.getElementById("mapDetailReplyWrap");
+  const options = document.getElementById("mapDetailOptions");
+  const voice = document.getElementById("mapDetailVoice");
+  if (!wrap || !options) return;
+  options.innerHTML = "";
+  // Shown for a waiting conversation only. The spec asks for it "to respond
+  // directly to an agent that is waiting_for_input", and an always-visible
+  // box invites typing at agents that are mid-turn, where the message would
+  // queue behind work the operator cannot see.
+  const eligible = nodeData.type === "chat"
+    && nodeData.agent_state === "waiting_for_input";
+  wrap.hidden = !eligible;
+  if (voice) voice.hidden = nodeData.comms !== "both";
+  if (!eligible) return;
+  try {
+    const resp = await fetch(
+      `/api/chats/${encodeURIComponent(nodeData.id)}/question`,
+      {credentials: "same-origin"});
+    if (!resp.ok) return;
+    const data = await resp.json();
+    // A prompt with numbered choices is answered by index, not by free text:
+    // typing "yes" at a menu does nothing, so the choices are offered as
+    // buttons and the text box stays for the open-ended case.
+    (data.options || []).forEach((opt, index) => {
+      const button = document.createElement("button");
+      button.className = "btn";
+      button.textContent = opt.label || opt.text || `Option ${index + 1}`;
+      button.addEventListener("click", async () => {
+        await _answerOption(nodeData.id, opt.index === undefined ? index : opt.index);
+      });
+      options.appendChild(button);
+    });
+  } catch (_) {
+    // No options is the normal case for a conversation waiting on free text.
+  }
+}
+
+async function _answerOption(chatId, index) {
+  try {
+    const resp = await fetch(`/api/chats/${encodeURIComponent(chatId)}/question`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({index}),
+    });
+    await _reportAction(resp.ok ? "Answered." : "Could not answer.", resp.ok);
+    if (resp.ok) _refreshAfterAction();
+  } catch (_) {
+    await _reportAction("Could not answer.", false);
+  }
+}
+
+async function _sendReply(chatId, text) {
+  if (!text.trim()) return;
+  try {
+    const resp = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({content: text}),
+    });
+    await _reportAction(resp.ok ? "Sent." : "Could not send.", resp.ok);
+    if (resp.ok) {
+      const input = document.getElementById("mapDetailReply");
+      if (input) input.value = "";
+      _refreshAfterAction();
+    }
+  } catch (_) {
+    await _reportAction("Could not send.", false);
+  }
+}
+
+/** Ask the page to reload the map after an action changed something.
+ *
+ *  Dispatched rather than called: app.js owns the polling and the fetch, and
+ *  reaching into it from here would give the map two owners for its data.
+ *  Same decoupling the "open this conversation" event already uses.
+ */
+function _refreshAfterAction() {
+  document.dispatchEvent(new CustomEvent("wc:map-refresh"));
+}
+
+document.getElementById("mapDetailSend")?.addEventListener("click", () => {
+  const input = document.getElementById("mapDetailReply");
+  if (_detailNode && input) _sendReply(_detailNode.id, input.value);
+});
+document.getElementById("mapDetailReply")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  const input = document.getElementById("mapDetailReply");
+  if (_detailNode && input) _sendReply(_detailNode.id, input.value);
+});
+document.getElementById("mapDetailModel")?.addEventListener("change", async (event) => {
+  if (!_detailNode) return;
+  const model = event.target.value;
+  try {
+    const resp = await fetch(`/api/chats/${encodeURIComponent(_detailNode.id)}`, {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({model}),
+    });
+    await _reportAction(resp.ok ? `Model set to ${model}.` : "Could not switch model.", resp.ok);
+    if (resp.ok) {
+      _detailNode.model_label = model;
+      _refreshAfterAction();
+    }
+  } catch (_) {
+    await _reportAction("Could not switch model.", false);
+  }
+});
+document.getElementById("mapDetailRestart")?.addEventListener("click", async () => {
+  if (!_detailNode) return;
+  // "Restart" re-sends the last prompt, which is what Retry does in the
+  // conversation view. It is not a process restart: nothing here can restart
+  // a CLI session, and the button does not claim to.
+  document.dispatchEvent(new CustomEvent("wc:map-open-chat", {
+    detail: {chatId: _detailNode.id, retry: true},
+  }));
+});
+document.getElementById("mapDetailLogs")?.addEventListener("click", () => {
+  if (!_detailNode) return;
+  // The raw transcript, which is a different thing from the task summary
+  // above it -- the summary is one human line, this is what the CLI actually
+  // wrote. Opened through the same event the conversation action uses so the
+  // page decides how to show it.
+  document.dispatchEvent(new CustomEvent("wc:map-open-transcript", {
+    detail: {chatId: _detailNode.id, sessionId: _detailNode.session_id || null},
+  }));
+});
+
 async function showDetail(nodeData) {
   const drawer = document.getElementById("mapDetailDrawer");
   if (!drawer) return;
@@ -796,6 +987,15 @@ async function showDetail(nodeData) {
   if (nodeData.id && nodeData.type === "chat") {
     _loadSparkline(nodeData.id);
   }
+  _fillModelSwitcher(nodeData);
+  _fillReply(nodeData);
+  const restart = document.getElementById("mapDetailRestart");
+  const logs = document.getElementById("mapDetailLogs");
+  if (restart) restart.hidden = nodeData.type !== "chat";
+  // Only where a transcript exists to open: a conversation with no linked
+  // terminal session has no raw log, and a button that opens an empty panel
+  // teaches the operator to stop trusting the buttons.
+  if (logs) logs.hidden = !(nodeData.type === "chat" && nodeData.session_id);
   const statusEl = document.getElementById("mapDetailStatus");
   statusEl.textContent = STATUS_LABEL[nodeData.status] || nodeData.status;
   statusEl.style.color = statusColor(nodeData.status);

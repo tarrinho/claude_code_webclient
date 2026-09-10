@@ -944,6 +944,20 @@ button{touch-action:manipulation}
   flex: 1; position: relative; overflow: hidden; padding: 20px;
 }
 #supervisorMapPanel svg { display: block; width: 100%; height: 100%; }
+/* Detail-panel controls. The reply row and the action icons are separate
+   blocks: replying is the thing an operator does to a waiting agent, and
+   stop/restart/logs are things done to a running one, so putting them in one
+   row would offer both at once and both are rarely right at once. */
+#supervisorMapPanel .map-detail-label { display: block; color: var(--muted); font-size: 10px; margin: 6px 0 2px; }
+#supervisorMapPanel .map-detail-model { width: 100%; font-size: 11px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--input-bg); color: var(--fg); }
+#supervisorMapPanel .map-detail-reply-row { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
+#supervisorMapPanel .map-detail-reply-input { flex: 1 1 auto; min-width: 0; font-size: 11px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--input-bg); color: var(--fg); }
+/* Option buttons stack. A prompt's choices are often long sentences, and a
+   row of them in a 200px panel truncates every one to uselessness. */
+#supervisorMapPanel .map-detail-options { display: flex; flex-direction: column; gap: 3px; }
+#supervisorMapPanel .map-detail-options button { text-align: left; font-size: 11px; padding: 3px 6px; }
+#supervisorMapPanel .map-detail-actions { display: flex; gap: 4px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+
 /* Detail panel additions for the dashboard: breadcrumb, counters, the
    plain-language task line, and the sparkline. */
 #supervisorMapPanel .map-detail-crumb { color: var(--muted); font-size: 10px; margin-bottom: 2px; }

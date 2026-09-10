@@ -25,7 +25,7 @@ async def probe_proxy(machine_id: str) -> bool:
         _, stdout, _ = await exec_command(
             machine_id,
             "pgrep -f 'claude_proxy' 2>/dev/null",
-            timeout=3,
+            timeout=5,
         )
         result = stdout.read().decode("utf-8", errors="replace").strip()
         return bool(result)
@@ -56,7 +56,7 @@ async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
 
     if store_fn:
         try:
-            store_fn(stats)
+            await store_fn(stats)
         except Exception as exc:
             _log.error("store remote stats failed: %s", exc)
     return stats

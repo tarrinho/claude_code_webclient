@@ -287,11 +287,17 @@ async def disconnect(machine_id: str) -> None:
 
 
 async def exec_command(machine_id: str, cmd: str, timeout: int = 10):
-    """Run *cmd* over the SSH tunnel. Returns (stdin, stdout, stderr)."""
+    """Run *cmd* over the SSH tunnel. Returns (stdin, stdout, stderr).
+
+    Runs inside asyncio.to_thread() so the synchronous paramiko call
+    does not block the event loop (the old bug that froze _tick).
+    """
     state = tunnel_manager._STATE.get(machine_id)
     if not state or not state.get("ssh_client"):
         raise RuntimeError("tunnel not connected")
-    return state["ssh_client"].exec_command(cmd, timeout=timeout)
+    return await asyncio.to_thread(
+        state["ssh_client"].exec_command, cmd, timeout=timeout
+    )
 
 
 async def open_sftp(machine_id: str):

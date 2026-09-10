@@ -37,6 +37,10 @@ _TRANSPORT_LOCKS: dict[str, asyncio.Lock] = {}
 _CONNECTING: set[str] = set()
 _queue: asyncio.Queue = asyncio.Queue()
 _port_lock = threading.Lock()
+# Ports currently reserved by an in-flight _run() task. Kept under _port_lock
+# so scan+reserve are atomic — no gap where another machine can grab the same
+# port before the first binds (the gap was the ~10s SSH handshake).
+_reserved_ports: set[int] = set()
 _task: asyncio.Task | None = None
 _running: bool = False
 
@@ -182,8 +186,6 @@ def _handle_command(action: str, machine_id: str, now_fn=None) -> None:
     elif action == "RECONNECT":
         state = _STATE.get(machine_id)
         if not state:
-            # Startup scan seeds RECONNECTs into an empty _STATE — create
-            # the entry so _try_connect() can attempt the connection.
             _STATE[machine_id] = {
                 "state": "connecting",
                 "tunnel_up": 0,
@@ -280,6 +282,9 @@ def _transport_lock(transport_id: str) -> asyncio.Lock:
 async def _tick(store_fn, now_fn) -> None:
     """One cycle: health-check + stats for each machine."""
     from tunnel_manager_health import collect_stats, probe_proxy
+    # Deferred import — top-level would create a circular import with db.py
+    # which itself imports tunnel_manager_ssh → tunnel_manager.
+    import db as _db_mod
 
     for machine_id, state in list(_STATE.items()):
         if state.get("state") == "connected":
@@ -289,11 +294,30 @@ async def _tick(store_fn, now_fn) -> None:
                 state["state"] = "connected"
                 state["last_check"] = now_fn()
                 state["error_msg"] = None
+                # Persist health-check result to DB so API returns it.
+                try:
+                    await _db_mod.ssh_tunnel_update(
+                        machine_id,
+                        proxy_ok=1,
+                        last_check=state["last_check"],
+                    )
+                except Exception:
+                    _log.exception("persist probe_ok failed")
             else:
                 state["state"] = "error"
                 state["last_check"] = now_fn()
                 state["error_msg"] = "Proxy health probe failed"
                 state["proxy_ok"] = 0
+                try:
+                    await _db_mod.ssh_tunnel_update(
+                        machine_id,
+                        proxy_ok=0,
+                        last_check=state["last_check"],
+                        state="error",
+                        error_msg="Proxy health probe failed",
+                    )
+                except Exception:
+                    _log.exception("persist probe_fail failed")
 
         elif state.get("state") == "error" or (
             state.get("state") == "connecting" and machine_id not in _CONNECTING
@@ -310,26 +334,18 @@ async def _tick(store_fn, now_fn) -> None:
             # same retry path "error" already uses -- rather than a separate
             # branch -- means one attempt at recovery, not two copies of the
             # backoff logic.
-            backoff = min(
-                state.get("_backoff", _BACKOFF_BASE) * 2, _BACKOFF_MAX
-            )
-            await asyncio.sleep(backoff)
-            # Release this machine's own prior claim on a shared transport
-            # (if any) before retrying -- same reasoning as the RECONNECT
-            # command: retrying without releasing first leaks the shared
-            # refcount on every backoff cycle, and the underlying connection
-            # is then never actually closed.
-            _release_machine(machine_id)
-            _STATE[machine_id] = {
-                "state": "connecting",
-                "tunnel_up": 0,
-                "proxy_ok": 0,
-                "error_msg": None,
-                "connected_at": None,
-                "last_check": now_fn(),
-                "_backoff": backoff,
-            }
-            _try_connect(machine_id)
+            #
+            # Guard: if the machine is already in _CONNECTING, an _run() is
+            # in-flight (spawned by _try_connect()). Do NOT spawn a second
+            # one here -- that creates duplicate SSH connections.  The
+            # in-flight _run() will finish, update state, and _tick() will
+            # handle the next cycle.
+            if machine_id in _CONNECTING:
+                state["last_check"] = now_fn()
+                continue
+            # Spawn the backoff retry as a concurrent task so it does NOT
+            # block _tick() from reaching the other machines' health checks.
+            asyncio.create_task(_retry_after_backoff(machine_id))
 
         elif state.get("state") == "connecting":
             state["last_check"] = now_fn()
@@ -342,6 +358,35 @@ async def _tick(store_fn, now_fn) -> None:
             stats_interval = max(stats_interval, 1)
             if tick_count % stats_interval == 0:
                 await collect_stats(machine_id, store_fn=store_fn)
+
+
+async def _retry_after_backoff(machine_id: str) -> None:
+    """Wait exponential backoff, then retry connect for *machine_id*.
+
+    Spawned as a concurrent task so it does not block _tick() from
+    health-checking other machines.
+    """
+    state = _STATE.get(machine_id)
+    if not state:
+        return
+    backoff = min(state.get("_backoff", _BACKOFF_BASE) * 2, _BACKOFF_MAX)
+    await asyncio.sleep(backoff)
+    # Release this machine's own prior claim on a shared transport
+    # (if any) before retrying -- same reasoning as the RECONNECT
+    # command: retrying without releasing first leaks the shared
+    # refcount on every backoff cycle, and the underlying connection
+    # is then never actually closed.
+    _release_machine(machine_id)
+    _STATE[machine_id] = {
+        "state": "connecting",
+        "tunnel_up": 0,
+        "proxy_ok": 0,
+        "error_msg": None,
+        "connected_at": None,
+        "last_check": state.get("last_check", _default_now()),
+        "_backoff": backoff,
+    }
+    _try_connect(machine_id)
 
 
 def _try_connect(machine_id: str) -> None:
@@ -365,17 +410,20 @@ def _try_connect(machine_id: str) -> None:
     _CONNECTING.add(machine_id)
 
     # Allocate the port under _port_lock BEFORE spawning _run(). This serializes
-    # all four machines (even on different transports) so the port is reserved
-    # before the ~10s SSH handshake begins — preventing the classic race where
-    # two machines both probe the same free port, both SSH-connect, then
-    # collide at bind-time.  Uses a simple blocking socket probe (not the
-    # async version) so we stay within the sync entry point.
+    # all machines (even on different transports) and reserves the port atomically
+    # in _reserved_ports, preventing the classic TOCTOU race where two machines
+    # both probe the same free port, both SSH-connect (~10s), then collide at
+    # bind-time.  Uses a blocking socket probe under _port_lock so we stay in
+    # the sync entry point.
     def _find_port_sync(low: int = 9000, high: int = 10000) -> int:
         for port in range(low, high):
+            if port in _reserved_ports:
+                continue  # already reserved by another in-flight _run()
             try:
                 s = socket.create_connection(("127.0.0.1", port), timeout=0.5)
                 s.close()
             except ConnectionRefusedError:
+                _reserved_ports.add(port)
                 return port
             except TimeoutError:
                 continue
@@ -460,6 +508,9 @@ def _try_connect(machine_id: str) -> None:
             _log.exception("connect_task error for %s", machine_id)
         finally:
             _CONNECTING.discard(machine_id)
+            # Release the port reservation so future machines can pick it up.
+            with _port_lock:
+                _reserved_ports.discard(assigned_port)
 
     try:
         asyncio.create_task(_run())

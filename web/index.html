@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=14017384">
+<link rel="stylesheet" href="/assets/styles.css?v=10486285">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -510,7 +510,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=7745989"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=3235823"></script>
+<script type="module" src="/assets/app.js?v=6561249"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>
@@ -518,7 +518,7 @@
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=16108987"></script>
+<script type="module" src="/assets/supervisor-map.js?v=16186027"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" role="dialog" aria-modal="true" aria-labelledby="supervisorMapTitle" hidden>
@@ -531,6 +531,28 @@
       <button class="btn-icon" id="mapZoomOutBtn" title="Zoom out" aria-label="Zoom out">−</button>
       <button class="btn-icon" id="mapZoomInBtn" title="Zoom in" aria-label="Zoom in">+</button>
     </div>
+  </div>
+  <div class="map-toolbar">
+    <input type="search" id="mapSearch" class="map-search"
+           placeholder="Jump to agent or node…" aria-label="Jump to agent or node"
+           autocomplete="off" spellcheck="false">
+    <button type="button" class="btn map-toggle" id="mapProblemsBtn"
+            aria-pressed="false" title="Problems only (P)">Problems</button>
+    <button type="button" class="btn map-toggle" id="mapCommsBtn"
+            aria-pressed="false" title="Show inter-agent messages (C)">Comms</button>
+    <button type="button" class="btn map-toggle" id="mapCompactBtn"
+            aria-pressed="false" title="Compact view (V)">Compact</button>
+    <label class="map-window-label">Window
+      <select id="mapWindow" class="map-window" aria-label="Observation window">
+        <option value="1">1h</option>
+        <option value="24" selected>24h</option>
+        <option value="168">7d</option>
+        <option value="0">Session</option>
+      </select>
+    </label>
+    <span class="map-toolbar-stats" id="mapTotals"></span>
+    <span class="map-toolbar-stats" id="mapCounts"></span>
+    <span class="map-toolbar-fresh" id="mapFresh" title="Time since the last refresh"></span>
   </div>
   <div class="map-body" id="mapBody">
     <svg id="supervisorMapSvg"></svg>

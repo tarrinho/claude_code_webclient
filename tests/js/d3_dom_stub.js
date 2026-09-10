@@ -45,6 +45,16 @@ var STUB = {
   // first d3.tree() call, so read it after one.
   treeImplemented: [],
   zoomAttached: 0,
+  // Timers the module sets, recorded rather than run. The map starts a 1s
+  // freshness ticker inside renderSupervisorMap, and without these every
+  // geometry test died on "ReferenceError: 'setInterval' is not defined" --
+  // the stub has to model the surface the module actually uses, which is the
+  // same rule test_qa_d3_stub_fidelity.py pins for d3.
+  //
+  // Not executed: a stub that ran the callback would have the ticker firing
+  // during a render and mutating the DOM the test is about to assert on.
+  intervals: [],
+  clearedIntervals: [],
   currentTransform: null,
   elHandlers: {},
   focusCalls: [],
@@ -360,6 +370,23 @@ function _tree() {
   });
   return proxy;
 }
+
+/* ── Timers ──────────────────────────────────────────────────────────── */
+var _nextTimerId = 1;
+function setInterval(fn, ms) {
+  var id = _nextTimerId++;
+  STUB.intervals.push({id: id, ms: ms});
+  return id;
+}
+function clearInterval(id) {
+  STUB.clearedIntervals.push(id);
+}
+function setTimeout(fn, ms) {
+  // Deliberately does not run the callback either, for the same reason.
+  var id = _nextTimerId++;
+  return id;
+}
+function clearTimeout(id) { STUB.clearedIntervals.push(id); }
 
 /* ── d3 namespace ────────────────────────────────────────────────────── */
 

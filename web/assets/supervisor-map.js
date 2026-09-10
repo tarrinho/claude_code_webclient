@@ -178,8 +178,15 @@ function _mapSummary(data) {
     + `${nodes - 1} node${nodes - 1 === 1 ? "" : "s"}`;
 }
 
-export function renderSupervisorMap(data) {
+export function renderSupervisorMap(data, options = {}) {
+  // The full payload is kept, and a filtered copy is what gets drawn. Keeping
+  // only the filtered tree would make the filters destructive: clearing
+  // "problems only" could not restore what it hid without another fetch, and
+  // the poll is every ten seconds.
   _data = data;
+  updateToolbar(data);
+  startFreshnessTicker();
+  data = _visibleTree(data);
   _root = null;
   // _collapsed deliberately survives this call. It used to be cleared here,
   // which made collapsing impossible rather than temporary: the click handler
@@ -957,6 +964,180 @@ document.getElementById("mapDetailLogs")?.addEventListener("click", () => {
   }));
 });
 
+// ── Toolbar: filters, view mode, window and read-outs ───────────────────
+// Filter state lives here rather than in app.js because it changes what this
+// module *draws*; app.js owns what it fetches. The window selector is the one
+// exception -- it changes the request -- so it dispatches rather than filtering.
+let _problemsOnly = false;
+let _compact = false;
+let _searchTerm = "";
+let _generatedAt = null;
+
+/** True when a node should survive the current filters.
+ *
+ *  A parent is kept when any descendant is kept, so filtering never orphans
+ *  a match: hiding the transport that holds the only blocked agent would hide
+ *  the agent with it, which is the opposite of what "problems only" is for.
+ */
+function _matchesFilters(node) {
+  const term = _searchTerm.trim().toLowerCase();
+  const isProblem = node.agent_state === "blocked"
+    || node.agent_state === "waiting_for_input";
+  const label = String(node.label || "").toLowerCase();
+  const selfOk = (!_problemsOnly || isProblem || node.type === "transport")
+    && (!term || label.includes(term));
+  if (selfOk) return true;
+  return (node.children || []).some(_matchesFilters);
+}
+
+/** The tree the current filters and view mode ask for.
+ *
+ *  Returns a copy. Filtering the fetched object in place would make the
+ *  filters destructive -- clearing "problems only" could not bring back what
+ *  it removed without another fetch, and the poll is every ten seconds.
+ */
+function _visibleTree(data) {
+  if (!data) return data;
+  const prune = (node) => {
+    const copy = {...node};
+    // Compact view: hubs and their counts only. The spec asks for exactly
+    // this, and it is also what makes a 70-agent fleet legible at all -- the
+    // count is already on the hub, so nothing has to be recomputed.
+    if (_compact && node.type === "transport") {
+      copy.children = [];
+      return copy;
+    }
+    const kids = (node.children || []).filter(_matchesFilters).map(prune);
+    copy.children = kids;
+    return copy;
+  };
+  return prune(data);
+}
+
+function _syncToggle(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+/** Redraw from the last payload without refetching. */
+function _redraw() {
+  if (_data) renderSupervisorMap(_data, {keepView: true});
+}
+
+/** Toolbar read-outs: fleet totals, node/agent counts, freshness. */
+function updateToolbar(data) {
+  const totals = (data && data.totals) || {};
+  const t = document.getElementById("mapTotals");
+  if (t) {
+    t.textContent = (totals.turns === undefined) ? ""
+      : `${_formatCount(totals.turns)} turns \u00b7 ${_formatCount(totals.tokens)} tokens`;
+  }
+  const c = document.getElementById("mapCounts");
+  if (c) {
+    const nodes = totals.nodes || 0;
+    const agents = totals.agents || 0;
+    c.textContent = `${nodes} node${nodes === 1 ? "" : "s"} \u00b7 `
+      + `${agents} agent${agents === 1 ? "" : "s"}`;
+  }
+  _generatedAt = (data && data.generated_at) ? Date.parse(data.generated_at) : null;
+  _tickFreshness();
+}
+
+/** "Last updated Ns ago", recomputed on a timer.
+ *
+ *  Driven from the server's generated_at rather than the moment the response
+ *  arrived: a client clock that is wrong makes a stale map look fresh, and a
+ *  freshness indicator that can lie is worse than none. Ticked every second
+ *  because the number is the whole point -- a static "updated 0s ago" is what
+ *  a frozen dashboard looks like.
+ */
+let _freshTimer = null;
+function _tickFreshness() {
+  const el = document.getElementById("mapFresh");
+  if (!el) return;
+  if (!_generatedAt || Number.isNaN(_generatedAt)) { el.textContent = ""; return; }
+  const secs = Math.max(0, Math.round((Date.now() - _generatedAt) / 1000));
+  el.textContent = secs < 60
+    ? `updated ${secs}s ago`
+    : `updated ${Math.floor(secs / 60)}m ago`;
+  // Amber once the map is more than three polls stale: the poll is 10s, so
+  // 30s without a refresh means something stopped rather than ran slowly.
+  el.style.color = secs > 30 ? statusColor("waiting") : "";
+}
+function startFreshnessTicker() {
+  if (_freshTimer) return;
+  _freshTimer = setInterval(_tickFreshness, 1000);
+}
+function stopFreshnessTicker() {
+  if (!_freshTimer) return;
+  clearInterval(_freshTimer);
+  _freshTimer = null;
+}
+
+/** Select and centre a node by name, for the search box. */
+function jumpTo(term) {
+  if (!_root || !term.trim()) return false;
+  const needle = term.trim().toLowerCase();
+  const hit = _root.descendants().find(
+    d => String(d.data.label || "").toLowerCase().includes(needle));
+  if (!hit) return false;
+  const {x, y} = _nodeXY(hit);
+  const scale = (_lastTransform && _lastTransform.k) || 1;
+  // Centre it rather than fit the whole tree: the operator asked for one
+  // node, and re-fitting would move everything else to accommodate it.
+  const tx = _canvas.w / 2 - x * scale;
+  const ty = _canvas.h / 2 - y * scale;
+  _svg.transition().duration(_motionMs(250))
+    .call(_zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  if (_hasDetail(hit.data.type)) showDetail(hit.data);
+  return true;
+}
+
+document.getElementById("mapProblemsBtn")?.addEventListener("click", () => {
+  _problemsOnly = !_problemsOnly;
+  _syncToggle("mapProblemsBtn", _problemsOnly);
+  _redraw();
+});
+document.getElementById("mapCompactBtn")?.addEventListener("click", () => {
+  _compact = !_compact;
+  _syncToggle("mapCompactBtn", _compact);
+  _redraw();
+});
+document.getElementById("mapSearch")?.addEventListener("input", (event) => {
+  _searchTerm = event.target.value || "";
+  _redraw();
+});
+document.getElementById("mapSearch")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  jumpTo(event.target.value || "");
+});
+document.getElementById("mapWindow")?.addEventListener("change", (event) => {
+  // Changes the request, not the drawing, so app.js has to hear about it.
+  document.dispatchEvent(new CustomEvent("wc:map-window", {
+    detail: {hours: Number(event.target.value)},
+  }));
+});
+
+// Keyboard shortcuts. The spec asks for "at minimum a quick key to jump to
+// problems only". Ignored while a text field has focus, or typing "p" into
+// the search box would toggle the filter instead of searching.
+document.addEventListener("keydown", (event) => {
+  const panel = document.getElementById("supervisorMapPanel");
+  if (!panel || panel.hidden) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const tag = (event.target && event.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  const key = event.key.toLowerCase();
+  if (key === "p") { document.getElementById("mapProblemsBtn")?.click(); }
+  else if (key === "c") { document.getElementById("mapCommsBtn")?.click(); }
+  else if (key === "v") { document.getElementById("mapCompactBtn")?.click(); }
+  else if (key === "/") {
+    event.preventDefault();
+    document.getElementById("mapSearch")?.focus();
+  }
+});
+
 async function showDetail(nodeData) {
   const drawer = document.getElementById("mapDetailDrawer");
   if (!drawer) return;
@@ -1166,6 +1347,9 @@ function hideDetail() {
 }
 
 export function closeSupervisorMap() {
+  // The freshness ticker is a 1s interval; leaving it running behind a closed
+  // panel is the same class of leak the map's own poll guard exists to avoid.
+  stopFreshnessTicker();
   if (_svg) _svg.selectAll("*").remove();
   _viewport = null;  // removed above; keep the handle from outliving the node
   hideDetail();

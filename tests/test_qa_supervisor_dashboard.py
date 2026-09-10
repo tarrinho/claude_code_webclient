@@ -617,3 +617,172 @@ class ActionEndpointsExistTests(unittest.TestCase):
 
     def test_the_stop_route_exists(self):
         self.assertIn('@router.post("/api/chats/{chat_id}/stop")', self.routes)
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class ToolbarFilterTests(unittest.TestCase):
+    """Step 6's filters, exercised through the real module."""
+
+    SAMPLE = """
+      var DATA = {
+        id: "root", label: "You", type: "center", status: "running",
+        totals: {turns: 12, tokens: 3456, nodes: 2, agents: 3},
+        generated_at: "2026-09-10T22:00:00Z",
+        children: [
+          {id: "h1", label: "Kali3", type: "transport", status: "idle",
+           agent_count: 2, children: [
+             {id: "a1", label: "cweb1", type: "chat", status: "error",
+              agent_state: "blocked", provider_family: "anthropic"},
+             {id: "a2", label: "cweb2", type: "chat", status: "idle",
+              agent_state: "idle", provider_family: "local"}
+           ]},
+          {id: "h2", label: "Direct", type: "transport", status: "idle",
+           agent_count: 1, children: [
+             {id: "a3", label: "quiet", type: "chat", status: "done",
+              agent_state: "idle", provider_family: "local"}
+           ]}
+        ]
+      };
+    """
+
+    def _run_with(self, probe):
+        return _eval(self.SAMPLE + probe)
+
+    def test_problems_only_keeps_the_problem_agent(self):
+        out = self._run_with("""
+          _problemsOnly = true;
+          var t = _visibleTree(DATA);
+          var ids = [];
+          (function walk(n){ ids.push(n.id); (n.children||[]).forEach(walk); })(t);
+          JSON.stringify({ids: ids});
+        """)
+        self.assertIn("a1", out["ids"], "the blocked agent was filtered out")
+        self.assertNotIn("a2", out["ids"], "an idle agent survived problems-only")
+
+    def test_problems_only_keeps_the_hub_holding_a_problem(self):
+        """Hiding the transport that holds the only blocked agent would hide
+        the agent with it -- the opposite of what the filter is for."""
+        out = self._run_with("""
+          _problemsOnly = true;
+          var t = _visibleTree(DATA);
+          JSON.stringify({hubs: t.children.map(function(h){return h.id;})});
+        """)
+        self.assertIn("h1", out["hubs"])
+
+    def test_search_matches_on_label(self):
+        out = self._run_with("""
+          _searchTerm = 'cweb2';
+          var t = _visibleTree(DATA);
+          var ids = [];
+          (function walk(n){ ids.push(n.id); (n.children||[]).forEach(walk); })(t);
+          JSON.stringify({ids: ids});
+        """)
+        self.assertIn("a2", out["ids"])
+        self.assertNotIn("a1", out["ids"])
+
+    def test_compact_shows_hubs_without_their_agents(self):
+        out = self._run_with("""
+          _compact = true;
+          var t = _visibleTree(DATA);
+          JSON.stringify({
+            hubs: t.children.length,
+            kids: t.children.map(function(h){ return (h.children||[]).length; })
+          });
+        """)
+        self.assertEqual(out["hubs"], 2)
+        self.assertEqual(out["kids"], [0, 0])
+
+    def test_filtering_does_not_mutate_the_payload(self):
+        """Destructive filtering could not restore what it hid without another
+        fetch, and the poll is every ten seconds."""
+        out = self._run_with("""
+          _problemsOnly = true;
+          _visibleTree(DATA);
+          _problemsOnly = false;
+          var t = _visibleTree(DATA);
+          var n = 0;
+          (function walk(x){ n += 1; (x.children||[]).forEach(walk); })(t);
+          JSON.stringify({nodes: n});
+        """)
+        self.assertEqual(out["nodes"], 6, "the payload was pruned in place")
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class ToolbarReadoutTests(unittest.TestCase):
+    def test_totals_and_counts_are_rendered(self):
+        out = _eval(ToolbarFilterTests.SAMPLE + """
+          updateToolbar(DATA);
+          JSON.stringify({
+            totals: document.getElementById('mapTotals').textContent,
+            counts: document.getElementById('mapCounts').textContent
+          });
+        """)
+        self.assertIn("12 turns", out["totals"])
+        self.assertIn("2 nodes", out["counts"])
+        self.assertIn("3 agents", out["counts"])
+
+    def test_counts_are_singular_where_they_should_be(self):
+        out = _eval("""
+          updateToolbar({totals: {turns: 1, tokens: 1, nodes: 1, agents: 1}});
+          JSON.stringify({counts: document.getElementById('mapCounts').textContent});
+        """)
+        self.assertIn("1 node ", out["counts"])
+        self.assertIn("1 agent", out["counts"])
+        self.assertNotIn("nodes", out["counts"])
+
+    def test_no_totals_renders_nothing_rather_than_zero(self):
+        """"0 turns" is a claim about the fleet; blank is the truth when the
+        server did not say."""
+        out = _eval("""
+          updateToolbar({});
+          JSON.stringify({totals: document.getElementById('mapTotals').textContent});
+        """)
+        self.assertEqual(out["totals"], "")
+
+
+class FreshnessTests(unittest.TestCase):
+    def setUp(self):
+        self.js = MAP_JS.read_text(encoding="utf-8")
+
+    def test_it_uses_the_servers_timestamp(self):
+        """A client clock that is wrong makes a stale map look fresh, and a
+        freshness indicator that can lie is worse than none."""
+        self.assertIn("data.generated_at", self.js)
+
+    def test_it_ticks_rather_than_rendering_once(self):
+        """A static "updated 0s ago" is exactly what a frozen dashboard looks
+        like."""
+        self.assertIn("setInterval(_tickFreshness", self.js)
+
+    def test_the_ticker_is_stopped_when_the_panel_closes(self):
+        """A 1s interval behind a closed panel is the same leak the map's own
+        poll guard exists to prevent."""
+        close = self.js[self.js.index("export function closeSupervisorMap"):]
+        self.assertIn("stopFreshnessTicker()", close[:400])
+
+    def test_a_stale_map_is_flagged(self):
+        """The poll is 10s, so 30s without a refresh means something stopped
+        rather than ran slowly."""
+        self.assertRegex(self.js, r"secs > 30")
+
+
+class KeyboardShortcutTests(unittest.TestCase):
+    def setUp(self):
+        self.js = MAP_JS.read_text(encoding="utf-8")
+
+    def test_there_is_a_problems_only_hotkey(self):
+        """The spec's stated minimum."""
+        self.assertRegex(self.js, r'key === "p"')
+
+    def test_typing_in_a_field_does_not_trigger_them(self):
+        """Otherwise typing "p" into the search box toggles the filter
+        instead of searching."""
+        self.assertRegex(self.js, r'tag === "input" \|\| tag === "textarea"')
+
+    def test_they_are_ignored_while_the_panel_is_closed(self):
+        self.assertRegex(self.js, r"if \(!panel \|\| panel\.hidden\) return;")
+
+    def test_modified_keys_are_left_alone(self):
+        """Ctrl+P is print and Cmd+C is copy; stealing them would be a bug
+        report, not a feature."""
+        self.assertRegex(self.js, r"event\.metaKey \|\| event\.ctrlKey")

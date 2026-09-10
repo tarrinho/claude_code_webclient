@@ -372,6 +372,21 @@ async def supervisor_map(
     return {
         "center": "You",
         "children": _capped(children, "root"),
+        # Fleet totals for the toolbar, summed from the same grouped query the
+        # per-agent counters come from -- so the header and the nodes cannot
+        # disagree. Summed over *all* agents rather than the ones on the map:
+        # an agent whose group overflowed past _MAX_CHILDREN still spent its
+        # turns, and a header that quietly excluded them would under-report
+        # the fleet by however much the cap hid.
+        "totals": {
+            "turns": sum(v.get("turns", 0) for v in agent_totals.values()),
+            "tokens": sum(v.get("tokens", 0) for v in agent_totals.values()),
+            # Node and agent counts for the header's "2 nodes - 5 agents".
+            # agent_count is read off each hub rather than recounted, because
+            # the hub already computed it before the overflow cap.
+            "nodes": len(children),
+            "agents": sum(h.get("agent_count", 0) for h in children),
+        },
         # The header shows "last updated Ns ago", so the answer has to come
         # from the server: a client clock that is wrong makes a stale map look
         # fresh, which is the one thing a freshness indicator must not do.

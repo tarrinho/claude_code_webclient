@@ -337,16 +337,21 @@ async function _loadMap(quiet = false) {
   if (_mapLoading) return;
   _mapLoading = true;
   try {
-    const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
+    // The window travels as a query parameter so the server does the
+    // aggregation. Doing it client-side would mean shipping every usage row
+    // to filter it in the browser, on a panel that polls every ten seconds.
+    const res = await fetch(
+      `/api/supervisor-map?hours=${encodeURIComponent(_mapWindowHours)}`,
+      {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=16108987');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=16186027');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
     byId('mapStatusEmpty').textContent = MAP_EMPTY_TEXT;
   } catch {
     if (quiet) return;
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=16108987');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=16186027');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -378,7 +383,7 @@ async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
   _stopMapPolling();
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=16108987');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=16186027');
   closeSupervisorMap();
 }
 
@@ -389,6 +394,15 @@ async function _closeMap() {
 // own state: the panel owns what it shows, this file owns the fetching and
 // the polling, and one of them has to be the caller. Same decoupling the
 // open-conversation action already uses.
+// The observation window the toolbar picked. Held here because it changes the
+// *request*, and this file owns fetching; the map's other toolbar controls
+// only change what is drawn and stay inside the module.
+let _mapWindowHours = 24;
+document.addEventListener('wc:map-window', (event) => {
+  const hours = Number(event.detail?.hours);
+  _mapWindowHours = Number.isFinite(hours) ? hours : 24;
+  _loadMap(true);
+});
 document.addEventListener('wc:map-refresh', () => {
   // Force, not the polling path: an action just changed something and the
   // operator is looking at the result, so the 10s tick is too slow to be

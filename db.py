@@ -135,6 +135,7 @@ def __getattr__(name: str):
         "ssh_transport_delete": "routes.db_transports",
         "ssh_transport_set_host_key_fingerprint": "routes.db_transports",
         "ssh_transport_set_last_synced_sha": "routes.db_transports",
+        "ssh_transport_set_last_qa_synced_sha": "routes.db_transports",
         # agent-reply audit trail + cooldown
         "agent_reply_log_add": "routes.db_agent_reply",
         "agent_reply_cooldown_check": "routes.db_agent_reply",
@@ -328,6 +329,7 @@ async def init() -> None:
             ssh_host_key_fingerprint  TEXT NOT NULL DEFAULT '',
             remote_path               TEXT NOT NULL DEFAULT '~/wc-proxy',
             last_synced_sha           TEXT NOT NULL DEFAULT '',
+            last_qa_synced_sha        TEXT NOT NULL DEFAULT '',
             created_at                TEXT NOT NULL,
             updated_at                TEXT NOT NULL
         );
@@ -1324,6 +1326,13 @@ async def _ensure_transport_columns() -> None:
     if columns and "last_synced_sha" not in columns:
         await db_conn.execute(
             "ALTER TABLE ssh_transports ADD COLUMN last_synced_sha TEXT NOT NULL "
+            "DEFAULT ''"
+        )
+        await db_conn.commit()
+
+    if columns and "last_qa_synced_sha" not in columns:
+        await db_conn.execute(
+            "ALTER TABLE ssh_transports ADD COLUMN last_qa_synced_sha TEXT NOT NULL "
             "DEFAULT ''"
         )
         await db_conn.commit()

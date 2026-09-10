@@ -11,7 +11,8 @@ import db
 
 _TRANSPORT_COLUMNS = (
     "id, name, owner_id, ssh_host, ssh_user, ssh_key_path, "
-    "ssh_host_key_fingerprint, remote_path, last_synced_sha, created_at, updated_at"
+    "ssh_host_key_fingerprint, remote_path, last_synced_sha, "
+    "last_qa_synced_sha, created_at, updated_at"
 )
 
 _DEFAULT_REMOTE_PATH = "~/wc-proxy"
@@ -122,6 +123,20 @@ async def ssh_transport_set_last_synced_sha(transport_id: str, sha: str) -> None
     """
     await db.db_conn.execute(
         "UPDATE ssh_transports SET last_synced_sha = ? WHERE id = ?",
+        (sha, transport_id),
+    )
+    await db.db_conn.commit()
+
+
+async def ssh_transport_set_last_qa_synced_sha(transport_id: str, sha: str) -> None:
+    """Advance the QA sync pointer. Independent of last_synced_sha -- see
+    ssh_transport_set_last_synced_sha's own docstring for the "no silent
+    pointer advancement" rule, which applies here identically. No owner_id
+    scoping, matching that setter: the caller (qa_remote.py) runs from a
+    request handler that has already checked ownership.
+    """
+    await db.db_conn.execute(
+        "UPDATE ssh_transports SET last_qa_synced_sha = ? WHERE id = ?",
         (sha, transport_id),
     )
     await db.db_conn.commit()

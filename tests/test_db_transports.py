@@ -29,7 +29,7 @@ class SshTransportsSchemaTests(unittest.IsolatedAsyncioTestCase):
             {
                 "id", "name", "owner_id", "ssh_host", "ssh_user",
                 "ssh_key_path", "ssh_host_key_fingerprint", "remote_path",
-                "last_synced_sha", "created_at", "updated_at",
+                "last_synced_sha", "last_qa_synced_sha", "created_at", "updated_at",
             },
         )
 

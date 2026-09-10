@@ -273,6 +273,19 @@ async def _run(
         # once followers have been released and nothing is half-written.
         raise asyncio.CancelledError
 
+    # Reaped here as well as in start(). On start() alone, a finished turn's
+    # event buffer is only released when the *next* turn begins anywhere in the
+    # process -- so a burst of conversations followed by an idle console holds
+    # every buffer indefinitely, waiting for a trigger that idleness guarantees
+    # will not come. Measured at roughly 1-4 MB per long turn, which is not
+    # alarming on its own and is pure waste on a host that has been OOM-killed
+    # before. This pass costs one dict scan.
+    #
+    # It cannot reap the turn that just finished: _RETAIN_S has to elapse
+    # first, which is what lets a client that reattaches late still collect the
+    # tail instead of finding an empty conversation.
+    _reap()
+
     try:
         await _drain(turn)
     except Exception:

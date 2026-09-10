@@ -431,6 +431,19 @@ async def lifespan(app: FastAPI):
     )
     if restored:
         _log.info("restored %d session(s) across the restart", restored)
+    # Queued prompts outlive the turn that would have drained them: turn_queue
+    # is on disk, `turns._live` is not, and `_drain()` fires when a turn
+    # *finishes*. Restart mid-turn and its `pending` rows have no trigger left,
+    # so the sidebar reports "N queued" for ever while nothing runs -- they
+    # execute only if the user happens to send another message in that same
+    # conversation. Held here instead of launched: see queue_hold_orphans for
+    # why boot is the wrong moment to spend a turn nobody asked for just now.
+    orphaned = await _startup_step("hold_orphaned_queue", db.queue_hold_orphans())
+    if orphaned:
+        _log.info(
+            "held %d queued prompt(s) orphaned by the last shutdown; they are "
+            "waiting for Send or Discard", orphaned,
+        )
     admin = await auth.bootstrap_admin()
     if admin:
         _log.info("bootstrapped admin: %s", admin)

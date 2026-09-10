@@ -149,6 +149,37 @@ async def queue_release(queue_id: int, owner_id: str) -> bool:
     return bool(cur.rowcount)
 
 
+async def queue_hold_orphans() -> int:
+    """Hold every pending prompt, across all conversations. Returns how many.
+
+    For startup only. The queue is on disk but the turn that would drain it
+    lives in memory, so a restart mid-turn leaves `pending` rows with nothing
+    left to trigger them: `_drain()` runs when a turn *finishes*, and after a
+    restart there is no turn to finish. Reproduced 2026-09-10 in a throwaway
+    database -- two pending rows, `running_ids()` empty, `queue_counts()`
+    reporting them to the sidebar as "2 queued", and no caller for
+    `queue_next()`. They would execute only if the user happened to send
+    another message in that same conversation.
+
+    Held rather than launched, deliberately. Firing queued prompts at boot
+    would spend a turn each with nobody watching, and it contradicts the rule
+    the drain already follows: a prompt is only sent on a clean finish,
+    because firing one into a conversation whose state the user has not seen
+    is the wrong default. Held rows already have Send and Discard controls, so
+    this turns a silent stall into a visible decision.
+
+    This is the same failure shape as the START_TUNNEL command that "simply sat
+    in the queue forever" (see the comment in app.py's lifespan): a persisted
+    queue whose consumer only ran on an event that a restart had already
+    destroyed.
+    """
+    cur = await db.db_conn.execute(
+        "UPDATE turn_queue SET state = 'held' WHERE state = 'pending'"
+    )
+    await db.db_conn.commit()
+    return cur.rowcount or 0
+
+
 async def queue_hold_all(chat_id: str) -> int:
     """Mark a conversation's pending prompts as held.  Returns how many."""
     cur = await db.db_conn.execute(

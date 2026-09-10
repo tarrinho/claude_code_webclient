@@ -1179,6 +1179,25 @@ async def _start_turn(
             # but Retry re-sends the same prompt, so it lands twice. The
             # conversation must not gain a phantom message for every failure
             # the user retried past.
+            #
+            # Reaffirmed 2026-09-10 after a review called this an inconsistency
+            # with the `cancelled` branch above and changed it. It is not an
+            # inconsistency, it is a different trade, and two tests in
+            # test_app.py state it: test_failed_retry_does_not_duplicate_user_prompt
+            # runs a failing attempt, retries, and asserts the conversation
+            # reads exactly [("user", prompt), ("assistant", answer)] -- one
+            # prompt, one answer. Keeping the partial makes that read
+            # prompt/partial/prompt/answer, which is a duplicated prompt in the
+            # foreground case to preserve a partial in the background one.
+            # test_incomplete_stream_does_not_persist_partial_turn pins the
+            # same rule for a stream that simply stops.
+            #
+            # The background gap is real and narrower than it looked: a user who
+            # walked away loses the partial *and* has no Retry button, because
+            # `retry()` sends `lastAttempt.content` from in-memory browser state
+            # for the currently-open chat only. Worth solving, but not by
+            # writing the pair -- that trades a clean transcript for everyone to
+            # help the one case.
             return
         assistant = "".join(parts)
         images = await asyncio.to_thread(
@@ -2397,6 +2416,10 @@ async def _sync_linked_chat_locked(
                 chat_id, len(rows),
             )
             await db.chat_set_question_ids(chat_id, new_ids)
+        else:
+            # No new turns and no unanswered questions: clear stale IDs so
+            # the sidebar stops rendering a dead question bar.
+            await db.chat_set_question_ids(chat_id, [])
         return rows
 
     try:
@@ -2423,6 +2446,11 @@ async def _sync_linked_chat_locked(
     if new_offset != offset:
         await db.chat_set_transcript_offset(chat_id, new_offset)
     if not rows:
+        # No turns were read but the file still existed (e.g. offset was
+        # already at EOF).  If the scan found nothing either, clear stale
+        # question_ids so the sidebar stops showing a dead question bar.
+        if not question_blocks:
+            await db.chat_set_question_ids(chat_id, [])
         return []
 
     # Dedup: the /stream handler's finish() callback may have already stored
@@ -2449,6 +2477,16 @@ async def _sync_linked_chat_locked(
         _log.info(
             "transcript_sync_questions chat_id=%s questions=%d",
             chat_id, len(new_ids),
+        )
+    elif not question_blocks:
+        # All scanned questions were already seen (or answered).  No new
+        # turns either — this branch is reached when read_turns returned rows
+        # that survived dedup but the question scan found nothing unanswered.
+        # Clear stale IDs so the sidebar stops showing a dead question bar.
+        await db.chat_set_question_ids(chat_id, [])
+        _log.info(
+            "transcript_sync_question_ids_cleared chat_id=%s",
+            chat_id,
         )
     _log.info("transcript_synced chat_id=%s turns=%d", chat_id, len(rows))
     return rows

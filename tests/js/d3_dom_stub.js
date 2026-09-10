@@ -21,6 +21,14 @@ var STUB = {
   scaleToCalls: [],
   scaleByCalls: [],
   treeSize: null,
+  treeNodeSize: null,
+  // Which layout setters were called, in order. Needed because d3's own
+  // read-back cannot distinguish "nodeSize only" from "size then nodeSize" --
+  // tree.size() returns null in both cases -- so a redundant .size() call is
+  // invisible to any assertion on the resulting values. It is still a defect:
+  // one of the two calls does nothing while the code reads as though both
+  // apply.
+  treeCalls: [],
   zoomAttached: 0,
   currentTransform: null,
   elHandlers: {},
@@ -267,16 +275,22 @@ function _tree() {
   // module calling both look correct here and behave differently in a
   // browser, which is the one thing this harness must not do.
   layout.size = function (s) {
+    STUB.treeCalls.push("size");
     layout.__size = s;
     layout.__nodeSize = false;
     return layout;
   };
   layout.nodeSize = function (s) {
+    STUB.treeCalls.push("nodeSize");
     layout.__nodeSizeVal = s;
     layout.__nodeSize = true;
     return layout;
   };
-  layout.separation = function (f) { layout.__separation = f; return layout; };
+  layout.separation = function (f) {
+    STUB.treeCalls.push("separation");
+    layout.__separation = f;
+    return layout;
+  };
   return layout;
 }
 

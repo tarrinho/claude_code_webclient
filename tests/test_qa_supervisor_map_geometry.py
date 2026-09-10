@@ -160,9 +160,25 @@ class MapZoomWiringTests(unittest.TestCase):
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
 class MapGeometryTests(unittest.TestCase):
 
+    # The four tests below were written for the radial layout and are rewritten
+    # here for the horizontal one (2026-09-10). They were failing against
+    # correct code -- they asserted `rotate(theta) translate(r,0)` transforms, a
+    # 2*pi angular span, and a radius of min(w,h)/2 - 40, none of which a
+    # horizontal tree produces. The defects they were written to catch are named
+    # in each docstring and still pinned, because those defects are about
+    # deriving geometry from the measured box and not pinning nodes to constants
+    # -- both of which still apply, just in different coordinates.
+
     def test_root_and_descendants_share_one_origin(self):
         """Defect 2: the root's transform was `translate(200,200)` while every
-        other node was polar about (0,0)."""
+        other node was positioned by the shared formula.
+
+        Still the property worth pinning after the restructure -- only the
+        formula changed. Every node, root included, is placed by
+        `translate(marginLeft + d.x + horizontalGap, marginTop + d.y)`, so the
+        root lands on that formula's own output for d.x = d.y = 0 rather than
+        on a constant somebody chose.
+        """
         out = _run("""
           renderSupervisorMap(DATA);
           var nodeSel = stubFindNodeSelection();
@@ -175,42 +191,110 @@ class MapGeometryTests(unittest.TestCase):
             "the root must not be pinned to a hardcoded point in SVG coordinates",
         )
         for t in transforms:
-            self.assertRegex(t, r"^rotate\(-?[\d.]+\) translate\(-?[\d.]+,0\)$")
-        # The root's radius is 0, so the shared formula already places it at
-        # the group's origin -- that is what makes the special case removable.
-        self.assertIn("translate(0,0)", transforms[0])
+            self.assertRegex(
+                t, r"^translate\(-?[\d.]+, -?[\d.]+\)$",
+                "every node is placed by one cartesian formula; a rotate() "
+                "here means the radial layout has come back in part",
+            )
+        # marginLeft 60 + horizontalGap 30, marginTop 40, at d.x = d.y = 0.
+        self.assertEqual(transforms[0], "translate(90, 40)")
+        self.assertGreater(
+            len(set(transforms)), 1,
+            "every node landed on the same point, so the layout ran but "
+            "placed nothing",
+        )
 
-    def test_the_layout_radius_comes_from_the_measured_box(self):
-        """Defect 3: RADIUS was min(400,400)/2 - 40 regardless of the panel."""
+    def test_the_view_box_and_backdrop_come_from_the_measured_box(self):
+        """Defect 3, in its surviving form: geometry that must follow the
+        panel's real size still does.
+
+        The radius this test used to check is gone -- node spacing is fixed now
+        (see the next test) -- but the viewBox and the pointer-catching rect are
+        still derived from `getBoundingClientRect`, and those were the parts
+        that made a 400x400 assumption visible to the reader.
+        """
         out = _run("""
           STUB.svgBox = {width: 900, height: 600, left: 0, top: 0};
           renderSupervisorMap(DATA);
           JSON.stringify({
-            size: STUB.treeSize,
             viewBox: stubSvg().__attrs.viewBox,
             bgWidth: stubFindByClass(stubSvg(), "map-bg").__attrs.width,
             bgHeight: stubFindByClass(stubSvg(), "map-bg").__attrs.height
           });
         """)
         self.assertEqual(out["viewBox"], "0 0 900 600")
-        # min(900, 600)/2 - 40
-        self.assertEqual(out["size"][1], 260)
-        self.assertAlmostEqual(out["size"][0], 2 * 3.141592653589793, places=6)
         # The rect exists to catch pointer events; sized to 400x400 it covered
         # only the top corner of a 930px-tall panel.
         self.assertEqual(out["bgWidth"], 900)
         self.assertEqual(out["bgHeight"], 600)
 
+    def test_the_layout_spacing_is_fixed_and_not_a_fit(self):
+        """What replaced the radius, and the defect that came with it.
+
+        The restructure called `.size([...])` and then `.nodeSize([20, 30])` on
+        the same layout. Those are mutually exclusive in d3-hierarchy -- one
+        flag, two setters, both writing dx/dy, later call wins -- so the
+        `.size()` values were overwritten and the canvas dimensions never
+        reached the layout while the code read as though they did. The dead
+        call is removed; this asserts which of the two is in force so it cannot
+        be quietly added back alongside.
+        """
+        out = _run("""
+          STUB.svgBox = {width: 900, height: 600, left: 0, top: 0};
+          renderSupervisorMap(DATA);
+          JSON.stringify({
+            size: STUB.treeSize,
+            nodeSize: STUB.treeNodeSize,
+            calls: STUB.treeCalls
+          });
+        """)
+        self.assertEqual(
+            out["nodeSize"], [20, 30],
+            "20px between siblings, 30px between levels",
+        )
+        self.assertIsNone(out["size"])
+        # Asserted on the calls, not on the values, and that distinction was
+        # found by mutation. Re-adding `.size(...)` before `.nodeSize(...)`
+        # leaves `tree.size()` reading back null exactly as it does now -- d3
+        # behaves that way and so does the stub -- so every value-based
+        # assertion here passed against the defect this test exists to catch.
+        # The only observable difference is that the setter was called.
+        sizing = [c for c in out["calls"] if c in ("size", "nodeSize")]
+        self.assertEqual(
+            sizing, ["nodeSize"],
+            f"the layout should use exactly one sizing setter; saw {sizing}. "
+            f"size() and nodeSize() are mutually exclusive in d3, so calling "
+            f"both means one of them is dead code that reads as though it "
+            f"applies",
+        )
+
     def test_an_unmeasurable_box_falls_back_instead_of_collapsing(self):
-        """A hidden or detached panel reports width 0. Deriving the radius
-        from that would put every node at radius 0 -- one unclickable dot."""
+        """A hidden or detached panel reports width 0.
+
+        Under the radial layout this was sharp: the radius came from the box,
+        so a zero box put every node at radius 0 -- one unclickable dot. Fixed
+        spacing removes that failure mode by construction, which is worth
+        asserting rather than assuming: the nodes must still be spread even
+        when nothing can be measured. The viewBox still needs its fallback,
+        and it is WIDTH x HEIGHT (800x400), not the 400x400 this test was
+        written against.
+        """
         out = _run("""
           STUB.svgBox = {width: 0, height: 0, left: 0, top: 0};
           renderSupervisorMap(DATA);
-          JSON.stringify({size: STUB.treeSize, viewBox: stubSvg().__attrs.viewBox});
+          var nodeSel = stubFindNodeSelection();
+          JSON.stringify({
+            nodeSize: STUB.treeNodeSize,
+            viewBox: stubSvg().__attrs.viewBox,
+            transforms: nodeSel.__computed.transform
+          });
         """)
-        self.assertEqual(out["viewBox"], "0 0 400 400")
-        self.assertEqual(out["size"][1], 160)
+        self.assertEqual(out["viewBox"], "0 0 800 400")
+        self.assertEqual(out["nodeSize"], [20, 30])
+        self.assertGreater(
+            len(set(out["transforms"])), 1,
+            "an unmeasurable panel collapsed every node onto one point",
+        )
 
     def test_the_initial_view_is_centred_and_finite(self):
         """zoomToFit runs at the end of every render. It used to call
@@ -218,20 +302,22 @@ class MapGeometryTests(unittest.TestCase):
         map was never fitted. Its replacement must produce usable numbers."""
         out = _run("""
           renderSupervisorMap(DATA);
-          // Recompute the tree's own bounds from the laid-out nodes, using the
-          // same polar-to-Cartesian conversion the node transforms use. The
-          // assertion below is that the fit maps this centre onto the centre
-          // of the box the SVG actually drew -- checking only that the numbers
-          // are finite and inside the box would pass just as happily while
-          // fitting to a stale 400x400 rectangle in the corner.
+          // Recompute the tree's own bounds from the laid-out nodes. The
+          // horizontal layout puts d.x and d.y in cartesian coordinates
+          // already, so there is no polar conversion to mirror -- this used to
+          // apply one, matching the radial transforms, and reproducing it here
+          // now would measure a shape the map never draws.
+          //
+          // The assertion below is that the fit maps this centre onto the
+          // centre of the box the SVG actually drew. Checking only that the
+          // numbers are finite and inside the box would pass just as happily
+          // while fitting to a stale rectangle in the corner.
           var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
           _root.descendants().forEach(function (d) {
-            var theta = d.x - Math.PI / 2;
-            var px = d.y * Math.cos(theta), py = d.y * Math.sin(theta);
-            if (px < minX) minX = px;
-            if (px > maxX) maxX = px;
-            if (py < minY) minY = py;
-            if (py > maxY) maxY = py;
+            if (d.x < minX) minX = d.x;
+            if (d.x > maxX) maxX = d.x;
+            if (d.y < minY) minY = d.y;
+            if (d.y > maxY) maxY = d.y;
           });
           var vb = stubSvg().__attrs.viewBox.split(" ");
           JSON.stringify({

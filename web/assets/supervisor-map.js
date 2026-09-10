@@ -211,15 +211,25 @@ export function renderSupervisorMap(data) {
     }
   });
 
-  // Horizontal tree layout: d.x = distance from left (horizontal),
-  // d.y = vertical position. Root is at d.x=0, d.y=center.
-  // .size is [height, width] because d3.tree maps d.y→vertical, d.x→horizontal.
-  // Vertical padding keeps siblings from overlapping (40px per sibling),
-  // plus a 30px horizontal gap between levels.
-  const verticalPadding = 40 * (data.children?.length || 1);
+  // Fixed node spacing rather than fit-to-canvas: nodeSize([20, 30]) puts
+  // 20px between siblings and 30px between levels, and the transform below
+  // maps d.x to horizontal and d.y to vertical.
+  //
+  // This used to also call .size([CANVAS_H - verticalPadding, CANVAS_W -
+  // horizontalGap]) immediately before .nodeSize(). Those are mutually
+  // exclusive in d3-hierarchy -- one flag, two setters, both writing dx/dy,
+  // and the later call decides how they are read -- so the .size() values
+  // were overwritten and the canvas dimensions never reached the layout. The
+  // rendered result has always been the nodeSize one; removing the dead call
+  // changes nothing on screen and stops the code claiming otherwise. See
+  // tests/test_qa_d3_stub_fidelity.py, which pins the exclusion so the stub
+  // cannot hide a repeat of this.
+  //
+  // The map is zoomable and zoomToFit() frames it, so fixed spacing is a
+  // reasonable choice here; if fit-to-canvas is wanted instead, replace
+  // .nodeSize() with .size() rather than adding it back alongside.
   const horizontalGap = 30;
   const tree = d3.tree()
-    .size([CANVAS_H - verticalPadding, CANVAS_W - horizontalGap])
     .separation((a, b) => a.parent === b.parent ? 1 : 1.2)
     .nodeSize([20, horizontalGap]);
   tree(root);

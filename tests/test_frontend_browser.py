@@ -272,7 +272,15 @@ class _BrowserFixture(unittest.TestCase):
         # browser pass has been blocked by the §0 memory gate; it surfaced the
         # first time the set ran on a QA node.
         self.page.wait_for_selector("#settingsDialog", state="hidden", timeout=5_000)
-        self._load()  # fresh page load
+        # Was `self._load()`, which does not exist on _BrowserFixture -- it is
+        # defined only on SupervisorBrowserTests and one other subclass, and the
+        # sole caller of this helper is BackendsPanelBrowserTests, which has no
+        # such method. So the line raised
+        # `AttributeError: 'BackendsPanelBrowserTests' object has no attribute
+        # '_load'` every time. It was hidden behind the is_hidden TypeError on
+        # the line above: fixing that one exposed this one, both in a helper
+        # that has never run to completion.
+        self.page.goto(f"{self.base}/", wait_until="domcontentloaded")
         self._open_settings()
 
     def _open_backends(self):

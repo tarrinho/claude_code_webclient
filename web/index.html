@@ -340,16 +340,16 @@
         <div class="skills-toolbar usage-toolbar">
           <label for="statsRange" hidden>Time range</label>
           <select id="statsRange" aria-label="Time range">
-            <option value="1">Last 24 hours</option>
+            <option value="1" selected>Last 24 hours</option>
             <option value="7">Last 7 days</option>
-            <option value="30" selected>Last 30 days</option>
+            <option value="30">Last 30 days</option>
             <option value="all">All time</option>
           </select>
           <label for="statsBucket" hidden>Group by</label>
           <select id="statsBucket" aria-label="Group by">
             <option value="halfhour">By 30 minutes</option>
-            <option value="hour">By hour</option>
-            <option value="day" selected>By day</option>
+            <option value="hour" selected>By hour</option>
+            <option value="day">By day</option>
             <option value="month">By month</option>
           </select>
           <span class="skills-count" id="statsCount" role="status" aria-live="polite"></span>
@@ -552,6 +552,7 @@
     </label>
     <span class="map-toolbar-stats" id="mapTotals"></span>
     <span class="map-toolbar-stats" id="mapCounts"></span>
+    <span class="map-toolbar-stats map-comms-note" id="mapCommsNote" hidden></span>
     <span class="map-toolbar-fresh" id="mapFresh" title="Time since the last refresh"></span>
   </div>
   <div class="map-body" id="mapBody">

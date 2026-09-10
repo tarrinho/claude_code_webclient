@@ -416,6 +416,24 @@ export function renderStats(container, payload) {
     title: 'Tokens over time, by billing route',
     colorFor: routeColor, labelFor: routeLabel, titleFor: e => inferredNote(e.key),
   });
+
+  // Cumulative tokens by billing route.
+  const cumulativeTokens = {
+    buckets: tokens.buckets,
+    series: tokens.series.map(s => ({
+      key: s.key,
+      values: (() => { const a = []; let t = 0; for (let i = 0; i < s.values.length; i++) { t += s.values[i] || 0; a.push(t); } return a; })(),
+      total: 0,
+    })),
+  };
+  lineChart(container, cumulativeTokens, {
+    title: 'Accumulated tokens by billing route',
+    colorFor: routeColor, labelFor: routeLabel, titleFor: e => inferredNote(e.key),
+    formatValue: abbrev, formatTip: exact,
+    summarize: entry => `${abbrev(cumulativeTokens.series.find(s => s.key === entry.key)?.values?.at(-1) ?? 0)} total`,
+  });
+  seriesTable(container, cumulativeTokens,
+    {labelFor: routeLabel, caption: 'Accumulated tokens by billing route', formatCell: exact});
   // The three measures live in the table rather than the chart: two routes
   // times three measures is six lines on one pair of axes, which is a picture
   // nobody reads, and six rows in a table anyone can.
@@ -454,6 +472,24 @@ export function renderStats(container, payload) {
   });
   seriesTable(container, requests,
     {labelFor: routeLabel, caption: 'Turns by billing route'});
+
+  // Cumulative turns by route.
+  const cumulativeRequests = {
+    buckets: requests.buckets,
+    series: requests.series.map(s => ({
+      key: s.key,
+      values: (() => { const a = []; let t = 0; for (let i = 0; i < s.values.length; i++) { t += s.values[i] || 0; a.push(t); } return a; })(),
+      total: 0,
+    })),
+  };
+  lineChart(container, cumulativeRequests, {
+    title: 'Accumulated turns by billing route',
+    colorFor: routeColor, labelFor: routeLabel, titleFor: e => inferredNote(e.key),
+    formatValue: abbrev, formatTip: exact,
+    summarize: entry => `${abbrev(cumulativeRequests.series.find(s => s.key === entry.key)?.values?.at(-1) ?? 0)} total`,
+  });
+  seriesTable(container, cumulativeRequests,
+    {labelFor: routeLabel, caption: 'Accumulated turns by billing route', formatCell: exact});
 
   const modelRows = payload.models || [];
   if (modelRows.length) {
@@ -532,6 +568,27 @@ export function renderStats(container, payload) {
     });
     seriesTable(container, agents, {
       labelFor: key => names.get(key) || key, caption: 'Tokens by agent',
+    });
+
+    // Cumulative tokens by agent.
+    const cumulativeAgents = {
+      buckets: agents.buckets,
+      series: agents.series.map(s => ({
+        key: s.key,
+        values: (() => { const a = []; let t = 0; for (let i = 0; i < s.values.length; i++) { t += s.values[i] || 0; a.push(t); } return a; })(),
+        total: 0,
+      })),
+    };
+    lineChart(container, cumulativeAgents, {
+      title: 'Accumulated tokens by agent',
+      colorFor: key => slotColor(Math.min(order.get(key) || 8, 8)),
+      labelFor: key => names.get(key) || key,
+      formatValue: abbrev, formatTip: exact,
+      summarize: entry => `${abbrev(cumulativeAgents.series.find(s => s.key === entry.key)?.values?.at(-1) ?? 0)} total`,
+      titleFor: entry => (entry.key === 'Other' ? '' : entry.key),
+    });
+    seriesTable(container, cumulativeAgents, {
+      labelFor: key => names.get(key) || key, caption: 'Accumulated tokens by agent', formatCell: exact,
     });
   }
 

@@ -816,6 +816,30 @@ button{touch-action:manipulation}
 .remote-stat-item{display:flex;justify-content:space-between}
 .remote-stat-time{font-size:11px;color:var(--muted)}
 
+/* ── Transport server stats (Statistics tab) ───────────────────── */
+.transport-stats-heading { margin: 18px 0 4px; font-size: 13px; font-weight: 650; }
+.transport-stats-note { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
+.transport-stats { display: grid; gap: 2px; }
+.transport-stat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4rem 4rem 4rem 4rem 6rem;
+  gap: 8px; align-items: baseline;
+  padding: 4px 0; border-bottom: 1px solid var(--line);
+  font: 11.5px ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.transport-stat-row.is-head { color: var(--muted); font-weight: 600; }
+.transport-stat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transport-stat-num { text-align: right; }
+/* A reading we do not have is muted, never rendered as a number: a 0 here
+   would read as an idle host, which is the defect this whole feature had. */
+.transport-stat-none { text-align: right; color: var(--muted); }
+.transport-stat-when { text-align: right; color: var(--muted); }
+.transport-stat-hot { color: var(--bad); }
+@media(max-width:480px){
+  .transport-stat-row { grid-template-columns: minmax(0, 1fr) 3rem 3rem 4rem; }
+  .transport-stat-row > :nth-child(5), .transport-stat-row > :nth-child(6) { display: none; }
+}
+
 /* ── Supervisor Map Panel ──────────────────────────────────────── */
 #supervisorMapPanel {
   position: fixed; right: 12px; top: 56px;

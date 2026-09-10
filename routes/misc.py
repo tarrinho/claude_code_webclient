@@ -601,7 +601,46 @@ async def handle_system_get(request: Request):
     snapshot = await sysstats.sample_async()
     snapshot["sample_interval_s"] = config.SYSTEM_SAMPLE_S
     snapshot["retention_days"] = config.SYSTEM_RETENTION_DAYS
+    snapshot["transports"] = await _transport_stats(request.state.session)
     return JSONResponse(snapshot)
+
+
+async def _transport_stats(session) -> list[dict[str, Any]]:
+    """The last stored sample for each of this owner's SSH transports.
+
+    Read from storage, never collected here: the whole point of the background
+    poller is that opening a page costs nothing. Every transport the owner has
+    is listed, including ones that have never reported -- a transport missing
+    from the table because nothing was ever sampled from it is
+    indistinguishable from a transport that does not exist, and the second is
+    the reassuring reading.
+    """
+    if not session:
+        return []
+    try:
+        transports = await db.ssh_transports_list(session["user"])
+        samples = {row["host_id"]: row for row in await db.system_latest_by_host()}
+    except Exception:
+        _log.exception("transport stats unavailable")
+        return []
+    out: list[dict[str, Any]] = []
+    for transport in transports:
+        sample = samples.get(transport["id"]) or {}
+        out.append({
+            "id": transport["id"],
+            "name": transport.get("name") or transport["id"],
+            "ssh_host": transport.get("ssh_host") or "",
+            # None rather than 0 where there is no reading: the panel prints
+            # "--" for those, and a 0 would read as an idle host. This is the
+            # same distinction parse_stats exists to preserve upstream.
+            "cpu_pct": sample.get("cpu_pct"),
+            "mem_pct": sample.get("mem_pct"),
+            "disk_pct": sample.get("disk_pct"),
+            "load1": sample.get("load1"),
+            "sampled_at": sample.get("created_at") or None,
+        })
+    return out
+
 
 
 async def handle_system_series_get(request: Request):

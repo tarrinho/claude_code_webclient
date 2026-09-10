@@ -3107,5 +3107,78 @@ class SupervisorMapBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class TransportStatsPanelTests(_BrowserFixture):
+    """The Statistics tab's transport table, rendered in a real browser.
+
+    Worth a browser test rather than only a payload test: the whole feature is
+    that opening the tab reads stored rows instead of collecting anything, and
+    "did it render without collecting" is a property of the page, not of the
+    endpoint. A fresh account has transports seeded by the fixture but no
+    stored samples, which is also the case most likely to be got wrong -- a
+    missing reading must print as "--", never as 0.
+    """
+
+    def test_the_table_lists_transports_without_collecting_anything(self):
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+
+        calls = []
+        self.page.on(
+            "request",
+            lambda r: calls.append(r.url) if "/api/system" in r.url else None,
+        )
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="stats"]')
+        self.page.wait_for_timeout(2500)
+
+        self.assertTrue(calls, "the Statistics tab never asked for host stats")
+        # One read of stored rows, not one SSH round-trip per transport.
+        self.assertLessEqual(len(calls), 2, calls)
+
+        rendered = self.page.inner_text("#transportStats")
+        self.assertTrue(rendered.strip(), "the transport table rendered empty")
+        # Either the header row (transports exist) or the explicit empty note.
+        self.assertTrue(
+            "Transport" in rendered or "No SSH transports" in rendered,
+            f"unexpected transport table content: {rendered[:200]!r}",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_a_transport_with_no_reading_shows_a_dash_not_a_zero(self):
+        """A 0 here reads as an idle host, which is precisely what the broken
+        collector made every transport look like for a day."""
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO ssh_transports (id,name,owner_id,ssh_host,ssh_user,"
+            "ssh_key_path,ssh_host_key_fingerprint,remote_path,created_at,"
+            "updated_at) VALUES ('t-quiet','Quiet Node','admin','quiet.example',"
+            "'kali','~/.ssh/id_ed25519','','~/wc-proxy',?,?)",
+            (stamp, stamp),
+        )
+        con.commit()
+        con.close()
+
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="stats"]')
+        self.page.wait_for_selector("#transportStats .transport-stat-row",
+                                    timeout=10_000)
+
+        row = self.page.locator(
+            "#transportStats .transport-stat-row", has_text="Quiet Node").first
+        text = row.inner_text()
+        self.assertIn("--", text, f"no-reading cells did not render a dash: {text!r}")
+        self.assertIn("never", text)
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

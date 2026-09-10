@@ -444,6 +444,101 @@ import { _renderUsage, loadUsage } from './usage.js?v=1';
 
 let _statsFetchedFor = null;
 
+/** Fill the Statistics tab's transport table from stored samples.
+ *
+ *  Nothing is collected here. The tunnel poller writes a sample per connected
+ *  transport on its own interval, and this reads the newest one per host --
+ *  which is the whole point: opening the tab costs a database read, not four
+ *  SSH round-trips.
+ */
+async function _loadTransportStats() {
+  const host = byId('transportStats');
+  if (!host) return;
+  try {
+    const resp = await apiFetch('/api/system');
+    if (!resp.ok) throw new Error('unavailable');
+    const payload = await resp.json();
+    _renderTransportStats(host, payload.transports || []);
+  } catch {
+    host.replaceChildren(_transportNote('Could not load transport stats.'));
+  }
+}
+
+function _transportNote(text) {
+  const note = document.createElement('div');
+  note.className = 'transport-stats-note';
+  note.textContent = text;
+  return note;
+}
+
+function _transportCell(value, unit, hotAt) {
+  const cell = document.createElement('span');
+  // null/undefined is "no reading", and must not print as 0 -- a zero here
+  // reads as an idle host, which is exactly what the unmapped collector keys
+  // made every transport look like.
+  if (value === null || value === undefined) {
+    cell.className = 'transport-stat-none';
+    cell.textContent = '--';
+    cell.title = 'No reading stored yet';
+    return cell;
+  }
+  cell.className = 'transport-stat-num';
+  if (hotAt !== undefined && Number(value) >= hotAt) {
+    cell.className += ' transport-stat-hot';
+  }
+  cell.textContent = unit === '%' ? `${Math.round(value)}%` : Number(value).toFixed(2);
+  return cell;
+}
+
+function _agoText(stamp) {
+  if (!stamp) return 'never';
+  const then = new Date(/Z$|[+-]\d\d:?\d\d$/.test(stamp) ? stamp : `${stamp}Z`);
+  if (Number.isNaN(then.getTime())) return 'unknown';
+  const seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
+  if (seconds < 90) return `${seconds}s ago`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
+}
+
+function _renderTransportStats(host, rows) {
+  if (!rows.length) {
+    host.replaceChildren(_transportNote('No SSH transports configured.'));
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'transport-stat-row is-head';
+  ['Transport', 'CPU', 'Mem', 'Disk', 'Load', 'Sampled'].forEach((label, i) => {
+    const cell = document.createElement('span');
+    cell.className = i === 0 ? 'transport-stat-name' : 'transport-stat-num';
+    cell.textContent = label;
+    head.appendChild(cell);
+  });
+
+  const body = rows.map(row => {
+    const line = document.createElement('div');
+    line.className = 'transport-stat-row';
+    const name = document.createElement('span');
+    name.className = 'transport-stat-name';
+    name.textContent = row.name || row.id;
+    if (row.ssh_host) name.title = row.ssh_host;
+    line.append(
+      name,
+      _transportCell(row.cpu_pct, '%', 90),
+      _transportCell(row.mem_pct, '%', 90),
+      _transportCell(row.disk_pct, '%', 90),
+      _transportCell(row.load1, 'load'),
+    );
+    const when = document.createElement('span');
+    when.className = 'transport-stat-when';
+    when.textContent = _agoText(row.sampled_at);
+    if (row.sampled_at) when.title = row.sampled_at;
+    line.appendChild(when);
+    return line;
+  });
+  host.replaceChildren(head, ...body);
+}
+
 async function loadStats(force = false) {
   const body = byId('statsBody');
   if (!body) return;
@@ -459,6 +554,10 @@ async function loadStats(force = false) {
   }));
   const count = byId('statsCount');
   if (count) count.textContent = 'Loading…';
+  // Independent of the usage series below, and deliberately not awaited
+  // together with it: a transport whose stats are missing must not stop the
+  // token charts rendering, and vice versa.
+  _loadTransportStats();
   try {
     const resp = await apiFetch(
       `/api/usage/series?days=${encodeURIComponent(range)}` +

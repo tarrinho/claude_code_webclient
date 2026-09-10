@@ -592,36 +592,88 @@ SYSTEM_FIELDS: tuple[str, ...] = (
 )
 
 
-async def system_sample_insert(values: dict[str, Any]) -> None:
-    """Store one host sample. Missing fields default to 0."""
+async def system_sample_insert(
+    values: dict[str, Any],
+    *,
+    host_type: str = "local",
+    host_id: str = "local",
+) -> None:
+    """Store one host sample. Missing fields default to 0.
+
+    ``host_type``/``host_id`` say which machine the sample describes. They
+    default to the local host because that is what every caller meant before
+    they existed, and the columns were added with the same defaults -- so rows
+    written before this argument are already labelled correctly and nothing
+    needs migrating.
+
+    They are keyword-only on purpose. A previous version of this function took
+    ``(host_type, host_id, data)`` positionally, shadowed this one, and was fed
+    a single flattened dict by sysstats' background loop -- crashing on every
+    interval with "type 'dict' is not supported" and stopping local sampling
+    entirely (see the note in db.py). Keyword-only means a caller written
+    against either signature cannot silently bind the wrong thing.
+    """
     if db.db_conn is None:
         return
-    columns: str = ", ".join(("created_at", *SYSTEM_FIELDS))
-    placeholders: str = ", ".join("?" * (len(SYSTEM_FIELDS) + 1))
+    columns: str = ", ".join(("created_at", "host_type", "host_id", *SYSTEM_FIELDS))
+    placeholders: str = ", ".join("?" * (len(SYSTEM_FIELDS) + 3))
     await db.db_conn.execute(
         f"INSERT INTO system_samples ({columns}) "  # nosec B608: names are literals
         f"VALUES ({placeholders})",
-        [db._now(), *(values.get(field, 0) or 0 for field in SYSTEM_FIELDS)],
+        [
+            db._now(), host_type, host_id,
+            *(values.get(field, 0) or 0 for field in SYSTEM_FIELDS),
+        ],
     )
     await db.db_conn.commit()
 
 
 async def system_latest() -> dict[str, Any] | None:
-    """The most recent stored sample, or None when nothing has been sampled."""
+    """The most recent sample *of this host*, or None if nothing is stored.
+
+    Scoped to host_type='local'. Unscoped, this returned whichever row was
+    newest -- and the transport poller writes one row per connected transport
+    per interval, so the figure this powers was usually a transport's, and
+    while the poller's keys were unmapped it was a row of zeros.
+    """
     cur = await db.db_conn.execute(
-        "SELECT * FROM system_samples ORDER BY id DESC LIMIT 1"
+        "SELECT * FROM system_samples WHERE host_type = 'local' "
+        "ORDER BY id DESC LIMIT 1"
     )
     row = await cur.fetchone()
     return dict(row) if row else None
 
 
+async def system_latest_by_host() -> list[dict[str, Any]]:
+    """The newest sample for each non-local host, newest sample first.
+
+    One grouped statement rather than a query per transport: this is read on
+    page open, and the number of transports is not fixed.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT s.* FROM system_samples s "
+        "JOIN (SELECT host_id, MAX(id) AS newest FROM system_samples "
+        "      WHERE host_type != 'local' GROUP BY host_id) latest "
+        "  ON latest.host_id = s.host_id AND latest.newest = s.id "
+        "ORDER BY s.created_at DESC"
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
 async def system_series(
     days: int | None = 7, bucket: str = "hour", fill: bool = False
 ) -> list[dict[str, Any]]:
-    """Host samples averaged per time bucket, oldest first."""
+    """This host's samples averaged per time bucket, oldest first.
+
+    Scoped to host_type='local' for the reason system_latest is: the transport
+    poller writes a row per connected transport per interval into this same
+    table, so an unscoped average silently mixed four machines' figures into
+    one line -- and while the poller's keys were unmapped, it averaged in
+    zeros, which is what the graph gaps and the low readings were.
+    """
     expr, expr_params = _bucket_expr(bucket)
     params: list[Any] = [*expr_params]
-    where = "1=1"
+    where = "host_type = 'local'"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))

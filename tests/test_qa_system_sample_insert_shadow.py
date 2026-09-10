@@ -49,13 +49,43 @@ class SystemSampleInsertShadowQA(unittest.TestCase):
             "module-level definition in db.py is shadowing the __getattr__ "
             "forward again",
         )
-        params = list(inspect.signature(db.system_sample_insert).parameters)
+        # The property, not a fixed list. What caused the crash was a second
+        # *positional* parameter: sysstats calls `store(to_row(snapshot))`, so
+        # a signature of (host_type, host_id, data) bound the dict to
+        # host_type and died on "type 'dict' is not supported". A parameter
+        # that can only be passed by keyword cannot do that, so extending the
+        # function that way is safe and the assertion should permit it --
+        # while still refusing the shape that broke.
+        #
+        # This started as `params == ["values"]` and was loosened when
+        # host_type/host_id were added keyword-only for transport stats. The
+        # loosening is deliberate: an assertion stricter than its own stated
+        # reason turns every safe change into a failure, and the next person
+        # reads the failure as permission to weaken the check itself.
+        signature = inspect.signature(db.system_sample_insert)
+        params = list(signature.parameters.values())
+        self.assertTrue(params, "system_sample_insert takes no arguments")
         self.assertEqual(
-            params, ["values"],
-            "db.system_sample_insert's signature changed shape -- sysstats.py "
-            "calls it with one positional dict (`store(to_row(snapshot))`); "
-            "anything else reproduces the parameter-binding crash this test "
-            "exists to catch",
+            params[0].name, "values",
+            "the first parameter is what sysstats' positional dict binds to",
+        )
+        self.assertIn(
+            params[0].kind,
+            (inspect.Parameter.POSITIONAL_ONLY,
+             inspect.Parameter.POSITIONAL_OR_KEYWORD),
+            "sysstats passes the sample positionally",
+        )
+        offenders = [
+            p.name for p in params[1:]
+            if p.kind is not inspect.Parameter.KEYWORD_ONLY
+        ]
+        self.assertEqual(
+            offenders, [],
+            f"these parameters can be passed positionally after `values`: "
+            f"{offenders}. sysstats.py calls this with one positional dict "
+            f"(`store(to_row(snapshot))`), so a second positional parameter "
+            f"reproduces the parameter-binding crash this test exists to "
+            f"catch",
         )
 
     def test_sysstats_calls_it_with_the_shape_it_actually_takes(self):

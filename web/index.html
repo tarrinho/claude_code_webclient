@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=40">
+<link rel="stylesheet" href="/assets/styles.css?v=41">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -355,6 +355,15 @@
           <span class="skills-count" id="statsCount" role="status" aria-live="polite"></span>
         </div>
         <div class="stats-body" id="statsBody"></div>
+        <!-- Transport server stats. Read from stored samples the tunnel
+             poller already writes on its own interval -- opening this tab
+             collects nothing, which is the point. -->
+        <h3 class="transport-stats-heading">Transport hosts</h3>
+        <p class="transport-stats-note" id="transportStatsNote">
+          Sampled in the background over each transport&rsquo;s own SSH
+          connection.
+        </p>
+        <div class="transport-stats" id="transportStats"></div>
       </div>
       <!-- Server tab: the health of the machine, not the cost of the model.
            Live reading first, history second -- the question this page is
@@ -481,7 +490,7 @@
 <script type="module" src="/assets/orchestrator.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
 <script type="module" src="/assets/voice-settings.js?v=8"></script>
-<script type="module" src="/assets/app.js?v=53"></script>
+<script type="module" src="/assets/app.js?v=55"></script>
 <script type="module" src="/assets/voice-conversation.js?v=6"></script>
 <script type="module" src="/assets/transcript.js"></script>
 

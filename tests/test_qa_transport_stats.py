@@ -283,7 +283,7 @@ class CollectorStorageTests(unittest.IsolatedAsyncioTestCase):
             "84.2",          # mem
             "0",             # mem_bytes   (single value → _split_bytes fails)
             "5.0",           # swap
-            "0.52 0.41 0.38", # load
+            "0.52 0.41 0.38",  # load
             "0.0",           # cores
             "0.0",           # uptime
             "0.0",           # hostname

@@ -864,56 +864,61 @@ export function createChatListController(dependencies) {
 
   function handleClick(event) {
     const button = event.target.closest('button[data-action]');
-    if (!button) return;
-    const action = button.dataset.action;
-    if (action === 'open') return onSelect(button.dataset.chatId);
-    if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
-    if (action === 'open-orchestrator') return onOpenSupervisor?.();
-    if (action === 'add-to-orchestrator') {
-      return onAddToSupervisor?.(button.dataset.chatId, button);
-    }
-    if (action === 'clear-orchestrator') return onClearSupervisor?.();
-    if (action === 'dismiss-agent') {
-      // Sits inside the row, whose own click opens the conversation. Without
-      // this the row would open the very chat you asked to stop being shown.
-      event.stopPropagation();
-      const {agentKind, agentId} = button.dataset;
-      return onDismissAgent?.(agentKind, agentId);
-    }
-    if (action === 'jump-agent') {
-      // A orchestrator row is a pointer at something listed elsewhere: a web
-      // chat opens, a terminal session resumes into one.
-      const {agentKind, agentId} = button.dataset;
-      return agentKind === 'session' ? onResumeCli(agentId) : onSelect(agentId);
-    }
-    if (action === 'read-transcript') {
-      // The viewer mounts itself from transcript.js; an event keeps the two
-      // modules decoupled rather than reaching across for a handle.
-      document.dispatchEvent(new CustomEvent('wc:open-transcript', {
-        detail: {sessionId: button.dataset.sessionId},
-      }));
-      return;
-    }
-    if (action === 'remove-cli') return onRemoveCli?.(button.dataset.sessionId);
-    if (action === 'menu') {
-      const menu = button.nextElementSibling;
-      const opening = !menu.classList.contains('open');
-      closeMenus();
-      if (opening) {
-        menu.classList.add('open');
-        placeMenu(button, menu);
-        button.setAttribute('aria-expanded', 'true');
-        openTrigger = button;
-        menu.querySelector('button')?.focus();
+    if (button) {
+      const action = button.dataset.action;
+      if (action === 'open') return onSelect(button.dataset.chatId);
+      if (action === 'resume-cli') return onResumeCli(button.dataset.sessionId);
+      if (action === 'open-orchestrator') return onOpenSupervisor?.();
+      if (action === 'add-to-orchestrator') {
+        return onAddToSupervisor?.(button.dataset.chatId, button);
       }
+      if (action === 'clear-orchestrator') return onClearSupervisor?.();
+      if (action === 'dismiss-agent') {
+        // Sits inside the row, whose own click opens the conversation. Without
+        // this the row would open the very chat you asked to stop being shown.
+        event.stopPropagation();
+        const {agentKind, agentId} = button.dataset;
+        return onDismissAgent?.(agentKind, agentId);
+      }
+      if (action === 'jump-agent') {
+        // A orchestrator row is a pointer at something listed elsewhere: a web
+        // chat opens, a terminal session resumes into one.
+        const {agentKind, agentId} = button.dataset;
+        return agentKind === 'session' ? onResumeCli(agentId) : onSelect(agentId);
+      }
+      if (action === 'read-transcript') {
+        // The viewer mounts itself from transcript.js; an event keeps the two
+        // modules decoupled rather than reaching across for a handle.
+        document.dispatchEvent(new CustomEvent('wc:open-transcript', {
+          detail: {sessionId: button.dataset.sessionId},
+        }));
+        return;
+      }
+      if (action === 'remove-cli') return onRemoveCli?.(button.dataset.sessionId);
+      if (action === 'menu') {
+        const menu = button.nextElementSibling;
+        const opening = !menu.classList.contains('open');
+        closeMenus();
+        if (opening) {
+          menu.classList.add('open');
+          placeMenu(button, menu);
+          button.setAttribute('aria-expanded', 'true');
+          openTrigger = button;
+          menu.querySelector('button')?.focus();
+        }
+        return;
+      }
+      closeMenus();
+      if (action === 'move-up' || action === 'move-down') {
+        nudge(button.dataset.chatId, action === 'move-up' ? -1 : 1);
+        return;
+      }
+      onAction(action, button.dataset.chatId);
       return;
     }
-    closeMenus();
-    if (action === 'move-up' || action === 'move-down') {
-      nudge(button.dataset.chatId, action === 'move-up' ? -1 : 1);
-      return;
-    }
-    onAction(action, button.dataset.chatId);
+    // No button — fall back to opening the row itself if clicked on a chat-item.
+    const row = event.target.closest('.chat-item[data-chat-id]');
+    if (row) return onSelect(row.dataset.chatId);
   }
 
   lists.forEach(list => list.addEventListener('click', handleClick));

@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from routes.db_supervisor_map import agent_series, supervisor_map
+from routes.db_supervisor_map import agent_series, comms_edges, supervisor_map
 
 _log = logging.getLogger("wc.app")
 
@@ -71,3 +71,24 @@ async def handle_agent_series(request: Request, agent_id: str):
         _log.exception("agent_series failed agent_id=%s", agent_id)
         raise HTTPException(status_code=500, detail="Data unavailable")
     return JSONResponse(content={"agent_id": agent_id, "points": points})
+
+
+@router.get("/api/supervisor-map/comms")
+async def handle_comms_edges(request: Request):
+    """Inter-agent message edges for the comms overlay.
+
+    A separate request from the map, and fetched only while the overlay is on.
+    agent_traffic scans transcript files -- the measured cost of one call was
+    3.75s cold on this deployment before it was made incremental -- so folding
+    it into a payload that polls every ten seconds would put that scan on the
+    critical path of a view most operators leave the overlay off for.
+    """
+    session = request.state.session
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        edges = await comms_edges()
+    except Exception:
+        _log.exception("comms_edges failed")
+        raise HTTPException(status_code=500, detail="Data unavailable")
+    return JSONResponse(content={"edges": edges, "count": len(edges)})

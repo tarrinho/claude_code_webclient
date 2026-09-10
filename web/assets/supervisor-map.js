@@ -307,6 +307,31 @@ export function renderSupervisorMap(data, options = {}) {
   tree(root);
   _root = root;
 
+  // -- Spokes ------------------------------------------------------
+  // The hub-and-spoke figure had no spokes: nodes were positioned by the tree
+  // layout and drawn, and nothing joined a child to its parent. So which hub
+  // an agent belonged to was conveyed by proximity alone, which the moment two
+  // hubs' children interleave conveys nothing -- and interleaving is normal
+  // here, since sibling spacing is fixed rather than fitted.
+  //
+  // Appended before the nodes so the nodes paint over the lines, and so a
+  // pointer near a node hits the node rather than a line passing behind it.
+  _viewport.append("g")
+    .attr("class", "map-spokes")
+    .selectAll("path")
+    .data(root.links())
+    .join("path")
+    .attr("class", "map-spoke")
+    .attr("fill", "none")
+    .attr("stroke", _cssVar("--line", "#d4d4d8"))
+    .attr("stroke-width", 1)
+    .attr("d", d => _spokePath(d.source, d.target));
+
+  // Own layer, and above the spokes: a comms edge is a different relation
+  // from containment and must not be mistaken for one, so it is drawn on its
+  // own group with its own style rather than added to the spoke join.
+  const commsLayer = _viewport.append("g").attr("class", "map-comms-layer");
+
   // Depth map: center=0, transport=1, machine=2, orchestrator=2, chat=3
   const node = _viewport.selectAll(".node")
     .data(root.descendants(), d => d.data.id)
@@ -570,6 +595,8 @@ export function renderSupervisorMap(data, options = {}) {
       }
     }
   });
+
+  _drawComms(commsLayer, root);
 
   // ── Click empty SVG background to close drawer (Fix 5) ──────────
   _svg.on("click", function(event) {
@@ -1019,6 +1046,229 @@ function _syncToggle(id, on) {
   if (el) el.setAttribute("aria-pressed", on ? "true" : "false");
 }
 
+/** Elbow from a parent to a child, in the same coordinate space the nodes
+ *  use. Routed through _nodeXY for the same reason zoomToFit is: three
+ *  independent position expressions is how the fit came to frame a rectangle
+ *  nothing was drawn in.
+ *
+ *  A curve rather than a straight line, because with fixed sibling spacing a
+ *  hub's children fan out far enough that straight lines from several hubs
+ *  cross in the middle of the canvas and stop being followable.
+ */
+function _spokePath(source, target) {
+  const a = _nodeXY(source);
+  const b = _nodeXY(target);
+  const midX = (a.x + b.x) / 2;
+  return `M${a.x},${a.y}C${midX},${a.y} ${midX},${b.y} ${b.x},${b.y}`;
+}
+
+// ── Comms overlay ─────────────────────────────────────────────────────
+// Who has been talking to whom, over the top of the containment tree.
+//
+// Off by default and fetched only while on. The source is
+// transcripts.agent_traffic, which scans transcript files -- 3.75s cold on
+// this deployment, 0.07s warm -- so it is deliberately not part of the map
+// payload that polls every 10 seconds.
+let _commsOn = false;
+let _commsEdges = [];
+let _commsTimer = null;
+// What the last draw could not place, so the toolbar can say so. A silently
+// dropped edge and no edge look identical, and the operator would read the
+// second meaning.
+let _commsUnmatched = 0;
+const _COMMS_REFRESH_MS = 60000;
+
+async function _loadComms() {
+  try {
+    const resp = await fetch("/api/supervisor-map/comms", {credentials: "same-origin"});
+    if (!resp.ok) { _commsEdges = []; _setCommsNote("comms unavailable"); return; }
+    const data = await resp.json();
+    _commsEdges = Array.isArray(data.edges) ? data.edges : [];
+  } catch (_) {
+    _commsEdges = [];
+    _setCommsNote("comms unavailable");
+    return;
+  }
+  _redraw();
+}
+
+function startCommsTicker() {
+  if (_commsTimer) return;
+  _commsTimer = setInterval(_loadComms, _COMMS_REFRESH_MS);
+}
+function stopCommsTicker() {
+  if (!_commsTimer) return;
+  clearInterval(_commsTimer);
+  _commsTimer = null;
+}
+
+function _setCommsNote(text) {
+  const el = document.getElementById("mapCommsNote");
+  if (el) { el.textContent = text || ""; el.hidden = !text; }
+}
+
+/** Index every node by the name a message would call it.
+ *
+ *  Traffic records name their peers the way the sessions do -- "cweb3" -- and
+ *  the map labels the same session the same way, so the label is the join key.
+ *  Lowercased, because neither side guarantees case.
+ */
+function _commsIndex(root) {
+  const byName = new Map();
+  for (const d of root.descendants()) {
+    const label = (d.data && d.data.label) || "";
+    if (!label) continue;
+    const key = label.trim().toLowerCase();
+    // First writer wins for a duplicate label, except that an agent outranks
+    // a container: two hubs can carry the same display name, and an edge
+    // drawn to a hub instead of to the agent inside it points at the wrong
+    // thing while looking correct.
+    const isAgent = d.data.type === "chat" || d.data.type === "session";
+    if (!byName.has(key) || (isAgent && !byName.get(key).isAgent)) {
+      byName.set(key, {node: d, isAgent});
+    }
+  }
+  return byName;
+}
+
+function _drawComms(layer, root) {
+  _commsUnmatched = 0;
+  if (!layer || !_commsOn) { _setCommsNote(""); return; }
+  if (!_commsEdges.length) { _setCommsNote("no messages between agents"); return; }
+
+  const index = _commsIndex(root);
+  const accent = _cssVar("--map-comms", "#a78bfa");
+
+  // One marker, defined once and referenced by every edge. The arrowhead is
+  // not decoration: the dash animation that shows direction is switched off
+  // by prefers-reduced-motion (styles.css disables every animation under that
+  // query), and a direction that only exists in an animation is no direction
+  // at all for a reader who has motion turned off.
+  const defs = layer.append("defs");
+  defs.append("marker")
+    .attr("id", "mapCommsArrow")
+    .attr("viewBox", "0 0 10 10")
+    .attr("refX", 9).attr("refY", 5)
+    .attr("markerWidth", 5).attr("markerHeight", 5)
+    .attr("orient", "auto-start-reverse")
+    .append("path")
+    .attr("d", "M0,1 L9,5 L0,9 z")
+    .attr("fill", accent);
+
+  let drawn = 0;
+  for (const edge of _commsEdges) {
+    const fromHit = index.get(String(edge.from || "").trim().toLowerCase());
+    const toHit = index.get(String(edge.to || "").trim().toLowerCase());
+    // A peer with no node on this map -- a socket address, or a session that
+    // has since ended -- is counted rather than dropped quietly.
+    if (!fromHit || !toHit) { _commsUnmatched++; continue; }
+    const from = fromHit.node, to = toHit.node;
+    if (from.data.id === to.data.id) { _commsUnmatched++; continue; }
+    const a = _nodeXY(from);
+    const b = _nodeXY(to);
+    // Bowed away from the straight line so A->B and B->A are two visible
+    // arcs rather than one line drawn twice: reversing the endpoints reverses
+    // (dy, -dx), which puts the reply on the far side of the message it
+    // answers. The offset is deliberately unsigned -- an earlier version
+    // multiplied it by `(a.y <= b.y ? 1 : -1)` to pick "a consistent side",
+    // and that factor cancels the reversal exactly, giving both directions
+    // the same control point and one arc where there should be two.
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const bow = Math.min(80, dist * 0.25);
+    const cx = (a.x + b.x) / 2 - (dy / dist) * bow;
+    const cy = (a.y + b.y) / 2 + (dx / dist) * bow;
+
+    const path = layer.append("path")
+      .attr("class", "map-comms-edge")
+      .attr("d", `M${a.x},${a.y}Q${cx},${cy} ${b.x},${b.y}`)
+      .attr("fill", "none")
+      .attr("stroke", accent)
+      // Weight by traffic, capped: an unbounded width turns the busiest pair
+      // into a band that hides the nodes it connects.
+      .attr("stroke-width", Math.min(3, 1 + (Number(edge.count) || 1) * 0.25))
+      .attr("marker-end", "url(#mapCommsArrow)")
+      .attr("cursor", "pointer")
+      .attr("tabindex", "0")
+      .attr("role", "button")
+      .attr("aria-label",
+        `${edge.from} to ${edge.to}: ${edge.count} message`
+        + `${Number(edge.count) === 1 ? "" : "s"}`);
+    path.append("title").text(`${edge.from} → ${edge.to} · ${edge.count}`);
+    path.on("click", (event) => {
+      // Or the map's background handler reads this as a click on empty canvas
+      // and closes the panel this click just opened.
+      event.stopPropagation();
+      _showCommsDetail(edge);
+    });
+    path.on("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        _showCommsDetail(edge);
+      }
+    });
+    drawn++;
+  }
+  _setCommsNote(
+    _commsUnmatched
+      ? `${drawn} exchange${drawn === 1 ? "" : "s"} · `
+        + `${_commsUnmatched} peer${_commsUnmatched === 1 ? "" : "s"} not on this map`
+      : `${drawn} exchange${drawn === 1 ? "" : "s"}`);
+}
+
+/** The clicked exchange, in the drawer the nodes use.
+ *
+ *  Plain language and no agent controls: this is a record of something that
+ *  already happened between two agents, so Stop, Restart and the model
+ *  switcher would all apply to whichever agent the reader last had open
+ *  rather than to the exchange in front of them.
+ */
+function _showCommsDetail(edge) {
+  const drawer = document.getElementById("mapDetailDrawer");
+  if (!drawer) return;
+  drawer.hidden = false;
+  const title = document.getElementById("mapDetailTitle");
+  if (title) title.textContent = `${edge.from} → ${edge.to}`;
+  const crumb = document.getElementById("mapDetailCrumb");
+  if (crumb) {
+    const n = Number(edge.count) || 0;
+    crumb.textContent = `${n} message${n === 1 ? "" : "s"}`
+      + (edge.last_at ? ` · last ${_relativeTime(edge.last_at)}` : "");
+  }
+  const stats = document.getElementById("mapDetailStats");
+  if (stats) stats.textContent = "";
+  const task = document.getElementById("mapDetailTask");
+  if (task) {
+    task.textContent = edge.summary
+      || "No summary was recorded for this exchange.";
+  }
+  const status = document.getElementById("mapDetailStatus");
+  if (status) status.textContent = "message";
+  const message = document.getElementById("mapDetailMessage");
+  if (message) message.textContent = "";
+  const meta = document.getElementById("mapDetailMeta");
+  if (meta) meta.textContent = "";
+  drawSparkline([]);
+  for (const id of ["mapDetailModelLabel", "mapDetailReplyWrap", "mapDetailOpen",
+                    "mapDetailStop", "mapDetailRestart", "mapDetailLogs"]) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = true;
+  }
+}
+
+/** "3m ago" from an ISO timestamp. Relative because the question a comms
+ *  edge answers is whether these two are talking *now*, and a wall-clock
+ *  time makes the reader do that subtraction. */
+function _relativeTime(iso) {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return String(iso);
+  const secs = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 /** Redraw from the last payload without refetching. */
 function _redraw() {
   if (_data) renderSupervisorMap(_data, {keepView: true});
@@ -1098,6 +1348,23 @@ document.getElementById("mapProblemsBtn")?.addEventListener("click", () => {
   _syncToggle("mapProblemsBtn", _problemsOnly);
   _redraw();
 });
+document.getElementById("mapCommsBtn")?.addEventListener("click", () => {
+  _commsOn = !_commsOn;
+  _syncToggle("mapCommsBtn", _commsOn);
+  if (_commsOn) {
+    // Redraw first so the toggle looks pressed immediately, then fetch: the
+    // scan can take seconds cold, and a button that does nothing visible
+    // until it returns reads as broken.
+    _redraw();
+    _loadComms();
+    startCommsTicker();
+  } else {
+    stopCommsTicker();
+    _commsEdges = [];
+    _redraw();
+  }
+});
+
 document.getElementById("mapCompactBtn")?.addEventListener("click", () => {
   _compact = !_compact;
   _syncToggle("mapCompactBtn", _compact);
@@ -1350,6 +1617,7 @@ export function closeSupervisorMap() {
   // The freshness ticker is a 1s interval; leaving it running behind a closed
   // panel is the same class of leak the map's own poll guard exists to avoid.
   stopFreshnessTicker();
+  stopCommsTicker();
   if (_svg) _svg.selectAll("*").remove();
   _viewport = null;  // removed above; keep the handle from outliving the node
   hideDetail();

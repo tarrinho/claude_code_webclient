@@ -821,3 +821,57 @@ async def agent_series(
         stamp = (now - datetime.timedelta(hours=back)).strftime("%Y-%m-%dT%H")
         out.append(int(rows.get(stamp, 0)))
     return out
+
+
+async def comms_edges(limit: int = 200, scan_files: int = 12) -> list[dict[str, Any]]:
+    """Who has been talking to whom, aggregated into one edge per pair.
+
+    Built on `transcripts.agent_traffic`, which reads what sessions recorded in
+    their own transcripts rather than tapping the socket they talk over -- a
+    log, not an interception layer.
+
+    Aggregated rather than returned per message. The overlay draws one line
+    per pair with a direction and a count; 200 individual messages between two
+    agents would be 200 coincident lines, and the operator's question is "are
+    these two talking", not "here is every sentence".
+
+    Direction is kept per ordered pair (A->B separate from B->A) because a
+    one-way flood and a conversation look identical once they are merged, and
+    the first is usually the interesting one.
+
+    The edge id is the ordered pair, which is also how the frontend looks up a
+    clicked line -- so the two cannot disagree about which exchange a summary
+    belongs to.
+    """
+    import transcripts
+    try:
+        messages = await transcripts.agent_traffic(limit=limit, scan_files=scan_files)
+    except Exception:
+        _log.warning("comms_edges: agent traffic unavailable", exc_info=True)
+        return []
+
+    edges: dict[tuple[str, str], dict[str, Any]] = {}
+    for msg in messages:
+        sender = (msg.get("sender") or "").strip()
+        recipient = (msg.get("recipient") or "").strip()
+        if not sender or not recipient or sender == recipient:
+            continue
+        key = (sender, recipient)
+        edge = edges.get(key)
+        if edge is None:
+            # agent_traffic returns newest first, so the first message seen
+            # for a pair is the most recent -- which is the one worth
+            # summarising and the one whose timestamp the overlay shows.
+            edge = {
+                "id": f"{sender}\u2192{recipient}",
+                "from": sender,
+                "to": recipient,
+                "count": 0,
+                "last_at": msg.get("timestamp") or "",
+                "summary": (msg.get("summary") or msg.get("text") or "").strip(),
+            }
+            edges[key] = edge
+        edge["count"] += 1
+    # Busiest first: with several pairs the overlay draws them in order, and
+    # the heaviest line should not be the one hidden underneath.
+    return sorted(edges.values(), key=lambda e: -e["count"])

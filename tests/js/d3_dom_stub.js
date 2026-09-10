@@ -253,6 +253,15 @@ function _hierarchy(data, childrenAccessor) {
     return n;
   }
   var root = build(data, 0, null);
+  // d3-hierarchy's real links(): one entry per node except the root, each
+  // naming the node and its parent. Absent from this stub until the spokes
+  // needed it -- and a missing method here reads as a bare "not a function"
+  // rather than as a stub gap, which is what STUB's proxy exists to prevent.
+  root.links = function () {
+    return root.descendants()
+      .filter(function (d) { return d.parent; })
+      .map(function (d) { return {source: d.parent, target: d}; });
+  };
   root.descendants = function () {
     var out = [];
     (function walk(n) {
@@ -449,6 +458,20 @@ function stubFindByClass(sel, cls) {
     if (hit) return hit;
   }
   return null;
+}
+
+// Every match, not the first. The comms overlay appends one path per edge as
+// a separate element rather than as one joined selection, so counting them is
+// the only way to tell "drew three arcs" from "drew one".
+function stubFindAllByClass(sel, cls) {
+  var out = [];
+  (function walk(node) {
+    if (!node) return;
+    if (node.__attrs && node.__attrs["class"] === cls) out.push(node);
+    var kids = node.__children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(sel);
+  return out;
 }
 
 function stubFindNodeSelection() {

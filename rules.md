@@ -466,9 +466,7 @@ tests/test_qa_orchestrator_ux_shortcuts.py
 tests/test_qa_mobile_no_autofocus.py
 tests/test_qa_machines_race.py
 tests/test_qa_browser_console_errors.py
-tests/test_qa_head_consistency.py
 tests/test_qa_bench_harness.py
-tests/test_qa_launch_reclaim.py
 tests/test_qa_agent_spawn_not_blocked.py
 "
 # A name that no longer matches a file is the one way this list can lie: it

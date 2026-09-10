@@ -28,9 +28,9 @@
      hue. Anthropic takes its own clay; the gateway takes Google's blue
      because that is the family name the operator uses for it; local takes
      green, for turns that cost nothing. */
-  --map-provider-anthropic:#d97757;
-  --map-provider-gateway:#4285f4;
-  --map-provider-local:#22c55e;
+  --map-provider-anthropic:#b45309;
+  --map-provider-gateway:#6d28d9;
+  --map-provider-local:#0e7490;--map-comms:#a78bfa;
 }
 html[data-theme="light"] {
   --bg:#f6f8fa; --panel:#fff; --panel2:#eaeef2; --line:#d0d7de;
@@ -51,9 +51,9 @@ html[data-theme="light"] {
   --map-idle:#1f66c4; --map-transport:#6b7280; --map-machine:#6b7280;
   /* Darker provider steps for a white panel, same reasoning as the map
      statuses above: the dark-theme values are chosen against #1c2230. */
-  --map-provider-anthropic:#b8532f;
-  --map-provider-gateway:#1a5fd0;
-  --map-provider-local:#0f8c47;
+  --map-provider-anthropic:#d97706;
+  --map-provider-gateway:#9333ea;
+  --map-provider-local:#155e75;--map-comms:#a78bfa;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -1155,3 +1155,42 @@ button{touch-action:manipulation}
   font-size:12px; color:var(--muted); font-weight:500;
 }
 .voice-control[hidden] { display:none; }
+
+/* ── Supervisor map: spokes and the comms overlay ─────────────────────────
+   The spokes carry no interaction, so they are declared non-interactive:
+   without this a hairline curve passing behind a node is a click target that
+   sits on top of the background rect, and the "click empty canvas to close"
+   handler stops firing wherever a line happens to run. */
+#supervisorMapPanel .map-spokes { pointer-events: none; }
+#supervisorMapPanel .map-spoke { opacity: .55; }
+
+/* Direction is shown by dashes marching from sender to recipient. Done as a
+   CSS animation on stroke-dashoffset rather than a d3 .transition() or SMIL,
+   because only a CSS animation is switched off by the global
+   prefers-reduced-motion rule above -- and both of the others would keep
+   moving for a reader who asked for no motion.
+
+   The arrowhead marker in the SVG is what carries the direction once the
+   animation is off, so this is decoration and the arrow is the information. */
+#supervisorMapPanel .map-comms-edge {
+  stroke-dasharray: 5 5;
+  stroke-opacity: .85;
+  animation: map-comms-flow 1.4s linear infinite;
+}
+#supervisorMapPanel .map-comms-edge:hover,
+#supervisorMapPanel .map-comms-edge:focus-visible {
+  stroke-opacity: 1;
+  stroke-dasharray: none;
+  outline: none;
+}
+@keyframes map-comms-flow {
+  from { stroke-dashoffset: 10; }
+  to   { stroke-dashoffset: 0; }
+}
+/* Restated rather than relying on the global rule alone: an animation with
+   iteration-count 1 still runs once, which on a dash offset is a visible
+   twitch on every redraw -- and the map redraws every 10 seconds. */
+@media (prefers-reduced-motion: reduce) {
+  #supervisorMapPanel .map-comms-edge { animation: none; }
+}
+#supervisorMapPanel .map-comms-note { color: var(--map-comms, #7c3aed); }

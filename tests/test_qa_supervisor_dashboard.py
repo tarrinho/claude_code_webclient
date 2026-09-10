@@ -786,3 +786,465 @@ class KeyboardShortcutTests(unittest.TestCase):
         """Ctrl+P is print and Cmd+C is copy; stealing them would be a bug
         report, not a feature."""
         self.assertRegex(self.js, r"event\.metaKey \|\| event\.ctrlKey")
+
+
+# ── Step 7: the comms overlay ───────────────────────────────────────────
+# Two agents talking to each other is the one relation the containment tree
+# cannot express: the tree says which hub an agent runs on, and says nothing
+# about who it has been messaging. These cover the aggregation and the drawing
+# separately, because the two failed differently -- the aggregation merged
+# directions, and the drawing had no lines at all.
+
+class CommsEdgeAggregationTests(unittest.IsolatedAsyncioTestCase):
+    """routes.db_supervisor_map.comms_edges, over a fake traffic log."""
+
+    @staticmethod
+    def _traffic(*records):
+        async def fake(limit=200, scan_files=12):
+            return list(records)
+        return fake
+
+    async def _edges(self, *records):
+        from unittest.mock import patch
+        import routes.db_supervisor_map as mod
+        with patch("transcripts.agent_traffic", self._traffic(*records)):
+            return await mod.comms_edges()
+
+    async def test_one_edge_per_ordered_pair(self):
+        edges = await self._edges(
+            {"sender": "cweb2", "recipient": "cweb3", "summary": "later",
+             "timestamp": "2026-09-10T19:02:03Z"},
+            {"sender": "cweb2", "recipient": "cweb3", "summary": "earlier",
+             "timestamp": "2026-09-10T19:00:00Z"},
+        )
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["count"], 2)
+
+    async def test_the_two_directions_stay_apart(self):
+        """A one-way flood and a conversation look identical once A->B and
+        B->A are merged, and the first is the interesting one."""
+        edges = await self._edges(
+            {"sender": "cweb2", "recipient": "cweb3", "summary": "ask",
+             "timestamp": "2026-09-10T19:02:03Z"},
+            {"sender": "cweb3", "recipient": "cweb2", "summary": "answer",
+             "timestamp": "2026-09-10T19:01:11Z"},
+        )
+        self.assertEqual(len(edges), 2)
+        self.assertEqual({(e["from"], e["to"]) for e in edges},
+                         {("cweb2", "cweb3"), ("cweb3", "cweb2")})
+
+    async def test_the_summary_is_the_most_recent_message(self):
+        """agent_traffic returns newest first, so the first record seen for a
+        pair is the one worth showing. Taking the last would put a stale line
+        under a live edge."""
+        edges = await self._edges(
+            {"sender": "a", "recipient": "b", "summary": "newest",
+             "timestamp": "2026-09-10T19:02:03Z"},
+            {"sender": "a", "recipient": "b", "summary": "oldest",
+             "timestamp": "2026-09-10T18:00:00Z"},
+        )
+        self.assertEqual(edges[0]["summary"], "newest")
+        self.assertEqual(edges[0]["last_at"], "2026-09-10T19:02:03Z")
+
+    async def test_it_falls_back_to_the_message_text_with_no_summary(self):
+        edges = await self._edges(
+            {"sender": "a", "recipient": "b", "text": "raw body",
+             "timestamp": "2026-09-10T19:02:03Z"})
+        self.assertEqual(edges[0]["summary"], "raw body")
+
+    async def test_a_self_message_is_not_an_edge(self):
+        """A loop on one node is drawn as an arc from a node to itself, which
+        is unreadable and says nothing -- an agent noting something to itself
+        is not inter-agent traffic."""
+        edges = await self._edges(
+            {"sender": "a", "recipient": "a", "summary": "note",
+             "timestamp": "2026-09-10T19:02:03Z"})
+        self.assertEqual(edges, [])
+
+    async def test_a_record_missing_a_peer_is_skipped(self):
+        edges = await self._edges(
+            {"sender": "a", "recipient": "", "summary": "x", "timestamp": "t"},
+            {"sender": None, "recipient": "b", "summary": "y", "timestamp": "t"},
+            {"summary": "z", "timestamp": "t"},
+        )
+        self.assertEqual(edges, [])
+
+    async def test_busiest_first(self):
+        """With several pairs the overlay draws in this order, and the heaviest
+        line should not be the one hidden underneath."""
+        edges = await self._edges(
+            {"sender": "a", "recipient": "b", "summary": "1", "timestamp": "t"},
+            {"sender": "c", "recipient": "d", "summary": "2", "timestamp": "t"},
+            {"sender": "c", "recipient": "d", "summary": "3", "timestamp": "t"},
+        )
+        self.assertEqual([e["count"] for e in edges], [2, 1])
+
+    async def test_the_id_is_the_ordered_pair(self):
+        """The frontend looks a clicked line up by this, so the two cannot
+        disagree about which exchange a summary belongs to."""
+        edges = await self._edges(
+            {"sender": "a", "recipient": "b", "summary": "x", "timestamp": "t"})
+        self.assertEqual(edges[0]["id"], "a→b")
+
+    async def test_an_unavailable_traffic_log_is_an_empty_overlay(self):
+        """Not a 500 and not a stack trace on the map: the overlay is an
+        extra, and a transcript directory that cannot be read must not take
+        the dashboard down with it."""
+        from unittest.mock import patch
+        import routes.db_supervisor_map as mod
+
+        async def boom(**_kw):
+            raise OSError("no transcripts")
+        with patch("transcripts.agent_traffic", boom):
+            self.assertEqual(await mod.comms_edges(), [])
+
+    async def test_no_cost_field_reaches_the_overlay(self):
+        """The spec rules out a dollar figure anywhere on this view, and a
+        traffic record is a place one could arrive by accident."""
+        edges = await self._edges(
+            {"sender": "a", "recipient": "b", "summary": "x", "timestamp": "t",
+             "cost_usd": 1.23, "total_cost_usd": 4.56})
+        for edge in edges:
+            for key in edge:
+                self.assertNotIn("cost", key.lower())
+
+
+class CommsEndpointTests(unittest.TestCase):
+    """The route, and the one performance decision behind it."""
+
+    def test_the_endpoint_exists_and_is_owner_gated(self):
+        src = (ROOT / "routes" / "supervisor_map.py").read_text(encoding="utf-8")
+        self.assertIn("/api/supervisor-map/comms", src)
+        handler = src.split("/api/supervisor-map/comms", 1)[1]
+        self.assertIn("request.state.session", handler,
+                      "an unauthenticated caller could read who is talking to "
+                      "whom across every owner on this host")
+        self.assertIn("401", handler)
+
+    def test_the_map_payload_does_not_scan_transcripts(self):
+        """supervisor_map is polled every 10s. agent_traffic scans transcript
+        files -- measured at 3.75s cold on this deployment -- so folding it in
+        would put that scan on the critical path of the whole view, for the
+        majority of readers who leave the overlay off."""
+        src = (ROOT / "routes" / "db_supervisor_map.py").read_text(encoding="utf-8")
+        marker = "async def supervisor_map("
+        self.assertIn(marker, src)
+        body = src.split(marker, 1)[1]
+        # Up to the next top-level def: what supervisor_map itself runs.
+        body = re.split(r"\nasync def |\ndef ", body, maxsplit=1)[0]
+        stripped = "\n".join(
+            line for line in body.splitlines()
+            if not line.strip().startswith("#"))
+        self.assertNotIn("agent_traffic", stripped)
+
+    def test_the_frontend_fetches_it_only_while_the_toggle_is_on(self):
+        src = MAP_JS.read_text(encoding="utf-8")
+        self.assertIn("/api/supervisor-map/comms", src)
+        # The fetch lives in _loadComms, and _loadComms is reached from the
+        # toggle and its own timer -- never from renderSupervisorMap, which is
+        # what the 10s poll calls.
+        render = src.split("function renderSupervisorMap", 1)[1]
+        render = render.split("\n/**", 1)[0]
+        self.assertNotIn("_loadComms", render)
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class SpokesExistTests(unittest.TestCase):
+    """The hub-and-spoke figure had no spokes.
+
+    Nodes were positioned by the tree layout and drawn, and nothing joined a
+    child to its parent -- so which hub an agent belonged to was conveyed by
+    proximity alone. Sibling spacing here is fixed rather than fitted, so two
+    hubs' children interleave as a matter of course, and proximity then
+    conveys nothing.
+    """
+
+    SAMPLE = """
+      var DATA = {
+        id: "root", label: "You", type: "center", status: "running",
+        children: [
+          {id: "h1", label: "Kali3", type: "transport", status: "idle",
+           children: [
+             {id: "a1", label: "cweb1", type: "chat", status: "running"},
+             {id: "a2", label: "cweb2", type: "chat", status: "idle"}
+           ]},
+          {id: "h2", label: "Direct", type: "transport", status: "idle",
+           children: [{id: "a3", label: "cweb3", type: "chat", status: "idle"}]}
+        ]
+      };
+    """
+
+    def test_one_spoke_per_parent_child_pair(self):
+        out = _eval(self.SAMPLE + """
+          renderSupervisorMap(DATA);
+          var g = stubFindByClass(stubSvg(), "map-spokes");
+          var joined = g ? g.__children[0] : null;
+          JSON.stringify({
+            group: !!g,
+            spokes: joined ? joined.__data.length : 0,
+            paths: joined ? (joined.__computed.d || []).length : 0
+          });
+        """)
+        self.assertTrue(out["group"], "no spoke layer was drawn at all")
+        # 5 nodes, root excluded: h1, h2, a1, a2, a3.
+        self.assertEqual(out["spokes"], 5)
+        self.assertEqual(out["paths"], 5)
+
+    def test_a_spoke_starts_at_its_parent_and_ends_at_its_child(self):
+        """Routed through _nodeXY, like the nodes and like zoomToFit. Three
+        independent position expressions is how the fit came to frame a
+        rectangle nothing was drawn in."""
+        out = _eval(self.SAMPLE + """
+          renderSupervisorMap(DATA);
+          var g = stubFindByClass(stubSvg(), "map-spokes");
+          var joined = g.__children[0];
+          var link = joined.__data[0];
+          var a = _nodeXY(link.source), b = _nodeXY(link.target);
+          JSON.stringify({
+            d: joined.__computed.d[0],
+            start: "M" + a.x + "," + a.y,
+            end: b.x + "," + b.y
+          });
+        """)
+        self.assertTrue(out["d"].startswith(out["start"]),
+                        f"spoke does not start at the parent: {out}")
+        self.assertTrue(out["d"].endswith(out["end"]),
+                        f"spoke does not end at the child: {out}")
+
+    def test_the_spoke_layer_is_under_the_nodes(self):
+        """DOM order is paint order in SVG. Lines over the nodes would cross
+        every mark they connect, and would take the clicks meant for them."""
+        out = _eval(self.SAMPLE + """
+          renderSupervisorMap(DATA);
+          var vp = stubFindByClass(stubSvg(), "map-viewport");
+          var classes = vp.__children.map(function (c) {
+            return (c.__attrs && c.__attrs["class"]) || c.__joinedOntoClass || "?";
+          });
+          JSON.stringify({classes: classes});
+        """)
+        classes = out["classes"]
+        self.assertIn("map-spokes", classes)
+        self.assertIn("node", classes)
+        self.assertLess(classes.index("map-spokes"), classes.index("node"))
+
+    def test_the_spokes_do_not_take_pointer_events(self):
+        """A hairline curve is otherwise a click target sitting on top of the
+        background rect, and "click empty canvas to close" stops firing
+        wherever a line happens to run."""
+        css = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.map-spokes\s*\{[^}]*pointer-events:\s*none")
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class CommsOverlayDrawingTests(unittest.TestCase):
+    """The overlay: matched by label, one arc per direction, nothing silent."""
+
+    SAMPLE = SpokesExistTests.SAMPLE
+
+    def _run(self, probe, edges, on="true"):
+        return _eval(self.SAMPLE + f"""
+          _commsOn = {on};
+          _commsEdges = {json.dumps(edges)};
+          renderSupervisorMap(DATA);
+          {probe}
+        """)
+
+    EDGE_AB = [{"id": "cweb1→cweb2", "from": "cweb1", "to": "cweb2",
+                "count": 3, "last_at": "2026-09-10T19:00:00Z",
+                "summary": "handed over the map fix"}]
+
+    def test_nothing_is_drawn_while_the_toggle_is_off(self):
+        out = self._run("""
+          JSON.stringify({
+            edges: stubFindAllByClass(stubSvg(), "map-comms-edge").length
+          });
+        """, self.EDGE_AB, on="false")
+        self.assertEqual(out["edges"], 0)
+
+    def test_an_edge_between_two_agents_on_the_map_is_drawn(self):
+        out = self._run("""
+          JSON.stringify({
+            edges: stubFindAllByClass(stubSvg(), "map-comms-edge").length
+          });
+        """, self.EDGE_AB)
+        self.assertEqual(out["edges"], 1)
+
+    def test_it_runs_between_the_two_named_agents(self):
+        """Matched by label, because that is the only name a traffic record
+        and a map node share. A mismatch here draws a line between the wrong
+        pair while looking entirely correct."""
+        out = self._run("""
+          var e = stubFindAllByClass(stubSvg(), "map-comms-edge")[0];
+          var a1 = _root.descendants().filter(function(d){return d.data.id==="a1";})[0];
+          var a2 = _root.descendants().filter(function(d){return d.data.id==="a2";})[0];
+          var p = _nodeXY(a1), q = _nodeXY(a2);
+          JSON.stringify({
+            d: e.__attrs.d,
+            from: "M" + p.x + "," + p.y,
+            to: q.x + "," + q.y
+          });
+        """, self.EDGE_AB)
+        self.assertTrue(out["d"].startswith(out["from"]), out)
+        self.assertTrue(out["d"].endswith(out["to"]), out)
+
+    def test_the_two_directions_are_two_distinct_arcs(self):
+        """Bowed to opposite sides. Drawn straight, a message and its reply
+        occupy the same pixels and the pair reads as one line.
+
+        Asserted on the control points, not on the path strings: with no bow
+        the two are still different strings -- "M a Q mid b" reversed -- so a
+        string comparison passes against a straight line. It did, which is how
+        this version came to exist.
+        """
+        both = self.EDGE_AB + [{"id": "cweb2\u2192cweb1", "from": "cweb2",
+                                "to": "cweb1", "count": 1, "last_at": "t",
+                                "summary": "ack"}]
+        out = self._run("""
+          var es = stubFindAllByClass(stubSvg(), "map-comms-edge");
+          JSON.stringify({
+            n: es.length,
+            ctrl: es.map(function (e) {
+              return e.__attrs.d.split("Q")[1].split(" ")[0];
+            }),
+            mid: (function () {
+              var a1 = _root.descendants().filter(function(d){return d.data.id==="a1";})[0];
+              var a2 = _root.descendants().filter(function(d){return d.data.id==="a2";})[0];
+              var p = _nodeXY(a1), q = _nodeXY(a2);
+              return ((p.x + q.x) / 2) + "," + ((p.y + q.y) / 2);
+            })()
+          });
+        """, both)
+        self.assertEqual(out["n"], 2)
+        self.assertNotEqual(
+            out["ctrl"][0], out["ctrl"][1],
+            "both directions bow the same way, so the reply is drawn over the "
+            "message it answers")
+        for ctrl in out["ctrl"]:
+            self.assertNotEqual(
+                ctrl, out["mid"],
+                "the control point is the midpoint, which is a straight line")
+
+    def test_the_overlay_sits_under_the_nodes(self):
+        """DOM order is paint order. An arc drawn over a node covers the mark
+        it connects, and -- because a comms edge is deliberately clickable --
+        takes the click meant for that node."""
+        out = self._run("""
+          var vp = stubFindByClass(stubSvg(), "map-viewport");
+          var classes = vp.__children.map(function (c) {
+            return (c.__attrs && c.__attrs["class"]) || c.__joinedOntoClass || "?";
+          });
+          JSON.stringify({classes: classes});
+        """, self.EDGE_AB)
+        classes = out["classes"]
+        self.assertIn("map-comms-layer", classes)
+        self.assertIn("node", classes)
+        self.assertLess(classes.index("map-comms-layer"), classes.index("node"),
+                        f"comms layer is painted over the nodes: {classes}")
+
+    def test_a_peer_that_is_not_on_the_map_is_counted_not_dropped(self):
+        """A socket address or an ended session has no node. Silently drawing
+        nothing makes "no traffic" and "traffic I could not place" look
+        identical, and the reader would take the first meaning."""
+        edges = self.EDGE_AB + [
+            {"id": "x", "from": "cweb1",
+             "to": "uds:/run/user/1000/cc-socks/1803.sock",
+             "count": 4, "last_at": "t", "summary": "s"}]
+        out = self._run("""
+          JSON.stringify({
+            drawn: stubFindAllByClass(stubSvg(), "map-comms-edge").length,
+            unmatched: _commsUnmatched,
+            note: document.getElementById("mapCommsNote").textContent
+          });
+        """, edges)
+        self.assertEqual(out["drawn"], 1)
+        self.assertEqual(out["unmatched"], 1)
+        self.assertIn("not on this map", out["note"])
+
+    def test_the_note_says_so_when_there_is_no_traffic(self):
+        out = self._run("""
+          JSON.stringify({note: document.getElementById("mapCommsNote").textContent});
+        """, [])
+        self.assertIn("no messages", out["note"].lower())
+
+    def test_every_edge_carries_an_arrowhead(self):
+        """Direction survives prefers-reduced-motion only because of this: the
+        dash animation that shows flow is switched off by that query, and a
+        direction that exists only in an animation is no direction at all for
+        a reader who turned motion off."""
+        out = self._run("""
+          var e = stubFindAllByClass(stubSvg(), "map-comms-edge")[0];
+          var marker = null;
+          (function walk(n){
+            if (n.__tag === "marker") marker = n;
+            (n.__children||[]).forEach(walk);
+          })(stubSvg());
+          JSON.stringify({
+            markerEnd: e.__attrs["marker-end"],
+            markerId: marker ? marker.__attrs.id : null,
+            orient: marker ? marker.__attrs.orient : null
+          });
+        """, self.EDGE_AB)
+        self.assertEqual(out["markerEnd"], "url(#mapCommsArrow)")
+        self.assertEqual(out["markerId"], "mapCommsArrow")
+
+    def test_an_edge_is_clickable_and_reachable_by_keyboard(self):
+        out = self._run("""
+          var e = stubFindAllByClass(stubSvg(), "map-comms-edge")[0];
+          JSON.stringify({
+            cursor: e.__attrs.cursor,
+            tabindex: e.__attrs.tabindex,
+            role: e.__attrs.role,
+            label: e.__attrs["aria-label"],
+            handlers: Object.keys(e.__handlers || {})
+          });
+        """, self.EDGE_AB)
+        self.assertEqual(out["cursor"], "pointer")
+        self.assertEqual(out["tabindex"], "0")
+        self.assertIn("cweb1", out["label"])
+        self.assertIn("3 messages", out["label"])
+        self.assertIn("click", out["handlers"])
+        self.assertIn("keydown", out["handlers"])
+
+    def test_stroke_width_is_capped(self):
+        """Weighted by traffic so the busy pair reads as busy, capped so it
+        does not become a band that hides the nodes it connects."""
+        heavy = [dict(self.EDGE_AB[0], count=400)]
+        out = self._run("""
+          var e = stubFindAllByClass(stubSvg(), "map-comms-edge")[0];
+          JSON.stringify({w: e.__attrs["stroke-width"]});
+        """, heavy)
+        self.assertLessEqual(out["w"], 3)
+
+
+class CommsOverlayStyleTests(unittest.TestCase):
+    """The parts only CSS can state."""
+
+    def setUp(self):
+        self.css = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")
+
+    def test_the_flow_animation_is_css_not_a_d3_transition(self):
+        """A d3 .transition() and an SVG <animate> both keep moving for a
+        reader who asked for no motion; the prefers-reduced-motion query
+        cannot reach either. Only a CSS animation is switched off for free."""
+        self.assertIn("map-comms-flow", self.css)
+        self.assertIn("stroke-dashoffset", self.css)
+        src = MAP_JS.read_text(encoding="utf-8")
+        overlay = src.split("function _drawComms", 1)[1].split("\n/**", 1)[0]
+        self.assertNotIn(".transition()", overlay)
+        self.assertNotIn("animateMotion", overlay)
+
+    def test_reduced_motion_switches_the_flow_off_explicitly(self):
+        """The global rule sets iteration-count to 1, and one iteration of a
+        dash offset is still a visible twitch -- on every redraw, and the map
+        redraws every 10 seconds."""
+        blocks = re.findall(
+            r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}",
+            self.css, flags=re.DOTALL)
+        self.assertTrue(
+            any("map-comms-edge" in b and "animation: none" in b for b in blocks),
+            "no reduced-motion rule names the comms edge")
+
+    def test_the_accent_is_defined_in_both_themes(self):
+        """One literal would be unreadable in one of them: the dark values are
+        chosen against #1c2230 and the light ones against white."""
+        self.assertEqual(len(re.findall(r"--map-comms:", self.css)), 2)

@@ -178,3 +178,19 @@ async def resolve_transport(
         raise QaRefusal(503, "no transport is Active, provisioned and has enough "
                               "free memory for a QA run right now")
     return best
+
+
+async def _sync(prepared: Prepared) -> dict:
+    """One call, no new sync engine code -- transport_sync.sync_transport is
+    reused unmodified, pointed at the QA checkout and the QA pointer, never
+    the production ones (spec §2)."""
+    import db
+    import transport_sync
+
+    result = await transport_sync.sync_transport(
+        prepared.machine_id, QA_REMOTE_PATH,
+        prepared.transport.get("last_qa_synced_sha") or "")
+    if result["ok"] and result["head_sha"]:
+        await db.ssh_transport_set_last_qa_synced_sha(
+            prepared.transport["id"], result["head_sha"])
+    return result

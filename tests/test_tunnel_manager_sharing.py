@@ -55,10 +55,16 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
              patch("paramiko.SSHClient", return_value=fake_ssh_client), \
              patch.object(fake_ssh_client, "connect", fake_paramiko_connect), \
              patch("tunnel_manager_ssh._check_key_permissions", return_value="k"), \
-             patch("tunnel_manager_ssh._find_available_port", AsyncMock(side_effect=[9001, 9002])), \
              patch("tunnel_manager_forward.start_forward", MagicMock(return_value=MagicMock())):
-            ok_a, client_a, transport_a, port_a, _, _, _ = await tunnel_manager_ssh.connect("ma")
-            ok_b, client_b, transport_b, port_b, _, _, _ = await tunnel_manager_ssh.connect("mb")
+            # Port allocation moved out of connect() and into
+            # tunnel_manager._try_connect() (a single global lock, to close
+            # a real TOCTOU race) -- connect() now just uses whatever
+            # assigned_port it's given, so the caller supplies distinct
+            # ports directly instead of connect() finding them itself.
+            ok_a, client_a, transport_a, port_a, _, _, _ = await tunnel_manager_ssh.connect(
+                "ma", assigned_port=9001)
+            ok_b, client_b, transport_b, port_b, _, _, _ = await tunnel_manager_ssh.connect(
+                "mb", assigned_port=9002)
 
         self.assertTrue(ok_a)
         self.assertTrue(ok_b)
@@ -214,11 +220,13 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
              patch.object(db, "ssh_transport_get", fake_transport_get), \
              patch("paramiko.SSHClient", side_effect=make_client), \
              patch("tunnel_manager_ssh._check_key_permissions", return_value="k"), \
-             patch("tunnel_manager_ssh._find_available_port", AsyncMock(side_effect=[9001, 9002])), \
              patch("tunnel_manager_forward.start_forward", MagicMock(return_value=MagicMock())):
+            # See test_two_machines_same_transport_share_one_ssh_client for
+            # why assigned_port is now passed explicitly rather than mocking
+            # _find_available_port -- connect() no longer allocates its own.
             result_a, result_b = await asyncio.gather(
-                tunnel_manager_ssh.connect("ma"),
-                tunnel_manager_ssh.connect("mb"),
+                tunnel_manager_ssh.connect("ma", assigned_port=9001),
+                tunnel_manager_ssh.connect("mb", assigned_port=9002),
             )
 
         ok_a, client_a, transport_a, port_a, _, _, _ = result_a
@@ -272,7 +280,7 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
         shared_client = MagicMock()
         shared_transport = MagicMock()
 
-        async def fake_connect(machine_id):
+        async def fake_connect(machine_id, assigned_port):
             # Simulate a real handshake succeeding and registering itself in
             # the shared registry...
             tunnel_manager._TRANSPORT_CONNECTIONS["t1"] = {
@@ -282,7 +290,7 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
             # ...but by the time it's about to return, STOP_TUNNEL has
             # already raced in and released this machine's _STATE entry.
             tunnel_manager._STATE.pop(machine_id, None)
-            return (True, shared_client, shared_transport, 9001, 22, forward_server, "t1")
+            return (True, shared_client, shared_transport, assigned_port, 22, forward_server, "t1")
 
         tunnel_manager._STATE["ma"] = {
             "state": "connecting", "tunnel_up": 0, "proxy_ok": 0,
@@ -323,9 +331,9 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
         is ever spawned while one is in flight."""
         connect_calls = []
 
-        async def fake_connect(machine_id):
+        async def fake_connect(machine_id, assigned_port):
             connect_calls.append(machine_id)
-            return (True, MagicMock(), MagicMock(), 9001, 22, MagicMock(), "t1")
+            return (True, MagicMock(), MagicMock(), assigned_port, 22, MagicMock(), "t1")
 
         tunnel_manager._STATE["ma"] = {
             "state": "connecting", "tunnel_up": 0, "proxy_ok": 0,
@@ -377,10 +385,10 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
         resume_db_write = asyncio.Event()
         connect_calls = []
 
-        async def fake_connect(machine_id):
+        async def fake_connect(machine_id, assigned_port):
             connect_calls.append(machine_id)
             client, transport, forward_server = MagicMock(), MagicMock(), MagicMock()
-            return (True, client, transport, 9001, 22, forward_server, "t1")
+            return (True, client, transport, assigned_port, 22, forward_server, "t1")
 
         async def fake_ssh_tunnel_update(*args, **kwargs):
             # This is the real _run()'s await point between writing
@@ -430,10 +438,38 @@ class SharedTransportConnectionTests(unittest.IsolatedAsyncioTestCase):
             # One _tick pass (backoff sleep faked out, for test speed) must
             # recognize the stranded "connecting" state and recover it by
             # retrying -- proving the machine is not orphaned forever.
-            with patch("asyncio.sleep", new=AsyncMock()):
+            #
+            # _retry_after_backoff is spawned via asyncio.create_task() and
+            # not awaited by _tick() itself (so it doesn't block other
+            # machines' health checks), so its own real `await
+            # asyncio.sleep(backoff)` only executes once _tick() returns and
+            # control yields back to the loop -- by which point a narrower
+            # `with patch(...)` scoped only around the _tick() call has
+            # already exited and un-mocked asyncio.sleep, so the retry
+            # would sit on a real backoff delay the test never waits out.
+            # Captured and awaited directly instead, the same way
+            # test_orphaned_successful_connect_releases_its_own_claim above
+            # captures _run()'s task, so the patch stays active for the
+            # retry's own sleep (and _try_connect's own second _run() task,
+            # captured the same way) too.
+            real_create_task = asyncio.create_task
+            retry_tasks = []
+
+            def capturing_create_task(coro, *a, **kw):
+                t = real_create_task(coro, *a, **kw)
+                retry_tasks.append(t)
+                return t
+
+            with patch("asyncio.sleep", new=AsyncMock()), \
+                 patch("asyncio.create_task", side_effect=capturing_create_task):
                 await tunnel_manager._tick(store_fn=AsyncMock(), now_fn=lambda: "t2")
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
+                self.assertEqual(len(retry_tasks), 1)
+                await retry_tasks[0]  # _retry_after_backoff itself
+                # It calls _try_connect() synchronously, which spawns _run()
+                # as a second captured task -- await that too, or the
+                # second connect may not have completed yet below.
+                self.assertEqual(len(retry_tasks), 2)
+                await retry_tasks[1]
 
         # A second real connect happened (the recovery retry), and it
         # completed all the way to "connected" (its own DB write resolves

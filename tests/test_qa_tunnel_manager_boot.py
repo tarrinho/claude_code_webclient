@@ -270,9 +270,15 @@ class TunnelManagerBootQA(unittest.IsolatedAsyncioTestCase):
 
         forward_server = None
         try:
+            # Port allocation moved out of connect() and into
+            # tunnel_manager._try_connect() (a single global lock, to close
+            # a real TOCTOU race) -- connect() now just uses whatever
+            # assigned_port it's given rather than finding one itself, so a
+            # real free port is found here the way a real caller would.
+            assigned_port = await tunnel_manager_ssh._find_available_port()
             with patch("paramiko.SSHClient", return_value=fake_client):
                 ok, ssh_client, transport, local_port, ssh_port, forward_server, ret_transport_id = (
-                    await tunnel_manager_ssh.connect(machine_id)
+                    await tunnel_manager_ssh.connect(machine_id, assigned_port=assigned_port)
                 )
 
             self.assertTrue(ok, "connect() reported failure against a faked "

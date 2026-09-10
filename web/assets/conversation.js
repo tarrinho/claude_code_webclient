@@ -883,7 +883,11 @@ export function createConversationController(dependencies) {
     // Image paths in a message resolve against the chat's own workspace, so
     // the renderer needs to know which chat it is drawing before it draws.
     setImageContext(chat.id);
-    const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}`);
+    const targetId = chat.id;
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(targetId)}`);
+    // Bail if the user already navigated away — stale response must not
+    // overwrite the real current chat with the wrong one's messages.
+    if (state.currentChat?.id !== targetId) return false;
     if (!response.ok) throw new Error('Could not open conversation');
     const data = await response.json();
     state.currentChat = data.chat;
@@ -1206,7 +1210,11 @@ export function createConversationController(dependencies) {
     // Voice temp chats live only in the tooltip overlay — never render
     // their messages in the right-panel workspace.
     if (state.currentChat?.voice_mode) return;
-    const response = await apiFetch(`/api/chats/${encodeURIComponent(state.currentChat.id)}`);
+    const targetId = state.currentChat.id;
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(targetId)}`);
+    // Bail if the user switched chats while waiting — stale response must not
+    // overwrite the real current chat with the wrong one's messages.
+    if (state.currentChat?.id !== targetId) return;
     if (!response.ok) return;
     const data = await response.json();
     state.currentChat = data.chat;

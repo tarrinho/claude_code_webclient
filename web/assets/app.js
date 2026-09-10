@@ -7,7 +7,7 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
 import {createChatListController} from './chat-list.js?v=6782212';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=7148055';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=5535443';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=7745989';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
@@ -340,13 +340,13 @@ async function _loadMap(quiet = false) {
     const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=9197460');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=13165995');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
     byId('mapStatusEmpty').textContent = MAP_EMPTY_TEXT;
   } catch {
     if (quiet) return;
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=9197460');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=13165995');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -378,7 +378,7 @@ async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
   _stopMapPolling();
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=9197460');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=13165995');
   closeSupervisorMap();
 }
 

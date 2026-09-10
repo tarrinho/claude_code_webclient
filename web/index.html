@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=9845523">
+<link rel="stylesheet" href="/assets/styles.css?v=10035249">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -518,7 +518,7 @@
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=9197460"></script>
+<script type="module" src="/assets/supervisor-map.js?v=13165995"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" role="dialog" aria-modal="true" aria-labelledby="supervisorMapTitle" hidden>
@@ -535,6 +535,30 @@
   <div class="map-body" id="mapBody">
     <svg id="supervisorMapSvg"></svg>
     <div id="mapStatusEmpty" class="map-empty" hidden>No agents running.</div>
+    <div id="mapLegend" class="map-legend" aria-label="Legend">
+      <button type="button" class="map-legend-toggle" id="mapLegendToggle"
+              aria-expanded="true" aria-controls="mapLegendBody"
+              title="Hide legend">Legend</button>
+      <div id="mapLegendBody" class="map-legend-body">
+        <div class="map-legend-group">
+          <span class="map-legend-heading">Provider</span>
+          <span class="map-legend-item"><i class="map-swatch" data-family="anthropic"></i>Anthropic</span>
+          <span class="map-legend-item"><i class="map-swatch" data-family="google_litellm"></i>Gateway</span>
+          <span class="map-legend-item"><i class="map-swatch" data-family="local"></i>Local / free</span>
+        </div>
+        <div class="map-legend-group">
+          <span class="map-legend-heading">State</span>
+          <span class="map-legend-item"><i class="map-ring-key map-ring-key-running"></i>Running</span>
+          <span class="map-legend-item"><i class="map-ring-key map-ring-key-blocked"></i>Blocked</span>
+          <span class="map-legend-item"><i class="map-ring-key map-ring-key-waiting"></i>Waiting for input</span>
+        </div>
+        <div class="map-legend-group">
+          <span class="map-legend-heading">Badges</span>
+          <span class="map-legend-item"><b>CLI</b>&nbsp;/&nbsp;<b>API</b> transport</span>
+          <span class="map-legend-item">&#x1F5E8; text &nbsp; &#x1F5E8;&#x1F3A4; + voice</span>
+        </div>
+      </div>
+    </div>
     <div id="mapTooltip" class="map-tooltip" hidden></div>
     <div id="mapDetailDrawer" class="map-detail" hidden>
       <div class="map-detail-header">

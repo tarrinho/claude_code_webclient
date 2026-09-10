@@ -15,14 +15,27 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 
-// Terminal dwarfs the website by three orders of magnitude on a real machine,
-// so these are never stacked into one series.
-const SOURCES = [
-  {key: 'through_claude_code', label: 'Thru Claude Code', slot: 1},
-  {key: 'direct', label: 'API Connection', slot: 2},
-  {key: 'ssh-proxy', label: 'SSH Proxy', slot: 3},
-  {key: 'proxy', label: 'Proxy', slot: 4},
+// Which side of the bill a turn landed on. This replaced a list keyed on
+// `usage_events.provider`, which four code paths write with four different
+// meanings -- 99.9% of the rows say "cli", a value that list did not name, so
+// almost every turn rendered in a series labelled after an implementation
+// detail of the transcript importer.
+//
+// Terminal work dwarfs the website by three orders of magnitude on a real
+// machine, so these are never stacked into one series.
+const ROUTES = [
+  {key: 'subscription', label: 'Thru Claude Code', slot: 1},
+  {key: 'gateway', label: 'Thru API', slot: 2},
+  // Empty against every row in the table today. It exists for the model id
+  // that does not exist yet: a new backend must show up as unattributed
+  // rather than quietly inflating one of the two lines above.
+  {key: 'unclassified', label: 'Unclassified', slot: 4},
 ];
+
+// The three measures, defined here exactly as the SQL defines them, because a
+// chart legend that means something different from the query behind it is the
+// failure this whole rework is fixing.
+const CHARTED = row => (row.billable_input || 0) + (row.output_tokens || 0);
 
 function svg(tag, attrs = {}) {
   const node = document.createElementNS(NS, tag);
@@ -161,6 +174,10 @@ export function lineChart(container, {buckets, series}, {
   // A total is meaningless for a gauge: summing CPU percentages across
   // buckets produces a number with no unit. Gauge callers pass their own.
   summarize = null,
+  // Hover text for a legend entry. The by-model chart merges several raw ids
+  // into one series, and a merge nobody can see is a merge nobody can check --
+  // this is where the ids that folded together are named.
+  titleFor = null,
 }) {
   const W = 720, H = 260;
   const pad = {top: 16, right: 16, bottom: 34, left: 52};
@@ -311,6 +328,8 @@ export function lineChart(container, {buckets, series}, {
       item.appendChild(swatch);
       const note = summarize ? summarize(entry) : abbrev(entry.total);
       item.appendChild(el('span', null, `${labelFor(entry.key)} · ${note}`));
+      const hover = titleFor ? titleFor(entry) : '';
+      if (hover) item.title = hover;
       legend.appendChild(item);
     });
     figure.appendChild(legend);
@@ -362,44 +381,139 @@ export function renderStats(container, payload) {
     return;
   }
 
-  const known = new Map(SOURCES.map(s => [s.key, s]));
-  const sourceLabel = key => known.get(key)?.label || key;
-  const sourceColor = key => slotColor(known.get(key)?.slot ?? 8);
+  const known = new Map(ROUTES.map(s => [s.key, s]));
+  const routeLabel = key => known.get(key)?.label || key;
+  const routeColor = key => slotColor(known.get(key)?.slot ?? 8);
+
+  // How many of a route's turns were classified from their model id rather
+  // than recorded by the site that ran them. Named in the legend, because a
+  // chart that cannot say how much of itself is inference is the kind of
+  // confident wrong number this page already produced once.
+  const inferred = new Map();
+  rows.forEach(row => {
+    const at = inferred.get(row.route) || {turns: 0, guessed: 0};
+    at.turns += row.requests || 0;
+    at.guessed += row.inferred_requests || 0;
+    inferred.set(row.route, at);
+  });
+  const inferredNote = key => {
+    const at = inferred.get(key);
+    if (!at || !at.guessed) return '';
+    return at.guessed >= at.turns
+      ? 'Every turn in this series was classified from its model id, not '
+        + 'recorded by the backend that ran it.'
+      : `${exact(at.guessed)} of ${exact(at.turns)} turns here were classified `
+        + 'from their model id rather than recorded.';
+  };
 
   // The spine is the full bucket axis for the window. An hour with no usage
   // genuinely is zero tokens, so these fill with zeros -- unlike the Server
   // page, where a missing bucket means nothing was measured and stays null.
   const spine = payload.spine || null;
-  const tokens = toSeries(rows, 'provider',
-    r => (r.input_tokens || 0) + (r.output_tokens || 0), spine);
-  lineChart(container, tokens, {
-    title: 'Tokens over time, by source',
-    colorFor: sourceColor, labelFor: sourceLabel,
-  });
-  seriesTable(container, tokens,
-    {labelFor: sourceLabel, caption: 'Tokens by source'});
 
-  const requests = toSeries(rows, 'provider', r => r.requests || 0, spine);
+  const tokens = toSeries(rows, 'route', CHARTED, spine);
+  lineChart(container, tokens, {
+    title: 'Tokens over time, by billing route',
+    colorFor: routeColor, labelFor: routeLabel, titleFor: e => inferredNote(e.key),
+  });
+  // The three measures live in the table rather than the chart: two routes
+  // times three measures is six lines on one pair of axes, which is a picture
+  // nobody reads, and six rows in a table anyone can.
+  const measured = {buckets: tokens.buckets, series: []};
+  const MEASURES = [
+    ['billable_input', 'billable in'],
+    ['cache_read', 'cache read'],
+    ['output_tokens', 'out'],
+  ];
+  ROUTES.forEach(route => {
+    MEASURES.forEach(([field, suffix]) => {
+      const at = new Map();
+      rows.filter(r => r.route === route.key).forEach(r => {
+        at.set(r.bucket, (at.get(r.bucket) || 0) + (r[field] || 0));
+      });
+      if (!at.size) return;
+      measured.series.push({
+        key: `${route.key}·${suffix}`,
+        values: tokens.buckets.map(b => at.get(b) || 0),
+        total: [...at.values()].reduce((a, b) => a + b, 0),
+      });
+    });
+  });
+  seriesTable(container, measured, {
+    labelFor: key => {
+      const [routeKey, suffix] = key.split('·');
+      return `${routeLabel(routeKey)} · ${suffix}`;
+    },
+    caption: 'Tokens by billing route and kind',
+  });
+
+  const requests = toSeries(rows, 'route', r => r.requests || 0, spine);
   lineChart(container, requests, {
-    title: 'Requests over time, by source',
-    colorFor: sourceColor, labelFor: sourceLabel,
+    title: 'Turns over time, by billing route',
+    colorFor: routeColor, labelFor: routeLabel, titleFor: e => inferredNote(e.key),
   });
   seriesTable(container, requests,
-    {labelFor: sourceLabel, caption: 'Requests by source'});
+    {labelFor: routeLabel, caption: 'Turns by billing route'});
 
   const modelRows = payload.models || [];
   if (modelRows.length) {
-    const models = toSeries(modelRows, 'model',
-      r => (r.input_tokens || 0) + (r.output_tokens || 0), spine);
+    const models = toSeries(modelRows, 'model', CHARTED, spine);
     // Colour follows the entity by rank within this chart only; the series are
     // already sorted by total, so a range change cannot repaint a survivor
     // differently from how it was drawn a moment ago.
     const order = new Map(models.series.map((s, i) => [s.key, i + 1]));
     const modelColor = key => slotColor(Math.min(order.get(key) || 8, 8));
+    // Which raw ids folded into each normalised name. `vllm/X` and `nvidia/X`
+    // are the same weights reached two ways, and before they were merged this
+    // chart drew one model as two lines three orders of magnitude apart.
+    const mergedIds = new Map();
+    modelRows.forEach(row => {
+      const at = mergedIds.get(row.model) || new Set();
+      (row.ids || []).forEach(id => at.add(id));
+      mergedIds.set(row.model, at);
+    });
     lineChart(container, models, {
       title: 'Tokens over time, by model',
       colorFor: modelColor, labelFor: k => k,
+      titleFor: entry => {
+        const ids = [...(mergedIds.get(entry.key) || [])];
+        return ids.length > 1 ? `Merged from: ${ids.join(', ')}` : (ids[0] || '');
+      },
     });
     seriesTable(container, models, {labelFor: k => k, caption: 'Tokens by model'});
+  }
+
+  // Per agent: which conversation or terminal session spent it. The chart the
+  // page most needed and did not have -- a surprising total is a question
+  // about who, and neither the route nor the model can answer it.
+  const agentRows = payload.agents || [];
+  if (agentRows.length) {
+    const names = new Map(agentRows.map(r => [r.agent_id, r.name || r.agent_id]));
+    const agents = toSeries(agentRows, 'agent_id', CHARTED, spine);
+    const order = new Map(agents.series.map((s, i) => [s.key, i + 1]));
+    lineChart(container, agents, {
+      title: 'Tokens over time, by agent',
+      colorFor: key => slotColor(Math.min(order.get(key) || 8, 8)),
+      labelFor: key => names.get(key) || key,
+      titleFor: entry => (entry.key === 'Other' ? '' : entry.key),
+    });
+    seriesTable(container, agents, {
+      labelFor: key => names.get(key) || key, caption: 'Tokens by agent',
+    });
+  }
+
+  // What every figure above leaves out, stated rather than hidden. These are
+  // turns whose model reported no cache breakdown, so each one counts the
+  // whole conversation again; including them made the old charts unreadable
+  // against any gateway's own accounting.
+  const unsplit = payload.unsplit_tokens || 0;
+  if (unsplit) {
+    const note = el('p', 'stat-empty',
+      `Excludes ${abbrev(unsplit)} tokens of re-counted context: turns whose `
+      + 'model reports no cache breakdown count the whole conversation again '
+      + 'on every turn, so charting them measures the conversation’s '
+      + 'length rather than what was spent.');
+    note.title = `${exact(unsplit)} tokens excluded`;
+    container.appendChild(note);
   }
 }

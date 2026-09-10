@@ -331,7 +331,12 @@ export function renderSupervisorMap(data) {
   node.each(function(d) {
     const g = d3.select(this);
     const r = nodeRadius(d);
-    const fillColor = statusColor(d.data.status);
+    // Provider family, not status. Nodes with no family -- orchestrators, the
+    // centre, overflow markers -- are containers rather than agents and keep
+    // the status colour they always had, because there is no provider to show
+    // and a neutral grey would make a failing group look inert.
+    const family = d.data.provider_family;
+    const fillColor = family ? providerColor(family) : statusColor(d.data.status);
     const outline = _cssVar("--map-outline", "#fff");
     const neutral = _cssVar("--map-machine", "#9ca3af");
 
@@ -354,17 +359,28 @@ export function renderSupervisorMap(data) {
         .attr("stroke", statusColor("running"))
         .attr("stroke-width", 2);
     } else if (d.data.type === "transport") {
-      // Transport: medium ring
+      // Hub: a ring whose colour is the host's saturation, cool through warm.
+      // Filled at low opacity as well as stroked -- a stroke alone is a thin
+      // line to read a temperature from, and the spec asks for a glow.
+      const heat = loadColor(
+        d.data.load_index === undefined ? null : d.data.load_index);
+      g.append("circle")
+        .attr("r", r + 4)
+        .attr("class", "map-hub-glow")
+        .attr("fill", heat)
+        .attr("opacity", d.data.load_index === undefined ? 0 : 0.22);
       g.append("circle")
         .attr("r", r)
         .attr("fill", "none")
-        .attr("stroke", fillColor)
-        .attr("stroke-width", 2);
+        .attr("stroke", heat)
+        .attr("stroke-width", 2.5);
     } else if (d.data.type === "machine") {
-      // Machine: medium filled neutral
+      // Backend: filled with its provider family. It was a neutral grey, so
+      // the map could not tell an Anthropic backend from a free local one --
+      // which is the single thing the operator most wants to see at a glance.
       g.append("circle")
         .attr("r", r)
-        .attr("fill", neutral)
+        .attr("fill", fillColor)
         .attr("stroke", outline)
         .attr("stroke-width", 1);
     } else if (d.data.type === "more") {
@@ -394,6 +410,59 @@ export function renderSupervisorMap(data) {
         .attr("fill", fillColor)
         .attr("stroke", d._children || d.children ? outline : "none")
         .attr("stroke-width", 1);
+    }
+
+    // ── Status ring, layered over the fill ──────────────────────────
+    // Appended after the shape so it draws on top, and only for agents: a
+    // hub's ring already carries its load, and giving it a second ring would
+    // put two unrelated meanings on the same mark.
+    const ring = stateRing(d.data.agent_state);
+    if (ring && d.data.type !== "transport" && d.depth > 0) {
+      const circle = g.append("circle")
+        .attr("r", r + 3.5)
+        .attr("fill", "none")
+        .attr("stroke", ring.stroke)
+        .attr("stroke-width", 2)
+        .attr("class", ring.pulse ? "map-ring map-ring-pulse" : "map-ring");
+      if (ring.dash) circle.attr("stroke-dasharray", ring.dash);
+      // A shape as well as a colour, for the state the operator has to act
+      // on. Colour alone fails anyone who cannot separate amber from green,
+      // and this is the one state that asks something of them.
+      if (d.data.agent_state === "waiting_for_input") {
+        g.append("text")
+          .attr("class", "map-wait-badge")
+          .attr("x", 0).attr("y", -(r + 7))
+          .attr("text-anchor", "middle")
+          .attr("font-size", "9px")
+          .attr("fill", ring.stroke)
+          .text("?");
+      }
+    }
+
+    // ── The two badges, kept separate ───────────────────────────────
+    // The spec is explicit that the transport mechanism and the model must
+    // not be merged into one label. So they differ in both shape and
+    // position: the mechanism is a two-or-three letter pill sitting above
+    // the node, the model is ordinary text to its side (drawn with the label
+    // below). Same colour would have been enough to read them as one string.
+    if (d.data.transport_mechanism) {
+      const isCli = d.data.transport_mechanism === "cli";
+      g.append("text")
+        .attr("class", "map-mech-badge")
+        .attr("x", r + 3).attr("y", -(r + 1))
+        .attr("fill", _cssVar("--map-label", "#1a1a2e"))
+        .text(isCli ? "CLI" : "API");
+    }
+    // Communication capability: a glyph, not a word, and placed on the
+    // opposite side from the mechanism badge so three marks around one node
+    // stay tellable apart.
+    if (d.data.comms) {
+      g.append("text")
+        .attr("class", "map-comms-icon")
+        .attr("x", -(r + 9)).attr("y", -(r + 1))
+        .attr("fill", _cssVar("--map-label", "#1a1a2e"))
+        // Speech balloon for text, balloon+wave when voice is also available.
+        .text(d.data.comms === "both" ? "\u{1F5E8}\u{1F3A4}" : "\u{1F5E8}");
     }
   });
 
@@ -523,6 +592,90 @@ export function renderSupervisorMap(data) {
 function _hasDetail(type) {
   return type === "chat" || type === "machine" || type === "task"
     || type === "session";
+}
+
+// ── Dashboard palette and encodings ─────────────────────────────────────
+// The spec inverts what this file used to do. Fill was `statusColor(status)`,
+// so a node's colour said what it was doing and nothing said who it talked
+// to. The spec wants the opposite: fill carries the provider family, and
+// status is layered on top as an outline and an animation, "not by changing
+// the fill color".
+//
+// That ordering is deliberate on the operator's part. Provider family is a
+// property of the agent that rarely changes, so it is the stable thing to
+// learn a colour for; status changes by the second and reads better as
+// motion. Encoding the volatile thing as fill meant the map's colours churned
+// while the fleet's shape stayed the same.
+const PROVIDER_VAR = {
+  anthropic: "--map-provider-anthropic",
+  google_litellm: "--map-provider-gateway",
+  local: "--map-provider-local",
+};
+const PROVIDER_FALLBACK = {
+  anthropic: "#d97757",   // Anthropic's own warm clay
+  google_litellm: "#4285f4",
+  local: "#22c55e",       // free/self-hosted: green, because it costs nothing
+};
+const PROVIDER_LABEL = {
+  anthropic: "Anthropic",
+  google_litellm: "Gateway (LiteLLM)",
+  local: "Local / free",
+};
+
+function providerColor(family) {
+  const key = PROVIDER_VAR[family] ? family : "local";
+  return _cssVar(PROVIDER_VAR[key], PROVIDER_FALLBACK[key]);
+}
+
+// The three states the spec asks to be visible without reading anything.
+const AGENT_STATE_LABEL = {
+  running: "Running",
+  blocked: "Blocked",
+  waiting_for_input: "Waiting for input",
+  idle: "Idle",
+};
+
+/** Hub fill for a saturation index, cool blue through to warm red.
+ *
+ *  Interpolated in two legs rather than one so the middle of the range is a
+ *  readable amber instead of the muddy grey a straight blue-to-red blend
+ *  passes through. `null` means the host has never reported: that renders as
+ *  a neutral outline, because a healthy-looking blue glow for a machine that
+ *  is not talking to us is worse than no glow at all.
+ */
+function loadColor(index) {
+  if (index === null || index === undefined || Number.isNaN(index)) {
+    return _cssVar("--map-machine", "#9ca3af");
+  }
+  const t = Math.max(0, Math.min(1, index));
+  const legs = t < 0.5
+    ? [[59, 130, 246], [245, 158, 11], t / 0.5]          // blue -> amber
+    : [[245, 158, 11], [239, 68, 68], (t - 0.5) / 0.5];  // amber -> red
+  const [from, to, k] = legs;
+  const mix = from.map((c, i) => Math.round(c + (to[i] - c) * k));
+  return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
+}
+
+/** The status ring: an outline layered over the provider fill.
+ *
+ *  Returns null for idle -- an idle agent gets no ring at all, so the ones
+ *  that do carry a ring are the ones worth looking at. Adding a "calm" ring
+ *  to everything would spend the operator's attention evenly, which is the
+ *  opposite of what a dashboard is for.
+ */
+function stateRing(state) {
+  if (state === "running") {
+    return {stroke: statusColor("running"), dash: null, pulse: true};
+  }
+  if (state === "blocked") {
+    // Solid, and explicitly not animated: the spec says the animation stops,
+    // because a pulsing red would read as "working on it".
+    return {stroke: statusColor("error"), dash: null, pulse: false};
+  }
+  if (state === "waiting_for_input") {
+    return {stroke: statusColor("waiting"), dash: "3 2", pulse: false};
+  }
+  return null;
 }
 
 function nodeRadius(d) {
@@ -763,6 +916,19 @@ export function zoomToFit() {
 }
 
 // Close button
+// Legend collapse. Collapsible and not dismissable: the spec wants it
+// "always visible (or easily toggled back on)", and a close button with no
+// way back is how a legend disappears permanently on first annoyance.
+document.getElementById("mapLegendToggle")?.addEventListener("click", () => {
+  const legend = document.getElementById("mapLegend");
+  const toggle = document.getElementById("mapLegendToggle");
+  if (!legend || !toggle) return;
+  const collapsed = legend.getAttribute("data-collapsed") === "true";
+  legend.setAttribute("data-collapsed", collapsed ? "false" : "true");
+  toggle.setAttribute("aria-expanded", collapsed ? "true" : "false");
+  toggle.title = collapsed ? "Hide legend" : "Show legend";
+});
+
 document.getElementById("supervisorMapClose")
   ?.addEventListener("click", () => {
     closeSupervisorMap();

@@ -21,6 +21,16 @@
   --map-idle:#3b82f6; --map-error:var(--bad); --map-done:var(--muted);
   --map-transport:#9ca3af; --map-machine:#9ca3af;
   --map-outline:var(--panel2); --map-label:var(--fg);
+  /* Provider families. These carry an agent's *fill* on the supervisor
+     dashboard, where status is an outline instead -- so these three have to
+     be distinguishable from each other AND from the status ring colours
+     layered on top of them, which is why none of them reuses a --map-status
+     hue. Anthropic takes its own clay; the gateway takes Google's blue
+     because that is the family name the operator uses for it; local takes
+     green, for turns that cost nothing. */
+  --map-provider-anthropic:#d97757;
+  --map-provider-gateway:#4285f4;
+  --map-provider-local:#22c55e;
 }
 html[data-theme="light"] {
   --bg:#f6f8fa; --panel:#fff; --panel2:#eaeef2; --line:#d0d7de;
@@ -39,6 +49,11 @@ html[data-theme="light"] {
      to a light one, which is the whole reason the white literal was wrong. */
   --map-running:#0f8c63; --map-busy:#b26a00; --map-waiting:#c2571a;
   --map-idle:#1f66c4; --map-transport:#6b7280; --map-machine:#6b7280;
+  /* Darker provider steps for a white panel, same reasoning as the map
+     statuses above: the dark-theme values are chosen against #1c2230. */
+  --map-provider-anthropic:#b8532f;
+  --map-provider-gateway:#1a5fd0;
+  --map-provider-local:#0f8c47;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -929,6 +944,64 @@ button{touch-action:manipulation}
   flex: 1; position: relative; overflow: hidden; padding: 20px;
 }
 #supervisorMapPanel svg { display: block; width: 100%; height: 100%; }
+/* Legend. Always visible by default, because the spec asks for that -- a map
+   with three colour encodings and three ring styles is not self-describing --
+   and collapsible rather than dismissable, so it can be brought back. */
+#supervisorMapPanel .map-legend {
+  position: absolute; left: 10px; bottom: 10px; z-index: 3;
+  background: var(--panel, #fff); border: 1px solid var(--line, #ddd);
+  border-radius: 6px; padding: 6px 8px; font-size: 10.5px;
+  max-width: calc(100% - 220px); box-shadow: 0 2px 8px rgba(0,0,0,.12);
+}
+#supervisorMapPanel .map-legend-toggle {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  font-size: 10px; font-weight: 700; letter-spacing: .4px;
+  text-transform: uppercase; padding: 0 0 4px;
+}
+#supervisorMapPanel .map-legend-body { display: flex; gap: 14px; flex-wrap: wrap; }
+#supervisorMapPanel .map-legend[data-collapsed="true"] .map-legend-body { display: none; }
+#supervisorMapPanel .map-legend-group { display: flex; flex-direction: column; gap: 2px; }
+#supervisorMapPanel .map-legend-heading { color: var(--muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: .4px; }
+#supervisorMapPanel .map-legend-item { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+#supervisorMapPanel .map-swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+#supervisorMapPanel .map-swatch[data-family="anthropic"] { background: var(--map-provider-anthropic); }
+#supervisorMapPanel .map-swatch[data-family="google_litellm"] { background: var(--map-provider-gateway); }
+#supervisorMapPanel .map-swatch[data-family="local"] { background: var(--map-provider-local); }
+/* Ring keys are hollow, matching the map: the legend has to show that state
+   is an outline and provider is a fill, or it teaches the wrong encoding. */
+#supervisorMapPanel .map-ring-key { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: none; border: 2px solid var(--muted); }
+#supervisorMapPanel .map-ring-key-running { border-color: var(--map-running); }
+#supervisorMapPanel .map-ring-key-blocked { border-color: var(--map-error, var(--bad)); }
+#supervisorMapPanel .map-ring-key-waiting { border-color: var(--map-waiting); border-style: dashed; }
+
+/* ── Supervisor dashboard node decoration ──────────────────────────────
+   The status ring pulses for a running agent and holds still for every other
+   state. Stated as CSS rather than a d3 transition on purpose: d3's
+   `.transition()` animates from JavaScript and the prefers-reduced-motion
+   media query cannot reach it, which is the trap _motionMs() exists to work
+   around for the zoom buttons. A CSS animation is switched off by the query
+   below for free.
+   
+   Animating opacity and stroke-width rather than r: r on an SVG circle is not
+   a compositable property, so a radius animation on every running node
+   repaints the whole subtree each frame -- visible on a map with a dozen
+   agents on a host that is already short of CPU. */
+.map-ring-pulse { animation: map-ring-pulse 1.6s ease-in-out infinite; }
+@keyframes map-ring-pulse {
+  0%, 100% { opacity: 1; stroke-width: 2; }
+  50%      { opacity: .45; stroke-width: 3; }
+}
+.map-wait-badge { font-weight: 700; pointer-events: none; }
+/* Two badges per agent, and they must stay visually distinct: the spec
+   forbids merging the transport mechanism and the model into one label. The
+   mechanism is a short pill above the node, the model is text beside it --
+   different shape and different position, so they cannot be read as one. */
+.map-mech-badge { font-size: 8px; font-weight: 700; letter-spacing: .3px; pointer-events: none; }
+.map-comms-icon { font-size: 9px; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .map-ring-pulse { animation: none; }
+}
+
 #supervisorMapPanel .map-tooltip {
   position: fixed; background: var(--fg, #1a1a2e); color: var(--bg, #fff);
   padding: 4px 8px; border-radius: 4px; font-size: 11px;

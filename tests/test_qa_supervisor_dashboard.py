@@ -171,3 +171,237 @@ class LoadIndexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Rendering: the encodings the spec inverts ───────────────────────────
+import json  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+try:  # pragma: no cover - reported as a skip
+    import quickjs  # noqa: E402
+except ImportError:
+    quickjs = None
+
+ROOT = Path(__file__).resolve().parents[1]
+MAP_JS = ROOT / "web" / "assets" / "supervisor-map.js"
+STUB_JS = Path(__file__).resolve().parent / "js" / "d3_dom_stub.js"
+
+
+def _module_source() -> str:
+    src = MAP_JS.read_text(encoding="utf-8")
+    src = re.sub(r"^\s*import\s.*?;\s*$", "", src, flags=re.MULTILINE | re.DOTALL)
+    src = re.sub(
+        r"^\s*export\s+(?=(?:async\s+)?(?:function|class|const|let|var)\b)",
+        "", src, flags=re.MULTILINE)
+    src = re.sub(r"^\s*export\s*\{.*?\};\s*$", "", src, flags=re.MULTILINE | re.DOTALL)
+    src = re.sub(r"^\s*export\s+default\s+", "", src, flags=re.MULTILINE)
+    return re.sub(r"^(let|const)\s", "var ", src, flags=re.MULTILINE)
+
+
+def _eval(probe: str) -> dict:
+    script = "\n".join([STUB_JS.read_text(encoding="utf-8"), _module_source(), probe])
+    return json.loads(quickjs.Context().eval(script))
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class ProviderIsTheFillTests(unittest.TestCase):
+    """The inversion. Fill used to be statusColor(status), so a node's colour
+    said what it was doing and nothing said who it talked to. The spec wants
+    provider as the fill and status "not by changing the fill color" -- the
+    stable property gets the colour, the volatile one gets motion."""
+
+    def test_each_family_gets_its_own_fill(self):
+        out = _eval("""
+          JSON.stringify({
+            a: providerColor('anthropic'),
+            g: providerColor('google_litellm'),
+            l: providerColor('local')
+          });
+        """)
+        self.assertEqual(len({out["a"], out["g"], out["l"]}), 3,
+                         f"two families share a colour: {out}")
+
+    def test_an_unknown_family_does_not_borrow_anthropics_colour(self):
+        """Defaulting to anthropic would paint an unidentified backend as the
+        paid one, or worse, a paid one as free."""
+        out = _eval("JSON.stringify({u: providerColor('nonsense'), l: providerColor('local')});")
+        self.assertEqual(out["u"], out["l"])
+
+    def test_no_provider_colour_collides_with_a_status_ring_colour(self):
+        """They are layered on the same mark, so a fill that matches the ring
+        drawn over it makes the ring invisible."""
+        out = _eval("""
+          JSON.stringify({
+            fills: ['anthropic','google_litellm','local'].map(providerColor),
+            rings: ['running','error','waiting'].map(statusColor)
+          });
+        """)
+        self.assertFalse(
+            set(out["fills"]) & set(out["rings"]),
+            f"a provider fill equals a status ring colour: {out}")
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class StateRingTests(unittest.TestCase):
+    def test_running_pulses(self):
+        out = _eval("JSON.stringify(stateRing('running'));")
+        self.assertTrue(out["pulse"])
+        self.assertIsNone(out["dash"])
+
+    def test_blocked_is_solid_and_does_not_animate(self):
+        """The spec stops the animation for blocked on purpose: a pulsing red
+        reads as "working on it", which is the opposite of the truth."""
+        out = _eval("JSON.stringify(stateRing('blocked'));")
+        self.assertFalse(out["pulse"])
+        self.assertIsNone(out["dash"])
+
+    def test_waiting_is_dashed_and_still(self):
+        out = _eval("JSON.stringify(stateRing('waiting_for_input'));")
+        self.assertFalse(out["pulse"])
+        self.assertTrue(out["dash"])
+
+    def test_idle_gets_no_ring_at_all(self):
+        """So the nodes that carry a ring are the ones worth looking at.
+        Ringing everything spends the operator's attention evenly, which is
+        what a dashboard exists to avoid."""
+        out = _eval("JSON.stringify({ring: stateRing('idle')});")
+        self.assertIsNone(out["ring"])
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class HubLoadColourTests(unittest.TestCase):
+    def test_cool_when_healthy_and_warm_when_saturated(self):
+        out = _eval("JSON.stringify({low: loadColor(0), high: loadColor(1)});")
+        low = [int(n) for n in re.findall(r"\d+", out["low"])]
+        high = [int(n) for n in re.findall(r"\d+", out["high"])]
+        self.assertGreater(low[2], low[0], f"0% load should be blue-dominant: {out['low']}")
+        self.assertGreater(high[0], high[2], f"100% load should be red-dominant: {out['high']}")
+
+    def test_an_unsampled_host_is_neutral_not_cool(self):
+        """A blue glow would say "healthy" about a machine that is not
+        reporting at all."""
+        out = _eval("JSON.stringify({none: loadColor(null), cool: loadColor(0)});")
+        self.assertNotEqual(out["none"], out["cool"])
+
+    def test_the_midpoint_is_not_grey(self):
+        """Interpolated in two legs through amber; a single blue-to-red blend
+        passes through a muddy grey exactly where most hosts sit."""
+        out = _eval("JSON.stringify({mid: loadColor(0.5)});")
+        r, g, b = [int(n) for n in re.findall(r"\d+", out["mid"])]
+        self.assertGreater(r + g, b * 2, f"midpoint reads grey/blue: {out['mid']}")
+
+
+class BadgesStaySeparateTests(unittest.TestCase):
+    """The spec's explicit "do not add": the transport-mechanism badge and the
+    model/provider badge must not be merged into a single label."""
+
+    def setUp(self):
+        self.js = MAP_JS.read_text(encoding="utf-8")
+
+    def test_the_mechanism_badge_is_its_own_element(self):
+        self.assertIn("map-mech-badge", self.js)
+
+    def test_the_mechanism_text_is_not_concatenated_with_the_model(self):
+        """A template joining the two is the merge the spec forbids."""
+        self.assertNotRegex(
+            self.js,
+            r"transport_mechanism\s*\+.*model_label|model_label\s*\+.*transport_mechanism",
+            "the two badges are being built as one string")
+
+    def test_they_are_placed_on_different_sides_of_the_node(self):
+        """Different shape *and* position, so three marks around one node stay
+        tellable apart."""
+        mech = re.search(r'map-mech-badge"\)\s*\.attr\("x", ([^)]+)\)', self.js)
+        comms = re.search(r'map-comms-icon"\)\s*\.attr\("x", ([^)]+)\)', self.js)
+        self.assertIsNotNone(mech)
+        self.assertIsNotNone(comms)
+        self.assertIn("-", comms.group(1),
+                      "the comms icon should sit on the opposite side")
+
+
+class LegendTests(unittest.TestCase):
+    """Always visible, and collapsible rather than dismissable."""
+
+    def setUp(self):
+        self.html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        self.css = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")
+
+    def test_it_exists_and_is_not_hidden_by_default(self):
+        self.assertIn('id="mapLegend"', self.html)
+        legend = re.search(r'<div id="mapLegend"[^>]*>', self.html).group(0)
+        self.assertNotIn("hidden", legend,
+                         "the spec asks for it to be visible by default")
+
+    def test_it_covers_provider_colours_and_states(self):
+        for family in ("anthropic", "google_litellm", "local"):
+            self.assertIn(f'data-family="{family}"', self.html)
+        for state in ("running", "blocked", "waiting"):
+            self.assertIn(f"map-ring-key-{state}", self.html)
+
+    def test_the_state_keys_are_hollow_so_they_teach_the_right_encoding(self):
+        """State is an outline on the map. A filled legend swatch for a state
+        would teach that status is a fill, which is what this change undid."""
+        self.assertRegex(self.css, r"\.map-ring-key\s*\{[^}]*background:\s*none")
+
+    def test_provider_keys_are_filled(self):
+        self.assertRegex(
+            self.css, r'\.map-swatch\[data-family="anthropic"\]\s*\{[^}]*background:')
+
+
+class PulseRespectsReducedMotionTests(unittest.TestCase):
+    def setUp(self):
+        self.css = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")
+
+    def test_the_ring_pulse_is_css_not_a_d3_transition(self):
+        """d3's .transition() animates from JavaScript and the
+        prefers-reduced-motion query cannot reach it -- the trap _motionMs()
+        exists to work around for the zoom buttons. A CSS animation is
+        switched off by the query for free."""
+        self.assertIn("@keyframes map-ring-pulse", self.css)
+
+    def test_reduced_motion_stops_it(self):
+        block = re.search(
+            r"@media \(prefers-reduced-motion: reduce\) \{(.*?)\}\s*\n",
+            self.css, re.DOTALL)
+        self.assertIsNotNone(block)
+        self.assertIn("map-ring-pulse", block.group(1))
+
+    def test_it_does_not_animate_the_radius(self):
+        """r on an SVG circle is not compositable, so animating it repaints
+        the subtree every frame -- on a map with a dozen running agents, on a
+        host already short of CPU."""
+        keyframes = re.search(r"@keyframes map-ring-pulse \{(.*?)\n\}", self.css, re.DOTALL)
+        self.assertIsNotNone(keyframes)
+        self.assertNotRegex(keyframes.group(1), r"\br\s*:")
+
+
+class FillIsProviderNotStatusTests(unittest.TestCase):
+    """The inversion, asserted on the renderer itself.
+
+    The palette tests above prove the colours exist and do not collide; they
+    pass just as happily if the renderer never calls providerColor. Reverting
+    `fillColor` to statusColor broke none of them, so this closes that.
+    """
+
+    def setUp(self):
+        self.js = MAP_JS.read_text(encoding="utf-8")
+
+    def test_the_node_fill_comes_from_the_provider_family(self):
+        self.assertRegex(
+            self.js, r"fillColor\s*=\s*family\s*\?\s*providerColor\(family\)",
+            "node fill is not keyed on provider_family; the spec asks for "
+            "status to be an outline and not the fill",
+        )
+
+    def test_containers_still_fall_back_to_status(self):
+        """Orchestrators, the centre and overflow markers are not agents and
+        have no family. A neutral grey would make a failing group look inert."""
+        self.assertRegex(self.js, r"providerColor\(family\)\s*:\s*statusColor\(")
+
+    def test_the_status_ring_is_drawn_after_the_shape(self):
+        """It has to sit above the fill it annotates. SVG has no z-index, so
+        document order is the only thing that decides."""
+        ring = self.js.index("stateRing(d.data.agent_state)")
+        fill = self.js.index("const fillColor = family")
+        self.assertGreater(ring, fill)

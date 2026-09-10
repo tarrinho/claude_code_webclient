@@ -26,13 +26,26 @@ def client(tmp_path, monkeypatch):
     otherwise auth.bootstrap_admin() silently no-ops (no admin user, no
     password to log in with) if the environment happens not to define it.
     """
+    # Narrow, and before anything else: the only thing that makes this harness
+    # genuinely unavailable is a missing dependency. Everything below is either
+    # a working harness or a bug, and both must be distinguishable from a skip.
     try:
-        import db
         import auth
-        import asyncio
-        import config
+        import db
         import tunnel_manager
+    except ImportError as exc:
+        pytest.skip(f"app harness unavailable: {exc}")
 
+    import asyncio
+    import config
+
+    # A loop of this fixture's own, created rather than fetched -- see the
+    # comment at db.init() below for what fetching one cost. Outside the try
+    # so `finally` can always close it.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
         monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "wc.db"))
         monkeypatch.setattr(config, "PROJECTS_ROOT", str(tmp_path / "projects"))
         # auth.bootstrap_admin() reads this fresh via config._str() (live
@@ -45,7 +58,21 @@ def client(tmp_path, monkeypatch):
         # matching the plain-HTTP-on-Tailscale deployment mode elsewhere.
         monkeypatch.setattr(config, "COOKIE_ALLOW_INSECURE", True)
 
-        loop = asyncio.get_event_loop()
+        # This was `asyncio.get_event_loop()`, which raises once any
+        # IsolatedAsyncioTestCase file has run before it -- there is no current
+        # loop left, and the deprecation warning said so on every run. The
+        # exception landed in a bare `except Exception: pytest.skip(...)` below,
+        # so eleven of this file's fourteen tests silently became "app harness
+        # unavailable" in every full-suite run while passing when the file was
+        # invoked alone. Reproducible in six seconds:
+        #
+        #   pytest tests/test_ssh_tunnel_api.py                    -> 14 passed
+        #   pytest tests/test_qa_orchestrator_cost.py tests/...    -> 11 skipped
+        #
+        # That matters here more than the count suggests: this file is the only
+        # coverage of /api/tunnel/*, and the tunnel code was being rewritten
+        # daily -- port allocation, RECONNECT, cross-transport collision --
+        # against a test file that had quietly stopped running.
         loop.run_until_complete(db.init())
         loop.run_until_complete(auth.bootstrap_admin())
 
@@ -65,11 +92,16 @@ def client(tmp_path, monkeypatch):
         loop.run_until_complete(tunnel_manager.stop())
 
         yield client
-
-        loop.run_until_complete(tunnel_manager.stop())
-        loop.run_until_complete(db.close())
-    except Exception:
-        pytest.skip("app harness unavailable")
+    finally:
+        # Teardown failures propagate. They are reported as errors, which is
+        # what they are; converting them to a skip is how the setup bug above
+        # stayed invisible for as long as it did.
+        try:
+            loop.run_until_complete(tunnel_manager.stop())
+            loop.run_until_complete(db.close())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
 
 
 def test_tunnel_start_no_machine(client):

@@ -426,7 +426,11 @@ class TheTwoPassSplitIsCompleteTests(unittest.TestCase):
         here would quietly keep 36 tests in the slow local pass."""
         for name in ("tests/test_qa_head_consistency.py",
                      "tests/test_qa_bench_harness.py",
-                     "tests/test_qa_launch_reclaim.py"):
+                     "tests/test_qa_launch_reclaim.py",
+                     # Runs bin/wc-claude.sh for real, which reads the
+                     # console's database: "no such table: ai_machines" on a
+                     # node that has no reason to have one.
+                     "tests/test_qa_agent_spawn_not_blocked.py"):
             self.assertIn(name, self.local_only)
 
     def test_this_file_runs_wherever_rules_md_reaches(self):

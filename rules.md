@@ -342,6 +342,11 @@ makes them wrong. So:
   which. One figure covering a split run is the same lie as a green total over
   unrun cases (registry #50, #51).
 
+`test_qa_agent_spawn_not_blocked.py` joined the list on 2026-09-10: it runs
+`bin/wc-claude.sh` for real, which reads the console's own database, and a QA
+node has no reason to have one -- it failed there with `sqlite3.OperationalError:
+no such table: ai_machines`, which is a fact about the node and not a defect.
+
 Note what is *not* done to make the remote number look complete: no Chromium is
 installed there and no git metadata is shipped. Both were considered and both
 are the same mistake — moving a test away from the host its assumptions
@@ -364,6 +369,7 @@ tests/test_qa_browser_console_errors.py
 tests/test_qa_head_consistency.py
 tests/test_qa_bench_harness.py
 tests/test_qa_launch_reclaim.py
+tests/test_qa_agent_spawn_not_blocked.py
 "
 # A name that no longer matches a file is the one way this list can lie: it
 # stays in the remote pass (so it still runs -- the safe direction) while

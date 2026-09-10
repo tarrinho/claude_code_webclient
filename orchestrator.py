@@ -550,6 +550,14 @@ class OrchestratorEngine:
 
             backend = await runner.get_backend(chat_id)
             provider = backend_kind(backend if isinstance(backend, dict) else None)
+            # The billing route, recorded rather than inferred later. This
+            # works on `get_backend`'s flat {provider, base_url, api_key} as
+            # well as on a machine row, because the base URL is the only field
+            # that separates the subscription from the gateway -- both carry
+            # provider "claude_code" on this deployment.
+            route = db.billing_route_from_machine(
+                backend if isinstance(backend, dict) else None
+            )
 
             # `take_last_usage` carries only the attempt runner.run_turn kept.
             # An attempt a content-quality retry discarded still spent real
@@ -583,6 +591,7 @@ class OrchestratorEngine:
                         duration_ms=frame.get("duration_ms"),
                         is_error=bool(frame.get("is_error")),
                         origin="orchestrator",
+                        billing_route=route,
                     )
                     cost = None
                     if row_id is None:

@@ -3575,5 +3575,203 @@ class TransportStatsPanelTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class StatisticsPanelBrowserTests(_BrowserFixture):
+    """Settings -> Statistics, in a real browser.
+
+    Worth a browser test rather than only a payload one: the complaint that
+    started this work was about what the charts *say*, and a label is a
+    property of the page. The payload tests pin the arithmetic; these pin that
+    the arithmetic reaches a legend a person can read.
+    """
+
+    def _seed_usage(self, rows):
+        """Insert usage rows directly. Each row is a dict of column overrides."""
+        import datetime
+        import sqlite3
+        now = datetime.datetime.now(datetime.UTC)
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        for index, row in enumerate(rows):
+            when = (now - datetime.timedelta(minutes=10 * index)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            values = {
+                "chat_id": "c1", "owner_id": "admin", "session_id": "",
+                "model": "claude-opus-5", "provider": "cli",
+                "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+                "cache_creation_tokens": 0, "context_unsplit": 0,
+                "billing_route": "", "origin": "terminal", "created_at": when,
+            }
+            values.update(row)
+            columns = ", ".join(values)
+            marks = ", ".join("?" for _ in values)
+            con.execute(
+                f"INSERT INTO usage_events ({columns}) VALUES ({marks})",
+                list(values.values()),
+            )
+        con.commit()
+        con.close()
+
+    def _open_statistics(self):
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="stats"]')
+        self.page.wait_for_selector("#statsBody figure.stat-figure",
+                                    timeout=15_000)
+
+    def _captions(self):
+        return self.page.locator(
+            "#statsBody figcaption.stat-caption").all_inner_texts()
+
+    def test_the_four_charts_are_drawn(self):
+        self._seed_usage([
+            {"model": "claude-opus-5", "session_id": "s-a", "input_tokens": 100},
+            {"model": "vllm/Qwen3.6-35B", "session_id": "s-b", "input_tokens": 60},
+        ])
+        self._open_statistics()
+
+        captions = self._captions()
+        for expected in ("Tokens over time, by billing route",
+                         "Turns over time, by billing route",
+                         "Tokens over time, by model",
+                         "Tokens over time, by agent"):
+            with self.subTest(caption=expected):
+                self.assertIn(expected, captions)
+        self.assertEqual(self.errors, [])
+
+    def test_the_route_legend_names_both_sides_of_the_bill(self):
+        """Both rows carry provider "cli" -- the value 99.9% of the real table
+        has -- so a page still grouping on that column would draw one series
+        called "cli" here instead of two named routes."""
+        self._seed_usage([
+            {"model": "claude-opus-5", "input_tokens": 100},
+            {"model": "vllm/Qwen3.6-35B", "input_tokens": 60},
+        ])
+        self._open_statistics()
+
+        figure = self.page.locator(
+            "#statsBody figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="by billing route")).first
+        legend = figure.locator(".stat-legend").inner_text()
+
+        self.assertIn("Thru Claude Code", legend)
+        self.assertIn("Thru API", legend)
+        self.assertNotIn("cli", legend)
+
+    def test_an_inferred_series_says_so_on_hover(self):
+        """A chart that cannot say how much of itself is a guess is the kind
+        of confident wrong number this page produced for months."""
+        self._seed_usage([
+            {"model": "claude-opus-5", "input_tokens": 100},
+            {"model": "vllm/Qwen3.6-35B", "input_tokens": 60},
+        ])
+        self._open_statistics()
+
+        figure = self.page.locator(
+            "#statsBody figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="by billing route")).first
+        titles = figure.locator(".stat-legend-item").evaluate_all(
+            "nodes => nodes.map(n => n.title || '')")
+
+        self.assertTrue(
+            any("classified" in title for title in titles),
+            f"no legend entry admits to being inferred: {titles}",
+        )
+
+    def test_one_model_under_two_prefixes_is_one_line(self):
+        """`nvidia/X` and `vllm/X` are the same weights reached two ways, and
+        charting them apart drew one model as two lines."""
+        self._seed_usage([
+            {"model": "nvidia/Qwen3.6-35B", "input_tokens": 100},
+            {"model": "vllm/Qwen3.6-35B", "input_tokens": 60},
+        ])
+        self._open_statistics()
+
+        figure = self.page.locator(
+            "#statsBody figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="by model")).first
+        text = figure.inner_text()
+
+        self.assertIn("Qwen3.6-35B", text)
+        self.assertNotIn("nvidia/", text)
+        self.assertNotIn("vllm/", text)
+
+    def test_the_merged_ids_are_reachable_on_hover(self):
+        """A merge nobody can see is a merge nobody can check."""
+        self._seed_usage([
+            {"model": "nvidia/Qwen3.6-35B", "input_tokens": 100},
+            {"model": "vllm/Qwen3.6-35B", "input_tokens": 60},
+            {"model": "claude-opus-5", "input_tokens": 10},
+        ])
+        self._open_statistics()
+
+        figure = self.page.locator(
+            "#statsBody figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="by model")).first
+        titles = figure.locator(".stat-legend-item").evaluate_all(
+            "nodes => nodes.map(n => n.title || '')")
+
+        self.assertTrue(
+            any("nvidia/Qwen3.6-35B" in t and "vllm/Qwen3.6-35B" in t
+                for t in titles),
+            f"the merged ids are not named anywhere: {titles}",
+        )
+
+    def test_the_agent_chart_uses_the_conversation_title(self):
+        self._seed_usage([
+            {"session_id": "s-named", "input_tokens": 100},
+            {"session_id": "s-other", "input_tokens": 20},
+        ])
+        # The conversation the session belongs to. Inserted rather than
+        # updated: this fixture's database has no chat row for the seeded id,
+        # and an UPDATE that matches nothing leaves the test asserting against
+        # a name that was never stored -- which is how the first version of
+        # this test failed for a reason unrelated to the feature.
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT OR REPLACE INTO chats "
+            "(id, title, description, session_id, work_dir, owner_id, "
+            " created_at, updated_at) "
+            "VALUES ('c-named', 'cweb2 - supervisor plan', NULL, 's-named', "
+            "        '/tmp', 'admin', ?, ?)",
+            (stamp, stamp),
+        )
+        con.commit()
+        con.close()
+
+        self._open_statistics()
+
+        figure = self.page.locator(
+            "#statsBody figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="by agent")).first
+        self.assertIn("cweb2 - supervisor plan", figure.inner_text())
+
+    def test_recounted_context_is_excluded_and_declared(self):
+        """It was 86.6% of the real table's headline. Excluding it silently
+        would be the same class of error as including it silently."""
+        self._seed_usage([
+            {"model": "claude-opus-5", "input_tokens": 900_000,
+             "context_unsplit": 1},
+            {"model": "claude-opus-5", "input_tokens": 1_000},
+        ])
+        self._open_statistics()
+
+        body = self.page.inner_text("#statsBody")
+        self.assertIn("re-counted context", body)
+
+        figure = self.page.locator(
+            "#statsBody figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="by billing route")).first
+        # The excluded 900K must not be in the line's own summary: if it were,
+        # the legend would read 901.0K rather than 1.0K.
+        self.assertNotIn("901", figure.inner_text())
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

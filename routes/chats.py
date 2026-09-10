@@ -842,6 +842,11 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
         )
         machine = None
     provider = backend_kind(machine)
+    # Recorded, not inferred later. This site has the machine in hand, so the
+    # billing route is a fact here and a guess anywhere downstream -- the
+    # charts distinguish the two, and every row written from now on is on the
+    # recorded side of that line.
+    route = db.billing_route_from_machine(machine)
     cost = frame.get("cost_usd")
     any_written = False
     any_failed = False
@@ -864,6 +869,7 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
             # Stated, not inferred. Every web turn runs against a session-linked
             # conversation, so "has a session id" never distinguished the two.
             origin="web",
+            billing_route=route,
         )
         if row_id is None:
             any_failed = True

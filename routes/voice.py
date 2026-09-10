@@ -284,16 +284,21 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     if assistant_text.strip():
         await db.messages_batch(chat_id, [("user", prompt), ("assistant", assistant_text)])
     await record_voice_turn_timing(model, ttft_ms or total_ms, total_ms)
+    # One read, two uses: the display kind and the billing route come from the
+    # same machine record, and asking twice would let them disagree about a
+    # backend the user switched mid-turn.
+    machine = await db.ai_machine_active(owner)
     await db.usage_record(
         chat_id=chat_id,
         owner_id=owner,
         model=model,
-        provider=backend_kind(await db.ai_machine_active(owner)),
+        provider=backend_kind(machine),
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         duration_ms=total_ms,
         is_error=failed,
         origin="voice",
+        billing_route=db.billing_route_from_machine(machine),
     )
 
 

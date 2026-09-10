@@ -173,10 +173,25 @@ grep -rn 'f".*{' --include='*.py' . | grep -i 'execute\|query\|sql' | grep -v te
 - All Python files under 400 lines.
 - All JS files under 300 lines.
 
+`./.claude/*` is excluded because it holds git worktrees — other checkouts of
+this same project. Left in, every file is reported twice, the list is roughly
+double its real length, and half the paths are another branch's problem. That
+is not a hypothetical: a 2026-09-10 run reported 80 oversized Python files, of
+which 53 were worktree copies.
+
+`tail -5` also under-reports on purpose-defeating terms — it shows the five
+largest whether or not they breach the cap, and hides the sixth when six
+breach it. Print what is actually over.
+
 ```bash
-find . -name '*.py' -not -path './.venv/*' -not -path './__pycache__/*' -not -path './tests/*' | xargs wc -l | sort -n | tail -5
-find . -name '*.js' -not -path './.venv/*' -not -path './__pycache__/*' -not -path './tests/*' | xargs wc -l | sort -n | tail -5
+find . -name '*.py' -not -path './.venv/*' -not -path './__pycache__/*' -not -path './.claude/*' -not -path './tests/*' | xargs wc -l | awk '$2 != "total" && $1 > 400' | sort -n
+find . -name '*.js' -not -path './.venv/*' -not -path './__pycache__/*' -not -path './.claude/*' -not -path './tests/*' | xargs wc -l | awk '$2 != "total" && $1 > 300' | sort -n
 ```
+
+Both caps are long and widely breached (measured 2026-09-10: 27 Python files
+over 400 lines, 12 JS files over 300). Treat the list as a standing debt
+register and a reason not to add to the worst offenders, not as a gate to be
+cleared in one run.
 
 ## 4. XSS scan
 
@@ -194,11 +209,67 @@ find web -name '*.js' -exec grep -l 'escapeHtml' {} \;
 `requirements.txt` must list every package that the code imports.
 Cross-reference the import list against the requirements file.
 
+Parsed, not grepped. The previous form of this stage was a `grep 'import '`
+into two `sed` substitutions, which matched the word "import" anywhere —
+including inside docstrings and comments — and then mangled whatever followed
+into a module name. A 2026-09-10 run produced entries like `# `, `argparse`,
+`a click on a list row, or immediately after creating one, so opening` and
+`"""A chat resumed before the existed`. Output that noisy is output nobody
+reads, which makes the stage decorative: registry #19 and #20 are both missing
+requirements that reached production, and #20 notes this scan missed it.
+
 ```bash
-grep -rh 'import \|^from ' --include='*.py' . | grep -v test | grep -v __pycache__ | grep -v '.venv' | sed 's/from \([^.]*\).*/\1/' | sed 's/import \([a-z_]*\).*/\1/' | sort -u > /tmp/imports.txt
-cut -d= -f1 requirements.txt | sort -u > /tmp/reqs.txt
-comm -23 /tmp/imports.txt /tmp/reqs.txt
+.venv/bin/python - <<'PYEOF'
+import ast, pathlib, sys
+stdlib = set(sys.stdlib_module_names)
+root = pathlib.Path(".")
+local = {p.stem for p in root.glob("*.py")}
+local |= {p.name for p in root.iterdir() if p.is_dir()}
+local |= {p.stem for p in root.glob("tests/*.py")}
+found = set()
+for p in root.rglob("*.py"):
+    if {".venv", "__pycache__", ".claude"} & set(p.parts):
+        continue
+    try:
+        tree = ast.parse(p.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        continue
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            found |= {a.name.split(".")[0] for a in n.names}
+        elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module:
+            found.add(n.module.split(".")[0])
+# requirements.txt entries, normalised: strip version pins and extras
+# ("uvicorn[standard]==0.52.4" -> "uvicorn"), since neither appears in an
+# import statement and leaving them in reports a satisfied dependency missing.
+reqs = set()
+for line in open("requirements.txt"):
+    line = line.strip()
+    if line and not line.startswith("#"):
+        for sep in ("==", ">=", "<=", "~=", ">", "<"):
+            line = line.split(sep)[0]
+        reqs.add(line.split("[")[0].strip().lower().replace("-", "_"))
+# Distribution name != import name for these.
+ALIAS = {"argon2": "argon2_cffi", "dotenv": "python_dotenv", "jwt": "pyjwt",
+         "yaml": "pyyaml", "PIL": "pillow", "multipart": "python_multipart"}
+# Test-only tooling: rules.md §14 installs these explicitly on the QA node
+# rather than shipping them as runtime dependencies.
+TEST_ONLY = {"pytest", "playwright", "selenium", "quickjs", "httpx", "requests",
+             "pyflakes"}
+missing = sorted(
+    m for m in found
+    if m not in stdlib and m not in local and m not in TEST_ONLY
+    and m.lower().replace("-", "_") not in reqs
+    and ALIAS.get(m, "").lower() not in reqs
+)
+print("MISSING from requirements.txt:", missing or "none")
+PYEOF
 ```
+
+A name-based scan of any kind still cannot catch a runtime-only dependency
+that nothing imports by name — registry #20 (`python-multipart`, reached
+through `await request.form()`) is the standing example, and the only thing
+that finds that class is §13 exercising the endpoint.
 
 ## 6. SQLite integrity
 
@@ -458,7 +529,7 @@ git ls-files -z | tar --null -T - -czf - \
   | $SSH "$QA_NODE" "mkdir -p $REMOTE_DIR && tar -xzf - -C $REMOTE_DIR" || exit 1
 $SSH "$QA_NODE" "cd $REMOTE_DIR && [ -x .venv/bin/python ] || python3 -m venv .venv; \
   PIP_USER=0 .venv/bin/pip install -q -r requirements.txt \
-  && PIP_USER=0 .venv/bin/pip install -q pytest pytest-subtests quickjs httpx requests playwright" || exit 1
+  && PIP_USER=0 .venv/bin/pip install -q pytest pytest-subtests quickjs httpx requests playwright pyflakes" || exit 1
 
 # The remote pass: everything not in LOCAL_ONLY, as --ignore arguments.
 IGNORES=""
@@ -819,8 +890,17 @@ Append every field-found bug to the registry below (cumulative — append, never
 | 90 | Writing a browser-based XSS regression test for #83 (supervisor `id`/`status` unescaped) produced two tests that passed identically whether the fix was present or reverted -- twice, for two unrelated reasons, on the first attempt each time | (a) A `<script>` payload inside `data-id="..."` proves nothing: text inside an attribute's quotes is never parsed as markup regardless of escaping, so the payload needed a bare `"` to break out, which `esc()` did not touch -- it only ever escaped `&`/`<`/`>`, never quotes, so the "fix" applied to `s.id` in registry #83 was a real no-op for the position it was applied to (harmless only because a UUID cannot contain a quote today). (b) Once corrected to a real quote-breakout (`onmouseover=`) and an `onerror`-`<img>` payload for the text-node `status` case, asserting on *execution* (a global the payload sets) still passed under both fixed and broken code: `Content-Security-Policy: script-src 'self'` blocks every inline `on*` handler regardless of what escaped it, so the CSP header -- not the fix -- was the thing the test was actually measuring | `esc()` extended to also escape `"`/`'` (it round-trips through `div.textContent`/`div.innerHTML` already; a harmless no-op everywhere it is used in text-node position, real protection where it is used in an attribute). Tests rewritten to assert on DOM *structure* -- `getAttribute("onmouseover")` is `null`, no `<img>` element exists -- rather than on a handler firing, so CSP blocking execution cannot masquerade as the escaping working | Mutation-verified against three separate reverts: quote-escaping removed (id test fails), `esc()` removed from `status` entirely (status test fails), each restored (both pass). See §16a below -- this entry is the reason it exists |
 | 91 | `POST /api/chats/search` 500'd unconditionally -- `ModuleNotFoundError: No module named 'db_chats'` -- on every request, found by a full `run full rules.md` test pass rather than by anyone hitting search live | `handle_chat_search` (`routes/chats.py`) did `from db_chats import _fts_validate_query`, a bare top-level module name left over from writing the FTS5 query-validation check inside `routes/db_chats.py` itself and not updating the importer to match -- the module is `routes.db_chats`, not `db_chats` | `from routes.db_chats import _fts_validate_query` | 11 already-existing tests (`SearchAPITests`, `ChatSearchApiTests`, `CrossForkSearchTests`) caught this the moment the full suite ran; no new test needed, since coverage already existed and simply hadn't been exercised in the same run as the breaking change |
 | 92 | `POST /api/tokens` 500'd on every creation (and, downstream, the backup and settings-patch endpoints too) | `handle_api_token_create` (`routes/misc.py`) calls `db.admin_action_record(...)` for the audit trail, but `admin_action_record` (defined in `routes/db_users.py`) was never added to `db.py`'s `__getattr__` dispatch table -- the same extraction-completeness gap as registry #80/#81, one function further out. `db.<name>` for an undeclared name raises `AttributeError`, past the point the token was already created and logged, so the token existed with no record of it having been issued | Added `"admin_action_record": "routes.db_users"` to the dispatch table | `TokenManagementApiTests` (4 cases), `SettingsApiTests` (2), `BackupAPITests`/`BackupApiTests` (5) all caught this the same run; all seven now pass with no new test needed |
+| 93 | Voice handoff summarization silently produced nothing for any conversation without a pinned model -- the exact case its fallback exists to handle. No error, no log line, no failed request | `routes/voice.py` called `runner.get_default_model()` and never imported `runner`. The surrounding `except Exception: return None` caught the resulting `NameError`, so the fallback path failed identically to "no summary available" and could not be told apart from it. Three sibling route modules already `import runner` and there is no cycle -- `runner` imports only stdlib, `backend_env` and `config` | `import runner` in `routes/voice.py` | `tests/test_qa_no_undefined_names.py` -- a pyflakes gate over every module, written for the class rather than the site, because a unit test here would need a chat with no pinned model *and* an assertion that the fallback produced something. Mutation-verified: deleting the import fails the gate |
+| 94 | Every `bench/judge_delegation.py` grading fallback reported `parse failed`, so a proxy error was indistinguishable from unparseable model output and the real cause of a zeroed score was never recorded | The diagnostic read `{e if 'e' in dir() else 'parse failed'}` after an `except Exception:` that never bound an `e`. `'e' in dir()` was therefore always false, the `e` branch was unreachable, and the string was a constant wearing a conditional | `except Exception as exc` with the last error captured as `f"{type(exc).__name__}: {exc}"` and printed | Same gate as #93 -- the old form was itself an undefined name. Mutation-verified: restoring the `'e' in dir()` expression fails it |
+| 95 | All 35 tests in `test_qa_supervisor_map_geometry.py` failed with `TypeError: not a function`, and read as 35 behavioural regressions from the horizontal-layout restructure. The harness had in fact stopped exercising the module at all | The restructure chained `.nodeSize()` onto `d3.tree()`, and `tests/js/d3_dom_stub.js` implemented only `.size()` and `.separation()`. Every test died inside `renderSupervisorMap` before reaching anything it asserted on. Nothing compared the d3 surface the module calls against the surface the stub provides, so a one-method gap presented as a broad failure | `.nodeSize()` added to the stub's tree layout with d3-hierarchy's real semantics: one flag, both setters write dx/dy, last call wins, and `tree.size()` reads back null once nodeSize is in effect. Faithful deliberately -- a stub honouring both would make a module calling both look correct while behaving differently in a browser | `tests/test_qa_d3_stub_fidelity.py` (7 cases, 3 subtests). Mutation-verified against three reverts: removing `.nodeSize()`, making the stub honour both setters, and collapsing the two modes onto one formula. The third initially passed -- the fixture was two levels deep, where `depth * dy` and `(depth / maxDepth) * dy` are the same number -- and the fixture is three levels now |
+| 96 | `web/assets/supervisor-map.js` never applies its canvas dimensions to the tree layout, so the map's measured box does not affect node placement. **Found, not fixed** -- it needs the horizontal restructure's design intent, not a repair | Lines 221-224 call `.size([CANVAS_H - verticalPadding, CANVAS_W - horizontalGap])` and then `.nodeSize([20, horizontalGap])` on the same layout. In d3-hierarchy those are mutually exclusive: both write dx/dy and the flag set by the later call decides how they are read, so the `.size()` values are overwritten and gone. Whichever of the two lines was meant, the other is dead | Open. Whoever owns the restructure should delete one of the two calls | Surfaced by #95's fidelity stub rather than hidden by it: `MapGeometryTests::test_the_layout_radius_comes_from_the_measured_box` now fails with `'NoneType' object is not subscriptable`, which is the honest reading of `tree.size()` being null. 4 `MapGeometryTests` failures remain and three of them encode the pre-restructure radial geometry (one expects `rotate(...) translate(...,0)` and gets `translate(90, 40)`) |
+| 97 | Four tests passed when their file ran alone and failed in a full run, which is why they survived the commits that introduced them | Three were process-global state and one was a host-dependent literal. (a) `routes/misc._settings_cache` is module-level with a 30s TTL; the production path is correct -- `handle_settings_patch` invalidates -- but tests build state *underneath* the endpoint via `setting_set`, fresh fixture databases and a different backend per subtest, none of which is a PATCH, so the endpoint correctly served the previous test's payload. (b) `test_qa_voice_model_per_backend` still stubbed `db.setting_get` after the handler switched to a single `setting_get_all` batch read, so every value read empty, `voice_backend_id` fell through to `config.VOICE_BACKEND_ID_DEFAULT`, and the handler's own validity check nulled it. (c) `test_qa_usage` hardcoded `vllm/Qwen3.6-35B-A3B-NVFP4` as its "second" model while `WC_TESTING_MODEL` resolves to that same id on this host, collapsing two dict keys into one. (d) The agent OOM opt-out test asserted a literal `"0"`, but opting out means *write nothing*, so the process keeps what it inherited -- it broke when the running CLIs on this host were backfilled to 200 and pytest became a child of one | (a) autouse reset in `conftest.py`, matching the rate-limiter fixture beside it. (b) stub `setting_get_all` too, and invalidate in the test's `_settings` helper since switching backend there mutates a dict rather than issuing the PATCH that would invalidate. (c) derive the second id and assert the two differ. (d) compare against the parent's own score. `bin/wc-claude.sh` was unchanged and correct | The four test files themselves; each failed before its fix and passes after. (d) additionally mutation-verified: removing the opt-out guard from the wrapper fails both opt-out tests |
+| 98 | `config.VERSION` moved to 0.16.0 and none of the five display surfaces followed, and `CHANGELOG.md` had no section for the release -- the **second consecutive** release to half-land in exactly this way (registry-adjacent: the 0.15.4 CHANGELOG entry records the same thing against 0.15.3) | A version bump is six edits in five files plus a changelog section, and nothing in the commit path requires them to travel together. `tests/test_qa_version_consistency.py` is the only thing that has caught it either time, and it caught it both times only because a full run happened afterwards | `ARCHITECTURE.md`, `web/index.html`, `web/orchestrator.html` (title and topbar) and `web/assets/orchestrator/main.js` set to 0.16.0, plus a `[0.16.0]` CHANGELOG section covering the six commits in the release | `test_qa_version_consistency.py` (6 failures before, all passing after). Worth noting it is a detector, not a preventer: it cannot fail until someone runs the suite, which is why this has now shipped twice |
+| 99 | Three defects in `routes/db_sessions.py`. **Found, not fixed** -- they exist only in another session's uncommitted working-tree changes; HEAD is clean | The in-flight session-cache feature carries (a) a second `read_claude_sessions` definition shadowing the older one, leaving 80 lines of unreachable code (`F811`), (b) a `_dedupe_sessions(merged)` result computed and discarded, with the dedupe that matters happening a few lines later, and (c) `_read_claude_sessions_sync()` called unwrapped from two `async` functions -- it globs a directory, reads every JSON file, and runs a SQLite lookup plus a PID check per session, all on the event loop, while the remote read on the very next line correctly uses `asyncio.to_thread` | Open, and deliberately so: the fixes were made and then reverted rather than commit another session's in-flight feature. (c) is the same class as registry #18 | Not written. `tests/test_qa_no_undefined_names.py` deliberately scopes itself to undefined names and does *not* assert `F811`, because a gate that fails on another session's uncommitted edit trains people to skip the suite. Add the `F811` assertion once the tree is quiet |
 
-## 16a-audit (this run): §16a ran against entries #91-92 above. Both were caught by pre-existing tests the moment the full suite ran -- no gap to fill, so no new test was written for either. #85/#86 (previous run) already have their tests confirmed still passing. Nothing skipped.
+## 16a-audit (this run): §16a ran against entries #93-99. #93 and #94 share one new gate (`test_qa_no_undefined_names.py`), mutation-verified by restoring each bug separately; both are undefined names, which is why the gate checks the class rather than the two sites. #95 has `test_qa_d3_stub_fidelity.py`, mutation-verified against three reverts -- and the third revert passed on the first attempt, so the fixture was deepened until it failed, which is exactly the check this stage exists to force. #97's four fixes are each covered by the test that was failing, verified before and after, with the OOM one additionally mutation-verified against the wrapper. #98 is covered by the pre-existing `test_qa_version_consistency.py`, which is a detector rather than a preventer and is recorded as such. #96 and #99 are open findings with no fix this run, so there is nothing to regression-test yet; both name what a future fix has to satisfy. Nothing skipped.
+
+## 16a-audit (previous run): §16a ran against entries #91-92. Both were caught by pre-existing tests the moment the full suite ran -- no gap to fill, so no new test was written for either. #85/#86 (the run before) already have their tests confirmed still passing. Nothing skipped.
 
 ## 16a. Regression test coverage (mandatory -- never `⏭️ SKIP` on a run that changed code)
 

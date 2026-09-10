@@ -38,8 +38,16 @@ import ast
 import unittest
 from pathlib import Path
 
-from pyflakes import checker as pyflakes_checker
-from pyflakes.messages import UndefinedLocal, UndefinedName
+try:
+    from pyflakes import checker as pyflakes_checker
+    from pyflakes.messages import UndefinedLocal, UndefinedName
+except ImportError:  # pragma: no cover - reported as a skip, not an error
+    # pyflakes arrives here as a flake8 dependency locally and is installed
+    # explicitly on the QA node by rules.md §14. Guarded rather than assumed:
+    # a bare import failure at collection time takes the whole file out with
+    # an error, which reads as a broken test rather than a missing tool.
+    pyflakes_checker = None
+    UndefinedLocal = UndefinedName = None
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,7 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # every file.
 _SKIP_PARTS = {".venv", "__pycache__", ".claude", "node_modules"}
 
-_UNDEFINED = (UndefinedName, UndefinedLocal)
+_UNDEFINED = (UndefinedName, UndefinedLocal) if UndefinedName else ()
 
 
 def _python_files() -> list[Path]:
@@ -76,6 +84,8 @@ def _undefined_names(path: Path) -> list[str]:
     ]
 
 
+@unittest.skipUnless(pyflakes_checker is not None,
+                     "needs pyflakes (rules.md \u00a714 installs it on the QA node)")
 class NoUndefinedNamesTests(unittest.TestCase):
     def test_no_module_references_an_undefined_name(self):
         """The gate. A hit here is a NameError waiting for the right input --

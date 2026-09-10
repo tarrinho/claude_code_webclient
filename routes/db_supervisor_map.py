@@ -53,6 +53,43 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
     # infrequent path -- the map is fetched on open, never polled, so once per
     # request is the right cost.
     host_capacity = resource_guard.capacity()
+    # One grouped read for every transport's newest CPU/RAM sample, keyed by
+    # the transport name the map groups on. Best-effort: the dashboard's glow
+    # is worth having and is not worth failing the whole map for, and a host
+    # that has never been sampled is a normal state (a transport added a
+    # minute ago has no rows yet).
+    # Keyed by the same value the map groups on. system_samples.host_id holds
+    # the transport id for a remote host and the literal "local" for this one,
+    # and the map's group key is `tid or "direct"` -- so the transport ids join
+    # directly and only "local" has to be translated. There is no host_label
+    # column; an earlier draft of this read one and would have keyed every
+    # sample under the empty string.
+    host_samples: dict[str, dict] = {}
+    try:
+        for row in await db.system_latest_by_host():
+            host_id = (row.get("host_id") or "").strip()
+            if host_id:
+                host_samples[host_id] = row
+        # system_latest_by_host filters host_type != 'local', so the machine
+        # the console itself runs on -- the "direct" hub, and the one most
+        # likely to be saturated -- would have no glow at all without this.
+        local = await db.system_latest()
+        if local:
+            host_samples["direct"] = local
+    except Exception:
+        _log.warning("supervisor_map: host samples unavailable", exc_info=True)
+    # Transport names, for the hub labels. Without this the label was
+    # `key.capitalize()` on a group key that is a transport *id*, so every
+    # remote hub read as a capitalised hex string
+    # ("F6f52152ad874e76a9c88b8dd5271655") instead of "Kali3". The dashboard
+    # spec names hubs as machines, so the id was never going to do.
+    transport_names: dict[str, str] = {}
+    try:
+        for row in await db.ssh_transports_list(owner_id):
+            if row.get("id"):
+                transport_names[row["id"]] = row.get("name") or row["id"]
+    except Exception:
+        _log.warning("supervisor_map: transport names unavailable", exc_info=True)
     machines = await db.ai_machines_list(owner_id)
     chats = await db.chat_list(owner_id)
     activity = await db.chat_last_activity(owner_id)
@@ -248,6 +285,12 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
                     "label": bk,
                     "status": _machine_status(m, chats_by_machine, chat_status),
                     "type": "machine",
+                    # Dashboard fields. Two separate keys on purpose -- the
+                    # spec forbids merging the transport-mechanism badge and
+                    # the model/provider badge into one label.
+                    "provider_family": _provider_family(m),
+                    "transport_mechanism": _transport_mechanism(m),
+                    "model_label": m.get("model") or "",
                 }
                 if not m.get("transport_id"):
                     node["capacity_existing"] = host_capacity["existing"]
@@ -259,18 +302,162 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
         node_children: list[dict[str, Any]] = (
             machine_nodes + orchestrator_nodes + direct_chats + session_nodes
         )
-        children.append({
+        hub: dict[str, Any] = {
             "id": key,
-            "label": key.capitalize(),
+            "label": transport_names.get(key) or ("Direct" if key == "direct" else key),
             "status": _aggregate_status(node_children),
             "type": "transport",
             "children": _capped(node_children, key),
-        })
+            # How many agents hang off this hub, for the compact view -- which
+            # shows hubs and counts only, so it must not have to walk the
+            # children it is not rendering. Counted before _capped, so an
+            # overflowed group still reports its real size.
+            "agent_count": len(node_children),
+        }
+        # Load, for the hub's glow. Absent rather than zeroed when the host has
+        # never reported: nothing measured and nothing happening must not look
+        # alike, and a 0% glow would read as "healthy" for a host that is
+        # simply not talking to us.
+        sample = host_samples.get(key)
+        if sample is not None:
+            hub["cpu_pct"] = sample.get("cpu_pct")
+            hub["mem_pct"] = sample.get("mem_pct")
+            hub["mem_used"] = sample.get("mem_used")
+            hub["mem_total"] = sample.get("mem_total")
+            hub["load1"] = sample.get("load1")
+            hub["load5"] = sample.get("load5")
+            hub["load15"] = sample.get("load15")
+            hub["sampled_at"] = sample.get("created_at")
+            hub["load_index"] = _load_index(sample)
+        children.append(hub)
 
     return {
         "center": "You",
         "children": _capped(children, "root"),
+        # The header shows "last updated Ns ago", so the answer has to come
+        # from the server: a client clock that is wrong makes a stale map look
+        # fresh, which is the one thing a freshness indicator must not do.
+        "generated_at": _utcnow(),
     }
+
+
+
+
+def _utcnow() -> str:
+    """An ISO-8601 UTC stamp, matching what the rest of the schema stores."""
+    import datetime
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── Supervisor Dashboard fields ─────────────────────────────────────────
+# Added for the dashboard spec, which needs four things the map never
+# carried: which provider family an agent talks to, whether it reaches it
+# through the Claude Code CLI or a direct API call, how the operator can
+# talk to it, and a state vocabulary that distinguishes "waiting for me"
+# from "busy".
+#
+# All four are derived from data already stored -- nothing new is collected.
+# The map's own `status` field is left exactly as it was: seven existing
+# tests asserts its vocabulary, and the dashboard's states are a different
+# question ("what does this agent need from me") answered alongside it.
+
+# The three families the spec asks for, keyed off what the backend row says.
+# Deliberately not a lookup on provider alone: a LiteLLM gateway and the
+# official API are both "anthropic-compatible" to the CLI, and the thing that
+# tells them apart is the host.
+_ANTHROPIC_HOSTS: Final[frozenset[str]] = frozenset({"api.anthropic.com"})
+
+
+def _provider_family(machine: dict) -> str:
+    """One of anthropic / google_litellm / local.
+
+    `local` means a self-hosted or free endpoint -- a vllm model on the
+    gateway, or anything on a private address. The spec calls this
+    "free/self-hosted", and the operator's reason for wanting it separate is
+    that those turns cost nothing, which is also why it must not be inferred
+    from the model name alone: `azure_ai/...` on the same gateway is not free.
+    """
+    host = (machine.get("host") or "").strip().lower()
+    model = (machine.get("model") or "").strip().lower()
+    base = (machine.get("base_url") or "").strip().lower()
+    if host in _ANTHROPIC_HOSTS:
+        return "anthropic"
+    # vllm-served models are the self-hosted ones on this deployment; the
+    # gateway also fronts azure_ai/* and anthropic models, which are not.
+    if model.startswith("vllm/") or "localhost" in base or "127.0.0.1" in base:
+        return "local"
+    if host or base:
+        return "google_litellm"
+    return "local"
+
+
+def _transport_mechanism(machine: dict) -> str:
+    """"cli" when the turn goes through the Claude Code CLI, else "direct_api".
+
+    backend_kind already draws this line -- it returns "through_claude_code"
+    for a CLI-spawned turn and "direct"/"ssh-proxy"/"proxy" otherwise -- so
+    this is a rename into the spec's vocabulary rather than a new judgement.
+    The spec is explicit that this badge stays separate from the model badge,
+    so they are two fields here and never one string.
+    """
+    from shared import backend_kind
+    kind = backend_kind(machine)
+    # "ssh-proxy" is a CLI turn too -- claude_proxy.py on the far side spawns
+    # the same `claude` binary, so the mechanism is identical and only the
+    # host differs. An earlier version compared against "through_claude_code"
+    # alone and labelled every transport-routed backend as a direct API call,
+    # which is the opposite of what happens: on this deployment those are the
+    # CLI turns. "proxy" is the legacy spelling of the same thing.
+    return "cli" if kind in ("through_claude_code", "ssh-proxy", "proxy") else "direct_api"
+
+
+def _comms(chat: dict) -> str:
+    """How the operator can reach this agent: "text", "voice" or "both"."""
+    return "both" if chat.get("voice_mode") else "text"
+
+
+def _agent_state(status: str, *, degraded: bool = False,
+                 has_question: bool = False, running: bool = False) -> str:
+    """The spec's state vocabulary, alongside the map's own `status`.
+
+    Three values matter to an operator scanning the dashboard, and they are
+    not the same question the seven-value `status` answers:
+
+    * ``waiting_for_input`` -- it has asked something and stopped. This is the
+      one worth an external notification, and the only one the operator can
+      clear.
+    * ``blocked`` -- it stopped and cannot continue on its own.
+    * ``running`` -- mid-turn.
+
+    ``has_question`` is passed in rather than read here: the caller resolves
+    it once per request from the pending-question scan, which reads
+    transcripts and must not be run per node.
+    """
+    if degraded or status == "error":
+        return "blocked"
+    if has_question or status == "waiting":
+        return "waiting_for_input"
+    if running or status in ("running", "busy"):
+        return "running"
+    return "idle"
+
+
+def _load_index(sample: dict | None) -> float | None:
+    """A single 0..1 saturation number for a hub's glow, or None if unknown.
+
+    The spec asks for "combined CPU/RAM load: cool/blue when healthy, warm/red
+    as it saturates", so the colour needs one number rather than two. Taken as
+    the worse of CPU and memory rather than their average: a host at 100%
+    memory and 10% CPU is saturated, and averaging would paint it as healthy.
+    """
+    if not sample:
+        return None
+    try:
+        cpu = float(sample.get("cpu_pct") or 0.0)
+        mem = float(sample.get("mem_pct") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, max(cpu, mem) / 100.0))
 
 
 def _capped(nodes: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
@@ -348,6 +535,15 @@ def _chat_node(
         "machine_label": backend_kind(machine) if machine else "unknown",
     }
     _attach_last_message(node, (activity or {}).get(cid))
+    # Dashboard fields. The provider family and mechanism come from the
+    # backend actually serving this conversation, so a chat pinned to the
+    # gateway and one on the official API are told apart even inside the same
+    # transport group.
+    if machine:
+        node["provider_family"] = _provider_family(machine)
+        node["transport_mechanism"] = _transport_mechanism(machine)
+        node["model_label"] = chat.get("model") or machine.get("model") or ""
+    node["comms"] = _comms(chat)
     # A degraded conversation is an error whatever it is otherwise doing.
     # classify_chat does not look at the column, so without this the map
     # showed a conversation the app had already given up on as plain idle.
@@ -359,6 +555,13 @@ def _chat_node(
     pending = queued.get(cid) or 0
     if pending:
         node["queued"] = pending
+    # The spec's state vocabulary, alongside `status` rather than replacing
+    # it: `status` drives the existing colours and seven tests assert its
+    # values, while this answers the different question the dashboard asks --
+    # does this agent need me.
+    node["agent_state"] = _agent_state(
+        node["status"], degraded=bool(chat.get("degraded")),
+    )
     return node
 
 

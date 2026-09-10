@@ -47,20 +47,54 @@ class StartupCallSiteTests(unittest.TestCase):
     invisible to every other test in this file, since they call
     tunnel_manager.start() themselves, correctly awaited."""
 
-    def test_app_py_awaits_tunnel_manager_start(self):
+    def test_app_py_does_not_discard_the_coroutine(self):
+        """The coroutine must be *consumed* -- awaited or scheduled.
+
+        It was `await`ed until 2026-09-10, when awaiting it turned out to be
+        its own outage: uvicorn does not bind the port until lifespan startup
+        returns, and this call talks to other machines over SSH, so a
+        transport that would not answer took the whole console down for ~25
+        minutes. It is now handed to asyncio.create_task with the task kept
+        in `_startup_tasks`.
+
+        So this no longer insists on `await`. What it still refuses is the
+        original bug: a bare call, which builds a coroutine object, drops it,
+        and leaves the manager's background loop non-existent while every
+        queued command sits in a queue nothing reads.
+        """
         source = APP_PY.read_text(encoding="utf-8")
-        match = re.search(r"^(.*tunnel_manager\.start\(.*\))\s*$", source, re.MULTILINE)
+        match = re.search(r"^(\s*)(\S.*)?tunnel_manager\.start\(", source,
+                          re.MULTILINE)
         self.assertIsNotNone(
             match, "tunnel_manager.start(...) is no longer called from app.py "
             "at all -- update this test if it moved, don't just delete it",
         )
-        line = match.group(1).strip()
-        self.assertTrue(
-            line.startswith("await "),
-            f"tunnel_manager.start(...) is called without await: {line!r} -- "
-            "this only creates a coroutine object and discards it, so the "
-            "manager's background loop never starts",
+        # The call and the two lines above it: create_task's opening line may
+        # sit above the call itself once the arguments are wrapped.
+        start = source.index("tunnel_manager.start(")
+        window = source[max(0, start - 200):start]
+        consumed = (
+            window.rstrip().endswith("await")
+            or "create_task(" in window
+            or "ensure_future(" in window
         )
+        self.assertTrue(
+            consumed,
+            "tunnel_manager.start(...) is neither awaited nor scheduled -- a "
+            "bare call only creates a coroutine object and discards it, so "
+            "the manager's background loop never starts. Context:\n"
+            + window[-200:],
+        )
+
+    def test_the_scheduled_task_is_kept(self):
+        """A task nobody holds a reference to can be garbage-collected
+        mid-flight, and its exception is then reported nowhere at all. The
+        reason `_startup_tasks` exists is that this one is fire-and-forget."""
+        source = APP_PY.read_text(encoding="utf-8")
+        if "create_task(" not in source[:source.index("tunnel_manager.start(")][-200:]:
+            self.skipTest("start() is awaited rather than scheduled")
+        self.assertIn("_startup_tasks.append(asyncio.create_task(", source)
+        self.assertIn("_startup_tasks[-1].add_done_callback(", source)
 
 
 class SshTunnelListActiveQA(unittest.IsolatedAsyncioTestCase):

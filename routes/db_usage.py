@@ -576,6 +576,10 @@ async def usage_prune(days: int) -> int:
 # ── Host statistics ─────────────────────────────────────────────────────────────────────
 
 SYSTEM_FIELDS: tuple[str, ...] = (
+    # Not a measurement but a property of the host, stored per sample because
+    # that is where the aggregate can reach it: load-per-core is computed
+    # inside the bucketed query.
+    "cores",
     "cpu_pct",
     "mem_pct",
     "mem_used",
@@ -589,6 +593,24 @@ SYSTEM_FIELDS: tuple[str, ...] = (
     "load15",
     "proc_rss",
     "proc_cpu_pct",
+)
+
+
+# Load divided by the host's own core count, so four machines of different
+# sizes can share one chart: a load of 8 is idle on a 16-core box and a queue
+# on a 2-core one, and the raw numbers put them on incomparable scales.
+#
+# The denominator is MAX(cores) rather than AVG: cores is a constant property
+# of the host, so any sample in the bucket carries the same value, and MAX
+# ignores rows written before the column existed (which default to 0).
+#
+# cores = 0 means unknown -- an old row, or a transport whose `nproc` did not
+# answer. Those yield NULL, not a division by zero and not a made-up 1: the
+# host is left out of the load chart for that bucket rather than plotted at a
+# figure nobody measured.
+_LOAD_PER_CORE = (
+    "CASE WHEN MAX(cores) > 0 "
+    "THEN ROUND(AVG(load1) / MAX(cores), 3) ELSE NULL END AS load_per_core"
 )
 
 
@@ -693,7 +715,8 @@ async def system_series_by_host(
         "ROUND(AVG(load1), 2) AS load1, "
         "ROUND(MAX(load1), 2) AS load1_max, "
         "ROUND(AVG(load5), 2) AS load5, "
-        "ROUND(AVG(load15), 2) AS load15 "
+        "ROUND(AVG(load15), 2) AS load15, "
+        f"MAX(cores) AS cores, {_LOAD_PER_CORE} "
         f"FROM system_samples WHERE {where} "  # nosec B608: clause is static
         "GROUP BY host_id, bucket ORDER BY host_id ASC, bucket ASC",
         params,
@@ -703,6 +726,49 @@ async def system_series_by_host(
         entry = dict(row)
         out.setdefault(entry.pop("host_id"), []).append(entry)
     return out
+
+
+def align_hosts_to_spine(
+    by_host: dict[str, list[dict[str, Any]]], spine: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Place every host's rows on the same *spine* of bucket keys.
+
+    The charts draw one line per host on one x-axis, so the hosts have to
+    agree on what the nth point means. They do not agree on their own: a
+    transport is sampled only while its tunnel is up, so each one arrives with
+    its own set of buckets, and drawing those directly puts a machine that was
+    connected for two buckets across the full width of the chart.
+
+    Missing buckets are filled with **nulls, not zeros**. A null breaks the
+    line, which is the honest picture of a disconnect; a zero draws a
+    confident reading of an idle machine that was in fact not measured. This
+    is the same distinction `parse_stats` preserves at collection time and
+    `_on_spine` preserves for the local series.
+
+    Buckets a host has that the spine does not are kept and the result
+    re-sorted, so a reading is never dropped for failing to line up.
+    """
+    if not spine or not by_host:
+        return by_host
+    order = {key: index for index, key in enumerate(spine)}
+    aligned: dict[str, list[dict[str, Any]]] = {}
+    for host_id, rows in by_host.items():
+        if not rows:
+            aligned[host_id] = rows
+            continue
+        fields = {key for row in rows for key in row}
+        blank = {
+            key: None for key in fields if key not in ("bucket", "samples")
+        }
+        present = {row["bucket"]: row for row in rows}
+        filled = [
+            present.get(key) or {"bucket": key, "samples": 0, **blank}
+            for key in spine
+        ]
+        filled.extend(row for key, row in present.items() if key not in order)
+        filled.sort(key=lambda row: row["bucket"])
+        aligned[host_id] = filled
+    return aligned
 
 
 async def system_series(
@@ -742,7 +808,8 @@ async def system_series(
         "ROUND(AVG(load15), 2) AS load15, "
         "CAST(AVG(proc_rss) AS INTEGER) AS proc_rss, "
         "CAST(MAX(proc_rss) AS INTEGER) AS proc_rss_max, "
-        "ROUND(AVG(proc_cpu_pct), 1) AS proc_cpu_pct "
+        "ROUND(AVG(proc_cpu_pct), 1) AS proc_cpu_pct, "
+        f"MAX(cores) AS cores, {_LOAD_PER_CORE} "
         f"FROM system_samples WHERE {where} "  # nosec B608: clause is static
         "GROUP BY bucket ORDER BY bucket ASC",
         params,

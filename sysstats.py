@@ -256,6 +256,10 @@ def to_row(snapshot: dict[str, Any]) -> dict[str, Any]:
     proc = snapshot.get("proc") or {}
     load = snapshot.get("load") or [0.0, 0.0, 0.0]
     return {
+        # os.cpu_count() -- threads, not physical cores, which is the right
+        # denominator for load average: the kernel counts a runnable task per
+        # hardware thread.
+        "cores": snapshot.get("ncpu", 0) or 0,
         "cpu_pct": snapshot.get("cpu_pct", 0.0),
         "mem_pct": snapshot.get("mem_pct", 0.0),
         "mem_used": snapshot.get("mem_used", 0),

@@ -5,12 +5,12 @@
 // -- which is why editing that file could leave a page rendering with stale
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
-import {apiFetch, downloadMarkdown} from './api.js?v=1';
-import {createChatListController} from './chat-list.js?v=5';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=6';
-import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=1';
-import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=2';
-import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=8';
+import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
+import {createChatListController} from './chat-list.js?v=6782212';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=10363682';
+import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
+import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=7745989';
+import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -340,13 +340,13 @@ async function _loadMap(quiet = false) {
     const res = await fetch('/api/supervisor-map', {credentials: 'same-origin'});
     if (!res.ok) throw new Error('Data unavailable');
     const data = await res.json();
-    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=7');
+    const { renderSupervisorMap, closeSupervisorMap: closeMap } = await import('./supervisor-map.js?v=9197460');
     if (closeMap) closeMap();
     renderSupervisorMap(data);
     byId('mapStatusEmpty').textContent = MAP_EMPTY_TEXT;
   } catch {
     if (quiet) return;
-    const { closeSupervisorMap } = await import('./supervisor-map.js?v=7');
+    const { closeSupervisorMap } = await import('./supervisor-map.js?v=9197460');
     if (closeSupervisorMap) closeSupervisorMap();
     byId('mapStatusEmpty').textContent = 'Connection error.';
     byId('mapStatusEmpty').hidden = false;
@@ -378,7 +378,7 @@ async function _closeMap() {
   const panel = byId('supervisorMapPanel');
   if (panel) panel.hidden = true;
   _stopMapPolling();
-  const { closeSupervisorMap } = await import('./supervisor-map.js?v=7');
+  const { closeSupervisorMap } = await import('./supervisor-map.js?v=9197460');
   closeSupervisorMap();
 }
 
@@ -438,7 +438,7 @@ function _switchTab(tab) {
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
-import { _renderUsage, loadUsage } from './usage.js?v=1';
+import { _renderUsage, loadUsage } from './usage.js?v=6329126';
 // The same rows the Usage tab sums, kept in time order. Rendered by stats.js,
 // which owns the SVG; this only fetches and reports failure.
 
@@ -493,17 +493,17 @@ async function loadStats(force = false) {
 
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
-import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=2';
+import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=11490210';
 export { notifyResult, setStatus };
 
-import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1';
+import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=15159128';
 
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=10';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=12624855';
 
-import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=4';
+import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=12802782';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();

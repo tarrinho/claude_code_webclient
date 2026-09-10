@@ -93,6 +93,63 @@ export function seriesFrom(rows, defs) {
 /** A gauge's headline is its peak, not its total. */
 const peakOf = format => entry => `peak ${format(entry.peak)}`;
 
+/** The most recent measured value, for metrics whose peak says nothing.
+ *
+ *  Disk fills over days rather than spiking, and load1 is already a kernel
+ *  average, so "peak" on those two is either the same number as now or a
+ *  one-bucket blip. Where the current reading is the interesting one, print
+ *  that instead. Holes are skipped: the last thing measured, not the last
+ *  bucket drawn.
+ */
+const lastOf = format => entry => {
+  for (let i = entry.values.length - 1; i >= 0; i -= 1) {
+    if (entry.values[i] !== null && entry.values[i] !== undefined) {
+      return `now ${format(entry.values[i])}`;
+    }
+  }
+  return 'no reading';
+};
+
+/**
+ * One series per host, all on the same bucket axis.
+ *
+ * seriesFrom() builds several series out of one host's row list -- average
+ * against peak. This builds one series per *host* out of one column, which is
+ * what a merged chart needs: four machines' CPU on a single pair of axes
+ * instead of four charts the eye has to compare by memory.
+ *
+ * `buckets` is the spine, and every host is read through it by bucket key
+ * rather than by position. The API aligns the hosts before sending them, so
+ * positions would usually work -- "usually" being the failure mode where a
+ * host that reported one extra bucket silently shifts its whole line sideways.
+ *
+ * Missing and null readings stay null, for the reason seriesFrom keeps them:
+ * a zero here draws a confident idle machine over the window nobody measured.
+ */
+export function hostSeries(buckets, hosts, field) {
+  const series = hosts.map(host => {
+    const byBucket = new Map((host.rows || []).map(row => [row.bucket, row]));
+    const values = buckets.map(bucket => {
+      const row = byBucket.get(bucket);
+      if (!row) return null;
+      const raw = row[field];
+      if (raw === null || raw === undefined) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    });
+    const real = values.filter(v => v !== null);
+    return {
+      key: host.key,
+      values,
+      measured: real.length,
+      total: real.reduce((a, b) => a + b, 0),
+      peak: real.length ? Math.max(...real) : 0,
+      mean: real.length ? real.reduce((a, b) => a + b, 0) / real.length : 0,
+    };
+  });
+  return {buckets, series};
+}
+
 function card(grid, {label, value, detail, ratio}) {
   const box = el('div', 'srv-card');
   box.appendChild(el('div', 'srv-card-label', label));
@@ -181,7 +238,18 @@ function renderLive(container, live) {
   if (facts.length) container.appendChild(el('p', 'srv-host', facts.join(' · ')));
 }
 
-function renderHistory(container, payload) {
+/** This host's numbers as tables, under the merged charts.
+ *
+ *  The charts this used to draw moved into `renderAllHosts`: CPU, memory,
+ *  disk and load are now one chart each with a line per machine, so drawing
+ *  them again here would put the same measurement on the page twice under two
+ *  different scales. What stays is the per-metric table -- exact figures,
+ *  average and peak side by side, which is the thing a merged chart cannot
+ *  show for four hosts at once -- plus WebConsole's own memory, which has no
+ *  counterpart on a transport and so has nothing to merge with.
+ */
+export function renderHostHistory(container, payload) {
+  container.replaceChildren();
   const rows = payload.series || [];
   if (!rows.length) {
     const every = payload.sample_interval_s || 60;
@@ -195,12 +263,6 @@ function renderHistory(container, payload) {
     {key: 'avg', field: 'cpu_pct'},
     {key: 'peak', field: 'cpu_max'},
   ]);
-  lineChart(container, cpu, {
-    title: 'CPU over time',
-    colorFor: key => slotColor(key === 'peak' ? 2 : 1),
-    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
-    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
-  });
   seriesTable(container, cpu, {
     labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
     caption: 'CPU', formatCell: pct,
@@ -210,12 +272,6 @@ function renderHistory(container, payload) {
     {key: 'avg', field: 'mem_pct'},
     {key: 'peak', field: 'mem_max'},
   ]);
-  lineChart(container, mem, {
-    title: 'Memory over time',
-    colorFor: key => slotColor(key === 'peak' ? 2 : 3),
-    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
-    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
-  });
   seriesTable(container, mem, {
     labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
     caption: 'Memory', formatCell: pct,
@@ -226,32 +282,17 @@ function renderHistory(container, payload) {
     {key: 'peak', field: 'disk_pct_max'},
   ]);
   if (disk.series.some(s => s.peak > 0)) {
-    lineChart(container, disk, {
-      title: 'Disk over time',
-      colorFor: key => slotColor(key === 'peak' ? 2 : 4),
-      labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
-      formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
-    });
     seriesTable(container, disk, {
       labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
       caption: 'Disk', formatCell: pct,
     });
   }
 
-  // Load is charted unpinned: it has no ceiling, and the number that matters
-  // is its size relative to the core count rather than to 100.
   const load = seriesFrom(rows, [
     {key: '1', field: 'load1'},
     {key: '5', field: 'load5'},
     {key: '15', field: 'load15'},
   ]);
-  lineChart(container, load, {
-    title: 'Load average over time',
-    colorFor: key => slotColor({1: 1, 5: 3, 15: 4}[key] || 8),
-    labelFor: key => `${key} min`,
-    formatValue: loadFmt, formatTip: loadFmt,
-    summarize: peakOf(loadFmt),
-  });
   seriesTable(container, load, {
     labelFor: key => `${key} min`, caption: 'Load average', formatCell: loadFmt,
   });
@@ -279,74 +320,110 @@ function renderHistory(container, payload) {
     `kept for ${payload.retention_days} days`));
 }
 
-/** One transport's charts: the same four the host below gets.
- *
- *  Deliberately the same `lineChart`/`seriesFrom` pair rather than a lighter
- *  variant. These graphs are read against the host's own, and two chart
- *  builders would eventually disagree about axis scaling or how a gap is
- *  drawn -- at which point comparing them silently stops being valid.
- *
- *  What is left out on purpose: the per-metric `seriesTable` the host gets.
- *  Four transports times four tables is a page nobody reads, and the current
- *  figures are already in the summary table above.
- */
-export function renderTransportHistory(container, rows) {
-  if (!rows || !rows.length) {
-    container.appendChild(el('p', 'stat-empty',
-      'No samples stored for this period. A transport is sampled only while '
-      + 'its tunnel is connected.'));
-    return;
-  }
-
-  const cpu = seriesFrom(rows, [
-    {key: 'avg', field: 'cpu_pct'},
-    {key: 'peak', field: 'cpu_max'},
-  ]);
-  lineChart(container, cpu, {
-    title: 'CPU over time',
-    colorFor: key => slotColor(key === 'peak' ? 2 : 1),
-    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
-    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
-  });
-
-  const mem = seriesFrom(rows, [
-    {key: 'avg', field: 'mem_pct'},
-    {key: 'peak', field: 'mem_max'},
-  ]);
-  lineChart(container, mem, {
-    title: 'Memory over time',
-    colorFor: key => slotColor(key === 'peak' ? 2 : 3),
-    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
-    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
-  });
-
-  const disk = seriesFrom(rows, [
-    {key: 'avg', field: 'disk_pct'},
-    {key: 'peak', field: 'disk_pct_max'},
-  ]);
-  lineChart(container, disk, {
-    title: 'Disk over time',
-    colorFor: key => slotColor(key === 'peak' ? 2 : 4),
-    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
-    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
-  });
-
-  const load = seriesFrom(rows, [
-    {key: '1', field: 'load1'},
-    {key: '5', field: 'load5'},
-    {key: '15', field: 'load15'},
-  ]);
-  lineChart(container, load, {
-    title: 'Load average over time',
-    colorFor: key => slotColor({1: 1, 5: 3, 15: 4}[key] || 8),
-    labelFor: key => `${key} min`,
-    // No axisMax: load is not a percentage and a transport with more cores
-    // than this host can legitimately sit above 1.
-    formatValue: loadFmt, formatTip: loadFmt, summarize: peakOf(loadFmt),
-  });
+/** Load per core, to two decimals. 1.00 is "as many runnable tasks as cores". */
+export function perCore(v) {
+  return (Number(v) || 0).toFixed(2);
 }
 
-export function renderServer(container, {live, history}) {
+/**
+ * Four charts, one per metric, with a line per machine.
+ *
+ * The layout this replaces was a block of four charts per host, which meant
+ * comparing two machines' CPU was a matter of remembering one picture while
+ * looking at another -- and the y-axes were fitted per chart, so two lines of
+ * the same height often meant different numbers. One chart per metric puts
+ * every host on one scale, which is the comparison the page exists to make.
+ *
+ * Load is the exception that needed work: raw load1 is not comparable across
+ * machines of different sizes, so this charts load divided by the host's own
+ * core count. The division happens in SQL (`load_per_core`), because the core
+ * count is per host and the average is per bucket.
+ *
+ * Average and peak are not drawn as two lines any more. Four hosts times two
+ * lines is eight lines on one pair of axes, which is unreadable; the peak
+ * survives as a number in the legend for the two metrics where a spike means
+ * something (CPU and memory), and the other two print the latest reading.
+ */
+export function renderAllHosts(container, {history, transports}) {
+  container.replaceChildren();
+  const rows = (history && history.series) || [];
+
+  // The local host leads, then the transports in the order the table above
+  // lists them, so a colour means the same machine in every chart.
+  const byHost = (history && history.transports) || {};
+  const hosts = [{key: 'local', label: 'This console', rows}];
+  for (const transport of transports || []) {
+    hosts.push({
+      key: transport.id,
+      label: transport.name || transport.id,
+      rows: byHost[transport.id] || [],
+    });
+  }
+
+  // The union of every host's buckets, not the local host's alone. The API
+  // aligns the transports onto the local series, so with local samples
+  // present the two are the same list -- but a console restarted minutes ago
+  // has no local history yet, and taking the spine from it would drop every
+  // transport's chart on the grounds that *this* machine was not sampled.
+  // Bucket keys are timestamps, so sorting them as strings is chronological.
+  const buckets = [...new Set(hosts.flatMap(
+    host => (host.rows || []).map(row => row.bucket)))].sort();
+  if (!buckets.length) {
+    const every = (history && history.sample_interval_s) || 60;
+    container.appendChild(el('p', 'stat-empty',
+      `No samples stored for this period yet. The server records one every ${every}s ` +
+      'while it is running, so history starts from its last restart.'));
+    return;
+  }
+  const labels = new Map(hosts.map(host => [host.key, host.label]));
+  const colors = new Map(hosts.map((host, i) => [host.key, slotColor(i + 1)]));
+
+  const chart = (field, options) => {
+    const built = hostSeries(buckets, hosts, field);
+    // A host with nothing measured is left out rather than drawn flat. An
+    // empty line in the legend and a zero across the bottom is the shape of a
+    // reading, and there was no reading -- the transport table above says
+    // "--" for those, which is the honest form of the same fact.
+    built.series = built.series.filter(entry => entry.measured > 0);
+    if (!built.series.length) return;
+    lineChart(container, built, {
+      colorFor: key => colors.get(key) || slotColor(8),
+      labelFor: key => labels.get(key) || key,
+      ...options,
+    });
+  };
+
+  chart('cpu_pct', {
+    title: 'CPU', formatValue: pct, formatTip: pct,
+    axisMax: 100, summarize: peakOf(pct),
+  });
+  chart('mem_pct', {
+    title: 'Memory', formatValue: pct, formatTip: pct,
+    axisMax: 100, summarize: peakOf(pct),
+  });
+  chart('disk_pct', {
+    title: 'Disk', formatValue: pct, formatTip: pct,
+    axisMax: 100, summarize: lastOf(pct),
+  });
+  // No axisMax: load has no ceiling. Per core it usually sits under 1, and
+  // pinning the axis at 1 would flatten exactly the excursions worth seeing.
+  chart('load_per_core', {
+    title: 'Load per core', formatValue: perCore, formatTip: perCore,
+    summarize: lastOf(perCore),
+  });
+
+  container.appendChild(el('p', 'srv-note',
+    'One line per machine. Load is divided by each host’s own core '
+    + 'count, so the hosts are comparable; a host whose core count is '
+    + 'unknown is left out of that chart. A break in a line is an interval '
+    + 'with no sample, not a reading of zero.'));
+}
+
+/** The live cards. History is no longer drawn here: the merged charts and the
+ *  per-metric tables render into their own containers, above and below the
+ *  transport table respectively, so each of the three can be placed on the
+ *  page independently of the other two. */
+export function renderServer(container, {live}) {
   container.replaceChildren();
   if (live && live.available === false) {
     container.appendChild(el('p', 'stat-empty',
@@ -355,5 +432,4 @@ export function renderServer(container, {live, history}) {
     return;
   }
   if (live) renderLive(container, live);
-  if (history) renderHistory(container, history);
 }

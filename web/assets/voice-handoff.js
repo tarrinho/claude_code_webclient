@@ -3,16 +3,16 @@
 // into (onReplyChunk/onReplyDone/onReplyError). Split out of
 // voice-conversation.js (2026-09-10); see voice-engine.js's header for why.
 
-import {apiFetch} from './api.js?v=1';
-import {showToast} from './app.js?v=56';
+import {apiFetch} from './api.js?v=2741508';
+import {showToast} from './app.js?v=7392132';
 import {
   flushSpeechBuffer, appendSpeechBuffer, clearSpeechBuffer, setVoiceStatus,
   updateVoiceButtonVisibility, pendingSpeechCount,
-} from './voice-engine.js?v=1';
+} from './voice-engine.js?v=7083095';
 import {
   voiceOverlay, voiceTooltipMessages, voiceTooltipConclusion,
   voiceParentState, voiceTempChatId, closeVoiceTooltip,
-} from './voice-tooltip.js?v=1';
+} from './voice-tooltip.js?v=10927021';
 
 const voiceAgreeBtn = document.getElementById('voiceAgreeBtn');
 const voiceSummarizeBtn = document.getElementById('voiceSummarizeBtn');

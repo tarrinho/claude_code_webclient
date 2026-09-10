@@ -840,6 +840,29 @@ class OrchestratorEngine:
                 # orchestrator had never once run a task on any backend.
                 self.owner_id,
             )
+            # Human-readable agent name for the planning turn.
+            try:
+                from routes.naming import generate_name as _generate_name
+                _transport = "local"
+                try:
+                    import db as _db2
+                    _routing = await _db2.chat_routing(plan_chat_id)
+                    _machine = _routing.get("machine") or await _db2.ai_machine_backend(self.owner_id)
+                    if _machine:
+                        _alias = (_machine.get("alias") or "").strip()
+                        if _alias:
+                            _transport = _alias
+                        elif _machine.get("transport_id"):
+                            from tunnel_manager import tunnel_status as _tun
+                            _st = await _tun(_machine["id"])
+                            if _st and _st.get("ssh_host"):
+                                _transport = _st["ssh_host"]
+                except Exception:
+                    pass
+                _name = _generate_name(_transport, prompt_text)
+                db.write_claude_session_file(f"supervisor_{plan_chat_id}", _name, work_dir)
+            except Exception:
+                pass  # Non-critical
             result = "".join(chunks) if chunks else ""
             # Before the empty-result check below, which returns early: a turn
             # that produced no text still spent tokens, and the earlier version
@@ -1021,6 +1044,27 @@ class OrchestratorEngine:
                 # Same reason as the planner: subtask_<id> is not a conversation.
                 self.owner_id,
             )
+            # Human-readable agent name for the subtask turn.
+            try:
+                from routes.naming import generate_name as _generate_name
+                _transport = "local"
+                try:
+                    _machine = await db.ai_machine_backend(self.owner_id)
+                    if _machine:
+                        _alias = (_machine.get("alias") or "").strip()
+                        if _alias:
+                            _transport = _alias
+                        elif _machine.get("transport_id"):
+                            from tunnel_manager import tunnel_status as _tun
+                            _st = await _tun(_machine["id"])
+                            if _st and _st.get("ssh_host"):
+                                _transport = _st["ssh_host"]
+                except Exception:
+                    pass
+                _name = _generate_name(_transport, full_prompt)
+                db.write_claude_session_file(f"supervisor_{task_chat_id}", _name, work_dir)
+            except Exception:
+                pass  # Non-critical
             result = "".join(chunks) if chunks else ""
             await self._record_usage(task_chat_id, model)
 

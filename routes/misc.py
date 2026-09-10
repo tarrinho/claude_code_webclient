@@ -687,6 +687,22 @@ async def handle_system_series_get(request: Request):
     hour.
     """
     days, bucket = _system_range(request)
+    # fill=True: the buckets no sample fell into come back as nulls, so the
+    # chart can break its line instead of skipping the interval and drawing
+    # the readings either side as though they were consecutive.
+    series = await db.system_series(days, bucket, fill=True)
+    # Every transport's series in the same response, keyed by transport id.
+    # One request and one grouped query rather than a round trip per
+    # configured host: the number of transports is not fixed.
+    transports = await db.system_series_by_host(days, bucket)
+    # Then put them on the local series' buckets. Each metric is now one chart
+    # with a line per host, so the hosts share an x-axis and have to agree on
+    # what the nth point means -- and only the local series is continuous,
+    # since a transport is sampled only while its tunnel is up. The filler is
+    # null, so a disconnect still breaks the line rather than drawing a zero.
+    transports = db.align_hosts_to_spine(
+        transports, [row["bucket"] for row in series]
+    )
     return JSONResponse(
         {
             "days": days if days is not None else 0,
@@ -694,20 +710,8 @@ async def handle_system_series_get(request: Request):
             "buckets": list(db.USAGE_BUCKETS),
             "sample_interval_s": config.SYSTEM_SAMPLE_S,
             "retention_days": config.SYSTEM_RETENTION_DAYS,
-            # fill=True: the buckets no sample fell into come back as nulls, so
-            # the chart can break its line instead of skipping the interval and
-            # drawing the readings either side as though they were consecutive.
-            "series": await db.system_series(days, bucket, fill=True),
-            # Every transport's series in the same response, keyed by
-            # transport id. One request and one grouped query rather than a
-            # round trip per configured host: the Server page draws a chart
-            # per transport, and the number of transports is not fixed.
-            #
-            # Rows here are NOT gap-filled, unlike the local series above. A
-            # transport is only sampled while its tunnel is connected, so a
-            # gap is the normal state rather than a missing reading, and
-            # filling it would draw a confident null across every disconnect.
-            "transports": await db.system_series_by_host(days, bucket),
+            "series": series,
+            "transports": transports,
         }
     )
 

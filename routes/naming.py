@@ -3,8 +3,6 @@
 import re
 from typing import Final
 
-import config
-
 # Filler words stripped from the front before taking the task summary.
 _FILLERS: Final[set[str]] = {
     "a", "an", "the", "to", "for", "in", "on", "at", "by", "with",
@@ -12,17 +10,24 @@ _FILLERS: Final[set[str]] = {
     "was", "were", "be", "been", "being", "have", "has", "had",
 }
 # Words kept under 3 chars after strip (e.g. "fix bugs" stays).
-_SHORT_KEEP: Final[set[str]] = {"fix", "add", "run", "stop", "kill", "log", "get", "set", "use", "make", "find", "try"}
+_SHORT_KEEP: Final[set[str]] = {
+    "fix", "add", "run", "stop", "kill", "log", "get", "set",
+    "use", "make", "find", "try", "write", "read", "copy", "move",
+    "edit", "update", "create", "send", "build", "test", "check",
+    "list", "show", "find", "open", "close", "save", "load",
+}
 
 # Per-transport spawn counter.
 _spawn_counter: dict[str, int] = {}
 
 # Regex to break a prompt into words while keeping punctuation attached.
-_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*|[^A-Za-z0-9_\s]+")
+_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_-]*|[^A-Za-z0-9_\s]+"
+)
 
 
-def generate_name(transport_name: str, session_id: str, prompt: str) -> str:
-    """Return a human-readable name for *session_id*.
+def generate_name(transport_name: str, prompt: str) -> str:
+    """Return a human-readable name for a new spawn.
 
     Format: ``{transport} : {n} : {task}`` where *n* is the per-transport
     spawn counter and *task* is the first five meaningful words from

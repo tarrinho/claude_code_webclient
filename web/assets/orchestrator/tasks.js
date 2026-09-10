@@ -2,7 +2,7 @@
 
 import { state } from "./state.js";
 import { apiFetch, formatTime } from "./api.js";
-import { abbrevTokens, formatUsd } from "../format.js?v=1";
+import { abbrevTokens, formatUsd } from "../format.js?v=6021618";
 import { showGoalBanner } from "./banners.js";
 import { $, el } from "./dom.js";
 import { addChatMessage, loadSupervisors, showActiveSupervisor } from "./list.js";

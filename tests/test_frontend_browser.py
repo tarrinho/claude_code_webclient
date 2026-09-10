@@ -3194,9 +3194,12 @@ class TransportStatsPanelTests(_BrowserFixture):
 
         headings = self.page.locator(
             "#panelServer .server-section-heading").all_inner_texts()
-        self.assertGreaterEqual(len(headings), 2, headings)
+        self.assertGreaterEqual(len(headings), 3, headings)
         self.assertIn("console", headings[0].lower(), headings)
-        self.assertIn("transport", headings[1].lower(), headings)
+        # Then the merged charts, then the transports. The live cards for the
+        # machine you are on come first; everything after them is comparison.
+        self.assertIn("all hosts", headings[1].lower(), headings)
+        self.assertIn("transport", headings[2].lower(), headings)
 
         # And in document order, not merely in heading order: the host's own
         # charts must sit above the transport table.
@@ -3248,11 +3251,11 @@ class TransportStatsPanelTests(_BrowserFixture):
     def test_changing_the_timeframe_redraws_the_transport_charts(self):
         """The controls govern every chart, not only the host's above them.
 
-        Asserted through the request the change makes: both chart sets are
-        built from one /api/system/series response, so if the new range does
-        not reach that request the transports keep the old window while the
-        host gets the new one -- two graphs side by side over different
-        spans, which is worse than either being wrong.
+        Asserted through the request the change makes: every line is built
+        from one /api/system/series response, so if the new range does not
+        reach that request the hosts keep the old window while the tables get
+        the new one -- one page showing two different spans, which is worse
+        than either being wrong.
         """
         import datetime
         import sqlite3
@@ -3283,7 +3286,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
         self.page.click("#settingsBtn")
         self.page.click('[data-tab="server"]')
-        self.page.wait_for_selector("#transportCharts .transport-chart-block",
+        self.page.wait_for_selector("#allHostCharts figure.stat-figure",
                                     timeout=15_000)
 
         series_calls = []
@@ -3312,11 +3315,10 @@ class TransportStatsPanelTests(_BrowserFixture):
             any("bucket=day" in url for url in series_calls),
             f"the new bucket never reached the series request: {series_calls}",
         )
-        # And the transport charts are still there afterwards -- a redraw that
-        # drops them is not a redraw.
+        # And the charts are still there afterwards -- a redraw that drops
+        # them is not a redraw.
         self.assertGreaterEqual(
-            self.page.locator(
-                "#transportCharts .transport-chart-block").count(), 1)
+            self.page.locator("#allHostCharts figure.stat-figure").count(), 1)
         self.assertEqual(self.errors, [])
 
     def test_the_table_lists_transports_without_collecting_anything(self):
@@ -3346,10 +3348,15 @@ class TransportStatsPanelTests(_BrowserFixture):
         )
         self.assertEqual(self.errors, [])
 
-    def test_a_transport_with_history_gets_its_own_charts(self):
-        """The graphs, and that they are the host's graphs rather than a
-        lighter lookalike: the same lineChart figure element, so the two sets
-        can be read against each other."""
+    def test_a_transport_with_history_joins_the_merged_charts(self):
+        """One chart per metric, a line per machine, the transport among them.
+
+        This replaced a block of four charts per host. The property that
+        matters now is that a transport appears *inside* the shared figures
+        rather than in a section of its own -- charts of its own are how the
+        page stopped being a comparison, because two charts fitted to two
+        different y-axes cannot be read against each other by eye.
+        """
         import datetime
         import sqlite3
         now = datetime.datetime.now(datetime.UTC)
@@ -3373,6 +3380,16 @@ class TransportStatsPanelTests(_BrowserFixture):
                 "VALUES (?,'transport','t-charted',?,?,?,?,?,?)",
                 (when, 20 + minutes, 40 + minutes, 55, 0.5, 0.4, 0.3),
             )
+            # And the console's own host over the same window: the whole
+            # point of the merged chart is two machines on one pair of axes,
+            # so a fixture with only the transport would pass while the
+            # console's line was missing.
+            con.execute(
+                "INSERT INTO system_samples (created_at,host_type,host_id,"
+                "cpu_pct,mem_pct,disk_pct,load1,load5,load15,cores) "
+                "VALUES (?,'local','local',?,?,?,?,?,?,4)",
+                (when, 10, 30, 45, 1.0, 0.9, 0.8),
+            )
         con.commit()
         con.close()
 
@@ -3381,28 +3398,121 @@ class TransportStatsPanelTests(_BrowserFixture):
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
         self.page.click("#settingsBtn")
         self.page.click('[data-tab="server"]')
-        self.page.wait_for_selector("#transportCharts .transport-chart-block",
+        self.page.wait_for_selector("#allHostCharts figure.stat-figure",
                                     timeout=15_000)
 
-        block = self.page.locator(
-            "#transportCharts .transport-chart-block", has_text="Charted Node").first
+        # One figure per metric. Exactly one CPU chart, not one per host.
+        captions = self.page.locator(
+            "#allHostCharts figcaption.stat-caption").all_inner_texts()
         self.assertEqual(
-            block.locator(".transport-chart-title").inner_text(), "Charted Node")
-        # The same figure element the host's own charts use.
-        figures = block.locator("figure.stat-figure")
-        self.assertGreaterEqual(
-            figures.count(), 4,
-            "expected CPU, memory, disk and load charts for the transport",
+            [c for c in captions if c == "CPU"], ["CPU"],
+            f"expected exactly one CPU chart, got captions {captions}",
         )
-        titles = block.inner_text()
-        for expected in ("CPU over time", "Memory over time", "Disk over time",
-                         "Load average over time"):
-            self.assertIn(expected, titles)
+        for expected in ("CPU", "Memory", "Disk"):
+            self.assertIn(expected, captions)
+
+        # The transport is a line inside them, named in the legend beside the
+        # console's own. Legend rather than any internal series bookkeeping:
+        # the legend is what tells a reader which line is which machine, and
+        # a chart that draws four indistinguishable lines is not a comparison.
+        cpu = self.page.locator(
+            "#allHostCharts figure.stat-figure",
+            has=self.page.locator("figcaption", has_text="CPU")).first
+        legend = cpu.locator(".stat-legend").inner_text()
+        self.assertIn("Charted Node", legend, legend)
+        self.assertIn("This console", legend, legend)
+        # And the peak is printed there, since it is no longer a second line.
+        self.assertIn("peak", legend.lower(), legend)
         self.assertEqual(self.errors, [])
 
-    def test_a_transport_with_no_history_gets_no_empty_axes(self):
-        """An empty pair of axes says "we measured nothing" in the same shape
-        a real measurement uses. The table's "--" already says it better."""
+    def test_a_host_with_no_core_count_is_left_out_of_the_load_chart(self):
+        """cores = 0 means "unknown", and dividing by it invents a figure.
+
+        The samples this seeds carry a load and no core count, which is what
+        every row written before the column existed looks like. The host must
+        be absent from that one chart while staying on the others -- omitting
+        it everywhere would hide readings that were genuinely taken.
+        """
+        import datetime
+        import sqlite3
+        now = datetime.datetime.now(datetime.UTC)
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO ssh_transports (id,name,owner_id,ssh_host,ssh_user,"
+            "ssh_key_path,ssh_host_key_fingerprint,remote_path,created_at,"
+            "updated_at) VALUES ('t-coreless','Coreless Node','admin',"
+            "'coreless.example','kali','~/.ssh/id_ed25519','','~/wc-proxy',?,?)",
+            (stamp, stamp),
+        )
+        con.execute(
+            "INSERT INTO ssh_transports (id,name,owner_id,ssh_host,ssh_user,"
+            "ssh_key_path,ssh_host_key_fingerprint,remote_path,created_at,"
+            "updated_at) VALUES ('t-cored','Cored Node','admin',"
+            "'cored.example','kali','~/.ssh/id_ed25519','','~/wc-proxy',?,?)",
+            (stamp, stamp),
+        )
+        for minutes in range(0, 50, 10):
+            when = (now - datetime.timedelta(minutes=minutes)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            con.execute(
+                "INSERT INTO system_samples (created_at,host_type,host_id,"
+                "cpu_pct,mem_pct,disk_pct,load1,load5,load15,cores) "
+                "VALUES (?,'transport','t-coreless',?,?,?,?,?,?,0)",
+                (when, 22, 44, 66, 3.5, 3.4, 3.3),
+            )
+            # Two hosts that do know their core count, so the load chart has
+            # two lines and therefore a legend at all -- it is only rendered
+            # for two or more series, and asserting an absence against an
+            # empty string would pass for the wrong reason.
+            con.execute(
+                "INSERT INTO system_samples (created_at,host_type,host_id,"
+                "cpu_pct,mem_pct,disk_pct,load1,load5,load15,cores) "
+                "VALUES (?,'local','local',?,?,?,?,?,?,4)",
+                (when, 11, 33, 55, 2.0, 1.9, 1.8),
+            )
+            con.execute(
+                "INSERT INTO system_samples (created_at,host_type,host_id,"
+                "cpu_pct,mem_pct,disk_pct,load1,load5,load15,cores) "
+                "VALUES (?,'transport','t-cored',?,?,?,?,?,?,8)",
+                (when, 12, 34, 56, 4.0, 3.9, 3.8),
+            )
+        con.commit()
+        con.close()
+
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#allHostCharts figure.stat-figure",
+                                    timeout=15_000)
+
+        def legend_of(caption):
+            figure = self.page.locator(
+                "#allHostCharts figure.stat-figure",
+                has=self.page.locator("figcaption", has_text=caption)).first
+            if not figure.count():
+                return ""
+            box = figure.locator(".stat-legend")
+            return box.inner_text() if box.count() else ""
+
+        self.assertIn("Coreless Node", legend_of("CPU"))
+        load_legend = legend_of("Load per core")
+        self.assertIn(
+            "Cored Node", load_legend,
+            "the load chart drew nothing at all, so the absence below proves "
+            "nothing",
+        )
+        self.assertNotIn(
+            "Coreless Node", load_legend,
+            "a host with no core count was plotted on the load chart anyway",
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_a_transport_with_no_history_is_absent_not_flat_at_zero(self):
+        """A line along the bottom says "measured, idle". Nothing was
+        measured, and the table's "--" already says that properly."""
         import datetime
         import sqlite3
         stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -3426,9 +3536,9 @@ class TransportStatsPanelTests(_BrowserFixture):
                                     timeout=10_000)
         self.page.wait_for_timeout(1500)
 
-        charts = self.page.locator(
-            "#transportCharts .transport-chart-block", has_text="Silent Node")
-        self.assertEqual(charts.count(), 0)
+        charts = self.page.locator("#allHostCharts")
+        if charts.count():
+            self.assertNotIn("Silent Node", charts.inner_text())
         # But it is still in the table, saying so.
         self.assertIn("Silent Node", self.page.inner_text("#transportStats"))
 

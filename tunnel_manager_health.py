@@ -73,7 +73,12 @@ def parse_stats(raw: dict[str, str]) -> dict[str, float]:
     transport as idle because its SSH exec failed.
     """
     parsed: dict[str, float] = {}
-    for label, column in (("cpu", "cpu_pct"), ("mem", "mem_pct"), ("disk", "disk_pct")):
+    # `cores` is deliberately excluded from the "did we read anything" test
+    # below: it is a property of the host, not a measurement of it, so a
+    # sample carrying nothing but a core count says nothing and must not be
+    # stored as though it did.
+    for label, column in (("cpu", "cpu_pct"), ("mem", "mem_pct"),
+                          ("disk", "disk_pct"), ("cores", "cores")):
         value = _one_number(raw.get(label, ""))
         if value is not None:
             parsed[column] = value
@@ -100,6 +105,11 @@ async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
         ("disk", "df -h / 2>/dev/null | awk 'NR==2{print $5}'"),
         ("mem", "free | awk '/Mem:/{printf \"%.1f\", $3/$2*100}'"),
         ("load", "cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}'"),
+        # The denominator for load average. Collected per sample rather than
+        # once per transport because there is nowhere to keep a per-transport
+        # fact that the bucketed aggregate can reach, and it costs one more
+        # exec on a connection that is already open and already running four.
+        ("cores", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null"),
     ]:
         try:
             _, stdout, _ = await exec_command(machine_id, cmd, timeout=5)
@@ -109,7 +119,7 @@ async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
 
     if store_fn:
         parsed = parse_stats(stats)
-        if not parsed:
+        if not {k for k in parsed if k != "cores"}:
             # Nothing readable came back. Storing this would write a row of
             # zeros that reads as a healthy idle host -- which is exactly what
             # the unmapped keys used to do.

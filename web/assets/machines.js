@@ -18,16 +18,16 @@ import {
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
   backendKindLabel,
-} from './app.js?v=56';
-import {apiFetch} from './api.js?v=1';
-import {notifyResult, setStatus} from './server-stats.js?v=2';
+} from './app.js?v=7392132';
+import {apiFetch} from './api.js?v=2741508';
+import {notifyResult, setStatus} from './server-stats.js?v=11490210';
 import {_transports, loadTransports, populateTransportPicker,
   // The transport group header offers these; see _buildTransportHeader.
   _showEditTransport, _deleteTransport,
   // Check / Init on the transport header -- see _buildTransportHeader.
   _checkTransport, _initTransport,
   // Sync + its pending-request queue; see _buildTransportHeader.
-  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=4';
+  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=12802782';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -186,7 +186,7 @@ async function _refreshTunnelStatus() {
       _tunnelStatusCache = (await resp.json()) || {};
       _renderMachineList();
     }
-  } catch (_) { /* ignore */ }
+  } catch (e) { console.error('[tunnel-status] refresh failed:', e); }
 }
 
 // Awaitable, and it fetches once before arming the interval. It used to only

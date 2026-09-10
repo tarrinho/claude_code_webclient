@@ -350,6 +350,96 @@ class PerHostSeriesTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_transport_history_is_an_empty_mapping(self):
         self.assertEqual(await db.system_series_by_host(days=None), {})
 
+    async def test_load_is_divided_by_the_hosts_own_core_count(self):
+        """The number that makes four machines comparable on one chart.
+
+        A load of 4 is idle on a 16-core box and a queue on a 2-core one, so
+        the raw figure puts them on incomparable scales. The division happens
+        in SQL because the core count is per host and the average is per
+        bucket.
+        """
+        await db.system_sample_insert(
+            {"load1": 4.0, "cores": 8}, host_type="transport", host_id="t-big")
+        await db.system_sample_insert(
+            {"load1": 4.0, "cores": 2}, host_type="transport", host_id="t-small")
+
+        series = await db.system_series_by_host(days=None, bucket="day")
+
+        self.assertEqual(series["t-big"][-1]["load_per_core"], 0.5)
+        self.assertEqual(series["t-small"][-1]["load_per_core"], 2.0)
+        # The raw load is still there: the tables print it, and dividing is a
+        # presentation choice that must not destroy the measurement.
+        self.assertEqual(series["t-big"][-1]["load1"], 4.0)
+
+    async def test_an_unknown_core_count_yields_no_figure_at_all(self):
+        """cores = 0 is "we do not know" -- every row written before the
+        column existed says that. A zero denominator must produce NULL, not
+        an error and not a made-up 1, so the chart can leave the host out
+        rather than plot a figure nobody measured."""
+        await db.system_sample_insert(
+            {"load1": 3.0, "cores": 0}, host_type="transport", host_id="t-nocore")
+
+        series = await db.system_series_by_host(days=None, bucket="day")
+
+        self.assertIsNone(series["t-nocore"][-1]["load_per_core"])
+        self.assertEqual(series["t-nocore"][-1]["load1"], 3.0)
+
+    async def test_the_local_series_computes_it_the_same_way(self):
+        """Both series feed one chart, so a difference here would be two
+        lines meaning different things on one pair of axes."""
+        await db.system_sample_insert({"load1": 2.0, "cores": 4})
+        local = await db.system_series(days=None, bucket="day")
+        self.assertEqual(local[-1]["load_per_core"], 0.5)
+        self.assertEqual(local[-1]["cores"], 4)
+
+
+class SpineAlignmentTests(unittest.TestCase):
+    """`align_hosts_to_spine`: every host on one x-axis, gaps as nulls.
+
+    Pure function, tested without a database: what it has to get right is the
+    filler value, and a zero there would draw a confident idle machine across
+    exactly the windows nobody sampled -- the same defect the collector's
+    unmapped keys produced, arriving by a different route.
+    """
+
+    def test_a_missing_bucket_is_filled_with_null_not_zero(self):
+        aligned = db.align_hosts_to_spine(
+            {"t-a": [{"bucket": "B", "samples": 2, "cpu_pct": 40.0}]},
+            ["A", "B", "C"],
+        )
+        rows = aligned["t-a"]
+        self.assertEqual([r["bucket"] for r in rows], ["A", "B", "C"])
+        self.assertIsNone(rows[0]["cpu_pct"])
+        self.assertIsNone(rows[2]["cpu_pct"])
+        self.assertEqual(rows[1]["cpu_pct"], 40.0)
+        # samples is a count of what was stored, so an empty bucket is 0 of
+        # them -- that one is a real zero rather than a missing reading.
+        self.assertEqual(rows[0]["samples"], 0)
+
+    def test_every_host_ends_up_on_the_same_axis(self):
+        aligned = db.align_hosts_to_spine(
+            {
+                "t-a": [{"bucket": "A", "samples": 1, "cpu_pct": 1.0}],
+                "t-b": [{"bucket": "C", "samples": 1, "cpu_pct": 2.0}],
+            },
+            ["A", "B", "C"],
+        )
+        self.assertEqual([r["bucket"] for r in aligned["t-a"]], ["A", "B", "C"])
+        self.assertEqual([r["bucket"] for r in aligned["t-b"]], ["A", "B", "C"])
+
+    def test_a_bucket_off_the_spine_is_kept_not_dropped(self):
+        """A reading is never discarded for failing to line up."""
+        aligned = db.align_hosts_to_spine(
+            {"t-a": [{"bucket": "D", "samples": 1, "cpu_pct": 9.0}]},
+            ["A", "B"],
+        )
+        self.assertEqual([r["bucket"] for r in aligned["t-a"]], ["A", "B", "D"])
+        self.assertEqual(aligned["t-a"][-1]["cpu_pct"], 9.0)
+
+    def test_an_empty_spine_changes_nothing(self):
+        rows = {"t-a": [{"bucket": "A", "samples": 1, "cpu_pct": 1.0}]}
+        self.assertEqual(db.align_hosts_to_spine(rows, []), rows)
+
 
 class SystemEndpointTests(unittest.IsolatedAsyncioTestCase):
     """GET /api/system carries the table's rows.
@@ -438,6 +528,37 @@ class SystemEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["transports"]["t-1"][-1]["cpu_pct"], 42.0)
         # The local series must not have the transport's reading in it.
         self.assertEqual(body["series"][-1]["cpu_pct"], 5.0)
+
+    async def test_the_transports_come_back_on_the_local_buckets(self):
+        """One chart per metric now, so the hosts share an x-axis and have to
+        agree on what the nth point means. Only the local series is
+        continuous -- a transport is sampled while its tunnel is up -- so the
+        response aligns them, filling with nulls so a disconnect breaks the
+        line instead of drawing a zero."""
+        import datetime
+        await db.ssh_transport_create(
+            "t-1", "Kali3", "admin", "kali-3.example", "kali", "~/.ssh/id_ed25519",
+        )
+        now = datetime.datetime.now(datetime.UTC)
+        older = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Two local buckets, one transport bucket inside them.
+        await db.db_conn.execute(
+            "INSERT INTO system_samples (created_at,host_type,host_id,cpu_pct) "
+            "VALUES (?,'local','local',5.0)", (older,))
+        await db.db_conn.commit()
+        await db.system_sample_insert({"cpu_pct": 6.0})
+        await db.system_sample_insert(
+            {"cpu_pct": 42.0}, host_type="transport", host_id="t-1")
+
+        body = self._client().get("/api/system/series?days=7&bucket=day").json()
+
+        local = [row["bucket"] for row in body["series"]]
+        remote = body["transports"]["t-1"]
+        self.assertGreater(len(local), 1, "the fixture needs two local buckets")
+        self.assertEqual([row["bucket"] for row in remote], local)
+        # The bucket it did not report in is a hole, not a reading of zero.
+        self.assertIsNone(remote[0]["cpu_pct"])
+        self.assertEqual(remote[-1]["cpu_pct"], 42.0)
 
     async def test_the_local_snapshot_still_comes_back(self):
         """The addition must not displace what this route already served."""

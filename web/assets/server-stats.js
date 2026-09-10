@@ -4,8 +4,8 @@
 // straight off /proc, while the history comes from the sampler's table and is
 // empty until the server has been up for a sampling interval.
 
-import {apiFetch} from './api.js?v=1';
-import {showToast, settingsVisible} from './app.js?v=56';
+import {apiFetch} from './api.js?v=2741508';
+import {showToast, settingsVisible} from './app.js?v=7392132';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
@@ -68,15 +68,18 @@ export async function loadServer(quiet = false) {
     const history = await histResp.json();
     // Lazily imported for the same reason as the statistics module: it is a
     // rarely-opened tab and pure weight in every other page load.
-    const {renderServer, renderTransportHistory} = await import('./server.js');
-    renderServer(body, {live, history});
-    // Transports above the host's own charts, and rendered from the same two
-    // payloads already fetched -- no request per transport.
+    const {renderServer, renderAllHosts, renderHostHistory} =
+      await import('./server.js');
+    renderServer(body, {live});
+    // Three containers, one payload pair, no request per transport. The
+    // merged charts need both: the series come from the history response and
+    // the host names from the live one, which is the only place a transport's
+    // name is known.
+    const charts = byId('allHostCharts');
+    if (charts) renderAllHosts(charts, {history, transports: live.transports || []});
     _renderTransportStats(byId('transportStats'), live.transports || []);
-    _renderTransportCharts(
-      byId('transportCharts'), live.transports || [],
-      history.transports || {}, renderTransportHistory,
-    );
+    const figures = byId('serverHistory');
+    if (figures) renderHostHistory(figures, history);
     if (count) {
       const cpu = Math.round(live.cpu_pct || 0);
       const mem = Math.round(live.mem_pct || 0);
@@ -114,34 +117,6 @@ function _transportNote(text) {
   note.className = 'transport-stats-note';
   note.textContent = text;
   return note;
-}
-
-/** A chart block per transport, in the same order as the table above it. */
-function _renderTransportCharts(host, transports, seriesByHost, renderHistory) {
-  if (!host) return;
-  const blocks = [];
-  for (const transport of transports) {
-    const rows = seriesByHost[transport.id] || [];
-    // A transport that has never reported gets no chart block at all. An
-    // empty pair of axes says "we measured nothing" in the same shape a real
-    // measurement uses, and the table above already says "--"/"never".
-    if (!rows.length) continue;
-    const section = document.createElement('section');
-    section.className = 'transport-chart-block';
-    const heading = document.createElement('h4');
-    heading.className = 'transport-chart-title';
-    heading.textContent = transport.name || transport.id;
-    if (transport.ssh_host) heading.title = transport.ssh_host;
-    section.appendChild(heading);
-    renderHistory(section, rows);
-    blocks.push(section);
-  }
-  if (!blocks.length) {
-    host.replaceChildren(_transportNote(
-      'No transport history stored for this period yet.'));
-    return;
-  }
-  host.replaceChildren(...blocks);
 }
 
 function _transportCell(value, unit, hotAt) {

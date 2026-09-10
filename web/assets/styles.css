@@ -864,16 +864,6 @@ button{touch-action:manipulation}
 .transport-stat-none { text-align: right; color: var(--muted); }
 .transport-stat-when { text-align: right; color: var(--muted); }
 .transport-stat-hot { color: var(--bad); }
-/* One chart block per transport, above the console host's own charts. */
-.transport-charts { display: grid; gap: 14px; margin: 14px 0 22px; }
-.transport-chart-block {
-  padding: 10px 12px;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: var(--panel);
-}
-.transport-chart-title {
-  margin: 0 0 6px; font-size: 12px; font-weight: 650;
-}
 @media(max-width:480px){
   .transport-stat-row { grid-template-columns: minmax(0, 1fr) 3rem 3rem 4rem; }
   .transport-stat-row > :nth-child(5), .transport-stat-row > :nth-child(6) { display: none; }

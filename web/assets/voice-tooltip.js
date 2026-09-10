@@ -4,16 +4,16 @@
 // voice-conversation.js (2026-09-10); see voice-engine.js's header for why.
 // Agree/Summarize/Reject and the streaming hooks live in voice-handoff.js.
 
-import {apiFetch} from './api.js?v=1';
-import {showToast} from './app.js?v=56';
+import {apiFetch} from './api.js?v=2741508';
+import {showToast} from './app.js?v=7392132';
 import {
   setVoiceStatus, startListening, updateVoiceButtonVisibility,
   stopListeningForClose, refreshButtonRefs, resetTranscript, voiceStatus,
   voiceMicBtn, voiceLiveBtn,
-} from './voice-engine.js?v=1';
+} from './voice-engine.js?v=7083095';
 import {
   resetVoiceHandoffState, voiceConversationComplete, voiceHandoffReject,
-} from './voice-handoff.js?v=1';
+} from './voice-handoff.js?v=15895927';
 
 export const voiceOverlay = document.getElementById('voiceOverlay');
 const voiceTooltip = document.getElementById('voiceTooltip');

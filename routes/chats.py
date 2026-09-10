@@ -29,6 +29,7 @@ import runner
 import transcripts
 import turns
 from classification import _asks_a_question
+from routes.naming import generate_name as _generate_agent_name
 from routes.voice import stream_voice_turn, voice_handoff as voice_handoff_fn
 from shared import (
     _MODEL_RE,
@@ -43,6 +44,49 @@ from shared import (
 _log = logging.getLogger("wc.app")
 
 router = APIRouter()
+
+
+async def _resolve_transport_name(chat_id: str, owner: str | None) -> str:
+    """Resolve a transport/agent display name for a turn.
+
+    Returns the SSH transport host (tunnelled), the machine's alias or host,
+    or ``"local"`` as the fallback.  Best-effort: failures are silent.
+    """
+    import db as _db
+
+    try:
+        routing = await _db.chat_routing(chat_id)
+        machine = routing.get("machine") or await _db.ai_machine_backend(owner) if owner else None
+        if not machine:
+            return "local"
+        if machine.get("transport_id"):
+            from tunnel_manager import tunnel_status as _tunnel_status
+            status = await _tunnel_status(machine["id"])
+            if status and status.get("ssh_host"):
+                return status["ssh_host"]
+        alias = (machine.get("alias") or "").strip()
+        if alias:
+            return alias
+        host = (machine.get("host") or "").strip()
+        if host:
+            return host
+    except Exception:
+        pass
+    return "local"
+
+
+async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: str | None) -> None:
+    """Generate and persist the human-readable agent name for *session_id*.
+
+    Resolves the transport name, calls :func:`routes.naming.generate_name`,
+    and writes the result into the session JSON so the session listing shows it.
+    """
+    try:
+        transport_name = await _resolve_transport_name(chat_id, owner)
+        name = _generate_agent_name(transport_name, prompt)
+        db.write_claude_session_file(session_id, name, "")
+    except Exception:
+        pass  # Naming is non-critical — don't break the turn
 
 
 def _transcript_mtimes_sync(session_ids: list[str]) -> dict[str, str]:
@@ -970,6 +1014,9 @@ async def handle_submit_message(request: Request, chat_id: str):
     await db.bump_chat_updated_at(chat_id)
     if session_id and session_id != chat["session_id"]:
         await db.chat_set_session(chat_id, session_id)
+    # Human-readable agent name — resolved from the transport/agent that handled this turn.
+    if session_id:
+        await _write_agent_name(session_id, prompt, chat_id, session.get("user"))
     # This turn was just stored above and the runner also appended it to the
     # CLI transcript, so step the sync past it or the next poll shows it twice.
     if session_id or chat.get("session_id"):
@@ -1135,6 +1182,9 @@ async def _start_turn(
         await db.bump_chat_updated_at(chat_id)
         if session_id and session_id != chat["session_id"]:
             await db.chat_set_session(chat_id, session_id)
+        # Human-readable agent name — resolved from the transport/agent that handled this turn.
+        if session_id:
+            await _write_agent_name(session_id, prompt, chat_id, owner)
         # The served model is not written back here either -- see the blocking
         # path above. `chats.model` means "the user chose this", and routing
         # reads it before everything else.

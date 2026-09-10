@@ -186,6 +186,7 @@ def __getattr__(name: str):
         "system_sample_insert": "routes.db_usage",
         "system_latest_by_host": "routes.db_usage",
         "system_series_by_host": "routes.db_usage",
+        "align_hosts_to_spine": "routes.db_usage",
         "system_latest": "routes.db_usage",
         "system_series": "routes.db_usage",
         "system_prune": "routes.db_usage",
@@ -1299,6 +1300,18 @@ async def _ensure_machines_columns() -> None:
             await db_conn.execute(
                 f"ALTER TABLE system_samples ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
             )  # nosec B608: column names are static literals
+    # Cores, so load average can be compared between hosts at all. A load of
+    # 4.0 is saturation on a 4-thread box and half-idle on an 8-core one, so
+    # one chart with several hosts' raw load on it invites a wrong read.
+    # 0 means unknown -- every row written before this migration -- and an
+    # unknown host is left out of the per-core series rather than divided by
+    # zero. A real column rather than a key in `data`, because the value is
+    # needed inside the bucketed aggregate and json_extract in a GROUP BY over
+    # this table is both slower and harder to read.
+    if "cores" not in ss_columns:
+        await db_conn.execute(
+            "ALTER TABLE system_samples ADD COLUMN cores INTEGER NOT NULL DEFAULT 0"
+        )
 
     await db_conn.commit()
 

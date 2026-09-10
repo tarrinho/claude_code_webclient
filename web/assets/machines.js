@@ -168,13 +168,27 @@ async function _refreshTunnelStatus() {
   } catch (_) { /* ignore */ }
 }
 
+// Awaitable, and it fetches once before arming the interval. It used to only
+// call setInterval, so the status cache stayed empty for the first 5 seconds
+// after the panel opened -- and _transportStatus reads a missing cache entry
+// as "uninitialized", because it has no way to say "not known yet". So every
+// open of Settings + Backends showed every transport as Uninitialized and
+// then flipped to Active up to 5s later. That is the "keeps showing wrong
+// information" reported on 2026-09-08, -09 and -10, and the reason clicking
+// Check appeared to do nothing: the badge was never reading Check's result,
+// it was waiting for a poll that had not happened yet.
+//
+// Returning the promise lets loadBackends await it *before* the first render,
+// so the first paint is correct rather than corrected.
 export function _pollTunnelStatus(active) {
   if (active && !_tunnelPollId) {
     _tunnelPollId = setInterval(_refreshTunnelStatus, 5000);
+    return _refreshTunnelStatus();
   } else if (!active && _tunnelPollId) {
     clearInterval(_tunnelPollId);
     _tunnelPollId = null;
   }
+  return Promise.resolve();
 }
 
 // transports.js dispatches this after Init, or a fully-passing Check, queues

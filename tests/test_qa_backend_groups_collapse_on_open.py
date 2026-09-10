@@ -75,7 +75,20 @@ class CalledEveryTimeThePanelOpensTests(unittest.TestCase):
         match = re.search(
             r"async function loadBackends\(\)\s*\{(.*?)\n\}", self.js, re.DOTALL)
         self.assertIsNotNone(match, "loadBackends not found in app.js")
-        self.body = match.group(1)
+        # Comment lines stripped before any ordering assertion below. The
+        # ordering tests use body.index(), which matches a *mention* as
+        # readily as a call -- and the comments in this function necessarily
+        # name the very calls being ordered, to explain why that order
+        # matters. A comment above the code saying "status used to be fetched
+        # after _renderMachineList()" put that string earlier in the body than
+        # the real call and failed the test against correct code. Same trap
+        # test_qa_agent_spawn_not_blocked.py hit and solved the same way; a
+        # test that can be broken by documenting the code is a test that
+        # discourages documenting the code.
+        self.body = "\n".join(
+            line for line in match.group(1).splitlines()
+            if not line.lstrip().startswith("//")
+        )
 
     def test_app_js_imports_the_reset(self):
         self.assertIn("_collapseAllTransportGroups", self.js)

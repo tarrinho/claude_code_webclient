@@ -600,7 +600,7 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=9';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=10';
 
 import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=4';
 
@@ -2037,15 +2037,28 @@ async function ensurePinnedModels(chat) {
 async function loadBackends() {
   await loadMachines();
   await loadTransports();
-  await loadTurnCounts();
+  // Tunnel status BEFORE the first render, and turn counts after it. Both
+  // orderings were wrong and both were visible.
+  //
+  // Status used to be fetched after _renderMachineList(), so the badges were
+  // painted against an empty cache -- which _transportStatus reads as
+  // "uninitialized", having no way to say "not known yet". Every open of this
+  // panel therefore showed every transport as Uninitialized before flipping
+  // to Active, which is the wrong information reported on 2026-09-08, -09 and
+  // -10, and why clicking Check looked like it did nothing.
+  //
+  // Turn counts used to be awaited before the render, so the whole panel
+  // waited on a 30-day usage aggregate to paint a single column. It is the
+  // slowest call here and the least urgent; the cards render without it and
+  // the counts fill in when they arrive.
+  const hasSsh = _machines.some(m => m.backend_kind === 'ssh_proxy');
+  await _pollTunnelStatus(hasSsh);
   // Every transport group starts collapsed (shrunk) on open -- runs every
   // time this panel is shown, not only on first load, so switching away and
   // back resets it too.
   _collapseAllTransportGroups();
   _renderMachineList();
-  // Start (or stop) 5s tunnel status polling so transport badges update live.
-  const hasSsh = _machines.some(m => m.backend_kind === 'ssh_proxy');
-  _pollTunnelStatus(hasSsh);
+  loadTurnCounts().then(_renderMachineList);
   await Promise.all(
     _machines
       .filter(machine => machine.provider === 'claude_code')

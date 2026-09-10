@@ -297,6 +297,60 @@ class CollectorStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values["load1"], 0.52)
 
 
+class PerHostSeriesTests(unittest.IsolatedAsyncioTestCase):
+    """`system_series_by_host`: one grouped query for every transport's
+    history, keyed by transport, so the Server page can draw a chart each
+    without a request per host."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+
+    async def test_each_transport_gets_its_own_key(self):
+        await db.system_sample_insert(
+            {"cpu_pct": 10.0}, host_type="transport", host_id="t-a")
+        await db.system_sample_insert(
+            {"cpu_pct": 90.0}, host_type="transport", host_id="t-b")
+
+        series = await db.system_series_by_host(days=None, bucket="day")
+
+        self.assertEqual(set(series), {"t-a", "t-b"})
+        self.assertEqual(series["t-a"][-1]["cpu_pct"], 10.0)
+        self.assertEqual(series["t-b"][-1]["cpu_pct"], 90.0)
+
+    async def test_the_local_host_is_not_among_them(self):
+        """It has its own series and its own charts; including it here would
+        draw the console's host twice under a transport heading."""
+        await db.system_sample_insert({"cpu_pct": 5.0})
+        self.assertEqual(await db.system_series_by_host(days=None), {})
+
+    async def test_the_columns_match_the_local_series(self):
+        """The charts are the same charts, so the rows must have the same
+        shape -- a second, subtly different aggregation would render two
+        graphs that look alike and mean different things."""
+        await db.system_sample_insert({"cpu_pct": 1.0})
+        await db.system_sample_insert(
+            {"cpu_pct": 1.0}, host_type="transport", host_id="t-a")
+
+        local = await db.system_series(days=None, bucket="day")
+        remote = await db.system_series_by_host(days=None, bucket="day")
+
+        for field in ("bucket", "samples", "cpu_pct", "cpu_max", "mem_pct",
+                      "mem_max", "disk_pct", "disk_pct_max", "load1",
+                      "load1_max", "load5", "load15"):
+            with self.subTest(field=field):
+                self.assertIn(field, local[-1])
+                self.assertIn(field, remote["t-a"][-1])
+
+    async def test_no_transport_history_is_an_empty_mapping(self):
+        self.assertEqual(await db.system_series_by_host(days=None), {})
+
+
 class SystemEndpointTests(unittest.IsolatedAsyncioTestCase):
     """GET /api/system carries the table's rows.
 
@@ -365,6 +419,25 @@ class SystemEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_transports_is_an_empty_list_not_an_error(self):
         body = self._client().get("/api/system").json()
         self.assertEqual(body["transports"], [])
+
+    async def test_the_series_endpoint_carries_every_transport(self):
+        """One request for the whole page: the local series and every
+        transport's, so drawing four charts costs no extra round trips."""
+        await db.ssh_transport_create(
+            "t-1", "Kali3", "admin", "kali-3.example", "kali", "~/.ssh/id_ed25519",
+        )
+        await db.system_sample_insert({"cpu_pct": 5.0})
+        await db.system_sample_insert(
+            {"cpu_pct": 42.0}, host_type="transport", host_id="t-1")
+
+        body = self._client().get("/api/system/series?days=1&bucket=day").json()
+
+        self.assertIn("series", body)
+        self.assertIn("transports", body)
+        self.assertIn("t-1", body["transports"])
+        self.assertEqual(body["transports"]["t-1"][-1]["cpu_pct"], 42.0)
+        # The local series must not have the transport's reading in it.
+        self.assertEqual(body["series"][-1]["cpu_pct"], 5.0)
 
     async def test_the_local_snapshot_still_comes_back(self):
         """The addition must not displace what this route already served."""

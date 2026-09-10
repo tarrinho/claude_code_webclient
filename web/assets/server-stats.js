@@ -5,7 +5,7 @@
 // empty until the server has been up for a sampling interval.
 
 import {apiFetch} from './api.js?v=1';
-import {showToast, settingsVisible} from './app.js?v=55';
+import {showToast, settingsVisible} from './app.js?v=56';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
@@ -68,8 +68,15 @@ export async function loadServer(quiet = false) {
     const history = await histResp.json();
     // Lazily imported for the same reason as the statistics module: it is a
     // rarely-opened tab and pure weight in every other page load.
-    const {renderServer} = await import('./server.js');
+    const {renderServer, renderTransportHistory} = await import('./server.js');
     renderServer(body, {live, history});
+    // Transports above the host's own charts, and rendered from the same two
+    // payloads already fetched -- no request per transport.
+    _renderTransportStats(byId('transportStats'), live.transports || []);
+    _renderTransportCharts(
+      byId('transportCharts'), live.transports || [],
+      history.transports || {}, renderTransportHistory,
+    );
     if (count) {
       const cpu = Math.round(live.cpu_pct || 0);
       const mem = Math.round(live.mem_pct || 0);
@@ -94,6 +101,118 @@ export async function loadServer(quiet = false) {
 // underneath the modal overlay -- the result appeared to land on the page
 // behind. #settingsStatus is the dialog's own aria-live region, so it is both
 // visible and announced.
+/** Fill the Server tab's transport table from stored samples.
+ *
+ *  Nothing is collected here. The tunnel poller writes a sample per connected
+ *  transport on its own interval, and this reads the newest one per host --
+ *  which is the whole point: opening the tab costs a database read, not four
+ *  SSH round-trips.
+ */
+
+function _transportNote(text) {
+  const note = document.createElement('div');
+  note.className = 'transport-stats-note';
+  note.textContent = text;
+  return note;
+}
+
+/** A chart block per transport, in the same order as the table above it. */
+function _renderTransportCharts(host, transports, seriesByHost, renderHistory) {
+  if (!host) return;
+  const blocks = [];
+  for (const transport of transports) {
+    const rows = seriesByHost[transport.id] || [];
+    // A transport that has never reported gets no chart block at all. An
+    // empty pair of axes says "we measured nothing" in the same shape a real
+    // measurement uses, and the table above already says "--"/"never".
+    if (!rows.length) continue;
+    const section = document.createElement('section');
+    section.className = 'transport-chart-block';
+    const heading = document.createElement('h4');
+    heading.className = 'transport-chart-title';
+    heading.textContent = transport.name || transport.id;
+    if (transport.ssh_host) heading.title = transport.ssh_host;
+    section.appendChild(heading);
+    renderHistory(section, rows);
+    blocks.push(section);
+  }
+  if (!blocks.length) {
+    host.replaceChildren(_transportNote(
+      'No transport history stored for this period yet.'));
+    return;
+  }
+  host.replaceChildren(...blocks);
+}
+
+function _transportCell(value, unit, hotAt) {
+  const cell = document.createElement('span');
+  // null/undefined is "no reading", and must not print as 0 -- a zero here
+  // reads as an idle host, which is exactly what the unmapped collector keys
+  // made every transport look like.
+  if (value === null || value === undefined) {
+    cell.className = 'transport-stat-none';
+    cell.textContent = '--';
+    cell.title = 'No reading stored yet';
+    return cell;
+  }
+  cell.className = 'transport-stat-num';
+  if (hotAt !== undefined && Number(value) >= hotAt) {
+    cell.className += ' transport-stat-hot';
+  }
+  cell.textContent = unit === '%' ? `${Math.round(value)}%` : Number(value).toFixed(2);
+  return cell;
+}
+
+function _agoText(stamp) {
+  if (!stamp) return 'never';
+  const then = new Date(/Z$|[+-]\d\d:?\d\d$/.test(stamp) ? stamp : `${stamp}Z`);
+  if (Number.isNaN(then.getTime())) return 'unknown';
+  const seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
+  if (seconds < 90) return `${seconds}s ago`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
+}
+
+function _renderTransportStats(host, rows) {
+  if (!rows.length) {
+    host.replaceChildren(_transportNote('No SSH transports configured.'));
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'transport-stat-row is-head';
+  ['Transport', 'CPU', 'Mem', 'Disk', 'Load', 'Sampled'].forEach((label, i) => {
+    const cell = document.createElement('span');
+    cell.className = i === 0 ? 'transport-stat-name' : 'transport-stat-num';
+    cell.textContent = label;
+    head.appendChild(cell);
+  });
+
+  const body = rows.map(row => {
+    const line = document.createElement('div');
+    line.className = 'transport-stat-row';
+    const name = document.createElement('span');
+    name.className = 'transport-stat-name';
+    name.textContent = row.name || row.id;
+    if (row.ssh_host) name.title = row.ssh_host;
+    line.append(
+      name,
+      _transportCell(row.cpu_pct, '%', 90),
+      _transportCell(row.mem_pct, '%', 90),
+      _transportCell(row.disk_pct, '%', 90),
+      _transportCell(row.load1, 'load'),
+    );
+    const when = document.createElement('span');
+    when.className = 'transport-stat-when';
+    when.textContent = _agoText(row.sampled_at);
+    if (row.sampled_at) when.title = row.sampled_at;
+    line.appendChild(when);
+    return line;
+  });
+  host.replaceChildren(head, ...body);
+}
+
+
 export function notifyResult(message, type = '') {
   if (settingsVisible) setStatus(message, type === 'error' ? 'error' : 'success');
   else showToast(message, type);

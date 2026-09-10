@@ -3110,7 +3110,7 @@ class SupervisorMapBrowserTests(_BrowserFixture):
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class TransportStatsPanelTests(_BrowserFixture):
-    """The Statistics tab's transport table, rendered in a real browser.
+    """The Server tab's transport table and charts, in a real browser.
 
     Worth a browser test rather than only a payload test: the whole feature is
     that opening the tab reads stored rows instead of collecting anything, and
@@ -3131,10 +3131,10 @@ class TransportStatsPanelTests(_BrowserFixture):
             lambda r: calls.append(r.url) if "/api/system" in r.url else None,
         )
         self.page.click("#settingsBtn")
-        self.page.click('[data-tab="stats"]')
-        self.page.wait_for_timeout(2500)
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_timeout(3000)
 
-        self.assertTrue(calls, "the Statistics tab never asked for host stats")
+        self.assertTrue(calls, "the Server tab never asked for host stats")
         # One read of stored rows, not one SSH round-trip per transport.
         self.assertLessEqual(len(calls), 2, calls)
 
@@ -3146,6 +3146,92 @@ class TransportStatsPanelTests(_BrowserFixture):
             f"unexpected transport table content: {rendered[:200]!r}",
         )
         self.assertEqual(self.errors, [])
+
+    def test_a_transport_with_history_gets_its_own_charts(self):
+        """The graphs, and that they are the host's graphs rather than a
+        lighter lookalike: the same lineChart figure element, so the two sets
+        can be read against each other."""
+        import datetime
+        import sqlite3
+        now = datetime.datetime.now(datetime.UTC)
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO ssh_transports (id,name,owner_id,ssh_host,ssh_user,"
+            "ssh_key_path,ssh_host_key_fingerprint,remote_path,created_at,"
+            "updated_at) VALUES ('t-charted','Charted Node','admin',"
+            "'charted.example','kali','~/.ssh/id_ed25519','','~/wc-proxy',?,?)",
+            (stamp, stamp),
+        )
+        # Several samples across the window, so the series has something to
+        # draw rather than a single point.
+        for minutes in range(0, 50, 10):
+            when = (now - datetime.timedelta(minutes=minutes)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            con.execute(
+                "INSERT INTO system_samples (created_at,host_type,host_id,"
+                "cpu_pct,mem_pct,disk_pct,load1,load5,load15) "
+                "VALUES (?,'transport','t-charted',?,?,?,?,?,?)",
+                (when, 20 + minutes, 40 + minutes, 55, 0.5, 0.4, 0.3),
+            )
+        con.commit()
+        con.close()
+
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#transportCharts .transport-chart-block",
+                                    timeout=15_000)
+
+        block = self.page.locator(
+            "#transportCharts .transport-chart-block", has_text="Charted Node").first
+        self.assertEqual(
+            block.locator(".transport-chart-title").inner_text(), "Charted Node")
+        # The same figure element the host's own charts use.
+        figures = block.locator("figure.stat-figure")
+        self.assertGreaterEqual(
+            figures.count(), 4,
+            "expected CPU, memory, disk and load charts for the transport",
+        )
+        titles = block.inner_text()
+        for expected in ("CPU over time", "Memory over time", "Disk over time",
+                         "Load average over time"):
+            self.assertIn(expected, titles)
+        self.assertEqual(self.errors, [])
+
+    def test_a_transport_with_no_history_gets_no_empty_axes(self):
+        """An empty pair of axes says "we measured nothing" in the same shape
+        a real measurement uses. The table's "--" already says it better."""
+        import datetime
+        import sqlite3
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO ssh_transports (id,name,owner_id,ssh_host,ssh_user,"
+            "ssh_key_path,ssh_host_key_fingerprint,remote_path,created_at,"
+            "updated_at) VALUES ('t-silent','Silent Node','admin',"
+            "'silent.example','kali','~/.ssh/id_ed25519','','~/wc-proxy',?,?)",
+            (stamp, stamp),
+        )
+        con.commit()
+        con.close()
+
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#transportStats .transport-stat-row",
+                                    timeout=10_000)
+        self.page.wait_for_timeout(1500)
+
+        charts = self.page.locator(
+            "#transportCharts .transport-chart-block", has_text="Silent Node")
+        self.assertEqual(charts.count(), 0)
+        # But it is still in the table, saying so.
+        self.assertIn("Silent Node", self.page.inner_text("#transportStats"))
 
     def test_a_transport_with_no_reading_shows_a_dash_not_a_zero(self):
         """A 0 here reads as an idle host, which is precisely what the broken
@@ -3168,7 +3254,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
         self.page.click("#settingsBtn")
-        self.page.click('[data-tab="stats"]')
+        self.page.click('[data-tab="server"]')
         self.page.wait_for_selector("#transportStats .transport-stat-row",
                                     timeout=10_000)
 

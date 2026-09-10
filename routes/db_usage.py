@@ -660,6 +660,51 @@ async def system_latest_by_host() -> list[dict[str, Any]]:
     return [dict(r) for r in await cur.fetchall()]
 
 
+async def system_series_by_host(
+    days: int | None = 1, bucket: str = "halfhour"
+) -> dict[str, list[dict[str, Any]]]:
+    """Every transport's samples bucketed over time, keyed by host_id.
+
+    One grouped query for all of them rather than one request per transport:
+    the page draws a chart per transport, the number of transports is not
+    fixed, and an N+1 here would make opening the Server tab cost a round
+    trip per configured host.
+
+    Shares `system_series`' bucket expression and column list deliberately --
+    the charts are the same charts, so the rows have to have the same shape.
+    A second, subtly different aggregation would render two graphs that look
+    alike and mean different things.
+    """
+    expr, expr_params = _bucket_expr(bucket)
+    params: list[Any] = [*expr_params]
+    where = "host_type != 'local'"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    cur = await db.db_conn.execute(
+        f"SELECT host_id, {expr} AS bucket, "  # nosec B608: expression is ours
+        "COUNT(*) AS samples, "
+        "ROUND(AVG(cpu_pct), 1) AS cpu_pct, "
+        "ROUND(MAX(cpu_pct), 1) AS cpu_max, "
+        "ROUND(AVG(mem_pct), 1) AS mem_pct, "
+        "ROUND(MAX(mem_pct), 1) AS mem_max, "
+        "ROUND(AVG(disk_pct), 1) AS disk_pct, "
+        "ROUND(MAX(disk_pct), 1) AS disk_pct_max, "
+        "ROUND(AVG(load1), 2) AS load1, "
+        "ROUND(MAX(load1), 2) AS load1_max, "
+        "ROUND(AVG(load5), 2) AS load5, "
+        "ROUND(AVG(load15), 2) AS load15 "
+        f"FROM system_samples WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY host_id, bucket ORDER BY host_id ASC, bucket ASC",
+        params,
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in await cur.fetchall():
+        entry = dict(row)
+        out.setdefault(entry.pop("host_id"), []).append(entry)
+    return out
+
+
 async def system_series(
     days: int | None = 7, bucket: str = "hour", fill: bool = False
 ) -> list[dict[str, Any]]:

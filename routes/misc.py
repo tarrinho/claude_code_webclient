@@ -698,6 +698,16 @@ async def handle_system_series_get(request: Request):
             # the chart can break its line instead of skipping the interval and
             # drawing the readings either side as though they were consecutive.
             "series": await db.system_series(days, bucket, fill=True),
+            # Every transport's series in the same response, keyed by
+            # transport id. One request and one grouped query rather than a
+            # round trip per configured host: the Server page draws a chart
+            # per transport, and the number of transports is not fixed.
+            #
+            # Rows here are NOT gap-filled, unlike the local series above. A
+            # transport is only sampled while its tunnel is connected, so a
+            # gap is the normal state rather than a missing reading, and
+            # filling it would draw a confident null across every disconnect.
+            "transports": await db.system_series_by_host(days, bucket),
         }
     )
 

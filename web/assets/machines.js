@@ -18,9 +18,9 @@ import {
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
   backendKindLabel,
-} from './app.js?v=55';
+} from './app.js?v=56';
 import {apiFetch} from './api.js?v=1';
-import {notifyResult, setStatus} from './server-stats.js?v=1';
+import {notifyResult, setStatus} from './server-stats.js?v=2';
 import {_transports, loadTransports, populateTransportPicker,
   // The transport group header offers these; see _buildTransportHeader.
   _showEditTransport, _deleteTransport,

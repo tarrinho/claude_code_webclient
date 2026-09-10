@@ -185,6 +185,7 @@ def __getattr__(name: str):
         "_on_spine": "routes.db_usage",
         "system_sample_insert": "routes.db_usage",
         "system_latest_by_host": "routes.db_usage",
+        "system_series_by_host": "routes.db_usage",
         "system_latest": "routes.db_usage",
         "system_series": "routes.db_usage",
         "system_prune": "routes.db_usage",

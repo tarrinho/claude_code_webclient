@@ -32,6 +32,14 @@ export function pct(n) {
   return `${(Number(n) || 0).toFixed(0)}%`;
 }
 
+/** Load average, to two decimals. Module scope because two chart builders
+ *  use it now -- it was a local inside renderHistory, so the transport
+ *  charts referenced an undefined name and would have thrown at render
+ *  time while the syntax gate, which only parses, stayed green. */
+export function loadFmt(v) {
+  return (Number(v) || 0).toFixed(2);
+}
+
 /** "3d 4h", "4h 12m", "12m" -- the two largest units that are non-zero. */
 export function duration(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -237,7 +245,6 @@ function renderHistory(container, payload) {
     {key: '5', field: 'load5'},
     {key: '15', field: 'load15'},
   ]);
-  const loadFmt = v => (Number(v) || 0).toFixed(2);
   lineChart(container, load, {
     title: 'Load average over time',
     colorFor: key => slotColor({1: 1, 5: 3, 15: 4}[key] || 8),
@@ -270,6 +277,73 @@ function renderHistory(container, payload) {
   container.appendChild(el('p', 'srv-note',
     `${exact(samples)} samples across ${rows.length} periods · ` +
     `kept for ${payload.retention_days} days`));
+}
+
+/** One transport's charts: the same four the host below gets.
+ *
+ *  Deliberately the same `lineChart`/`seriesFrom` pair rather than a lighter
+ *  variant. These graphs are read against the host's own, and two chart
+ *  builders would eventually disagree about axis scaling or how a gap is
+ *  drawn -- at which point comparing them silently stops being valid.
+ *
+ *  What is left out on purpose: the per-metric `seriesTable` the host gets.
+ *  Four transports times four tables is a page nobody reads, and the current
+ *  figures are already in the summary table above.
+ */
+export function renderTransportHistory(container, rows) {
+  if (!rows || !rows.length) {
+    container.appendChild(el('p', 'stat-empty',
+      'No samples stored for this period. A transport is sampled only while '
+      + 'its tunnel is connected.'));
+    return;
+  }
+
+  const cpu = seriesFrom(rows, [
+    {key: 'avg', field: 'cpu_pct'},
+    {key: 'peak', field: 'cpu_max'},
+  ]);
+  lineChart(container, cpu, {
+    title: 'CPU over time',
+    colorFor: key => slotColor(key === 'peak' ? 2 : 1),
+    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
+    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
+  });
+
+  const mem = seriesFrom(rows, [
+    {key: 'avg', field: 'mem_pct'},
+    {key: 'peak', field: 'mem_max'},
+  ]);
+  lineChart(container, mem, {
+    title: 'Memory over time',
+    colorFor: key => slotColor(key === 'peak' ? 2 : 3),
+    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
+    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
+  });
+
+  const disk = seriesFrom(rows, [
+    {key: 'avg', field: 'disk_pct'},
+    {key: 'peak', field: 'disk_pct_max'},
+  ]);
+  lineChart(container, disk, {
+    title: 'Disk over time',
+    colorFor: key => slotColor(key === 'peak' ? 2 : 4),
+    labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
+    formatValue: pct, formatTip: pct, axisMax: 100, summarize: peakOf(pct),
+  });
+
+  const load = seriesFrom(rows, [
+    {key: '1', field: 'load1'},
+    {key: '5', field: 'load5'},
+    {key: '15', field: 'load15'},
+  ]);
+  lineChart(container, load, {
+    title: 'Load average over time',
+    colorFor: key => slotColor({1: 1, 5: 3, 15: 4}[key] || 8),
+    labelFor: key => `${key} min`,
+    // No axisMax: load is not a percentage and a transport with more cores
+    // than this host can legitimately sit above 1.
+    formatValue: loadFmt, formatTip: loadFmt, summarize: peakOf(loadFmt),
+  });
 }
 
 export function renderServer(container, {live, history}) {

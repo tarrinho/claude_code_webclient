@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=41">
+<link rel="stylesheet" href="/assets/styles.css?v=42">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -355,20 +355,24 @@
           <span class="skills-count" id="statsCount" role="status" aria-live="polite"></span>
         </div>
         <div class="stats-body" id="statsBody"></div>
-        <!-- Transport server stats. Read from stored samples the tunnel
-             poller already writes on its own interval -- opening this tab
-             collects nothing, which is the point. -->
-        <h3 class="transport-stats-heading">Transport hosts</h3>
-        <p class="transport-stats-note" id="transportStatsNote">
-          Sampled in the background over each transport&rsquo;s own SSH
-          connection.
-        </p>
-        <div class="transport-stats" id="transportStats"></div>
       </div>
       <!-- Server tab: the health of the machine, not the cost of the model.
            Live reading first, history second -- the question this page is
            opened to answer is almost always "is it struggling right now?". -->
       <div class="settings-panel" id="panelServer" role="tabpanel" aria-labelledby="tabServer" tabindex="0" hidden>
+        <!-- Transports first, and deliberately: these are the machines that
+             run the agents. The console's own host matters too, but it is the
+             one you are already looking at. Read from samples the tunnel
+             poller stores on its own interval, so opening this tab collects
+             nothing over SSH. -->
+        <h3 class="transport-stats-heading">Transport hosts</h3>
+        <p class="transport-stats-note">
+          Sampled in the background over each transport&rsquo;s own SSH
+          connection. A host is only sampled while its tunnel is connected.
+        </p>
+        <div class="transport-stats" id="transportStats"></div>
+        <div class="transport-charts" id="transportCharts"></div>
+        <h3 class="transport-stats-heading">This console&rsquo;s host</h3>
         <p>Processor, memory and disk on the machine this console runs on, plus what WebConsole itself is using.</p>
         <div class="skills-toolbar usage-toolbar">
           <label for="serverRange" hidden>Time range</label>
@@ -484,13 +488,13 @@
   </div>
 </div>
 <script type="module" src="/assets/usage.js?v=1"></script>
-<script type="module" src="/assets/server-stats.js?v=1"></script>
+<script type="module" src="/assets/server-stats.js?v=2"></script>
 <script type="module" src="/assets/skills.js?v=1"></script>
 <script type="module" src="/assets/machines.js?v=10"></script>
 <script type="module" src="/assets/orchestrator.js?v=1"></script>
 <script type="module" src="/assets/device-alerts.js?v=2"></script>
 <script type="module" src="/assets/voice-settings.js?v=8"></script>
-<script type="module" src="/assets/app.js?v=55"></script>
+<script type="module" src="/assets/app.js?v=56"></script>
 <script type="module" src="/assets/voice-engine.js?v=1"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=1"></script>
 <script type="module" src="/assets/voice-handoff.js?v=1"></script>

@@ -200,8 +200,10 @@ class TheStubProvidesWhatTheModuleCallsTests(unittest.TestCase):
         # is now true for anything at all and a typeof check here would pass
         # for a method the stub does not implement -- which is the exact gap
         # this test exists to close.
+        # d3.tree() first: the list is derived when a layout is built, so it is
+        # empty before the first call.
         implemented = set(_eval(
-            "JSON.stringify({names: STUB.treeImplemented})")["names"])
+            "d3.tree(); JSON.stringify({names: STUB.treeImplemented})")["names"])
         for name in sorted(chain):
             with self.subTest(method=name):
                 self.assertIn(
@@ -252,6 +254,42 @@ class AnUnimplementedMethodSaysSoTests(unittest.TestCase):
             msg, "not a function",
             "this is the message the incident produced; it is what the proxy "
             "exists to replace",
+        )
+
+    def test_the_implemented_list_is_derived_not_declared(self):
+        """Closes the one direction a hand-written list drifts silently.
+
+        Raised by the stub's author: understating the list makes two tests
+        fail, but *adding* a method to `_tree()` without listing it made the
+        coverage check go quiet on exactly the method just added. The list is
+        derived with the proxy's own rule now -- own function-valued keys,
+        minus the `__`-prefixed internals -- so the two definitions of
+        "implemented" cannot disagree.
+
+        Asserted by comparing the list against that rule applied
+        independently, rather than against a hardcoded set of names, so adding
+        a real method to the stub does not fail this test.
+        """
+        out = _eval("""
+          var t = d3.tree();
+          var derived = [];
+          for (var k in t) {
+            if (k.slice(0, 2) !== '__' && typeof t[k] === 'function'
+                && Object.prototype.hasOwnProperty.call(t, k)) {
+              derived.push(k);
+            }
+          }
+          JSON.stringify({declared: STUB.treeImplemented, derived: derived.sort()});
+        """)
+        self.assertEqual(
+            sorted(out["declared"]), sorted(out["derived"]),
+            "STUB.treeImplemented disagrees with the layout's own methods, so "
+            "it is being maintained by hand somewhere and can drift",
+        )
+        self.assertIn(
+            "nodeSize", out["declared"],
+            "the derivation produced nothing useful; a rule that returns an "
+            "empty list agrees with itself and proves nothing",
         )
 
     def test_the_implemented_methods_are_not_shadowed_by_the_proxy(self):

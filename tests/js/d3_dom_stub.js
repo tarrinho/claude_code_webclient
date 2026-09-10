@@ -29,12 +29,21 @@ var STUB = {
   // one of the two calls does nothing while the code reads as though both
   // apply.
   treeCalls: [],
-  // The tree-layout methods this stub really implements. Declared rather than
-  // inferred, because the proxy below answers *every* method name with a
-  // throwing function, so `typeof layout.foo === "function"` can no longer
-  // tell present from absent -- this list is what the fidelity tests check
-  // against.
-  treeImplemented: ["size", "nodeSize", "separation"],
+  // The tree-layout methods this stub really implements. Needed because the
+  // proxy below answers *every* method name with a throwing function, so
+  // `typeof layout.foo === "function"` can no longer tell present from absent
+  // and the fidelity tests need some other source of truth.
+  //
+  // Derived from the layout itself, not hand-written. A declared list drifts
+  // in one direction silently: understate it and two tests fail, but add a
+  // method to _tree() without listing it and the coverage check goes quiet on
+  // exactly the method you just added. The proxy already treats
+  // `key in target` as the definition of "implemented", so this uses the same
+  // rule -- own function-valued keys, minus the internal __-prefixed state --
+  // and the two cannot disagree. It also keeps the "Implemented here:" line in
+  // the error message accurate for free. Populated by _tree(); empty until the
+  // first d3.tree() call, so read it after one.
+  treeImplemented: [],
   zoomAttached: 0,
   currentTransform: null,
   elHandlers: {},
@@ -320,6 +329,13 @@ function _tree() {
   // not implemented above is still an error at the moment it is called -- it
   // is not silently accepted, which would be far worse -- but the message
   // names the method, this file, and what to do about it.
+  // Derived with the proxy's own rule, so the two cannot disagree: an own key
+  // whose value is a function, excluding the __-prefixed internal state.
+  STUB.treeImplemented = Object.keys(layout)
+    .filter(function (k) {
+      return k.slice(0, 2) !== "__" && typeof layout[k] === "function";
+    })
+    .sort();
   proxy = new Proxy(layout, {
     get: function (target, key) {
       if (key in target) return target[key];

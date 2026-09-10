@@ -262,7 +262,16 @@ class _BrowserFixture(unittest.TestCase):
     def _close_settings_and_reopen(self):
         """Close the dialog, refresh, re-open — validates load flow."""
         self.page.click("#settingsCancel")
-        self.page.wait_for_selector("#settingsDialog", is_hidden=True, timeout=5_000)
+        # state="hidden", not is_hidden=True. Playwright's wait_for_selector
+        # takes `state` from {attached, detached, hidden, visible} and has no
+        # is_hidden parameter, so the previous form raised
+        # `TypeError: Page.wait_for_selector() got an unexpected keyword
+        # argument 'is_hidden'` on every call -- this helper could never have
+        # worked, and it failed every test that used it. It went unnoticed
+        # because this file is in rules.md's LOCAL_ONLY set and the local
+        # browser pass has been blocked by the §0 memory gate; it surfaced the
+        # first time the set ran on a QA node.
+        self.page.wait_for_selector("#settingsDialog", state="hidden", timeout=5_000)
         self._load()  # fresh page load
         self._open_settings()
 

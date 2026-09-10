@@ -1,4 +1,4 @@
-/** Supervisor Map — D3 radial mind map renderer. */
+/** Supervisor Map — D3 horizontal (left-to-right) mind map renderer. */
 
 // Every colour here is read from a CSS custom property, with the old literal
 // kept as the fallback argument. The map was the one SVG in this app that
@@ -85,12 +85,12 @@ let _detailNode = null;
 // at render time and diverge as soon as the panel is resized, and using the
 // live pixel box against viewBox coordinates would fit the tree to the wrong
 // rectangle.
-let _canvas = {w: 400, h: 400};
+let _canvas = {w: 800, h: 400};
 // Fallbacks only. The real canvas is measured from the SVG's own client box on
 // every render (see _canvasSize): these applied when the panel was ~380x930,
 // so the layout used a fraction of it and three of the tree's four quadrants
 // fell outside the drawable area with no way to pan them back.
-const WIDTH = 400;
+const WIDTH = 800;
 const HEIGHT = 400;
 
 /** The SVG's real pixel box, falling back to the fixed pair when unmeasurable
@@ -186,12 +186,6 @@ export function renderSupervisorMap(data) {
   // without a container there is nothing for a zoom handler to move -- which
   // is half of why zoom did nothing. The other half was that no
   // `.on("zoom", ...)` handler existed at all.
-  //
-  // The centering translate is the other half of the geometry fix: the tree
-  // layout is polar about (0,0), and the root used to be special-cased to
-  // `translate(200,200)` while its own children radiated from the corner.
-  // Centering the whole group instead puts root and descendants in one
-  // coordinate system, which is also what zoomToFit's math already assumed.
   _viewport = _svg.append("g").attr("class", "map-viewport");
 
   _zoom = d3.zoom()
@@ -204,11 +198,6 @@ export function renderSupervisorMap(data) {
       _lastTransform = event.transform;
     });
   _svg.call(_zoom);
-  // Centring is expressed as the initial zoom transform rather than as a fixed
-  // translate on the group, so there is exactly one thing positioning the tree.
-  // Baking translate(w/2,h/2) into the group as well would apply the centring
-  // twice, because zoomToFit computes absolute tx/ty from the box centre.
-  _svg.call(_zoom.transform, d3.zoomIdentity.translate(CANVAS_W / 2, CANVAS_H / 2));
 
   const root = d3.hierarchy(data, d => d.children || []);
   // Re-apply what the user collapsed. This has to happen before the layout
@@ -222,26 +211,23 @@ export function renderSupervisorMap(data) {
     }
   });
 
-  // .size([2*PI, RADIUS]) is not optional for a radial layout: d3.tree()
-  // defaults to size([1, 1]) absent this call, so every node's angle (d.x)
-  // and radius (d.y) were fractions between 0 and 1 -- the whole tree
-  // rendered as a cluster within about one square pixel near the SVG's
-  // origin instead of spreading across the panel. Confirmed in a real
-  // browser: a machine node's own transform read
-  // `rotate(-61.35deg) translate(1,0)`, i.e. radius 1 (one CSS pixel, since
-  // this SVG carries no viewBox), which is what made it unreliable to click
-  // -- Playwright resolved the element correctly, but its rendered footprint
-  // was too small to reliably beat whatever painted behind the SVG at that
-  // exact pixel.
-  // Derived from the measured box, so a tall panel spreads the tree across it
-  // instead of over a 400x400 corner. The 40 leaves room for leaf labels,
-  // which are drawn outside their node's radius.
-  const RADIUS = Math.max(40, Math.min(CANVAS_W, CANVAS_H) / 2 - 40);
+  // Horizontal tree layout: d.x = distance from left (horizontal),
+  // d.y = vertical position. Root is at d.x=0, d.y=center.
+  // .size is [height, width] because d3.tree maps d.y→vertical, d.x→horizontal.
+  // Vertical padding keeps siblings from overlapping (40px per sibling),
+  // plus a 30px horizontal gap between levels.
+  const verticalPadding = 40 * (data.children?.length || 1);
+  const horizontalGap = 30;
   const tree = d3.tree()
-    .size([2 * Math.PI, RADIUS])
-    .separation((a, b) => a.parent === b.parent ? 1 : 1.2);
+    .size([CANVAS_H - verticalPadding, CANVAS_W - horizontalGap])
+    .separation((a, b) => a.parent === b.parent ? 1 : 1.2)
+    .nodeSize([20, horizontalGap]);
   tree(root);
   _root = root;
+
+  // Shift the whole tree right so the root circle fits inside the panel margin.
+  const marginLeft = 60;
+  const marginTop = 40;
 
   // Depth map: center=0, transport=1, machine=2, orchestrator=2, chat=3
   const node = _viewport.selectAll(".node")
@@ -250,13 +236,8 @@ export function renderSupervisorMap(data) {
     .attr("class", "node")
     .attr("tabindex", "0")
     .attr("role", "button")
-    // One formula for every node, root included. The root used to be
-    // special-cased to translate(200,200) -- a hardcoded point in the SVG's
-    // own coordinates -- while its children were placed polar about (0,0), so
-    // the centre circle sat detached from the tree radiating out of the
-    // corner. The root's radius (d.y) is 0, so this formula already puts it at
-    // the group's origin; centring is the group's job, not the node's.
-    .attr("transform", d => `rotate(${d.x * 180 / Math.PI - 90}) translate(${d.y},0)`)
+    // Horizontal: translate left, then down.
+    .attr("transform", d => `translate(${marginLeft + d.x + horizontalGap}, ${marginTop + d.y})`)
     .attr("cursor", d =>
       (d.children || d._children || _hasDetail(d.data.type)) ? "pointer" : "default"
     )
@@ -264,7 +245,7 @@ export function renderSupervisorMap(data) {
       `${d.data.type || "node"} · ${STATUS_LABEL[d.data.status] || d.data.status} · ${d.data.label || ""}`
     );
 
-  // ── Node shapes (Fix 4: per-spec shapes) ────────────────────────
+  // ── Node shapes (per-spec shapes) ───────────────────────────────
   // Center: large dark circle
   // Transport: medium ring (hollow)
   // Machine: medium filled circle (neutral)
@@ -340,12 +321,15 @@ export function renderSupervisorMap(data) {
     }
   });
 
-  // Labels (skip center node)
+  // ── Labels (right-aligned, left of the node) ────────────────────
+  // Horizontal layout: labels sit to the left of each node (or right for the
+  // root's first child, which starts at the far left edge). Labels are
+  // right-aligned so the node sits naturally to the right of the text.
   node.filter(d => d.depth > 0)
     .append("text")
     .attr("dy", "0.35em")
-    .attr("x", d => d.children ? 10 : -10)
-    .attr("text-anchor", d => d.children ? "start" : "end")
+    .attr("x", d => (d.children ? 10 : -10))
+    .attr("text-anchor", d => (d.children ? "start" : "end"))
     .text(d => {
       const name = d.data.label || "";
       return name.length > 20 ? name.slice(0, 18) + "…" : name;
@@ -662,26 +646,19 @@ export function closeSupervisorMap() {
 export function zoomToFit() {
   if (!_svg || !_root) return;
   try {
-    // d3.tree()'s layout API has no .bounds() -- calling it always threw,
-    // which sent every call straight to the scrollIntoView fallback below and
-    // meant zoom-to-fit had never actually run. The real bounds have to come
-    // from converting each node's polar position (angle=d.x, radius=d.y) to
-    // the Cartesian point it is actually rendered at, matching the node
-    // transform above exactly: `rotate(d.x*180/PI - 90) translate(d.y,0)` is
-    // equivalent to plotting (d.y*cos(theta), d.y*sin(theta)) with
-    // theta = d.x - PI/2.
+    // Horizontal tree: d.x = horizontal position, d.y = vertical.
+    // No polar conversion needed — the values are already cartesian.
     const nodes = _root.descendants();
     if (!nodes.length) return;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const d of nodes) {
-      const theta = d.x - Math.PI / 2;
-      const px = d.y * Math.cos(theta);
-      const py = d.y * Math.sin(theta);
-      minX = Math.min(minX, px); maxX = Math.max(maxX, px);
-      minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+      minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x);
+      minY = Math.min(minY, d.y); maxY = Math.max(maxY, d.y);
     }
-    const width = maxX - minX + 80;
-    const height = maxY - minY + 80;
+    // Add a padding around the tree so nodes don't touch the viewBox edge.
+    const pad = 80;
+    const width = maxX - minX + pad;
+    const height = maxY - minY + pad;
     if (width <= 0 || height <= 0) return;
     const box = _canvas;
     const scale = Math.min(box.w / width, box.h / height, 2);

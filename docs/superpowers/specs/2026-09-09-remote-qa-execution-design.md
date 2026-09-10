@@ -207,6 +207,16 @@ more honest choice: refuse clearly (`"<name> has no live tunnel — Check or
 Init it first"`) rather than silently reimplementing connection handling a
 second way.
 
+**Second precondition, same shape:** liveness proves the transport can be
+reached; it does not prove `bin/wc-provision-qa.sh` has ever been run there.
+Before syncing, check for `~/wc-qa-checkout/.venv/bin/python` over
+`exec_command` (a `test -x` one-liner, no different in kind from the
+capacity check in §3) and refuse with `"<name> has not been provisioned for
+QA — run bin/wc-provision-qa.sh <name> first"` if it is missing. Without
+this, the first sign of an unprovisioned transport is a
+`.venv/bin/python: No such file or directory` from inside a pytest command
+string — technically correct, useless to whoever is staring at it.
+
 ### 5. Node selection
 
 ```
@@ -221,6 +231,20 @@ memory (§3), and pick the roomiest; refuse entirely, in this host's own name,
 if none qualifies — never silently fall back to running locally, which would
 masquerade as relief while actually adding another process to the box this
 feature exists to relieve.
+
+**One run per transport, held for the run's whole lifetime.** Nothing above
+stops two callers — two `cweb` sessions, or a retry racing a still-running
+attempt — from targeting the same transport at once; doing so doubles the
+remote memory cost this design exists to avoid, on the exact host it was
+supposed to relieve. `qa_remote.py` holds an in-process lock per
+`machine_id` (a dict of asyncio locks, the same shape `tunnel_manager`
+already uses for one-connection-attempt-at-a-time) for the run's full
+duration — sync through last chunk. A second run targeting a locked
+transport is refused immediately: `"<name> already has a QA run in progress
+— wait for it or pick another transport"`, not queued silently behind it.
+Unnamed node selection treats a locked transport the same as one that fails
+the capacity check: skipped when picking the roomiest, refused if it was the
+only candidate.
 
 ### 6. Execution and result streaming
 
@@ -241,6 +265,37 @@ could go silently missing a slice. `CHUNK_TIMEOUT` mirrors the local script's
 own per-chunk wall-clock cap (default 600s): a chunk that does not finish in
 time is reported as failed, never as a missing, uncounted chunk.
 
+**Streamed, not held open as one blocking response.** A full run is many
+chunks at up to `CHUNK_TIMEOUT` each — minutes, not seconds — so
+`POST /api/qa/run` responds the way `stream_turn` already does for a turn:
+`StreamingResponse`, one JSON line per event (`chunk-start`, `chunk-result`,
+`run-done`), consumed incrementally by `bin/wc-run-suite-remote.sh` and
+printed as it arrives. A single blocking response would mean nothing is
+visible until the entire run finishes, and would tie the whole result to one
+HTTP request surviving for the run's full length — including surviving a
+`systemctl --user restart webconsole.service`, which CLAUDE.md rule 9
+already documents as routine here. Made explicit rather than left to be
+discovered live: a restart during a QA run kills the request the same way it
+kills a turn — the connection drops, `bin/wc-run-suite-remote.sh` reports
+the run as interrupted, and the remote `pytest` chunk process (a plain child
+of the SSH session, not detached) dies with it. No resume-in-place;
+re-running is `bin/wc-run-suite-remote.sh <transport>` again, which re-syncs
+(cheap, incremental) and starts a fresh set of chunks. Full resumability
+(picking up only the chunks that had not finished) is not attempted here —
+YAGNI unless restarts during QA runs turn out to be common enough to matter.
+
+**Each chunk result records which of two things failed, not just that
+something did.** An `exec_command` raising (SSH drop, timeout, transport
+gone away) and a chunk's own pytest run failing are different problems with
+different next actions — one says "try again, maybe on this transport,
+maybe another"; the other says "a test actually broke." The per-chunk result
+file gets a `status` field distinguishing them: `"passed"`, `"test_failure"`
+(pytest ran, something in it failed), `"transport_error"` (`exec_command`
+itself raised or timed out — the chunk never got a real pytest verdict),
+`"capacity_refused"` (§3's per-chunk check). A run summary that only says "N
+chunks failed" hides which of these it was; the report
+`bin/wc-run-suite-remote.sh` prints distinguishes them the same way.
+
 ### 7. Security
 
 No new credential and no new listener — same live SSH connection every other
@@ -252,6 +307,21 @@ above) is safe specifically because the destination never executes as the
 application — approving that gate protects against exactly the class of risk
 a QA-only, non-running checkout does not carry.
 
+**Token scope is inherited, not new, and worth stating rather than
+assuming:** `bin/wc-token.py` (existing) mints a token carrying whatever role
+its owner has — there is no per-route scoping mechanism in this codebase
+today, so a token minted for `wc-run-suite-remote.sh` can call anything that
+owner's session could, not only `/api/qa/run`. This design does not add
+scoping (out of scope — it would be a change to `auth.py`/`middleware.py`
+serving every token consumer, not just this one) but it does fix the expiry:
+`wc-run-suite-remote.sh` mints with a short, explicit expiry
+(`wc-token.py create ... --days 1`) rather than the no-expiry default, so a
+token left in a script's environment or a stray log line is a bounded
+exposure, not a standing one. Calling it "short-lived" without pinning a
+number was a gap in the draft; one day is the number, chosen to comfortably
+cover a single run plus a same-day retry without leaving a token live for a
+week nobody remembers.
+
 ## Files touched
 
 - `bin/wc-provision-qa.sh` (new) — one-time per-transport environment setup.
@@ -261,15 +331,19 @@ a QA-only, non-running checkout does not carry.
 - `db.py` — `ssh_transports.last_qa_synced_sha` column + migration.
 - `routes/db_transports.py` — `ssh_transport_set_last_qa_synced_sha`.
 - `qa_remote.py` (new) — the orchestrator, run *inside the app process* (§4):
-  liveness precondition → node selection (§5) → capacity check (§3) → sync
-  (§2, calling `transport_sync.sync_transport` unmodified) → chunked remote
-  pytest (§6) → per-chunk result files, same layout `run-suite-chunked.sh`
-  already produces.
-- `routes/qa.py` (new) — `POST /api/qa/run`, calling into `qa_remote.py`.
-  Owner-scoped like every other transport route.
+  liveness precondition → provisioning check (§4) → per-transport lock (§5) →
+  node selection (§5) → capacity check (§3) → sync (§2, calling
+  `transport_sync.sync_transport` unmodified) → chunked remote pytest,
+  streamed (§6) → per-chunk result files tagged `passed`/`test_failure`/
+  `transport_error`/`capacity_refused` (§6), same layout
+  `run-suite-chunked.sh` already produces.
+- `routes/qa.py` (new) — `POST /api/qa/run`, `StreamingResponse` calling into
+  `qa_remote.py` (§6). Owner-scoped like every other transport route.
 - `bin/wc-run-suite-remote.sh` (new) — thin CLI wrapper: mint a short-lived
-  API token, `POST /api/qa/run`, stream the response to the terminal. Not a
-  standalone SSH client itself — see §4 for why it cannot be one.
+  (`--days 1`, §7) API token, `POST /api/qa/run`, consume and print the
+  streamed response incrementally, reporting an interrupted run plainly if
+  the connection drops mid-run (§6). Not a standalone SSH client itself —
+  see §4 for why it cannot be one.
 - No changes to `transport_sync.py`, `tunnel_manager_ssh.py`, or
   `run-suite-chunked.sh` itself — all three are consumed as they already are.
 - Tests: capacity-gate refusal (mocked `exec_command` returning low
@@ -278,6 +352,16 @@ a QA-only, non-running checkout does not carry.
   but none is live), the QA sync path/column stays independent of the
   production one (a QA sync must never read or write `last_synced_sha`, and
   vice versa), a chunk-file-list parity check mirroring
-  `run-suite-chunked.sh`'s own collected-vs-planned assertion, and an
+  `run-suite-chunked.sh`'s own collected-vs-planned assertion, an
   owner-scoping test on `POST /api/qa/run` matching the existing transport
-  route tests' rigor.
+  route tests' rigor, a provisioning-check refusal (mocked `exec_command`
+  reporting no venv) with the exact "run wc-provision-qa.sh first" message,
+  a per-transport lock test (second concurrent run against a locked
+  transport is refused, not queued, and a locked transport is excluded from
+  unnamed node selection), a streaming-response test asserting events arrive
+  incrementally rather than only after the whole run completes, a
+  `transport_error`-vs-`test_failure` tagging test (an `exec_command` raising
+  produces `transport_error`, a nonzero pytest exit with output produces
+  `test_failure`), and a token-expiry test confirming
+  `wc-run-suite-remote.sh` mints with the short expiry rather than the
+  no-expiry default.

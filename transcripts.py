@@ -24,6 +24,7 @@ import logging
 import re
 import shutil
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Final
 
@@ -861,48 +862,96 @@ def _iter_strings(value: Any):
 _RESUME_ANCHOR_BYTES: Final[int] = 64
 
 
-def _read_appended(
-    path: Path, start: int, anchor: bytes,
-) -> tuple[bytes, int, bytes, bool] | None:
-    """Read the whole records added since *start*, verifying the file first.
+# Read size for the streaming scan below. The cold path used to slurp the
+# whole file -- handle.read() on 86MB, then .decode(), then .split(b"\n") --
+# several full copies, and a peak of hundreds of megabytes. On this host that
+# peak is what got webconsole.service OOM-killed (SIGKILL, no traceback) while
+# five claude CLIs held ~1.6GB of a 3.8GB box, and each kill cold-starts the
+# caches, which spikes again: a loop. Streaming holds one block, one carried
+# part-line and the anchor, whatever the file's size.
+_READ_CHUNK_BYTES: Final[int] = 1 << 20
 
-    Returns ``(records, consumed, new_anchor, resumed)``, or None if the file
-    could not be read at all. ``records`` holds only complete records -- a
-    line still being written is left for next time, because a growing
-    transcript's tail is routinely half-written and consuming it would drop
-    the record it carries. ``consumed`` is the record boundary to resume from.
-    ``resumed`` is False when the file turned out not to be the one the caller
-    had parsed, in which case the caller must discard its accumulated state.
+
+class _AppendedReader:
+    """Iterate the whole records added to *path* since *start*.
+
+    Opens and verifies eagerly so ``ok`` and ``resumed`` are known before the
+    caller commits to merging anything: ``resumed`` False means the file is
+    not the one the caller parsed (rewritten under it), so its accumulated
+    state has to be discarded *before* the new records are merged in.
+
+    Iteration yields complete records only. A line still being written is
+    carried and left unconsumed, because a growing transcript's tail is
+    routinely half-written and consuming it would drop the record it carries.
+    After iteration, ``consumed`` is the record boundary to resume from and
+    ``anchor`` the bytes that prove it.
     """
-    base = max(0, start - len(anchor)) if start else 0
-    try:
-        with path.open("rb") as handle:
-            if base:
-                handle.seek(base)
-            buffer = handle.read()
-    except OSError:
-        return None
 
-    prefix = start - base
-    resumed = bool(start)
-    if prefix and buffer[:prefix] != anchor:
-        resumed = False
+    def __init__(self, path: Path, start: int, anchor: bytes):
+        self.consumed = 0
+        self.anchor = b""
+        self.resumed = False
+        self.ok = False
+        self._handle = None
         try:
-            buffer = path.read_bytes()
+            handle = path.open("rb")
         except OSError:
-            return None
-        base = prefix = 0
+            return
+        self.ok = True
+        self._handle = handle
+        if start:
+            base = max(0, start - len(anchor))
+            try:
+                handle.seek(base)
+                if handle.read(start - base) == anchor:
+                    self.resumed = True
+                    self.consumed = start
+                    self.anchor = anchor
+                else:
+                    handle.seek(0)
+            except OSError:
+                self.ok = False
+                handle.close()
+                self._handle = None
 
-    chunk = buffer[prefix:]
-    cut = chunk.rfind(b"\n")
-    if cut < 0:
-        # Nothing complete to add. Keep the caller's position if it was valid,
-        # otherwise report a fresh start with nothing consumed.
-        return (b"", start, anchor, True) if resumed else (b"", 0, b"", False)
+    def __enter__(self) -> _AppendedReader:
+        return self
 
-    consumed = base + prefix + cut + 1
-    anchor_from = max(base, consumed - _RESUME_ANCHOR_BYTES)
-    return chunk[:cut + 1], consumed, buffer[anchor_from - base:consumed - base], resumed
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    def __iter__(self):
+        if self._handle is None:
+            return
+        carry = b""
+        tail = self.anchor
+        while True:
+            try:
+                block = self._handle.read(_READ_CHUNK_BYTES)
+            except OSError:
+                self.ok = False
+                return
+            if not block:
+                return
+            data = carry + block
+            cut = data.rfind(b"\n")
+            if cut < 0:
+                # No complete record in this block; keep carrying it.
+                carry = data
+                continue
+            complete, carry = data[:cut + 1], data[cut + 1:]
+            self.consumed += len(complete)
+            tail = (tail + complete)[-_RESUME_ANCHOR_BYTES:]
+            self.anchor = tail
+            # split drops nothing: complete ends in a newline, so the final
+            # element is the empty string after it.
+            for line in complete.split(b"\n")[:-1]:
+                yield line
 
 
 # path -> (bytes_consumed, anchor, events). bytes_consumed is a *record boundary*
@@ -947,18 +996,23 @@ def _agent_events_sync(path: Path, session_id: str, title: str) -> list[dict[str
         # Grown: keep what was already parsed and read only the new bytes.
         start, anchor, events = cached[0], cached[1], list(cached[2])
 
-    read = _read_appended(path, start, anchor)
-    if read is None:
+    reader = _AppendedReader(path, start, anchor)
+    if not reader.ok:
         # Don't poison the cache on a transient read failure -- serve what was
         # already known and try again next call.
+        reader.close()
         return _agent_events_copy(cached[2], title) if cached else []
-    records, consumed, new_anchor, resumed = read
-    if not resumed:
+    if not reader.resumed:
+        # Rewritten under us: the parsed events describe records that may no
+        # longer be in the file. Checked before merging, not after.
         events = []
 
-    if records:
-        events.extend(_parse_agent_records(records, session_id, title))
-        _agent_events_cache[key] = (consumed, new_anchor, list(events))
+    with reader:
+        events.extend(_parse_agent_records(reader, session_id, title))
+    if not reader.ok:
+        return _agent_events_copy(cached[2], title) if cached else []
+    if reader.consumed > start or not reader.resumed:
+        _agent_events_cache[key] = (reader.consumed, reader.anchor, list(events))
     return _agent_events_copy(events, title)
 
 
@@ -978,16 +1032,18 @@ def _agent_events_copy(
 
 
 def _parse_agent_records(
-    raw: bytes, session_id: str, title: str,
+    records: Iterable[bytes], session_id: str, title: str,
 ) -> list[dict[str, Any]]:
-    """Pull cross-session messages out of *raw*, which must contain only
-    whole JSONL records."""
-    if _AGENT_MARKER not in raw and b"SendMessage" not in raw:
-        return []
-
+    """Pull cross-session messages out of *records*, each a whole JSONL line."""
     events: list[dict[str, Any]] = []
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
+    for raw_line in records:
+        # Was a single substring check over the whole file before this
+        # streamed; per line it does the same job and skips the json.loads
+        # for every record that cannot possibly carry a message, which is
+        # nearly all of them.
+        if _AGENT_MARKER not in raw_line and b"SendMessage" not in raw_line:
+            continue
+        line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
             continue
         try:
@@ -1855,29 +1911,34 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
         start, anchor = cached[0], cached[1]
         asked, answered = dict(cached[2]), set(cached[3])
 
-    read = _read_appended(path, start, anchor)
-    if read is None:
+    reader = _AppendedReader(path, start, anchor)
+    if not reader.ok:
         # Serve what was already known rather than poisoning the cache with a
         # verdict no bytes backed; the next call tries again.
+        reader.close()
         return _question_verdict(cached[2], cached[3]) if cached else None
-    records, consumed, new_anchor, resumed = read
-    if not resumed:
+    if not reader.resumed:
         # The file was rewritten, so the accumulated asks and answers describe
-        # records that may no longer be there.
+        # records that may no longer be there. Checked before merging.
         asked, answered = {}, set()
 
-    if records:
-        _parse_question_records(records, asked, answered)
-        _pending_question_cache[key] = (consumed, new_anchor, asked, answered)
+    with reader:
+        _parse_question_records(reader, asked, answered)
+    if not reader.ok:
+        return _question_verdict(cached[2], cached[3]) if cached else None
+    if reader.consumed > start or not reader.resumed:
+        _pending_question_cache[key] = (
+            reader.consumed, reader.anchor, asked, answered)
     return _question_verdict(asked, answered)
 
 
 def _parse_question_records(
-    raw: bytes, asked: dict[str, dict[str, Any]], answered: set[str],
+    records: Iterable[bytes], asked: dict[str, dict[str, Any]],
+    answered: set[str],
 ) -> None:
-    """Merge the asks and answers in *raw* into the running state. *raw* must
-    contain only whole JSONL records."""
-    for line in raw.split(b"\n"):
+    """Merge the asks and answers in *records*, each a whole JSONL line, into
+    the running state."""
+    for line in records:
         text = line.strip()
         if not text:
             continue

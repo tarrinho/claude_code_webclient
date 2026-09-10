@@ -128,6 +128,51 @@ class AgentEventsIncrementalTests(unittest.TestCase):
         self._append_records(_incoming("cweb2", "third"))
         self.assertIn("third", self._texts())
 
+    # ── bounded allocation, which is the point of streaming ───────────────
+
+    def test_no_single_read_exceeds_the_chunk_size(self):
+        """The cold path used to slurp the whole file -- read() on 86MB, then
+        decode(), then split() -- several full copies and a peak of hundreds
+        of MB. That peak is what got the service OOM-killed on this host. Peak
+        allocation must now be bounded by the chunk size regardless of file
+        size, so a big transcript costs the same as a small one."""
+        # Comfortably more than one chunk's worth of records.
+        big = transcripts._READ_CHUNK_BYTES * 3
+        with self.path.open("ab") as fh:
+            written = 0
+            while written < big:
+                written += fh.write(
+                    json.dumps(_incoming("cweb2", "x" * 500)).encode() + b"\n")
+        self.assertGreater(self.path.stat().st_size,
+                           transcripts._READ_CHUNK_BYTES * 2)
+
+        sizes = []
+        real_open = Path.open
+
+        def watching_open(self_path, *a, **kw):
+            handle = real_open(self_path, *a, **kw)
+            real_read = handle.read
+
+            def counting_read(*ra, **rkw):
+                data = real_read(*ra, **rkw)
+                sizes.append(len(data))
+                return data
+
+            handle.read = counting_read
+            return handle
+
+        with patch.object(Path, "read_bytes", lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("read_bytes slurps the whole file"))), \
+             patch.object(Path, "open", watching_open):
+            events = self._events()
+
+        self.assertTrue(events, "the big file should still parse")
+        self.assertLessEqual(
+            max(sizes), transcripts._READ_CHUNK_BYTES,
+            f"a single read pulled {max(sizes)} bytes; allocation must stay "
+            f"bounded by the {transcripts._READ_CHUNK_BYTES}-byte chunk",
+        )
+
     # ── growth ────────────────────────────────────────────────────────────
 
     def test_records_appended_after_a_read_are_found(self):

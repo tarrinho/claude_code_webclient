@@ -2445,7 +2445,7 @@ document.addEventListener('DOMContentLoaded', () => {
     elements: {
       messages: byId('messagesArea'), composerInput: byId('composerInput'),
       modelPicker: byId('conversationModel'),
-      sendButton: byId('sendBtn'), retryButton: byId('retryBtn'),
+      sendButton: byId('sendBtn'), retryButton: byId('retryBtn'), refreshChatBtn: byId('refreshChatBtn'),
       jumpButton: byId('jumpToLatest'), runState: byId('runState'),
       composerStatus: byId('composerStatus'),
       queueBar: byId('queueBar'), queueList: byId('queueList'),

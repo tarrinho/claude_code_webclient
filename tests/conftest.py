@@ -252,6 +252,43 @@ def _reset_rate_limiter():
     yield
 
 
+# ── Settings cache isolation ─────────────────────────────────────────────────
+#
+# Same shape of problem as the rate limiter above, and it arrived the same way.
+# `routes/misc._settings_cache` is module-level, so it is one dict for the whole
+# process, and `GET /api/settings` serves from it for 30s
+# (`_SETTINGS_CACHE_TTL_S`).
+#
+# The production path is correct and this fixture is not covering for a bug in
+# it: the only writer of settings is `handle_settings_patch`, and it calls
+# `_settings_invalidate()` before returning. Tests are different because they
+# build state *underneath* the endpoint -- `db.setting_set`, fresh fixture
+# databases, a different selected backend per subtest -- none of which is a
+# PATCH, so nothing invalidates and the endpoint correctly serves the payload
+# it built for the previous test.
+#
+# Measured on 2026-09-10: 40 failures across `test_model_settings.py`,
+# `test_voice_turn.py`, `test_qa_voice_model_per_backend.py` and
+# `test_qa_usage.py`, every one of which passed when run alone. The symptom is
+# misleading in the same way the limiter's was -- the clearest example asserted
+# `voice_model_options` and got `[]`, which reads as "the options are not being
+# built" rather than "you are looking at the last test's answer".
+#
+# Clearing before each test, for the reason given above: a test that fails
+# part-way through still leaves a warm cache behind, and cleaning up "after"
+# would skip exactly the runs that need it.
+@_pytest.fixture(autouse=True)
+def _reset_settings_cache():
+    """Drop the process-global GET /api/settings cache before each test."""
+    try:
+        from routes import misc as _misc
+    except Exception:  # pragma: no cover - a run that cannot import the app
+        yield
+        return
+    _misc._settings_invalidate()
+    yield
+
+
 # ── Capability guard ─────────────────────────────────────────────────────────
 #
 # Refuses a run that would silently skip a whole layer of the suite because of

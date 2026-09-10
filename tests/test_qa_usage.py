@@ -128,23 +128,35 @@ class UnitQA(unittest.TestCase):
                              15531, label)
 
     def test_multiple_models_are_attributed_separately(self):
-        # Two distinct models on purpose -- TESTING_MODEL and the gateway id
+        # Two distinct models on purpose -- TESTING_MODEL and the second id
         # must stay different values, or this stops proving separate
         # attribution and starts proving a dict has one key.
+        #
+        # The second id used to be the literal "vllm/Qwen3.6-35B-A3B-NVFP4",
+        # and the hazard the comment above describes duly happened: on a host
+        # where WC_TESTING_MODEL resolves to that same gateway id, the two keys
+        # collapsed into one and the test failed asserting 1 != 2. Derived and
+        # guarded instead, so it cannot silently degenerate -- and the guard
+        # reports the collision rather than the symptom.
+        other = ("azure_ai/gpt-5.4-mini"
+                 if TESTING_MODEL != "azure_ai/gpt-5.4-mini"
+                 else "vllm/Qwen3.6-35B-A3B-NVFP4")
+        self.assertNotEqual(
+            TESTING_MODEL, other,
+            "this test needs two different model ids to attribute apart",
+        )
         frame = {
             "type": "result",
             "modelUsage": {
                 TESTING_MODEL: {"inputTokens": 100, "outputTokens": 10},
-                "vllm/Qwen3.6-35B-A3B-NVFP4": {"inputTokens": 200, "outputTokens": 20},
+                other: {"inputTokens": 200, "outputTokens": 20},
             },
         }
         for label, parse in self.parsers():
             models = parse(frame)["models"]
             self.assertEqual(len(models), 2, label)
             self.assertEqual(models[TESTING_MODEL]["input_tokens"], 100, label)
-            self.assertEqual(
-                models["vllm/Qwen3.6-35B-A3B-NVFP4"]["output_tokens"], 20, label
-            )
+            self.assertEqual(models[other]["output_tokens"], 20, label)
 
     def test_flat_usage_reports_an_unknown_model(self):
         frame = {"type": "result", "usage": {"input_tokens": 12, "output_tokens": 3}}

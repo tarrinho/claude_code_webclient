@@ -64,7 +64,17 @@ class _Cursor:
 
 
 async def _settings(selected: str | None):
-    """Call handle_settings_get with the machine table stubbed."""
+    """Call handle_settings_get with the machine table stubbed.
+
+    Each call represents a *different* stored settings state, so it drops the
+    handler's response cache first. Without this, a test that calls the helper
+    twice gets its first answer back both times: the cache is keyed on owner
+    and lives for 30s, and switching backend here means mutating a stub dict
+    rather than issuing the PATCH that would invalidate it in production.
+    conftest's autouse reset is per test, which is one clear too few for the
+    subtest loop below.
+    """
+    misc_routes._settings_invalidate()
     settings = {
         "voice_backend_id": selected,
         "voice_model": "azure_ai/gpt-5.4-mini",
@@ -73,6 +83,28 @@ async def _settings(selected: str | None):
 
     async def setting_get(key):
         return settings.get(key)
+
+    async def setting_get_all(keys):
+        """handle_settings_get batch-reads its settings in one query rather
+        than calling setting_get thirteen times, so stubbing setting_get alone
+        leaves every value unread.
+
+        That is how this test broke without its subject changing: with the
+        settings dict ignored, voice_backend_id fell through to
+        config.VOICE_BACKEND_ID_DEFAULT, which is not one of the stub rows, so
+        the handler's own validity check nulled it and voice_model_options came
+        back empty. Both stubs are kept -- setting_get is still the API
+        elsewhere in the handler, and a stub that quietly stops being consulted
+        is exactly the failure being fixed here.
+
+        Absent keys are omitted rather than returned as None, matching
+        db.setting_get_all: a key with no stored row is missing from its dict,
+        which is what lets `_get(key) or default` in the handler work.
+        """
+        return {
+            key: value for key, value in settings.items()
+            if key in keys and value is not None
+        }
 
     async def execute(sql, *_args):
         if "FROM ai_machines" in sql:
@@ -83,6 +115,8 @@ async def _settings(selected: str | None):
         return next((r for r in _ROWS if r["id"] == machine_id), None)
 
     with patch.object(misc_routes.db, "setting_get", AsyncMock(side_effect=setting_get)), \
+            patch.object(misc_routes.db, "setting_get_all",
+                         AsyncMock(side_effect=setting_get_all)), \
             patch.object(misc_routes.db, "ai_machine_get",
                          AsyncMock(side_effect=machine_get)), \
             patch.object(misc_routes.db, "db_conn",

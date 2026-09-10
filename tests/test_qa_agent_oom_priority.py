@@ -78,7 +78,21 @@ class AgentOomPriorityTests(unittest.TestCase):
         )
 
     def test_it_can_be_opted_out_of(self):
-        self.assertEqual(_run_wrapper({"WC_AGENT_OOM_ADJ": "0"}), "0")
+        """Opting out means the wrapper writes nothing, so the exec'd process
+        keeps whatever it inherited -- which is this test runner's own score,
+        not a literal 0.
+
+        This assertion used to be `== "0"`, and it passed until the running
+        CLIs on this host had their scores backfilled to 200. Pytest is a child
+        of one of those sessions, so it now inherits 200 and hands that to the
+        wrapper. The old form was really asserting "the parent happens to be at
+        0", which says nothing about the opt-out and fails wherever the wrapper
+        is actually in use. Compare against the parent instead; see
+        test_opting_out_leaves_an_inherited_score_alone for the same property
+        proven against a deliberately raised parent.
+        """
+        inherited = Path("/proc/self/oom_score_adj").read_text().strip()
+        self.assertEqual(_run_wrapper({"WC_AGENT_OOM_ADJ": "0"}), inherited)
 
     def test_opting_out_leaves_an_inherited_score_alone(self):
         """Opting out has to mean "do not touch it", not "force it to 0".

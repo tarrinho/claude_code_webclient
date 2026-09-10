@@ -359,6 +359,23 @@ _STARTUP_STEP_TIMEOUT_S: Final[float] = float(
 _STARTUP_STEP_SLOW_S: Final[float] = 2.0
 
 
+# Background startup tasks kept referenced: asyncio only holds a weak
+# reference to a running task, so a bare create_task can be collected
+# mid-flight. The done-callback is what stops a crash in one of these being
+# silently swallowed -- an unobserved task's exception is only reported when
+# the task is garbage collected, which may be never.
+_startup_tasks: list[asyncio.Task] = []
+
+
+def _log_startup_task(task: asyncio.Task) -> None:
+    if task.cancelled():
+        _log.info("startup_task_cancelled task=%s", task.get_name())
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.error("startup_task_failed task=%s: %r", task.get_name(), exc)
+
+
 async def _startup_step(name: str, awaitable):
     """Run one startup step under a timeout, recording what it cost.
 
@@ -436,7 +453,23 @@ async def lifespan(app: FastAPI):
     # queue forever -- confirmed live: `wc.tunnel_manager` never logged a
     # single line, and /api/tunnel/status/<id> stayed {"state": "none"}
     # indefinitely after a real start request.
-    await tunnel_manager.start(db.system_sample_insert)
+    # Scheduled, not awaited. Awaiting it made SSH connectivity a
+    # precondition for binding the port: on 2026-09-10 startup logged
+    # db.init/migrate_sessions/load_settings/load_sessions and then stopped
+    # dead here, the process sat in futex_do_wait with hundreds of paramiko
+    # reconnects a minute in the log, and the site served nothing for ~25
+    # minutes across two releases and a rollback. Uvicorn does not serve until
+    # the lifespan startup returns, so anything that can block indefinitely
+    # here takes the whole console down with it -- and the transports are the
+    # one thing here that talks to other machines.
+    #
+    # NOT the same mistake as calling it bare: that created a coroutine and
+    # discarded it, so the manager never existed. create_task schedules it and
+    # the reference is held below, so it runs -- just not in the critical path.
+    _startup_tasks.append(asyncio.create_task(
+        tunnel_manager.start(db.system_sample_insert), name="tunnel_manager.start",
+    ))
+    _startup_tasks[-1].add_done_callback(_log_startup_task)
     # Answers permission and plan-approval prompts for chats whose owner armed
     # this. The lookups are injected from routes.chats rather than imported by
     # auto_answer, so that module carries no routes dependency and no cycle --
@@ -460,6 +493,19 @@ async def lifespan(app: FastAPI):
         sync_request_watcher.start(config.SYNC_REQUEST_WATCHER_INTERVAL_S)
     else:
         _log.info("sync_request_watcher disabled (config.SYNC_REQUEST_WATCHER_ENABLED)")
+    # In-memory TTL cache for remote session data — background task refreshes
+    # every 3 s so that request handlers get instant results.
+    import routes.db_sessions as _db_sessions
+    _cache_refresh: asyncio.Task[None] | None = None
+    async def _cache_refresh_loop() -> None:
+        nonlocal _cache_refresh
+        _cache_refresh = asyncio.create_task(_db_sessions.update_sessions_cache())
+        while True:
+            await asyncio.sleep(3)
+            _cache_refresh = asyncio.create_task(_db_sessions.update_sessions_cache())
+
+    asyncio.create_task(_cache_refresh_loop())
+
     yield
     # Stopped before db.close(): the sampler writes through the connection.
     await rate_limit.stop_cleanup()

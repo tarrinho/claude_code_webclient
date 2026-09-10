@@ -612,12 +612,32 @@ async def handle_usage_series_get(request: Request):
         bucket = "day"
 
     series = await db.usage_series(owner, days, bucket)
-    # Cost is only meaningful for the official API: Claude Code prices every
+    # Cost is only meaningful on the subscription: Claude Code prices every
     # turn with Anthropic's rates, so a gateway's figure is arithmetic on the
     # wrong number. Blanked here for the same reason /api/usage blanks it.
+    #
+    # Gated on the billing route now rather than on `provider`. That column is
+    # written with four different meanings by four code paths -- 99.9% of the
+    # rows say "cli", which is not one of the display kinds this test used to
+    # compare against -- so the old check blanked cost on subscription turns
+    # and left it on gateway ones whenever the row came from the importer.
     for row in series:
-        if row.get("provider") != "through_claude_code":
+        if row.get("route") != db.SUBSCRIPTION:
             row["cost_usd"] = None
+
+    # The agent chart's series, plus the titles for its legend. Two calls
+    # rather than a join, because the names come from `chats` and the figures
+    # from `usage_events`: joining them would make one query answer to two
+    # tables' schemas for no saving a page load can measure.
+    agents = await db.usage_agent_series(owner, days, bucket)
+    names = await db.usage_agent_names(
+        owner, sorted({row["agent_id"] for row in agents}),
+    )
+    for row in agents:
+        row["name"] = names.get(row["agent_id"]) or (
+            "Other" if row["agent_id"] == "Other"
+            else row["agent_id"][:8]
+        )
 
     return JSONResponse(
         {
@@ -627,6 +647,16 @@ async def handle_usage_series_get(request: Request):
             "retention_days": config.USAGE_RETENTION_DAYS,
             "series": series,
             "models": await db.usage_model_series(owner, days, bucket),
+            "agents": agents,
+            # Re-counted context: the input of turns whose model reported no
+            # cache breakdown, so each one counts the whole conversation again.
+            # Excluded from every measure above and reported here so the page
+            # can say what it left out. On this database it is 86.6% of the raw
+            # token total, which is most of why the old charts could not be
+            # reconciled against the gateway's own figures.
+            "unsplit_tokens": sum(
+                row.get("unsplit_tokens") or 0 for row in series
+            ),
             # The complete bucket axis for the window, including the buckets no
             # row falls into. The series GROUP BY only returns buckets that
             # have rows, and the chart places points by index, so an idle hour
@@ -1517,14 +1547,41 @@ async def handle_sessions_resume(request: Request, session_id: str):
 
     # Create a new WebConsole chat linked to the CLI session
     chat_id = uuid.uuid4().hex
-    # Prefer a name a human would recognise: the terminal's own session name,
-    # else the conversation's opening prompt. "CLI: 5bfd4035-b6d..." tells the
-    # reader nothing about which conversation it is.
-    title = (
-        (source.get("name") or "").strip()
-        or (await transcripts.session_title(session_id)).strip()
-        or f"CLI: {session_id[:12]}..."
-    )[:200]
+
+    # Resolve the transport name for the formatting pass.
+    transport_name = "local"
+    try:
+        if source.get("transport_id"):
+            from tunnel_manager import tunnel_status as _tunnel_status
+            _status = await _tunnel_status(source["transport_id"])
+            if _status and _status.get("ssh_host"):
+                transport_name = _status["ssh_host"]
+            else:
+                _alias = (source.get("alias") or "").strip()
+                if _alias:
+                    transport_name = _alias
+                else:
+                    _host = (source.get("host") or "").strip()
+                    if _host:
+                        transport_name = _host
+        else:
+            _alias = (source.get("alias") or "").strip()
+            if _alias:
+                transport_name = _alias
+            else:
+                _host = (source.get("host") or "").strip()
+                if _host:
+                    transport_name = _host
+    except Exception:
+        pass
+
+    # Generate a human-readable title: {transport} : {n} : {task}
+    # Same logic as the session file name, so the sidebar shows one consistent
+    # format whether the chat is the sidebar or the messages panel.
+    from routes.naming import generate_name as _generate_chat_name
+    prompt_text = (await transcripts.session_title(session_id)).strip()
+    title = _generate_chat_name(transport_name, prompt_text)
+
     work_dir = _adopt_session_cwd(source.get("cwd"), session_id)
     await db.chat_create(chat_id, title, None, work_dir, session["user"])
     # Link the CLI session ID

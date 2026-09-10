@@ -332,6 +332,11 @@ or launch a browser — and sending those away does not make them portable, it
 makes them wrong. So:
 
 - **Remote pass:** every file not named in `LOCAL_ONLY` below. ~3,300 tests.
+  `test_qa_rules_preflight.py` is in this pass, not the local one: it reads this
+  file, and this file was gitignored until 2026-09-09, so it could not travel.
+  Now that it is tracked the tests move with it, and they were always portable
+  anyway -- they inject their readings through `WC_PREFLIGHT_MEM_KB` rather than
+  reading `/proc`, so they test the block's logic and not the box.
 - **Local pass:** `LOCAL_ONLY`, run here with the existing capped block.
 - **§14 passes only if both pass.** Report both numbers and say which host ran
   which. One figure covering a split run is the same lie as a green total over
@@ -356,7 +361,6 @@ tests/test_qa_orchestrator_ux_shortcuts.py
 tests/test_qa_mobile_no_autofocus.py
 tests/test_qa_machines_race.py
 tests/test_qa_browser_console_errors.py
-tests/test_qa_rules_preflight.py
 tests/test_qa_head_consistency.py
 tests/test_qa_bench_harness.py
 tests/test_qa_launch_reclaim.py

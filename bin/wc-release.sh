@@ -4,6 +4,13 @@
 #
 # Usage: bin/wc-release.sh
 #
+# THIS SCRIPT DOES NOT DEPLOY. It merges session branches; putting a commit
+# live is bin/wc-deploy.sh. The distinction is written here because it was
+# briefly lost: this file replaced the deploy script under the same name on
+# 2026-09-09, so for a day `bin/wc-release.sh` was the only release-shaped
+# entry point in bin/, it answered with "Nothing to do." and exit 0, and a
+# session asking for a deploy was told it had succeeded.
+#
 # Flow:
 #   1. Ensure the `release` branch exists (based on main).
 #   2. Merge each session/ branch into release.
@@ -67,7 +74,9 @@ fi
 
 # All merges clean — now merge release into main (only if release differs).
 if git merge-base --is-ancestor release main 2>/dev/null; then
-  echo "release is already merged into main. Nothing to do." >&2
+  echo "release is already merged into main. Nothing to merge." >&2
+  echo "NOTE: this script merges branches. It does NOT deploy." >&2
+  echo "      Nothing has been put live. To deploy: bin/wc-deploy.sh" >&2
   exit 0
 fi
 
@@ -75,5 +84,6 @@ echo "Merging release into main..." >&2
 git merge release -m "release: merge from staging (all session branches clean)"
 
 echo "" >&2
-echo "Release complete." >&2
-echo "Push with: git push origin main" >&2
+echo "Merge complete -- nothing is live yet." >&2
+echo "Push with:   git push origin main" >&2
+echo "Deploy with: bin/wc-deploy.sh" >&2

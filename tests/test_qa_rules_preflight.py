@@ -38,6 +38,16 @@ def _block(name: str) -> str:
     return source[start:source.index(f"# <<< {name}")]
 
 
+def _local_only_names() -> list[str]:
+    """The LOCAL_ONLY entries, parsed from §14's own block.
+
+    Shared by the two classes that need it so neither can drift from the
+    runbook -- a count written down in a test is a second place to forget.
+    """
+    inside = _block("local-only-block").split('LOCAL_ONLY="', 1)[1].split('"', 1)[0]
+    return [line.strip() for line in inside.splitlines() if line.strip()]
+
+
 def _run(name: str, state: str, **env: str) -> subprocess.CompletedProcess:
     """Execute a block under the shell options a real run would use."""
     return subprocess.run(
@@ -353,9 +363,7 @@ class TheTwoPassSplitIsCompleteTests(unittest.TestCase):
         self.local_only = self._local_only()
 
     def _local_only(self) -> list[str]:
-        block = _block("local-only-block")
-        inside = block.split('LOCAL_ONLY="', 1)[1].split('"', 1)[0]
-        return [line.strip() for line in inside.splitlines() if line.strip()]
+        return _local_only_names()
 
     def test_the_list_is_declared_and_not_empty(self):
         self.assertTrue(self.local_only, "LOCAL_ONLY parsed as empty")
@@ -406,15 +414,37 @@ class TheTwoPassSplitIsCompleteTests(unittest.TestCase):
 
     def test_the_host_coupled_files_are_in_the_local_pass(self):
         """Each of these fails on a remote node for a reason that is not a
-        defect: rules.md is gitignored and not shipped, test_qa_head_consistency
-        needs a real git checkout, and the bench and reclaim tests need the
-        claude CLI on PATH. Measured on 2026-09-09 -- they were exactly the
-        remote failures once the browser files were excluded."""
-        for name in ("tests/test_qa_rules_preflight.py",
-                     "tests/test_qa_head_consistency.py",
+        defect: test_qa_head_consistency needs a real git checkout, and the
+        bench and reclaim tests need the claude CLI on PATH. Measured on
+        2026-09-09 -- they were exactly the remote failures once the browser
+        files were excluded.
+
+        This file used to be in that list too, because it reads rules.md and
+        rules.md was gitignored. rules.md is tracked as of 2026-09-09, so it
+        travels with the checkout and these tests run on the node -- which is
+        asserted below rather than left as a comment, because a stale entry
+        here would quietly keep 36 tests in the slow local pass."""
+        for name in ("tests/test_qa_head_consistency.py",
                      "tests/test_qa_bench_harness.py",
                      "tests/test_qa_launch_reclaim.py"):
             self.assertIn(name, self.local_only)
+
+    def test_this_file_runs_wherever_rules_md_reaches(self):
+        """The whole reason it was local-only has gone away.
+
+        Asserted as "the file is here", not as "git tracks it". The first
+        version of this test shelled out to `git ls-files`, which exits 128 on
+        the remote checkout because it has no .git -- so a test written to
+        prove this file is portable was itself the only thing in it that was
+        not. Presence is also the property that actually matters: tracking is
+        merely the mechanism that gets the file onto the node.
+        """
+        self.assertNotIn("tests/test_qa_rules_preflight.py", self.local_only)
+        self.assertTrue(
+            RULES.is_file(),
+            f"{RULES} is missing, so this file cannot run here and belongs "
+            f"back in LOCAL_ONLY",
+        )
 
 
 class TheLocalPassIsOneLineTests(unittest.TestCase):
@@ -459,9 +489,14 @@ class TheLocalPassIsOneLineTests(unittest.TestCase):
         slice_line = result.stdout.splitlines()[-1]
         self.assertNotIn("\n", slice_line)
         self.assertIn("tests/test_frontend_browser.py", slice_line)
+        # Compared against the parsed list rather than a literal count: the
+        # list shrank by one when rules.md became trackable, and a hardcoded
+        # number turns every future change to it into a puzzle rather than a
+        # decision.
+        expected = len(_local_only_names())
         self.assertEqual(
-            len(slice_line.split()), 10,
-            f"expected all ten LOCAL_ONLY files on one line: {slice_line!r}",
+            len(slice_line.split()), expected,
+            f"expected all {expected} LOCAL_ONLY files on one line: {slice_line!r}",
         )
 
 

@@ -273,6 +273,7 @@ def to_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "load15": load[2] if len(load) > 2 else 0.0,
         "proc_rss": proc.get("rss", 0),
         "proc_cpu_pct": proc.get("cpu_pct", 0.0),
+        "uptime_s": snapshot.get("uptime_s", 0.0),
     }
 
 

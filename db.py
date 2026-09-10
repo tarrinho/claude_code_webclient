@@ -28,6 +28,7 @@ def __getattr__(name: str):
         "queue_held_counts": "routes.db_queue",
         "queue_delete": "routes.db_queue",
         "queue_hold_all": "routes.db_queue",
+        "queue_hold_orphans": "routes.db_queue",
         "queue_list": "routes.db_queue",
         "queue_next": "routes.db_queue",
         "queue_release": "routes.db_queue",
@@ -690,6 +691,7 @@ async def init() -> None:
     await _migrate_ssh_proxy_machines_to_transports()
     await _clear_dangling_machine_pins()
     await _ensure_usage_columns()
+    await _ensure_system_samples_columns()
     await _ensure_orchestrator_columns()
     await _backfill_orchestrators_from_supervisors()
     await db_conn.commit()
@@ -1350,6 +1352,17 @@ async def _ensure_transport_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE ssh_transports ADD COLUMN last_qa_synced_sha TEXT NOT NULL "
             "DEFAULT ''"
+        )
+        await db_conn.commit()
+
+
+async def _ensure_system_samples_columns() -> None:
+    """Additive migration: add uptime_s if the table lacks it."""
+    cursor = await db_conn.execute("PRAGMA table_info(system_samples)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "uptime_s" not in columns:
+        await db_conn.execute(
+            "ALTER TABLE system_samples ADD COLUMN uptime_s REAL NOT NULL DEFAULT 0"
         )
         await db_conn.commit()
 

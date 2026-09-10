@@ -593,6 +593,9 @@ SYSTEM_FIELDS: tuple[str, ...] = (
     "load15",
     "proc_rss",
     "proc_cpu_pct",
+    # Host uptime at time of sample (seconds since boot). Stored per-sample
+    # so the history can show the transport was offline between samples.
+    "uptime_s",
 )
 
 

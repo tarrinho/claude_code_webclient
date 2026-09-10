@@ -274,10 +274,29 @@ class CollectorStorageTests(unittest.IsolatedAsyncioTestCase):
             def read(self):
                 return self._text.encode()
 
-        replies = iter(["12.5", "45%", "84.2", "0.52 0.41 0.38"])
+        # Matches the command order in collect_stats: cpu, disk, disk_bytes, mem,
+        # mem_bytes, swap, load, cores, uptime, hostname, kernel.
+        _expected = [
+            "12.5",          # cpu
+            "45%",           # disk
+            "0",             # disk_bytes  (single value → _split_bytes fails)
+            "84.2",          # mem
+            "0",             # mem_bytes   (single value → _split_bytes fails)
+            "5.0",           # swap
+            "0.52 0.41 0.38", # load
+            "0.0",           # cores
+            "0.0",           # uptime
+            "0.0",           # hostname
+            "0.0",           # kernel
+        ]
+        _reply_idx = [0]
 
         async def fake_exec(machine_id, cmd, timeout=5):
-            return None, _Out(next(replies)), None
+            if _reply_idx[0] < len(_expected):
+                text = _expected[_reply_idx[0]]
+                _reply_idx[0] += 1
+                return None, _Out(text), None
+            return None, _Out("0.0"), None
 
         with patch.dict(
             tunnel_manager._STATE,

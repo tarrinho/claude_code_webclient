@@ -711,8 +711,18 @@ async def _transport_stats(session) -> list[dict[str, Any]]:
             # same distinction parse_stats exists to preserve upstream.
             "cpu_pct": sample.get("cpu_pct"),
             "mem_pct": sample.get("mem_pct"),
+            "mem_used": sample.get("mem_used"),
+            "mem_total": sample.get("mem_total"),
+            "swap_pct": sample.get("swap_pct"),
             "disk_pct": sample.get("disk_pct"),
+            "disk_used": sample.get("disk_used"),
+            "disk_total": sample.get("disk_total"),
             "load1": sample.get("load1"),
+            "load5": sample.get("load5"),
+            "load15": sample.get("load15"),
+            "cores": sample.get("cores"),
+            "uptime_s": sample.get("uptime_s"),
+            "proc_rss": sample.get("proc_rss"),
             "sampled_at": sample.get("created_at") or None,
         })
     return out

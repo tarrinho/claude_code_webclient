@@ -60,13 +60,14 @@ def _one_number(raw: str) -> float | None:
 def parse_stats(raw: dict[str, str]) -> dict[str, float]:
     """Map `collect_stats`'s shell output onto system_samples' column names.
 
-    The labels `collect_stats` collects under ("cpu", "disk", "mem", "load")
+    The labels `collect_stats` collects ("cpu", "disk", "disk_bytes", "mem",
+    "mem_bytes", "swap", "load", "cores", "uptime", "hostname", "kernel")
     are not the column names `system_sample_insert` writes ("cpu_pct",
-    "disk_pct", "mem_pct", "load1"/"load5"/"load15"), and that function
-    defaults anything it is not given to 0. So the poller had been storing a
-    zero for every metric of every connected transport, once per stats
-    interval, since the day it was wired up -- 146 such rows by the time it
-    was noticed, mixed into the local host's own series.
+    "disk_pct", "disk_used", "disk_total", "mem_used", "mem_total", "swap_pct",
+    "load1", "load5", "load15", "uptime_s"), and that function defaults
+    anything it is not given to 0. So the poller had been storing a zero for
+    every metric of every connected transport, once per stats interval, since
+    the day it was wired up.
 
     A field with no usable reading is *omitted*, not zeroed. The caller can
     then decline to store a sample that says nothing, rather than recording a
@@ -82,13 +83,55 @@ def parse_stats(raw: dict[str, str]) -> dict[str, float]:
         value = _one_number(raw.get(label, ""))
         if value is not None:
             parsed[column] = value
+
+    # Disk bytes: "used total" from `df -B1 /`.
+    disk_bytes = _split_bytes(raw.get("disk_bytes"))
+    if disk_bytes:
+        parsed["disk_used"] = disk_bytes["used"]
+        parsed["disk_total"] = disk_bytes["total"]
+
+    # Memory bytes: "used total" from `free -b`.
+    mem_bytes = _split_bytes(raw.get("mem_bytes"))
+    if mem_bytes:
+        parsed["mem_used"] = mem_bytes["used"]
+        parsed["mem_total"] = mem_bytes["total"]
+
+    # Swap percentage.
+    swap_val = _one_number(raw.get("swap", ""))
+    if swap_val is not None:
+        parsed["swap_pct"] = swap_val
+
     # /proc/loadavg's first three fields, positionally: "0.52 0.41 0.38".
     load_parts = (raw.get("load") or "").split()
     for column, part in zip(("load1", "load5", "load15"), load_parts):
         value = _one_number(part)
         if value is not None:
             parsed[column] = value
+
+    # Uptime in seconds.
+    uptime = _one_number(raw.get("uptime", ""))
+    if uptime is not None:
+        parsed["uptime_s"] = uptime
+
     return parsed
+
+
+def _split_bytes(raw: str | None) -> dict[str, float] | None:
+    """'used total' from `df -B1 /` or `free -b`.
+
+    Returns {"used": N, "total": M} or None when there is not one usable
+    value in *raw*.
+    """
+    if not raw:
+        return None
+    parts = raw.strip().split()
+    if len(parts) < 2:
+        return None
+    used = _one_number(parts[0])
+    total = _one_number(parts[1])
+    if used is None or total is None:
+        return None
+    return {"used": used, "total": total}
 
 
 async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
@@ -103,13 +146,21 @@ async def collect_stats(machine_id: str, store_fn=None) -> dict[str, str]:
     for label, cmd in [
         ("cpu", "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"),
         ("disk", "df -h / 2>/dev/null | awk 'NR==2{print $5}'"),
+        ("disk_bytes", "df -B1 / 2>/dev/null | awk 'NR==2{print $3\" \"$2}'"),
         ("mem", "free | awk '/Mem:/{printf \"%.1f\", $3/$2*100}'"),
+        ("mem_bytes", "free -b 2>/dev/null | awk '/Mem:/{printf \"%s %s\", $3, $2}'"),
+        ("swap", "free | awk '/Swap:/{printf \"%.1f\", $3/$2*100}'"),
         ("load", "cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}'"),
         # The denominator for load average. Collected per sample rather than
         # once per transport because there is nowhere to keep a per-transport
         # fact that the bucketed aggregate can reach, and it costs one more
         # exec on a connection that is already open and already running four.
         ("cores", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null"),
+        # Uptime of the host, in seconds.
+        ("uptime", "awk '{printf \"%.1f\", $1}' /proc/uptime 2>/dev/null"),
+        # Hostname and kernel release for hardware-info style display.
+        ("hostname", "hostname 2>/dev/null"),
+        ("kernel", "uname -r 2>/dev/null"),
     ]:
         try:
             _, stdout, _ = await exec_command(machine_id, cmd, timeout=5)

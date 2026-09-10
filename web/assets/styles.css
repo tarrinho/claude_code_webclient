@@ -848,6 +848,9 @@ button{touch-action:manipulation}
    from it rather than none at all. */
 #panelServer > .server-section-heading:first-of-type { margin-top: 4px; }
 .transport-stats-note { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
+.transport-panel { margin-bottom: 12px; }
+.transport-panel-hdr { font: 600 13px ui-sans-serif, system-ui, sans-serif; margin-bottom: 6px; }
+.transport-panel-ip { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 8px; }
 .transport-stats { display: grid; gap: 2px; }
 .transport-stat-row {
   display: grid;

@@ -13,6 +13,36 @@ import {showToast, settingsVisible} from './app.js?v=7392132';
 // orchestrator.js/device-alerts.js/usage.js/skills.js.
 const byId = id => document.getElementById(id);
 
+// ── Local DOM helpers (server.js has its own copy; modules do not share scope)
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/** One card in a srv-cards grid. Mirrors server.js's card() so transport
+ *  panels render identically without an import cycle (both files import
+ *  from app.js, and server.js imports from stats.js -- circular deps
+ *  explode in ESM). */
+function _card(grid, {label, value, detail, ratio}) {
+  const box = el('div', 'srv-card');
+  box.appendChild(el('div', 'srv-card-label', label));
+  box.appendChild(el('div', 'srv-card-value', value));
+  if (typeof ratio === 'number') {
+    const track = el('div', 'srv-meter');
+    const fill = el('span', 'srv-meter-fill');
+    fill.style.width = `${Math.min(100, Math.max(0, ratio))}%`;
+    if (ratio >= 90) fill.className += ' srv-meter-bad';
+    else if (ratio >= 70) fill.className += ' srv-meter-warn';
+    track.appendChild(fill);
+    box.appendChild(track);
+  }
+  if (detail) box.appendChild(el('div', 'srv-card-detail', detail));
+  grid.appendChild(box);
+}
+
 // A live reading that never changes is worse than no reading: it looks current
 // and is not. The panel refreshes itself while it is on screen, at half the
 // sampler's interval so a new stored sample shows up promptly without the page
@@ -154,37 +184,136 @@ function _renderTransportStats(host, rows) {
     host.replaceChildren(_transportNote('No SSH transports configured.'));
     return;
   }
-  const head = document.createElement('div');
-  head.className = 'transport-stat-row is-head';
-  ['Transport', 'CPU', 'Mem', 'Disk', 'Load', 'Sampled'].forEach((label, i) => {
-    const cell = document.createElement('span');
-    cell.className = i === 0 ? 'transport-stat-name' : 'transport-stat-num';
-    cell.textContent = label;
-    head.appendChild(cell);
+
+  const frag = document.createDocumentFragment();
+  for (const row of rows) {
+    const panel = _renderTransportPanel(row);
+    frag.appendChild(panel);
+  }
+  host.replaceChildren(frag);
+}
+
+function _renderTransportPanel(row) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'transport-panel';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'transport-panel-hdr';
+  hdr.textContent = row.name || row.id;
+  if (row.ssh_host) {
+    const badge = document.createElement('span');
+    badge.className = 'transport-panel-ip';
+    badge.textContent = row.ssh_host;
+    hdr.appendChild(badge);
+  }
+  wrapper.appendChild(hdr);
+
+  const grid = el('div', 'srv-cards');
+
+  // CPU
+  _card(grid, {
+    label: 'CPU',
+    value: _pct(row.cpu_pct),
+    ratio: row.cpu_pct,
+    detail: _loadDetail(row),
   });
 
-  const body = rows.map(row => {
-    const line = document.createElement('div');
-    line.className = 'transport-stat-row';
-    const name = document.createElement('span');
-    name.className = 'transport-stat-name';
-    name.textContent = row.name || row.id;
-    if (row.ssh_host) name.title = row.ssh_host;
-    line.append(
-      name,
-      _transportCell(row.cpu_pct, '%', 90),
-      _transportCell(row.mem_pct, '%', 90),
-      _transportCell(row.disk_pct, '%', 90),
-      _transportCell(row.load1, 'load'),
-    );
-    const when = document.createElement('span');
-    when.className = 'transport-stat-when';
-    when.textContent = _agoText(row.sampled_at);
-    if (row.sampled_at) when.title = row.sampled_at;
-    line.appendChild(when);
-    return line;
-  });
-  host.replaceChildren(head, ...body);
+  // Memory
+  if (row.mem_total) {
+    _card(grid, {
+      label: 'Memory',
+      value: _pct(row.mem_pct),
+      ratio: row.mem_pct,
+      detail: _bytesDetail(row.mem_used, row.mem_total),
+    });
+  }
+
+  // Disk
+  if (row.disk_total) {
+    _card(grid, {
+      label: 'Disk',
+      value: _pct(row.disk_pct),
+      ratio: row.disk_pct,
+      detail: _bytesDetail(row.disk_used, row.disk_total),
+    });
+  }
+
+  // Swap
+  if (row.swap_pct !== null && row.swap_pct !== undefined && row.swap_pct > 0) {
+    _card(grid, {
+      label: 'Swap',
+      value: _pct(row.swap_pct),
+      ratio: row.swap_pct,
+      detail: _swapBytesDetail(row),
+    });
+  }
+
+  // Uptime
+  if (row.uptime_s && row.uptime_s > 0) {
+    _card(grid, {
+      label: 'Uptime',
+      value: _duration(row.uptime_s),
+      detail: 'since last boot',
+    });
+  }
+
+  wrapper.appendChild(grid);
+
+  // Hardware info line
+  const facts = [];
+  if (row.cores && row.cores > 0) {
+    facts.push(`${Math.round(row.cores)}t`);
+  }
+  if (facts.length) {
+    wrapper.appendChild(el('p', 'srv-host', facts.join(' · ')));
+  }
+
+  return wrapper;
+}
+
+function _loadDetail(row) {
+  const parts = [];
+  if (row.load1 !== null && row.load1 !== undefined) parts.push(row.load1.toFixed(2));
+  if (row.load5 !== null && row.load5 !== undefined) parts.push(row.load5.toFixed(2));
+  if (row.load15 !== null && row.load15 !== undefined) parts.push(row.load15.toFixed(2));
+  const loadStr = parts.length ? ` · load ${parts.join(' ')}` : '';
+  return row.cores && row.cores > 0 ? `· ${row.cores}t${loadStr}` : loadStr;
+}
+
+function _swapBytesDetail(row) {
+  if (row.mem_total && row.mem_total > 0) {
+    const swapTotal = row.mem_total * 0.5; // rough estimate
+    const swapUsed = (row.swap_pct / 100) * swapTotal;
+    return _bytesDetail(swapUsed, swapTotal);
+  }
+  return '';
+}
+
+export function _pct(n) {
+  return `${(Number(n) || 0).toFixed(0)}%`;
+}
+
+export function _bytesUsed(n) {
+  const v = Number(n) || 0;
+  if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(1)} GiB`;
+  if (v >= 1024 ** 2) return `${(v / 1024 ** 2).toFixed(0)} MiB`;
+  if (v >= 1024) return `${(v / 1024).toFixed(0)} KiB`;
+  return `${v} B`;
+}
+
+function _bytesDetail(used, total) {
+  return `${_bytesUsed(used)} of ${_bytesUsed(total)}`;
+}
+
+export function _duration(s) {
+  const sec = Math.max(0, Math.floor(Number(s) || 0));
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m`;
+  return `${sec}s`;
 }
 
 

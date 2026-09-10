@@ -198,3 +198,150 @@ async def _sync(prepared: Prepared) -> dict:
         await db.ssh_transport_set_last_qa_synced_sha(
             prepared.transport["id"], result["head_sha"])
     return result
+
+
+# Kept as literal fragments, not re-derived from bin/run-suite-chunked.sh --
+# the two files cannot share code across bash/Python, so parity is pinned
+# by a test asserting both contain these same substrings (spec §6: "the
+# two runners can never define 'a chunk' two different ways").
+_COLLECT_CMD_FRAGMENT = "pytest --collect-only -q"
+_BROWSER_GREP_FRAGMENT = "grep -ln 'playwright\\|sync_playwright'"
+_CHUNK_GROUP_SIZE = 6
+
+
+async def _collect_chunks(machine_id: str) -> tuple[list[list[str]], list[str]]:
+    """(plain_file_groups, browser_files), discovered remotely so the list
+    reflects what is actually on the synced checkout. Mirrors
+    run-suite-chunked.sh's own rule exactly: the file list comes from
+    pytest's own collection, never a glob; browser files run one at a time;
+    everything else in groups of _CHUNK_GROUP_SIZE."""
+    import tunnel_manager_ssh
+
+    collect_cmd = (
+        f"cd {QA_REMOTE_PATH} && .venv/bin/python -m {_COLLECT_CMD_FRAGMENT} "
+        "2>/dev/null | grep -oE '^[^:]+\\.py' | sort -u"
+    )
+    _, stdout, _ = await tunnel_manager_ssh.exec_command(machine_id, collect_cmd, timeout=60)
+    all_files = [
+        line.strip() for line in stdout.read().decode("utf-8", "replace").splitlines()
+        if line.strip()
+    ]
+
+    browser_cmd = (
+        f"cd {QA_REMOTE_PATH} && {_BROWSER_GREP_FRAGMENT} "
+        f"{' '.join(all_files)} 2>/dev/null | sort"
+    )
+    _, stdout, _ = await tunnel_manager_ssh.exec_command(machine_id, browser_cmd, timeout=30)
+    browser_files = [
+        line.strip() for line in stdout.read().decode("utf-8", "replace").splitlines()
+        if line.strip()
+    ]
+
+    browser_set = set(browser_files)
+    plain_files = [f for f in all_files if f not in browser_set]
+    plain_chunks = [
+        plain_files[i:i + _CHUNK_GROUP_SIZE]
+        for i in range(0, len(plain_files), _CHUNK_GROUP_SIZE)
+    ]
+    return plain_chunks, browser_files
+
+
+@dataclass
+class ChunkResult:
+    name: str
+    status: str  # "passed" | "test_failure" | "transport_error" | "capacity_refused"
+    output: str
+    returncode: int | None
+
+
+async def _run_chunk(
+    machine_id: str, name: str, files: list[str], timeout: int, floor_mb: int,
+) -> ChunkResult:
+    """Checked again immediately before running -- load can shift mid-run on
+    a shared transport (spec §3). A capacity_refused chunk never reaches
+    exec_command at all, so it can never be confused with a transport_error
+    (SSH actually failing) or a test_failure (pytest actually ran)."""
+    import tunnel_manager_ssh
+
+    ok, available = await _check_capacity(machine_id, floor_mb)
+    if not ok:
+        seen = f"{available} MB" if available is not None else "unknown"
+        return ChunkResult(
+            name, "capacity_refused",
+            f"only {seen} available, floor is {floor_mb} MB", None)
+
+    file_args = " ".join(files)
+    cmd = f"cd {QA_REMOTE_PATH} && .venv/bin/python -m pytest {file_args} -q --tb=short"
+    try:
+        _, stdout, stderr = await tunnel_manager_ssh.exec_command(
+            machine_id, cmd, timeout=timeout)
+        out = stdout.read().decode("utf-8", "replace")
+        err = stderr.read().decode("utf-8", "replace")
+        rc = stdout.channel.recv_exit_status()
+    except Exception as exc:
+        return ChunkResult(name, "transport_error", str(exc), None)
+    status = "passed" if rc == 0 else "test_failure"
+    return ChunkResult(name, status, out + err, rc)
+
+
+async def execute(prepared: Prepared):
+    """Sync, then every chunk, yielding one event per step. Holds
+    _run_lock(prepared.machine_id) for the whole call -- released in
+    `finally` whether the run finishes, fails, or the caller stops
+    consuming early (an aborted HTTP connection cancels this generator,
+    which still runs `finally`).
+
+    Lock acquisition is check-then-acquire, not a blocking `await
+    lock.acquire()`: Task 3's resolve_transport only checks lock.locked()
+    before returning success, it never acquires the lock itself, so two
+    concurrent requests can both pass that check for the same machine
+    before either reaches here. asyncio is single-threaded and
+    cooperative, so an uncontended lock.acquire() does not suspend --
+    a .locked() check immediately followed by .acquire() with no
+    intervening await is atomic against other coroutines. This keeps a
+    second run targeting a locked transport refused immediately, per
+    spec §5, rather than silently queued behind the first."""
+    import config
+
+    lock = _run_lock(prepared.machine_id)
+    if lock.locked():
+        yield {"type": "run-done", "ok": False,
+               "reason": f"{prepared.transport['name']} already has a QA run in "
+                         f"progress — wait for it or pick another transport"}
+        return
+    await lock.acquire()
+    try:
+        yield {"type": "sync-start", "transport": prepared.transport["name"]}
+        sync_result = await _sync(prepared)
+        if not sync_result["ok"]:
+            yield {"type": "run-done", "ok": False, "reason": sync_result["reason"]}
+            return
+        yield {"type": "sync-done", "files_changed": sync_result["files_changed"]}
+
+        plain_chunks, browser_files = await _collect_chunks(prepared.machine_id)
+        totals = {"passed": 0, "test_failure": 0, "transport_error": 0,
+                  "capacity_refused": 0}
+
+        async def _run_and_report(name: str, files: list[str]):
+            yield {"type": "chunk-start", "name": name, "files": files}
+            result = await _run_chunk(
+                prepared.machine_id, name, files, config.QA_CHUNK_TIMEOUT,
+                prepared.floor_mb)
+            totals[result.status] += 1
+            yield {
+                "type": "chunk-result", "name": result.name,
+                "status": result.status, "output": result.output,
+            }
+
+        for i, files in enumerate(plain_chunks, start=1):
+            async for event in _run_and_report(f"plain-{i:02d}", files):
+                yield event
+        for f in browser_files:
+            name = f"browser-{f.rsplit('/', 1)[-1].removesuffix('.py')}"
+            async for event in _run_and_report(name, [f]):
+                yield event
+
+        ok = totals["test_failure"] == 0 and totals["transport_error"] == 0
+        yield {"type": "run-done", "ok": ok, "totals": totals}
+    finally:
+        lock.release()

@@ -583,6 +583,49 @@ class ChatGetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(older["messages"][-1]["content"], "msg9")
         self.assertFalse(older["has_more"])
 
+    async def test_chat_get_syncs_a_linked_chat_before_reading(self):
+        """Opening (or reloading) a chat linked to a live CLI session must
+        show current content, not whatever the last periodic sync happened
+        to leave in `messages` -- see the design note on handle_chat_get."""
+        chat_id = "get-linked"
+        await db.chat_create(chat_id, "Linked", None, f"{self.tmpdir.name}/p", "admin")
+        await db.chat_set_session(chat_id, "sess-1")
+        with patch.object(
+            chat_routes, "_sync_linked_chat", AsyncMock(return_value=[])
+        ) as synced:
+            await chat_routes.handle_chat_get(self._req(chat_id), chat_id)
+        synced.assert_awaited_once()
+        # Called with the chat dict, not just an id -- _sync_linked_chat reads
+        # session_id/transcript_offset off of it directly.
+        self.assertEqual(synced.await_args.args[0]["id"], chat_id)
+
+    async def test_chat_get_does_not_sync_an_unlinked_chat(self):
+        """No session_id -- nothing to import from, so this must be a no-op,
+        not a wasted call into a function that will just return []."""
+        chat_id = "get-unlinked"
+        await db.chat_create(chat_id, "Unlinked", None, f"{self.tmpdir.name}/p", "admin")
+        with patch.object(
+            chat_routes, "_sync_linked_chat", AsyncMock(return_value=[])
+        ) as synced:
+            await chat_routes.handle_chat_get(self._req(chat_id), chat_id)
+        synced.assert_not_awaited()
+
+    async def test_chat_get_survives_a_sync_failure(self):
+        """A broken transcript (or a transient read error) must not turn
+        "open this chat" into a 500 -- the client should still get whatever
+        is already stored."""
+        chat_id = "get-sync-fails"
+        await db.chat_create(chat_id, "Sync Fails", None, f"{self.tmpdir.name}/p", "admin")
+        await db.chat_set_session(chat_id, "sess-1")
+        await db.messages_append(chat_id, "user", "already stored")
+        with patch.object(
+            chat_routes, "_sync_linked_chat",
+            AsyncMock(side_effect=OSError("transcript unreadable")),
+        ):
+            resp = await chat_routes.handle_chat_get(self._req(chat_id), chat_id)
+        data = json.loads(resp.body)
+        self.assertEqual(data["messages"][0]["content"], "already stored")
+
 
 class ChatPatchTests(unittest.IsolatedAsyncioTestCase):
 

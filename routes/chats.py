@@ -333,6 +333,21 @@ async def handle_chat_get(request: Request, chat_id: str):
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    # Catch up before reading: without this, opening (or reloading) a linked
+    # chat served whatever the last periodic sync happened to leave in
+    # `messages` -- up to 30s stale in the common case, and unboundedly
+    # stale if nothing had synced it in a while (e.g. no tab had it open).
+    # Cheap when there is nothing new (_sync_linked_chat costs one stat in
+    # that case) and only does real work when the transcript actually grew,
+    # which is exactly when a fresh read is worth it.
+    if chat.get("session_id"):
+        try:
+            await _sync_linked_chat(chat)
+        except Exception as exc:
+            # A sync failure here must not turn "open this chat" into a 500 --
+            # the client still gets whatever was already stored.
+            _log.warning("chat_get_sync_failed chat_id=%s: %s", chat_id, exc)
+
     # Paginated: a chat with thousands of turns used to send, and render,
     # every one of them on every open and every poll-driven refresh. `limit`
     # defaults to the newest 50; `before_id` (a message id, oldest one already
@@ -2113,6 +2128,8 @@ async def handle_chat_question_answer(request: Request):
         "question_answered chat_id=%s user=%s index=%s label=%s",
         chat_id, session["user"], want, result.get("label"),
     )
+    # Clear question_ids so the UI bar disappears immediately.
+    await db.chat_set_question_ids(chat_id, [])
     return JSONResponse({"ok": True, "index": want, "label": result.get("label")})
 
 
@@ -2186,6 +2203,8 @@ async def handle_chat_question_dismiss(request: Request):
         "question_dismissed chat_id=%s user=%s question_id=%s",
         chat_id, session["user"], pending.get("id"),
     )
+    # Clear question_ids so the UI bar disappears immediately.
+    await db.chat_set_question_ids(chat_id, [])
     return JSONResponse({"ok": True, "dismissed": True})
 
 
@@ -2404,6 +2423,19 @@ async def _sync_linked_chat_locked(
             # No id — fall back to content dedup against the whole set.
             filtered_questions.append(qb)
 
+    # Cross-check with the terminal: the transcript scan returns any question
+    # without a tool_result, but the terminal may have already answered it (a
+    # text response never made it into the JSONL).  If the terminal is no
+    # longer blocked, all scanned questions are stale — clear question_ids
+    # instead of re-adding them.
+    terminal_blocked = True
+    if question_blocks:
+        try:
+            pending = await _pending_prompt(session_id)
+            terminal_blocked = bool(pending)
+        except Exception:
+            pass
+
     # A chat imported before transcript_offset existed carries the column
     # default of 0 while already holding its history, so reading from the
     # start would import every turn a second time. Treat it as caught up and
@@ -2417,11 +2449,18 @@ async def _sync_linked_chat_locked(
             if rendered:
                 rows.append(("assistant", rendered))
         if rows:
-            _log.info(
-                "transcript_sync_questions chat_id=%s questions=%d",
-                chat_id, len(rows),
-            )
-            await db.chat_set_question_ids(chat_id, new_ids)
+            if terminal_blocked:
+                _log.info(
+                    "transcript_sync_questions chat_id=%s questions=%d",
+                    chat_id, len(rows),
+                )
+                await db.chat_set_question_ids(chat_id, new_ids)
+            else:
+                _log.info(
+                    "transcript_sync_question_ids_cleared_stale chat_id=%s",
+                    chat_id,
+                )
+                await db.chat_set_question_ids(chat_id, [])
         else:
             # No new turns and no unanswered questions: clear stale IDs so
             # the sidebar stops rendering a dead question bar.

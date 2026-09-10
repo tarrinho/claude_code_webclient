@@ -1562,7 +1562,7 @@ function startTranscriptSync() {
 // opened it -- the list was being refreshed faithfully, the rows behind it
 // were stale. Slower than the open conversation on purpose: this is about a
 // list being honest, not about watching a reply arrive.
-const SYNC_ALL_MS = 30000;
+const SYNC_ALL_MS = 10000;
 let _syncAllTimer = null;
 let _syncingAll = false;
 

@@ -109,6 +109,10 @@ MAX_TUNNELS = _int("WC_MAX_TUNNELS", 5)
 # memory one -- it was hardcoded at 3 seconds, which starved the event loop
 # badly enough that /login took 75 seconds to answer.
 REMOTE_SESSION_CACHE_S = _int("WC_REMOTE_SESSION_CACHE_S", 60)
+# Whether read_claude_sessions() reaches SSH transports to collect remote CLI
+# sessions.  Defaults off so tests that create a local sessions dir do not
+# unexpectedly hit the real network.
+REMOTE_SESSIONS = _bool("WC_REMOTE_SESSIONS", False)
 
 TUNNEL_HEALTH_INTERVAL_S = _int("WC_TUNNEL_HEALTH_INTERVAL_S", 30)
 # Seconds between remote stats collection (CPU, mem, disk via SSH exec).

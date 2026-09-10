@@ -258,7 +258,6 @@ class ProbeForwardTests(unittest.IsolatedAsyncioTestCase):
                     await server.wait_closed()
 
     async def test_the_proxy_accepting_the_handshake_is_ready(self):
-        import asyncio
         import json
 
         async def _ack(reader, writer):
@@ -305,8 +304,6 @@ class ProbeForwardTests(unittest.IsolatedAsyncioTestCase):
         """ExitOnForwardFailure=yes: the remote refused to bind the forward
         (e.g. AllowTcpForwarding no) and ssh has already exited nonzero --
         there is no listener to connect to at all."""
-        import asyncio
-
         async def _fake_exec(*argv, **kwargs):
             return _FakeSshHandle(
                 returncode=255, stderr=b"open failed: administratively prohibited")
@@ -339,8 +336,6 @@ class ProbeForwardTests(unittest.IsolatedAsyncioTestCase):
         """ssh reports itself alive (forward bound) but nothing is behind it
         -- the proxy process is not running, distinct from the forward
         itself being refused."""
-        import asyncio
-
         async def _fake_exec(*argv, **kwargs):
             return _FakeSshHandle()   # "alive"; no server ever started
 

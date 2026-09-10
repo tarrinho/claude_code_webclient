@@ -600,6 +600,10 @@ async def handle_http_exception(request: Request, exc: HTTPException):
             session.get("user", "anonymous") if isinstance(session, dict) else "anonymous",
         )
     except Exception:
+        # Deliberately silent, and the one broad catch here that should stay
+        # that way: this wraps the *logging* of an error response, so there is
+        # nowhere left to report a failure to. Anything raised here would
+        # replace the client's real 4xx/5xx with a 500 about logging.
         pass
     if "text/html" in (getattr(request, "headers", None) or {}).get("accept", ""):
         return HTMLResponse(

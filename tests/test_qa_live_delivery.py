@@ -118,7 +118,7 @@ class SendTextTests(unittest.TestCase):
 
     def test_deliver_is_still_restricted_to_its_key_set(self):
         """send_text must not have widened the prompt-answering path."""
-        _ok, calls = [], []
+        calls = []
         with patch.object(prompts, "_run", lambda argv: calls.append(argv)):
             self.assertFalse(prompts.deliver(SCREEN, "rm -rf /"))
         self.assertEqual(calls, [])

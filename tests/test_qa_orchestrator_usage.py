@@ -25,7 +25,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import config
 import runner
 import orchestrator
 from tests.testing_model import TESTING_MODEL

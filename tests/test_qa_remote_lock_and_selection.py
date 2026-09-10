@@ -4,7 +4,6 @@ Design: docs/superpowers/specs/2026-09-09-remote-qa-execution-design.md §5.
 """
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch

@@ -201,8 +201,14 @@ def main():
     print("\n\n=== SUMMARY ===", file=sys.stderr)
     for model in MODELS:
         r = results.get(model, {})
-        e = errors.get(model, [])
-        print(f"  {model}: {len(r)}/{len(MODELS)*len(TASKS)} tasks", file=sys.stderr)
+        errs = errors.get(model, [])
+        # The error list was fetched here and never printed, so a run where
+        # every task failed summarised identically to one where none did.
+        suffix = f", {len(errs)} error(s)" if errs else ""
+        print(f"  {model}: {len(r)}/{len(MODELS)*len(TASKS)} tasks{suffix}",
+              file=sys.stderr)
+        for err in errs[:3]:
+            print(f"      {str(err)[:120]}", file=sys.stderr)
 
     print(f"\nResults saved to {OUTPUT}", file=sys.stderr)
 

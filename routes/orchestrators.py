@@ -54,6 +54,10 @@ async def handle_supervisor(request: Request):
     try:
         queued = await db.queue_counts(owner)
     except Exception:
+        # An empty dict renders as "nothing queued", which is exactly what a
+        # healthy idle console looks like -- so a broken query here is
+        # invisible in the UI. Degrade, but say so.
+        _log.warning("supervisor: queue_counts failed", exc_info=True)
         queued = {}
     waiting: list[dict] = []   # asked for something, or reported a blocker
     working: list[dict] = []   # mid-turn
@@ -91,6 +95,10 @@ async def handle_supervisor(request: Request):
     try:
         cli_sessions = await db.read_claude_sessions()
     except Exception:
+        # Same shape: [] means "no terminal sessions", which is a normal state.
+        # This call reaches the filesystem and, when remote discovery is
+        # enabled, SSH -- both of which fail in ways worth knowing about.
+        _log.warning("supervisor: read_claude_sessions failed", exc_info=True)
         cli_sessions = []
     transcripts_by_id = {t["session_id"]: t for t in await transcripts.list_recent(200)}
 
@@ -179,6 +187,9 @@ async def handle_orchestrator_members_get(request: Request, supervisor_id: str):
     try:
         queued = await db.queue_counts(owner)
     except Exception:
+        # As above in handle_supervisor: {} is indistinguishable from an idle
+        # console, so a failing query would never surface.
+        _log.warning("orchestrator members: queue_counts failed", exc_info=True)
         queued = {}
     activity = await db.chat_last_activity(owner)
     by_id = {c["id"]: c for c in await db.chat_list(owner)}

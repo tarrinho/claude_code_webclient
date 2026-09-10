@@ -267,7 +267,7 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
             failed = True
             _log.warning("stream_voice_turn empty response chat_id=%s model=%s", chat_id, model)
             yield f"data: {json.dumps({'type': 'error', 'error': 'Voice reply came back empty. Please try again.'})}\n\n"
-    except Exception as exc:  # noqa: BLE001 - surfaced to the client as an SSE event
+    except Exception:  # noqa: BLE001 - surfaced to the client as an SSE event
         # Never forward str(exc) to the client: openai/httpx exception text
         # commonly embeds the request URL (connection errors, timeouts, DNS
         # failures), which would leak the resolved gateway's base_url to the
@@ -303,7 +303,6 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
     Returns the id of the created summary message on success, or None on
     failure.  Deletes the voice chat and all its messages after handoff.
     """
-    import routes.db_chats as db_chats
 
     voice_chat = await db.chat_get(chat_id, owner)
     if not voice_chat:
@@ -367,7 +366,10 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
 
     parent_base_url = (parent_backend or {}).get("base_url")
     parent_api_key = (parent_backend or {}).get("api_key")
-    parent_provider = (parent_backend or {}).get("provider", "claude_code")
+    # The parent's `provider` is deliberately not consulted: this path
+    # always speaks to an OpenAI-compatible endpoint (see the URL
+    # normalisation below). It used to be read into a local that nothing
+    # used, which read as though the provider selected a client.
 
     if not parent_base_url or not parent_api_key:
         # Fallback: delete the voice chat without handoff summary

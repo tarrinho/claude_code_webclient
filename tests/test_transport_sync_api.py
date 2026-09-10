@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 import auth
 import config
 import db
-from routes import transports as transports_routes
 
 
 def _client():

@@ -14,7 +14,6 @@ streaming loop itself only via browser/integration tests.
 from __future__ import annotations
 import unittest
 
-import json
 import secrets
 import tempfile
 import uuid

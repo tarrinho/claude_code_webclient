@@ -69,9 +69,12 @@ def score_reasoning(item):
         return 1
 
     has_docstring = '"""' in resp or "'''" in resp
-    has_comment = resp.count("#") > 1 or ("#" in resp and len(resp) > 100)
     has_typing = "->" in resp and ":" in resp and "def " in resp
-    has_typehint = "list[" in resp or "dict[" in resp or "TypeVar" in resp
+    # Only has_typing and has_docstring feed the score below. Two further
+    # signals (inline comments, and PEP-585 generics) used to be computed
+    # here and never used, which read as though the rubric weighed them.
+    # Adding them would change every historical benchmark number, so they
+    # are gone rather than wired in.
 
     if item["correct"] and has_typing and has_docstring:
         return 5

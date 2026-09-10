@@ -25,7 +25,10 @@ async def handle_qa_run(request: Request):
     owner = session["user"]
     try:
         body = await request.json()
-    except Exception:
+    except ValueError:
+        # As in routes/misc.py: a bad body is the caller's problem and stays
+        # silent, but only ValueError is a bad body. Anything else is a bug and
+        # should not be disguised as an empty request.
         body = {}
     if not isinstance(body, dict):
         body = {}

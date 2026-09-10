@@ -11,8 +11,8 @@ import asyncio
 import datetime
 import json
 import logging
-import os
 import re
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -98,23 +98,59 @@ _SKILL_LIMIT: Final[int] = 500
 # to any static asset URL. Bypasses any browser/CDN cache that ignores query
 # strings (they are only ignored when no query string is present).
 #
-# Reads the git commit short hash at request time so deploys to the same host
-# always get a fresh value without build-time injection.  Falls back to the
-# VERSION string if git is unavailable.
+# Reads the git commit short hash so deploys to the same host get a fresh
+# value without build-time injection. Falls back to the VERSION string if git
+# is unavailable.
+#
+# Rewritten 2026-09-10. The previous form was
+# `os.popen("git -C /home/kali/projects/claude-code-webconsole rev-parse ...")`
+# and was wrong three ways, all of them silent:
+#
+#   1. The repo path was an absolute literal for this one checkout. Anywhere
+#      else -- a QA node, a git worktree, a second host, a relocated clone --
+#      git ran against a directory that is not a repository and every caller
+#      quietly took the fallback branch while the code read as though it were
+#      reporting a commit.
+#   2. `os.popen` runs the command through a shell for no reason.
+#   3. It forked a git process on *every request*, with no caching.
+#
+# Note for anyone tempted to drop this: it is not reachable from the frontend,
+# but `/api/version/hash` is a public-ish endpoint with tests, and the
+# per-asset cache-busting it was meant to serve is now done properly by
+# `bin/wc-asset-versions.py` -- which hashes each file's own content, so only
+# changed assets are re-fetched rather than all of them on every commit.
+_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+# Short TTL rather than compute-once: the original comment's intent was that a
+# redeploy be visible without a rebuild, and a process that outlives a deploy
+# would otherwise serve the old hash for ever. 30s keeps that while removing
+# the per-request fork.
+_ASSET_VERSION_TTL_S: Final[int] = 30
+_asset_version_cache: tuple[str, float] | None = None
 
 
 def _asset_version() -> str:
     """Return a short version string for cache busting."""
+    global _asset_version_cache
+    if _asset_version_cache is not None:
+        value, loaded_at = _asset_version_cache
+        if time.monotonic() - loaded_at < _ASSET_VERSION_TTL_S:
+            return value
+
+    version = config.VERSION.removeprefix("WebConsole_")
     try:
-        out = os.popen(
-            "git -C /home/kali/projects/claude-code-webconsole "
-            "rev-parse --short HEAD 2>/dev/null"
-        ).read().strip()
-        if out:
-            return out
-    except Exception:  # noqa: BLE001
-        pass
-    return config.VERSION.removeprefix("WebConsole_")
+        out = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            version = out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        # A missing git, or one that hangs past the timeout. The VERSION
+        # fallback is already assigned, so there is nothing to do but keep it.
+        _log.debug("asset version: git unavailable, using VERSION", exc_info=True)
+
+    _asset_version_cache = (version, time.monotonic())
+    return version
 
 
 @router.get("/api/version/hash")
@@ -150,6 +186,10 @@ async def _api_ping(request: Request):
         else:
             remaining = ttl
     except Exception:  # noqa: BLE001
+        # Reporting the full TTL is the safe fallback, but it is also
+        # indistinguishable from a fresh session -- so a clock or session-store
+        # fault here would look like normal operation for ever.
+        _log.debug("ping: could not compute session TTL", exc_info=True)
         remaining = ttl
     return JSONResponse({"session_ttl_remaining": remaining, "ttl": ttl})
 
@@ -1213,7 +1253,11 @@ async def handle_tokens_create(request: Request):
         )
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
+        # A malformed or absent JSON body is a client condition, not a server
+        # fault, so it is still swallowed -- but narrowly. `except Exception`
+        # here also absorbed programming errors raised while reading the body
+        # and reported them as "no fields supplied".
         data = {}
     if not isinstance(data, dict):
         data = {}

@@ -23,7 +23,7 @@ import contextlib
 import json
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import config
 import db

@@ -60,7 +60,6 @@ async def start(store_fn, _now_fn=None) -> None:
     owner context and attempts reconnects (backoff from step 1).
     """
     global _task, _running
-    import db
     if _task and not _task.done():
         return  # idempotent
     _running = True

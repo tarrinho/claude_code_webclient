@@ -8,7 +8,6 @@ Covers:
 from __future__ import annotations
 import unittest
 
-import datetime
 import secrets
 import tempfile
 from unittest.mock import patch
@@ -90,6 +89,9 @@ class TokenRouteTests(unittest.IsolatedAsyncioTestCase):
         tokens = r2.json()["tokens"]
         self.assertEqual(len(tokens), 1)
         tok = tokens[0]
+        # By id, not merely "has an id": the listing asserted the *shape* of a
+        # token and never that it was the token just created.
+        self.assertEqual(tok["id"], tid)
         self.assertIn("id", tok)
         self.assertIn("name", tok)
         self.assertNotIn("token", tok)

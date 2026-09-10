@@ -272,8 +272,20 @@ async def handle_chat_create(request: Request):
     )
     _log.info("chat_created chat_id=%s work_dir=%s", chat_id, work_dir)
     voice_mode = bool(data.get("voice_mode"))
-    is_temporary = bool(data.get("is_temporary", False))
     parent_chat_id = data.get("parent_chat_id") or None
+    # `is_temporary` in the request body is deliberately NOT read. Temporariness
+    # is derived from having a parent -- see the `if parent_chat_id:` branch
+    # below, which sets is_temporary=1 -- and that is the only way a chat
+    # becomes temporary.
+    #
+    # It used to be read into a local that nothing then used, so the field read
+    # as though it were honoured while being silently dropped: a client sending
+    # `is_temporary: true` without a parent got an ordinary chat. Left
+    # unhonoured rather than wired up, because a temporary chat is hidden from
+    # the sidebar, and letting an unvalidated client flag hide chats is a
+    # behaviour change rather than a bug fix. tests/test_qa_voice_parent_child.py
+    # passes `is_temporary: True` and passes either way -- it also sends
+    # parent_chat_id, which is what actually does the work.
     if voice_mode:
         voice_backend_id = (
             await db.setting_get("voice_backend_id")

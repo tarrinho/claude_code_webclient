@@ -29,9 +29,6 @@ import os
 import tempfile
 import unittest
 from collections import defaultdict
-from pathlib import Path
-
-
 def _app():
     """Import app against a throwaway database.
 

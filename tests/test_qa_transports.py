@@ -184,8 +184,13 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
 
         bob, bob_headers = self._login("bob")
         r2 = bob.get("/api/transports", headers=bob_headers)
-        names = {t["name"] for t in r2.json()["transports"]}
+        listed = r2.json()["transports"]
+        names = {t["name"] for t in listed}
         self.assertNotIn("visible-to-alice", names)
+        # By id as well as by name. A name is not an identifier -- bob could
+        # own a transport called the same thing -- so isolation is only really
+        # asserted against the id alice's row was created with.
+        self.assertNotIn(tid, {t["id"] for t in listed})
 
         # Verify it exists in DB under alice
         rows = await db_transports.ssh_transports_list("alice")

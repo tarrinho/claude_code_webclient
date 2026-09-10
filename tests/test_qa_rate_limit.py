@@ -28,8 +28,6 @@ import asyncio
 import json
 import time as _time_mod
 import unittest
-from typing import Any
-
 import rate_limit
 
 

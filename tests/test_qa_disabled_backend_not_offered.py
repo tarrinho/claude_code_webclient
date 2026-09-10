@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import importlib.util
 import sqlite3
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path

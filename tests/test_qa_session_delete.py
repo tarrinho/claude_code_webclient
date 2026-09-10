@@ -7,7 +7,6 @@ from __future__ import annotations
 import unittest
 
 import json
-import os
 import secrets
 import tempfile
 from pathlib import Path

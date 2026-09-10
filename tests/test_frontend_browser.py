@@ -3151,6 +3151,114 @@ class TransportStatsPanelTests(_BrowserFixture):
         """)
         self.assertEqual(order, "host-first")
 
+    def test_the_timeframe_controls_lead_the_panel(self):
+        """First in the panel, and sticky. Position asserted by document
+        order rather than by looking at the rendered offset: the panel is
+        inside a scrolling container, and a control that is merely visually
+        near the top is not the same as one the reader cannot lose."""
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#serverTimeframe", timeout=15_000)
+
+        # The FIRST element child, not the first one that happens to carry an
+        # id. The initial version of this skipped id-less nodes, so moving the
+        # toolbar below the heading and description still passed -- they have
+        # no ids, and the toolbar was still the first thing with one.
+        first = self.page.evaluate("""
+          () => {
+            const panel = document.getElementById('panelServer');
+            const first = panel.firstElementChild;
+            return first ? (first.id || first.tagName.toLowerCase()) : null;
+          }
+        """)
+        self.assertEqual(
+            first, "serverTimeframe",
+            "the time-frame controls are not the first thing in the panel",
+        )
+        self.assertEqual(
+            self.page.evaluate(
+                "() => getComputedStyle("
+                "document.getElementById('serverTimeframe')).position"),
+            "sticky",
+        )
+
+    def test_changing_the_timeframe_redraws_the_transport_charts(self):
+        """The controls govern every chart, not only the host's above them.
+
+        Asserted through the request the change makes: both chart sets are
+        built from one /api/system/series response, so if the new range does
+        not reach that request the transports keep the old window while the
+        host gets the new one -- two graphs side by side over different
+        spans, which is worse than either being wrong.
+        """
+        import datetime
+        import sqlite3
+        now = datetime.datetime.now(datetime.UTC)
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT INTO ssh_transports (id,name,owner_id,ssh_host,ssh_user,"
+            "ssh_key_path,ssh_host_key_fingerprint,remote_path,created_at,"
+            "updated_at) VALUES ('t-ranged','Ranged Node','admin',"
+            "'ranged.example','kali','~/.ssh/id_ed25519','','~/wc-proxy',?,?)",
+            (stamp, stamp),
+        )
+        for minutes in range(0, 50, 10):
+            when = (now - datetime.timedelta(minutes=minutes)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            con.execute(
+                "INSERT INTO system_samples (created_at,host_type,host_id,"
+                "cpu_pct,mem_pct,disk_pct,load1,load5,load15) "
+                "VALUES (?,'transport','t-ranged',?,?,?,?,?,?)",
+                (when, 30, 40, 50, 0.5, 0.4, 0.3),
+            )
+        con.commit()
+        con.close()
+
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#transportCharts .transport-chart-block",
+                                    timeout=15_000)
+
+        series_calls = []
+        self.page.on(
+            "request",
+            lambda r: series_calls.append(r.url)
+            if "/api/system/series" in r.url else None,
+        )
+        self.page.select_option("#serverRange", "7")
+        self.page.wait_for_timeout(2500)
+
+        self.assertTrue(
+            series_calls, "changing the range made no series request at all")
+        self.assertTrue(
+            any("days=7" in url for url in series_calls),
+            f"the new range never reached the series request: {series_calls}",
+        )
+
+        # Both controls, not just the range. The first version of this test
+        # exercised only the range, so deleting the bucket select's own
+        # listener left every chart on a stale slot width and the test passed.
+        series_calls.clear()
+        self.page.select_option("#serverBucket", "day")
+        self.page.wait_for_timeout(2500)
+        self.assertTrue(
+            any("bucket=day" in url for url in series_calls),
+            f"the new bucket never reached the series request: {series_calls}",
+        )
+        # And the transport charts are still there afterwards -- a redraw that
+        # drops them is not a redraw.
+        self.assertGreaterEqual(
+            self.page.locator(
+                "#transportCharts .transport-chart-block").count(), 1)
+        self.assertEqual(self.errors, [])
+
     def test_the_table_lists_transports_without_collecting_anything(self):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")

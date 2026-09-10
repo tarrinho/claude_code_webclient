@@ -820,12 +820,33 @@ button{touch-action:manipulation}
 .remote-stat-time{font-size:11px;color:var(--muted)}
 
 /* ── Transport server stats (Statistics tab) ───────────────────── */
+/* The Server tab's time-frame controls: first in the panel, and pinned there
+   while it scrolls. They govern every chart on the page -- the host's and each
+   transport's are built from one series request made with these two values --
+   and with four transports the page is long enough that a control you have to
+   scroll back up to find reads as though it only applied to whatever was next
+   to it. `.settings-body` is the scrolling element, so this sticks to that. */
+.server-timeframe {
+  position: sticky; top: 0; z-index: 2;
+  margin: 0 0 12px; padding: 6px 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+/* The label the controls carry, so their scope is stated rather than
+   inferred from where they happen to sit. */
+.server-timeframe::after {
+  content: "applies to every chart below";
+  margin-left: auto; font-size: 10.5px; color: var(--muted);
+}
+@media(max-width:480px){ .server-timeframe::after { display: none; } }
+
 /* Section headings on the Server tab. Renamed from .transport-stats-heading
    when the console's own host was given one too: a class named after one of
    the two sections it styles reads as though the other were a special case. */
 .server-section-heading { margin: 18px 0 4px; font-size: 13px; font-weight: 650; }
-/* The first heading on the panel needs no top gap. */
-#panelServer > .server-section-heading:first-of-type { margin-top: 0; }
+/* The toolbar leads the panel now, so the first heading keeps a small gap
+   from it rather than none at all. */
+#panelServer > .server-section-heading:first-of-type { margin-top: 4px; }
 .transport-stats-note { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
 .transport-stats { display: grid; gap: 2px; }
 .transport-stat-row {

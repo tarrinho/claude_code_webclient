@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=43">
+<link rel="stylesheet" href="/assets/styles.css?v=44">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -360,9 +360,7 @@
            Live reading first, history second -- the question this page is
            opened to answer is almost always "is it struggling right now?". -->
       <div class="settings-panel" id="panelServer" role="tabpanel" aria-labelledby="tabServer" tabindex="0" hidden>
-        <h3 class="server-section-heading">This console&rsquo;s host</h3>
-        <p>Processor, memory and disk on the machine this console runs on, plus what WebConsole itself is using.</p>
-        <div class="skills-toolbar usage-toolbar">
+        <div class="skills-toolbar usage-toolbar server-timeframe" id="serverTimeframe">
           <label for="serverRange" hidden>Time range</label>
           <select id="serverRange" aria-label="Time range">
             <option value="1" selected>Last 24 hours</option>
@@ -377,6 +375,8 @@
           </select>
           <span class="skills-count" id="serverCount" role="status" aria-live="polite"></span>
         </div>
+        <h3 class="server-section-heading">This console&rsquo;s host</h3>
+        <p>Processor, memory and disk on the machine this console runs on, plus what WebConsole itself is using.</p>
         <div class="stats-body" id="serverBody"></div>
         <!-- The transports come after the host above, not before it: this
              tab is opened to read the machine you are on, and the range and

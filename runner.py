@@ -546,6 +546,9 @@ def memory_refusal() -> str | None:
     See docs/superpowers/specs/2026-09-08-resource-guard-design.md.
     """
     try:
+        _rg_path = Path(__file__).parent
+        if str(_rg_path) not in sys.path:
+            sys.path.insert(0, str(_rg_path))
         import resource_guard
 
         verdict = resource_guard.check()

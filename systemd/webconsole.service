@@ -5,6 +5,21 @@ Description=WebConsole web application
 Wants=webconsole-proxy.service
 After=webconsole-proxy.service network-online.target
 PartOf=webconsole.target
+# In [Unit], not [Service], and that is the whole point: systemd only honours
+# these here. Sitting in [Service] they were silently ignored, and the
+# effective window stayed systemd's 10s default rather than the 60s written
+# down. Measured 2026-09-10: with each failed attempt taking ~7s (~4s of
+# runtime plus RestartSec=3), barely one start falls inside a 10s window, so
+# the burst of 5 was never reached and the loop could not stop itself -- the
+# service restarted 121 times over about fourteen minutes against a port that
+# was already in use. 60s is wide enough to hold ~8 attempts, so it trips.
+#
+# The consequence of it working is that a genuinely broken service now stops
+# and stays failed instead of hammering the host, and clearing it takes
+# `systemctl --user reset-failed webconsole.service`. Failing visibly is the
+# point: fourteen minutes of silent looping is what this prevents.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=exec
@@ -16,8 +31,8 @@ Environment=WC_EXEC=1
 ExecStart=/usr/bin/env bash launch.sh proxy
 Restart=always
 RestartSec=3
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# StartLimitIntervalSec / StartLimitBurst live in [Unit] above -- systemd
+# ignores them here, which is exactly the bug that let this loop 121 times.
 # Decline the user manager's DefaultOOMScoreAdjust=200, which made this the
 # host's preferred OOM victim: measured 2026-09-10, the service sat at
 # oom_score 813 on 141MB while seven claude CLIs sat at 698-709 on 167-366MB

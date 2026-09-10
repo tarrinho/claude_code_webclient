@@ -19,6 +19,7 @@ for the machine to be in either state.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -557,18 +558,28 @@ class RemoteSuiteBlockTests(unittest.TestCase):
         dropping it from the first one left the test green while the runtime
         dependencies silently failed to install.
         """
-        # Comment lines are excluded, and that is not a loophole: a comment
-        # cannot install anything, so requiring PIP_USER=0 in one asserts
-        # nothing about the block's behaviour. It does punish explaining the
-        # block -- a comment added on 2026-09-10 reading "minutes of pip
-        # installs" failed this test against a correct block, which is the
-        # same trap test_qa_backend_groups_collapse_on_open.py and
-        # test_qa_agent_spawn_not_blocked.py both hit and solved the same way.
-        # A test that can be broken by documenting the code discourages
-        # documenting the code.
+        # Matched on the command's *shape*, not on the substring "pip install",
+        # and both halves of that matter.
+        #
+        # `\binstall\b` is what makes prose safe: a comment reading "minutes of
+        # pip installs" contains the substring but not the word, so it cannot
+        # trip this. That was a real failure on 2026-09-10 -- documenting why
+        # .venv is preserved broke this test against a correct block -- and it
+        # is the third time this repo has been bitten by a check that matches a
+        # mention as readily as a call (see
+        # test_qa_backend_groups_collapse_on_open.py and
+        # test_qa_agent_spawn_not_blocked.py). Excluding comments fixes the
+        # case in hand; matching the shape makes the next one impossible rather
+        # than merely caught. Suggested by the peer whose investigation turned
+        # up the stale-file problem in #103.
+        #
+        # Comments are still excluded, because a *genuine* command quoted
+        # inside a comment ("run `pip install -r requirements.txt` first") is
+        # the shape and still installs nothing.
+        pip_re = re.compile(r"\bpip\s+install\b")
         pip_lines = [
             line for line in self.block.splitlines()
-            if "pip install" in line and not line.lstrip().startswith("#")
+            if pip_re.search(line) and not line.lstrip().startswith("#")
         ]
         self.assertTrue(pip_lines, "no pip install in the block at all")
         for line in pip_lines:

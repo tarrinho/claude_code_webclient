@@ -418,11 +418,40 @@ makes them wrong. So:
 node has no reason to have one -- it failed there with `sqlite3.OperationalError:
 no such table: ai_machines`, which is a fact about the node and not a defect.
 
-Note what is *not* done to make the remote number look complete: no Chromium is
-installed there and no git metadata is shipped. Both were considered and both
-are the same mistake — moving a test away from the host its assumptions
-describe, then adding machinery to compensate. The browser layer was never what
-exhausts memory here; it runs one file at a time and fits.
+Note what is *not* done to make the remote number look complete: no git
+metadata is shipped, and nothing is installed to make a host-specific test
+pass. Both were considered and both are the same mistake — moving a test away
+from the host its assumptions describe, then adding machinery to compensate.
+The browser layer was never what exhausts memory here; it runs one file at a
+time and fits.
+
+This section used to say "no Chromium is installed there", and that is no
+longer true: measured 2026-09-10, both `Pentester - Kali_MAc` and `Kali3` carry
+`/usr/bin/chromium` with Playwright's browsers already downloaded, and the
+browser layer ran remotely without anyone installing anything. That is useful
+when the §0 gate has made the local browser pass unavailable — but it does not
+promote those files out of `LOCAL_ONLY`, because what makes them local is their
+assumptions about *this* host, not the absence of a browser.
+
+Two node facts to expect rather than investigate, both of them the node being
+unlike this host rather than a defect:
+
+- **`Kali3` has `/usr/bin/claude`**, which fails the two
+  `test_qa_proxy_claude_path` fallback cases there, and a live session on that
+  node fails two of the `test_qa_sessions_read` family the same way. Four of
+  seven remote failures on that node were this shape.
+- **A QA node has no console database and no API key**, so the Anthropic
+  backend the Backends panel seeds on first load carries only
+  `config.ANTHROPIC_MODEL`. Its model picker offers `['', 'claude-sonnet-5']`,
+  and any test asserting a *probed* list — anything expecting `claude-opus-5`
+  alongside it — cannot pass without a key and network.
+
+And a caution on reading counts from a node at all: the browser tests are flaky
+there. Identical code across three consecutive runs of
+`BackendsPanelBrowserTests` plus `BackendsTurnCountBrowserTests` gave 5/7, 7/5
+and 6/6. Compare failure *signatures* between runs, never totals, and do not
+conclude anything about a change from a single run's count — that mistake was
+made in this session and retracted.
 
 ```bash
 # >>> local-only-block
@@ -522,11 +551,34 @@ QA_NODE="${QA_NODE:?set from node-pick-block}"
 REMOTE_DIR="${WC_QA_REMOTE_DIR:-~/wc-qa-checkout}"
 SSH="ssh -i ${WC_QA_KEY:-~/.ssh/id_ed25519} -o BatchMode=yes -o ConnectTimeout=8"
 
+# The tracked tree is CLEARED before it is extracted, and that is not tidiness.
+#
+# `tar -xzf` over an existing directory only ever adds and overwrites -- it
+# never removes. So a file deleted in this repo lived on the node for ever, and
+# any test that globs a directory rather than naming files kept finding it.
+# Measured 2026-09-10: `web/assets/voice-conversation.js` was deleted here in
+# 07d5b41 and was still on kali-3 hours later carrying `app.js?v=53`, so
+# test_qa_asset_module_versions reported app.js referenced at two versions and
+# three tests failed on a defect that did not exist at HEAD. An earlier run in
+# the same session reported `{'56', '54'}` from the same cause and it was
+# misattributed to a peer's mid-edit working tree. A stale-file failure is
+# expensive precisely because it looks like a real one, and it points at code
+# that is already correct.
+#
+# .venv is preserved: it is minutes of pip installs and it is not part of the
+# tracked tree, so nothing in it can go stale in this way. The guard on
+# REMOTE_DIR is there because this is an `rm -rf` running over SSH -- an empty
+# or absurd value must stop the run, not widen the delete.
+case "$REMOTE_DIR" in
+  ""|"/"|"~"|"~/"|"$HOME"|"/home"|"/root") echo "FAIL: refusing to clear REMOTE_DIR=$REMOTE_DIR"; exit 1;;
+esac
 # PIP_USER is set on at least one transport and breaks every venv install with
 # "Can not perform a '--user' install"; pip reports it and carries on, so the
 # suite then fails on missing imports rather than on anything real.
 git ls-files -z | tar --null -T - -czf - \
-  | $SSH "$QA_NODE" "mkdir -p $REMOTE_DIR && tar -xzf - -C $REMOTE_DIR" || exit 1
+  | $SSH "$QA_NODE" "mkdir -p $REMOTE_DIR \
+      && find $REMOTE_DIR -mindepth 1 -maxdepth 1 ! -name .venv -exec rm -rf {} + \
+      && tar -xzf - -C $REMOTE_DIR" || exit 1
 $SSH "$QA_NODE" "cd $REMOTE_DIR && [ -x .venv/bin/python ] || python3 -m venv .venv; \
   PIP_USER=0 .venv/bin/pip install -q -r requirements.txt \
   && PIP_USER=0 .venv/bin/pip install -q pytest pytest-subtests quickjs httpx requests playwright pyflakes" || exit 1
@@ -901,8 +953,8 @@ Append every field-found bug to the registry below (cumulative — append, never
 | 100 | `webconsole.service` was `active` but `disabled`, so the site would not have come back after a reboot. Nothing was wrong with the running server, which is exactly why this was invisible: every health check, every request and `systemctl is-active` all reported fine | The unit had been started but never enabled -- no `default.target.wants` symlink -- while `webconsole-proxy.service` and `webconsole-health.timer` both were. `Linger=yes` was set, so the units survive logout; that is a different property from surviving a reboot, and having one is easy to mistake for having both | `bash bin/wc-install-supervision.sh`, which is idempotent and created the missing symlink (it also restarted the app, picking up peers' committed Python changes in the same step) | §17's own first check, `systemctl --user is-enabled` on all three units, which is why that line lists three units rather than asserting on the one being deployed. All four recovery cases then passed: crash restart, independent proxy restart, the wedged `SIGSTOP` case that only the health check can see, and a healthy server left untouched |
 | 101 | Every one of the 19 tests reaching `_open_backends()` in `test_frontend_browser.py` timed out on `wait_for_selector(".machine-card")`, and the browser pass had been reading as a broad frontend regression | Two correct features with no card between them. `loadBackends()` calls `_collapseAllTransportGroups()` before rendering (Pedro's request, pinned by `test_qa_backend_groups_collapse_on_open.py`), and a collapsed group renders **no** cards at all -- `_renderMachineList` appends the group header, then builds cards only for groups absent from `_collapsedGroups`. So after opening the panel there were zero `.machine-card` elements in the DOM and the wait could not succeed. Nothing was wrong with the product | The helper waits for `.transport-collapse-toggle` -- which exists collapsed or not, so it is the honest "panel has rendered" signal -- expands one collapsed group, then waits for a card. One, not all: collecting every toggle upfront and clicking each detaches the handles, because a click re-renders the list (`ElementHandle.click: Element is not attached to the DOM`) | The 19 tests themselves. Signature, not count: before, all died on a 10s `.machine-card` timeout and the two classes took ~359s; after, that timeout does not occur and they take ~60s. **The count is not a usable measure here** -- identical code gave 5/7, 7/5 and 6/6 across three runs on the node, and an earlier three-way "variant comparison" of mine (3/9, 9/3, 6/6) was reading that noise as signal, which is retracted in `b2a14ae`. Residual failures are that flakiness plus a node fact: the seeded Anthropic backend carries only `config.ANTHROPIC_MODEL`, so the picker offers `['', 'claude-sonnet-5']` and tests expecting a probed list need an API key and network |
 | 102 | `test_frontend_browser.py`'s `_close_settings_and_reopen` had two bugs stacked, and could never have run to completion in any form | `page.wait_for_selector("#settingsDialog", is_hidden=True)` -- Playwright takes `state` from {attached, detached, hidden, visible} and has no `is_hidden` parameter, so every call raised `TypeError`. Fixing that exposed the next line, `self._load()`, which is defined on `SupervisorBrowserTests` and one other subclass but not on `_BrowserFixture` where the helper lives, while its sole caller is `BackendsPanelBrowserTests`: `AttributeError` every time | `state="hidden"`, and the fresh page load the docstring describes, via `self.base` as `_login` already does | Verified against the installed Playwright signature rather than from memory, and the rest of the file checked: `state=` and `timeout=` are the only kwargs used anywhere else. Also scanned every class for the same shape of mistake -- a `self._helper()` call resolving to nothing through the MRO -- and this was the only instance. Both in `75db75d` / `7d761a6` |
-| 103 | `ComposerChatNameTests.test_no_chat_open_leaves_it_empty` failed once during a §14 remote pass on `Pentester - Kali_MAc` -- `self.assertEqual(self._name(), "")` saw the just-deleted chat's title instead of the empty string `showWelcome()` sets, read after `.empty-state` was already visible | Read `showWelcome()` and the delete flow (`app.js`'s `saveChatDialog`) end to end: `composerChatName.textContent = ''` runs synchronously, strictly before the `.empty-state` div is even created, with nothing between them and nothing else in the traced call graph (`refreshChats()`, `updateCurrentUi()`) that writes that field on this path. No code defect found. Re-ran the exact test 4/4 with `WC_RESOURCE_GUARD=off` on this host (8.3s-18.5s each) -- all green, no flakiness observed locally. Consistent with #101's already-measured node flakiness (identical code, 5/7 / 7/5 / 6/6 across three runs) rather than a fifth, unrelated defect; not re-litigated from scratch on that basis | None -- not a product defect on the evidence gathered. Left open rather than closed, since a single remote failure with no local repro is not proof of absence either; re-open with a real repro (local or otherwise) if it recurs | `tests/test_qa_composer_chat_name.py` itself, already covering this path -- no new test written, since there is nothing yet to pin a fix against |
-## 16a-audit (this run): §16a ran against entries #93-99. #93 and #94 share one new gate (`test_qa_no_undefined_names.py`), mutation-verified by restoring each bug separately; both are undefined names, which is why the gate checks the class rather than the two sites. #95 has `test_qa_d3_stub_fidelity.py`, mutation-verified against three reverts -- and the third revert passed on the first attempt, so the fixture was deepened until it failed, which is exactly the check this stage exists to force. #97's four fixes are each covered by the test that was failing, verified before and after, with the OOM one additionally mutation-verified against the wrapper. #98 is covered by the pre-existing `test_qa_version_consistency.py`, which is a detector rather than a preventer and is recorded as such. #96 was subsequently fixed in `064189f` and its test is described in its own row -- worth reading, because the first version asserted on the layout's read-back values and passed against the defect, since d3 reports `tree.size()` as null whether nodeSize is the only sizing call or merely the last one; the assertion moved to the setter call sequence. #100 was found by §17's first check and is covered by that check. #101 and #102 are covered by the 19 tests that were failing, all of which now reach their own assertions; #101's entry states why its pass/fail *count* is not evidence and what is. Both were found only by sending the LOCAL_ONLY set to a QA node, which is the argument for doing that while the §0 gate keeps the local browser pass unavailable -- and the node turning out to have Chromium and Playwright browsers already installed means §14's "no Chromium is installed there" note is stale. #99 stays open and is the one entry with no test: the fixes are written and verified behaviour-neutral, but the file cannot be committed without shipping the broken feature they sit inside, and the measurements in that row say why. Nothing skipped.
+| 103 | Three tests failed on a QA node reporting `app.js` referenced at two versions (`?v=53` alongside `?v=56`, and in an earlier run `?v=54`), which reads as the ES-module identity split this repo has shipped more than once -- the browser loading `app.js` twice with two `state` objects. HEAD was correct the whole time | §14's sync is `git ls-files -z | tar ... | ssh "tar -xzf - -C $REMOTE_DIR"`, and `tar -xzf` over an existing directory only adds and overwrites: it never removes. So a file deleted in this repo stayed on the node indefinitely, and any test globbing a directory rather than naming files kept finding it. `web/assets/voice-conversation.js` was deleted here in `07d5b41` and was still on `kali-3` hours later carrying `app.js?v=53`. The failure is expensive precisely because it looks real and points at code that is already correct: a peer investigated it against a clean `git archive` export of HEAD before we worked out it was the node's own leftovers, and I had earlier misattributed the `{'56','54'}` form of it to a peer's mid-edit working tree | The tracked tree is cleared before extraction: `find $REMOTE_DIR -mindepth 1 -maxdepth 1 ! -name .venv -exec rm -rf {} +`. `.venv` is preserved because it is minutes of pip installs and, not being tracked, cannot go stale this way. `REMOTE_DIR` is guarded against empty/`/`/`$HOME` first, since this is an `rm -rf` over SSH | Verified on the node rather than reasoned about: after the corrected sync the stale file is gone, `app.js` resolves to one version (13 references, all `?v=56`), the venv survived, and `test_qa_asset_module_versions` plus `test_qa_version_consistency` are 10 passed / 5 subtests there. Before it, the same files failed |
+## 16a-audit (this run): §16a ran against entries #93-99. #93 and #94 share one new gate (`test_qa_no_undefined_names.py`), mutation-verified by restoring each bug separately; both are undefined names, which is why the gate checks the class rather than the two sites. #95 has `test_qa_d3_stub_fidelity.py`, mutation-verified against three reverts -- and the third revert passed on the first attempt, so the fixture was deepened until it failed, which is exactly the check this stage exists to force. #97's four fixes are each covered by the test that was failing, verified before and after, with the OOM one additionally mutation-verified against the wrapper. #98 is covered by the pre-existing `test_qa_version_consistency.py`, which is a detector rather than a preventer and is recorded as such. #96 was subsequently fixed in `064189f` and its test is described in its own row -- worth reading, because the first version asserted on the layout's read-back values and passed against the defect, since d3 reports `tree.size()` as null whether nodeSize is the only sizing call or merely the last one; the assertion moved to the setter call sequence. #100 was found by §17's first check and is covered by that check. #103 is covered by the two version tests it was breaking, checked green on the node after the fix and red before. #101 and #102 are covered by the 19 tests that were failing, all of which now reach their own assertions; #101's entry states why its pass/fail *count* is not evidence and what is. Both were found only by sending the LOCAL_ONLY set to a QA node, which is the argument for doing that while the §0 gate keeps the local browser pass unavailable -- and the node turning out to have Chromium and Playwright browsers already installed means §14's "no Chromium is installed there" note is stale. #99 stays open and is the one entry with no test: the fixes are written and verified behaviour-neutral, but the file cannot be committed without shipping the broken feature they sit inside, and the measurements in that row say why. Nothing skipped.
 
 ## 16a-audit (previous run): §16a ran against entries #91-92. Both were caught by pre-existing tests the moment the full suite ran -- no gap to fill, so no new test was written for either. #85/#86 (the run before) already have their tests confirmed still passing. Nothing skipped.
 

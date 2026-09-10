@@ -148,6 +148,7 @@ def __getattr__(name: str):
         "user_get_by_name": "routes.db_users",
         "user_create": "routes.db_users",
         "setting_get": "routes.db_users",
+        "setting_get_all": "routes.db_users",
         "setting_set": "routes.db_users",
         "api_token_create": "routes.db_users",
         "api_token_by_hash": "routes.db_users",

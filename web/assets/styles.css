@@ -510,6 +510,9 @@ button{touch-action:manipulation}
 .transport-status-badge{font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;padding:2px 7px;border-radius:10px;white-space:nowrap}
 .transport-status-badge-active{color:var(--ok);background:rgba(63,185,80,.12)}
 .transport-status-badge-uninitialized{color:var(--warn);background:rgba(210,153,34,.12)}
+/* "Checking…" -- muted like disabled rather than warning-coloured like
+   uninitialized: not knowing yet is not a problem being reported. */
+.transport-status-badge-unknown{color:var(--muted);background:rgba(139,148,158,.12)}
 .transport-status-badge-disabled{color:var(--muted);background:rgba(139,148,158,.12)}
 .transport-count{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 .machine-form{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:8px;background:var(--panel)}

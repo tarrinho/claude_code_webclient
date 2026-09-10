@@ -104,14 +104,20 @@ function _providerLabel(machine) {
 }
 
 // ── Transport group status ─────────────────────────────────────────────────
-// Three states, derived entirely from data already fetched -- no schema
+// Four states, derived entirely from data already fetched -- no schema
 // change, no new endpoint. "Active" means a turn could actually run on this
 // group right now; "Disabled" is deliberate (every machine on it turned
-// off); "Uninitialized" is everything else -- added but never Checked/Inited,
-// or a transport with no machine assigned to it yet.
-const TRANSPORT_STATUS_ORDER = {active: 0, uninitialized: 1, disabled: 2};
+// off); "Uninitialized" means known not to be up -- added but never
+// Checked/Inited, or a transport with no machine assigned to it yet; and
+// "Checking…" means no status has been fetched yet, which is not the same
+// claim and used to be reported as Uninitialized.
+// "unknown" sorts next to active deliberately: nearly every unknown group
+// resolves to active a moment later, and sorting it beside uninitialized
+// would make the list visibly reshuffle as the first status arrives.
+const TRANSPORT_STATUS_ORDER = {active: 0, unknown: 1, uninitialized: 2, disabled: 3};
 const TRANSPORT_STATUS_LABEL = {
-  active: 'Active', uninitialized: 'Uninitialized', disabled: 'Disabled',
+  active: 'Active', unknown: 'Checking…', uninitialized: 'Uninitialized',
+  disabled: 'Disabled',
 };
 
 export function _transportStatus(machines, tunnelStatusCache = {}) {
@@ -126,6 +132,13 @@ export function _transportStatus(machines, tunnelStatusCache = {}) {
   // is never split between transported and not).
   const withTransport = machines.filter(m => m.transport_id);
   if (!withTransport.length) return 'active';
+  // A null cache means nothing has been fetched yet; an empty object means a
+  // fetch came back with nothing to say about these machines. Those are
+  // different facts and conflating them is what made this panel report
+  // Uninitialized -- as a statement -- for six reported days, whenever it
+  // rendered before the first status arrived. "I do not know yet" now has a
+  // value of its own, so no render can claim a state it was never told.
+  if (!tunnelStatusCache) return 'unknown';
   // One shared tunnel per transport (Task 5): starting it for one machine
   // brings the whole connection up for all of them, so the first machine's
   // status speaks for the group.
@@ -134,9 +147,14 @@ export function _transportStatus(machines, tunnelStatusCache = {}) {
 }
 
 // ── SSH Tunnel toggle ──────────────────────────────────────────────
-let _tunnelStatusCache = {};
+// null, not {}: "not fetched yet" rather than "fetched and empty". See the
+// unknown branch in _transportStatus for why the difference is load-bearing.
+let _tunnelStatusCache = null;
 
 export function _setTunnelStatus(status) {
+  // `|| {}` rather than `|| null`: an explicit call with a falsy payload is
+  // still a report ("nothing to tell you"), not an absence of one. Only the
+  // initial value above, before any fetch, is null.
   _tunnelStatusCache = status || {};
   _renderMachineList(); // refresh badges
 }
@@ -162,7 +180,10 @@ async function _refreshTunnelStatus() {
   try {
     const resp = await apiFetch('/api/tunnel/status');
     if (resp.ok) {
-      _tunnelStatusCache = await resp.json();
+      // `|| {}` so a null/empty body still counts as "fetched": leaving the
+      // cache null would keep every badge reading "Checking…" for ever
+      // rather than falling through to the real Uninitialized verdict.
+      _tunnelStatusCache = (await resp.json()) || {};
       _renderMachineList();
     }
   } catch (_) { /* ignore */ }

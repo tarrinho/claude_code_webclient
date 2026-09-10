@@ -865,7 +865,7 @@ function updateCurrentUi(chat) {
   byId('syncBtn').hidden = !chat.session_id;
   byId('composerArea').style.display = 'block';
   // Mic and live-conversation belong to voice chats only, and
-  // voice-conversation.js cannot hear that the open chat changed.
+  // voice-handoff.js cannot hear that the open chat changed.
   window.voiceConversation?.refreshControls?.();
   storageSet('wc_last_chat', chat.id);
   markSeen(chat.id, chat.updated_at);
@@ -2051,8 +2051,20 @@ async function loadBackends() {
   // waited on a 30-day usage aggregate to paint a single column. It is the
   // slowest call here and the least urgent; the cards render without it and
   // the counts fill in when they arrive.
-  const hasSsh = _machines.some(m => m.backend_kind === 'ssh_proxy');
-  await _pollTunnelStatus(hasSsh);
+  // Keyed on transport_id, which is what _transportStatus actually reads,
+  // not on a display string. It was `backend_kind === 'ssh_proxy'`, and
+  // shared.py:backend_kind emits "ssh-proxy" with a hyphen -- the underscore
+  // form only exists in app.js's own label table as a legacy *provider*
+  // value. So this predicate was always false, the poller was never armed,
+  // and tunnel status was never fetched on this panel at all: the badges only
+  // ever updated via the wc:tunnel-start-queued event, i.e. after pressing
+  // Init or Check. That is the root of every "why is it Uninitialized" and
+  // "Check works but the status does not change" report, and no amount of
+  // fixing the status pipeline could have shown it, because the client was
+  // not asking. Deriving the condition from the same field the badge reads
+  // is what stops the two drifting apart again.
+  const hasTransports = _machines.some(m => m.transport_id);
+  await _pollTunnelStatus(hasTransports);
   // Every transport group starts collapsed (shrunk) on open -- runs every
   // time this panel is shown, not only on first load, so switching away and
   // back resets it too.
@@ -2283,7 +2295,10 @@ async function loadInitialData() {
     await refreshSessions();
     await loadMachines();
     // Start tunnel status polling at boot so transport badges update live.
-    _pollTunnelStatus(_machines.some(m => m.backend_kind === 'ssh_proxy'));
+    // transport_id, not backend_kind -- see the note in loadBackends: the
+    // 'ssh_proxy' comparison this replaced could never match what
+    // shared.py:backend_kind emits ("ssh-proxy"), so polling never started.
+    _pollTunnelStatus(_machines.some(m => m.transport_id));
     // Only the active backend's models are needed to fill the picker at boot;
     // the rest load when the Backends tab is opened.
     const active = _machines.find(machine => machine.active);

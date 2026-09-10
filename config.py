@@ -259,6 +259,11 @@ PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000)  # cap on user prompt lengt
 # CLAUDE.md's Qwen3.5 note -- is retried up to this many times before the
 # last attempt is delivered as-is. 0 disables the retry.
 TURN_RETRY_MAX = _int("WC_TURN_RETRY_MAX", 2)
+
+# Seconds to wait before retrying a turn that failed because the Claude CLI
+# stopped producing output mid-stream ("The response stopped arriving …").
+# Only one retry is attempted regardless of TURN_RETRY_MAX.
+PROXY_TURN_RETRY_DELAY_S = _int("WC_PROXY_TURN_RETRY_DELAY_S", 5)
 # Below this many output tokens, with no text content, a turn counts as a
 # non-answer for retry purposes.
 TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
@@ -272,7 +277,7 @@ TURN_RETRY_MIN_TOKENS = _int("WC_TURN_RETRY_MIN_TOKENS", 5)
 WC_WEBCONSOLE_URL = _str("WC_WEBCONSOLE_URL")
 
 # --- misc ----------------------------------------------------------------
-VERSION = "WebConsole_0.15.4"
+VERSION = "WebConsole_0.16.0"
 MAX_UPLOAD_BYTES = _int("WC_MAX_UPLOAD_BYTES", 524288000)  # 500 MB upload cap
 
 

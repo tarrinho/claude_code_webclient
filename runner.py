@@ -31,6 +31,9 @@ import config
 
 _log: object = __import__("loguru").logger.bind(service="runner")
 
+_STOPPED_ARRIVING_RE = re.compile(
+    r"The response stopped arriving", re.IGNORECASE,
+)
 _K = TypeVar("_K")
 _V = TypeVar("_V")
 
@@ -1183,15 +1186,32 @@ async def run_turn(
 
     _retried_usage_by_chat.pop(chat_id, None)
     max_attempts = config.TURN_RETRY_MAX + 1
+    stopped_arriving_retry = False
     for attempt in range(1, max_attempts + 1):
-        if config.PROXY_ENABLED:
-            chunks, sid = await _proxy_turn(
-                prompt, session_id, str(resolved), chat_id, model, owner
-            )
-        else:
-            chunks, sid = await _execute_direct(
-                prompt, session_id, str(resolved), chat_id, model, owner
-            )
+        try:
+            if config.PROXY_ENABLED:
+                chunks, sid = await _proxy_turn(
+                    prompt, session_id, str(resolved), chat_id, model, owner
+                )
+            else:
+                chunks, sid = await _execute_direct(
+                    prompt, session_id, str(resolved), chat_id, model, owner
+                )
+        except TurnError as exc:
+            # "stopped arriving" — CLI hung mid-stream; wait then retry once.
+            if (
+                config.PROXY_ENABLED
+                and not stopped_arriving_retry
+                and _STOPPED_ARRIVING_RE.search(exc.message)
+            ):
+                stopped_arriving_retry = True
+                _log.warning(
+                    "turn_retry chat_id=%s attempt=%d/%d reason=stopped_arriving",
+                    chat_id, attempt, max_attempts,
+                )
+                await asyncio.sleep(config.PROXY_TURN_RETRY_DELAY_S)
+                continue
+            raise
 
         if attempt == max_attempts or not _is_non_answer(
             chunks, _usage_by_chat.get(chat_id) or {}
@@ -1251,6 +1271,7 @@ async def stream_turn(
 
     _retried_usage_by_chat.pop(chat_id, None)
     max_attempts = config.TURN_RETRY_MAX + 1
+    stopped_arriving_retry = False
     for attempt in range(1, max_attempts + 1):
         if config.PROXY_ENABLED:
             inner = _proxy_stream_turn(
@@ -1279,6 +1300,29 @@ async def stream_turn(
                 yield event
                 continue
             if etype == "error":
+                # "stopped arriving" — CLI hung mid-stream; wait then retry
+                # once before delivering the error to the client.
+                if (
+                    config.PROXY_ENABLED
+                    and not stopped_arriving_retry
+                    and _STOPPED_ARRIVING_RE.search(event.get("error", ""))
+                ):
+                    stopped_arriving_retry = True
+                    _log.warning(
+                        "stream_retry chat_id=%s attempt=%d/%d reason=stopped_arriving",
+                        chat_id, attempt, max_attempts,
+                    )
+                    if usage_event is not None:
+                        yield usage_event
+                    yield {
+                        "type": "status",
+                        "status": "api_retry",
+                        "attempt": attempt + 1,
+                        "max_retries": max_attempts - 1,
+                        "error": event.get("error", "Response stopped arriving, retrying"),
+                    }
+                    await asyncio.sleep(config.PROXY_TURN_RETRY_DELAY_S)
+                    break  # restart the outer for-loop for the retry attempt
                 if usage_event is not None:
                     yield usage_event
                 yield event

@@ -1419,7 +1419,8 @@ export function createConversationController(dependencies) {
   });
   elements.sendButton.addEventListener('click', () => send());
   elements.retryButton.addEventListener('click', retry);
-  // Expose send() on window so voice-conversation.js can call it.
+  // Expose send() on window so the voice-* modules (voice-engine.js,
+  // voice-tooltip.js) can call it.
   window.__webConsoleSend = send;
 
   elements.messages.addEventListener('scroll', () => {

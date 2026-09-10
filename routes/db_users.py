@@ -39,6 +39,18 @@ async def setting_get(key: str) -> str | None:
     return row["value"] if row else None
 
 
+async def setting_get_all(keys: set[str]) -> dict[str, str | None]:
+    """Fetch multiple settings in a single query.  Un-requested keys return None."""
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    cur = await db.db_conn.execute(
+        f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+        tuple(keys),
+    )
+    return {row["key"]: row["value"] for row in await cur.fetchall()}
+
+
 async def setting_set(key: str, value: str) -> None:
     await db.db_conn.execute(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "

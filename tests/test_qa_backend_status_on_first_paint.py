@@ -138,6 +138,102 @@ class LoadBackendsOrderingTests(unittest.TestCase):
         )
 
 
+class PollPredicateTests(unittest.TestCase):
+    """The root cause, and the reason five earlier attempts at this panel
+    found nothing: the client never asked for tunnel status at all.
+
+    `_pollTunnelStatus` was armed on `backend_kind === 'ssh_proxy'`, while
+    shared.py:backend_kind emits "ssh-proxy" with a hyphen -- the underscore
+    form survives only in app.js's label table as a legacy *provider* value.
+    The predicate could therefore never be true, the poller was never started,
+    and badges only ever updated via the wc:tunnel-start-queued event, i.e.
+    after pressing Init or Check. Every fix aimed at the status pipeline was
+    aimed at the wrong half.
+
+    Both call sites now derive the condition from `transport_id` -- the same
+    field _transportStatus reads -- so the trigger and the thing it feeds
+    cannot drift apart into two spellings again."""
+
+    def setUp(self):
+        self.js = APP_JS.read_text(encoding="utf-8")
+        self.code = _strip_comments(self.js)
+
+    def test_the_unmatchable_underscore_comparison_is_gone(self):
+        self.assertNotIn(
+            "backend_kind === 'ssh_proxy'", self.code,
+            "this compares against a string shared.py never emits, so the "
+            "poller is never armed",
+        )
+
+    def test_every_poll_call_is_keyed_on_transport_id(self):
+        calls = re.findall(r"_pollTunnelStatus\(([^)]*)\)", self.code)
+        self.assertTrue(calls, "no _pollTunnelStatus call sites found")
+        for arg in calls:
+            self.assertNotIn(
+                "backend_kind", arg,
+                f"_pollTunnelStatus({arg}) keys on a display string; the "
+                f"badge reads transport_id",
+            )
+
+    def test_both_call_sites_are_still_present(self):
+        """One arms it for the Backends panel, one at boot. Losing the boot
+        call would leave badges stale until Settings was opened."""
+        self.assertEqual(
+            len(re.findall(r"_pollTunnelStatus\(", self.code)), 2,
+            "expected exactly the panel-open and boot call sites",
+        )
+
+
+class StatusTableTests(unittest.TestCase):
+    """`unknown` has to exist in both lookup tables or it renders as
+    `undefined` in the badge and `NaN` in the sort comparator."""
+
+    def setUp(self):
+        self.js = MACHINES_JS.read_text(encoding="utf-8")
+
+    def test_unknown_has_a_label(self):
+        table = re.search(r"TRANSPORT_STATUS_LABEL = \{(.*?)\}", self.js, re.DOTALL)
+        self.assertIsNotNone(table)
+        self.assertIn("unknown:", table.group(1),
+                      "a status with no label renders as undefined")
+
+    def test_unknown_has_a_sort_position(self):
+        table = re.search(r"TRANSPORT_STATUS_ORDER = \{(.*?)\}", self.js, re.DOTALL)
+        self.assertIsNotNone(table)
+        self.assertIn("unknown:", table.group(1),
+                      "a status missing from the order table sorts as NaN")
+
+    def test_unknown_sorts_next_to_active_not_beside_uninitialized(self):
+        """Almost every unknown group resolves to active a moment later.
+        Sorting it beside uninitialized would make the list reshuffle
+        visibly as the first status lands."""
+        table = re.search(r"TRANSPORT_STATUS_ORDER = \{(.*?)\}", self.js, re.DOTALL).group(1)
+        order = dict(re.findall(r"(\w+):\s*(\d+)", table))
+        self.assertEqual(int(order["unknown"]) - int(order["active"]), 1,
+                         f"unknown should sort immediately after active: {order}")
+
+    def test_the_cache_starts_null_so_unknown_is_reachable(self):
+        """Without this the unknown branch is dead code in the real app.
+
+        _transportStatus distinguishes null ("not fetched") from {} ("fetched,
+        nothing to report"), so the module's initial value decides whether the
+        distinction exists at all. Initialising it to {} passes every
+        behavioural test -- those call the function directly with null -- while
+        the running page can never reach the unknown state and goes straight
+        back to reporting Uninitialized before the first fetch. Found by
+        mutation: flipping null to {} broke nothing until this existed."""
+        self.assertRegex(
+            self.js, r"let _tunnelStatusCache = null;",
+            "the cache must start null, or 'unknown' is unreachable and the "
+            "first paint lies again",
+        )
+
+    def test_the_badge_has_a_style_for_unknown(self):
+        """An unstyled badge inherits nothing and reads as unstyled text."""
+        css = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".transport-status-badge-unknown", css)
+
+
 class ModuleVersionsAgreeTests(unittest.TestCase):
     """Both files changed, so both cache-busters had to move together. This
     repo has shipped the ES-module identity split more than once -- two

@@ -42,9 +42,17 @@ class VoiceConversationUiTests(unittest.TestCase):
         for control in ('voiceMicBtn', 'voiceLiveBtn', 'voiceStopBtn'):
             self.assertIn(f'id="{control}"', composer)
 
-    def test_voice_conversation_js_file_stays_under_300_lines(self):
-        content = (ASSETS / "voice-conversation.js").read_text()
-        self.assertLess(len(content.splitlines()), 300)
+    def test_voice_conversation_js_files_stay_under_300_lines(self):
+        """voice-conversation.js was split 2026-09-10 into three files along
+        its own natural seams (engine/tooltip/handoff) once it crossed 300
+        lines -- each successor stays under the same cap."""
+        for name in ("voice-engine.js", "voice-tooltip.js", "voice-handoff.js"):
+            content = (ASSETS / name).read_text()
+            self.assertLess(len(content.splitlines()), 300, name)
+
+    def test_voice_conversation_js_is_loaded(self):
+        for name in ("voice-engine.js", "voice-tooltip.js", "voice-handoff.js"):
+            self.assertIn(name, self.html)
 
     def test_conversation_js_calls_voice_hooks(self):
         conv = (ASSETS / "conversation.js").read_text()

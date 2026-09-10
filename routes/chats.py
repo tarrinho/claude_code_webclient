@@ -332,7 +332,7 @@ async def handle_chat_get(request: Request, chat_id: str):
                 # Voice conversations answer through a different turn path and
                 # own the mic / live-conversation controls in the composer.
                 # Without this the client could not tell one apart after a
-                # reload, so every guard in voice-conversation.js read
+                # reload, so every guard in the voice-* frontend modules read
                 # undefined and the controls stayed hidden in the very
                 # conversations they belong to.
                 "voice_mode": bool(chat.get("voice_mode")),

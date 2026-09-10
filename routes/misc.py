@@ -41,6 +41,42 @@ _log = logging.getLogger("wc.app")
 
 router = APIRouter()
 
+# ── Settings cache ──────────────────────────────────────────────────────────────
+# In-memory cache for GET /api/settings keyed by (owner_id, cache_version).
+# cache_version increments on every PATCH write so stale entries expire instantly;
+# the TTL is a safety net if version somehow gets out of sync.
+_SETTINGS_CACHE_TTL_S: Final[int] = 30
+_settings_cache_version: int = 0
+_settings_cache: dict[tuple[str, int], tuple[dict, float]] = {}
+
+
+async def _settings_cache_get(owner_id: str) -> dict[str, Any] | None:
+    """Return cached settings for *owner_id* if still valid, else None."""
+    global _settings_cache_version
+    key = (owner_id, _settings_cache_version)
+    entry = _settings_cache.get(key)
+    if entry is None:
+        return None
+    payload, loaded_at = entry
+    if time.monotonic() - loaded_at > _SETTINGS_CACHE_TTL_S:
+        _settings_cache.pop(key, None)
+        return None
+    return payload
+
+
+def _settings_cache_put(owner_id: str, payload: dict[str, Any]) -> None:
+    """Store *payload* for *owner_id* at the current cache_version."""
+    global _settings_cache_version
+    key = (owner_id, _settings_cache_version)
+    _settings_cache[key] = (payload, time.monotonic())
+
+
+def _settings_invalidate() -> None:
+    """Bump the cache version so every key becomes stale on the next GET."""
+    global _settings_cache_version
+    _settings_cache_version += 1
+    _settings_cache.clear()  # version bump makes all entries stale anyway
+
 
 # Skill discovery roots. Plain module attributes (not Final) so tests can patch
 # them and never touch the real ~/.claude tree.
@@ -642,7 +678,6 @@ async def _transport_stats(session) -> list[dict[str, Any]]:
     return out
 
 
-
 async def handle_system_series_get(request: Request):
     """GET /api/system/series -- stored host samples bucketed over time.
 
@@ -747,63 +782,86 @@ async def handle_settings_get(request: Request):
     counterpart, which is admin-only: the frontend reads it on every page load
     to render the version and the settings form. Every value below must
     therefore stay non-sensitive -- never add a secret, key, or token here.
+
+    Uses an in-memory cache keyed by (owner_id, cache_version) so that the
+    same-owner re-fetch within a 30-second window bypasses the DB entirely.
+    Every PATCH write bumps the version, making stale entries instantly invalid.
     """
     session = request.state.session
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required")
+
+    owner_id = session["user"]
+
+    # Fast path: cache hit.
+    cached = await _settings_cache_get(owner_id)
+    if cached is not None:
+        return JSONResponse(cached)
+
+    # Slow path: build from DB.
     host = await runner.get_proxy_host()
+
+    # Batch-read all setting values in a single query.
+    _SETTINGS_KEYS = frozenset((
+        "session_ttl", "turn_timeout", "prompt_max",
+        "voice_backend_id", "voice_ai_machine_id", "voice_model",
+        "voice_speech_rate", "webconsole_url", "debug_console",
+        "cross_session_inbound", "testing_default_model", "testing_model_enforce",
+        "default_model",
+    ))
+    _settings_rows = await db.setting_get_all(_SETTINGS_KEYS)
+
+    def _get(key: str, default: Any = None) -> str | None:
+        return _settings_rows.get(key, default)
+
     try:
-        session_ttl = int(await db.setting_get("session_ttl") or config.SESSION_TTL_S)
+        session_ttl = int(_get("session_ttl") or config.SESSION_TTL_S)
     except (TypeError, ValueError):
         session_ttl = config.SESSION_TTL_S
     try:
-        turn_timeout = int(
-            await db.setting_get("turn_timeout") or config.TURN_TIMEOUT_S
-        )
+        turn_timeout = int(_get("turn_timeout") or config.TURN_TIMEOUT_S)
     except (TypeError, ValueError):
         turn_timeout = config.TURN_TIMEOUT_S
     try:
-        prompt_max = int(await db.setting_get("prompt_max") or config.PROMPT_MAX_CHARS)
+        prompt_max = int(_get("prompt_max") or config.PROMPT_MAX_CHARS)
     except (TypeError, ValueError):
         prompt_max = config.PROMPT_MAX_CHARS
-    voice_backend_id = await db.setting_get("voice_backend_id")
+
+    voice_backend_id = _get("voice_backend_id")
     if not voice_backend_id:
-        voice_backend_id = await db.setting_get("voice_ai_machine_id")
+        voice_backend_id = _get("voice_ai_machine_id")
     voice_backend_id = voice_backend_id or config.VOICE_BACKEND_ID_DEFAULT
-    voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
+    voice_model = _get("voice_model") or config.VOICE_MODEL_DEFAULT
     try:
         voice_speech_rate = float(
-            await db.setting_get("voice_speech_rate") or config.VOICE_SPEECH_RATE_DEFAULT
+            _get("voice_speech_rate") or config.VOICE_SPEECH_RATE_DEFAULT
         )
     except (TypeError, ValueError):
         voice_speech_rate = config.VOICE_SPEECH_RATE_DEFAULT
-    webconsole_url = await db.setting_get("webconsole_url")
+
+    webconsole_url = _get("webconsole_url")
     if not webconsole_url and config.WC_WEBCONSOLE_URL:
         webconsole_url = config.WC_WEBCONSOLE_URL
 
-    debug_console = await db.setting_get("debug_console")
-    debug_console = debug_console == "1"
+    debug_console = _get("debug_console") == "1"
 
-    cross_session_inbound = await db.setting_get("cross_session_inbound")
+    cross_session_inbound = _get("cross_session_inbound")
     if cross_session_inbound not in ("accept", "prompt"):
         cross_session_inbound = config.CROSS_SESSION_INBOUND_DEFAULT
 
-    testing_default_model = (
-        await db.setting_get("testing_default_model") or config.TESTING_MODEL_DEFAULT
-    )
-    testing_model_enforce = await db.setting_get("testing_model_enforce")
+    testing_default_model = _get("testing_default_model") or config.TESTING_MODEL_DEFAULT
+    testing_model_enforce_raw = _get("testing_model_enforce")
     testing_model_enforce = (
-        config.TESTING_MODEL_ENFORCE_DEFAULT if testing_model_enforce is None
-        else testing_model_enforce == "1"
+        config.TESTING_MODEL_ENFORCE_DEFAULT if testing_model_enforce_raw is None
+        else testing_model_enforce_raw == "1"
     )
 
     from routes.db_machines import parse_active_models
     from routes.voice import voice_model_timing_averages
 
-    # Voice backend options are scoped to the authenticated owner.
-    owner_id = session["user"]
     if voice_backend_id and not await db.ai_machine_get(voice_backend_id, owner_id):
         voice_backend_id = None
+
     # active_models travels with each backend, so the Settings dialog can
     # repopulate the model dropdown from the *selected* backend without
     # another request.
@@ -855,31 +913,36 @@ async def handle_settings_get(request: Request):
     # the dropdown, and what an API client reading settings expects.
     voice_model_options = _options(voice_backend_id) if voice_backend_id else []
 
-    return JSONResponse(
-        {
-            "ai_machine_host": host,
-            "ai_machine_port": config.PROXY_PORT,
-            "proxy_enabled": config.PROXY_ENABLED,
-            "default_model": await db.setting_get("default_model") or config.MODEL_NAME,
-            "webconsole_url": webconsole_url,
-            "version": config.VERSION.removeprefix("WebConsole_"),
-            "session_ttl_s": session_ttl,
-            "turn_timeout_s": turn_timeout,
-            "prompt_max": prompt_max,
-            "debug_console": debug_console,
-            "voice_backend_id": voice_backend_id,
-            # Compatibility key for older clients; both values are the same
-            # owner-scoped selection and never expose another user's machine.
-            "voice_ai_machine_id": voice_backend_id,
-            "voice_backend_options": voice_backend_options,
-            "voice_model": voice_model,
-            "voice_speech_rate": voice_speech_rate,
-            "voice_model_options": voice_model_options,
-            "cross_session_inbound": cross_session_inbound,
-            "testing_default_model": testing_default_model,
-            "testing_model_enforce": testing_model_enforce,
-        }
-    )
+    payload = {
+        "ai_machine_host": host,
+        "ai_machine_port": config.PROXY_PORT,
+        "proxy_enabled": config.PROXY_ENABLED,
+        "default_model": _get("default_model") or config.MODEL_NAME,
+        "webconsole_url": webconsole_url,
+        "version": config.VERSION.removeprefix("WebConsole_"),
+        "session_ttl_s": session_ttl,
+        "turn_timeout_s": turn_timeout,
+        "prompt_max": prompt_max,
+        "debug_console": debug_console,
+        "voice_backend_id": voice_backend_id,
+        # Compatibility key for older clients; both values are the same
+        # owner-scoped selection and never expose another user's machine.
+        "voice_ai_machine_id": voice_backend_id,
+        "voice_backend_options": voice_backend_options,
+        "voice_model": voice_model,
+        "voice_speech_rate": voice_speech_rate,
+        "voice_model_options": voice_model_options,
+        "cross_session_inbound": cross_session_inbound,
+        "testing_default_model": testing_default_model,
+        "testing_model_enforce": testing_model_enforce,
+    }
+
+    # Cache the full payload (including dynamic parts like active_models and
+    # timing averages) so that subsequent GETs within the TTL for the same
+    # owner hit the cache without touching the DB.
+    _settings_cache_put(owner_id, payload)
+
+    return JSONResponse(payload)
 
 
 async def handle_settings_patch(request: Request):
@@ -1086,6 +1149,8 @@ async def handle_settings_patch(request: Request):
             # Empty string clears the stored value.
             await db.setting_set("webconsole_url", "")
             _log.info("WebConsole URL cleared by user=%s", session["user"])
+    # Bust the settings cache so the next GET rebuilds from DB.
+    _settings_invalidate()
     return JSONResponse(
         {"ok": True, "ai_machine_host": await db.setting_get("ai_machine_host")}
     )

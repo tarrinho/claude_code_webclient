@@ -72,6 +72,46 @@ def _call_transport_status(machines: list[dict], tunnel_status: dict) -> str:
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
 class TransportStatusTests(unittest.TestCase):
 
+    # ── "not known yet" is not a verdict ──────────────────────────────────
+    #
+    # Added 2026-09-10. Six reports across three days said this panel showed
+    # Uninitialized and "wrong information". Two causes, both here: the client
+    # never fetched status at all (its predicate compared backend_kind against
+    # 'ssh_proxy' while shared.py emits "ssh-proxy"), and when it had no data
+    # this function reported the absence as a fact. The first is fixed in
+    # app.js; these pin the second.
+
+    def test_a_never_fetched_cache_is_unknown_not_uninitialized(self):
+        """The defect. A null cache means no fetch has happened, which is not
+        the same as knowing the tunnel is down -- and saying "Uninitialized"
+        for it is a false statement, not a placeholder."""
+        machines = [{"id": "m1", "transport_id": "t1", "enabled": True}]
+        self.assertEqual(_call_transport_status(machines, None), "unknown")
+
+    def test_a_fetched_but_empty_cache_is_still_uninitialized(self):
+        """The other side of the distinction, and the reason null rather than
+        a flag: an empty object is a report ("nothing to tell you about these
+        machines"), so the Uninitialized verdict is earned here."""
+        machines = [{"id": "m1", "transport_id": "t1", "enabled": True}]
+        self.assertEqual(_call_transport_status(machines, {}), "uninitialized")
+
+    def test_a_local_group_is_active_even_with_no_status_fetched(self):
+        """Unknown must not leak onto groups that have no tunnel to know
+        about -- a direct backend's readiness does not depend on the fetch."""
+        machines = [{"id": "m1", "enabled": True}]
+        self.assertEqual(_call_transport_status(machines, None), "active")
+
+    def test_disabled_still_wins_over_unknown(self):
+        """A deliberately-disabled group is known to be off regardless of
+        whether any status has been fetched; unknown must not mask it."""
+        machines = [{"id": "m1", "transport_id": "t1", "enabled": False}]
+        self.assertEqual(_call_transport_status(machines, None), "disabled")
+
+    def test_a_group_with_no_machines_is_uninitialized_even_unfetched(self):
+        """Nothing to be unsure about: an empty group is known to have no
+        backend assigned, which is what Uninitialized means."""
+        self.assertEqual(_call_transport_status([], None), "uninitialized")
+
     def test_a_transport_with_no_machines_is_uninitialized(self):
         """A transport just created, nothing assigned to it yet."""
         self.assertEqual(_call_transport_status([], {}), "uninitialized")

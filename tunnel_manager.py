@@ -300,6 +300,7 @@ async def _tick(store_fn, now_fn) -> None:
                         machine_id,
                         proxy_ok=1,
                         last_check=state["last_check"],
+                        error_msg=None,
                     )
                 except Exception:
                     _log.exception("persist probe_ok failed")

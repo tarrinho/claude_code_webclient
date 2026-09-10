@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 
 import db
 import routes.db_machines as db_machines
+import runner
 from shared import backend_kind
 
 _log = logging.getLogger("wc.voice")

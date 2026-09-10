@@ -206,6 +206,11 @@ def grade_one(item: dict):
         correct=item["correct"],
         response=item["response"][:1500],
     )
+    # The last exception, so the fallback below can say why. It used to test
+    # `'e' in dir()`, but `except Exception:` never bound an `e`, so that was
+    # always false and every fallback reported "parse failed" -- including the
+    # ones caused by the proxy erroring rather than by unparseable output.
+    last_error: str = "parse failed"
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             text = call_proxy_safe(prompt)
@@ -215,11 +220,12 @@ def grade_one(item: dict):
                 return result
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
-        except Exception:
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
     # Fallback: zeros
-    print(f"  Fallback to zeros for {item['model']}/{item['task']}: {e if 'e' in dir() else 'parse failed'}", file=sys.stderr)
+    print(f"  Fallback to zeros for {item['model']}/{item['task']}: {last_error}", file=sys.stderr)
     return {"completeness":0,"reasoning":0,"code_quality":0,
             "constraint_handling":0,"consistency":0,"clarity":0}
 

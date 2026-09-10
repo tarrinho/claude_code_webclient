@@ -20,6 +20,75 @@ churn.
 
 ---
 
+## [0.16.0] — 2026-09-10
+
+The bump to 0.16.0 landed the same way 0.15.4 did: `config.VERSION` moved and
+none of the five display surfaces followed, and this file had no section. That
+is the second consecutive release to half-land in exactly the way the entry
+below it describes, so it is worth saying plainly — the bump is not the release,
+and `tests/test_qa_version_consistency.py` is the only thing that noticed
+either time. Both halves are completed here.
+
+### Added
+
+- **Server tab statistics for transports.** Stored samples rather than live
+  probes, with a chart set per host, the console's own host leading and
+  transports below it, and the time-frame controls pinned at the top so they
+  stay reachable while the panel scrolls.
+- **A settings response cache** for `GET /api/settings`: 30s TTL, invalidated
+  on every `PATCH`, and one batch query in place of thirteen individual
+  `setting_get` calls.
+
+### Changed
+
+- **The supervisor map is laid out horizontally** instead of radially.
+- **`voice-conversation.js` split** into `voice-engine.js`, `voice-tooltip.js`
+  and `voice-handoff.js`, bringing each under the 300-line cap.
+
+### Fixed
+
+- **Every SSH transport in Settings → Backends read "Uninitialized", and
+  pressing Check appeared to do nothing even when Check reported success.**
+  Reported six times across three days, and each earlier attempt was aimed at
+  the status pipeline, which was healthy. The browser was never asking:
+  `_pollTunnelStatus` was armed on `backend_kind === 'ssh_proxy'` while
+  `shared.py` emits `"ssh-proxy"` with a hyphen — the underscore form survives
+  only in a legacy *provider* label table — so the condition could never be
+  true and the poller never started. Badges only ever updated in response to
+  `wc:tunnel-start-queued`, which is to say after Init or Check. Both call
+  sites now key on `transport_id`, the field the badge itself reads, so the
+  trigger and the display cannot drift into two spellings again.
+- **The Backends panel asserted "Uninitialized" as a fact before it had
+  fetched anything.** A fourth status, `unknown`, now renders as "Checking…"
+  and sorts immediately after `active`; the status cache starts as `null`
+  ("never fetched") as distinct from `{}` ("fetched, nothing to report").
+- **`app.js` and `styles.css` shipped changed content at unchanged
+  cache-busters** (`v=55`, `v=41`) while `machines.js` was bumped, so a
+  returning browser loaded the old predicate and got the old behaviour with a
+  mismatched module pair. Now `v=56` and `v=42`, consistent across
+  `index.html` and all twelve referencing files.
+- **Four tests that passed alone and failed in a full run**, three of them
+  from process-global state: the new settings cache is module-level and
+  survived between tests that build state underneath the endpoint rather than
+  through a `PATCH` (fixed with an autouse reset, matching the rate-limiter
+  fixture beside it); `test_qa_voice_model_per_backend` still stubbed
+  `setting_get` after the switch to `setting_get_all`, so every value read
+  empty; `test_qa_usage` hardcoded a second model id that `WC_TESTING_MODEL`
+  can resolve to, collapsing two dict keys into one; and the agent OOM
+  opt-out test asserted a literal `0` where opting out means leaving the
+  inherited value alone.
+- **`routes/voice.py` called `runner.get_default_model()` without importing
+  `runner`.** The surrounding `except Exception: return None` swallowed the
+  `NameError`, so voice handoff summarization silently produced nothing for
+  any conversation without a pinned model — precisely the fallback path that
+  code exists to provide.
+- **`bench/judge_delegation.py` reported every grading fallback as "parse
+  failed".** It tested `'e' in dir()`, but `except Exception:` never bound an
+  `e`, so the branch was unreachable and a proxy error was indistinguishable
+  from unparseable output. The last exception is now captured and named.
+
+---
+
 ## [0.15.4] — 2026-09-09
 
 `config.VERSION` was moved to 0.15.4 on 2026-09-08 and nothing else was: no

@@ -237,16 +237,45 @@ function _tree() {
     var maxDepth = 0;
     nodes.forEach(function (n) { if (n.depth > maxDepth) maxDepth = n.depth; });
     if (!maxDepth) maxDepth = 1;
-    var span = layout.__size ? layout.__size[0] : 1;
-    var radius = layout.__size ? layout.__size[1] : 1;
-    nodes.forEach(function (n, i) {
-      n.x = nodes.length > 1 ? (i / nodes.length) * span : 0;
-      n.y = (n.depth / maxDepth) * radius;
-    });
-    STUB.treeSize = layout.__size;
+    // nodeSize means fixed per-node spacing; size means fit-to-box. Real d3
+    // treats them as mutually exclusive (see below), so the effective mode
+    // decides which one drives positions here.
+    if (layout.__nodeSize) {
+      var dx = layout.__nodeSizeVal ? layout.__nodeSizeVal[0] : 1;
+      var dy = layout.__nodeSizeVal ? layout.__nodeSizeVal[1] : 1;
+      nodes.forEach(function (n, i) {
+        n.x = i * dx;
+        n.y = n.depth * dy;
+      });
+    } else {
+      var span = layout.__size ? layout.__size[0] : 1;
+      var radius = layout.__size ? layout.__size[1] : 1;
+      nodes.forEach(function (n, i) {
+        n.x = nodes.length > 1 ? (i / nodes.length) * span : 0;
+        n.y = (n.depth / maxDepth) * radius;
+      });
+    }
+    // Mirrors d3: tree.size() reads back null once nodeSize is in effect.
+    STUB.treeSize = layout.__nodeSize ? null : layout.__size;
+    STUB.treeNodeSize = layout.__nodeSize ? layout.__nodeSizeVal : null;
     return root;
   };
-  layout.size = function (s) { layout.__size = s; return layout; };
+  // d3-hierarchy's tree layout carries ONE flag for these two setters:
+  // `size` clears it, `nodeSize` sets it, and the accessor that is called
+  // last wins while the other's value is ignored. Reproduced faithfully on
+  // purpose -- a stub that accepted both and honoured both would make a
+  // module calling both look correct here and behave differently in a
+  // browser, which is the one thing this harness must not do.
+  layout.size = function (s) {
+    layout.__size = s;
+    layout.__nodeSize = false;
+    return layout;
+  };
+  layout.nodeSize = function (s) {
+    layout.__nodeSizeVal = s;
+    layout.__nodeSize = true;
+    return layout;
+  };
   layout.separation = function (f) { layout.__separation = f; return layout; };
   return layout;
 }

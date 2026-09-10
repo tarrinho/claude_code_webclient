@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from routes.db_supervisor_map import supervisor_map
+from routes.db_supervisor_map import agent_series, supervisor_map
 
 _log = logging.getLogger("wc.app")
 
@@ -34,9 +34,40 @@ async def handle_supervisor_map(request: Request):
     session = request.state.session
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required")
+    # The dashboard's observation window. The spec offers 1h / 24h / 7d /
+    # session, and "session" means all time -- expressed as hours=0 rather
+    # than a magic string so the query has one shape.
+    raw = request.query_params.get("hours")
+    hours: float | None = 24.0
+    if raw is not None:
+        try:
+            parsed = float(raw)
+            hours = None if parsed <= 0 else min(parsed, 24.0 * 400)
+        except (TypeError, ValueError):
+            hours = 24.0
     try:
-        tree = await supervisor_map(session["user"])
+        tree = await supervisor_map(session["user"], hours)
         return JSONResponse(content=tree)
     except Exception:
         _log.exception("supervisor_map failed")
         raise HTTPException(status_code=500, detail="Data unavailable")
+
+
+@router.get("/api/supervisor-map/agent/{agent_id}/series")
+async def handle_agent_series(request: Request, agent_id: str):
+    """Recent token totals per bucket for one agent, for its sparkline.
+
+    Per-agent and fetched on selection rather than folded into the map
+    payload. The map polls every ten seconds and a series for every agent
+    would multiply the cost of the poll by the size of the fleet, to draw
+    something only the selected node shows.
+    """
+    session = request.state.session
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        points = await agent_series(session["user"], agent_id)
+    except Exception:
+        _log.exception("agent_series failed agent_id=%s", agent_id)
+        raise HTTPException(status_code=500, detail="Data unavailable")
+    return JSONResponse(content={"agent_id": agent_id, "points": points})

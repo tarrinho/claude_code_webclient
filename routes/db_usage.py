@@ -5,6 +5,7 @@
 
 import datetime
 import logging
+import re
 import time
 from typing import Any
 
@@ -34,11 +35,19 @@ async def usage_record(
     duration_ms: int | None = None,
     is_error: bool = False,
     origin: str = "web",
+    billing_route: str = "",
 ) -> int | None:
     """Record one model's usage for a completed turn.
 
     Returns the row id, or None if the write failed. Accounting must never
     break a turn that has already succeeded, so failures are swallowed.
+
+    ``billing_route`` is the caller's *record* of which side of the bill this
+    turn landed on -- see `billing_route_from_machine`. Callers that cannot
+    know it leave it empty, and `billing_route_of` infers one at read time
+    from the model id. The two are kept apart on purpose: a chart that cannot
+    tell a recorded route from an inferred one cannot say how much of itself
+    is a guess.
     """
     if not chat_id or not owner_id or not model:
         _log.warning(
@@ -52,8 +61,8 @@ async def usage_record(
             "INSERT INTO usage_events "
             "(chat_id, owner_id, model, provider, input_tokens, output_tokens, "
             " cache_read_tokens, cache_creation_tokens, cost_usd, cost_basis, "
-            " duration_ms, is_error, created_at, origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " duration_ms, is_error, created_at, origin, billing_route) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id,
                 owner_id,
@@ -69,6 +78,7 @@ async def usage_record(
                 1 if is_error else 0,
                 db._now(),
                 origin or "web",
+                billing_route or "",
             ),
         )
         await db.db_conn.commit()
@@ -172,7 +182,25 @@ async def usage_import(
 
 
 async def _ensure_usage_columns() -> None:
-    """Additive usage schema migrations, and a one-time origin backfill."""
+    """Additive usage schema migrations, and a one-time origin backfill.
+
+    ``origin`` replaces inferring where a turn came from. The old rule was
+    "session_id is set, therefore a terminal" -- true today, but a guess about
+    the shape of a row rather than a statement of fact, and every web turn runs
+    against a session-linked conversation, so nothing but the absence of a
+    column was keeping the two apart.
+
+    ``context_unsplit`` marks a row whose model reported no cache breakdown, so
+    its ``input_tokens`` is the whole conversation re-read rather than new
+    spend.
+
+    ``billing_route`` records which side of the bill a turn landed on, and is
+    the one migration here with no backfill -- see the comment on it below.
+
+    This is the only definition. db.py held an identical copy until
+    2026-09-10, and because a module-level name there beats its __getattr__
+    dispatch, that copy was what ran and this one was dead.
+    """
     cursor = await db.db_conn.execute("PRAGMA table_info(usage_events)")
     columns = {row["name"] for row in await cursor.fetchall()}
     routed = await db.db_conn.execute("PRAGMA table_info(routed_requests)")
@@ -187,6 +215,17 @@ async def _ensure_usage_columns() -> None:
         "context_unsplit":
             "ALTER TABLE usage_events ADD COLUMN context_unsplit "
             "INTEGER NOT NULL DEFAULT 0",
+        # Which side of the bill a turn landed on. Deliberately NOT backfilled
+        # anywhere below, unlike origin and context_unsplit: an empty string
+        # means "the write site did not know", which is the truth for every row
+        # that predates this column, and `billing_route_of` infers a route for
+        # those from the model id at read time. Filling this column with those
+        # inferences would erase the only distinction it exists to carry --
+        # recorded fact against read-time guess -- and the charts label the two
+        # differently.
+        "billing_route":
+            "ALTER TABLE usage_events ADD COLUMN billing_route "
+            "TEXT NOT NULL DEFAULT ''",
     }
     added = False
     for column, statement in migrations.items():
@@ -208,6 +247,118 @@ async def _ensure_usage_columns() -> None:
         "  AND input_tokens > 8000"
     )
     await db.db_conn.commit()
+
+
+# ── Billing route ───────────────────────────────────────────────────────────
+#
+# Which side of the bill a turn landed on: the Claude subscription (the CLI's
+# own login against api.anthropic.com, priced by Claude Code) or an API key
+# through the LiteLLM gateway. It is the split that makes the charts
+# reconcilable against the gateway's own figures, and the only one that
+# separates spend anybody is billed for twice over.
+#
+# It is not recoverable from a transcript. Checked on 2026-09-10 across 120
+# transcripts, every assistant record, seven models: `service_tier` is
+# "standard" on all of them, `quotaLimits` is absent from all of them, and
+# `cache_read_input_tokens` is present on all of them. A gateway turn and a
+# subscription turn are shape-identical in the record. So the route is
+# *recorded* by the write sites that resolve a backend, and *inferred* from the
+# model id for the 131k rows written before this existed.
+SUBSCRIPTION = "subscription"
+GATEWAY = "gateway"
+UNCLASSIFIED = "unclassified"
+
+# Model-id prefixes this deployment's gateway puts on what it serves. These are
+# facts about *this* LiteLLM instance, not about gateways in general, which is
+# why they live in one named table rather than scattered through a query.
+_GATEWAY_PREFIXES: tuple[str, ...] = (
+    "vllm/", "nvidia/", "azure_ai/", "openai/", "gemini/", "bedrock/", "Qwen/",
+)
+# Families the gateway serves without a prefix. `gpt-5.6-luna` and
+# `gpt-5.4-mini` arrive bare, and no Anthropic subscription serves an
+# OpenAI-family id.
+_GATEWAY_BARE = re.compile(r"^(?:gpt-|o[0-9]|mistral|llama|qwen|deepseek)", re.I)
+# The subscription's own models. Bare `claude-*` only, and the anchor is what
+# does the work: a gateway-served Claude carries a vendor prefix
+# (`azure_ai/claude-opus-4-8-corporate`) and so cannot match this at all. The
+# prefix check above therefore runs first for readability rather than for
+# correctness -- reordering the two changes no result, which was confirmed by
+# mutation rather than assumed.
+_SUBSCRIPTION_BARE = re.compile(r"^claude-")
+
+
+def billing_route_of(stored: str | None, model: str | None) -> tuple[str, bool]:
+    """Return ``(route, inferred)`` for one usage row.
+
+    A stored value always wins: it was written by a site that had resolved the
+    backend, so it is a record rather than a reading of the tea leaves. Only
+    when it is empty -- every row older than the column -- does the model id
+    decide, and the second element of the tuple says so, because the charts
+    label an inferred series differently and that label has to be driven by
+    the same call that made the decision.
+
+    An id matching no rule is ``unclassified`` rather than being folded into
+    whichever side looks more plausible. That bucket is empty against every row
+    in the table today, and it is here for the model id that does not exist
+    yet: a new gateway model must show up as unattributed, not silently
+    inflate the subscription's line.
+    """
+    if stored:
+        return (stored, False)
+    name = (model or "").strip()
+    if name.startswith(_GATEWAY_PREFIXES):
+        return (GATEWAY, True)
+    if _SUBSCRIPTION_BARE.match(name):
+        return (SUBSCRIPTION, True)
+    if _GATEWAY_BARE.match(name):
+        return (GATEWAY, True)
+    return (UNCLASSIFIED, True)
+
+
+def billing_route_from_machine(machine: dict[str, Any] | None) -> str:
+    """The route a backend record implies, or "" when it implies nothing.
+
+    The base URL decides, and it is the only field that can: every machine on
+    this host carries provider ``claude_code`` -- the official API and the
+    gateway alike -- so `provider` separates nothing here. A machine with no
+    base URL is the official API by definition, which is the same rule
+    `backend_env.deltas` applies when it removes an inherited
+    ``ANTHROPIC_BASE_URL``.
+
+    Returns "" for an unknown backend rather than guessing, so the row is
+    stored unrecorded and classified from its model id at read time like any
+    other historical row.
+    """
+    if not machine:
+        return ""
+    base = str(machine.get("base_url") or "").strip().lower()
+    if not base:
+        return SUBSCRIPTION
+    host = base.split("//", 1)[-1].split("/", 1)[0].split("@")[-1].split(":")[0]
+    if host == "anthropic.com" or host.endswith(".anthropic.com"):
+        return SUBSCRIPTION
+    return GATEWAY
+
+
+def normalise_model_id(model: str | None) -> str:
+    """Strip a gateway's vendor prefix so one model is one series.
+
+    `nvidia/Qwen3.6-35B-A3B-NVFP4` and `vllm/Qwen3.6-35B-A3B-NVFP4` are the
+    same weights reached two ways, and charting them separately drew one model
+    as two lines three orders of magnitude apart.
+
+    Only the prefix is removed. A model the gateway *renamed* --
+    `vllm/Qwen3.5-0.8` becoming `Qwen/Qwen3.5-0.8B` -- still reads as two
+    models here, and deliberately so: collapsing "0.8" into "0.8B" would mean
+    guessing that two ids differing in their size suffix are the same thing,
+    which is exactly the kind of inference that put a wrong number on this page
+    in the first place.
+    """
+    name = (model or "").strip()
+    for prefix in _GATEWAY_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
 
 
 ROUTED_WINDOW_S: int = 6 * 3600
@@ -302,6 +453,58 @@ async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str
     )
     return [dict(row) for row in await cur.fetchall()]
 
+
+
+# The dashboard's observation windows are hours, not days: "1h" is one of the
+# four the spec names and _cutoff's day granularity cannot express it.
+def _cutoff_hours(hours: float) -> str:
+    """The ISO timestamp *hours* before now, in _now()'s format."""
+    return time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - max(0.0, hours) * 3600)
+    )
+
+
+async def usage_agent_totals(
+    owner_id: str, hours: float | None = 24.0
+) -> dict[str, dict[str, int]]:
+    """Turns and tokens per agent for the last *hours*, keyed by agent id.
+
+    "Agent" is the same identity `usage_agent_series` uses -- session_id where
+    there is one, chat_id otherwise -- because that is where the rows actually
+    are, and the supervisor map's nodes are keyed the same way. Anything else
+    would report zero for the terminal sessions, which are the majority.
+
+    One grouped statement for the whole fleet rather than a query per node:
+    the map polls every ten seconds and the number of agents is not fixed, so
+    per-node reads would multiply with the thing being displayed.
+
+    `hours=None` means all time, for the spec's "session" window.
+
+    Turns are counted as rows: usage_record writes one row per turn per model,
+    so a two-model turn counts twice here. That is deliberate and matches what
+    the usage panel already reports -- and no cost figure is derived from it,
+    which is the thing the spec rules out entirely.
+    """
+    where = "WHERE owner_id = ?"
+    params: list[Any] = [owner_id]
+    if hours:
+        where += " AND created_at >= ?"
+        params.append(_cutoff_hours(hours))
+    cur = await db.db_conn.execute(
+        "SELECT COALESCE(NULLIF(session_id, ''), chat_id) AS agent_id, "
+        "COUNT(*) AS turns, "
+        "COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS tokens "
+        f"FROM usage_events {where} "  # nosec B608
+        "GROUP BY agent_id",
+        params,
+    )
+    out: dict[str, dict[str, int]] = {}
+    for row in await cur.fetchall():
+        agent_id = row["agent_id"]
+        if agent_id:
+            out[agent_id] = {"turns": row["turns"] or 0,
+                             "tokens": row["tokens"] or 0}
+    return out
 
 async def usage_by_session(
     owner_id: str, days: int | None = 30, limit: int = 15
@@ -486,10 +689,68 @@ def _bucket_expr(bucket: str) -> tuple[str, list[Any]]:
     )
 
 
+# The three measures every token chart on the Statistics page reports, defined
+# once because they have to mean the same thing in all four of them.
+#
+# `billable_input` excludes rows flagged `context_unsplit`. Those are turns
+# whose model reported no cache breakdown, so each one counts the whole
+# conversation again -- 6.30B of the 7.27B tokens in this table on 2026-09-10,
+# 86.6% of the headline. The Usage tab has always subtracted them; the charts
+# never did, which is most of why they could not be reconciled against the
+# gateway's own figures.
+#
+# `cache_creation` is added to billable input because that is how it is
+# charged: writing the cache costs full rate, reading it does not. `cache_read`
+# is therefore its own measure rather than being folded in or dropped -- it is
+# 25.78B tokens that were charted nowhere at all.
+_TOKEN_MEASURES = (
+    "COALESCE(SUM(CASE WHEN context_unsplit = 1 THEN 0 "
+    "                  ELSE input_tokens + cache_creation_tokens END), 0) "
+    "  AS billable_input, "
+    "COALESCE(SUM(cache_read_tokens), 0) AS cache_read, "
+    "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+    "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
+    "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens"
+)
+
+# Fields summed when several database rows fold into one charted series.
+_FOLD_FIELDS = (
+    "requests", "billable_input", "cache_read", "output_tokens",
+    "unsplit_tokens", "errors", "inferred_requests",
+)
+
+
+def _fold(into: dict[str, Any], row: dict[str, Any]) -> None:
+    """Add *row*'s measures into *into*, in place."""
+    for field in _FOLD_FIELDS:
+        if field in row:
+            into[field] = (into.get(field) or 0) + (row.get(field) or 0)
+    # Cost is summed separately: it is a float and may legitimately be absent.
+    if row.get("cost_usd"):
+        into["cost_usd"] = (into.get("cost_usd") or 0) + row["cost_usd"]
+
+
 async def usage_series(
     owner_id: str, days: int | None = 30, bucket: str = "day"
 ) -> list[dict[str, Any]]:
-    """Token totals per time bucket per provider, oldest first."""
+    """Token totals per time bucket per **billing route**, oldest first.
+
+    Grouped by route rather than by `provider`, which is the column this was
+    grouped by for months and which four code paths write with four different
+    meanings: the transcript importer hardcodes "cli" (131,314 of 131,557 rows
+    on 2026-09-10), two web paths write raw machine-provider values
+    ("anthropic", "anthropic-compatible"), and only the remainder carry a
+    `shared.backend_kind` display kind. A chart grouped on that column put
+    99.9% of the data in one series named after an implementation detail.
+
+    The route cannot be resolved in SQL -- `billing_route_of` falls back to
+    model-id rules for rows written before the column existed -- so the query
+    groups by (bucket, stored route, model) and the fold happens here. The
+    cardinality is small: 19 distinct models against a bounded bucket count.
+
+    `inferred_requests` carries how many of a series' turns were classified
+    rather than recorded, so the chart can say how much of itself is a guess.
+    """
     expr, expr_params = _bucket_expr(bucket)
     params: list[Any] = [*expr_params, owner_id]
     where = "owner_id = ?"
@@ -497,66 +758,205 @@ async def usage_series(
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
     cur = await db.db_conn.execute(
-        f"SELECT {expr} AS bucket, provider, "  # nosec B608: expression is ours
-        "COALESCE(NULLIF(origin, ''), 'web') AS origin, "
+        f"SELECT {expr} AS bucket, "  # nosec B608: expression is ours
+        "COALESCE(billing_route, '') AS stored_route, model, "
         "COUNT(*) AS requests, "
-        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-        "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
-        "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
-        "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
-        "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens, "
+        f"{_TOKEN_MEASURES}, "
         "COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS cost_usd, "
         "COALESCE(SUM(is_error), 0) AS errors "
         f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY bucket, provider, origin ORDER BY bucket ASC",
+        "GROUP BY bucket, stored_route, model ORDER BY bucket ASC",
         params,
     )
-    return [dict(row) for row in await cur.fetchall()]
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for raw in await cur.fetchall():
+        row = dict(raw)
+        route, inferred = billing_route_of(row.pop("stored_route"), row.pop("model"))
+        row["inferred_requests"] = row["requests"] if inferred else 0
+        key = (row["bucket"], route)
+        if key not in merged:
+            merged[key] = {"bucket": row["bucket"], "route": route}
+            order.append(key)
+        _fold(merged[key], row)
+    return [merged[key] for key in order]
 
 
 async def usage_model_series(
-    owner_id: str, days: int | None = 30, bucket: str = "day", top: int = 6
+    owner_id: str, days: int | None = 30, bucket: str = "day", top: int = 12
 ) -> list[dict[str, Any]]:
-    """Token totals per time bucket per model, for the top *top* models."""
+    """Token totals per bucket per model, for the top *top* models.
+
+    Models are keyed on their normalised id, so `vllm/X` and `nvidia/X` are one
+    series rather than the same weights drawn as two lines three orders of
+    magnitude apart. Every raw id that folded into a series comes back in
+    `ids`, because the tooltip names them and a merge nobody can see is a merge
+    nobody can check.
+
+    `top` defaults to 12 rather than 6: this table holds 19 distinct ids over
+    30 days, and the old default hid 13 of them inside "Other".
+    """
     expr, expr_params = _bucket_expr(bucket)
     params: list[Any] = [owner_id]
     where = "owner_id = ?"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
+    # Ranked on the same basis the chart draws, not on raw input+output: with
+    # re-counted context included, one unsplit model outranked everything and
+    # the ordering described the defect rather than the usage. Ranked after
+    # normalising, too, or a model split across two ids could miss the cut
+    # twice while its total belonged at the top.
     ranked = await db.db_conn.execute(
-        "SELECT model FROM usage_events "
-        f"WHERE {where} "  # nosec B608: clause is static
-        "GROUP BY model ORDER BY SUM(input_tokens + output_tokens) DESC "
-        "LIMIT ?",
-        [*params, max(1, min(int(top), 12))],
+        "SELECT model, "
+        "SUM(CASE WHEN context_unsplit = 1 THEN 0 "
+        "         ELSE input_tokens + cache_creation_tokens END) "
+        "  + SUM(output_tokens) AS charted "
+        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY model",
+        params,
     )
-    keep = [row["model"] for row in await ranked.fetchall()]
-    if not keep:
+    by_name: dict[str, int] = {}
+    for row in await ranked.fetchall():
+        name = normalise_model_id(row["model"])
+        by_name[name] = by_name.get(name, 0) + int(row["charted"] or 0)
+    if not by_name:
         return []
+    keep = {
+        name for name, _ in
+        sorted(by_name.items(), key=lambda kv: -kv[1])[:max(1, min(int(top), 24))]
+    }
     cur = await db.db_conn.execute(
         f"SELECT {expr} AS bucket, model, "  # nosec B608: expression is ours
         "COUNT(*) AS requests, "
-        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-        "COALESCE(SUM(output_tokens), 0) AS output_tokens "
+        f"{_TOKEN_MEASURES} "
         f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
         "GROUP BY bucket, model ORDER BY bucket ASC",
         [*expr_params, *params],
     )
-    kept = set(keep)
     merged: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
     for raw in await cur.fetchall():
         row = dict(raw)
-        if row["model"] not in kept:
-            row["model"] = "Other"
-        key = (row["bucket"], row["model"])
-        if key in merged:
-            for field in ("requests", "input_tokens", "output_tokens"):
-                merged[key][field] += row[field]
-        else:
-            merged[key] = row
-    return list(merged.values())
+        raw_id = row.pop("model")
+        name = normalise_model_id(raw_id)
+        if name not in keep:
+            name = "Other"
+        key = (row["bucket"], name)
+        if key not in merged:
+            merged[key] = {"bucket": row["bucket"], "model": name, "ids": []}
+            order.append(key)
+        entry = merged[key]
+        if raw_id and raw_id not in entry["ids"]:
+            entry["ids"].append(raw_id)
+        _fold(entry, row)
+    return [merged[key] for key in order]
+
+
+async def usage_agent_series(
+    owner_id: str, days: int | None = 30, bucket: str = "day", top: int = 8
+) -> list[dict[str, Any]]:
+    """Token totals per bucket per agent -- a terminal session or a chat.
+
+    Keyed on `session_id` and falling back to `chat_id`, in that order, because
+    that is where the data actually is: 131,314 of 131,557 rows carry a session
+    id and only 15,885 carry a chat id. A run's spend belongs to whichever
+    conversation produced it, and for the overwhelming majority that is a
+    terminal session rather than a web chat.
+
+    Names are resolved by the caller, not here: this module has no business
+    reading session files, and the title of a chat is one join away in a table
+    this query has no reason to touch.
+    """
+    expr, expr_params = _bucket_expr(bucket)
+    params: list[Any] = [owner_id]
+    where = "owner_id = ?"
+    if days is not None:
+        where += " AND created_at >= ?"
+        params.append(_cutoff(days))
+    key_expr = (
+        "CASE WHEN session_id IS NOT NULL AND TRIM(session_id) <> '' "
+        "     THEN session_id "
+        "     WHEN chat_id IS NOT NULL AND TRIM(chat_id) <> '' THEN chat_id "
+        "     ELSE '' END"
+    )
+    ranked = await db.db_conn.execute(
+        f"SELECT {key_expr} AS agent_id, "  # nosec B608: expression is ours
+        "SUM(CASE WHEN context_unsplit = 1 THEN 0 "
+        "         ELSE input_tokens + cache_creation_tokens END) "
+        "  + SUM(output_tokens) AS charted "
+        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY agent_id HAVING agent_id <> '' "
+        "ORDER BY charted DESC LIMIT ?",
+        [*params, max(1, min(int(top), 20))],
+    )
+    keep = {row["agent_id"] for row in await ranked.fetchall()}
+    if not keep:
+        return []
+    cur = await db.db_conn.execute(
+        f"SELECT {expr} AS bucket, {key_expr} AS agent_id, "  # nosec B608: ours
+        "COUNT(*) AS requests, "
+        f"{_TOKEN_MEASURES} "
+        f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
+        "GROUP BY bucket, agent_id ORDER BY bucket ASC",
+        [*expr_params, *params],
+    )
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for raw in await cur.fetchall():
+        row = dict(raw)
+        agent = row.pop("agent_id") or ""
+        # A row with neither id is real spend that cannot be attributed to
+        # anything openable, so it joins "Other" rather than being dropped:
+        # the chart's total must still add up to the page's total.
+        name = agent if agent in keep else "Other"
+        key = (row["bucket"], name)
+        if key not in merged:
+            merged[key] = {"bucket": row["bucket"], "agent_id": name}
+            order.append(key)
+        _fold(merged[key], row)
+    return [merged[key] for key in order]
+
+
+async def usage_agent_names(
+    owner_id: str, agent_ids: list[str]
+) -> dict[str, str]:
+    """Titles for the agent ids `usage_agent_series` returned, where one exists.
+
+    One query against `chats`, matching either the linked session id or the
+    chat's own id -- the same join `usage_by_session` already uses to name a
+    terminal session. Deliberately *not* `read_claude_sessions()`: that reads
+    the session files and, on a host with live remote sessions, takes seconds
+    per call. A chart legend is not worth a filesystem walk, and an id with no
+    title renders as its first eight characters rather than blocking the page.
+
+    Ids with no row are simply absent from the mapping; the caller decides
+    what an unnamed agent looks like.
+    """
+    wanted = [i for i in agent_ids if i and i != "Other"]
+    if not wanted:
+        return {}
+    names: dict[str, str] = {}
+    # Chunked: SQLite's default parameter ceiling is 999, and this list is
+    # bounded by the caller's `top` today but need not stay that way.
+    for start in range(0, len(wanted), 400):
+        chunk = wanted[start:start + 400]
+        marks = ",".join("?" for _ in chunk)
+        cur = await db.db_conn.execute(
+            "SELECT id, session_id, title FROM chats "  # nosec B608: generated
+            f"WHERE owner_id = ? AND deleted_at IS NULL "
+            f"  AND (session_id IN ({marks}) OR id IN ({marks}))",
+            [owner_id, *chunk, *chunk],
+        )
+        for row in await cur.fetchall():
+            title = (row["title"] or "").strip()
+            if not title:
+                continue
+            if row["session_id"] in chunk:
+                names.setdefault(row["session_id"], title)
+            if row["id"] in chunk:
+                names.setdefault(row["id"], title)
+    return names
 
 
 async def usage_prune(days: int) -> int:

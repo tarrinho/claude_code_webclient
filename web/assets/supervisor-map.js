@@ -687,11 +687,115 @@ function nodeRadius(d) {
 }
 
 // ── Detail drawer (Fix 2: actual data) ─────────────────────────────────
+/** Draw a trailing activity sparkline into the detail panel.
+ *
+ *  Points are token totals per bucket for one agent, newest last. Drawn as a
+ *  polyline rather than bars: the shape of the trend is the question ("has
+ *  this agent gone quiet?"), and bars at this size are three pixels wide and
+ *  answer it worse.
+ *
+ *  An empty series clears the element instead of drawing a flat line at zero.
+ *  A flat line says "no activity", which is a claim; nothing says "nothing
+ *  recorded", which is the truth when a window holds no rows.
+ */
+function drawSparkline(points) {
+  const svg = document.getElementById("mapDetailSpark");
+  if (!svg) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const values = (points || []).map(Number).filter(n => !Number.isNaN(n));
+  if (values.length < 2) return;
+  const max = Math.max(...values, 1);
+  const W = 160, H = 34, pad = 2;
+  const step = (W - pad * 2) / (values.length - 1);
+  const path = values
+    .map((v, i) => `${(pad + i * step).toFixed(1)},${(H - pad - (v / max) * (H - pad * 2)).toFixed(1)}`)
+    .join(" ");
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", path);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", statusColor("running"));
+  line.setAttribute("stroke-width", "1.5");
+  svg.appendChild(line);
+}
+
+/** "Kali3 -> cweb2", the breadcrumb above the panel.
+ *
+ *  Read off the laid-out tree rather than stored on the node: the hub a node
+ *  hangs from is a fact about the tree, and duplicating it into every child
+ *  is how the two drift apart when a conversation is re-pinned.
+ */
+function _breadcrumb(nodeId) {
+  if (!_root) return "";
+  const found = _root.descendants().find(d => d.data.id === nodeId);
+  if (!found) return "";
+  const names = [];
+  for (let cur = found.parent; cur; cur = cur.parent) {
+    if (cur.data && cur.data.label) names.unshift(cur.data.label);
+  }
+  return names.join(" \u2192 ");
+}
+
+function _formatCount(n) {
+  const value = Number(n) || 0;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+  return String(value);
+}
+
+/** Fetch and draw the selected agent's sparkline.
+ *
+ *  Guarded by the id it was asked for: the operator can click a second node
+ *  before the first request lands, and without this the slower response would
+ *  paint the wrong agent's history under the right agent's name.
+ */
+let _sparkFor = null;
+async function _loadSparkline(agentId) {
+  _sparkFor = agentId;
+  try {
+    const resp = await fetch(
+      `/api/supervisor-map/agent/${encodeURIComponent(agentId)}/series`,
+      {credentials: "same-origin"});
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (_sparkFor !== agentId) return;   // superseded by a later selection
+    drawSparkline(data.points || []);
+  } catch (_) {
+    // A missing sparkline is not worth an error to the operator; the panel's
+    // other fields are already useful and the box simply stays empty.
+  }
+}
+
 async function showDetail(nodeData) {
   const drawer = document.getElementById("mapDetailDrawer");
   if (!drawer) return;
 
   document.getElementById("mapDetailTitle").textContent = nodeData.label;
+  const crumb = document.getElementById("mapDetailCrumb");
+  if (crumb) crumb.textContent = _breadcrumb(nodeData.id);
+  // Counters for the window the toolbar has selected. Turns and tokens only:
+  // the spec rules out any dollar figure anywhere on this view.
+  const stats = document.getElementById("mapDetailStats");
+  if (stats) {
+    stats.textContent = "";
+    if (nodeData.turns !== undefined || nodeData.tokens !== undefined) {
+      const turns = document.createElement("span");
+      turns.innerHTML = `<b>${_formatCount(nodeData.turns)}</b> turns`;
+      const tokens = document.createElement("span");
+      tokens.innerHTML = `<b>${_formatCount(nodeData.tokens)}</b> tokens`;
+      stats.appendChild(turns);
+      stats.appendChild(tokens);
+    }
+  }
+  const task = document.getElementById("mapDetailTask");
+  if (task) task.textContent = nodeData.task_summary || "";
+  // Cleared on open, filled by the series fetch below: leaving the previous
+  // agent's line up while the new one loads attributes one agent's activity
+  // to another, which is worse than a blank box for a moment.
+  drawSparkline([]);
+  if (nodeData.id && nodeData.type === "chat") {
+    _loadSparkline(nodeData.id);
+  }
   const statusEl = document.getElementById("mapDetailStatus");
   statusEl.textContent = STATUS_LABEL[nodeData.status] || nodeData.status;
   statusEl.style.color = statusColor(nodeData.status);

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=10035249">
+<link rel="stylesheet" href="/assets/styles.css?v=12361553">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -518,7 +518,7 @@
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=13165995"></script>
+<script type="module" src="/assets/supervisor-map.js?v=7795691"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" role="dialog" aria-modal="true" aria-labelledby="supervisorMapTitle" hidden>
@@ -561,11 +561,16 @@
     </div>
     <div id="mapTooltip" class="map-tooltip" hidden></div>
     <div id="mapDetailDrawer" class="map-detail" hidden>
+      <div id="mapDetailCrumb" class="map-detail-crumb"></div>
       <div class="map-detail-header">
         <span id="mapDetailTitle" class="map-detail-title"></span>
         <button class="btn-icon" id="mapDetailClose" aria-label="Close detail">×</button>
       </div>
       <div id="mapDetailStatus" class="map-detail-status"></div>
+      <div id="mapDetailStats" class="map-detail-stats"></div>
+      <div id="mapDetailTask" class="map-detail-task"></div>
+      <svg id="mapDetailSpark" class="map-detail-spark" viewBox="0 0 160 34"
+           preserveAspectRatio="none" aria-hidden="true"></svg>
       <div id="mapDetailMessage" class="map-detail-message"></div>
       <div id="mapDetailMeta" class="map-detail-meta"></div>
       <div class="map-detail-actions">

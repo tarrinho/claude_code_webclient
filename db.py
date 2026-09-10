@@ -180,6 +180,15 @@ def __getattr__(name: str):
         "_bucket_expr": "routes.db_usage",
         "usage_series": "routes.db_usage",
         "usage_model_series": "routes.db_usage",
+        "usage_agent_series": "routes.db_usage",
+        "usage_agent_totals": "routes.db_usage",
+        "usage_agent_names": "routes.db_usage",
+        "billing_route_of": "routes.db_usage",
+        "SUBSCRIPTION": "routes.db_usage",
+        "GATEWAY": "routes.db_usage",
+        "UNCLASSIFIED": "routes.db_usage",
+        "billing_route_from_machine": "routes.db_usage",
+        "normalise_model_id": "routes.db_usage",
         "usage_prune": "routes.db_usage",
         "usage_earliest": "routes.db_usage",
         "_earliest": "routes.db_usage",
@@ -690,7 +699,11 @@ async def init() -> None:
     await _ensure_transport_columns()
     await _migrate_ssh_proxy_machines_to_transports()
     await _clear_dangling_machine_pins()
-    await _ensure_usage_columns()
+    # Through the dispatch, not as a bare name: this one lives in
+    # routes/db_usage.py, and a local copy of it here is what made a migration
+    # silently not run. See the note where that copy used to be.
+    from routes.db_usage import _ensure_usage_columns as _usage_columns
+    await _usage_columns()
     await _ensure_system_samples_columns()
     await _ensure_orchestrator_columns()
     await _backfill_orchestrators_from_supervisors()
@@ -1367,59 +1380,14 @@ async def _ensure_system_samples_columns() -> None:
         await db_conn.commit()
 
 
-async def _ensure_usage_columns() -> None:
-    """Additive usage schema migrations, and a one-time origin backfill.
-
-    ``origin`` replaces inferring where a turn came from. The old rule was
-    "session_id is set, therefore a terminal" -- true today, but a guess about
-    the shape of a row rather than a statement of fact, and every web turn runs
-    against a session-linked conversation, so nothing but the absence of a
-    column was keeping the two apart.
-
-    ``context_unsplit`` marks a row whose model reported no cache breakdown, so
-    its ``input_tokens`` is the whole conversation re-read rather than new
-    spend.
-    """
-    cursor = await db_conn.execute("PRAGMA table_info(usage_events)")
-    columns = {row["name"] for row in await cursor.fetchall()}
-    routed = await db_conn.execute("PRAGMA table_info(routed_requests)")
-    routed_columns = {row["name"] for row in await routed.fetchall()}
-    if routed_columns and "prompt" not in routed_columns:
-        await db_conn.execute(
-            "ALTER TABLE routed_requests ADD COLUMN prompt TEXT NOT NULL DEFAULT ''"
-        )
-        await db_conn.commit()
-    migrations = {
-        "origin": "ALTER TABLE usage_events ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
-        "context_unsplit":
-            "ALTER TABLE usage_events ADD COLUMN context_unsplit "
-            "INTEGER NOT NULL DEFAULT 0",
-    }
-    added = False
-    for column, statement in migrations.items():
-        if column not in columns:
-            await db_conn.execute(statement)
-            added = True
-    if added:
-        await db_conn.commit()
-    # Backfill only rows that predate the column, using the rule that produced
-    # them. Bounded by origin = '' so it runs once and never re-labels a row
-    # that was written with an explicit origin.
-    await db_conn.execute(
-        "UPDATE usage_events SET origin = "
-        "CASE WHEN session_id IS NOT NULL AND TRIM(session_id) <> '' "
-        "     THEN 'terminal' ELSE 'web' END "
-        "WHERE origin = ''"
-    )
-    # Same for the cache split: a historic row with no cache line at all and a
-    # large input is context that was never broken out.
-    await db_conn.execute(
-        "UPDATE usage_events SET context_unsplit = 1 "
-        "WHERE context_unsplit = 0 AND origin = 'terminal' "
-        "  AND cache_read_tokens = 0 AND cache_creation_tokens = 0 "
-        "  AND input_tokens > 8000"
-    )
-    await db_conn.commit()
+# _ensure_usage_columns lived here, and was the copy that ran: a
+# module-level name in this file always beats the __getattr__ dispatch
+# below, so the routes/db_usage.py definition the table points at was
+# dead code. The two were identical until a migration was added to the
+# dispatched one on 2026-09-10 -- which then never executed, and the
+# column it adds did not exist. Deleted here rather than there, because
+# the dispatch table is the statement of where this belongs.
+# See tests/test_qa_db_dispatch_shadow.py.
 
 
 def _now() -> str:

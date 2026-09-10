@@ -405,3 +405,134 @@ class FillIsProviderNotStatusTests(unittest.TestCase):
         ring = self.js.index("stateRing(d.data.agent_state)")
         fill = self.js.index("const fillColor = family")
         self.assertGreater(ring, fill)
+
+
+class TaskSummaryTests(unittest.TestCase):
+    """The plain-language line, and what it honestly is."""
+
+    def setUp(self):
+        from routes.db_supervisor_map import _task_summary
+        self.summarise = _task_summary
+
+    def test_it_reads_the_preview_field(self):
+        """chat_last_activity returns `preview` -- substr(content, 1, 200).
+        An earlier version read `content`, found nothing, and every agent's
+        summary silently fell through to the state fallback: plausible-looking
+        output that said nothing at all."""
+        self.assertEqual(
+            self.summarise({"preview": "Reading the config file."}, "running"),
+            "Reading the config file.")
+
+    def test_it_stops_at_the_first_sentence(self):
+        self.assertEqual(
+            self.summarise({"preview": "Found it. Then a lot more text."}, "running"),
+            "Found it.")
+
+    def test_a_very_long_first_sentence_is_trimmed(self):
+        """A dashboard line that wraps to three lines stops being scannable."""
+        out = self.summarise({"preview": "x" * 400}, "running")
+        self.assertLessEqual(len(out), 120)
+        self.assertTrue(out.endswith("…"))
+
+    def test_it_collapses_whitespace(self):
+        self.assertEqual(
+            self.summarise({"preview": "  a\n\n  b  "}, "idle"), "a b")
+
+    def test_with_no_message_it_explains_the_state(self):
+        """An operator scanning for the agent that needs them is better served
+        by "Waiting for an answer" than an empty row they must click."""
+        self.assertEqual(
+            self.summarise(None, "waiting_for_input"), "Waiting for an answer")
+        self.assertEqual(
+            self.summarise({}, "blocked"), "Stopped and cannot continue")
+        self.assertEqual(self.summarise(None, "idle"), "Idle")
+
+
+@unittest.skipUnless(quickjs is not None, "needs quickjs")
+class SparklineTests(unittest.TestCase):
+    def test_an_empty_series_draws_nothing(self):
+        """A flat line at zero is a claim ("no activity"); nothing is the
+        truth when a window holds no rows."""
+        out = _eval("""
+          drawSparkline([]);
+          var svg = document.getElementById('mapDetailSpark');
+          JSON.stringify({children: (svg && svg.__children ? svg.__children.length : 0)});
+        """)
+        self.assertEqual(out["children"], 0)
+
+    def test_a_single_point_draws_nothing(self):
+        """One point is not a trend, and a one-pixel polyline reads as a
+        speck of dirt."""
+        out = _eval("""
+          drawSparkline([5]);
+          var svg = document.getElementById('mapDetailSpark');
+          JSON.stringify({children: (svg && svg.__children ? svg.__children.length : 0)});
+        """)
+        self.assertEqual(out["children"], 0)
+
+
+class CountFormattingTests(unittest.TestCase):
+    """Token counts on this deployment reach the billions; the panel is 200px."""
+
+    def setUp(self):
+        self.js = MAP_JS.read_text(encoding="utf-8")
+
+    def test_large_counts_are_abbreviated(self):
+        self.assertIn("_formatCount", self.js)
+        for unit in ("1e9", "1e6", "1e3"):
+            self.assertIn(unit, self.js)
+
+
+class NoCostAnywhereTests(unittest.TestCase):
+    """The spec's first explicit "do not add": no dollar-cost tracking
+    anywhere on this view. Usage is turns and tokens only."""
+
+    def test_the_map_payload_carries_no_cost_field(self):
+        src = (ROOT / "routes" / "db_supervisor_map.py").read_text(encoding="utf-8")
+        self.assertNotIn("cost_usd", src)
+        self.assertNotIn('"cost"', src)
+
+    def test_the_renderer_shows_no_currency(self):
+        js = MAP_JS.read_text(encoding="utf-8")
+        self.assertNotIn("cost_usd", js)
+        self.assertNotRegex(js, r'["\'`]\s*\$\s*["\'`]', "a currency symbol is being rendered")
+
+    def test_the_totals_query_selects_no_cost(self):
+        """usage_events has a cost_usd column, so this is a live temptation
+        rather than a hypothetical one."""
+        src = (ROOT / "routes" / "db_usage.py").read_text(encoding="utf-8")
+        fn_start = src.index("async def usage_agent_totals")
+        fn_end = src.index("async def", fn_start + 10)
+        body = src[fn_start:fn_end]
+        # The docstring stripped first. It explains *why* no cost is derived,
+        # so the word appears there legitimately -- and matching it failed
+        # this test against a clean query. Fourth time this repo has been
+        # bitten by a check that reads a mention as a use; see
+        # test_qa_rules_preflight.py's pip check for the same fix.
+        body = re.sub(r'"""(.*?)"""', "", body, flags=re.DOTALL)
+        self.assertNotIn("cost", body,
+                         "the totals query selects a cost column")
+
+
+class AgentSeriesTests(unittest.TestCase):
+    def setUp(self):
+        self.src = (ROOT / "routes" / "db_supervisor_map.py").read_text(encoding="utf-8")
+
+    def test_it_is_owner_scoped_in_the_query(self):
+        """The agent id arrives from a URL path. Scoping in the query rather
+        than trusting the caller is what stops one account asking about
+        another's agent."""
+        fn = self.src[self.src.index("async def agent_series"):]
+        self.assertIn("owner_id = ?", fn)
+
+    def test_it_caps_the_bucket_count(self):
+        """An unbounded ?buckets= would let one request scan the whole table."""
+        fn = self.src[self.src.index("async def agent_series"):]
+        self.assertIn("min(buckets", fn)
+
+    def test_it_returns_a_dense_series(self):
+        """Zeros for quiet hours, so the x-axis is time. A sparse series
+        compresses a two-hour gap into one pixel and reads as continuous
+        work."""
+        fn = self.src[self.src.index("async def agent_series"):]
+        self.assertIn("rows.get(stamp, 0)", fn)

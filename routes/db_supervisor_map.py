@@ -23,7 +23,9 @@ _log = logging.getLogger("wc.app")
 _MAX_CHILDREN: Final[int] = 12
 
 
-async def supervisor_map(owner_id: str) -> dict[str, Any]:
+async def supervisor_map(
+    owner_id: str, hours: float | None = 24.0
+) -> dict[str, Any]:
     """Return the full supervisor map tree for *owner_id*.
 
     Tree structure (three levels):
@@ -90,6 +92,15 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
                 transport_names[row["id"]] = row.get("name") or row["id"]
     except Exception:
         _log.warning("supervisor_map: transport names unavailable", exc_info=True)
+    # Turns and tokens per agent for the default window. One grouped query for
+    # the whole fleet: the map polls every ten seconds, so a per-node read
+    # would multiply with the thing being displayed. The window the operator
+    # picks is applied by re-fetching with ?hours=, not by filtering here.
+    try:
+        agent_totals = await db.usage_agent_totals(owner_id, hours)
+    except Exception:
+        _log.warning("supervisor_map: usage totals unavailable", exc_info=True)
+        agent_totals = {}
     machines = await db.ai_machines_list(owner_id)
     chats = await db.chat_list(owner_id)
     activity = await db.chat_last_activity(owner_id)
@@ -97,6 +108,11 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
 
     # Build lookup indexes
     machine_by_id: dict[str, dict] = {m["id"]: m for m in machines}
+    # Members of an orchestrator arrive as thin rows -- a title and an id --
+    # so their session id has to come from the chat they refer to. Without
+    # this their counters were looked up by chat id alone and read zero, and
+    # almost every usage row carries a session id rather than a chat id.
+    chat_by_id: dict[str, dict] = {c["id"]: c for c in chats}
 
     # Build CLI status lookups
     marks = await db.read_marks_get(owner_id)
@@ -232,6 +248,13 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
                         "label": task.get("title") or f"Task {len(orch_children) + 1}",
                         "status": _task_status(task),
                         "type": "task",
+                        # A task is work the orchestrator is doing, so the
+                        # same state vocabulary applies. It has no backend of
+                        # its own -- the orchestrator's turns are billed to
+                        # the conversation running them -- so no provider,
+                        # mechanism or counters here rather than zeros, which
+                        # would read as "ran nothing".
+                        "agent_state": _agent_state(_task_status(task)),
                     })
                 # Members not covered by a task
                 task_ids = {t.get("id") for t in tasks}
@@ -246,6 +269,20 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
                         "type": "chat",
                     }
                     _attach_last_message(member_node, activity.get(cid))
+                    # Same dashboard fields as a direct chat. Built inline
+                    # rather than through _chat_node because a member row is
+                    # not a full chat row -- it has a title and an id and not
+                    # the machine or voice columns -- so the shared helper
+                    # would report every orchestrator member as text-only on
+                    # an unknown backend.
+                    member_node["agent_state"] = _agent_state(member_node["status"])
+                    member_node["task_summary"] = _task_summary(
+                        activity.get(cid), member_node["agent_state"])
+                    m_chat = chat_by_id.get(cid) or {}
+                    m_counts = (agent_totals.get(m_chat.get("session_id") or "")
+                                or agent_totals.get(cid) or {})
+                    member_node["turns"] = m_counts.get("turns", 0)
+                    member_node["tokens"] = m_counts.get("tokens", 0)
                     orch_children.append(member_node)
 
                 if orch_children:
@@ -274,6 +311,7 @@ async def supervisor_map(owner_id: str) -> dict[str, Any]:
             elif "__chat" in item:
                 direct_chats.append(_chat_node(
                     item["chat"], chat_status, queued, machine_by_id, activity,
+                    agent_totals,
                 ))
             elif "__session" in item:
                 session_nodes.append(item["node"])
@@ -460,6 +498,42 @@ def _load_index(sample: dict | None) -> float | None:
     return max(0.0, min(1.0, max(cpu, mem) / 100.0))
 
 
+
+def _task_summary(last: dict | None, status: str) -> str:
+    """One human-readable line about what this agent is doing now.
+
+    Honest about what it is: the spec asks for "a one-line human description",
+    and this is the first sentence of the last message, trimmed -- not a
+    generated summary. Generating one would mean a model call per agent per
+    poll, which is the wrong price for a line of text on a dashboard that
+    refreshes every ten seconds.
+
+    When there is no message to draw on, it says what the state means rather
+    than leaving the field blank: an operator scanning for the agent that
+    needs them is better served by "Waiting for an answer" than by an empty
+    row they have to click to understand.
+    """
+    # "preview", which is what chat_last_activity returns -- substr(content,
+    # 1, 200) of the newest message. An earlier version read "content" and so
+    # found nothing, and every agent's summary silently fell through to the
+    # state fallback below, which looks plausible and says nothing.
+    text = (last or {}).get("preview") or ""
+    text = " ".join(text.split())
+    if text:
+        # First sentence, or a hard trim -- whichever comes first. A dashboard
+        # line that wraps to three lines stops being scannable.
+        for stop in (". ", "! ", "? "):
+            idx = text.find(stop)
+            if 0 < idx < 120:
+                return text[: idx + 1].strip()
+        return (text[:117] + "\u2026") if len(text) > 118 else text
+    return {
+        "waiting_for_input": "Waiting for an answer",
+        "blocked": "Stopped and cannot continue",
+        "running": "Working",
+    }.get(status, "Idle")
+
+
 def _capped(nodes: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     """*nodes* truncated to ``_MAX_CHILDREN``, with what was dropped named.
 
@@ -521,6 +595,7 @@ def _chat_node(
     queued: dict,
     machine_by_id: dict[str, dict],
     activity: dict[str, dict] | None = None,
+    agent_totals: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     """One direct-chat node, carrying the three states the map used to drop."""
     from shared import backend_kind
@@ -562,6 +637,15 @@ def _chat_node(
     node["agent_state"] = _agent_state(
         node["status"], degraded=bool(chat.get("degraded")),
     )
+    node["task_summary"] = _task_summary(
+        (activity or {}).get(cid), node["agent_state"])
+    # Counters, looked up under the session id first: usage rows carry one for
+    # almost every turn, and a conversation linked to a CLI session has its
+    # usage filed there rather than under the chat id.
+    totals = (agent_totals or {})
+    counts = totals.get(chat.get("session_id") or "") or totals.get(cid) or {}
+    node["turns"] = counts.get("turns", 0)
+    node["tokens"] = counts.get("tokens", 0)
     return node
 
 
@@ -679,3 +763,41 @@ def _normalise(status: str | None) -> str:
     if status in ("running", "busy", "waiting", "idle", "error", "done"):
         return status
     return "idle"
+
+
+async def agent_series(
+    owner_id: str, agent_id: str, buckets: int = 24
+) -> list[int]:
+    """Token totals per hour for one agent, oldest first, newest last.
+
+    Owner-scoped in the query rather than trusted from the caller: the agent
+    id arrives from a URL path, and the map's own ids are the only ones a
+    client should be able to ask about. Matched against session_id *or*
+    chat_id for the reason usage_agent_totals gives -- that is where the rows
+    are.
+
+    Returns a dense list with zeros for quiet hours, so the sparkline's
+    x-axis is time rather than "hours that happened to have activity". A
+    sparse series would compress a two-hour gap into one pixel and read as
+    continuous work.
+    """
+    import db
+    cur = await db.db_conn.execute(
+        "SELECT strftime('%Y-%m-%dT%H', created_at) AS hour, "
+        "COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS tokens "
+        "FROM usage_events "
+        "WHERE owner_id = ? AND (session_id = ? OR chat_id = ?) "
+        "GROUP BY hour ORDER BY hour DESC LIMIT ?",
+        (owner_id, agent_id, agent_id, max(1, min(buckets, 168))),
+    )
+    rows = {r["hour"]: r["tokens"] or 0 for r in await cur.fetchall()}
+    if not rows:
+        return []
+    import datetime
+    now = datetime.datetime.now(datetime.UTC).replace(
+        minute=0, second=0, microsecond=0)
+    out: list[int] = []
+    for back in range(max(1, min(buckets, 168)) - 1, -1, -1):
+        stamp = (now - datetime.timedelta(hours=back)).strftime("%Y-%m-%dT%H")
+        out.append(int(rows.get(stamp, 0)))
+    return out

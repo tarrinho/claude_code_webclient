@@ -3120,6 +3120,37 @@ class TransportStatsPanelTests(_BrowserFixture):
     missing reading must print as "--", never as 0.
     """
 
+    def test_the_consoles_own_host_leads_the_page(self):
+        """Order asserted, because it was wrong once and reversing it is
+        invisible to every other test here. This tab is opened to read the
+        machine you are on; the transports follow, under the range and bucket
+        controls that govern both."""
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#serverBody", timeout=15_000)
+
+        headings = self.page.locator(
+            "#panelServer .server-section-heading").all_inner_texts()
+        self.assertGreaterEqual(len(headings), 2, headings)
+        self.assertIn("console", headings[0].lower(), headings)
+        self.assertIn("transport", headings[1].lower(), headings)
+
+        # And in document order, not merely in heading order: the host's own
+        # charts must sit above the transport table.
+        order = self.page.evaluate("""
+          () => {
+            const body = document.getElementById('serverBody');
+            const table = document.getElementById('transportStats');
+            if (!body || !table) return null;
+            return body.compareDocumentPosition(table)
+              & Node.DOCUMENT_POSITION_FOLLOWING ? 'host-first' : 'transports-first';
+          }
+        """)
+        self.assertEqual(order, "host-first")
+
     def test_the_table_lists_transports_without_collecting_anything(self):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")

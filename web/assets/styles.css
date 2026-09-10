@@ -820,7 +820,12 @@ button{touch-action:manipulation}
 .remote-stat-time{font-size:11px;color:var(--muted)}
 
 /* ── Transport server stats (Statistics tab) ───────────────────── */
-.transport-stats-heading { margin: 18px 0 4px; font-size: 13px; font-weight: 650; }
+/* Section headings on the Server tab. Renamed from .transport-stats-heading
+   when the console's own host was given one too: a class named after one of
+   the two sections it styles reads as though the other were a special case. */
+.server-section-heading { margin: 18px 0 4px; font-size: 13px; font-weight: 650; }
+/* The first heading on the panel needs no top gap. */
+#panelServer > .server-section-heading:first-of-type { margin-top: 0; }
 .transport-stats-note { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
 .transport-stats { display: grid; gap: 2px; }
 .transport-stat-row {

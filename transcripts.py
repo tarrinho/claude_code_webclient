@@ -850,12 +850,87 @@ def _iter_strings(value: Any):
             yield from _iter_strings(item)
 
 
+# path -> (bytes_consumed, events). bytes_consumed is a *record boundary*
+# (immediately after a newline), never a raw size: the tail of a growing
+# transcript is routinely a half-written line, and resuming from a raw size
+# would start mid-record and drop the message that line was carrying.
+#
+# Measured on 2026-09-09, which is why this exists: agent_traffic() scans the
+# 12 most recently modified transcripts, and those are by definition the ones
+# being actively appended to -- 86, 50, 49, 48, 44, 40, 31, 13MB on this host,
+# ~450MB re-read in full per call, 31.4s wall and 603MB peak RSS. Reading only
+# what was appended makes the cost proportional to what actually changed. A
+# plain size-keyed cache (the idiom used elsewhere in this file) would have
+# been near-useless here for exactly the reason these files were selected:
+# they are the ones changing.
+_agent_events_cache: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+
+
 def _agent_events_sync(path: Path, session_id: str, title: str) -> list[dict[str, Any]]:
-    """Extract messages sent to and received from other sessions."""
+    """Extract messages sent to and received from other sessions.
+
+    Reads only the bytes appended since the last call (see
+    _agent_events_cache). Transcripts are append-only, so everything already
+    parsed stays true -- this reads less of the file without showing less of
+    the conversation, which a tail window would not have managed.
+    """
+    key = str(path)
     try:
-        raw = path.read_bytes()
+        size = path.stat().st_size
     except OSError:
         return []
+
+    cached = _agent_events_cache.get(key)
+    if cached is not None and cached[0] == size:
+        return _agent_events_copy(cached[1], title)
+
+    start = 0
+    events: list[dict[str, Any]] = []
+    if cached is not None and size > cached[0]:
+        # Grown: keep what was already parsed and read only the new bytes.
+        start, events = cached[0], list(cached[1])
+    # size < cached[0] means truncated or replaced, so the cached parse no
+    # longer describes this file: fall through with start=0 and re-read it.
+
+    try:
+        with path.open("rb") as handle:
+            if start:
+                handle.seek(start)
+            chunk = handle.read()
+    except OSError:
+        # Don't poison the cache on a transient read failure -- serve what was
+        # already known and try again next call.
+        return _agent_events_copy(cached[1], title) if cached else []
+
+    # Parse only up to the last complete record. The remainder (a line still
+    # being written) stays unconsumed so the next call re-reads it whole.
+    cut = chunk.rfind(b"\n")
+    if cut >= 0:
+        events.extend(_parse_agent_records(chunk[:cut + 1], session_id, title))
+        _agent_events_cache[key] = (start + cut + 1, list(events))
+    return _agent_events_copy(events, title)
+
+
+def _agent_events_copy(
+    events: list[dict[str, Any]], title: str,
+) -> list[dict[str, Any]]:
+    """Fresh dicts, never the cached ones. _agent_traffic_sync writes
+    ``sender``/``recipient`` into what it gets back, which would otherwise
+    mutate the cache in place. The title is refreshed on the way out so a
+    cached parse never serves a stale one."""
+    out = []
+    for event in events:
+        copy = dict(event)
+        copy["session_title"] = title
+        out.append(copy)
+    return out
+
+
+def _parse_agent_records(
+    raw: bytes, session_id: str, title: str,
+) -> list[dict[str, Any]]:
+    """Pull cross-session messages out of *raw*, which must contain only
+    whole JSONL records."""
     if _AGENT_MARKER not in raw and b"SendMessage" not in raw:
         return []
 

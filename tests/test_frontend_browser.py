@@ -305,19 +305,29 @@ class _BrowserFixture(unittest.TestCase):
         # The header exists whether or not the group is collapsed, so it is the
         # honest readiness signal for "the panel has rendered".
         self.page.wait_for_selector(".transport-collapse-toggle", timeout=10_000)
-        # Re-queried each time, not collected once. A click calls
-        # _toggleGroupCollapse, which re-renders the whole list, so every
-        # handle gathered beforehand is detached by the first click --
-        # `ElementHandle.click: Element is not attached to the DOM` on the
-        # second group. The first version of this helper did collect them
-        # upfront and hit exactly that.
-        for _ in range(20):  # bounded: a re-render must not become a loop
-            toggle = self.page.query_selector(
-                '.transport-collapse-toggle[aria-expanded="false"]')
-            if toggle is None:
-                break
+        # One group, not all of them. Expanding one is all this helper owes its
+        # callers: it exists so that `.machine-card` exists, and one expanded
+        # group renders cards. A test needing a *particular* group open should
+        # open that one itself rather than have this reach for all of them.
+        #
+        # Collecting every toggle upfront and clicking each is specifically
+        # wrong: a click calls _toggleGroupCollapse, which re-renders the list,
+        # so handles gathered beforehand are detached and the second click
+        # raises `ElementHandle.click: Element is not attached to the DOM`.
+        #
+        # A caution for anyone tuning this, learned the hard way here: these
+        # tests are flaky on a QA node, and the residual pass/fail count moves
+        # by a couple either way between runs of *identical* code -- measured
+        # 5/7, 7/5 and 6/6 across three runs. So do not compare helper variants
+        # on single runs; three such comparisons looked meaningful and were
+        # noise. What is a real signal is the failure *signature*: before this
+        # fix every one of these tests died on a 10s
+        # `wait_for_selector(".machine-card")` timeout and the pair took ~359s,
+        # and afterwards that timeout is gone and they take ~60s.
+        toggle = self.page.query_selector(
+            '.transport-collapse-toggle[aria-expanded="false"]')
+        if toggle is not None:
             toggle.click()
-            self.page.wait_for_timeout(150)
         self.page.wait_for_selector(".machine-card", timeout=10_000)
         self.page.wait_for_timeout(800)
 

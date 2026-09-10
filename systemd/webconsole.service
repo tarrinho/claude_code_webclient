@@ -18,6 +18,29 @@ Restart=always
 RestartSec=3
 StartLimitIntervalSec=60
 StartLimitBurst=5
+# Decline the user manager's DefaultOOMScoreAdjust=200, which made this the
+# host's preferred OOM victim: measured 2026-09-10, the service sat at
+# oom_score 813 on 141MB while seven claude CLIs sat at 698-709 on 167-366MB
+# each -- the process using the least memory was first in line to be killed,
+# purely because of the +200. That is a priority inversion. A killed CLI
+# resumes from its transcript; a killed webconsole takes every session's UI
+# down with it, and each kill cold-starts the transcript caches, whose first
+# scans spike memory and invite the next kill. It was SIGKILLed twice in ten
+# minutes that morning.
+#
+# Asks for 0 and gets 100, measured: the user manager runs at adj 100 and
+# lowering below its own value needs CAP_SYS_RESOURCE, which it does not
+# have. The kernel clamps silently -- systemd reports OOMScoreAdjust=0 while
+# /proc/<pid>/oom_score_adj reads 100 and nothing is logged. Worth keeping
+# anyway: it took the score from 813 to 746, it costs nothing, and it takes
+# full effect if this ever runs under a privileged manager or the
+# DefaultOOMScoreAdjust goes away.
+#
+# 746 is still above the CLIs at 698-709, so this is only half the fix. The
+# other half cannot live here, because a service cannot lower itself below
+# its manager: bin/wc-claude.sh raises each interactive CLI's own score
+# instead, which is always permitted. See the comment there.
+OOMScoreAdjust=0
 # Application records go to logs/webconsole.log via logging.conf's rotating
 # handler; this captures uvicorn's own access lines, which only reach stdout.
 StandardOutput=append:%h/projects/claude-code-webconsole/logs/uvicorn.out.log

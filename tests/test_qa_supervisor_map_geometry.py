@@ -302,31 +302,36 @@ class MapGeometryTests(unittest.TestCase):
         map was never fitted. Its replacement must produce usable numbers."""
         out = _run("""
           renderSupervisorMap(DATA);
-          // Recompute the tree's own bounds from the laid-out nodes. The
-          // horizontal layout puts d.x and d.y in cartesian coordinates
-          // already, so there is no polar conversion to mirror -- this used to
-          // apply one, matching the radial transforms, and reproducing it here
-          // now would measure a shape the map never draws.
+          // Measured through _nodeXY, then pushed through the zoom transform
+          // the fit applied -- so these are screen positions, where the
+          // question "is the tree centred" actually means something.
           //
-          // The assertion below is that the fit maps this centre onto the
-          // centre of the box the SVG actually drew. Checking only that the
-          // numbers are finite and inside the box would pass just as happily
-          // while fitting to a stale rectangle in the corner.
+          // Stated as a property rather than by recomputing zoomToFit's
+          // formula: the midpoint of the transformed extremes should land on
+          // the box's midpoint. Mirroring the implementation would pass
+          // against any formula the implementation happened to use, including
+          // the wrong one it used before -- this version measured raw
+          // d.x/d.y, which is the exact coordinate-space mistake the fix
+          // corrects, and so it failed against correct code.
           var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          var t = STUB.transforms[STUB.transforms.length - 1];
           _root.descendants().forEach(function (d) {
-            if (d.x < minX) minX = d.x;
-            if (d.x > maxX) maxX = d.x;
-            if (d.y < minY) minY = d.y;
-            if (d.y > maxY) maxY = d.y;
+            var p = _nodeXY(d);
+            var sx = p.x * t.k + t.x, sy = p.y * t.k + t.y;
+            if (sx < minX) minX = sx;
+            if (sx > maxX) maxX = sx;
+            if (sy < minY) minY = sy;
+            if (sy > maxY) maxY = sy;
           });
           var vb = stubSvg().__attrs.viewBox.split(" ");
           JSON.stringify({
-            last: STUB.transforms[STUB.transforms.length - 1],
+            last: t,
             count: STUB.transforms.length,
             boxW: parseFloat(vb[2]),
             boxH: parseFloat(vb[3]),
-            cx: (minX + maxX) / 2,
-            cy: (minY + maxY) / 2
+            midX: (minX + maxX) / 2,
+            midY: (minY + maxY) / 2,
+            minX: minX, maxX: maxX, minY: minY, maxY: maxY
           });
         """)
         last = out["last"]
@@ -336,13 +341,65 @@ class MapGeometryTests(unittest.TestCase):
             self.assertEqual(last[key], last[key], f"{key} is NaN")
         self.assertGreater(last["k"], 0)
         self.assertAlmostEqual(
-            last["x"], out["boxW"] / 2 - out["cx"] * last["k"], places=6,
-            msg="the fit must centre the tree in the box the SVG drew",
+            out["midX"], out["boxW"] / 2, places=6,
+            msg="the fit must centre the rendered tree horizontally in the "
+                "box the SVG drew",
         )
         self.assertAlmostEqual(
-            last["y"], out["boxH"] / 2 - out["cy"] * last["k"], places=6,
-            msg="the fit must centre the tree in the box the SVG drew",
+            out["midY"], out["boxH"] / 2, places=6,
+            msg="the fit must centre the rendered tree vertically in the box "
+                "the SVG drew",
         )
+
+    def test_the_fit_keeps_every_node_inside_the_box(self):
+        """Registry #96's user-visible half, and the reason removing the dead
+        `.size()` call was not the whole fix.
+
+        `SupervisorMapBrowserTests::test_the_tree_is_rendered_at_a_visible_size`
+        found a node circle at x=1258 against an SVG right edge of 1249. The
+        cause was zoomToFit measuring raw `d.x`/`d.y` while the render drew at
+        `MARGIN_LEFT + d.x + LEVEL_GAP, MARGIN_TOP + d.y` -- so the fit centred
+        a rectangle offset by (90, 40) from the real one and the tree sat that
+        far right-and-down of centre, scaled.
+
+        Asserted on a wider tree than SAMPLE_DATA on purpose: with only a
+        handful of nodes the scale caps at 2 and the tree is small enough that
+        a (90, 40) displacement still lands inside the box, so the fixture that
+        exists could not have caught this.
+        """
+        wide = ",".join(
+            '{{id:"t{0}",type:"transport",status:"idle",label:"t{0}",'
+            'children:[{1}]}}'.format(
+                i, ",".join(
+                    '{{id:"m{0}_{1}",type:"machine",status:"idle",label:"m"}}'
+                    .format(i, j) for j in range(5)))
+            for i in range(6))
+        out = _run("""
+          STUB.svgBox = {width: 1249, height: 800, left: 0, top: 0};
+          var WIDE = {id:"root",type:"root",status:"idle",label:"root",
+                      children:[""" + wide + """]};
+          renderSupervisorMap(WIDE);
+          var t = STUB.transforms[STUB.transforms.length - 1];
+          var pts = _root.descendants().map(function (d) {
+            var p = _nodeXY(d);
+            return {x: p.x * t.k + t.x, y: p.y * t.k + t.y};
+          });
+          JSON.stringify({k: t.k, pts: pts});
+        """)
+        # The node's own ink, not just its centre: a circle fitted by its
+        # centre sits half outside the edge, and half outside is what
+        # getBoundingClientRect reports in the browser test.
+        reach = 12 * out["k"]
+        self.assertGreater(len(out["pts"]), 20, "the wide fixture did not render")
+        for p in out["pts"]:
+            self.assertGreaterEqual(
+                p["x"] - reach, -1, f"node ink left of the box: {p}")
+            self.assertLessEqual(
+                p["x"] + reach, 1249 + 1, f"node ink right of the box: {p}")
+            self.assertGreaterEqual(
+                p["y"] - reach, -1, f"node ink above the box: {p}")
+            self.assertLessEqual(
+                p["y"] + reach, 800 + 1, f"node ink below the box: {p}")
 
 
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")

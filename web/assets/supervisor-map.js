@@ -86,6 +86,43 @@ let _detailNode = null;
 // live pixel box against viewBox coordinates would fit the tree to the wrong
 // rectangle.
 let _canvas = {w: 800, h: 400};
+// ── Layout geometry ────────────────────────────────────────────────────
+// Module-level, and shared by the render and by zoomToFit, because the two
+// disagreeing is exactly the bug this replaced. The render drew each node at
+// `MARGIN_LEFT + d.x + LEVEL_GAP, MARGIN_TOP + d.y` while zoomToFit measured
+// raw `d.x`/`d.y`, so the fit centred a rectangle the map never drew and the
+// whole tree was displaced by (90, 40) layout units -- (90*scale, 40*scale) on
+// screen, which is what pushed nodes past the right edge. One definition, used
+// by both, is the only way that stays fixed.
+const SIBLING_GAP = 20;   // nodeSize dx: between siblings
+const LEVEL_GAP = 30;     // nodeSize dy: between depths
+const MARGIN_LEFT = 60;   // so the root circle clears the panel edge
+const MARGIN_TOP = 40;
+// The largest distance a node's ink reaches from its own centre: r 6 plus the
+// r+3 halo at depth 1, and r 8 at the root. zoomToFit fits the ink rather than
+// the centres, because a bounds built from centres leaves the outermost circle
+// half outside the viewBox and half a circle outside is what the browser test
+// measures with getBoundingClientRect.
+//
+// Honest about its current weight: `pad` in zoomToFit is 80, which leaves 40
+// units of slack on each side and therefore already covers these 12. So
+// removing NODE_EXTENT would not change a single pixel today, and no test
+// catches its removal -- verified by mutation, not assumed. It is kept because
+// it is what makes the fit correct independently of `pad`: lower `pad` and the
+// ink still fits, whereas without this the guarantee silently becomes "pad
+// happens to be generous". If you reduce `pad`, this is the line that stops it
+// clipping.
+const NODE_EXTENT = 12;
+
+/** Where a node is actually drawn, in viewBox units.
+ *
+ *  The one definition of that, deliberately. The render used to inline this
+ *  expression in its transform while zoomToFit recomputed bounds from raw
+ *  `d.x`/`d.y`, and the two silently described different pictures. Anything
+ *  that needs to know where a node is calls this. */
+function _nodeXY(d) {
+  return {x: MARGIN_LEFT + d.x + LEVEL_GAP, y: MARGIN_TOP + d.y};
+}
 // Fallbacks only. The real canvas is measured from the SVG's own client box on
 // every render (see _canvasSize): these applied when the panel was ~380x930,
 // so the layout used a fraction of it and three of the tree's four quadrants
@@ -225,19 +262,18 @@ export function renderSupervisorMap(data) {
   // tests/test_qa_d3_stub_fidelity.py, which pins the exclusion so the stub
   // cannot hide a repeat of this.
   //
-  // The map is zoomable and zoomToFit() frames it, so fixed spacing is a
-  // reasonable choice here; if fit-to-canvas is wanted instead, replace
-  // .nodeSize() with .size() rather than adding it back alongside.
-  const horizontalGap = 30;
+  // Fixed spacing is the decision, not a leftover: the map is zoomable and
+  // pannable and zoomToFit() frames it, so the layout does not need to know
+  // the canvas size. Fit-to-canvas was a requirement of the radial layout --
+  // the radius had to come from the measured box -- and it does not survive
+  // the change to horizontal. If it is ever wanted back, replace .nodeSize()
+  // with .size(); never add one alongside the other, since d3 silently keeps
+  // only the last of the two.
   const tree = d3.tree()
     .separation((a, b) => a.parent === b.parent ? 1 : 1.2)
-    .nodeSize([20, horizontalGap]);
+    .nodeSize([SIBLING_GAP, LEVEL_GAP]);
   tree(root);
   _root = root;
-
-  // Shift the whole tree right so the root circle fits inside the panel margin.
-  const marginLeft = 60;
-  const marginTop = 40;
 
   // Depth map: center=0, transport=1, machine=2, orchestrator=2, chat=3
   const node = _viewport.selectAll(".node")
@@ -246,8 +282,13 @@ export function renderSupervisorMap(data) {
     .attr("class", "node")
     .attr("tabindex", "0")
     .attr("role", "button")
-    // Horizontal: translate left, then down.
-    .attr("transform", d => `translate(${marginLeft + d.x + horizontalGap}, ${marginTop + d.y})`)
+    // Horizontal: translate left, then down. _nodeXY is the single definition
+    // of where a node sits, so zoomToFit measures the same points the render
+    // draws.
+    .attr("transform", d => {
+      const {x, y} = _nodeXY(d);
+      return `translate(${x}, ${y})`;
+    })
     .attr("cursor", d =>
       (d.children || d._children || _hasDetail(d.data.type)) ? "pointer" : "default"
     )
@@ -656,14 +697,28 @@ export function closeSupervisorMap() {
 export function zoomToFit() {
   if (!_svg || !_root) return;
   try {
-    // Horizontal tree: d.x = horizontal position, d.y = vertical.
-    // No polar conversion needed — the values are already cartesian.
+    // Measured through _nodeXY, so these are the points the render actually
+    // draws. This used to read raw d.x/d.y while the transform added
+    // MARGIN_LEFT + LEVEL_GAP and MARGIN_TOP, so the fit centred a rectangle
+    // offset by (90, 40) from the real one and the tree sat that far
+    // right-and-down of centre -- (90*scale, 40*scale) on screen. At the
+    // scales this hits in a real panel that is a few pixels, which is why it
+    // read as "a node is 9px outside the box" rather than as an obvious
+    // misalignment.
+    //
+    // NODE_EXTENT grows the bounds to the edge of a node's ink rather than its
+    // centre. Fitting centres leaves the outermost circle half outside the
+    // viewBox, and half a circle outside is exactly what the browser test
+    // measures with getBoundingClientRect.
     const nodes = _root.descendants();
     if (!nodes.length) return;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const d of nodes) {
-      minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x);
-      minY = Math.min(minY, d.y); maxY = Math.max(maxY, d.y);
+      const {x, y} = _nodeXY(d);
+      minX = Math.min(minX, x - NODE_EXTENT);
+      maxX = Math.max(maxX, x + NODE_EXTENT);
+      minY = Math.min(minY, y - NODE_EXTENT);
+      maxY = Math.max(maxY, y + NODE_EXTENT);
     }
     // Add a padding around the tree so nodes don't touch the viewBox edge.
     const pad = 80;

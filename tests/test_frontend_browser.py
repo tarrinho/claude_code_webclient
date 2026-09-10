@@ -284,7 +284,40 @@ class _BrowserFixture(unittest.TestCase):
         self._open_settings()
 
     def _open_backends(self):
+        """Open Settings on the Backends tab with the cards actually visible.
+
+        Every transport group starts collapsed now -- `loadBackends()` calls
+        `_collapseAllTransportGroups()` before it renders, which is what Pedro
+        asked for and what `test_qa_backend_groups_collapse_on_open.py` pins.
+        A collapsed group renders *no* `.machine-card` at all: the loop in
+        `_renderMachineList` appends the header, then builds cards only for
+        groups absent from `_collapsedGroups`.
+
+        So waiting for `.machine-card` straight after opening the panel could
+        not succeed, and the 10s timeout failed all 19 tests that come through
+        this helper. Nothing here was wrong with the product -- the collapse
+        behaviour is the requested behaviour -- but this file is in rules.md's
+        LOCAL_ONLY set and the local browser pass has been blocked by the §0
+        memory gate, so the interaction went unseen until the set ran on a QA
+        node. Expand first, then wait.
+        """
         self.page.click("#settingsBtn")
+        # The header exists whether or not the group is collapsed, so it is the
+        # honest readiness signal for "the panel has rendered".
+        self.page.wait_for_selector(".transport-collapse-toggle", timeout=10_000)
+        # Re-queried each time, not collected once. A click calls
+        # _toggleGroupCollapse, which re-renders the whole list, so every
+        # handle gathered beforehand is detached by the first click --
+        # `ElementHandle.click: Element is not attached to the DOM` on the
+        # second group. The first version of this helper did collect them
+        # upfront and hit exactly that.
+        for _ in range(20):  # bounded: a re-render must not become a loop
+            toggle = self.page.query_selector(
+                '.transport-collapse-toggle[aria-expanded="false"]')
+            if toggle is None:
+                break
+            toggle.click()
+            self.page.wait_for_timeout(150)
         self.page.wait_for_selector(".machine-card", timeout=10_000)
         self.page.wait_for_timeout(800)
 

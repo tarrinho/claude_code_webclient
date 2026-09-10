@@ -60,6 +60,24 @@ class RunRemoteScriptShapeTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("Authorization: Bearer", source)
 
+    def test_it_does_not_default_to_a_localhost_port_nothing_listens_on(self):
+        """Confirmed live: nothing listens on 127.0.0.1:8080 on this
+        deployment (uvicorn binds only the tailnet IP on 443, Caddy is
+        inactive) -- a hardcoded default here connected to nothing."""
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("127.0.0.1:8080", source)
+
+    def test_it_looks_up_the_tailnet_domain_like_launch_sh_does(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("tailscale status --json", source)
+
+    def test_it_never_passes_the_token_as_a_curl_argv_flag(self):
+        """argv is world-readable via /proc/<pid>/cmdline for the run's
+        whole duration -- the token must travel to curl via a -K config
+        file, never a -H argv argument."""
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn('-H "Authorization', source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,8 @@ async def handle_qa_run(request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
     name = body.get("transport") or None
 
     try:

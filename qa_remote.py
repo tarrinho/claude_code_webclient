@@ -36,13 +36,31 @@ async def _available_mb(machine_id: str) -> int | None:
     separately broken, so nothing here can rely on persisted stats).
     Returns None on any failure to read or parse, distinct from a
     successfully-read 0 -- callers must not conflate "could not check" with
-    "checked, and it's empty"."""
+    "checked, and it's empty".
+
+    Both the exec_command call and the blocking .read() are wrapped in
+    asyncio.wait_for + asyncio.to_thread (mirroring
+    routes/chats.py._remote_agent_reply's established pattern) -- exec_command
+    is `async def` but its body, and file.read(), are synchronous paramiko
+    calls that block the single event loop thread for as long as the remote
+    command takes without this.
+    """
     import tunnel_manager_ssh
 
     try:
-        _, stdout, _ = await tunnel_manager_ssh.exec_command(
-            machine_id, "free -m | awk '/Mem:/{print $7}'", timeout=5)
-        return int(stdout.read().decode("utf-8", "replace").strip())
+        _, stdout, _ = await asyncio.wait_for(
+            tunnel_manager_ssh.exec_command(
+                machine_id, "free -m | awk '/Mem:/{print $7}'", timeout=5),
+            timeout=5)
+    except Exception:
+        return None
+
+    def _read() -> bytes:
+        return stdout.read()
+
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_read), timeout=5)
+        return int(raw.decode("utf-8", "replace").strip())
     except Exception:
         return None
 
@@ -59,19 +77,30 @@ async def _check_capacity(machine_id: str, floor_mb: int) -> tuple[bool, int | N
 async def _is_provisioned(machine_id: str) -> bool:
     """Has bin/wc-provision-qa.sh ever run here? Checked live, the same way
     as capacity -- a stale "provisioned" flag would be worse than no flag at
-    all, since the checkout could have been wiped since."""
+    all, since the checkout could have been wiped since. See _available_mb's
+    docstring for why both the exec_command call and the read are wrapped."""
     import tunnel_manager_ssh
 
     cmd = f"test -x {QA_REMOTE_PATH}/.venv/bin/python && echo yes"
     try:
-        _, stdout, _ = await tunnel_manager_ssh.exec_command(machine_id, cmd, timeout=5)
-        return stdout.read().decode("utf-8", "replace").strip() == "yes"
+        _, stdout, _ = await asyncio.wait_for(
+            tunnel_manager_ssh.exec_command(machine_id, cmd, timeout=5), timeout=5)
+    except Exception:
+        return False
+
+    def _read() -> bytes:
+        return stdout.read()
+
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_read), timeout=5)
+        return raw.decode("utf-8", "replace").strip() == "yes"
     except Exception:
         return False
 
 
 import asyncio
 from dataclasses import dataclass
+from typing import AsyncIterator
 
 _RUN_LOCKS: dict[str, asyncio.Lock] = {}
 
@@ -187,12 +216,41 @@ async def resolve_transport(
 async def _sync(prepared: Prepared) -> dict:
     """One call, no new sync engine code -- transport_sync.sync_transport is
     reused unmodified, pointed at the QA checkout and the QA pointer, never
-    the production ones (spec §2)."""
+    the production ones (spec §2).
+
+    transport_sync's transfer runs over SFTP, which does not do bash-style
+    '~' expansion the way every exec_command shell call in this module does
+    -- so QA_REMOTE_PATH's tilde form would put/mkdir against a directory
+    literally named '~' at the SFTP root, not bin/wc-provision-qa.sh's real
+    checkout at $HOME/wc-qa-checkout. $HOME is resolved once, live, right
+    here -- only for this SFTP-bound call, nowhere else in this module needs
+    it. A failed $HOME read falls back to the tilde form (today's existing,
+    already-broken-for-SFTP behavior) rather than hard-failing the whole run
+    over an unrelated hiccup; transport_sync.sync_transport's own SyncError
+    handling still applies from there.
+    """
     import db
+    import tunnel_manager_ssh
     import transport_sync
 
+    home = ""
+    try:
+        _, stdout, _ = await asyncio.wait_for(
+            tunnel_manager_ssh.exec_command(prepared.machine_id, "echo $HOME", timeout=5),
+            timeout=5)
+
+        def _read() -> bytes:
+            return stdout.read()
+
+        raw = await asyncio.wait_for(asyncio.to_thread(_read), timeout=5)
+        home = raw.decode("utf-8", "replace").strip()
+    except Exception:
+        home = ""
+
+    remote_dir = f"{home}/wc-qa-checkout" if home else QA_REMOTE_PATH
+
     result = await transport_sync.sync_transport(
-        prepared.machine_id, QA_REMOTE_PATH,
+        prepared.machine_id, remote_dir,
         prepared.transport.get("last_qa_synced_sha") or "")
     if result["ok"] and result["head_sha"]:
         await db.ssh_transport_set_last_qa_synced_sha(
@@ -214,26 +272,65 @@ async def _collect_chunks(machine_id: str) -> tuple[list[list[str]], list[str]]:
     reflects what is actually on the synced checkout. Mirrors
     run-suite-chunked.sh's own rule exactly: the file list comes from
     pytest's own collection, never a glob; browser files run one at a time;
-    everything else in groups of _CHUNK_GROUP_SIZE."""
+    everything else in groups of _CHUNK_GROUP_SIZE. Also mirrors its two
+    anti-false-green guards: refuse on zero collected files, and cross-check
+    the planned chunk count against what was actually collected -- a remote
+    collection that comes back empty or partial must not silently report
+    run-done ok:true with all-zero totals.
+
+    Raises RuntimeError on either guard tripping. Uncaught here deliberately:
+    it propagates up through execute()'s try/finally (lock still released)
+    and out to routes/qa.py's event_stream(), which already converts any
+    mid-run exception into a terminal run-done ok:false event -- the same
+    path a transport dying mid-chunk already takes, so this needs no new
+    event type.
+    """
     import tunnel_manager_ssh
 
+    collect_timeout = 60
     collect_cmd = (
-        f"cd {QA_REMOTE_PATH} && .venv/bin/python -m {_COLLECT_CMD_FRAGMENT} "
-        "2>/dev/null | grep -oE '^[^:]+\\.py' | sort -u"
+        f"cd {QA_REMOTE_PATH} && timeout {collect_timeout}s .venv/bin/python "
+        f"-m {_COLLECT_CMD_FRAGMENT} 2>/dev/null | grep -oE '^[^:]+\\.py' | sort -u"
     )
-    _, stdout, _ = await tunnel_manager_ssh.exec_command(machine_id, collect_cmd, timeout=60)
+    try:
+        _, stdout, _ = await asyncio.wait_for(
+            tunnel_manager_ssh.exec_command(machine_id, collect_cmd, timeout=collect_timeout),
+            timeout=collect_timeout)
+
+        def _read_collect() -> bytes:
+            return stdout.read()
+
+        raw = await asyncio.wait_for(asyncio.to_thread(_read_collect), timeout=collect_timeout)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("pytest --collect-only timed out on the remote checkout") from exc
     all_files = [
-        line.strip() for line in stdout.read().decode("utf-8", "replace").splitlines()
+        line.strip() for line in raw.decode("utf-8", "replace").splitlines()
         if line.strip()
     ]
 
+    if not all_files:
+        raise RuntimeError(
+            "pytest collected no files on the remote checkout -- refusing "
+            "to report a green run")
+
+    browser_timeout = 30
     browser_cmd = (
-        f"cd {QA_REMOTE_PATH} && {_BROWSER_GREP_FRAGMENT} "
+        f"cd {QA_REMOTE_PATH} && timeout {browser_timeout}s {_BROWSER_GREP_FRAGMENT} "
         f"{' '.join(all_files)} 2>/dev/null | sort"
     )
-    _, stdout, _ = await tunnel_manager_ssh.exec_command(machine_id, browser_cmd, timeout=30)
+    try:
+        _, stdout, _ = await asyncio.wait_for(
+            tunnel_manager_ssh.exec_command(machine_id, browser_cmd, timeout=browser_timeout),
+            timeout=browser_timeout)
+
+        def _read_browser() -> bytes:
+            return stdout.read()
+
+        raw = await asyncio.wait_for(asyncio.to_thread(_read_browser), timeout=browser_timeout)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("browser-file detection timed out on the remote checkout") from exc
     browser_files = [
-        line.strip() for line in stdout.read().decode("utf-8", "replace").splitlines()
+        line.strip() for line in raw.decode("utf-8", "replace").splitlines()
         if line.strip()
     ]
 
@@ -243,6 +340,12 @@ async def _collect_chunks(machine_id: str) -> tuple[list[list[str]], list[str]]:
         plain_files[i:i + _CHUNK_GROUP_SIZE]
         for i in range(0, len(plain_files), _CHUNK_GROUP_SIZE)
     ]
+
+    planned = sum(len(c) for c in plain_chunks) + len(browser_files)
+    if planned != len(all_files):
+        raise RuntimeError(
+            f"{len(all_files)} files collected but {planned} planned -- refusing to run")
+
     return plain_chunks, browser_files
 
 
@@ -260,7 +363,15 @@ async def _run_chunk(
     """Checked again immediately before running -- load can shift mid-run on
     a shared transport (spec §3). A capacity_refused chunk never reaches
     exec_command at all, so it can never be confused with a transport_error
-    (SSH actually failing) or a test_failure (pytest actually ran)."""
+    (SSH actually failing) or a test_failure (pytest actually ran).
+
+    The remote command is prefixed with a shell `timeout` -- paramiko's own
+    exec_command(timeout=) is a per-recv inactivity timeout, not a wall-clock
+    cap, and pytest's continuous progress output means a genuinely stuck
+    chunk would never trip it without this. See _available_mb's docstring
+    for why the exec_command call and the reads are each wrapped in
+    asyncio.wait_for/asyncio.to_thread.
+    """
     import tunnel_manager_ssh
 
     ok, available = await _check_capacity(machine_id, floor_mb)
@@ -271,20 +382,32 @@ async def _run_chunk(
             f"only {seen} available, floor is {floor_mb} MB", None)
 
     file_args = " ".join(files)
-    cmd = f"cd {QA_REMOTE_PATH} && .venv/bin/python -m pytest {file_args} -q --tb=short"
+    cmd = (
+        f"cd {QA_REMOTE_PATH} && timeout {timeout}s .venv/bin/python "
+        f"-m pytest {file_args} -q --tb=short"
+    )
     try:
-        _, stdout, stderr = await tunnel_manager_ssh.exec_command(
-            machine_id, cmd, timeout=timeout)
-        out = stdout.read().decode("utf-8", "replace")
-        err = stderr.read().decode("utf-8", "replace")
-        rc = stdout.channel.recv_exit_status()
+        _, stdout, stderr = await asyncio.wait_for(
+            tunnel_manager_ssh.exec_command(machine_id, cmd, timeout=timeout),
+            timeout=timeout)
+
+        def _read() -> tuple[bytes, bytes, int]:
+            out = stdout.read()
+            err = stderr.read()
+            rc = stdout.channel.recv_exit_status()
+            return out, err, rc
+
+        out_bytes, err_bytes, rc = await asyncio.wait_for(
+            asyncio.to_thread(_read), timeout=timeout)
     except Exception as exc:
         return ChunkResult(name, "transport_error", str(exc), None)
+    out = out_bytes.decode("utf-8", "replace")
+    err = err_bytes.decode("utf-8", "replace")
     status = "passed" if rc == 0 else "test_failure"
     return ChunkResult(name, status, out + err, rc)
 
 
-async def execute(prepared: Prepared):
+async def execute(prepared: Prepared) -> AsyncIterator[dict]:
     """Sync, then every chunk, yielding one event per step. Holds
     _run_lock(prepared.machine_id) for the whole call -- released in
     `finally` whether the run finishes, fails, or the caller stops

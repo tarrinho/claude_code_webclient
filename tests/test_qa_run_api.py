@@ -107,6 +107,22 @@ class QaRunApiTests(unittest.IsolatedAsyncioTestCase):
             client.post("/api/qa/run", json={}, headers=headers)
         mocked.assert_awaited_once_with("admin", None)
 
+    async def test_a_non_object_json_body_is_treated_like_an_empty_one(self):
+        """A valid-but-non-object body (e.g. a JSON array or a bare number)
+        must not raise an unhandled AttributeError out of body.get() and
+        surface as a 500 -- it should behave exactly like an empty body."""
+        client, headers = self._login()
+        with patch(
+            "qa_remote.resolve_transport",
+            AsyncMock(side_effect=qa_remote.QaRefusal(503, "none qualify")),
+        ) as mocked:
+            resp = client.post(
+                "/api/qa/run", content=b"[1,2,3]",
+                headers={**headers, "Content-Type": "application/json"},
+            )
+        self.assertNotEqual(resp.status_code, 500)
+        mocked.assert_awaited_once_with("admin", None)
+
     async def test_an_exception_mid_run_reaches_the_client_as_run_done(self):
         prepared = qa_remote.Prepared(
             transport={"id": "t1", "name": "One"}, machine_id="m1", floor_mb=700)

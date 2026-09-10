@@ -7,10 +7,18 @@ nothing about remote memory can be trusted from the database.
 """
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import qa_remote
+
+
+async def _hang(*args, **kwargs):
+    """Never completes -- simulates exec_command's paramiko body blocking on
+    a stuck remote read, so the surrounding asyncio.wait_for is what has to
+    do the work of returning control."""
+    await asyncio.sleep(999)
 
 
 def _exec_returning(text: str):
@@ -35,6 +43,15 @@ class AvailableMbTests(unittest.IsolatedAsyncioTestCase):
     async def test_unparseable_output_is_none(self):
         with patch("tunnel_manager_ssh.exec_command", _exec_returning("garbage\n")):
             self.assertIsNone(await qa_remote._available_mb("m1"))
+
+    async def test_a_hanging_exec_command_times_out_instead_of_blocking_forever(self):
+        """Proves the asyncio.wait_for wrapping actually does something: a
+        mocked exec_command that never returns must still make this
+        function come back (with None) within its own 5s budget, not hang
+        the caller (and, in production, the whole event loop) forever."""
+        with patch("tunnel_manager_ssh.exec_command", AsyncMock(side_effect=_hang)):
+            result = await qa_remote._available_mb("m1")
+        self.assertIsNone(result)
 
 
 class CheckCapacityTests(unittest.IsolatedAsyncioTestCase):
@@ -71,6 +88,11 @@ class IsProvisionedTests(unittest.IsolatedAsyncioTestCase):
         with patch("tunnel_manager_ssh.exec_command",
                     AsyncMock(side_effect=RuntimeError("tunnel not connected"))):
             self.assertFalse(await qa_remote._is_provisioned("m1"))
+
+    async def test_a_hanging_exec_command_times_out_instead_of_blocking_forever(self):
+        with patch("tunnel_manager_ssh.exec_command", AsyncMock(side_effect=_hang)):
+            result = await qa_remote._is_provisioned("m1")
+        self.assertFalse(result)
 
 
 if __name__ == "__main__":

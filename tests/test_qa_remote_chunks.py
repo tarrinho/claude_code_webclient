@@ -5,6 +5,7 @@ Design: docs/superpowers/specs/2026-09-09-remote-qa-execution-design.md §6.
 """
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,13 @@ import db
 import qa_remote
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+async def _hang(*args, **kwargs):
+    """Never completes -- simulates exec_command's body blocking on a stuck
+    remote read, so the surrounding asyncio.wait_for is what has to do the
+    work of returning control."""
+    await asyncio.sleep(999)
 
 
 def _exec_result(text: str, rc: int = 0):
@@ -61,6 +69,34 @@ class CollectChunksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plain_chunks[0]), 6)
         self.assertEqual(len(plain_chunks[1]), 1)
 
+    async def test_a_collection_that_finds_nothing_refuses_the_run(self):
+        """An empty collection must never turn into a green run with
+        all-zero totals -- this is the anti-false-green guard."""
+        with patch("tunnel_manager_ssh.exec_command",
+                    AsyncMock(return_value=_exec_result(""))):
+            with self.assertRaisesRegex(RuntimeError, "collected no files"):
+                await qa_remote._collect_chunks("m1")
+
+    async def test_both_remote_commands_carry_a_wall_clock_timeout_prefix(self):
+        """paramiko's own exec_command(timeout=) is a per-recv inactivity
+        timeout, not a wall-clock cap -- the shell `timeout Ns` prefix is
+        what actually kills a stuck remote process."""
+        files = "\n".join(f"tests/test_{i}.py" for i in range(1, 3))
+
+        async def fake_exec(machine_id, cmd, timeout):
+            if "playwright" in cmd:
+                return _exec_result("")
+            return _exec_result(files + "\n")
+
+        mock = AsyncMock(side_effect=fake_exec)
+        with patch("tunnel_manager_ssh.exec_command", mock):
+            await qa_remote._collect_chunks("m1")
+
+        self.assertEqual(len(mock.call_args_list), 2)
+        for call in mock.call_args_list:
+            cmd = call.args[1]
+            self.assertIn("timeout", cmd)
+
 
 class RunChunkTests(unittest.IsolatedAsyncioTestCase):
     async def test_passed_when_pytest_exits_zero(self):
@@ -106,6 +142,32 @@ class RunChunkTests(unittest.IsolatedAsyncioTestCase):
                 "m1", "plain-01", ["tests/test_a.py"], timeout=600, floor_mb=700)
         self.assertEqual(result.status, "capacity_refused")
         exec_mock.assert_not_awaited()
+
+    async def test_transport_error_when_exec_command_hangs_past_the_timeout(self):
+        """Proves the asyncio.wait_for wrapping actually does something: a
+        mocked exec_command that never returns must still make this
+        function come back (as transport_error) within the chunk's own
+        timeout, not block the caller -- and in production, the event loop
+        -- forever. A small timeout (2s) is used since it is a real
+        parameter here, unlike the hardcoded 5s in _available_mb."""
+        with (
+            patch("qa_remote._check_capacity", AsyncMock(return_value=(True, 900))),
+            patch("tunnel_manager_ssh.exec_command", AsyncMock(side_effect=_hang)),
+        ):
+            result = await qa_remote._run_chunk(
+                "m1", "plain-01", ["tests/test_a.py"], timeout=2, floor_mb=700)
+        self.assertEqual(result.status, "transport_error")
+
+    async def test_timeout_prefix_appears_in_the_remote_command(self):
+        exec_mock = AsyncMock(return_value=_exec_result("2 passed\n", rc=0))
+        with (
+            patch("qa_remote._check_capacity", AsyncMock(return_value=(True, 900))),
+            patch("tunnel_manager_ssh.exec_command", exec_mock),
+        ):
+            await qa_remote._run_chunk(
+                "m1", "plain-01", ["tests/test_a.py"], timeout=123, floor_mb=700)
+        cmd = exec_mock.call_args.args[1]
+        self.assertIn("timeout 123s", cmd)
 
 
 class ExecuteEventStreamTests(unittest.IsolatedAsyncioTestCase):

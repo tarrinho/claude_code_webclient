@@ -148,6 +148,44 @@ if ! guard_output="$(python3 -m resource_guard \
     printf '%s\n' "$guard_output" >&2
 fi
 
+# ── Be the OOM victim, so the webconsole is not ─────────────────────────
+# The paragraph above ends on "nothing now prevents an OOM kill of
+# webconsole.service, which has happened before". It happened again on
+# 2026-09-10: SIGKILL twice in ten minutes, and each kill cold-starts the
+# transcript caches, whose first scans spike memory and invite the next one.
+#
+# The kernel was picking the wrong process, and by a wide margin. Measured
+# that morning: webconsole.service sat at oom_score 813 on 141 MB while seven
+# of these CLIs sat at 698-709 on 167-366 MB each -- the process using the
+# least memory was first in line, purely because the user manager's
+# DefaultOOMScoreAdjust=200 applies to services and not to shell children.
+#
+# The service cannot fix this from its own side: a unit can ask for
+# OOMScoreAdjust=0, but the user manager runs at adj 100 and lowering below
+# its own value needs CAP_SYS_RESOURCE, so the kernel silently clamps it to
+# 100 (813 -> 746, still above these). Raising *our own* score always works,
+# so the correction lives here.
+#
+# The trade is deliberate and it is the right way round: a killed CLI resumes
+# from its transcript, while a killed webconsole takes every session's UI down
+# at once and starts the cold-start loop. Recoverable beats shared.
+#
+# Set once, at the top: oom_score_adj survives exec (so all four exec paths
+# below are covered) and is inherited on fork (so the hot-swap loop's child
+# is too). Console-spawned turns are unaffected -- they go through
+# claude_proxy with -p and never reach this wrapper.
+#
+# WC_AGENT_OOM_ADJ=0 opts out. Failure is only possible somewhere without a
+# writable /proc, and is never worth refusing a session over.
+_wc_oom_adj="${WC_AGENT_OOM_ADJ:-200}"
+if [ "$_wc_oom_adj" != "0" ]; then
+    if ! printf '%s' "$_wc_oom_adj" > /proc/self/oom_score_adj 2>/dev/null; then
+        echo "wc-claude: note — could not raise this session's OOM score;" \
+             "webconsole.service stays the kernel's preferred victim." >&2
+    fi
+fi
+unset _wc_oom_adj
+
 # --wc-profile <name> pins this session to one backend for its whole life,
 # instead of following whatever the console is currently routing to. Consumed
 # here and removed from the arguments, because `claude` does not know the flag.

@@ -873,15 +873,48 @@ button{touch-action:manipulation}
 }
 
 /* ── Supervisor Map Panel ──────────────────────────────────────── */
+/* A centred overlay, the same shape as #settingsDialog, rather than a strip
+   pinned to the right edge.
+   
+   It was `right: 12px; width: 420px`, which is about a quarter of a laptop
+   screen -- and 420px is the *scarce* axis for a left-to-right tree, so every
+   level of depth competed for it. The 200px detail panel inside then covered
+   48% of that: measured on the real node shape, 8 of 8 clickable leaves sat
+   behind it, so clicking a chat hid the chat you clicked.
+   
+   Toggled on [hidden], not on a .open class, because every existing caller
+   sets `panel.hidden` -- app.js's _openMap/_closeMap/_startMapPolling, the
+   close button and the Escape handler in supervisor-map.js, and two browser
+   tests. Hence the :not([hidden]) rule below rather than .dialog-backdrop's
+   .open: an author `display: grid` would beat the UA stylesheet's
+   `[hidden] { display: none }` and the panel could never be closed again,
+   which is exactly why .dialog-backdrop carries a separate class. */
 #supervisorMapPanel {
-  position: fixed; right: 12px; top: 56px;
-  width: 420px; height: calc(100vh - 68px);
+  position: fixed; inset: 0;
+  z-index: 400;
+  display: none;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0,0,0,.62);
+  overflow-y: auto;
+}
+#supervisorMapPanel:not([hidden]) { display: grid; }
+/* The dialog itself. Wider and shorter than the old strip: depth now runs
+   across, so horizontal room is what the layout is short of. `position:
+   relative` is load-bearing -- .map-detail is absolutely positioned, and
+   without a positioned ancestor here it would anchor to the viewport and sit
+   against the screen edge instead of inside the dialog. */
+#supervisorMapPanel .map-dialog {
+  position: relative;
+  width: min(1100px, 100%);
+  height: min(820px, calc(100dvh - 36px));
   background: var(--panel2, #fff);
   border: 1px solid var(--line, #ddd);
-  border-radius: 8px;
+  border-radius: 10px;
   display: flex; flex-direction: column;
-  z-index: 100;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,.4);
 }
 #supervisorMapPanel .panel-header {
   display: flex; align-items: center; gap: 8px;

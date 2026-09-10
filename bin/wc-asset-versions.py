@@ -152,7 +152,13 @@ def scan() -> tuple[list[str], int]:
     problems: list[str] = []
     seen = 0
     for holder in _reference_files():
-        text = holder.read_text(encoding="utf-8")
+        # Through _content, so the reference and the hash it is compared
+        # against come from the *same* snapshot. Reading the holder from the
+        # working tree while hashing targets from --ref compares a reference
+        # in one revision against content in another, and every uncommitted
+        # asset edit then fails the check -- which is the "gate people switch
+        # off" failure the --ref scoping exists to avoid.
+        text = _content(holder)
         for match in _REF_RE.finditer(text):
             name, found = match.group(1), int(match.group(2))
             target = _target(name, holder)

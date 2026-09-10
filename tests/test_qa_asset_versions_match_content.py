@@ -24,13 +24,20 @@ content, and this asserts that derivation still holds. Edit a module without
 re-running the script and this fails, instead of a browser silently keeping
 the old module.
 
-Asserted against HEAD, not the working tree, and the scope is deliberate. The
-invariant is "every committed reference matches committed content" -- which is
-what the machines.js bug violated, and what a deploy serves. A dirty working
-tree is not a violation: another session part-way through editing an asset has
-not done anything wrong yet, and failing the suite for everyone because of it
-would make this gate the thing people switch off. `--check` without `--ref`
-covers that case and is what a pre-commit hook should call.
+Asserted against the working tree. That reverses the first version of this
+file, which checked HEAD on the reasoning that "a dirty working tree is not a
+violation" -- and the reasoning was wrong in practice, in a way only running it
+showed. A HEAD-mode gate goes red because of somebody else's commit: a peer
+who changes an asset without re-deriving leaves every other session with a
+failing suite and nothing in their own tree to fix. Working-tree mode always
+fails for something the person seeing the failure can fix, with one command
+(`bin/wc-asset-versions.py`), which is the property that decides whether a
+gate survives.
+
+The cost is accepted deliberately: editing an asset does turn this red until
+the script is run. That is one command and it is the correct state to be in --
+the reference genuinely is stale until then. `--ref` remains for asking the
+same question about a commit, which is useful in CI where nothing is dirty.
 
 Deliberately not a git-*history* check. An earlier version of this idea
 compared "last commit touching the file" against "last commit changing its
@@ -60,21 +67,12 @@ def _load_script():
     return module
 
 
-def _is_git_checkout() -> bool:
-    """A tar-exported tree (the QA node) has no .git, and `git show HEAD:` in
-    one falls back to working-tree content -- which would make this test assert
-    a tautology rather than skip. Same reason test_qa_head_consistency.py and
-    test_qa_deploy_entrypoint.py guard themselves."""
-    return (ROOT / ".git").exists()
-
-
-@unittest.skipUnless(_is_git_checkout(), "not a git checkout")
 class AssetVersionsMatchContentTests(unittest.TestCase):
     def setUp(self):
         self.assertTrue(SCRIPT.is_file(), f"{SCRIPT} is missing")
         self.mod = _load_script()
-        # Committed content is the subject; see the module docstring.
-        self.mod._REF = "HEAD"
+        # Working tree, not HEAD; see the module docstring for why that scope
+        # changed. _REF is left at its default None.
 
     def test_every_reference_matches_its_target_content(self):
         """The gate. A failure names the file and both numbers."""
@@ -92,7 +90,7 @@ class AssetVersionsMatchContentTests(unittest.TestCase):
         test calls. If they could disagree, a green suite would not mean a
         green `--check`."""
         result = subprocess.run(
-            [sys.executable, str(SCRIPT), "--check", "--ref", "HEAD"],
+            [sys.executable, str(SCRIPT), "--check"],
             capture_output=True, text=True, cwd=ROOT, timeout=120,
         )
         self.assertEqual(
@@ -140,9 +138,6 @@ class AssetVersionsMatchContentTests(unittest.TestCase):
         stop busting anything.
         """
         real = ROOT / "web" / "assets" / "app.js"
-        # Working-tree content for this one: the point is that the hash
-        # responds to bytes, and HEAD content cannot be edited.
-        self.mod._REF = None
         original = self.mod.version_for(real)
         text = real.read_text(encoding="utf-8")
         try:

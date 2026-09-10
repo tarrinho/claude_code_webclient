@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=4257673">
+<link rel="stylesheet" href="/assets/styles.css?v=9845523">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -504,13 +504,13 @@
   </div>
 </div>
 <script type="module" src="/assets/usage.js?v=6329126"></script>
-<script type="module" src="/assets/server-stats.js?v=8558270"></script>
+<script type="module" src="/assets/server-stats.js?v=8469847"></script>
 <script type="module" src="/assets/skills.js?v=15159128"></script>
 <script type="module" src="/assets/machines.js?v=14224854"></script>
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=7745989"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=7392132"></script>
+<script type="module" src="/assets/app.js?v=3339281"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>
@@ -521,9 +521,10 @@
 <script type="module" src="/assets/supervisor-map.js?v=9197460"></script>
 
 <!-- Supervisor Map Panel -->
-<div id="supervisorMapPanel" class="panel" hidden>
+<div id="supervisorMapPanel" role="dialog" aria-modal="true" aria-labelledby="supervisorMapTitle" hidden>
+ <div class="dialog map-dialog">
   <div class="panel-header">
-    <span>Supervisor Map</span>
+    <span id="supervisorMapTitle">Supervisor Map</span>
     <button class="btn-icon" id="supervisorMapClose" aria-label="Close">×</button>
     <div class="zoom-controls">
       <button class="btn-icon" id="mapFitBtn" title="Fit to view" aria-label="Fit to view">⊡</button>
@@ -549,6 +550,7 @@
       </div>
       <div id="mapDetailActionStatus" class="map-detail-meta" hidden></div>
     </div>
+ </div>
   </div>
 </div>
 </body>

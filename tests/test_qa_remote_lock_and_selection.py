@@ -130,6 +130,16 @@ class ResolveNamedTransportTests(_WithTransportsDb):
         self.assertEqual(prepared.machine_id, "m1")
         self.assertEqual(prepared.floor_mb, 700)
 
+    async def test_resolve_transport_uses_the_config_default_when_unspecified(self):
+        await self._make_transport("t1", "One", "m1")
+        with (
+            self._tunnel_up(),
+            patch("qa_remote._is_provisioned", AsyncMock(return_value=True)),
+            patch("qa_remote._check_capacity", AsyncMock(return_value=(True, 900))) as mocked,
+        ):
+            await qa_remote.resolve_transport("admin", "One")
+        mocked.assert_awaited_once_with("m1", 700)
+
 
 class ResolveUnnamedTransportTests(_WithTransportsDb):
     async def test_picks_the_roomiest_active_candidate(self):
@@ -175,6 +185,13 @@ class ResolveUnnamedTransportTests(_WithTransportsDb):
         target; this test pins that absence."""
         with self.assertRaises(qa_remote.QaRefusal):
             await qa_remote.resolve_transport("admin", None, floor_mb=700)
+
+
+class ConfigDefaultsTests(unittest.TestCase):
+    def test_floor_defaults_to_700(self):
+        import config
+
+        self.assertEqual(config.QA_CAPACITY_FLOOR_MB, 700)
 
 
 if __name__ == "__main__":

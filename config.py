@@ -197,6 +197,15 @@ TESTING_MODEL_DEFAULT = _str("WC_TESTING_MODEL_DEFAULT", "claude-opus-5")
 # instead of the fixed default above. See tests/conftest.py for the resolver.
 TESTING_MODEL_ENFORCE_DEFAULT = _bool("WC_TESTING_MODEL_ENFORCE_DEFAULT", True)
 
+# --- remote QA execution -----------------------------------------------------
+# See docs/superpowers/specs/2026-09-09-remote-qa-execution-design.md.
+# Same env vars bin/run-suite-chunked.sh already reads for the equivalent
+# local-run settings, deliberately -- a remote run and a local chunked run
+# should agree on what "enough room" and "too long" mean unless told
+# otherwise.
+QA_CAPACITY_FLOOR_MB = _int("WC_SUITE_COST_MB", 700)
+QA_CHUNK_TIMEOUT = _int("WC_CHUNK_TIMEOUT", 600)
+
 # --- usage accounting ------------------------------------------------------
 # How long per-turn usage rows are kept. Pruned once per startup; 0 disables
 # pruning and keeps everything.

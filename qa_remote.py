@@ -135,7 +135,7 @@ async def _check_named(transport: dict, machine_id: str, floor_mb: int) -> None:
 
 
 async def resolve_transport(
-    owner: str, name: str | None, floor_mb: int = 700,
+    owner: str, name: str | None, floor_mb: int | None = None,
 ) -> Prepared:
     """Named: use that transport or raise QaRefusal with the specific
     reason. Unnamed: consider every owner's Active, unlocked, provisioned
@@ -143,6 +143,10 @@ async def resolve_transport(
     never fall back to running locally (spec §5)."""
     import db
     import tunnel_manager
+
+    if floor_mb is None:
+        import config
+        floor_mb = config.QA_CAPACITY_FLOOR_MB
 
     if name:
         transport = next(

@@ -513,9 +513,14 @@ async def lifespan(app: FastAPI):
     # through to the local read, keeping tests that patch a sessions dir
     # from being poisoned by the pre-warmed cache.
     import routes.db_sessions as _db_sessions
-    if not config.REMOTE_SESSIONS:
-        yield
-        return
+    # Skip starting the loop, but do NOT return from the lifespan here. An
+    # early `yield; return` on this path -- which is the default, since
+    # REMOTE_SESSIONS is off -- skipped the whole shutdown block below:
+    # turns.shutdown(), db.close(), tunnel_manager.stop() and the rest never
+    # ran on any normal restart. The comment on turns.shutdown() states the
+    # cost precisely: a turn cancelled there still runs its `finish`, which
+    # needs the connection, and leaving them to be torn down with the loop
+    # abandons tasks mid-write.
     _cache_interval = config.REMOTE_SESSION_CACHE_S
 
     async def _cache_refresh_loop() -> None:
@@ -531,9 +536,15 @@ async def lifespan(app: FastAPI):
                 _log.exception("update_sessions_cache failed; retrying next tick")
             await asyncio.sleep(_cache_interval)
 
-    _startup_tasks.append(asyncio.create_task(
-        _cache_refresh_loop(), name="sessions_cache_refresh"))
-    _startup_tasks[-1].add_done_callback(_log_startup_task)
+    if config.REMOTE_SESSIONS:
+        _startup_tasks.append(asyncio.create_task(
+            _cache_refresh_loop(), name="sessions_cache_refresh"))
+        _startup_tasks[-1].add_done_callback(_log_startup_task)
+    else:
+        _log.info(
+            "remote session discovery disabled (config.REMOTE_SESSIONS); "
+            "the sessions cache will not be refreshed"
+        )
 
     yield
     # Stopped before db.close(): the sampler writes through the connection.

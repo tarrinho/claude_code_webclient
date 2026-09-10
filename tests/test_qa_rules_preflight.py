@@ -557,9 +557,18 @@ class RemoteSuiteBlockTests(unittest.TestCase):
         dropping it from the first one left the test green while the runtime
         dependencies silently failed to install.
         """
+        # Comment lines are excluded, and that is not a loophole: a comment
+        # cannot install anything, so requiring PIP_USER=0 in one asserts
+        # nothing about the block's behaviour. It does punish explaining the
+        # block -- a comment added on 2026-09-10 reading "minutes of pip
+        # installs" failed this test against a correct block, which is the
+        # same trap test_qa_backend_groups_collapse_on_open.py and
+        # test_qa_agent_spawn_not_blocked.py both hit and solved the same way.
+        # A test that can be broken by documenting the code discourages
+        # documenting the code.
         pip_lines = [
             line for line in self.block.splitlines()
-            if "pip install" in line
+            if "pip install" in line and not line.lstrip().startswith("#")
         ]
         self.assertTrue(pip_lines, "no pip install in the block at all")
         for line in pip_lines:

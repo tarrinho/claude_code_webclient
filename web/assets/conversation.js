@@ -884,6 +884,10 @@ export function createConversationController(dependencies) {
     // the renderer needs to know which chat it is drawing before it draws.
     setImageContext(chat.id);
     const targetId = chat.id;
+    // Mark the target before the first await. The previous guard checked
+    // state.currentChat, which remains null until the response arrives, so it
+    // rejected every first chat open as a stale response.
+    state.currentChat = {id: targetId};
     const response = await apiFetch(`/api/chats/${encodeURIComponent(targetId)}`);
     // Bail if the user already navigated away — stale response must not
     // overwrite the real current chat with the wrong one's messages.

@@ -116,29 +116,159 @@ class PendingQuestionCacheTests(unittest.TestCase):
     # ── the cache actually caches ─────────────────────────────────────────
 
     def test_an_unchanged_file_is_not_re_read(self):
+        """Patches Path.open, not Path.read_bytes. An earlier version of this
+        test patched read_bytes, which the incremental implementation never
+        calls -- so it passed without observing anything at all. A test that
+        cannot fail is worse than no test, because it reads as coverage."""
         self._append(_ask())
         transcripts.pending_question("s")            # populates the cache
-        real_read_bytes = Path.read_bytes
-        calls = []
+        real_open = Path.open
+        opens = []
 
-        def counting_read_bytes(self_path, *a, **kw):
-            calls.append(str(self_path))
-            return real_read_bytes(self_path, *a, **kw)
+        def counting_open(self_path, *a, **kw):
+            opens.append(str(self_path))
+            return real_open(self_path, *a, **kw)
 
-        with patch.object(Path, "read_bytes", counting_read_bytes):
+        with patch.object(Path, "open", counting_open):
             transcripts.pending_question("s")
         self.assertEqual(
-            calls, [], "an unchanged transcript was read again; the cache is "
+            opens, [], "an unchanged transcript was opened again; the cache is "
                        "not being consulted")
 
-    def test_the_cache_is_keyed_on_the_size_actually_read(self):
-        """Keyed on len(raw), not the earlier stat() -- the file can grow
-        between the two, and remembering the stat() size would mean the next
-        call compares against a number no scan ever parsed."""
+    def test_the_cache_records_a_record_boundary_not_a_raw_size(self):
+        """The offset must land immediately after a newline. A growing
+        transcript's last line is routinely half-written, and remembering a
+        raw byte count would resume mid-record next time and drop the message
+        that line carried."""
         self._append(_ask())
         transcripts.pending_question("s")
-        cached_size, _ = transcripts._pending_question_cache[str(self.path)]
-        self.assertEqual(cached_size, len(self.path.read_bytes()))
+        raw = self.path.read_bytes()
+        offset, _anchor, asked, answered = transcripts._pending_question_cache[str(self.path)]
+        self.assertEqual(offset, len(raw),
+                         "this file ends with a newline, so the boundary is "
+                         "the whole file")
+        self.assertEqual(raw[offset - 1:offset], b"\n")
+        self.assertEqual(set(asked), {"q1"})
+        self.assertEqual(answered, set())
+
+    # ── incremental reading ───────────────────────────────────────────────
+
+    def test_a_complete_and_a_partial_record_in_one_read(self):
+        """The case that separates a record-boundary offset from a raw-size
+        one, and the one a live transcript produces constantly: a read ending
+        mid-record after a complete record. Counting the partial's bytes as
+        consumed loses the question that line was carrying, permanently."""
+        self._append(_filler(1))
+        transcripts.pending_question("s")
+
+        complete = json.dumps(_filler(2)).encode() + b"\n"
+        partial = json.dumps(_ask("q9", "Late question")).encode()
+        with self.path.open("ab") as fh:
+            fh.write(complete + partial[:30])
+        self.assertIsNone(transcripts.pending_question("s"),
+                          "a partial record must not be parsed as complete")
+
+        with self.path.open("ab") as fh:
+            fh.write(partial[30:] + b"\n")
+        found = transcripts.pending_question("s")
+        self.assertIsNotNone(
+            found, "the question was lost -- the partial record's bytes were "
+                   "counted as consumed alongside the complete one")
+        self.assertEqual(found["id"], "q9")
+
+    def test_only_the_appended_bytes_are_read(self):
+        """The whole point: cost proportional to what was added, which is what
+        a size-keyed cache of the verdict could not deliver for a transcript
+        being appended to every few seconds."""
+        self._append(_ask())
+        transcripts.pending_question("s")
+        before = self.path.stat().st_size
+        self._append(_filler(1))
+        appended = self.path.stat().st_size - before
+
+        sizes = []
+        real_open = Path.open
+
+        def watching_open(self_path, *a, **kw):
+            handle = real_open(self_path, *a, **kw)
+            real_read = handle.read
+
+            def counting_read(*ra, **rkw):
+                data = real_read(*ra, **rkw)
+                sizes.append(len(data))
+                return data
+
+            handle.read = counting_read
+            return handle
+
+        with patch.object(Path, "open", watching_open):
+            transcripts.pending_question("s")
+        # The appended bytes, plus at most the 64-byte anchor read back to
+        # prove the file was not rewritten under us.
+        self.assertGreaterEqual(sum(sizes), appended)
+        self.assertLessEqual(
+            sum(sizes), appended + transcripts._RESUME_ANCHOR_BYTES,
+            f"read {sum(sizes)} bytes for a {appended}-byte append; the whole "
+            f"{before + appended}-byte file was re-read",
+        )
+
+    def test_a_file_rewritten_larger_than_the_old_offset_is_re_read(self):
+        """The reachable version of the rewrite case: repair_if_needed()
+        rewrites a transcript in place, the session appends past the old
+        offset, and the file is now *larger* -- indistinguishable from growth
+        by size alone. Resuming would keep asks and answers for records that
+        are no longer in the file. The 64-byte anchor is what notices."""
+        self._append(_ask("q1"), *[_filler(i) for i in range(6)])
+        self.assertEqual(transcripts.pending_question("s")["id"], "q1")
+        old_offset = transcripts._pending_question_cache[str(self.path)][0]
+
+        # q1 is gone from the rewritten file; q2 is the only ask in it now.
+        self.path.write_text("")
+        self._append(_ask("q2", "Fresh"), *[_filler(i) for i in range(10)])
+        self.assertGreater(self.path.stat().st_size, old_offset,
+                           "precondition: must look like growth, not a shrink")
+
+        found = transcripts.pending_question("s")
+        self.assertEqual(
+            found["id"], "q2",
+            "served a question from the pre-rewrite file -- the stale asks "
+            "were carried across a rewrite",
+        )
+
+    def test_a_rewrite_that_removes_the_question_reports_no_question(self):
+        """The case that actually catches stale state being carried across a
+        rewrite. Where the rewritten file still has a pending question, a
+        stale ask is masked -- the verdict returns the newest unanswered one
+        and the newer real ask wins by insertion order. Here the rewritten
+        file has *no* pending question, so carrying the old asks invents one
+        that no longer exists anywhere in the file: a phantom prompt the UI
+        would offer to answer."""
+        self._append(_ask("q1"), *[_filler(i) for i in range(6)])
+        self.assertEqual(transcripts.pending_question("s")["id"], "q1")
+        old_offset = transcripts._pending_question_cache[str(self.path)][0]
+
+        # Rewritten with no unanswered question at all, and larger than the
+        # old offset so it cannot be caught as a shrink.
+        self.path.write_text("")
+        self._append(*[_filler(i) for i in range(20)])
+        self.assertGreater(self.path.stat().st_size, old_offset,
+                           "precondition: must look like growth, not a shrink")
+
+        self.assertIsNone(
+            transcripts.pending_question("s"),
+            "reported a question that no longer exists in the file -- stale "
+            "asks were carried across the rewrite",
+        )
+
+    def test_a_truncated_file_is_re_read_from_the_start(self):
+        self._append(_ask("q1"))
+        self.assertEqual(transcripts.pending_question("s")["id"], "q1")
+        self.path.write_text("")
+        self._append(_ask("q2", "Fresh question"))
+        found = transcripts.pending_question("s")
+        self.assertEqual(found["id"], "q2",
+                         "a shrunk file must be re-read, not resumed from a "
+                         "stale offset")
 
     # ── failure handling ──────────────────────────────────────────────────
 

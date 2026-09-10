@@ -850,7 +850,62 @@ def _iter_strings(value: Any):
             yield from _iter_strings(item)
 
 
-# path -> (bytes_consumed, events). bytes_consumed is a *record boundary*
+# Bytes kept from just before a resume point to prove the file is still the
+# one that was parsed. A size comparison alone cannot tell "appended to" from
+# "rewritten to a similar length": repair_if_needed() rewrites a transcript in
+# place (dropping empty-text records), and if the session then appends past
+# the old offset, resuming would carry state describing records that no longer
+# exist. Found by a test that regrew a truncated file *larger* than the old
+# offset -- the earlier shrink-only check passed only because the first
+# version of that test happened to leave it smaller.
+_RESUME_ANCHOR_BYTES: Final[int] = 64
+
+
+def _read_appended(
+    path: Path, start: int, anchor: bytes,
+) -> tuple[bytes, int, bytes, bool] | None:
+    """Read the whole records added since *start*, verifying the file first.
+
+    Returns ``(records, consumed, new_anchor, resumed)``, or None if the file
+    could not be read at all. ``records`` holds only complete records -- a
+    line still being written is left for next time, because a growing
+    transcript's tail is routinely half-written and consuming it would drop
+    the record it carries. ``consumed`` is the record boundary to resume from.
+    ``resumed`` is False when the file turned out not to be the one the caller
+    had parsed, in which case the caller must discard its accumulated state.
+    """
+    base = max(0, start - len(anchor)) if start else 0
+    try:
+        with path.open("rb") as handle:
+            if base:
+                handle.seek(base)
+            buffer = handle.read()
+    except OSError:
+        return None
+
+    prefix = start - base
+    resumed = bool(start)
+    if prefix and buffer[:prefix] != anchor:
+        resumed = False
+        try:
+            buffer = path.read_bytes()
+        except OSError:
+            return None
+        base = prefix = 0
+
+    chunk = buffer[prefix:]
+    cut = chunk.rfind(b"\n")
+    if cut < 0:
+        # Nothing complete to add. Keep the caller's position if it was valid,
+        # otherwise report a fresh start with nothing consumed.
+        return (b"", start, anchor, True) if resumed else (b"", 0, b"", False)
+
+    consumed = base + prefix + cut + 1
+    anchor_from = max(base, consumed - _RESUME_ANCHOR_BYTES)
+    return chunk[:cut + 1], consumed, buffer[anchor_from - base:consumed - base], resumed
+
+
+# path -> (bytes_consumed, anchor, events). bytes_consumed is a *record boundary*
 # (immediately after a newline), never a raw size: the tail of a growing
 # transcript is routinely a half-written line, and resuming from a raw size
 # would start mid-record and drop the message that line was carrying.
@@ -863,16 +918,18 @@ def _iter_strings(value: Any):
 # plain size-keyed cache (the idiom used elsewhere in this file) would have
 # been near-useless here for exactly the reason these files were selected:
 # they are the ones changing.
-_agent_events_cache: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+_agent_events_cache: dict[str, tuple[int, bytes, list[dict[str, Any]]]] = {}
 
 
 def _agent_events_sync(path: Path, session_id: str, title: str) -> list[dict[str, Any]]:
     """Extract messages sent to and received from other sessions.
 
     Reads only the bytes appended since the last call (see
-    _agent_events_cache). Transcripts are append-only, so everything already
-    parsed stays true -- this reads less of the file without showing less of
-    the conversation, which a tail window would not have managed.
+    _agent_events_cache). Transcripts are append-only in normal operation, so
+    everything already parsed stays true -- this reads less of the file
+    without showing less of the conversation, which a tail window would not
+    have managed. _read_appended is what notices the abnormal case, a file
+    rewritten under us.
     """
     key = str(path)
     try:
@@ -882,32 +939,26 @@ def _agent_events_sync(path: Path, session_id: str, title: str) -> list[dict[str
 
     cached = _agent_events_cache.get(key)
     if cached is not None and cached[0] == size:
-        return _agent_events_copy(cached[1], title)
+        return _agent_events_copy(cached[2], title)
 
-    start = 0
+    start, anchor = 0, b""
     events: list[dict[str, Any]] = []
     if cached is not None and size > cached[0]:
         # Grown: keep what was already parsed and read only the new bytes.
-        start, events = cached[0], list(cached[1])
-    # size < cached[0] means truncated or replaced, so the cached parse no
-    # longer describes this file: fall through with start=0 and re-read it.
+        start, anchor, events = cached[0], cached[1], list(cached[2])
 
-    try:
-        with path.open("rb") as handle:
-            if start:
-                handle.seek(start)
-            chunk = handle.read()
-    except OSError:
+    read = _read_appended(path, start, anchor)
+    if read is None:
         # Don't poison the cache on a transient read failure -- serve what was
         # already known and try again next call.
-        return _agent_events_copy(cached[1], title) if cached else []
+        return _agent_events_copy(cached[2], title) if cached else []
+    records, consumed, new_anchor, resumed = read
+    if not resumed:
+        events = []
 
-    # Parse only up to the last complete record. The remainder (a line still
-    # being written) stays unconsumed so the next call re-reads it whole.
-    cut = chunk.rfind(b"\n")
-    if cut >= 0:
-        events.extend(_parse_agent_records(chunk[:cut + 1], session_id, title))
-        _agent_events_cache[key] = (start + cut + 1, list(events))
+    if records:
+        events.extend(_parse_agent_records(records, session_id, title))
+        _agent_events_cache[key] = (consumed, new_anchor, list(events))
     return _agent_events_copy(events, title)
 
 
@@ -1708,97 +1759,41 @@ async def list_recent(limit: int = 50) -> list[dict[str, Any]]:
     return await asyncio.to_thread(_list_sync, limit)
 
 
-# Same shape and the same soundness argument as _question_scan_cache above:
-# (size_at_last_scan, result), and a size match is sound rather than
-# approximate because a new question and an answer are both *appended*
-# records -- neither can change this answer without the file growing.
+# path -> (bytes_consumed, asked, answered). Incremental, like
+# _agent_events_cache, and for the same reason: the offset is a record
+# boundary rather than a raw size, because a growing transcript's last line
+# is routinely half-written.
 #
-# Measured on 2026-09-09, which is why this exists: the scan below is 1,709 ms
-# on cweb2's 86 MB transcript, and it was run on every poll -- every 4s per
-# open conversation (app.js QUESTION_POLL_MS) and again every 5s server-side
-# for every armed chat (auto_answer's loop, through routes.chats._pending_prompt).
-# 86 MB re-read and json.loads()'d line by line every 4 seconds, to reach the
-# same verdict as a moment earlier. An unchanged transcript now costs one
-# stat() instead.
-_pending_question_cache: dict[str, tuple[int, dict[str, Any] | None]] = {}
+# This started (2026-09-09, earlier the same day) as a size-keyed cache of the
+# verdict, which removed the repeat cost for an *idle* transcript and nothing
+# at all for a busy one -- measured live afterwards, 10 chats were armed and
+# four of their transcripts were growing every few seconds (51, 50, 42 and
+# 15MB, +6-19KB per 20s), so every append invalidated the entry and the next
+# poll re-read the whole file. That is 52-195MB per 20s of re-reading, and
+# it is the chats someone is actively working in that lose the benefit --
+# exactly the wrong way round.
+#
+# Keeping `asked`/`answered` instead of the verdict is what makes resuming
+# possible: both are monotonic over an append-only file (a new record can add
+# an ask or add an answer, never retract either), and they accumulate in file
+# order, so an incremental merge reaches the same state a full scan would.
+# The scan itself still covers the whole file -- a session can sit on a prompt
+# for a long time with nothing appended after it, so reading *less* of the
+# file would miss exactly the prompt this exists to find. What is removed is
+# re-reading, not reading.
+#
+# Cost: 1,320ms on cweb2's 86MB transcript, run every 4s per open
+# conversation (app.js QUESTION_POLL_MS) and again every 5s server-side per
+# armed chat (auto_answer, via routes.chats._pending_prompt).
+_pending_question_cache: dict[
+    str, tuple[int, bytes, dict[str, dict[str, Any]], set[str]]
+] = {}
 
 
-def pending_question(session_id: str) -> dict[str, Any] | None:
-    """Return the question *session_id* is still waiting on, or None.
-
-    A question is pending when its tool_use has no matching tool_result. The
-    whole transcript is scanned rather than a tail, because a session can sit on
-    a prompt for a long time while nothing else is appended -- so the repeat
-    cost is removed by caching on file size (see _pending_question_cache),
-    never by reading less of the file, which would miss exactly the
-    sat-on-for-ages prompt this is for.
-
-    ``needle`` is the question text, used to confirm the prompt really is on
-    screen before a keystroke is delivered to that window.
-    """
-    path = transcript_path(session_id)
-    if path is None:
-        return None
-
-    key = str(path)
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return None
-    cached = _pending_question_cache.get(key)
-    if cached is not None and cached[0] == size:
-        # Shallow copy, as _scan_questions_sync does: callers must not be able
-        # to mutate what the next caller reads back.
-        return dict(cached[1]) if cached[1] is not None else None
-
-    paths = [path]
-    asked: dict[str, dict[str, Any]] = {}
-    answered: set[str] = set()
-    scanned = -1
-    for path in paths:
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            continue
-        # Cached under the size actually read, not the stat() above: the file
-        # can grow between the two, and keying on what was really parsed is
-        # what keeps the next call's comparison honest.
-        scanned = len(raw)
-        for line in raw.split(b"\n"):
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                record = json.loads(text.decode("utf-8", errors="replace"))
-            except json.JSONDecodeError:
-                continue
-            message = record.get("message")
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if (
-                    block.get("type") == "tool_use"
-                    and block.get("name") == _QUESTION_TOOL
-                    and block.get("id")
-                ):
-                    built = _question_block(block)
-                    if built:
-                        asked[str(block["id"])] = built
-                elif (
-                    block.get("type") == "tool_use"
-                    and block.get("name") in _APPROVAL_TOOLS
-                    and block.get("id")
-                ):
-                    asked[str(block["id"])] = _approval_block(block)
-                elif block.get("type") == "tool_result" and block.get("tool_use_id"):
-                    answered.add(str(block["tool_use_id"]))
-
-    result: dict[str, Any] | None = None
+def _question_verdict(
+    asked: dict[str, dict[str, Any]], answered: set[str],
+) -> dict[str, Any] | None:
+    """The newest ask with no matching answer, as the API shape."""
     for qid, built in reversed(list(asked.items())):
         if qid in answered:
             continue
@@ -1815,21 +1810,106 @@ def pending_question(session_id: str) -> dict[str, Any] | None:
         # unanswered prompt.
         needle = "" if built.get("approval") else str(
             first.get("question") or "").strip()
-        result = {
+        return {
             "id": qid,
             "questions": built.get("questions") or [],
             "approval": bool(built.get("approval")),
             "needle": needle,
         }
-        break
+    return None
 
-    # Only cache a scan that actually read the file. A failed read leaves
-    # scanned at -1 and falls through to "no question" for this call, but must
-    # not be remembered as the verdict for that size -- the next call should
-    # try again rather than trust a result no bytes backed.
-    if scanned >= 0:
-        _pending_question_cache[key] = (scanned, result)
-    return dict(result) if result is not None else None
+
+def pending_question(session_id: str) -> dict[str, Any] | None:
+    """Return the question *session_id* is still waiting on, or None.
+
+    A question is pending when its tool_use has no matching tool_result.
+    Reads only the bytes appended since the last call and merges them into
+    the running asks/answers -- see _pending_question_cache for why that
+    reaches the same state as a full scan, and why reading less of the file
+    would not.
+
+    ``needle`` is the question text, used to confirm the prompt really is on
+    screen before a keystroke is delivered to that window.
+    """
+    path = transcript_path(session_id)
+    if path is None:
+        return None
+
+    key = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+
+    cached = _pending_question_cache.get(key)
+    if cached is not None and cached[0] == size:
+        return _question_verdict(cached[2], cached[3])
+
+    start, anchor = 0, b""
+    asked: dict[str, dict[str, Any]] = {}
+    answered: set[str] = set()
+    if cached is not None and size > cached[0]:
+        # Grown: resume from the record boundary, keeping what is already
+        # known. Copied rather than mutated in place so a failed read below
+        # cannot leave the cache half-updated.
+        start, anchor = cached[0], cached[1]
+        asked, answered = dict(cached[2]), set(cached[3])
+
+    read = _read_appended(path, start, anchor)
+    if read is None:
+        # Serve what was already known rather than poisoning the cache with a
+        # verdict no bytes backed; the next call tries again.
+        return _question_verdict(cached[2], cached[3]) if cached else None
+    records, consumed, new_anchor, resumed = read
+    if not resumed:
+        # The file was rewritten, so the accumulated asks and answers describe
+        # records that may no longer be there.
+        asked, answered = {}, set()
+
+    if records:
+        _parse_question_records(records, asked, answered)
+        _pending_question_cache[key] = (consumed, new_anchor, asked, answered)
+    return _question_verdict(asked, answered)
+
+
+def _parse_question_records(
+    raw: bytes, asked: dict[str, dict[str, Any]], answered: set[str],
+) -> None:
+    """Merge the asks and answers in *raw* into the running state. *raw* must
+    contain only whole JSONL records."""
+    for line in raw.split(b"\n"):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            record = json.loads(text.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if (
+                block.get("type") == "tool_use"
+                and block.get("name") == _QUESTION_TOOL
+                and block.get("id")
+            ):
+                built = _question_block(block)
+                if built:
+                    asked[str(block["id"])] = built
+            elif (
+                block.get("type") == "tool_use"
+                and block.get("name") in _APPROVAL_TOOLS
+                and block.get("id")
+            ):
+                asked[str(block["id"])] = _approval_block(block)
+            elif block.get("type") == "tool_result" and block.get("tool_use_id"):
+                answered.add(str(block["tool_use_id"]))
 
 
 # Auto-reply to another Claude session by writing a <cross-session-message>

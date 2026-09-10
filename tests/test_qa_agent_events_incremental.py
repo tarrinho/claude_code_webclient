@@ -175,16 +175,43 @@ class AgentEventsIncrementalTests(unittest.TestCase):
         with patch.object(Path, "open", watching_open):
             self._events()
         self.assertTrue(read_sizes, "the grown file was never read")
-        # Exactly the appended bytes, not merely "fewer than the whole file":
-        # the weaker form still passes a reader that re-reads most of it.
-        self.assertEqual(
-            sum(read_sizes), appended,
+        # The appended bytes, plus at most the 64-byte anchor read back to
+        # prove the file was not rewritten under us. Still strict enough to
+        # fail a full re-read, which is the regression this guards.
+        self.assertGreaterEqual(sum(read_sizes), appended)
+        self.assertLessEqual(
+            sum(read_sizes), appended + transcripts._RESUME_ANCHOR_BYTES,
             f"read {sum(read_sizes)} bytes for a {appended}-byte append; the "
             f"whole {before + appended}-byte file was re-read instead of only "
-            f"what changed",
+            f"what changed plus the anchor",
         )
 
     # ── shrinking / replacement ───────────────────────────────────────────
+
+    def test_a_file_rewritten_larger_than_the_old_offset_is_re_read(self):
+        """The hole a shrink-only check leaves, and the one that is actually
+        reachable: repair_if_needed() rewrites a transcript in place, and if
+        the session then appends past the old offset the file is *larger*
+        than before, so it looks exactly like growth. Resuming would carry
+        events for records that no longer exist. Caught by the 64-byte anchor
+        before the resume point, not by the size.
+
+        An earlier version of this test truncated and appended only a small
+        record, leaving the file smaller than the old offset -- so it took the
+        shrink path and passed against this bug."""
+        self._append_records(*[_incoming("cweb2", f"old {i}") for i in range(6)])
+        self.assertEqual(len(self._texts()), 6)
+        old_offset = transcripts._agent_events_cache[str(self.path)][0]
+
+        # Rewritten shorter, then grown well past where the old parse stopped.
+        self.path.write_bytes(b"")
+        self._append_records(*[_incoming("cweb9", f"new {i}") for i in range(8)])
+        self.assertGreater(self.path.stat().st_size, old_offset,
+                           "precondition: must look like growth, not a shrink")
+
+        texts = self._texts()
+        self.assertTrue(all(t.startswith("new ") for t in texts), texts)
+        self.assertEqual(len(texts), 8)
 
     def test_a_truncated_file_is_re_read_from_the_start(self):
         """A shrunk file is not the file that was parsed, so the cached parse

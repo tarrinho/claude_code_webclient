@@ -493,18 +493,39 @@ async def lifespan(app: FastAPI):
         sync_request_watcher.start(config.SYNC_REQUEST_WATCHER_INTERVAL_S)
     else:
         _log.info("sync_request_watcher disabled (config.SYNC_REQUEST_WATCHER_ENABLED)")
-    # In-memory TTL cache for remote session data — background task refreshes
-    # every 3 s so that request handlers get instant results.
+    # In-memory cache for remote session data, refreshed in the background so
+    # request handlers get instant results.
+    #
+    # Two things were wrong with refreshing this every 3 seconds with
+    # create_task. A pass opens an SSH connection to every transport and reads
+    # one file per session, so it takes far longer than 3 seconds -- and
+    # create_task never waits, so passes *stacked*: four transports' worth of
+    # SSH handshakes launched every 3 seconds while earlier passes were still
+    # running. With 36 sessions across four transports, /login took 75 seconds
+    # to answer on 2026-09-10.
+    #
+    # Awaited rather than spawned, so exactly one pass runs at a time, and on
+    # an interval that reflects what is being watched: a list of CLI sessions
+    # on other machines does not change every three seconds.
     import routes.db_sessions as _db_sessions
-    _cache_refresh: asyncio.Task[None] | None = None
-    async def _cache_refresh_loop() -> None:
-        nonlocal _cache_refresh
-        _cache_refresh = asyncio.create_task(_db_sessions.update_sessions_cache())
-        while True:
-            await asyncio.sleep(3)
-            _cache_refresh = asyncio.create_task(_db_sessions.update_sessions_cache())
+    _cache_interval = config.REMOTE_SESSION_CACHE_S
 
-    asyncio.create_task(_cache_refresh_loop())
+    async def _cache_refresh_loop() -> None:
+        while True:
+            try:
+                await _db_sessions.update_sessions_cache()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # One failed refresh must not end the loop: the cache would
+                # then be silently frozen at whatever it last held, which
+                # reads exactly like a working cache.
+                _log.exception("update_sessions_cache failed; retrying next tick")
+            await asyncio.sleep(_cache_interval)
+
+    _startup_tasks.append(asyncio.create_task(
+        _cache_refresh_loop(), name="sessions_cache_refresh"))
+    _startup_tasks[-1].add_done_callback(_log_startup_task)
 
     yield
     # Stopped before db.close(): the sampler writes through the connection.

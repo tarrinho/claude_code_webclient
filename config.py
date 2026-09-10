@@ -104,6 +104,12 @@ RATE_LIMIT_ENDPOINTS: dict[str, tuple[int, float]] = {
 # connection to a remote host and a local port forward.
 MAX_TUNNELS = _int("WC_MAX_TUNNELS", 5)
 # Seconds between tunnel health probes (keepalive + proxy ping).
+# How often the remote-session cache is refreshed. Each pass SSHes to every
+# transport and reads a file per session, so this is a network cost, not a
+# memory one -- it was hardcoded at 3 seconds, which starved the event loop
+# badly enough that /login took 75 seconds to answer.
+REMOTE_SESSION_CACHE_S = _int("WC_REMOTE_SESSION_CACHE_S", 60)
+
 TUNNEL_HEALTH_INTERVAL_S = _int("WC_TUNNEL_HEALTH_INTERVAL_S", 30)
 # Seconds between remote stats collection (CPU, mem, disk via SSH exec).
 TUNNEL_STATS_INTERVAL_S = _int("WC_TUNNEL_STATS_INTERVAL_S", 120)

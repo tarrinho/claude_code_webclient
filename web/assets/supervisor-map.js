@@ -87,31 +87,56 @@ let _detailNode = null;
 // rectangle.
 let _canvas = {w: 800, h: 400};
 // ── Layout geometry ────────────────────────────────────────────────────
-// Module-level, and shared by the render and by zoomToFit, because the two
-// disagreeing is exactly the bug this replaced. The render drew each node at
-// `MARGIN_LEFT + d.x + LEVEL_GAP, MARGIN_TOP + d.y` while zoomToFit measured
-// raw `d.x`/`d.y`, so the fit centred a rectangle the map never drew and the
-// whole tree was displaced by (90, 40) layout units -- (90*scale, 40*scale) on
-// screen, which is what pushed nodes past the right edge. One definition, used
-// by both, is the only way that stays fixed.
-const SIBLING_GAP = 20;   // nodeSize dx: between siblings
-const LEVEL_GAP = 30;     // nodeSize dy: between depths
+// Module-level and shared by the render and by zoomToFit, because those two
+// disagreeing was the bug this replaced: the render drew each node through the
+// margins while zoomToFit measured raw `d.x`/`d.y`, so the fit centred a
+// rectangle the map never drew and the whole tree sat (90, 40) layout units
+// right-and-down of centre, scaled. One definition, used by both, is the only
+// arrangement that cannot drift.
+//
+// Left-to-right: depth runs across, siblings run down. _nodeXY maps d.y (depth)
+// to horizontal and d.x (sibling) to vertical, which is d3's standard swap for
+// a horizontal tree.
+//
+// This was top-down until 2026-09-10, and the labels are what settle it. The
+// label block below places text beside each node with `dy: "0.35em"` and
+// `x: ±10` -- vertically centred, extending sideways -- and its own comment
+// says "labels sit to the left of each node". That is the left-to-right idiom,
+// and under a top-down layout it collides with itself: siblings sat 23px apart
+// horizontally while a truncated 20-character label needs about 124px, so
+// measured on a 12-task fan-out, 11 of 11 adjacent label pairs overlapped. The
+// same tree left-to-right overlaps 0 of 11, because labels then stack down the
+// axis that has room.
+//
+// The constants are measured, not chosen. Because zoomToFit normalises the
+// whole tree into the panel, raising LEVEL_GAP barely widens the on-screen
+// column (104px at 100 rising only to 117px at 180) while it shrinks the row
+// gap (20.8px down to 13.0px) -- and 180 with SIBLING_GAP 20 collides
+// outright. What matters is the ratio, not the magnitude. 120/24 gives the
+// widest safe row gap at 21.7px against a 14px line box, holds that through a
+// 30-way fan-out, and still clears 16.0px at 50 leaves.
+const SIBLING_GAP = 24;   // nodeSize dx -> vertical: between sibling rows
+const LEVEL_GAP = 120;    // nodeSize dy -> horizontal: between depth columns
 const MARGIN_LEFT = 60;   // so the root circle clears the panel edge
 const MARGIN_TOP = 40;
+// zoomToFit's breathing room, module-level so a test can pin what NODE_EXTENT
+// contributes independently of it. See test_the_fit_needs_no_padding_to_keep
+// _ink_inside.
+const FIT_PAD = 80;
 // The largest distance a node's ink reaches from its own centre: r 6 plus the
 // r+3 halo at depth 1, and r 8 at the root. zoomToFit fits the ink rather than
 // the centres, because a bounds built from centres leaves the outermost circle
 // half outside the viewBox and half a circle outside is what the browser test
 // measures with getBoundingClientRect.
 //
-// Honest about its current weight: `pad` in zoomToFit is 80, which leaves 40
-// units of slack on each side and therefore already covers these 12. So
-// removing NODE_EXTENT would not change a single pixel today, and no test
-// catches its removal -- verified by mutation, not assumed. It is kept because
-// it is what makes the fit correct independently of `pad`: lower `pad` and the
-// ink still fits, whereas without this the guarantee silently becomes "pad
-// happens to be generous". If you reduce `pad`, this is the line that stops it
-// clipping.
+// FIT_PAD is 80, so it already leaves 40 units of slack each side and covers
+// these 12 on its own: removing NODE_EXTENT changes not a single pixel at
+// today's padding. That made it unfalsifiable at first -- a mutation removing
+// it failed no test. What it is actually for is making the fit correct
+// *independently* of FIT_PAD, so the guarantee is not "the padding happens to
+// be generous", and that is now pinned by evaluating the module with
+// FIT_PAD = 0, where these 12 units are the only slack there is. See
+// test_the_fit_needs_no_padding_to_keep_ink_inside.
 const NODE_EXTENT = 12;
 
 /** Where a node is actually drawn, in viewBox units.
@@ -121,7 +146,7 @@ const NODE_EXTENT = 12;
  *  `d.x`/`d.y`, and the two silently described different pictures. Anything
  *  that needs to know where a node is calls this. */
 function _nodeXY(d) {
-  return {x: MARGIN_LEFT + d.x + LEVEL_GAP, y: MARGIN_TOP + d.y};
+  return {x: MARGIN_LEFT + d.y + LEVEL_GAP, y: MARGIN_TOP + d.x};
 }
 // Fallbacks only. The real canvas is measured from the SVG's own client box on
 // every render (see _canvasSize): these applied when the panel was ~380x930,
@@ -721,9 +746,8 @@ export function zoomToFit() {
       maxY = Math.max(maxY, y + NODE_EXTENT);
     }
     // Add a padding around the tree so nodes don't touch the viewBox edge.
-    const pad = 80;
-    const width = maxX - minX + pad;
-    const height = maxY - minY + pad;
+    const width = maxX - minX + FIT_PAD;
+    const height = maxY - minY + FIT_PAD;
     if (width <= 0 || height <= 0) return;
     const box = _canvas;
     const scale = Math.min(box.w / width, box.h / height, 2);

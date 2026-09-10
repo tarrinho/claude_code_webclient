@@ -89,11 +89,30 @@ def _module_source() -> str:
     return src
 
 
-def _run(probe: str) -> dict:
-    """Render the map once, then evaluate *probe* and return its JSON result."""
+def _run(probe: str, *, source_edits: tuple[tuple[str, str], ...] = ()) -> dict:
+    """Render the map once, then evaluate *probe* and return its JSON result.
+
+    `source_edits` applies literal (old, new) substitutions to the module
+    source *after* the module-syntax strips above, which matters: those
+    rewrite top-level `const` to `var`, so an edit written against `const
+    FIT_PAD = 80;` matches nothing. Match the assignment without its
+    declaration keyword. It exists for one narrow job -- pinning what
+    a constant contributes when another constant is currently masking it, as
+    NODE_EXTENT is masked by FIT_PAD -- and each edit is asserted to have
+    matched, so a rename cannot turn the test that uses it into a no-op.
+    """
+    src = _module_source()
+    for old, new in source_edits:
+        if old not in src:
+            raise AssertionError(
+                f"source edit found nothing to replace: {old!r}. The constant "
+                f"was probably renamed; the test using this is now measuring "
+                f"unmodified source."
+            )
+        src = src.replace(old, new)
     script = "\n".join([
         STUB_JS.read_text(encoding="utf-8"),
-        _module_source(),
+        src,
         SAMPLE_DATA,
         probe,
     ])
@@ -196,8 +215,17 @@ class MapGeometryTests(unittest.TestCase):
                 "every node is placed by one cartesian formula; a rotate() "
                 "here means the radial layout has come back in part",
             )
-        # marginLeft 60 + horizontalGap 30, marginTop 40, at d.x = d.y = 0.
-        self.assertEqual(transforms[0], "translate(90, 40)")
+        # Derived from the module's own constants rather than hardcoded: the
+        # property is "the root sits where the shared formula puts it at
+        # d.x = d.y = 0", not "the root is at some particular pixel". Pinning
+        # the pixel meant retuning LEVEL_GAP failed a test that is not about
+        # spacing at all.
+        consts = _run("""
+          JSON.stringify({left: MARGIN_LEFT, top: MARGIN_TOP, level: LEVEL_GAP});
+        """)
+        self.assertEqual(
+            transforms[0],
+            f"translate({consts['left'] + consts['level']}, {consts['top']})")
         self.assertGreater(
             len(set(transforms)), 1,
             "every node landed on the same point, so the layout ran but "
@@ -248,9 +276,18 @@ class MapGeometryTests(unittest.TestCase):
             calls: STUB.treeCalls
           });
         """)
-        self.assertEqual(
-            out["nodeSize"], [20, 30],
-            "20px between siblings, 30px between levels",
+        # Shape, not magnitudes. The values are tuned by measurement (see the
+        # comment on LEVEL_GAP in supervisor-map.js) and asserting them here
+        # would make retuning the layout a test failure. What must hold is the
+        # orientation invariant: in a left-to-right tree the depth axis needs
+        # room for a label between columns, so LEVEL_GAP has to exceed
+        # SIBLING_GAP by a wide margin. Reversed, the labels collide -- which
+        # is the defect this layout was changed to fix.
+        sib, level = out["nodeSize"]
+        self.assertGreater(
+            level, sib * 3,
+            f"nodeSize is [{sib}, {level}]: the depth axis must be far wider "
+            f"than the sibling axis, or adjacent labels overlap",
         )
         self.assertIsNone(out["size"])
         # Asserted on the calls, not on the values, and that distinction was
@@ -290,7 +327,8 @@ class MapGeometryTests(unittest.TestCase):
           });
         """)
         self.assertEqual(out["viewBox"], "0 0 800 400")
-        self.assertEqual(out["nodeSize"], [20, 30])
+        sib, level = out["nodeSize"]
+        self.assertGreater(level, sib * 3)
         self.assertGreater(
             len(set(out["transforms"])), 1,
             "an unmeasurable panel collapsed every node onto one point",
@@ -350,6 +388,102 @@ class MapGeometryTests(unittest.TestCase):
             msg="the fit must centre the rendered tree vertically in the box "
                 "the SVG drew",
         )
+
+    def test_depth_runs_across_and_siblings_run_down(self):
+        """The orientation itself, which nothing pinned until now.
+
+        The map is left-to-right: `_nodeXY` maps d.y (depth) to horizontal and
+        d.x (sibling) to vertical. Reverting that one line to the top-down
+        `translate(d.x, d.y)` passed all 51 tests in this file, which meant the
+        change this layout exists for was unprotected.
+
+        It matters because of the labels. They are placed beside each node with
+        `dy: "0.35em"` and `x: ±10` -- vertically centred, extending sideways --
+        so siblings need horizontal room *between rows*, not between columns.
+        Top-down put them 24 units apart on the axis a 20-character label needs
+        about 124px of, and measured on a 12-task fan-out every one of 11
+        adjacent label pairs overlapped.
+        """
+        out = _run("""
+          renderSupervisorMap(DATA);
+          // Transport A and its machine are parent and child: one depth apart.
+          // Transport A and Local are siblings at the same depth.
+          var byId = {};
+          _root.descendants().forEach(function (d) {
+            byId[d.data.id] = {p: _nodeXY(d), depth: d.depth};
+          });
+          JSON.stringify({t1: byId.t1, m1: byId.m1, m2: byId.m2});
+        """)
+        t1, m1, m2 = out["t1"], out["m1"], out["m2"]
+        self.assertEqual([t1["depth"], m1["depth"]], [1, 2], "fixture changed")
+        self.assertEqual(m2["depth"], 1, "m2 should be t1's sibling")
+
+        depth_dx = abs(m1["p"]["x"] - t1["p"]["x"])
+        depth_dy = abs(m1["p"]["y"] - t1["p"]["y"])
+        self.assertGreater(
+            depth_dx, depth_dy,
+            f"a parent and its child are separated by {depth_dx} across and "
+            f"{depth_dy} down: depth must run across for a left-to-right tree",
+        )
+        sib_dx = abs(m2["p"]["x"] - t1["p"]["x"])
+        sib_dy = abs(m2["p"]["y"] - t1["p"]["y"])
+        self.assertEqual(
+            sib_dx, 0,
+            f"two nodes at the same depth are {sib_dx} apart horizontally; "
+            f"same depth must mean same column",
+        )
+        self.assertGreater(
+            sib_dy, 0, "siblings must be separated vertically")
+
+    def test_the_fit_needs_no_padding_to_keep_ink_inside(self):
+        """What NODE_EXTENT is *for*, tested where it is the only thing doing
+        the work.
+
+        With FIT_PAD at 80 the fit has 40 units of slack each side, which
+        already covers a 12-unit node reach -- so removing NODE_EXTENT changed
+        no pixel and failed no test, which made it unfalsifiable defensive
+        code. Evaluated with FIT_PAD = 0, those 12 units are the only slack
+        there is, and the assertion becomes about the constant rather than
+        about the padding being generous. Suggested by the map's author after
+        I reported the gap rather than papering over it.
+        """
+        # A deep tree in a narrow box, so the fit is genuinely width-bound and
+        # the scale lands below its cap of 2. With the 5-node SAMPLE_DATA the
+        # scale caps out, the tree ends up smaller than the box, and centring
+        # leaves slack that hides what NODE_EXTENT does -- that is why the
+        # first version of this test still passed with NODE_EXTENT removed.
+        node = {"id": "d7", "type": "chat", "status": "idle", "label": "n"}
+        for i in range(6, -1, -1):
+            node = {"id": f"d{i}", "type": "chat", "status": "idle",
+                    "label": "n", "children": [node]}
+        chain = json.dumps(node)
+        out = _run(
+            """
+              STUB.svgBox = {width: 300, height: 300, left: 0, top: 0};
+              var DEEP = {id:"root",type:"center",status:"idle",label:"r",
+                          children:[""" + chain + """]};
+              renderSupervisorMap(DEEP);
+              var t = STUB.transforms[STUB.transforms.length - 1];
+              var pts = _root.descendants().map(function (d) {
+                var p = _nodeXY(d);
+                return {x: p.x * t.k + t.x, y: p.y * t.k + t.y};
+              });
+              JSON.stringify({k: t.k, pts: pts});
+            """,
+            source_edits=(("FIT_PAD = 80;", "FIT_PAD = 0;"),),
+        )
+        self.assertLess(out["k"], 2, "scale hit its cap; the fit is not "
+                                     "width-bound and this test proves nothing")
+        reach = 12 * out["k"]
+        self.assertTrue(out["pts"], "nothing rendered")
+        for p in out["pts"]:
+            self.assertGreaterEqual(
+                p["x"] - reach, -1,
+                f"with no padding, node ink left the box: {p}. NODE_EXTENT is "
+                f"what reserves room for a circle's radius in the fit.")
+            self.assertLessEqual(p["x"] + reach, 300 + 1, f"ink right of box: {p}")
+            self.assertGreaterEqual(p["y"] - reach, -1, f"ink above box: {p}")
+            self.assertLessEqual(p["y"] + reach, 300 + 1, f"ink below box: {p}")
 
     def test_the_fit_keeps_every_node_inside_the_box(self):
         """Registry #96's user-visible half, and the reason removing the dead

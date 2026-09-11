@@ -432,9 +432,13 @@ def routed_owner_of(
 
 
 async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
-    """Totals split by where the turn came from: this website, or a terminal."""
-    where = "WHERE owner_id = ?"
-    params: list[Any] = [owner_id]
+    """Totals split by where the turn came from: this website, or a terminal.
+
+    Shared across every account by design -- statistics are not per-owner
+    here, so *owner_id* is accepted for a stable signature but never filters.
+    """
+    where = "WHERE 1=1"
+    params: list[Any] = []
     if days:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
@@ -509,9 +513,12 @@ async def usage_agent_totals(
 async def usage_by_session(
     owner_id: str, days: int | None = 30, limit: int = 15
 ) -> list[dict[str, Any]]:
-    """Terminal usage per session, named by the conversation it belongs to."""
-    where = "WHERE u.owner_id = ? AND u.origin = 'terminal'"
-    params: list[Any] = [owner_id]
+    """Terminal usage per session, named by the conversation it belongs to.
+
+    Shared across every account -- see :func:`usage_by_origin`.
+    """
+    where = "WHERE u.origin = 'terminal'"
+    params: list[Any] = []
     if days:
         where += " AND u.created_at >= ?"
         params.append(_cutoff(days))
@@ -534,9 +541,12 @@ async def usage_by_session(
 
 
 async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
-    """Per-model aggregates for *owner_id*. ``days=None`` means all time."""
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
+    """Per-model aggregates across every account. ``days=None`` means all time.
+
+    Shared across every account -- see :func:`usage_by_origin`.
+    """
+    params: list[Any] = []
+    where = "1=1"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
@@ -557,9 +567,13 @@ async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, A
 
 
 async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
-    """Totals across every model, so the header does not re-sum in the client."""
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
+    """Totals across every model and every account, so the header does not
+    re-sum in the client.
+
+    Shared across every account -- see :func:`usage_by_origin`.
+    """
+    params: list[Any] = []
+    where = "1=1"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
@@ -578,14 +592,18 @@ async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
 
 
 async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Most recent turns, with the conversation title joined in."""
+    """Most recent turns across every account, with the conversation title
+    joined in.
+
+    Shared across every account -- see :func:`usage_by_origin`.
+    """
     cur = await db.db_conn.execute(
         "SELECT u.created_at, u.chat_id, u.model, u.provider, u.input_tokens, "
         "u.output_tokens, u.cost_usd, u.cost_basis, u.duration_ms, u.is_error, "
         "COALESCE(c.title, 'Terminal ' || substr(u.session_id, 1, 8)) AS chat_title "
         "FROM usage_events u LEFT JOIN chats c ON c.id = u.chat_id "
-        "WHERE u.owner_id = ? ORDER BY u.id DESC LIMIT ?",
-        (owner_id, max(1, min(50 if limit is None else int(limit), 500))),
+        "ORDER BY u.id DESC LIMIT ?",
+        (max(1, min(50 if limit is None else int(limit), 500)),),
     )
     return [dict(row) for row in await cur.fetchall()]
 
@@ -750,10 +768,12 @@ async def usage_series(
 
     `inferred_requests` carries how many of a series' turns were classified
     rather than recorded, so the chart can say how much of itself is a guess.
+
+    Shared across every account -- see :func:`usage_by_origin`.
     """
     expr, expr_params = _bucket_expr(bucket)
-    params: list[Any] = [*expr_params, owner_id]
-    where = "owner_id = ?"
+    params: list[Any] = [*expr_params]
+    where = "1=1"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
@@ -1225,10 +1245,12 @@ async def system_series(
 
 
 async def usage_earliest(owner_id: str) -> str | None:
-    """The oldest usage timestamp for *owner_id*, or None."""
+    """The oldest usage timestamp across every account, or None.
+
+    Shared across every account -- see :func:`usage_by_origin`.
+    """
     cur = await db.db_conn.execute(
-        "SELECT MIN(created_at) AS first FROM usage_events WHERE owner_id = ?",
-        (owner_id,),
+        "SELECT MIN(created_at) AS first FROM usage_events",
     )
     row = await cur.fetchone()
     return (row["first"] if row else None) or None

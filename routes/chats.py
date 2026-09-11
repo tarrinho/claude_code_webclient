@@ -93,21 +93,41 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
         db.write_claude_session_file(session_id, task, "")
         chat = await db.chat_get(chat_id, owner, include_archived=True)
         if chat and (chat.get("title") == "Untitled"):
-            title = f"{chat_id[:6]} - {task}"
+            # First name: use task words without transport prefix.
+            task_words = _naming_task_part(task)
+            title = f"{chat_id[:6]} - {task_words}"
             await db.chat_update(chat_id, owner, title=title)
             return title
         # Chat already has a name — only update the task suffix.
         if chat:
             existing = chat.get("title") or ""
-            prefix = existing.rsplit(" - ", 1)[0] if " - " in existing else existing
-            title = f"{prefix} - {task}"
-            # Skip the write if the suffix hasn't changed.
+            # Split on last " - " that looks like a separator.
+            if " - " in existing:
+                prefix, _, _ = existing.rpartition(" - ")
+            else:
+                # No separator yet — treat the whole name as the prefix.
+                prefix = existing
+            task_words = _naming_task_part(task)
+            title = f"{prefix} - {task_words}"
             if existing != title:
                 await db.chat_update(chat_id, owner, title=title)
         return task
     except Exception:
         pass  # Naming is non-critical — don't break the turn
         return None
+
+
+def _naming_task_part(name: str) -> str:
+    """Strip the ``{transport} : {n} : `` prefix from a generated name.
+
+    ``generate_name`` returns ``kali : 3 : Fix Bug Add Feat`` — the client
+    just wants ``Fix Bug Add Feat`` (or whatever the first full name was).
+    Returns the input unchanged when there is no transport-prefix.
+    """
+    parts = name.split(" : ")
+    if len(parts) >= 3:
+        return " : ".join(parts[2:])
+    return name
 
 
 async def _resolve_transport_for_create(session: dict) -> str:

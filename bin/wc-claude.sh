@@ -49,6 +49,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$HERE"
 DB="${WC_DB_PATH:-$HERE/data/webconsole.db}"
 
 # Captured once, before apply_env ever runs, so apply_env's has-key branch can

@@ -191,10 +191,8 @@ mkdir -p logs
 # once. systemd captures stdout to the journal, so no redirect here.
 if [ "${WC_EXEC:-0}" = "1" ]; then
     exec python3 -m uvicorn app:app \
-        --host "${TAILNET_IP}" \
-        --port 443 \
-        --ssl-certfile "$CERT_FILE" \
-        --ssl-keyfile "$KEY_FILE" \
+        --host 127.0.0.1 \
+        --port 8080 \
         --log-level info
 fi
 

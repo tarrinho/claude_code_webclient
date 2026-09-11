@@ -82,19 +82,29 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
     and writes the result into both the DB title (so the sidebar shows it)
     and the session JSON file (so the CLI sees it).  Returns the generated
     name so callers can store it beside their own work-unit.
+
+    The chat ID prefix (first 6 hex chars of the uuid) stays fixed — the
+    suffix (task/goal words) updates on every new session so the sidebar
+    reflects the latest work without the chat jumping to a different slot.
     """
     try:
         transport_name = await _resolve_transport_name(chat_id, owner)
-        name = _generate_agent_name(transport_name, prompt)
-        db.write_claude_session_file(session_id, name, "")
-        # The sidebar reads chats.title, not the session file, so the DB
-        # column is the real source of truth for the sidebar.  Only set it
-        # when the chat still reads "Untitled" — if the user renamed manually
-        # we keep their choice.
+        task = _generate_agent_name(transport_name, prompt)
+        db.write_claude_session_file(session_id, task, "")
         chat = await db.chat_get(chat_id, owner, include_archived=True)
         if chat and (chat.get("title") == "Untitled"):
-            await db.chat_update(chat_id, owner, title=name)
-        return name
+            title = f"{chat_id[:6]} - {task}"
+            await db.chat_update(chat_id, owner, title=title)
+            return title
+        # Chat already has a name — only update the task suffix.
+        if chat:
+            existing = chat.get("title") or ""
+            prefix = existing.rsplit(" - ", 1)[0] if " - " in existing else existing
+            title = f"{prefix} - {task}"
+            # Skip the write if the suffix hasn't changed.
+            if existing != title:
+                await db.chat_update(chat_id, owner, title=title)
+        return task
     except Exception:
         pass  # Naming is non-critical — don't break the turn
         return None

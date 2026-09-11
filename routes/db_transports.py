@@ -41,20 +41,24 @@ async def ssh_transport_create(
 
 
 async def ssh_transport_get(transport_id: str, owner_id: str) -> dict[str, Any] | None:
+    """*owner_id* is accepted but no longer filters -- transports are a shared
+    pool across every account (2026-09-11). It stays in the signature so every
+    call site (dozens, across routes/machines.py, routes/transports.py, the
+    tunnel manager, sync watchers) keeps working unchanged."""
     cur = await db.db_conn.execute(
         f"SELECT {_TRANSPORT_COLUMNS} FROM ssh_transports "  # nosec B608: columns are static
-        "WHERE id = ? AND owner_id = ?",
-        (transport_id, owner_id),
+        "WHERE id = ?",
+        (transport_id,),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
 
 
 async def ssh_transports_list(owner_id: str) -> list[dict[str, Any]]:
+    """*owner_id* is accepted but no longer filters -- see ssh_transport_get."""
     cur = await db.db_conn.execute(
         f"SELECT {_TRANSPORT_COLUMNS} FROM ssh_transports "  # nosec B608: columns are static
-        "WHERE owner_id = ? ORDER BY name ASC",
-        (owner_id,),
+        "ORDER BY name ASC",
     )
     return [dict(r) for r in await cur.fetchall()]
 
@@ -66,6 +70,10 @@ async def ssh_transports_list_all() -> list[dict[str, Any]]:
     reason chats_with_auto_answer() is: a watcher runs on behalf of no
     particular request, so owner-scoping it would silently stop watching
     every owner but the first one checked.
+
+    Since 2026-09-11 this is identical to ssh_transports_list() (transports
+    are unscoped everywhere now); kept as its own name because callers
+    document their intent by which one they call.
     """
     cur = await db.db_conn.execute(
         f"SELECT {_TRANSPORT_COLUMNS} FROM ssh_transports "  # nosec B608: columns are static
@@ -75,16 +83,18 @@ async def ssh_transports_list_all() -> list[dict[str, Any]]:
 
 
 async def ssh_transport_update(transport_id: str, owner_id: str, **fields: Any) -> bool:
+    """*owner_id* is accepted but no longer scopes the write -- see
+    ssh_transport_get. Any account can edit any transport."""
     allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path", "remote_path"}
     pairs = [(k, v) for k, v in fields.items() if k in allowed and v is not None]
     if not pairs:
         return False
     sets = [f"{k} = ?" for k, _ in pairs]
     sets.append("updated_at = ?")
-    vals = [v for _, v in pairs] + [db._now(), transport_id, owner_id]
+    vals = [v for _, v in pairs] + [db._now(), transport_id]
     sql = (
         "UPDATE ssh_transports SET " + ", ".join(sets)
-        + " WHERE id = ? AND owner_id = ?"
+        + " WHERE id = ?"
     )  # nosec B608: fields are allowlisted
     cur = await db.db_conn.execute(sql, vals)
     await db.db_conn.commit()
@@ -92,9 +102,11 @@ async def ssh_transport_update(transport_id: str, owner_id: str, **fields: Any) 
 
 
 async def ssh_transport_delete(transport_id: str, owner_id: str) -> bool:
+    """*owner_id* is accepted but no longer scopes the delete -- any account
+    can delete any transport, matching the shared-pool model."""
     cur = await db.db_conn.execute(
-        "DELETE FROM ssh_transports WHERE id = ? AND owner_id = ?",
-        (transport_id, owner_id),
+        "DELETE FROM ssh_transports WHERE id = ?",
+        (transport_id,),
     )
     await db.db_conn.commit()
     return cur.rowcount > 0

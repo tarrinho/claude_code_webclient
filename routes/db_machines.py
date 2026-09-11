@@ -17,27 +17,31 @@ _BACKEND_COLUMNS = (
 
 
 async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
-    """Return the owner's active machine without exposing its API key."""
+    """Return the active machine without exposing its API key.
+
+    *owner_id* is accepted but no longer filters -- machines are a shared
+    pool across every account (2026-09-11), and "active" is one global flag:
+    whichever machine the last activate() call named, for every account.
+    """
     if db.db_conn is None:
         raise sqlite3.Error("database not connected")
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "active, enabled "
-        "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
-        (owner_id,),
+        "FROM ai_machines WHERE active = 1 LIMIT 1",
     )
     row = await cur.fetchone()
     return dict(row) if row else None
 
 
 async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
+    """*owner_id* is accepted but no longer filters -- see ai_machine_active."""
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "CASE WHEN active = 1 THEN 1 ELSE 0 END AS active, "
         "CASE WHEN enabled = 1 THEN 1 ELSE 0 END AS enabled, "
         "created_at, updated_at, transport_id "
-        "FROM ai_machines WHERE owner_id = ? ORDER BY active DESC, name ASC",
-        (owner_id,),
+        "FROM ai_machines ORDER BY active DESC, name ASC",
     )
     return [dict(r) for r in await cur.fetchall()]
 
@@ -47,6 +51,8 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     # them from this function's return value to actually reach an ssh_proxy
     # machine. Without them here every connect attempt got "" for all three
     # regardless of what was saved in Settings.
+    #
+    # *owner_id* is accepted but no longer filters -- see ai_machine_active.
     cur = await db.db_conn.execute(
         "SELECT id, name, provider, host, port, model, active_models, base_url, description, "
         "ssh_host, ssh_user, ssh_key_path, ssh_host_key_fingerprint, transport_id, "
@@ -56,8 +62,8 @@ async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
         "AS has_api_key, "
         "created_at, updated_at, "
         "models_list, models_updated_at "
-        "FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (id, owner_id),
+        "FROM ai_machines WHERE id = ?",
+        (id,),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
@@ -142,9 +148,9 @@ async def ai_machine_update(
         return False
     sets.append("updated_at = ?")
     vals.append(db._now())
-    vals.extend([machine_id, owner_id])
+    vals.append(machine_id)
     sql = (
-        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?"
+        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ?"
     )  # nosec B608: fields are allowlisted
     cur = await db.db_conn.execute(sql, vals)
     await db.db_conn.commit()
@@ -154,18 +160,28 @@ async def ai_machine_update(
 async def ai_machine_clear_transport(machine_id: str, owner_id: str) -> bool:
     """Set transport_id back to NULL -- a bare None through ai_machine_update
     is indistinguishable from "field not supplied" (its pairs-building only
-    sets a field when the value is not None), so clearing needs its own path."""
+    sets a field when the value is not None), so clearing needs its own path.
+
+    *owner_id* is accepted but no longer scopes the write -- see
+    ai_machine_active."""
     cur = await db.db_conn.execute(
         "UPDATE ai_machines SET transport_id = NULL, updated_at = ? "
-        "WHERE id = ? AND owner_id = ?",
-        (db._now(), machine_id, owner_id),
+        "WHERE id = ?",
+        (db._now(), machine_id),
     )
     await db.db_conn.commit()
     return cur.rowcount > 0
 
 
 async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
-    """Deactivate all machines and activate the one requested.
+    """Deactivate every machine and activate the one requested.
+
+    *owner_id* is accepted but no longer scopes anything: "active" is one
+    global flag shared by every account (2026-09-11) -- whoever activates a
+    machine changes where every user's next turn routes, matching a shared
+    pool of infrastructure rather than per-account backends. The
+    "deactivate all" step below is therefore unconditional, not scoped to
+    a single owner's rows.
 
     No explicit BEGIN: db_conn is shared across every writer in the
     process, and a literal "BEGIN" raises "cannot start a transaction
@@ -182,20 +198,17 @@ async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
     # refusal that had already run that statement would leave the owner with
     # no default at all, which is worse than the state it declined to leave.
     cur = await db.db_conn.execute(
-        "SELECT enabled FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (machine_id, owner_id),
+        "SELECT enabled FROM ai_machines WHERE id = ?",
+        (machine_id,),
     )
     row = await cur.fetchone()
     if not row or not row["enabled"]:
         return False
     try:
-        await db.db_conn.execute(
-            "UPDATE ai_machines SET active = 0 WHERE owner_id = ?",
-            (owner_id,),
-        )
+        await db.db_conn.execute("UPDATE ai_machines SET active = 0")
         cur = await db.db_conn.execute(
-            "UPDATE ai_machines SET active = 1, updated_at = ? WHERE id = ? AND owner_id = ?",
-            (db._now(), machine_id, owner_id),
+            "UPDATE ai_machines SET active = 1, updated_at = ? WHERE id = ?",
+            (db._now(), machine_id),
         )
         await db.db_conn.commit()
         return cur.rowcount > 0
@@ -217,17 +230,22 @@ async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
     NULL means "follow whichever backend is active", which is the picker's own
     default, so an unpinned conversation keeps working. `db._clear_dangling_machine_pins`
     repairs rows written before this; this stops new ones being created.
+
+    *owner_id* is accepted but no longer scopes the delete -- machines are a
+    shared pool (2026-09-11). The unpin step below is unscoped to match: a
+    shared machine can be pinned by chats belonging to any account, and all
+    of them need clearing, not just the deleting user's own.
     """
     cur = await db.db_conn.execute(
-        "DELETE FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (machine_id, owner_id),
+        "DELETE FROM ai_machines WHERE id = ?",
+        (machine_id,),
     )
     deleted = cur.rowcount > 0
     if deleted:
         await db.db_conn.execute(
             "UPDATE chats SET ai_machine_id = NULL "
-            "WHERE ai_machine_id = ? AND owner_id = ?",
-            (machine_id, owner_id),
+            "WHERE ai_machine_id = ?",
+            (machine_id,),
         )
     await db.db_conn.commit()
     return deleted
@@ -236,15 +254,18 @@ async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
 async def ai_machine_set_models(
     machine_id: str, owner_id: str, active: list[str], default: str | None
 ) -> bool:
-    """Set which models a machine offers, and which one it defaults to."""
+    """Set which models a machine offers, and which one it defaults to.
+
+    *owner_id* is accepted but no longer scopes the write -- see
+    ai_machine_active."""
     sets = ["active_models = ?", "updated_at = ?"]
     vals: list[Any] = [__import__("json").dumps(active), db._now()]
     if default:
         sets.insert(1, "model = ?")
         vals.insert(1, default)
     cur = await db.db_conn.execute(
-        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ? AND owner_id = ?",
-        [*vals, machine_id, owner_id],
+        "UPDATE ai_machines SET " + ", ".join(sets) + " WHERE id = ?",
+        [*vals, machine_id],
     )  # nosec B608: column names are literals, values parameterised
     await db.db_conn.commit()
     return cur.rowcount > 0
@@ -253,11 +274,14 @@ async def ai_machine_set_models(
 async def ai_machine_set_models_list(
     machine_id: str, owner_id: str, models_list: str, models_updated_at: str
 ) -> bool:
-    """Persist the full model list (JSON) and its timestamp for a machine."""
+    """Persist the full model list (JSON) and its timestamp for a machine.
+
+    *owner_id* is accepted but no longer scopes the write -- see
+    ai_machine_active."""
     cur = await db.db_conn.execute(
         "UPDATE ai_machines SET models_list = ?, models_updated_at = ? "
-        "WHERE id = ? AND owner_id = ?",
-        (models_list, models_updated_at, machine_id, owner_id),
+        "WHERE id = ?",
+        (models_list, models_updated_at, machine_id),
     )
     await db.db_conn.commit()
     return cur.rowcount > 0
@@ -265,10 +289,13 @@ async def ai_machine_set_models_list(
 
 async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
     """Return one machine's API key. Kept separate from ai_machine_get so the
-    key is only ever fetched where it is deliberately needed."""
+    key is only ever fetched where it is deliberately needed.
+
+    *owner_id* is accepted but no longer scopes the read -- see
+    ai_machine_active."""
     cur = await db.db_conn.execute(
-        "SELECT api_key FROM ai_machines WHERE id = ? AND owner_id = ?",
-        (machine_id, owner_id),
+        "SELECT api_key FROM ai_machines WHERE id = ?",
+        (machine_id,),
     )
     row = await cur.fetchone()
     return row["api_key"] if row else None
@@ -301,16 +328,21 @@ async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
     The host is the durable identity here: it is what makes a machine *the
     official Anthropic API* rather than a gateway, it survives a rename of the
     provider vocabulary, and it survives the user renaming the machine itself.
-    A backend the owner has already pointed at api.anthropic.com satisfies
-    this function's promise whatever it is called, so that row is returned
-    rather than shadowed by a fresh duplicate.
+    A backend already pointed at api.anthropic.com satisfies this function's
+    promise whatever it is called or whoever created it, so that row is
+    returned rather than shadowed by a fresh duplicate.
+
+    The lookup is unscoped by owner (2026-09-11, machines became a shared
+    pool): before this it ran per-owner and created one duplicate "Anthropic
+    API" row per distinct account that ever opened Settings -- three such
+    duplicates already exist in this deployment's database from that era.
     """
     cur = await db.db_conn.execute(
         # Oldest first, so repeated calls are stable rather than depending on
         # row order if duplicates already exist from before this fix.
-        "SELECT id FROM ai_machines WHERE owner_id = ? AND host = ? "
+        "SELECT id FROM ai_machines WHERE host = ? "
         "ORDER BY created_at LIMIT 1",
-        (owner_id, db._ANTHROPIC_HOST),
+        (db._ANTHROPIC_HOST,),
     )
     row = await cur.fetchone()
     if row:
@@ -339,11 +371,15 @@ async def chat_owner(chat_id: str) -> str | None:
 
 
 async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
-    """Return the active machine *including* its API key, for the runner only."""
+    """Return the active machine *including* its API key, for the runner only.
+
+    *owner_id* is accepted but no longer scopes the read -- "active" is one
+    global flag shared by every account (2026-09-11), so every chat's next
+    turn resolves to the same machine regardless of who owns the chat. See
+    ai_machine_activate."""
     cur = await db.db_conn.execute(
         f"SELECT {_BACKEND_COLUMNS} "  # nosec B608: columns are static
-        "FROM ai_machines WHERE owner_id = ? AND active = 1 LIMIT 1",
-        (owner_id,),
+        "FROM ai_machines WHERE active = 1 LIMIT 1",
     )
     row = await cur.fetchone()
     return dict(row) if row else None
@@ -352,13 +388,17 @@ async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
 async def ai_machine_backend_by_id(
     machine_id: str, owner_id: str
 ) -> dict[str, Any] | None:
-    """Return one specific machine including its API key, for the runner only."""
+    """Return one specific machine including its API key, for the runner only.
+
+    *owner_id* is accepted but no longer scopes the read -- see
+    ai_machine_backend. A chat pinned to a machine (ai_machine_id) resolves
+    to it regardless of who owns the chat or the machine."""
     if not machine_id:
         return None
     cur = await db.db_conn.execute(
         f"SELECT {_BACKEND_COLUMNS} "  # nosec B608: columns are static
-        "FROM ai_machines WHERE id = ? AND owner_id = ? LIMIT 1",
-        (machine_id, owner_id),
+        "FROM ai_machines WHERE id = ? LIMIT 1",
+        (machine_id,),
     )
     row = await cur.fetchone()
     return dict(row) if row else None
@@ -429,11 +469,14 @@ async def ai_machine_set_enabled(
     ambiguously beside eight text fields -- and the callers that must refuse
     (routes/machines.handle_machine_patch) need one obvious entry point to
     guard rather than a value buried in a dict.
+
+    *owner_id* is accepted but no longer scopes the write -- see
+    ai_machine_active.
     """
     cur = await db.db_conn.execute(
         "UPDATE ai_machines SET enabled = ?, updated_at = ? "
-        "WHERE id = ? AND owner_id = ?",
-        (1 if enabled else 0, db._now(), machine_id, owner_id),
+        "WHERE id = ?",
+        (1 if enabled else 0, db._now(), machine_id),
     )
     await db.db_conn.commit()
     return cur.rowcount > 0

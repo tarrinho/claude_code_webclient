@@ -54,6 +54,13 @@ class TemporaryDBMixin:
         self.db_patch.start()
         self.root_patch.start()
         await db.init()
+        # chat_create requires a real UUID, not the literal "admin" -- see
+        # routes/db_chats.py's own guard. ai_machines/ssh_transports have no
+        # such guard (owner_id is unscoped metadata for them since
+        # 2026-09-11), so make_machine's "admin" default stays fine as-is.
+        import auth
+        await db.user_create("admin", None, auth.hash_password("admin"))
+        self.admin_id = (await db.user_get_by_name("admin"))["id"]
 
     async def close_temp_db(self):
         await db.close()
@@ -171,7 +178,7 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await self.init_temp_db()
-        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", "admin")
+        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", self.admin_id)
 
     async def asyncTearDown(self):
         await self.close_temp_db()
@@ -245,12 +252,16 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         actives = [m["id"] for m in await db.ai_machines_list("admin") if m["active"]]
         self.assertEqual(actives, [second])
 
-    async def test_backend_is_not_shared_across_owners(self):
+    async def test_backend_is_shared_across_owners(self):
+        """Machines became a shared pool on 2026-09-11: whoever activates one
+        changes routing for every account, not just their own. This used to
+        assert the opposite (test_backend_is_not_shared_across_owners) --
+        see routes/db_machines.py's ai_machine_activate docstring."""
         mid = await self.make_machine(machine_id="m-bob", provider="claude_code",
                                       base_url=GATEWAY, api_key="k", owner_id="bob")
         await db.ai_machine_activate(mid, "bob")
-        # c1 belongs to admin, who has no active machine.
-        self.assertEqual(await runner.get_backend("c1"), {})
+        # c1 belongs to admin -- bob's activation still routes admin's turns.
+        self.assertEqual((await runner.get_backend("c1"))["base_url"], GATEWAY)
 
 
 # ── Component (API contracts) ──────────────────────────────────────────────────
@@ -274,7 +285,7 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             headers={"accept": "*/*"},
             query_params={},
             client=SimpleNamespace(host="127.0.0.1"),
-            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
+            state=SimpleNamespace(session={"user": self.admin_id, "role": "admin"}),
             json=AsyncMock(return_value=body or {}),
         )
 
@@ -368,7 +379,7 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await self.init_temp_db()
-        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", "admin")
+        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", self.admin_id)
         mid = await self.make_machine(
             machine_id="m-e2e", provider="claude_code",
             base_url=GATEWAY + "/v1", api_key="k-e2e",
@@ -416,7 +427,7 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             headers={"accept": "*/*"},
             query_params={},
             client=SimpleNamespace(host="127.0.0.1"),
-            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
+            state=SimpleNamespace(session={"user": self.admin_id, "role": "admin"}),
             json=AsyncMock(return_value=body),
         )
 
@@ -429,7 +440,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await self.init_temp_db()
-        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", "admin")
+        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/projects", self.admin_id)
 
     async def asyncTearDown(self):
         await self.close_temp_db()
@@ -483,7 +494,7 @@ class AcceptanceUATQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             method="GET", url=SimpleNamespace(path="/api/machines"), cookies={},
             headers={"accept": "*/*"}, query_params={},
             client=SimpleNamespace(host="127.0.0.1"),
-            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
+            state=SimpleNamespace(session={"user": self.admin_id, "role": "admin"}),
             json=AsyncMock(return_value={}),
         )
         for resp in (await machine_routes.handle_machines_list(req),

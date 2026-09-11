@@ -1,10 +1,10 @@
 # naming.py — human-readable agent naming with transport + counter + task.
 
-import re
 import json
+import os
+import re
+from glob import glob
 from typing import Final
-
-import db
 
 # Filler words stripped from the front before taking the task summary.
 _FILLERS: Final[set[str]] = {
@@ -20,44 +20,19 @@ _SHORT_KEEP: Final[set[str]] = {
     "list", "show", "find", "open", "close", "save", "load",
 }
 
+# Per-transport spawn counter. Seeded at startup from session files so the
+# value survives restarts; incremented in-process on every new spawn.
+_spawn_counter: dict[str, int] = {}
+
 # Regex to break a prompt into words while keeping punctuation attached.
 _TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"[A-Za-z_][A-Za-z0-9_-]*|[^A-Za-z0-9_\s]+"
 )
 
-
-# --- persistent counter -------------------------------------------------------
-
-_CTR_KEY = "naming_counter"   # {transport}: {value}
-
-
-def _counter_get(transport: str) -> int:
-    """Return the highest *n* used in session-file names for *transport*."""
-    try:
-        raw = db.setting_get(_CTR_KEY)
-        data = json.loads(raw) if raw else {}
-        return data.get(transport, 0)
-    except Exception:
-        return 0
-
-
-def _counter_set(transport: str, value: int) -> None:
-    """Persist the highest *n* for *transport*."""
-    try:
-        raw = db.setting_get(_CTR_KEY)
-        data = json.loads(raw) if raw else {}
-    except Exception:
-        data = {}
-    data[transport] = value
-    db.setting_set(_CTR_KEY, json.dumps(data))
-
-
-def _counter_next(transport: str) -> int:
-    """Reserve and return the next counter value for *transport*."""
-    cur = _counter_get(transport)
-    nxt = cur + 1
-    _counter_set(transport, nxt)
-    return nxt
+# Pattern used to parse session-file names: ``{transport} : {N} : {task}``
+_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^([^\s:]+)\s*:\s*(\d+)\s*:\s*(.+)$"
+)
 
 
 # --- name generation ------------------------------------------------------------
@@ -66,14 +41,16 @@ def generate_name(transport_name: str, prompt: str) -> str:
     """Return a human-readable name for a new spawn.
 
     Format: ``{transport} : {n} : {task}`` where *n* is the next-per-transport
-    counter (persistent in the DB) and *task* is the first five meaningful
-    words from *prompt*.
+    counter (seeded at startup from all existing session files so it never
+    collides across restarts) and *task* is the first five meaningful words
+    from *prompt*.
 
     Filler words are stripped, words under 3 chars are kept only if they
     are common verbs/short operations.  Falls back to ``Untitled {n}``
     when the prompt is empty or too short.
     """
-    counter = _counter_next(transport_name)
+    counter = _spawn_counter.get(transport_name, 0) + 1
+    _spawn_counter[transport_name] = counter
 
     clean = _extract_task_words(prompt)
 
@@ -109,19 +86,52 @@ def _title(s: str) -> str:
     return s[0].upper() + s[1:]
 
 
-def deduplicate_existing() -> list[dict]:
-    """Scan session-file names and bump duplicates so every *n* is unique.
+# --- startup seeding / deduplication -------------------------------------------
 
-    Returns a list of dicts describing each change:
+def seed_counter() -> int:
+    """Scan session-file names and initialise the in-memory counter.
+
+    Every session file under ``~/.claude/sessions/`` that matches the
+    ``{transport} : {n} : {task}`` pattern is read.  The highest *n* per
+    transport is stored in ``_spawn_counter`` so new spawns continue the
+    sequence even after a restart — no two sessions will ever get the same *n*.
+
+    Returns the number of transports whose counter was seeded.
+    """
+    max_seen: dict[str, int] = {}
+
+    for path in glob(os.path.expanduser("~/.claude/sessions/*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        name = data.get("name") or ""
+        m = _NAME_RE.match(name)
+        if m:
+            transport, n = m.group(1), int(m.group(2))
+            max_seen[transport] = max(max_seen.get(transport, 0), n)
+
+    for transport, hi in max_seen.items():
+        _spawn_counter[transport] = hi
+
+    return len(max_seen)
+
+
+def deduplicate_existing() -> list[dict]:
+    """Bump duplicate session-file names so every *n* is unique.
+
+    Scans all session files, finds transport groups where two or more share
+    the same *n*, and bumps each duplicate to the next free slot.  Also
+    updates ``_spawn_counter`` to reflect the highest used value so future
+    sessions never collide.
+
+    Existing names that are already unique are left untouched.
+
+    Returns a list of dicts:
     ``{"session_id": "...", "old": "...", "new": "..."}``.
     """
-    import os
-    from glob import glob
-    import re as _re
-
-    # Pattern: ``{transport} : {n} : {task}``
-    _P = _re.compile(r"^([^\s:]+)\s*:\s*(\d+)\s*:\s*(.+)$")
-
     files = glob(os.path.expanduser("~/.claude/sessions/*.json"))
     counters: dict[str, set[int]] = {}   # transport -> set of used n
     changes: list[dict] = []
@@ -134,7 +144,7 @@ def deduplicate_existing() -> list[dict]:
             continue
 
         name = data.get("name") or ""
-        m = _P.match(name)
+        m = _NAME_RE.match(name)
         if not m:
             continue
 
@@ -147,7 +157,7 @@ def deduplicate_existing() -> list[dict]:
         existing = counters[transport]
 
         if n in existing:
-            # Duplicate — bump until we find a free slot.
+            # Duplicate — bump to the next free slot.
             nxt = n + 1
             while nxt in existing:
                 nxt += 1
@@ -166,9 +176,9 @@ def deduplicate_existing() -> list[dict]:
                 pass
         else:
             existing.add(n)
-            # Track the highest seen counter.
-            current = _counter_get(transport)
-            if nxt := max(n, current):
-                _counter_set(transport, nxt)
+
+    # Update _spawn_counter to reflect the highest used value per transport.
+    for transport, used in counters.items():
+        _spawn_counter[transport] = max(_spawn_counter.get(transport, 0), max(used))
 
     return changes

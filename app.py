@@ -413,6 +413,10 @@ async def lifespan(app: FastAPI):
         config.PORT,
     )
     await _startup_step("db.init", db.init())
+    # Seed the naming counter from all existing session-file names so the
+    # counter survives restarts; new spawns will continue from here.
+    from routes.naming import seed_counter as _seed
+    _seed()
     # Deduplicate session-file names so every transport counter is unique.
     from routes.naming import deduplicate_existing as _dedup
     if changes := _dedup():

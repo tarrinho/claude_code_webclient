@@ -540,7 +540,7 @@ import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMac
   // Backends tab becomes visible. Was a bare cross-module reference.
   _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=14224854';
 
-import { loadTransports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=12802782';
+import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=12802782';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();

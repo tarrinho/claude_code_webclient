@@ -18,16 +18,16 @@ import {
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
   backendKindLabel,
-} from './app.js?v=9841123';
+} from './app.js?v=15382680';
 import {apiFetch} from './api.js?v=2741508';
-import {notifyResult, setStatus} from './server-stats.js?v=8469847';
+import {notifyResult, setStatus} from './server-stats.js?v=5278923';
 import {_transports, loadTransports, populateTransportPicker,
   // The transport group header offers these; see _buildTransportHeader.
   _showEditTransport, _deleteTransport,
   // Check / Init on the transport header -- see _buildTransportHeader.
   _checkTransport, _initTransport,
   // Sync + its pending-request queue; see _buildTransportHeader.
-  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=12802782';
+  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=2281096';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -104,23 +104,81 @@ function _providerLabel(machine) {
 }
 
 // ── Transport group status ─────────────────────────────────────────────────
-// Four states, derived entirely from data already fetched -- no schema
+// Five states, derived entirely from data already fetched -- no schema
 // change, no new endpoint. "Active" means a turn could actually run on this
 // group right now; "Disabled" is deliberate (every machine on it turned
 // off); "Uninitialized" means known not to be up -- added but never
-// Checked/Inited, or a transport with no machine assigned to it yet; and
+// Checked/Inited, or a transport with no machine assigned to it yet;
 // "Checking…" means no status has been fetched yet, which is not the same
-// claim and used to be reported as Uninitialized.
+// claim and used to be reported as Uninitialized; and "Broken" means Check
+// last reported real failures on a group that used to (or was believed to)
+// read Active -- see _brokenTransportIds below.
 // "unknown" sorts next to active deliberately: nearly every unknown group
 // resolves to active a moment later, and sorting it beside uninitialized
 // would make the list visibly reshuffle as the first status arrives.
-const TRANSPORT_STATUS_ORDER = {active: 0, unknown: 1, uninitialized: 2, disabled: 3};
+// "broken" sorts right after unknown/active: it is the one state that means
+// something an operator set up is currently failing, so it belongs with the
+// states worth looking at first, not buried under uninitialized (never set
+// up at all) or disabled (deliberate).
+const TRANSPORT_STATUS_ORDER = {active: 0, unknown: 1, broken: 2, uninitialized: 3, disabled: 4};
 const TRANSPORT_STATUS_LABEL = {
-  active: 'Active', unknown: 'Checking…', uninitialized: 'Uninitialized',
-  disabled: 'Disabled',
+  active: 'Active', unknown: 'Checking…', broken: 'Broken',
+  uninitialized: 'Uninitialized', disabled: 'Disabled',
 };
 
-export function _transportStatus(machines, tunnelStatusCache = {}) {
+// A transport whose most recent Check came back reachable but not ready --
+// real errors, not "never checked" -- reads as broken (red) rather than
+// uninitialized (amber) until either a later Check/Init passes or the
+// tunnel-status poll independently proves proxy_ok true again. Keyed by
+// transport_id, same key _checkTransport already has to hand.
+//
+// Before this existed, Check's own four-line breakdown could show every
+// check failing (proxy down, tunnel reset) while the group badge kept
+// reading the last poll's "Active" -- Check's result and the badge read from
+// two caches that never talked to each other.
+const _brokenTransportIds = new Set();
+
+// Patches this one transport group's badge in place rather than calling
+// _renderMachineList(): a full rebuild replaces every header element,
+// including the one _checkTransport just appended its four-line readiness
+// box to -- so a naive _renderMachineList() here discarded that box in the
+// same synchronous call stack it was added in, before the browser ever
+// painted it. Reported 2026-09-11 as "not ready -- see the checks" with the
+// checks never visible. Header elements are found by data-transport-id, set
+// once in _buildTransportHeader.
+export function _setTransportBroken(transportId, isBroken) {
+  if (!transportId) return;
+  if (isBroken) _brokenTransportIds.add(transportId);
+  else _brokenTransportIds.delete(transportId);
+
+  const header = document.querySelector(
+    `.transport-group-header[data-transport-id="${CSS.escape(transportId)}"]`);
+  if (!header) return; // group not currently rendered (panel closed, etc.)
+  const machines = _machines.filter(m => m.transport_id === transportId);
+  const status = _transportStatus(machines, _tunnelStatusCache, _brokenTransportIds);
+  header.className = `transport-group-header transport-status-${status}`;
+  const badge = header.querySelector('.transport-status-badge');
+  if (badge) {
+    badge.className = `transport-status-badge transport-status-badge-${status}`;
+    badge.textContent = TRANSPORT_STATUS_LABEL[status];
+  }
+}
+
+// transports.js dispatches this after every Check (pass or fail) -- a
+// CustomEvent rather than an import, same cycle-avoidance as
+// wc:tunnel-start-queued below: transports.js cannot import machines.js
+// because machines.js already imports from transports.js.
+document.addEventListener('wc:transport-check-result', e => {
+  _setTransportBroken(e.detail?.transportId, !!e.detail?.broken);
+});
+
+// brokenIds defaults to a fresh, empty Set rather than the module-level
+// _brokenTransportIds: tests/test_qa_transport_status.py extracts this one
+// function's source by brace-matching and runs it standalone in QuickJS, so
+// a default that named the outer module binding would be a ReferenceError
+// there. Real call sites below all pass _brokenTransportIds explicitly;
+// nothing here reaches outside its own arguments.
+export function _transportStatus(machines, tunnelStatusCache = {}, brokenIds = new Set()) {
   if (!machines.length) return 'uninitialized';
   // enabled defaults true server-side; explicit false is the only way a
   // machine reads as off. Disabled wins over everything else on this group --
@@ -143,7 +201,21 @@ export function _transportStatus(machines, tunnelStatusCache = {}) {
   // brings the whole connection up for all of them, so the first machine's
   // status speaks for the group.
   const status = tunnelStatusCache[withTransport[0].id];
-  return status && status.proxy_ok ? 'active' : 'uninitialized';
+  if (status && status.proxy_ok) return 'active';
+  return brokenIds.has(withTransport[0].transport_id) ? 'broken' : 'uninitialized';
+}
+
+// Clears a transport's broken flag the moment the poll independently proves
+// proxy_ok true again (e.g. someone restarted the remote service by hand) --
+// self-healing without waiting for another Check. Call after any update to
+// _tunnelStatusCache, before the render that reads it.
+function _clearBrokenWhereHealthy(tunnelStatusCache) {
+  if (!tunnelStatusCache) return;
+  for (const [machineId, status] of Object.entries(tunnelStatusCache)) {
+    if (!status || !status.proxy_ok) continue;
+    const machine = _machines.find(m => m.id === machineId);
+    if (machine && machine.transport_id) _brokenTransportIds.delete(machine.transport_id);
+  }
 }
 
 // ── SSH Tunnel toggle ──────────────────────────────────────────────
@@ -156,6 +228,7 @@ export function _setTunnelStatus(status) {
   // still a report ("nothing to tell you"), not an absence of one. Only the
   // initial value above, before any fetch, is null.
   _tunnelStatusCache = status || {};
+  _clearBrokenWhereHealthy(_tunnelStatusCache);
   _renderMachineList(); // refresh badges
 }
 
@@ -184,6 +257,7 @@ async function _refreshTunnelStatus() {
       // cache null would keep every badge reading "Checking…" for ever
       // rather than falling through to the real Uninitialized verdict.
       _tunnelStatusCache = (await resp.json()) || {};
+      _clearBrokenWhereHealthy(_tunnelStatusCache);
       _renderMachineList();
     }
   } catch (e) { console.error('[tunnel-status] refresh failed:', e); }
@@ -648,7 +722,7 @@ function _buildMachineCard(m) {
     delBtn.type = 'button';
     delBtn.className = 'machine-action machine-action-danger';
     delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', () => _deleteMachine(m.id));
+    delBtn.addEventListener('click', () => _confirmDelete(m));
     actions.appendChild(delBtn);
 
     card.appendChild(actions);
@@ -697,7 +771,7 @@ export function _collapseAllTransportGroups() {
 // 5) -- and the transport actions. `key` is 'direct' for the local group or
 // the transport's own id; both need a stable identity to collapse by.
 function _buildTransportHeader(label, machines, transport, key) {
-  const status = _transportStatus(machines, _tunnelStatusCache);
+  const status = _transportStatus(machines, _tunnelStatusCache, _brokenTransportIds);
   if (!_seededGroups.has(key)) {
     _seededGroups.add(key);
     // Least urgent, so it starts out of the way; everything else starts open
@@ -708,6 +782,10 @@ function _buildTransportHeader(label, machines, transport, key) {
 
   const header = document.createElement('div');
   header.className = `transport-group-header transport-status-${status}`;
+  // Lets _setTransportBroken find this exact header later (by transport_id)
+  // to patch its badge in place, without a full _renderMachineList() rebuild
+  // that would discard whatever _checkTransport just appended to it.
+  if (transport) header.dataset.transportId = transport.id;
 
   const toggle = document.createElement('button');
   toggle.type = 'button';
@@ -832,7 +910,7 @@ export function _machineGroups() {
     groups.push({
       key: 'direct', label: 'Direct', spineLabel: 'direct',
       machines: local, transport: null, direct: true,
-      status: _transportStatus(local, _tunnelStatusCache),
+      status: _transportStatus(local, _tunnelStatusCache, _brokenTransportIds),
     });
   }
 
@@ -841,8 +919,8 @@ export function _machineGroups() {
   // away, not only once a machine is assigned to it.
   const renderedTransportIds = new Set();
   [..._transports].sort((a, b) => {
-    const sa = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a.id) || [], _tunnelStatusCache)];
-    const sb = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b.id) || [], _tunnelStatusCache)];
+    const sa = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a.id) || [], _tunnelStatusCache, _brokenTransportIds)];
+    const sb = TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b.id) || [], _tunnelStatusCache, _brokenTransportIds)];
     return sa !== sb ? sa - sb : a.name.localeCompare(b.name);
   }).forEach(transport => {
     renderedTransportIds.add(transport.id);
@@ -850,7 +928,7 @@ export function _machineGroups() {
     groups.push({
       key: transport.id, label: `via ${transport.name}`,
       spineLabel: transport.name, machines, transport, direct: false,
-      status: _transportStatus(machines, _tunnelStatusCache),
+      status: _transportStatus(machines, _tunnelStatusCache, _brokenTransportIds),
     });
   });
 
@@ -859,14 +937,14 @@ export function _machineGroups() {
   // ordering, since there is no transport row to prioritise by name.
   [...byTransport.keys()]
     .filter(id => !renderedTransportIds.has(id))
-    .sort((a, b) => TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a), _tunnelStatusCache)]
-      - TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b), _tunnelStatusCache)])
+    .sort((a, b) => TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(a), _tunnelStatusCache, _brokenTransportIds)]
+      - TRANSPORT_STATUS_ORDER[_transportStatus(byTransport.get(b), _tunnelStatusCache, _brokenTransportIds)])
     .forEach(transportId => {
       const machines = byTransport.get(transportId);
       groups.push({
         key: `unknown:${transportId}`, label: 'via (unknown transport)',
         spineLabel: '(unknown)', machines, transport: null, direct: false,
-        status: _transportStatus(machines, _tunnelStatusCache),
+        status: _transportStatus(machines, _tunnelStatusCache, _brokenTransportIds),
       });
     });
 
@@ -1221,6 +1299,66 @@ export async function _saveMachine() {
   } finally {
     save.disabled = false;
   }
+}
+
+// ── Confirmation dialog (Yes/No popup with styled buttons) ───────────────────
+
+/** Fire-and-forget delete confirmation.
+ *
+ * Opens the styled confirm popup; calls _deleteMachine only if the user
+ * clicks Yes (or hits Enter). No-op on No / Escape / backdrop click.
+ */
+export function _confirmDelete(machine) {
+  _showConfirmDialog('Delete this backend?',
+    `This cannot be undone. Delete ${machine.name || machine.id}?`,
+    () => _deleteMachine(machine.id)
+  );
+}
+
+/** Close the confirmation dialog. Exported for Escape-key handler in app.js. */
+export function _closeConfirmDialog() {
+  const overlay = byId('confirmDialog');
+  if (overlay.classList.contains('open')) {
+    overlay.removeEventListener('click', overlay._confirmClickHandler);
+    overlay.classList.remove('open');
+  }
+}
+
+/** Show the styled confirmation popup.
+ *
+ * @param {string} title   - Dialog heading (h2)
+ * @param {string} message - Body paragraph (p)
+ * @param {function} [onYes] - Callback when user clicks Yes
+ */
+function _showConfirmDialog(title, message, onYes) {
+  const overlay = byId('confirmDialog');
+  const overlayBody = byId('confirmDialogBody');
+  const titleEl = byId('confirmTitle');
+  const msgEl = byId('confirmMessage');
+  const yesBtn = byId('confirmYes');
+  const noBtn = byId('confirmNo');
+
+  titleEl.textContent = title;
+  msgEl.textContent = message;
+
+  function _handleYes() { _teardown(); overlay.classList.remove('open'); if (onYes) onYes(); }
+  function _handleNo() { _teardown(); overlay.classList.remove('open'); }
+
+  // Click on backdrop → No
+  function onBackdropClick(e) { if (e.target === overlay) _handleNo(); }
+  overlay._confirmClickHandler = onBackdropClick;
+
+  function _teardown() {
+    overlay.removeEventListener('click', onBackdropClick);
+    overlay._confirmClickHandler = null;
+    yesBtn.removeEventListener('click', _handleYes);
+    noBtn.removeEventListener('click', _handleNo);
+  }
+
+  yesBtn.addEventListener('click', _handleYes);
+  noBtn.addEventListener('click', _handleNo);
+  overlay.addEventListener('click', onBackdropClick);
+  overlay.classList.add('open');
 }
 
 export function _showAddMachine() {

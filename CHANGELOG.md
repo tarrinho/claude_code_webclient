@@ -20,7 +20,47 @@ churn.
 
 ---
 
-## [0.16.0] — 2026-09-10
+## [0.17.0] — 2026-09-11
+
+### Added
+
+- **Version bump to 0.17.0.** `config.VERSION`, `web/index.html`, and
+  `web/orchestrator.html` all updated.
+
+### Fixed
+
+- **Agent replies to remote sessions failed silently.**
+  `build_remote_reply_command()` used `cd ~/wc-proxy`, but tilde does not
+  expand in SSH's non-interactive exec mode, and the remote `python3 -c` did
+  not have `remote_path` on `sys.path`, so `import transcripts` always failed.
+  Fixed: cd now uses `$HOME/wc-proxy` and `sys.path` is injected via
+  `expanduser(remote_path)` before the import. (§14 rules.md was also fixed:
+  bare `pip install` hit PEP 668 "externally-managed-environment" on Kali;
+  switched to `.venv/bin/pip`.)
+
+- **First sidebar chat would not open in the workspace.**
+  The stale-response guard in `conversation.js` checked `state.currentChat`,
+  which was still `null` during the first `GET /api/chats/{id}` await, so it
+  rejected every initial selection as "stale" and returned before rendering.
+  Fixed: marks the target chat before the first await.
+
+### Changed
+
+- **§14 dependency gate** no longer uses bare `pip`/`python3`; uses the venv
+  equivalents to avoid PEP 668 failures on Kali and other externally-managed
+  distros.
+
+### Security
+
+- **Dependabot bumps:** `actions/checkout` v4→v7,
+  `actions/setup-python` v5→v7, `gitleaks-action` v2→v3,
+  `codeql-action` v3→v4, `bandit` 1.7→1.9.4, `safety` 3.0→3.8.1,
+  `pip-audit` 2.7→2.10.1, `ruff` 0.9→0.16.6, `quickjs` 1.19→1.19.4,
+  Python 3.13→3.14 (Docker).
+
+---
+
+## [0.16.2] — 2026-09-11
 
 The bump to 0.16.0 landed the same way 0.15.4 did: `config.VERSION` moved and
 none of the five display surfaces followed, and this file had no section. That

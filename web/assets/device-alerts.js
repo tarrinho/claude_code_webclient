@@ -35,7 +35,7 @@ let _lastWaitingCount = null;
 // completion on its own be mistaken for one.
 let _lastActionableCount = 0;
 
-function _alertsEnabled() {
+export function _alertsEnabled() {
   return storageGet('wc_alerts') === 'on'
     && typeof Notification !== 'undefined'
     && Notification.permission === 'granted';

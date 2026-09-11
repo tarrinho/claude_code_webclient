@@ -216,5 +216,95 @@ class HealthCheckTests(unittest.TestCase):
         return f"http://127.0.0.1:{server.server_address[1]}/login"
 
 
+HEALTH_URL_SH = REPO / "bin" / "wc-health-url.sh"
+
+
+@unittest.skipUnless(HEALTH_URL_SH.exists(), "bin/wc-health-url.sh not present")
+class HealthUrlDerivationTests(unittest.TestCase):
+    """Which URL the check builds when WC_HEALTH_URL is not set.
+
+    Every test above injects WC_HEALTH_URL, so the derivation -- the part that
+    was actually broken -- had no coverage at all, and shipped broken twice.
+    It built https://<tailnet-ip>/login from whatever was listening on :443.
+    Caddy fronts :443 with a single named site block and routes on SNI, so an
+    address matches no site and answers 000 for ever; wc-health.sh acted on
+    that by restarting webconsole.service every ~60s, and wc-deploy.sh skipped
+    its gate entirely. Measured 2026-09-11 against the live server: IP form
+    000, name form 200, app form 200.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _derive(self, tailscale_body: str, *, port: str | None = None) -> str:
+        """Run the shared wc_health_url() against a stubbed `tailscale`."""
+        bin_dir = self.dir / "stub-bin"
+        bin_dir.mkdir(exist_ok=True)
+        stub = bin_dir / "tailscale"
+        stub.write_text("#!/usr/bin/env bash\n" + tailscale_body)
+        stub.chmod(0o755)
+
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        # The fallback reads WC_PORT; drop any ambient value so the default is
+        # what is under test unless a case sets one.
+        env.pop("WC_PORT", None)
+        if port is not None:
+            env["WC_PORT"] = port
+
+        proc = subprocess.run(
+            ["bash", "-c", f'. "{HEALTH_URL_SH}"; wc_health_url'],
+            cwd=REPO, env=env, capture_output=True, text=True,
+            timeout=60, check=False,
+        )
+        return proc.stdout.strip()
+
+    def test_the_url_is_built_from_the_host_name(self):
+        url = self._derive(
+            """echo '{"Self": {"DNSName": "test-host.example.ts.net."}}'\n""")
+        self.assertEqual(url, "https://test-host.example.ts.net/login")
+
+    def test_the_trailing_root_dot_is_stripped(self):
+        """tailscale reports DNSName fully qualified: "...ts.net." with the dot."""
+        url = self._derive(
+            """echo '{"Self": {"DNSName": "kali-2.tail850c40.ts.net."}}'\n""")
+        self.assertEqual(url, "https://kali-2.tail850c40.ts.net/login")
+        self.assertNotIn("./login", url)
+
+    def test_it_is_never_an_address(self):
+        """The regression itself, across every way tailscale can let us down."""
+        for label, body in (
+            ("normal", """echo '{"Self": {"DNSName": "h.example.ts.net."}}'\n"""),
+            ("tailscale missing or failing", "exit 1\n"),
+            ("unparseable output", 'echo "not json"\n'),
+            ("empty output", "true\n"),
+            ("no DNSName key", """echo '{"Self": {}}'\n"""),
+        ):
+            with self.subTest(case=label):
+                url = self._derive(body)
+                self.assertNotRegex(
+                    url, r"https://\d+\.\d+\.\d+\.\d+",
+                    "an https URL built from an address matches no Caddy site "
+                    "block and answers 000, which this check then acts on",
+                )
+
+    def test_it_falls_back_to_the_app_on_loopback(self):
+        """No usable name: ask the app directly rather than another address.
+
+        uvicorn binds 127.0.0.1:8080 behind Caddy, so this is reachable -- and
+        it is the more honest question for a script whose only action is to
+        restart webconsole.service.
+        """
+        self.assertEqual(
+            self._derive("exit 1\n"), "http://127.0.0.1:8080/login")
+
+    def test_the_fallback_port_follows_wc_port(self):
+        self.assertEqual(
+            self._derive("exit 1\n", port="9999"),
+            "http://127.0.0.1:9999/login",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

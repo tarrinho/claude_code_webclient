@@ -40,9 +40,29 @@ RELEASES="${WC_RELEASES_DIR:-$HOME/.local/share/webconsole/releases}"
 CURRENT="$RELEASES/current"
 KEEP="${WC_RELEASES_KEEP:-5}"
 UNIT="${WC_UNIT:-webconsole.service}"
-# Where the running instance is checked. Empty skips the live check, which is
-# what --dry-run and a non-default releases dir want.
-HEALTH_URL="${WC_HEALTH_URL:-}"
+# Where the running instance is checked after the restart.
+#
+# This defaulted to empty, so every real deploy printed "no WC_HEALTH_URL set;
+# skipping the live check" and activated a release without ever asking whether
+# it answered -- the same shape of failure this file's header describes, where a
+# session asking for a deploy is told it succeeded on the strength of nothing.
+# Nothing in the repo set the variable, so the check below had never run.
+#
+# Derived by host name, never an address -- see bin/wc-health-url.sh for why an
+# address answers 000 against Caddy's SNI-only routing, and for the measurements.
+# Sourced rather than copied so this and wc-health.sh cannot drift apart.
+#
+# --dry-run never reaches restart_and_check, so it is unaffected. Set
+# WC_SKIP_HEALTH_CHECK=1 to opt out deliberately (a throwaway WC_RELEASES_DIR,
+# or a host where the tailnet name does not resolve).
+# shellcheck source=bin/wc-health-url.sh
+. "$(dirname "$0")/wc-health-url.sh"
+
+if [ "${WC_SKIP_HEALTH_CHECK:-0}" = "1" ]; then
+    HEALTH_URL=""
+else
+    HEALTH_URL="${WC_HEALTH_URL:-$(wc_health_url)}"
+fi
 
 die() { echo "wc-release: $*" >&2; exit 1; }
 
@@ -118,7 +138,7 @@ restart_and_check() {
     systemctl --user restart "$UNIT" || die \
         "restart of $UNIT failed -- current already points at $(readlink -f "$CURRENT"), roll back with --rollback"
     if [ -z "$HEALTH_URL" ]; then
-        echo "no WC_HEALTH_URL set; skipping the live check"
+        echo "live check skipped (WC_SKIP_HEALTH_CHECK=1) -- this release is unverified"
         return 0
     fi
     local code=""

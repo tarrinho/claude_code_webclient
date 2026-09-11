@@ -8,19 +8,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-# The server binds the tailnet address, not loopback, so a check against
-# 127.0.0.1 is refused every time -- which would restart a perfectly healthy
-# server every 30 seconds, for ever. Ask what is actually listening rather than
-# assuming; fall back to the tailnet address, then loopback.
-wc_health_url() {
-    local addr
-    addr="$(ss -tlnH 'sport = :443' 2>/dev/null | awk '{print $4}' | sed 's/:443$//' | head -1)"
-    if [ -z "$addr" ] || [ "$addr" = "*" ] || [ "$addr" = "0.0.0.0" ]; then
-        addr="$(tailscale ip -4 2>/dev/null | head -1)"
-    fi
-    [ -n "$addr" ] || addr="127.0.0.1"
-    printf 'https://%s:443/login' "$addr"
-}
+# The health URL is defined once, in its own file, and sourced by both this
+# script and bin/wc-deploy.sh. It used to be built here from whatever was
+# listening on :443 -- an address, which Caddy's SNI-only routing answers with
+# 000 forever -- and this script acted on that by restarting the service every
+# ~60s. See bin/wc-health-url.sh for the measurements.
+# shellcheck source=bin/wc-health-url.sh
+. "$(dirname "$0")/wc-health-url.sh"
 
 # A seam, so the restart decision can be exercised in a test without either
 # restarting the live server or shadowing the real systemctl on PATH. Defaults

@@ -100,7 +100,37 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
         return None
 
 
-def _transcript_mtimes_sync(session_ids: list[str]) -> dict[str, str]:
+async def _resolve_transport_for_create(session: dict) -> str:
+    """Resolve a transport name for a chat being created.
+
+    Similar to :func:`_resolve_transport_name` but has no chat_id yet, so it
+    infers from the session data and backend pins.  Returns the host/alias or
+    ``"local"`` as the fallback.
+    """
+    import db as _db
+
+    try:
+        pin_machine_id = session.get("machine_id") or session.get("backend_pin")
+        if pin_machine_id:
+            machine = await _db.ai_machine_get(pin_machine_id, session.get("user"))
+            if machine:
+                alias = (machine.get("alias") or "").strip()
+                if alias:
+                    return alias
+                if machine.get("transport_id"):
+                    from tunnel_manager import tunnel_status as _tunnel_status
+                    status = await _tunnel_status(machine["id"])
+                    if status and status.get("ssh_host"):
+                        return status["ssh_host"]
+                host = (machine.get("host") or "").strip()
+                if host:
+                    return host
+    except Exception:
+        pass
+    return "local"
+
+
+async def _resolve_transport_name(chat_id: str, owner: str | None) -> str:
     """Last-write time of each session's transcript, as an ISO timestamp.
 
     Blocking: locating a transcript globs the projects directory, so callers
@@ -252,7 +282,24 @@ async def handle_chat_create(request: Request):
     """POST /api/chats -- create a new chat with its project directory."""
     session = request.state.session
     data = await request.json()
-    title = (data.get("title") or "Untitled").strip()[:200]
+    user_title = (data.get("title") or "").strip()[:200]
+
+    # If the user provided no title, generate one from the last prompt in the
+    # linked session (if any).  Otherwise fall back to the "Untitled" path
+    # which gives the slug a sensible work-dir prefix.
+    title = user_title if user_title else "Untitled"
+    if title == "Untitled":
+        session_id = data.get("session_id")
+        if session_id:
+            try:
+                prompt_text = (await transcripts.session_title(session_id)).strip()
+                if prompt_text:
+                    transport_name = await _resolve_transport_for_create(session)
+                    auto = _generate_agent_name(transport_name, prompt_text)
+                    if auto != "Untitled":
+                        title = auto
+            except Exception:
+                pass
 
     slug = db.slug_from_title(title)
     slug = db.slug_pattern(slug) or "untitled"

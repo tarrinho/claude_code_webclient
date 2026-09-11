@@ -1172,22 +1172,22 @@ async def _prepare_transcript_for_backend(chat: dict) -> None:
     """Make a conversation replayable before it runs on a strict backend.
 
     A gateway that streams its reply can record assistant messages whose only
-    content is an empty text block. It replays those happily; the Anthropic API
+    content is an empty text block. It replays those happily; a strict backend
     rejects the entire request with "text content blocks must be non-empty", so
-    a conversation started on such a gateway fails the moment it is moved to
-    Anthropic -- before the new prompt is even considered.
+    a conversation started on a lenient gateway fails the moment it moves to a
+    strict one -- before the new prompt is even considered.
 
-    Only Anthropic backends need this, and the check is a byte scan that finds
-    nothing on a healthy transcript, so the common path stays cheap.
+    Run unconditionally, on every backend, not gated on `provider ==
+    "claude_code"`: that gate assumed only Anthropic itself enforces this
+    validation, which held until a chat pinned to a `provider == "direct"`
+    gateway (CF AI Machine API) hit the exact same "text content blocks must
+    be non-empty" error -- that gateway forwards to something equally strict
+    for at least some requests, so the assumption was never safe to rely on.
+    The check is a byte scan that finds nothing on a healthy transcript, so
+    running it on every turn regardless of backend stays cheap.
     """
     session_id = chat.get("session_id")
     if not session_id:
-        return
-    try:
-        backend = await runner.get_backend(chat["id"])
-    except Exception:
-        return
-    if backend.get("provider") != "claude_code":
         return
     try:
         result = await transcripts.repair_if_needed(session_id)

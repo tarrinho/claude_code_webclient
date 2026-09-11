@@ -29,6 +29,7 @@ import runner
 import transcripts
 import turns
 from classification import _asks_a_question
+from routes.naming import _NAME_RE
 from routes.naming import generate_name as _generate_agent_name
 from routes.voice import stream_voice_turn, voice_handoff as voice_handoff_fn
 from shared import (
@@ -86,6 +87,16 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
     The chat ID prefix (first 6 hex chars of the uuid) stays fixed — the
     suffix (task/goal words) updates on every new session so the sidebar
     reflects the latest work without the chat jumping to a different slot.
+
+    A title the user typed at creation (anything not already in
+    ``{transport} : {n} : {task}`` form) is converted into that form
+    exactly once, with the user's own words taking the ``{task}`` slot
+    verbatim — never the words extracted from a later turn's prompt. Once
+    converted, ``_NAME_RE`` matches it and it is left alone: a name someone
+    chose is not silently replaced turn over turn. Before this, an
+    untouched user title accumulated ``" - {latest task}"`` on every turn
+    forever, since a title with no ``" - "`` in it treated the whole thing
+    as the prefix to keep appending to.
     """
     try:
         transport_name = await _resolve_transport_name(chat_id, owner)
@@ -98,19 +109,31 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
             title = f"{chat_id[:6]} - {task_words}"
             await db.chat_update(chat_id, owner, title=title)
             return title
-        # Chat already has a name — only update the task suffix.
+        # Chat already has a name. Three cases:
+        #  - already "{transport} : {n} : {task}" (auto-named at creation,
+        #    or converted below on an earlier turn) -- task slot is fixed,
+        #    leave it alone;
+        #  - this function's own "{chat_id[:6]} - {task}" format from the
+        #    Untitled branch above -- not user-given, keep refreshing the
+        #    suffix every turn as before;
+        #  - anything else is what the user actually typed -- fold it into
+        #    the standard skeleton once, then it matches the first case
+        #    and is never touched again.
         if chat:
             existing = chat.get("title") or ""
-            # Split on last " - " that looks like a separator.
-            if " - " in existing:
-                prefix, _, _ = existing.rpartition(" - ")
+            if _NAME_RE.match(existing):
+                pass
+            elif existing.startswith(f"{chat_id[:6]} - "):
+                task_words = _naming_task_part(task)
+                title = f"{chat_id[:6]} - {task_words}"
+                if existing != title:
+                    await db.chat_update(chat_id, owner, title=title)
             else:
-                # No separator yet — treat the whole name as the prefix.
-                prefix = existing
-            task_words = _naming_task_part(task)
-            title = f"{prefix} - {task_words}"
-            if existing != title:
-                await db.chat_update(chat_id, owner, title=title)
+                skeleton = _NAME_RE.match(task)  # task = "{transport} : {n} : ..."
+                if skeleton:
+                    title = f"{skeleton.group(1)} : {skeleton.group(2)} : {existing}"
+                    if existing != title:
+                        await db.chat_update(chat_id, owner, title=title)
         return task
     except Exception:
         pass  # Naming is non-critical — don't break the turn

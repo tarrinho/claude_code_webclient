@@ -112,8 +112,12 @@ class AnchoredNamingTests(unittest.IsolatedAsyncioTestCase):
         prefix = chat1["title"].rsplit(" - ", 1)[0]
         self.assertTrue(chat2["title"].startswith(prefix + " - "))
 
-    async def test_no_separator_uses_whole_name_as_prefix(self):
-        """A name without ' - ' is fully preserved."""
+    async def test_a_user_typed_title_takes_the_task_slot_once(self):
+        """A title the user typed at creation is folded into the standard
+        {transport} : {n} : {task} skeleton, with their own words verbatim
+        in the task slot -- not appended to with " - {latest task}" on
+        every turn (the old behavior, which grew without bound since a
+        title with no " - " in it was treated as the whole prefix)."""
         chat_id = "aaaaaa0000000000"
         session_id = "sess00000000000003"
 
@@ -126,7 +130,33 @@ class AnchoredNamingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         chat = await db.chat_get(chat_id, _OWNER)
-        self.assertTrue(chat["title"].startswith("voice-chat-app - "))
+        self.assertTrue(chat["title"].endswith(": voice-chat-app"))
+        self.assertRegex(chat["title"], r"^kali : \d+ : voice-chat-app$")
+
+    async def test_a_user_typed_title_never_updates_again(self):
+        """Once converted, the user's words are fixed -- a second turn's
+        task summary must not replace or append to them."""
+        chat_id = "bbbbbb0000000000"
+        session_id = "sess00000000000004"
+
+        await db.chat_create(chat_id, "voice-chat-app", None, f"{self.tmp.name}/proj", _OWNER)
+        with patch.object(db, "write_claude_session_file"), \
+             patch.object(chat_routes, "_resolve_transport_name", AsyncMock(return_value="kali")), \
+             patch.object(chat_routes.db, "chat_get", await self._make_mock_get("voice-chat-app")):
+            await chat_routes._write_agent_name(
+                session_id, "do something new", chat_id, _OWNER
+            )
+        chat1 = await db.chat_get(chat_id, _OWNER)
+
+        with patch.object(db, "write_claude_session_file"), \
+             patch.object(chat_routes, "_resolve_transport_name", AsyncMock(return_value="kali")), \
+             patch.object(chat_routes.db, "chat_get", await self._make_mock_get(chat1["title"])):
+            await chat_routes._write_agent_name(
+                session_id, "a completely different task", chat_id, _OWNER
+            )
+        chat2 = await db.chat_get(chat_id, _OWNER)
+
+        self.assertEqual(chat1["title"], chat2["title"])
 
     async def test_naming_task_part_strips_transport_prefix(self):
         """_naming_task_part removes the 'transport : n :' prefix."""

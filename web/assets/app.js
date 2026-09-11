@@ -1973,11 +1973,8 @@ async function ensurePinnedModels(chat) {
 // Open the Backends tab: machines first so the cards exist, then the models
 // each one serves. Only Anthropic-protocol backends publish a list.
 async function loadBackends() {
-  console.log('[wc] loadBackends: starting');
   await loadMachines();
-  console.log('[wc] loadBackends: _machines=', _machines.length, _machines.map(m => m.name));
   await loadTransports();
-  console.log('[wc] loadBackends: _transports=', _transports.length, _transports.map(t => t.name));
   // Tunnel status BEFORE the first render, and turn counts after it. Both
   // orderings were wrong and both were visible.
   //

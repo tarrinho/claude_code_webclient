@@ -345,7 +345,7 @@ async def _handle_client(
     try:
         raw = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=10.0)
         frame = json.loads(raw)
-    except (asyncio.TimeoutError, ValueError, json.JSONDecodeError):
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError):
         log.warning("bad or missing handshake from %s", peer)
         writer.close()
         return

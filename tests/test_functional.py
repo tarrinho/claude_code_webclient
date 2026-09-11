@@ -44,6 +44,47 @@ class ProxyAuthenticationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(launched)
 
+    async def test_proxy_handles_disconnect_before_handshake_line(self):
+        """A client that connects and disconnects without ever writing the
+        handshake line (0 bytes read) must not crash the server callback.
+
+        asyncio.IncompleteReadError is an EOFError subclass, not a
+        ValueError, so `except (asyncio.TimeoutError, ValueError,
+        json.JSONDecodeError)` around readuntil() did not catch it -- it
+        escaped _handle_client as an unhandled exception in
+        client_connected_cb instead of getting the same "bad or missing
+        handshake" warning every other malformed-handshake case gets. Seen
+        in production as four `IncompleteReadError: 0 bytes read` tracebacks
+        right at a webconsole restart, when in-flight connections opened but
+        never got to write before their owning task was cancelled.
+        """
+        loop = asyncio.get_running_loop()
+        unhandled = []
+        loop.set_exception_handler(lambda loop, context: unhandled.append(context))
+        try:
+            server = await asyncio.start_server(
+                lambda reader, writer: claude_proxy.handle_client(
+                    reader, writer, "claude", "correct-token-with-at-least-32-characters",
+                ),
+                "127.0.0.1",
+                0,
+            )
+            port = server.sockets[0].getsockname()[1]
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            # Disconnect immediately, writing nothing -- exactly what
+            # produced the IncompleteReadError in production.
+            writer.close()
+            await writer.wait_closed()
+            # Give the server's client_connected_cb a chance to run.
+            await asyncio.sleep(0.05)
+
+            server.close()
+            await server.wait_closed()
+        finally:
+            loop.set_exception_handler(None)
+
+        self.assertEqual(unhandled, [], f"handle_client raised unhandled: {unhandled}")
+
     async def test_proxy_handles_disconnect_before_turn(self):
         server = await asyncio.start_server(
             lambda reader, writer: claude_proxy.handle_client(

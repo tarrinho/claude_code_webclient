@@ -1266,6 +1266,7 @@ export function createConversationController(dependencies) {
     let fullText = '';
     let accepted = false;
     let succeeded = false;
+    let trulyFailed = false;
 
     try {
       const response = await apiFetch(`/api/chats/${encodeURIComponent(chatId)}/stream`, {
@@ -1362,6 +1363,9 @@ export function createConversationController(dependencies) {
         }
         setStreamState('stopped');
         showToast('Response stopped');
+        // A user-requested stop is stored server-side (finish() persists a
+        // cancelled turn's partial text), so the bubble showing it here is
+        // accurate and must stay -- trulyFailed stays false.
       } else {
         if (!accepted || !fullText) {
           elements.composerInput.value = content;
@@ -1370,11 +1374,18 @@ export function createConversationController(dependencies) {
         }
         setStreamState('failed');
         showToast(error.message, 'error');
+        // A genuine failure stores nothing server-side (finish() only
+        // persists on success or user-cancel), so any partial text already
+        // rendered here belongs to an answer that will never exist. Marked
+        // so the cleanup below removes it even though fullText is non-empty
+        // -- leaving it was the orphaned bubble a Retry (or a new message
+        // sent right after) then appeared to duplicate or run into.
+        trulyFailed = true;
       }
     } finally {
       _sending = false;
       abortController = null;
-      if (assistantRow && !fullText) assistantRow.remove();
+      if (assistantRow && (trulyFailed || !fullText)) assistantRow.remove();
       await refreshQueue(chatId);
       await refreshChats();
       if (succeeded) {

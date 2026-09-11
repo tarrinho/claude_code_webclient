@@ -1274,7 +1274,6 @@ async def stream_turn(
 
     _retried_usage_by_chat.pop(chat_id, None)
     max_attempts = config.TURN_RETRY_MAX + 1
-    stopped_arriving_retry = False
     for attempt in range(1, max_attempts + 1):
         if config.PROXY_ENABLED:
             inner = _proxy_stream_turn(
@@ -1303,29 +1302,31 @@ async def stream_turn(
                 yield event
                 continue
             if etype == "error":
-                # "stopped arriving" — CLI hung mid-stream; wait then retry
-                # once before delivering the error to the client.
-                if (
-                    config.PROXY_ENABLED
-                    and not stopped_arriving_retry
-                    and _STOPPED_ARRIVING_RE.search(event.get("error", ""))
-                ):
-                    stopped_arriving_retry = True
-                    _log.warning(
-                        "stream_retry chat_id=%s attempt=%d/%d reason=stopped_arriving",
-                        chat_id, attempt, max_attempts,
-                    )
-                    if usage_event is not None:
-                        yield usage_event
-                    yield {
-                        "type": "status",
-                        "status": "api_retry",
-                        "attempt": attempt + 1,
-                        "max_retries": max_attempts - 1,
-                        "error": event.get("error", "Response stopped arriving, retrying"),
-                    }
-                    await asyncio.sleep(config.PROXY_TURN_RETRY_DELAY_S)
-                    break  # restart the outer for-loop for the retry attempt
+                # A "stopped arriving" error used to claim a retry here --
+                # logging it, telling the client "retrying" -- without ever
+                # performing one: the retry only works by looping the outer
+                # `for attempt` loop, and nothing here set `should_retry`, so
+                # the very next check (`if not should_retry: return`) below
+                # exited immediately. The generator ended without a `done`
+                # event, the caller (turns.py) treated that as "stream ended
+                # before completion" and stored nothing, but the browser had
+                # already rendered the promised-but-abandoned partial text
+                # live and never removed it -- so the next message the user
+                # sent (a manual Retry or a fresh prompt) landed right after
+                # that orphaned bubble and read as a duplicate or a jumble of
+                # concatenated messages. `run_turn`, the blocking twin, has a
+                # correctly-working version of this same retry (it loops via
+                # `continue`, not a broken break), so making this one actually
+                # retry is possible -- but text from this attempt is already
+                # streamed live by the time the retry decision is made, and a
+                # real second attempt would concatenate its own text onto the
+                # first's in both the stored message and the browser's live
+                # view with no reset signal to separate them. That is a larger
+                # change (a reset event threaded through turns.py, chats.py's
+                # produce(), and conversation.js). Until that lands, failing
+                # here -- honestly, on the first stall, like any other error --
+                # is what stops the duplicate/concatenated symptom without
+                # introducing a new way to cause it.
                 if usage_event is not None:
                     yield usage_event
                 yield event

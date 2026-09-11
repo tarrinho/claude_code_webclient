@@ -413,6 +413,10 @@ async def lifespan(app: FastAPI):
         config.PORT,
     )
     await _startup_step("db.init", db.init())
+    # Deduplicate session-file names so every transport counter is unique.
+    from routes.naming import deduplicate_existing as _dedup
+    if changes := _dedup():
+        _log.info("deduplicated %d session-file name(s)", len(changes))
     # Sessions: migrate from DB_PATH to SESSION_DB_PATH if they still share
     # the old combined file (registry #47). Runs once, idempotent.
     #

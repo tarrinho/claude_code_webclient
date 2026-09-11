@@ -23,6 +23,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import auth
 import config
 import db
 import runner
@@ -42,6 +43,12 @@ class RoutingMixin:
         self.db_patch.start()
         self.root_patch.start()
         await db.init()
+        # chat_create requires a real UUID, not the literal "admin" -- see
+        # routes/db_chats.py's own guard. ai_machines have no such guard
+        # (owner_id is unscoped metadata for them since 2026-09-11), so
+        # make_machine's "admin" default stays a plain literal below.
+        await db.user_create("admin", None, auth.hash_password("admin"))
+        self.admin_id = (await db.user_get_by_name("admin"))["id"]
 
     async def close_temp_db(self):
         await db.close()
@@ -55,8 +62,10 @@ class RoutingMixin:
                                    base_url, None, owner, provider)
         return mid
 
-    async def make_chat(self, cid, owner="admin"):
-        await db.chat_create(cid, cid, None, f"{self.tmp.name}/projects", owner)
+    async def make_chat(self, cid, owner=None):
+        await db.chat_create(
+            cid, cid, None, f"{self.tmp.name}/projects", owner or self.admin_id
+        )
         return cid
 
     def _req(self, body):
@@ -67,7 +76,7 @@ class RoutingMixin:
             headers={"accept": "*/*"},
             query_params={},
             client=SimpleNamespace(host="127.0.0.1"),
-            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
+            state=SimpleNamespace(session={"user": self.admin_id, "role": "admin"}),
             json=AsyncMock(return_value=body),
         )
 
@@ -93,40 +102,44 @@ class UnitQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_unpinned_follows_the_active_machine(self):
         routing = await db.chat_routing("c1")
-        self.assertEqual(routing["owner"], "admin")
+        self.assertEqual(routing["owner"], self.admin_id)
         self.assertEqual(routing["machine"]["id"], "act")
         self.assertFalse(routing["pinned"])
 
     async def test_pinned_uses_its_own_machine(self):
-        await db.chat_set_machine("c1", "admin", "gw")
+        await db.chat_set_machine("c1", self.admin_id, "gw")
         routing = await db.chat_routing("c1")
         self.assertEqual(routing["machine"]["id"], "gw")
         self.assertTrue(routing["pinned"])
 
     async def test_pin_carries_the_api_key_for_the_runner(self):
-        await db.chat_set_machine("c1", "admin", "gw")
+        await db.chat_set_machine("c1", self.admin_id, "gw")
         self.assertEqual((await db.chat_routing("c1"))["machine"]["api_key"], "k")
 
     async def test_pin_to_a_deleted_machine_falls_back(self):
         # A dangling pin must not fail the turn.
-        await db.chat_set_machine("c1", "admin", "gw")
+        await db.chat_set_machine("c1", self.admin_id, "gw")
         await db.ai_machine_delete("gw", "admin")
         routing = await db.chat_routing("c1")
         self.assertEqual(routing["machine"]["id"], "act")
         self.assertFalse(routing["pinned"])
 
-    async def test_pin_to_another_owners_machine_is_not_honoured(self):
+    async def test_pin_to_another_owners_machine_is_honoured(self):
+        """Machines became a shared pool on 2026-09-11 -- a pin resolves
+        regardless of who owns the machine or the chat. This used to assert
+        the opposite (test_pin_to_another_owners_machine_is_not_honoured);
+        see ai_machine_backend_by_id's docstring in routes/db_machines.py."""
         await self.make_machine("bobs", base_url=GATEWAY, model="m", owner="bob")
         # Written directly, bypassing the API's ownership check.
         await db.db_conn.execute(
             "UPDATE chats SET ai_machine_id = ? WHERE id = ?", ("bobs", "c1")
         )
         await db.db_conn.commit()
-        self.assertEqual((await db.chat_routing("c1"))["machine"]["id"], "act")
+        self.assertEqual((await db.chat_routing("c1"))["machine"]["id"], "bobs")
 
     async def test_clearing_the_pin_returns_to_following(self):
-        await db.chat_set_machine("c1", "admin", "gw")
-        await db.chat_set_machine("c1", "admin", None)
+        await db.chat_set_machine("c1", self.admin_id, "gw")
+        await db.chat_set_machine("c1", self.admin_id, None)
         self.assertEqual((await db.chat_routing("c1"))["machine"]["id"], "act")
 
     async def test_set_machine_is_owner_scoped(self):
@@ -158,7 +171,7 @@ class IntegrationQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_two_conversations_can_use_different_backends(self):
         # The whole point of the feature.
-        await db.chat_set_machine("chatB", "admin", "gw")
+        await db.chat_set_machine("chatB", self.admin_id, "gw")
         a = await runner.get_backend("chatA")
         b = await runner.get_backend("chatB")
         self.assertEqual(a["base_url"], OFFICIAL)
@@ -167,9 +180,9 @@ class IntegrationQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b["api_key"], "k")
 
     async def test_switching_the_active_machine_leaves_a_pin_alone(self):
-        await db.chat_set_machine("chatB", "admin", "gw")
+        await db.chat_set_machine("chatB", self.admin_id, "gw")
         await db.ai_machine_activate("gw", "admin")
-        await db.chat_set_machine("chatA", "admin", "official")
+        await db.chat_set_machine("chatA", self.admin_id, "official")
         self.assertEqual((await runner.get_backend("chatA"))["base_url"], OFFICIAL)
         self.assertEqual((await runner.get_backend("chatB"))["base_url"], GATEWAY)
 
@@ -179,13 +192,13 @@ class IntegrationQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await runner.get_backend("chatA"))["base_url"], GATEWAY)
 
     async def test_model_defaults_to_the_conversations_backend(self):
-        await db.chat_set_machine("chatB", "admin", "gw")
+        await db.chat_set_machine("chatB", self.admin_id, "gw")
         self.assertEqual(await runner.get_default_model("chatA"), "claude-opus-5")
         self.assertEqual(await runner.get_default_model("chatB"), "vllm/Q")
 
     async def test_a_pinned_model_beats_the_backend_default(self):
-        await db.chat_set_machine("chatB", "admin", "gw")
-        await db.chat_update("chatB", "admin", model="azure_ai/gpt-5.4-mini")
+        await db.chat_set_machine("chatB", self.admin_id, "gw")
+        await db.chat_update("chatB", self.admin_id, model="azure_ai/gpt-5.4-mini")
         self.assertEqual(
             await runner.get_default_model("chatB"), "azure_ai/gpt-5.4-mini"
         )
@@ -196,7 +209,7 @@ class IntegrationQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         # A claude_code machine with no base_url returns {"provider": "claude_code"}
         # from get_backend — the env builder strips ANTHROPIC_BASE_URL in OAuth mode.
         await self.make_machine("keyless", base_url=None, model="m")
-        await db.chat_set_machine("chatA", "admin", "keyless")
+        await db.chat_set_machine("chatA", self.admin_id, "keyless")
         backend = await runner.get_backend("chatA")
         self.assertEqual(backend["provider"], "claude_code")
         self.assertNotIn("base_url", backend)
@@ -206,14 +219,14 @@ class IntegrationQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
     async def test_pin_survives_a_fork(self):
         # chat_fork already copied ai_machine_id; now that it routes, a fork
         # must land on the same backend as its parent.
-        await db.chat_set_machine("chatB", "admin", "gw")
-        forked = await db.chat_fork("chatB", "admin")
+        await db.chat_set_machine("chatB", self.admin_id, "gw")
+        forked = await db.chat_fork("chatB", self.admin_id)
         self.assertEqual(
             (await runner.get_backend(forked["id"]))["base_url"], GATEWAY
         )
 
     async def test_env_for_a_pinned_conversation_points_at_its_gateway(self):
-        await db.chat_set_machine("chatB", "admin", "gw")
+        await db.chat_set_machine("chatB", self.admin_id, "gw")
         env = runner._build_env(await runner.get_backend("chatB"))
         self.assertEqual(env["ANTHROPIC_BASE_URL"], GATEWAY)
         self.assertEqual(env["ANTHROPIC_API_KEY"], "k")
@@ -261,10 +274,10 @@ class ComponentAPIQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_patch_sets_and_clears_the_model(self):
         await self.patch_chat("c1", {"model": "azure_ai/gpt-5.4-mini"})
-        self.assertEqual((await db.chat_get("c1", "admin"))["model"],
+        self.assertEqual((await db.chat_get("c1", self.admin_id))["model"],
                          "azure_ai/gpt-5.4-mini")
         await self.patch_chat("c1", {"model": None})
-        self.assertIsNone((await db.chat_get("c1", "admin"))["model"])
+        self.assertIsNone((await db.chat_get("c1", self.admin_id))["model"])
 
     async def test_patch_can_change_both_at_once(self):
         await self.patch_chat("c1", {"ai_machine_id": "gw", "model": "vllm/Q"})
@@ -272,13 +285,16 @@ class ComponentAPIQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(routing["machine"]["id"], "gw")
         self.assertEqual(routing["model"], "vllm/Q")
 
-    async def test_patch_rejects_another_users_machine(self):
+    async def test_patch_accepts_another_users_machine(self):
+        """Machines became a shared pool on 2026-09-11 -- pinning to a
+        machine another account created is allowed. This used to assert a
+        404 (test_patch_rejects_another_users_machine); see
+        ai_machine_get's docstring in routes/db_machines.py."""
         await self.make_machine("bobs", base_url=GATEWAY, model="m", owner="bob")
-        from fastapi import HTTPException
-        with self.assertRaises(HTTPException) as ctx:
-            await self.patch_chat("c1", {"ai_machine_id": "bobs"})
-        self.assertEqual(ctx.exception.status_code, 404)
-        self.assertFalse((await db.chat_routing("c1"))["pinned"])
+        await self.patch_chat("c1", {"ai_machine_id": "bobs"})
+        routing = await db.chat_routing("c1")
+        self.assertTrue(routing["pinned"])
+        self.assertEqual(routing["machine"]["id"], "bobs")
 
     async def test_patch_rejects_an_unknown_machine(self):
         from fastapi import HTTPException
@@ -316,7 +332,7 @@ class ComponentAPIQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
     async def test_the_chat_payload_exposes_its_routing(self):
         # The picker needs both fields to show the conversation's own state.
         await self.patch_chat("c1", {"ai_machine_id": "gw", "model": "vllm/Q"})
-        chat = await db.chat_get("c1", "admin")
+        chat = await db.chat_get("c1", self.admin_id)
         self.assertEqual(chat["ai_machine_id"], "gw")
         self.assertEqual(chat["model"], "vllm/Q")
 
@@ -378,7 +394,7 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         await self.patch_chat("work", {"ai_machine_id": "ai-machine",
                                        "model": "azure_ai/gpt-5.4-mini"})
         # Simulate a fresh page load: read the chat back as the UI would.
-        chat = await db.chat_get("work", "admin")
+        chat = await db.chat_get("work", self.admin_id)
         self.assertEqual(chat["ai_machine_id"], "ai-machine")
         self.assertEqual(chat["model"], "azure_ai/gpt-5.4-mini")
 
@@ -387,7 +403,7 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         # a local transcript, so the session id is still valid afterwards.
         await db.chat_set_session("work", "sess-123")
         await self.patch_chat("work", {"ai_machine_id": "ai-machine"})
-        self.assertEqual((await db.chat_get("work", "admin"))["session_id"],
+        self.assertEqual((await db.chat_get("work", self.admin_id))["session_id"],
                          "sess-123")
 
     async def test_usage_is_attributed_to_the_backend_that_ran_the_turn(self):
@@ -396,15 +412,15 @@ class AcceptanceUATQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
         frame = {"type": "usage",
                  "models": {"claude-opus-5": {"input_tokens": 10, "output_tokens": 1}},
                  "cost_usd": None, "duration_ms": 1, "is_error": False}
-        await chat_routes._record_turn_usage("work", "admin", frame)
+        await chat_routes._record_turn_usage("work", self.admin_id, frame)
         await self.patch_chat("work", {"ai_machine_id": "ai-machine"})
         await db.ai_machine_activate("ai-machine", "admin")
         frame2 = {"type": "usage",
                   "models": {"vllm/Q": {"input_tokens": 20, "output_tokens": 2}},
                   "cost_usd": None, "duration_ms": 1, "is_error": False}
-        await chat_routes._record_turn_usage("work", "admin", frame2)
+        await chat_routes._record_turn_usage("work", self.admin_id, frame2)
         providers = {r["model"]: r["provider"]
-                     for r in await db.usage_totals("admin", None)}
+                     for r in await db.usage_totals(self.admin_id, None)}
         self.assertEqual(providers["claude-opus-5"], "through_claude_code")
         self.assertEqual(providers["vllm/Q"], "through_claude_code")
 
@@ -442,7 +458,7 @@ class ChatPayloadQA(RoutingMixin, unittest.IsolatedAsyncioTestCase):
             headers={"accept": "*/*"},
             query_params={},
             client=SimpleNamespace(host="127.0.0.1"),
-            state=SimpleNamespace(session={"user": "admin", "role": "admin"}),
+            state=SimpleNamespace(session={"user": self.admin_id, "role": "admin"}),
             json=AsyncMock(return_value={}),
         )
 

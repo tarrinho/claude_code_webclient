@@ -152,8 +152,12 @@ class SetModelsTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_machine_returns_false(self):
         self.assertFalse(await db.ai_machine_set_models("nope", "admin", [], None))
 
-    async def test_another_owner_cannot_write(self):
-        self.assertFalse(await db.ai_machine_set_models("m1", "bob", ["a"], None))
+    async def test_another_owner_can_write(self):
+        """Machines became a shared pool on 2026-09-11 -- any account can
+        edit any machine's model list. This used to assert the opposite
+        (test_another_owner_cannot_write); see ai_machine_set_models's
+        caller, routes/db_machines.py."""
+        self.assertTrue(await db.ai_machine_set_models("m1", "bob", ["a"], None))
 
 
 class ModelsEndpointSelectionTests(unittest.IsolatedAsyncioTestCase):

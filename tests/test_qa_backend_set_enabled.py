@@ -50,10 +50,14 @@ class SetEnabledTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.db.ai_machine_set_enabled("m-1", "admin", True))
         self.assertEqual((await self.db.ai_machine_get("m-1", "admin"))["enabled"], 1)
 
-    async def test_it_is_scoped_by_owner(self):
-        self.assertFalse(
+    async def test_another_owner_can_disable_it_too(self):
+        """Machines became a shared pool on 2026-09-11 -- any account can
+        disable any machine. This used to assert the opposite
+        (test_it_is_scoped_by_owner); see ai_machine_set_enabled's
+        docstring in routes/db_machines.py."""
+        self.assertTrue(
             await self.db.ai_machine_set_enabled("m-1", "someone-else", False))
-        self.assertEqual((await self.db.ai_machine_get("m-1", "admin"))["enabled"], 1)
+        self.assertEqual((await self.db.ai_machine_get("m-1", "admin"))["enabled"], 0)
 
     async def test_activate_refuses_a_disabled_machine(self):
         """The guard: 'make default' must not re-enable by the back door."""

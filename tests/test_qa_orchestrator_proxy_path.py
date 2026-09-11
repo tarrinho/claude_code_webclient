@@ -150,10 +150,14 @@ class ProxyTurnFrameTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(turn)
         self.assertNotIn("backend", turn)
 
-    async def test_another_owners_backend_is_not_sent(self):
+    async def test_another_owners_backend_is_sent_too(self):
+        """Machines became a shared pool on 2026-09-11 -- the one active
+        machine backs every owner's fallback resolution, not just the
+        account that activated it. This used to assert the opposite
+        (test_another_owners_backend_is_not_sent); see ai_machine_backend's
+        docstring in routes/db_machines.py."""
         turn = await self._send("bob")
-        self.assertNotIn("backend", turn,
-                         "the fallback must stay scoped to the owner given")
+        self.assertEqual(turn["backend"].get("base_url"), "https://gw.example.com")
 
 
 class BothBranchesAreCoveredTests(unittest.TestCase):

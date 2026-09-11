@@ -190,9 +190,13 @@ class BackendFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await runner.get_default_model(owner="alice"), "vllm/Local-Model")
 
-    async def test_another_owners_machine_is_not_used(self):
-        """The fallback must stay owner-scoped."""
-        self.assertEqual(await runner.get_backend(uuid.uuid4().hex, "bob"), {})
+    async def test_another_owners_machine_is_used_too(self):
+        """Machines became a shared pool on 2026-09-11 -- the one active
+        machine backs every owner's fallback resolution. This used to
+        assert the opposite (test_another_owners_machine_is_not_used); see
+        ai_machine_backend's docstring in routes/db_machines.py."""
+        backend = await runner.get_backend(uuid.uuid4().hex, "bob")
+        self.assertEqual(backend.get("base_url"), "https://gw.example.com")
 
 
 class TaskRowIdentityTests(unittest.IsolatedAsyncioTestCase):

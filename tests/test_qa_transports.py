@@ -74,7 +74,11 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["transports"], [])
 
-    async def test_list_is_owner_scoped(self):
+    async def test_list_is_shared_across_owners(self):
+        """Transports became a shared pool on 2026-09-11 -- every account
+        sees every transport. This used to assert the opposite
+        (test_list_is_owner_scoped); see ssh_transports_list's docstring in
+        routes/db_transports.py."""
         client, headers = self._login("alice")
         bob, bob_headers = self._login("bob")
 
@@ -84,12 +88,12 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
             "kali", "/home/kali/.ssh/id_rsa",
         )
 
-        # Alice sees it, bob does not
+        # Both alice and bob see it.
         r = client.get("/api/transports", headers=headers)
         self.assertEqual(len(r.json()["transports"]), 1)
 
         r2 = bob.get("/api/transports", headers=bob_headers)
-        self.assertEqual(len(r2.json()["transports"]), 0)
+        self.assertEqual(len(r2.json()["transports"]), 1)
 
     def test_requires_login(self):
         r = _client(follow_redirects=False).get("/api/transports")
@@ -173,7 +177,11 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertIn(r.status_code, (303, 401))
 
-    async def test_create_stores_in_db_owner_scoped(self):
+    async def test_create_is_visible_to_every_owner(self):
+        """Transports became a shared pool on 2026-09-11 -- a transport
+        alice creates is visible to bob too. This used to assert the
+        opposite (test_create_stores_in_db_owner_scoped); see
+        ssh_transports_list's docstring in routes/db_transports.py."""
         client, headers = self._login("alice")
         r = client.post("/api/transports", json={
             "name": "visible-to-alice",
@@ -187,13 +195,11 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
         r2 = bob.get("/api/transports", headers=bob_headers)
         listed = r2.json()["transports"]
         names = {t["name"] for t in listed}
-        self.assertNotIn("visible-to-alice", names)
-        # By id as well as by name. A name is not an identifier -- bob could
-        # own a transport called the same thing -- so isolation is only really
-        # asserted against the id alice's row was created with.
-        self.assertNotIn(tid, {t["id"] for t in listed})
+        self.assertIn("visible-to-alice", names)
+        self.assertIn(tid, {t["id"] for t in listed})
 
-        # Verify it exists in DB under alice
+        # ssh_transports_list takes an owner argument but no longer filters
+        # on it -- any value returns the whole shared pool.
         rows = await db_transports.ssh_transports_list("alice")
         names2 = {t["name"] for t in rows}
         self.assertIn("visible-to-alice", names2)
@@ -217,7 +223,11 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
                        headers=headers)
         self.assertEqual(r.status_code, 404)
 
-    async def test_get_404_for_another_users_transport(self):
+    async def test_get_200_for_another_users_transport(self):
+        """Transports became a shared pool on 2026-09-11 -- any account can
+        read any transport. This used to assert a 404
+        (test_get_404_for_another_users_transport); see ssh_transport_get's
+        docstring in routes/db_transports.py."""
         client, headers = self._login("alice")
         tid = uuid.uuid4().hex
         await db_transports.ssh_transport_create(
@@ -229,7 +239,7 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r2.status_code, 200)
 
         r3 = client.get(f"/api/transports/{tid}", headers=headers)
-        self.assertEqual(r3.status_code, 404)
+        self.assertEqual(r3.status_code, 200)
 
     def test_get_requires_login(self):
         r = _client(follow_redirects=False).get("/api/transports/someid")
@@ -316,20 +326,19 @@ class TransportRouteTests(unittest.IsolatedAsyncioTestCase):
         r = _client(follow_redirects=False).delete("/api/transports/someid")
         self.assertIn(r.status_code, (303, 401))
 
-    async def test_delete_is_owner_scoped(self):
+    async def test_delete_works_for_any_owner(self):
+        """Transports became a shared pool on 2026-09-11 -- any account can
+        delete any transport. This used to assert alice's delete was
+        refused (test_delete_is_owner_scoped); see ssh_transport_delete's
+        docstring in routes/db_transports.py."""
         client, headers = self._login("alice")
         tid = uuid.uuid4().hex
         await db_transports.ssh_transport_create(
             tid, "bob-only", "bob", "10.0.0.1", "kali", "/root/.ssh/key",
         )
-        bob, bob_headers = self._login("bob")
 
-        # Bob can delete, alice cannot
         r1 = client.delete(f"/api/transports/{tid}", headers=headers)
-        self.assertEqual(r1.status_code, 404)
-
-        r2 = bob.delete(f"/api/transports/{tid}", headers=bob_headers)
-        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r1.status_code, 200)
 
     def test_delete_returns_404_for_unknown_transport(self):
         client, headers = self._login("alice")

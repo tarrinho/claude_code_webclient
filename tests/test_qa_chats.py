@@ -683,10 +683,17 @@ class APIChatListTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await db.init()
-        await auth.bootstrap_admin()
+        # bootstrap_admin() needs WC_ADMIN_PASSWORD from the environment,
+        # which this fixture does not set -- create the user directly instead,
+        # with a password we control for the login below.
+        await db.user_create("admin", None, auth.hash_password("admin"))
+        # Real logins carry the user's UUID (session["user"] == user["id"]),
+        # not the login name -- so the chat below must be owned by that UUID
+        # to match what /login actually produces.
+        self.admin_id = (await db.user_get_by_name("admin"))["id"]
 
     async def test_list_returns_chats_key(self):
-        await db.chat_create("api-1", "API List", None, f"{self.tmpdir.name}/api-1", "admin")
+        await db.chat_create("api-1", "API List", None, f"{self.tmpdir.name}/api-1", self.admin_id)
         from fastapi.testclient import TestClient
 
         from app import app as web_app  # type: ignore

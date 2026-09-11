@@ -227,7 +227,7 @@ async def handle_login(request: Request):
             )
         return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
 
-    sid, csrf = auth.session_new(user["name"], user.get("role") or "user")
+    sid, csrf = auth.session_new(user["id"], user.get("role") or "user")
     auth.login_record_success(ip)
     resp = JSONResponse({"ok": True})
     set_session_cookie(resp, sid)

@@ -304,6 +304,10 @@ class OrchestratorCostEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
         self.password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(self.password))
+        # Real logins now carry the user's UUID (session["user"] == user["id"]),
+        # not the login name -- so rows scoped to this fixture's admin must be
+        # owned by that UUID, matching what /login actually produces.
+        self.admin_id = (await db.user_get_by_name("admin"))["id"]
 
     def _login(self):
         client = _client()
@@ -314,10 +318,10 @@ class OrchestratorCostEndpointTests(unittest.IsolatedAsyncioTestCase):
         return client
 
     async def test_the_response_carries_the_cost(self):
-        await db.orchestrator_create("o-1", "Build it", None, "admin")
+        await db.orchestrator_create("o-1", "Build it", None, self.admin_id)
         await db.orchestrator_set_planner_chat("o-1", "plan-uuid")
         await db.usage_record(
-            chat_id="plan-uuid", owner_id="admin", model=TESTING_MODEL,
+            chat_id="plan-uuid", owner_id=self.admin_id, model=TESTING_MODEL,
             provider="through_claude_code", input_tokens=1200,
             output_tokens=300, cost_usd=0.07, origin="orchestrator",
         )
@@ -331,7 +335,7 @@ class OrchestratorCostEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(body["cost"]["cost_usd"], 0.07, places=6)
 
     async def test_an_unstarted_orchestrator_reports_zeros_not_an_error(self):
-        await db.orchestrator_create("o-1", "Build it", None, "admin")
+        await db.orchestrator_create("o-1", "Build it", None, self.admin_id)
         client = self._login()
 
         body = client.get("/api/orchestrators/o-1/tasks").json()
@@ -341,7 +345,7 @@ class OrchestratorCostEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_task_list_still_comes_back(self):
         """The figure is an addition, not a replacement."""
-        await db.orchestrator_create("o-1", "Build it", None, "admin")
+        await db.orchestrator_create("o-1", "Build it", None, self.admin_id)
         await db.orchestrator_task_create("o-1", "t-1", "Do it", None)
         client = self._login()
 

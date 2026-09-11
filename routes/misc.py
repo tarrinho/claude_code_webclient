@@ -1454,6 +1454,60 @@ def _sanitize_session_id(session_id: str) -> str:
     return session_id
 
 
+def _fix_stale_work_dir(chat_id: str) -> None:
+    """Repair a chat whose work_dir escapes PROJECTS_ROOT.
+
+    Old chats were created with work_dir set to bare session UUIDs, ``/tmp``,
+    or any path that later turned out outside the PROJECTS_ROOT gate enforced
+    by runner.py.  This fixes them in-place so the chat can run turns again.
+    """
+    try:
+        root = Path(config.PROJECTS_ROOT).resolve()
+        if not root.is_dir():
+            return
+    except (OSError, RuntimeError):
+        return
+
+    try:
+        row = db.db_conn.execute(
+            "SELECT work_dir FROM chats WHERE id = ?", (chat_id,)
+        ).fetchone()
+    except Exception:
+        return
+    if not row:
+        return
+    old_work_dir = row[0]
+    if not old_work_dir:
+        return
+
+    try:
+        candidate = Path(old_work_dir).resolve()
+    except (OSError, RuntimeError):
+        candidate = None
+
+    if candidate and candidate.is_dir() and candidate.is_relative_to(root):
+        return  # already valid
+
+    # Create a new scratch dir inside PROJECTS_ROOT
+    new_work_dir = root / f"cli-import-{chat_id[:8]}"
+    new_work_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        db.db_conn.execute(
+            "UPDATE chats SET work_dir = ? WHERE id = ?",
+            (str(new_work_dir), chat_id),
+        )
+        db.db_conn.commit()
+        _log.info(
+            "work_dir_repaired chat_id=%s old=%s new=%s",
+            chat_id, old_work_dir, new_work_dir,
+        )
+    except Exception:
+        _log.warning(
+            "work_dir_repair_failed chat_id=%s: %s", chat_id, db.db_conn,
+        )
+
+
 def _adopt_session_cwd(source_cwd: str | None, session_id: str) -> str:
     """Pick the work_dir for a chat adopting a CLI session.
 
@@ -1537,6 +1591,11 @@ async def handle_sessions_resume(request: Request, session_id: str):
         # messages so a conversation continued here is never duplicated.
         if not await db.messages_get(existing["id"]):
             await _import_transcript(existing["id"], session_id)
+        # Fix stale work_dir: chats created before PROJECTS_ROOT validation
+        # had work_dir set to bare session UUIDs or /tmp or any path outside
+        # PROJECTS_ROOT. runner.py line 1268 rejects those as escaping the
+        # root, so we must repair here or the chat is permanently broken.
+        _fix_stale_work_dir(existing["id"])
         return JSONResponse(
             {
                 "id": existing["id"],

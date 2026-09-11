@@ -160,7 +160,7 @@ async def _resolve_transport_for_create(session: dict) -> str:
     return "local"
 
 
-async def _resolve_transport_name(chat_id: str, owner: str | None) -> str:
+def _transcript_mtimes_sync(session_ids: list[str]) -> dict[str, str]:
     """Last-write time of each session's transcript, as an ISO timestamp.
 
     Blocking: locating a transcript globs the projects directory, so callers

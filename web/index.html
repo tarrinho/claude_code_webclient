@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=1789146172">
+<link rel="stylesheet" href="/assets/styles.css?v=5525951">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -33,7 +33,7 @@
   <header class="topbar">
     <button class="btn-icon" id="menuBtn" aria-label="Open conversations" aria-expanded="false">☰</button>
     <h1 id="topbarTitle">WebConsole</h1>
-    <span class="ver" id="ver">0.17.0</span>
+    <span class="ver" id="ver">0.17.2</span>
     <button class="btn-icon" id="orchestratorBtn" aria-label="Open orchestrator" title="Orchestrator" style="margin-right:6px"><svg fill="currentColor" width="18" height="18" viewBox="0 0 52 52" aria-hidden="true"><path d="M36.4,3.14a1.62,1.62,0,0,0-2.24-1,1.65,1.65,0,0,0-.59,2.38l7.28,18.18c.45.95,1.28,1.51,2.21,1.06a1.76,1.76,0,0,0,.63-2.47Z"/><path d="M26.2,15.75c4.11,0,7.41,3.74,7.41,8.37s-3.3,8.37-7.41,8.37-7.41-3.74-7.41-8.37S22.09,15.75,26.2,15.75Z"/><path d="M9.11,34.34l10.67,1.2L22.24,50h-3a1.87,1.87,0,0,1-1.79-1.39l-2.18-7.84-9.09-1a4.77,4.77,0,0,1-3.88-6.3L7,19.79A2.79,2.79,0,0,1,10.52,18a2.86,2.86,0,0,1,1.73,3.63L8.33,33.09A.94.94,0,0,0,9.11,34.34Z"/><path d="M33.36,50h-3.2l2.43-14.29,10.09,1.91a.94.94,0,0,0,1.08-1.14l-1.42-6.4a2.85,2.85,0,0,1,2.07-3.44,2.8,2.8,0,0,1,3.38,2.1L49.87,38a4.73,4.73,0,0,1-5.38,5.8l-7.7-1.46-1.62,6.27A1.87,1.87,0,0,1,33.36,50Z"/><path d="M23.31,37.29a1.1,1.1,0,0,1-1.68-.95V34.57a1.1,1.1,0,0,1,1.68-1l2.89,1.83Z"/><path d="M26.2,35.45l2.88-1.83a1.1,1.1,0,0,1,1.69,1v1.77a1.11,1.11,0,0,1-1.69.95Z"/></svg></button>
     <button class="btn-icon" id="supervisorMapBtn" aria-label="Open supervisor map" title="Supervisor Map"><svg fill="currentColor" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg></button>
 <button class="btn-icon" id="settingsBtn" aria-label="Open settings" title="Settings">⚙</button>
@@ -219,6 +219,16 @@
       <!-- Backends tab: a machine and the models it serves are one thing -->
       <div class="settings-panel" id="panelBackends" role="tabpanel" aria-labelledby="tabBackends" tabindex="0">
         <p>Each backend is somewhere Claude Code can run. The active one serves the models offered when starting a turn.</p>
+        <!-- Re-runs loadBackends() on demand: machines, transports, tunnel
+             status and every machine's model list, all in one pass. Before
+             this the only way to see it again was to leave the tab and come
+             back, which re-triggers the same call as a side effect of the
+             tab switch rather than as an intentional action. -->
+        <div class="backend-refresh-row">
+          <button type="button" class="btn-secondary btn-refresh-backends" id="refreshBackendsBtn"
+                  title="Reload machines, transports and models">⟳ Refresh all</button>
+          <span class="backend-refresh-status" id="refreshBackendsStatus" role="status" aria-live="polite"></span>
+        </div>
         <!-- The map: where a turn starts, the wire it follows, and the
              backends it can land on. -->
         <!-- Three columns, and the middle one is the point: a turn reaches a
@@ -503,22 +513,22 @@
     </div>
   </div>
 </div>
-<script type="module" src="/assets/usage.js?v=1789146172"></script>
-<script type="module" src="/assets/server-stats.js?v=1789146172"></script>
-<script type="module" src="/assets/skills.js?v=1789146172"></script>
-<script type="module" src="/assets/machines.js?v=1789146172"></script>
-<script type="module" src="/assets/orchestrator.js?v=1789146172"></script>
-<script type="module" src="/assets/device-alerts.js?v=1789146172"></script>
-<script type="module" src="/assets/voice-settings.js?v=1789146172"></script>
-<script type="module" src="/assets/app.js?v=1789146172"></script>
-<script type="module" src="/assets/voice-engine.js?v=1789146172"></script>
-<script type="module" src="/assets/voice-tooltip.js?v=1789146172"></script>
-<script type="module" src="/assets/voice-handoff.js?v=1789146172"></script>
+<script type="module" src="/assets/usage.js?v=6329126"></script>
+<script type="module" src="/assets/server-stats.js?v=8469847"></script>
+<script type="module" src="/assets/skills.js?v=15159128"></script>
+<script type="module" src="/assets/machines.js?v=14224854"></script>
+<script type="module" src="/assets/orchestrator.js?v=225906"></script>
+<script type="module" src="/assets/device-alerts.js?v=12607362"></script>
+<script type="module" src="/assets/voice-settings.js?v=5515949"></script>
+<script type="module" src="/assets/app.js?v=1727197"></script>
+<script type="module" src="/assets/voice-engine.js?v=7083095"></script>
+<script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
+<script type="module" src="/assets/voice-handoff.js?v=15895927"></script>
 <script type="module" src="/assets/transcript.js"></script>
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
-<script type="module" src="/assets/supervisor-map.js?v=1789146172"></script>
+<script type="module" src="/assets/supervisor-map.js?v=3911632"></script>
 
 <!-- Supervisor Map Panel -->
 <div id="supervisorMapPanel" role="dialog" aria-modal="true" aria-labelledby="supervisorMapTitle" hidden>

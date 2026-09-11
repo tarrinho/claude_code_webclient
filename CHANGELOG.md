@@ -20,6 +20,80 @@ churn.
 
 ---
 
+## [0.17.2] — 2026-09-11
+
+0.17.1 was a version bump with no release of its own: it landed between two
+batches of fixes and was immediately superseded without ever gaining a
+CHANGELOG section. Its changes are folded in here, following the same
+precedent as 0.4.0 and 0.7.1 above.
+
+### Changed
+
+- **AI machines and SSH transports became a shared pool across every
+  account.** Previously owner-scoped like conversations: a machine or
+  transport one account created was invisible to, and unusable by, every
+  other account. On this deployment that meant one account owned every real
+  machine and transport while a second, otherwise-valid account saw an empty
+  Backends panel and no way to reach any of them. `routes/db_machines.py`
+  and `routes/db_transports.py` dropped every `owner_id` filter from
+  read/update/delete/activate; `owner_id` stays on create calls as
+  creator/audit metadata only. "Active" (which machine new turns route
+  through) is now one flag shared by every account rather than a per-owner
+  default — whoever activates a machine changes routing for everyone.
+  Conversations (`chats`) are unaffected and remain private per account.
+
+- **Usage and statistics endpoints report across all accounts, not per-owner**,
+  matching the same shared-infrastructure model.
+
+### Fixed
+
+- **Session identity was the login name, not the user's UUID.**
+  `app.py`'s login handler passed `user["name"]` into the session instead of
+  `user["id"]`, so every `owner_id`-scoped query (`chat_create` among them)
+  received a username where it expected a real UUID. Invisible everywhere
+  except `chat_create`'s own guard, which raised `ValueError: owner_id must
+  be a real user UUID, not 'admin'` whenever the login name was literally
+  "admin" — the default when `WC_ADMIN_USER` is unset. The same bug existed
+  independently in the session-resume endpoint, which resolved a username
+  instead of the UUID before calling `chat_create`; fixed the same way.
+
+- **A duplicate function name broke `/api/chats` and left resumed sessions
+  pointing at a stale work_dir.** Repaired as part of the resume-endpoint fix
+  above.
+
+- **Static assets could silently split into two module instances.**
+  `index.html`'s `<script>` tag for `app.js` and every module that
+  `import`s `app.js` referenced it under two different `?v=` querystrings
+  after two rounds of edits landed without re-running the version-stamping
+  step. Two different URLs for the same file are two different ES module
+  instances to a browser: the page's real logic populated one instance's
+  state, while the code that renders the Backends panel read the other,
+  permanently-empty one — no console error, because nothing was actually
+  broken syntactically, just silently duplicated. `bin/wc-asset-versions.py`
+  exists for exactly this; running it resynced 33 stale references across 15
+  files to their real content hashes.
+
+- **The IncompleteReadError from a dropped connection crashed the proxy's
+  handshake handler instead of logging it.** `claude_proxy.py`'s handshake
+  `except` clause caught `TimeoutError`/`ValueError`/`JSONDecodeError` but not
+  `asyncio.IncompleteReadError` (an `EOFError` subclass), so a client that
+  connected and disconnected before writing its handshake line — as happens
+  to in-flight turns during a restart — surfaced as an unhandled exception in
+  `client_connected_cb` instead of the same "bad or missing handshake"
+  warning every other malformed handshake gets.
+
+- **`_alertsEnabled` was never exported from `device-alerts.js`**, so
+  `supervisor-map.js`'s import of it threw a `SyntaxError` and blocked the
+  whole panel from opening.
+
+- **The chat-naming counter was in-memory and reset on restart**, so titles
+  like "ssh : 3 : fix the thing" could repeat after a restart. Made
+  persistent in the database; existing duplicate session names deduplicated
+  on migration.
+
+- **Model/agent statistics charts were still owner-scoped** after usage
+  reporting moved to cross-account — a gap in that change, closed here.
+
 ## [0.17.0] — 2026-09-11
 
 ### Added

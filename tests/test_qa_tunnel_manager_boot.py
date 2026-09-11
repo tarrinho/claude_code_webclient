@@ -35,8 +35,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import config
 import db
-from tests.testing_model import TESTING_MODEL
 import tunnel_manager
+from tests.testing_model import TESTING_MODEL
 
 REPO = Path(__file__).resolve().parent.parent
 APP_PY = REPO / "app.py"

@@ -79,6 +79,7 @@ function FakeEl(id) {
     },
     scrollIntoView: function () {},
     getAttribute: function () { return null; },
+    setAttribute: function (k, v) { el._attrs = el._attrs || {}; el._attrs[k] = v; },
     // Focus tracking, for the drawer's focus handling. A test seeds
     // __focusables on the element it is about to query.
     __focusables: [],
@@ -90,6 +91,11 @@ function FakeEl(id) {
     addEventListener: function (type, fn) {
       STUB.elHandlers[id] = STUB.elHandlers[id] || {};
       STUB.elHandlers[id][type] = fn;
+    },
+    appendChild: function (child) { el._children = el._children || []; el._children.push(child); },
+    prepend: function (child) { el._children = el._children || []; el._children.unshift(child); },
+    removeChild: function (child) {
+      if (el._children) el._children = el._children.filter(c => c !== child);
     },
   };
   return el;
@@ -120,6 +126,12 @@ function CustomEvent(type, init) {
   this.detail = (init && init.detail) || null;
 }
 
+document.createElement = function (tag) {
+  var el = FakeEl("_createElement_" + tag);
+  el.tagName = tag.toUpperCase();
+  return el;
+};
+
 // document.body has to be a real fake element: the module asks it for
 // computed styles and uses body.contains() to decide whether the element it
 // wants to hand focus back to is still in the page.
@@ -128,6 +140,25 @@ document.body = FakeEl("body");
 function getComputedStyle() {
   return {getPropertyValue: function () { return ""; }};
 }
+
+/* ── d3 ──────────────────────────────────────────────────────────────────── */
+var _currentSel = null;  // set by .each() so select(this) resolves correctly
+var d3 = {
+  select: function (el) {
+    // When .each() calls the callback, this is the per-node wrapper Sel.
+    // Check if el is already a Sel (has __attrs + __children).
+    if (el && typeof el.__attrs === "object" && typeof el.__children === "object") {
+      _currentSel = el;
+      return el;
+    }
+    // For SVG selection, return a new Sel rooted at the current context.
+    var s = Sel(el.slice(1), {data: _currentSel && _currentSel.__data || []});
+    if (_currentSel) {
+      s.__origin = _currentSel.__origin || _currentSel;
+    }
+    return s;
+  }
+};
 
 /* ── d3 selections ───────────────────────────────────────────────────── */
 
@@ -173,6 +204,24 @@ function Sel(tag, opts) {
     sel.__children.push(child);
     return child;
   };
+  // Insert places a child before the reference element.  The comms overlay
+  // draws label pills *under* the text, and the stub's array of children
+  // is paint-order, so the index must be tracked so tests can assert the
+  // pill sits before the text node.
+  sel.insert = function (t, ref) {
+    var child = Sel(t, {data: sel.__data});
+    // The ref selector picks the position; we find the first child whose tag
+    // matches ref and insert before it.  If no match, push like append.
+    var refIdx = ref
+      ? sel.__children.findIndex(function (c) { return c.__tag === ref; })
+      : -1;
+    if (refIdx >= 0) {
+      sel.__children.splice(refIdx, 0, child);
+    } else {
+      sel.__children.push(child);
+    }
+    return child;
+  };
   sel.selectAll = function (selector) {
     var s = Sel("selection", {});
     s.__selector = selector;
@@ -195,12 +244,18 @@ function Sel(tag, opts) {
     return joined;
   };
   sel.filter = function (fn) {
-    return Sel(sel.__tag, {data: sel.__data.filter(fn)});
+    var out = Sel(sel.__tag, {data: sel.__data.filter(fn)});
+    out.__origin = sel.__origin || sel;
+    return out;
   };
   sel.each = function (fn) {
     sel.__data.forEach(function (d, i) {
       var per = Sel(sel.__tag, {data: [d]});
-      sel.__children.push(per);
+      // Attach to the origin (the real tree) rather than sel, because
+      // sel might be a disconnected filter() result that was never
+      // appended to the viewport.
+      var parent = (sel.__origin || sel);
+      parent.__children.push(per);
       fn.call(per, d, i);
     });
     return sel;

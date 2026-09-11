@@ -73,7 +73,7 @@ class MembersBase(unittest.IsolatedAsyncioTestCase):
         # wrong argument order cost 600 seconds instead of one traceback.
         try:
             await db.close()
-        except Exception:  # noqa: BLE001,S110 -- must not mask the real failure
+        except Exception:
             pass
         self.root_patch.stop()
         self.db_patch.stop()

@@ -91,9 +91,7 @@ def _offenders() -> list[tuple[str, int, str]]:
             names = _handler_names(node)
             if not names:
                 found.append((path.name, node.lineno, "bare except"))
-            elif names & BROAD:
-                found.append((path.name, node.lineno, " ".join(sorted(names))))
-            elif not names <= NARROW:
+            elif names & BROAD or not names <= NARROW:
                 found.append((path.name, node.lineno, " ".join(sorted(names))))
     return found
 

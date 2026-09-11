@@ -37,7 +37,7 @@ def _run_echo_server(sock: socket.socket, stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             conn, _ = sock.accept()
-        except socket.timeout:
+        except TimeoutError:
             continue
         except OSError:
             return

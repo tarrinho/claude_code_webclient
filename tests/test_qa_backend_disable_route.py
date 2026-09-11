@@ -114,19 +114,17 @@ class DisableIsRefusedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_unknown_machine_is_404_not_409(self):
         a, b, c = _patched(None, _NO_PINS, AsyncMock())
-        with a, b, c:
-            with self.assertRaises(HTTPException) as caught:
-                await mr.handle_machine_patch(_Request({"enabled": False}), "m-1")
+        with a, b, c, self.assertRaises(HTTPException) as caught:
+            await mr.handle_machine_patch(_Request({"enabled": False}), "m-1")
         self.assertEqual(caught.exception.status_code, 404)
 
 
 class FieldValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_enabled_must_be_a_boolean(self):
         a, b, c = _patched(dict(_MACHINE), _NO_PINS, AsyncMock())
-        with a, b, c:
-            with self.assertRaises(HTTPException) as caught:
-                await mr.handle_machine_patch(
-                    _Request({"enabled": "yes"}), "m-1")
+        with a, b, c, self.assertRaises(HTTPException) as caught:
+            await mr.handle_machine_patch(
+                _Request({"enabled": "yes"}), "m-1")
         self.assertEqual(caught.exception.status_code, 400)
 
     async def test_enabled_is_an_accepted_field(self):

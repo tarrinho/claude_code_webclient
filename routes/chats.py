@@ -333,20 +333,23 @@ async def handle_chat_get(request: Request, chat_id: str):
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    # Catch up before reading: without this, opening (or reloading) a linked
-    # chat served whatever the last periodic sync happened to leave in
-    # `messages` -- up to 30s stale in the common case, and unboundedly
-    # stale if nothing had synced it in a while (e.g. no tab had it open).
-    # Cheap when there is nothing new (_sync_linked_chat costs one stat in
-    # that case) and only does real work when the transcript actually grew,
-    # which is exactly when a fresh read is worth it.
+    # Fire-and-forget sync: launch in background so the GET returns
+    # immediately with stored content (chat renders on first paint),
+    # then the next poll-driven refresh picks up any newly-synced turns.
+    # Must NOT await here: a 95MB transcript takes seconds to scan,
+    # which blocks the response until the browser times out.
     if chat.get("session_id"):
-        try:
-            await _sync_linked_chat(chat)
-        except Exception as exc:
-            # A sync failure here must not turn "open this chat" into a 500 --
-            # the client still gets whatever was already stored.
-            _log.warning("chat_get_sync_failed chat_id=%s: %s", chat_id, exc)
+        asyncio.create_task(
+            _sync_linked_chat(chat)
+        ).add_done_callback(
+            lambda fut: _log.debug("bg chat_get sync done chat_id=%s", chat_id)
+            if not fut.cancelled() and not fut.exception()
+            else _log.warning(
+                "bg chat_get sync failed chat_id=%s: %s",
+                chat_id,
+                fut.exception() or "cancelled",
+            )
+        )
 
     # Paginated: a chat with thousands of turns used to send, and render,
     # every one of them on every open and every poll-driven refresh. `limit`

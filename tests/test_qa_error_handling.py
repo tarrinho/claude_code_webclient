@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import re
 import unittest
-
+from pathlib import Path
 
 CADDY_ERROR_HTML = """<!doctype html>
 <html lang="en">

@@ -176,8 +176,7 @@ class TheStubProvidesWhatTheModuleCallsTests(unittest.TestCase):
         self.assertTrue(used, "found no d3 calls in supervisor-map.js")
         missing = sorted(
             name for name in used
-            if not _eval("JSON.stringify({has: typeof d3[%r] !== 'undefined'})"
-                         % name)["has"]
+            if not _eval(f'JSON.stringify({{has: typeof d3["{name}"] !== "undefined"}})')["has"]
         )
         self.assertEqual(
             missing, [],

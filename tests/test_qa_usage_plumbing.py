@@ -31,8 +31,8 @@ import db
 import runner
 import transcripts
 import turns
-from tests.testing_model import TESTING_MODEL
 from routes import chats as chat_routes
+from tests.testing_model import TESTING_MODEL
 
 # ── Unit: what counts as a prompt boundary ────────────────────────────────────
 

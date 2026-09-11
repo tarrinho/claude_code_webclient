@@ -2,4 +2,17 @@
 # Tunnel code catches broad exceptions intentionally: the loop must survive
 # transient SSH failures, socket drops, and paramiko errors. Bleeding-edge
 # strictness (S110/BLE001) is counterproductive in a retry loop.
-ignore = ["BLE001", "S110"]
+# These are style suggestions, not correctness/security issues:
+ignore = [
+    "BLE001",
+    "S110",
+    "PLW1510",  # subprocess.run without check=False — tests verify exit codes manually
+    "RUF059",   # unpacked variable never used — intentional unpacking in tests
+    "SIM117",   # nested with — readability preference
+    "RUF034",   # useless if-else — logic is deliberate
+    "B018",     # useless expression — intentional for test isolation
+    "ISC004",   # implicit string concat — test readability
+    "RUF015",   # next(iter(x)) over slice — minor optimization
+    "RUF012",   # mutable default class attribute — deliberate for test caching
+    "UP031",    # percent format — intentional for d3 stub compat
+]

@@ -146,7 +146,7 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
             json=AsyncMock(return_value={}),
         )
 
-    PENDING = {  # noqa: RUF012 -- a fixture, not shared mutable state
+    PENDING = {
         "id": "toolu_01",
         "needle": "Which of these",
         "questions": [{"question": "Which of these", "header": "Weekend",

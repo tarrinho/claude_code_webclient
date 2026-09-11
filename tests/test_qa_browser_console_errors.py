@@ -28,7 +28,6 @@ import unittest
 
 import tests.test_frontend_browser as fb
 
-
 # Console noise that is expected and is not a defect. Kept deliberately short
 # and specific: a broad pattern here would silence the next real error, which
 # is the whole failure mode this file exists to catch. Every entry needs a

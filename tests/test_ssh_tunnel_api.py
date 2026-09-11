@@ -37,6 +37,7 @@ def client(tmp_path, monkeypatch):
         pytest.skip(f"app harness unavailable: {exc}")
 
     import asyncio
+
     import config
 
     # A loop of this fixture's own, created rather than fetched -- see the
@@ -77,7 +78,8 @@ def client(tmp_path, monkeypatch):
         loop.run_until_complete(auth.bootstrap_admin())
 
         from fastapi.testclient import TestClient
-        from app import app  # noqa: F811
+
+        from app import app
         client = TestClient(app, raise_server_exceptions=False)
         client.post(
             "/login", json={"username": "admin", "password": "admin-test-pw-123"}
@@ -152,6 +154,7 @@ def test_tunnel_status_survives_no_in_memory_state(client):
     machine_id = _create_machine_with_transport(client)
 
     import asyncio
+
     import db
 
     asyncio.get_event_loop().run_until_complete(
@@ -307,8 +310,9 @@ def test_tunnel_start_for_a_real_machine_actually_creates_the_row(client, monkey
     assert resp.json() == {"ok": True, "status": "connecting"}
     assert queued == [(machine_id, "START_TUNNEL")]
 
-    import db
     import asyncio
+
+    import db
     row = asyncio.get_event_loop().run_until_complete(db.ssh_tunnel_get(machine_id))
     assert row is not None, (
         "no ssh_tunnels row was created for a real machine_id -- "
@@ -324,7 +328,8 @@ async def _noop():
 def test_tunnel_start_requires_auth():
     """POST /api/tunnel/start without auth returns 401."""
     from fastapi.testclient import TestClient
-    from app import app  # noqa: F811
+
+    from app import app
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/api/tunnel/start", json={})
     assert resp.status_code == 401
@@ -333,7 +338,8 @@ def test_tunnel_start_requires_auth():
 def test_tunnel_stop_requires_auth():
     """POST /api/tunnel/stop without auth returns 401."""
     from fastapi.testclient import TestClient
-    from app import app  # noqa: F811
+
+    from app import app
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/api/tunnel/stop", json={})
     assert resp.status_code == 401
@@ -342,7 +348,8 @@ def test_tunnel_stop_requires_auth():
 def test_tunnel_toggle_requires_auth():
     """POST /api/tunnel/toggle without auth returns 401."""
     from fastapi.testclient import TestClient
-    from app import app  # noqa: F811
+
+    from app import app
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/api/tunnel/toggle", json={})
     assert resp.status_code == 401

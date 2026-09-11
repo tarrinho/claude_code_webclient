@@ -49,8 +49,8 @@ from unittest.mock import patch
 
 import config
 import db
-import runner
 import orchestrator
+import runner
 from tests.testing_model import TESTING_MODEL
 
 
@@ -160,7 +160,7 @@ class BackendFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         try:
             await db.close()
-        except Exception:  # noqa: BLE001,S110 -- must not mask the real failure
+        except Exception:
             pass
         self.root_patch.stop()
         self.db_patch.stop()
@@ -209,7 +209,7 @@ class TaskRowIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         try:
             await db.close()
-        except Exception:  # noqa: BLE001,S110
+        except Exception:
             pass
         self.root_patch.stop()
         self.db_patch.stop()

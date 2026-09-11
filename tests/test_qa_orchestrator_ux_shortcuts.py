@@ -65,11 +65,11 @@ def _driver_status() -> tuple[bool, str]:
     """
     try:
         from playwright._impl._driver import compute_driver_executable
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"playwright not importable: {exc.__class__.__name__}"
     try:
         parts = compute_driver_executable()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"driver path unresolvable: {exc.__class__.__name__}"
     for path in (parts if isinstance(parts, (list, tuple)) else [parts]):
         if not os.path.exists(path):

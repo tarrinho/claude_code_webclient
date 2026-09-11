@@ -20,6 +20,7 @@ import qa_remote
 
 def _client():
     from fastapi.testclient import TestClient
+
     from app import app as web_app
     return TestClient(web_app, raise_server_exceptions=False, base_url="https://testserver")
 

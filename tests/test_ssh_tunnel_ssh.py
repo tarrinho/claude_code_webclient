@@ -7,7 +7,6 @@ import asyncio
 
 import pytest
 
-
 pytest.importorskip("paramiko")
 
 
@@ -172,7 +171,7 @@ def test_pinned_policy_accepts_a_key_matching_the_stored_fingerprint():
     expected case on every connection after the first, so it must not
     raise or record a "new" fingerprint (nothing changed, nothing to
     persist again)."""
-    from tunnel_manager_ssh import _PinnedHostKeyPolicy, _fingerprint
+    from tunnel_manager_ssh import _fingerprint, _PinnedHostKeyPolicy
 
     key = _FakeKey(b"the-real-key")
     stored = _fingerprint(key)
@@ -189,7 +188,7 @@ def test_pinned_policy_rejects_a_key_that_does_not_match_the_pin():
     *different* key than the one accepted on first connect -- a MITM, or
     the host being reinstalled with a new key -- must be rejected, not
     silently trusted the way AutoAddPolicy always did."""
-    from tunnel_manager_ssh import _PinnedHostKeyPolicy, _fingerprint
+    from tunnel_manager_ssh import _fingerprint, _PinnedHostKeyPolicy
 
     original = _fingerprint(_FakeKey(b"original-key"))
     policy = _PinnedHostKeyPolicy(original)

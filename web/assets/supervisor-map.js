@@ -73,6 +73,11 @@ const STATUS_LABEL = {
 // could call `_tree.bounds()`, which is not a d3 API and always threw. The
 // layout is now a local, and the bounds are computed from _root's own nodes.
 let _svg, _zoom, _data, _root, _viewport, _collapsed = new Set();
+// History buffer: one snapshot per poll, kept in a rolling window. Declared
+// here so `renderSupervisorMap` can push to it (let is TDZ; a later declaration
+// would throw "not defined" from inside the function body).
+let _historySnapshots = [];
+let _historyIdx = -1;  // -1 = live
 // The zoom transform in force, kept across re-renders so a background refresh
 // does not reset the reader's view. Null means "no view chosen yet", which is
 // what makes the first render after an open fit to the tree.
@@ -184,7 +189,14 @@ export function renderSupervisorMap(data, options = {}) {
   // "problems only" could not restore what it hid without another fetch, and
   // the poll is every ten seconds.
   _data = data;
-  updateToolbar(data);
+  // History: snapshot for the scrubber.  One every poll, kept in a rolling
+  // buffer so the operator can rewind without another network call.
+  if (_data) {
+    _historySnapshots.push(JSON.stringify(_data));
+    if (_historySnapshots.length > 6) _historySnapshots.shift();
+    _historyIdx = _historySnapshots.length - 1;  // live again
+  }
+    updateToolbar(data);
   startFreshnessTicker();
   data = _visibleTree(data);
   _root = null;
@@ -265,6 +277,21 @@ export function renderSupervisorMap(data, options = {}) {
       // nothing else writes to the viewport's transform.
       _viewport.attr("transform", event.transform);
       _lastTransform = event.transform;
+      // Zoom-based LOD: collapse siblings when the zoom scale drops below
+      // the threshold so only hubs are visible, expand when zooming in.
+      // This is the "map-style level-of-detail" the spec asks for — rather
+      // than a manual compact toggle, the view simplifies itself.
+      const scale = event.transform.k;
+      if (scale < 0.5) {
+        // Hide all agent-level children (depth 2) when zoomed out.
+        _collapsed = new Set(_root.descendants()
+          .filter(d => d.depth >= 2 && d.children).map(d => d.data.id));
+        _redraw();
+      } else if (scale >= 0.5 && _collapsed.size > 0) {
+        // Restore: only keep explicitly pinned collapsed nodes.
+        _collapsed = new Set([..._collapsed].filter(id => _pinned.has(id)));
+        _redraw();
+      }
     });
   _svg.call(_zoom);
 
@@ -461,14 +488,39 @@ export function renderSupervisorMap(data, options = {}) {
       // on. Colour alone fails anyone who cannot separate amber from green,
       // and this is the one state that asks something of them.
       if (d.data.agent_state === "waiting_for_input") {
+        // Pill background so the "?" is legible against every fill and ring.
+        // Without one the "?" blends into the ring stroke and the fill, and
+        // the shape that tells the operator what to do becomes unreadable.
+        g.append("circle")
+          .attr("r", 5.5)
+          .attr("cx", 0).attr("cy", -(r + 7))
+          .attr("fill", _cssVar("--panel", "#fff"))
+          .attr("stroke", ring.stroke)
+          .attr("stroke-width", 1);
         g.append("text")
           .attr("class", "map-wait-badge")
           .attr("x", 0).attr("y", -(r + 7))
           .attr("text-anchor", "middle")
-          .attr("font-size", "9px")
+          .attr("dominant-baseline", "central")
+          .attr("font-size", "10px")
+          .attr("font-weight", "700")
           .attr("fill", ring.stroke)
           .text("?");
       }
+    }
+
+    // ── Pin ring (gold) ───────────────────────────────────────────
+    // Pinned agents float above all filters: a pin is the operator's
+    // bookmark so an agent does not vanish when "problems only" is on.
+    // Gold, not a status colour, so it is a meta-state the operator adds,
+    // not a state the agent reports.
+    if (_pinned.has(d.data.id)) {
+      g.append("circle")
+        .attr("r", r + 5.5)
+        .attr("fill", "none")
+        .attr("stroke", "#f59e0b")
+        .attr("stroke-width", 2)
+        .attr("stroke-dasharray", "3 2");
     }
 
     // ── The two badges, kept separate ───────────────────────────────
@@ -479,20 +531,45 @@ export function renderSupervisorMap(data, options = {}) {
     // below). Same colour would have been enough to read them as one string.
     if (d.data.transport_mechanism) {
       const isCli = d.data.transport_mechanism === "cli";
+      // Pill so the pill reads on every fill.  The pill is a circle here
+      // (not an ellipse) because the node itself is circular and the badge
+      // sits on the node's perimeter; an ellipse would clip or overflow.
+      g.append("circle")
+        .attr("r", 7)
+        .attr("cx", r + 3).attr("cy", -(r + 1))
+        .attr("fill", _cssVar("--panel", "#fff"))
+        .attr("stroke", _cssVar("--line", "#d4d4d8"))
+        .attr("stroke-width", 0.5);
       g.append("text")
         .attr("class", "map-mech-badge")
         .attr("x", r + 3).attr("y", -(r + 1))
-        .attr("fill", _cssVar("--map-label", "#1a1a2e"))
+        .attr("text-anchor", "middle")
+        .attr("dominant-baseline", "central")
+        .attr("font-size", "7px")
+        .attr("font-weight", "700")
+        .attr("fill", _cssVar("--fg", "#1a1a2e"))
         .text(isCli ? "CLI" : "API");
     }
     // Communication capability: a glyph, not a word, and placed on the
     // opposite side from the mechanism badge so three marks around one node
     // stay tellable apart.
     if (d.data.comms) {
+      // Pill background so the glyph is legible on every fill.  A pill is
+      // the only shape that does not collide with the node's own circle, and
+      // it also separates this mark from the mechanism badge which shares
+      // the same vertical zone but lives on the opposite side.
+      g.append("circle")
+        .attr("r", 5)
+        .attr("cx", -(r + 9)).attr("cy", -(r + 1))
+        .attr("fill", _cssVar("--panel", "#fff"))
+        .attr("stroke", _cssVar("--line", "#d4d4d8"))
+        .attr("stroke-width", 0.5);
       g.append("text")
         .attr("class", "map-comms-icon")
         .attr("x", -(r + 9)).attr("y", -(r + 1))
-        .attr("fill", _cssVar("--map-label", "#1a1a2e"))
+        .attr("text-anchor", "middle")
+        .attr("font-size", "8px")
+        .attr("fill", _cssVar("--fg", "#1a1a2e"))
         // Speech balloon for text, balloon+wave when voice is also available.
         .text(d.data.comms === "both" ? "\u{1F5E8}\u{1F3A4}" : "\u{1F5E8}");
     }
@@ -502,7 +579,12 @@ export function renderSupervisorMap(data, options = {}) {
   // Horizontal layout: labels sit to the left of each node (or right for the
   // root's first child, which starts at the far left edge). Labels are
   // right-aligned so the node sits naturally to the right of the text.
-  node.filter(d => d.depth > 0)
+  //
+  // Agent labels are drawn over the provider-colour fill, so they need a
+  // background pill.  Transport hub labels sit on the neutral SVG background
+  // rect, so they are plain text.
+  // Hub labels: plain text on the neutral background rect — no pill needed.
+  node.filter(d => d.depth > 0 && d.data.type === "transport")
     .append("text")
     .attr("dy", "0.35em")
     .attr("x", d => (d.children ? 10 : -10))
@@ -512,9 +594,56 @@ export function renderSupervisorMap(data, options = {}) {
       return name.length > 20 ? name.slice(0, 18) + "…" : name;
     })
     .attr("font-size", "11px")
-    .attr("fill", () => _cssVar("--map-label", "#1a1a2e"));
+    .attr("font-weight", "500")
+    .attr("fill", () => _cssVar("--fg", "#1a1a2e"));
+
+  // Agent labels need a background pill because they are drawn over the
+  // provider-colour fill.  The pill is a small capsule that the text
+  // sits inside, so the fill never bleeds through.
+  node.filter(d => d.depth > 0 && d.data.type !== "transport")
+    .each(function(d) {
+      const g = d3.select(this);
+      const name = (d.data.label || "").length > 20
+        ? d.data.label.slice(0, 18) + "…" : d.data.label;
+      // Rough width estimate: 11px font × ~6px per char.
+      const w = name.length * 6 + 8;
+      const anchor = d.children ? "start" : "end";
+      const xOffset = d.children ? 6 : -6;
+      // Pill rectangle (drawn under the text).
+      g.insert("rect", "text")
+        .attr("x", anchor === "start" ? xOffset : xOffset - w)
+        .attr("y", -7)
+        .attr("width", w)
+        .attr("height", 14)
+        .attr("rx", 3)
+        .attr("fill", _cssVar("--panel", "#fff"))
+        .attr("opacity", 0.85);
+      g.append("text")
+        .attr("dy", "0.35em")
+        .attr("x", xOffset)
+        .attr("text-anchor", anchor)
+        .text(name)
+        .attr("font-size", "11px")
+        .attr("font-weight", "500")
+        .attr("fill", () => _cssVar("--fg", "#1a1a2e"));
+    });
 
   // ── Tooltip (hover) ─────────────────────────────────────────────
+  node.on("contextmenu", function(event, d) {
+    // Right-click: pin or unpin.  Left-click opens the detail panel.
+    // Ctrl-click on a normal click also toggles the pin so the operator
+    // can pin without reaching for the context menu.
+    event.preventDefault();
+    event.stopPropagation();
+    if (_pinned.has(d.data.id)) {
+      _pinned.delete(d.data.id);
+    } else {
+      _pinned.add(d.data.id);
+    }
+    _updatePinnedPills();
+    _redraw();
+  });
+
   node.on("mouseenter", function(event, d) {
     const tooltip = document.getElementById("mapTooltip");
     if (tooltip) {
@@ -646,9 +775,9 @@ const PROVIDER_VAR = {
   local: "--map-provider-local",
 };
 const PROVIDER_FALLBACK = {
-  anthropic: "#d97757",   // Anthropic's own warm clay
-  google_litellm: "#4285f4",
-  local: "#22c55e",       // free/self-hosted: green, because it costs nothing
+  anthropic: "#b45309",   // coral
+  google_litellm: "#6d28d9", // indigo
+  local: "#0e7490",       // teal
 };
 const PROVIDER_LABEL = {
   anthropic: "Anthropic",
@@ -1070,6 +1199,38 @@ function _spokePath(source, target) {
 // this deployment, 0.07s warm -- so it is deliberately not part of the map
 // payload that polls every 10 seconds.
 let _commsOn = false;
+/** Pinned agent ids (in-memory, survives filter changes).
+ * A pin is the operator's bookmark so an agent does not vanish
+ * when "problems only" is on.
+ */
+let _pinned = new Set();
+
+/** Refresh the toolbar's pinned pills so they match _pinned.
+ * One function rather than scattering updates everywhere.
+ */
+function _updatePinnedPills() {
+  const container = document.getElementById("mapPinnedList");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const id of _pinned) {
+    const pill = document.createElement("span");
+    pill.className = "map-pinned-pill";
+    pill.textContent = id;
+    pill.addEventListener("click", () => {
+      _pinned.delete(id);
+      _updatePinnedPills();
+      _redraw();
+    });
+    container.appendChild(pill);
+  }
+  const btn = document.getElementById("mapPinBtn");
+  if (btn) {
+    btn.setAttribute("aria-pressed", String(_pinned.size > 0));
+    btn.title = _pinned.size > 0
+      ? `Pin manager (${_pinned.size} pinned)`
+      : "Pin right-click agent (I)";
+  }
+}
 let _commsEdges = [];
 let _commsTimer = null;
 // What the last draw could not place, so the toolbar can say so. A silently
@@ -1100,6 +1261,74 @@ function stopCommsTicker() {
   if (!_commsTimer) return;
   clearInterval(_commsTimer);
   _commsTimer = null;
+}
+
+/** Supervisor-specific alerting: when the map is closed, a new
+ *  problem agent is an interruption.  The existing device-alerts.js fires
+ *  on the orchestrator page; this one fires on the supervisor map, because
+ *  an operator might have the map open while the orchestrator panel is
+ *  hidden, or vice versa.
+ *
+ *  Only fires on a RISE: a new blocked/waiting agent.  An existing problem
+ *  that is still there is already known.  The first time the map opens it
+ *  sets the baseline silently.
+ */
+let _supervisorAlertBaseline = null;
+let _lastAlertedAgents = new Set();
+
+async function _checkSupervisorAlert() {
+  if (!_alertsEnabled()) return;
+  // The map is visible: the operator is watching, no alert needed.
+  const panel = document.getElementById("supervisorMapPanel");
+  if (panel && !panel.hidden) return;
+  try {
+    const resp = await fetch("/api/supervisor-map", {credentials: "same-origin"});
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data || !data.children) return;
+    // Count agents in problem state.
+    let problemAgents = [];
+    function walk(n) {
+      if (n.children) n.children.forEach(walk);
+      if (n.type === "chat" || n.type === "session") {
+        if (n.agent_state === "blocked" || n.agent_state === "waiting_for_input") {
+          problemAgents.push(n.label || n.id);
+        }
+      }
+    }
+    walk(data);
+    if (problemAgents.length === 0) return;
+    // Baseline on first check: don't alert on agents already waiting when
+    // the map was last opened.  Only alert on NEW problems.
+    if (_supervisorAlertBaseline === null) {
+      _supervisorAlertBaseline = new Set(problemAgents);
+      _lastAlertedAgents = new Set();
+      return;
+    }
+    // New problems: agents not in the baseline.
+    const newProblems = problemAgents.filter(a => !_supervisorAlertBaseline.has(a));
+    if (newProblems.length === 0) return;
+    // Alert once per agent, not every poll.
+    const newAlerted = newProblems.filter(a => !_lastAlertedAgents.has(a));
+    if (newAlerted.length === 0) return;
+    // Fire the alert.
+    for (const agent of newAlerted) {
+      _lastAlertedAgents.add(agent);
+    }
+    // Delegate to the device-alert system.
+    if (typeof notifyResult === "function") {
+      notifyResult(
+        newAlerted.length + " agent" + (newAlerted.length === 1 ? "" : "s") +
+        " needs attention: " + newAlerted.join(", "),
+        "warning"
+      );
+    }
+  } catch (_) { /* unavailable: silently ignore */ }
+}
+
+// Start a 20s check for new problems while the map is closed.
+function startSupervisorAlertCheck() {
+  _alertTimer = setInterval(_checkSupervisorAlert, 20000);
 }
 
 function _setCommsNote(text) {
@@ -1269,6 +1498,7 @@ function _relativeTime(iso) {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
+startSupervisorAlertCheck();
 /** Redraw from the last payload without refetching. */
 function _redraw() {
   if (_data) renderSupervisorMap(_data, {keepView: true});
@@ -1370,6 +1600,44 @@ document.getElementById("mapCompactBtn")?.addEventListener("click", () => {
   _syncToggle("mapCompactBtn", _compact);
   _redraw();
 });
+document.getElementById("mapPinBtn")?.addEventListener("click", () => {
+  // When pressed with nothing pinned, nothing happens.
+  // The real pin/unpin is right-click on a node or `I` for the same action.
+  // The button is a toggle that clears all pins so the operator can reset.
+  if (_pinned.size === 0) return;
+  _pinned.clear();
+  _updatePinnedPills();
+  _redraw();
+});
+/** History scrubber: drag to see what the map looked like N seconds ago.
+
+ *  The slider is reversed so 0 (rightmost) is always live.  A scrub goes
+ *  read-only: if a new poll arrives while the slider is not at zero, it
+ *  clamps back because the snapshot is now stale — scrubbing behind a
+ *  moving wall is meaningless.
+ */
+document.getElementById("mapHistorySlider")?.addEventListener("input", (event) => {
+  const v = Number(event.target.value);
+  _historyIdx = v === 0 ? _historySnapshots.length - 1 : _historySnapshots.length + v;
+  if (_historyIdx < 0) { _historyIdx = -1; return; }
+  const label = document.getElementById("mapHistoryLabel");
+  if (label) {
+    const age = Math.abs(v) * 10;
+    label.textContent = v === 0 ? "" : String(age) + "s ago";
+  }
+  if (v === 0) { _redraw(); return; }
+  const raw = _historySnapshots[_historyIdx];
+  if (raw) {
+    try {
+      const snapshot = JSON.parse(raw);
+      // Override generated_at so the freshness ticker shows "N s ago" not "fresh".
+      const now = Date.now();
+      snapshot.generated_at = new Date(now - Math.abs(v) * 10000).toISOString();
+      renderSupervisorMap(snapshot, {keepView: true});
+    } catch (e) { /* corrupt snapshot: fall through to live */ }
+  }
+});
+
 document.getElementById("mapSearch")?.addEventListener("input", (event) => {
   _searchTerm = event.target.value || "";
   _redraw();
@@ -1419,9 +1687,15 @@ async function showDetail(nodeData) {
     stats.textContent = "";
     if (nodeData.turns !== undefined || nodeData.tokens !== undefined) {
       const turns = document.createElement("span");
-      turns.innerHTML = `<b>${_formatCount(nodeData.turns)}</b> turns`;
+      const tBold = document.createElement("b");
+      tBold.textContent = _formatCount(nodeData.turns);
+      turns.appendChild(tBold);
+      turns.appendChild(document.createTextNode(" turns"));
       const tokens = document.createElement("span");
-      tokens.innerHTML = `<b>${_formatCount(nodeData.tokens)}</b> tokens`;
+      const tkBold = document.createElement("b");
+      tkBold.textContent = _formatCount(nodeData.tokens);
+      tokens.appendChild(tkBold);
+      tokens.appendChild(document.createTextNode(" tokens"));
       stats.appendChild(turns);
       stats.appendChild(tokens);
     }

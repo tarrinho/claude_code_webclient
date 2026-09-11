@@ -45,8 +45,8 @@ from unittest.mock import patch
 import auth
 import config
 import db
-import shared
 import orchestrator
+import shared
 from tests.testing_model import TESTING_MODEL
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent

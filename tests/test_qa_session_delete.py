@@ -4,11 +4,11 @@ Covers:
   handle_session_delete — DELETE /api/sessions/{session_id}
 """
 from __future__ import annotations
-import unittest
 
 import json
 import secrets
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 

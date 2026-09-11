@@ -25,7 +25,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import tests.conftest as conftest
+from tests import conftest
 
 
 class _Env(unittest.TestCase):

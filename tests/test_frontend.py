@@ -1,5 +1,5 @@
-import re
 import pathlib
+import re
 import unittest
 from pathlib import Path
 

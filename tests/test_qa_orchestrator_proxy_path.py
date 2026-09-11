@@ -64,7 +64,7 @@ class FakeProxy:
             ):
                 writer.write((json.dumps(frame) + "\n").encode())
             await writer.drain()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Recorded, not swallowed. A bare pass here would hide the reason a
             # frame never arrived and leave the assertion blaming the code --
             # which is the same mistake this whole file exists because of.
@@ -111,7 +111,7 @@ class ProxyTurnFrameTests(unittest.IsolatedAsyncioTestCase):
         await self.proxy.stop()
         try:
             await db.close()
-        except Exception:  # noqa: BLE001,S110 -- must not mask the real failure
+        except Exception:
             pass
         for p in reversed(self.patches):
             p.stop()

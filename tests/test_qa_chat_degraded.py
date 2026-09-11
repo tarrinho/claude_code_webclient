@@ -100,7 +100,7 @@ class ChatDegradedNotPatchableTests(unittest.TestCase):
     """
 
     def test_degraded_is_a_known_column_but_never_a_patchable_field(self):
-        import routes.db_chats as db_chats
+        from routes import db_chats
 
         self.assertIn("degraded", db_chats._CHAT_COLUMNS)
         self.assertNotIn("degraded", db_chats._ALLOWED_CHAT_FIELDS)

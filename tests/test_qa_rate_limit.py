@@ -28,8 +28,8 @@ import asyncio
 import json
 import time as _time_mod
 import unittest
-import rate_limit
 
+import rate_limit
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

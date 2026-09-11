@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator
@@ -389,9 +390,8 @@ async def get_proxy_target(
 
     # keyless claude_code (the former "proxy" type): no base_url, route
     # to the machine's host as the proxy target.
-    if provider == "claude_code" and machine.get("base_url") is None:
-        if machine.get("host"):
-            return machine["host"], int(machine.get("port") or config.PROXY_PORT)
+    if provider == "claude_code" and machine.get("base_url") is None and machine.get("host"):
+        return machine["host"], int(machine.get("port") or config.PROXY_PORT)
     return await get_proxy_host(), config.PROXY_PORT
 
 

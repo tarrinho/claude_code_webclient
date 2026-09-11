@@ -505,8 +505,8 @@ class MapGeometryTests(unittest.TestCase):
             '{{id:"t{0}",type:"transport",status:"idle",label:"t{0}",'
             'children:[{1}]}}'.format(
                 i, ",".join(
-                    '{{id:"m{0}_{1}",type:"machine",status:"idle",label:"m"}}'
-                    .format(i, j) for j in range(5)))
+                    f'{{id:"m{i}_{j}",type:"machine",status:"idle",label:"m"}}'
+                     for j in range(5)))
             for i in range(6))
         out = _run("""
           STUB.svgBox = {width: 1249, height: 800, left: 0, top: 0};

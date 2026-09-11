@@ -585,8 +585,8 @@ class ChatGetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_get_syncs_a_linked_chat_before_reading(self):
         """Opening (or reloading) a chat linked to a live CLI session must
-        show current content, not whatever the last periodic sync happened
-        to leave in `messages` -- see the design note on handle_chat_get."""
+        launch a background sync so the GET returns immediately with stored
+        content, then the next poll picks up new turns."""
         chat_id = "get-linked"
         await db.chat_create(chat_id, "Linked", None, f"{self.tmpdir.name}/p", "admin")
         await db.chat_set_session(chat_id, "sess-1")
@@ -594,6 +594,8 @@ class ChatGetTests(unittest.IsolatedAsyncioTestCase):
             chat_routes, "_sync_linked_chat", AsyncMock(return_value=[])
         ) as synced:
             await chat_routes.handle_chat_get(self._req(chat_id), chat_id)
+        # Fire-and-forget: a task was created (not awaited inline),
+        # and we can still verify _sync_linked_chat was called.
         synced.assert_awaited_once()
         # Called with the chat dict, not just an id -- _sync_linked_chat reads
         # session_id/transcript_offset off of it directly.

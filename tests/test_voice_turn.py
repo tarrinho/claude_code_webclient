@@ -23,6 +23,7 @@ HTTPS = "https://testserver"
 
 def _client(follow_redirects: bool = True):
     from fastapi.testclient import TestClient
+
     from app import app as web_app
     return TestClient(
         web_app, raise_server_exceptions=False, base_url=HTTPS,
@@ -198,6 +199,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_voice_turn_yields_matching_sse_frames(self):
         from types import SimpleNamespace
+
         from routes import voice
 
         class _FakeStream:
@@ -245,6 +247,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         resolved gateway's base_url to the browser via the SSE error frame.
         """
         from types import SimpleNamespace
+
         from routes import voice
 
         chat = await self._voice_chat_on_a_real_backend("c6")
@@ -272,6 +275,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         it must not be stored as a successful empty assistant message.
         """
         from types import SimpleNamespace
+
         from routes import voice
 
         class _FakeStream:
@@ -325,6 +329,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_voice_turn_records_usage_on_success(self):
         from types import SimpleNamespace
+
         from routes import voice
 
         class _FakeStream:

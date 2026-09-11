@@ -151,7 +151,7 @@ class SupervisorTimeQA(unittest.TestCase):
                         browser.close()
                 finally:
                     pw.stop()
-            except BaseException as exc:  # noqa: BLE001 -- re-raised on the caller
+            except BaseException as exc:
                 errors.append(exc)
 
         thread = threading.Thread(target=work, name="formatTime-browser")
@@ -273,7 +273,7 @@ def _page_unavailable() -> bool:
         driver = compute_driver_executable()
         driver = driver[0] if isinstance(driver, (list, tuple)) else driver
         return not Path(driver).exists()
-    except Exception:  # noqa: BLE001 -- any resolution failure means skip
+    except Exception:
         return True
 
 

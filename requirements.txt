@@ -13,7 +13,7 @@ argon2-cffi==25.1.0
 python-dotenv==1.2.3
 loguru==0.7.3
 # Required by tunnel_manager for SSH tunnel lifecycle management.
-paramiko==4.0.0
+paramiko==5.0.0
 # Required by routes/voice.py's stream_voice_turn -- the one deliberate
 # exception to this project's CLI-only rule (see repo-root CLAUDE.md).
 openai==3.8.0

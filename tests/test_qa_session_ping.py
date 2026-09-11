@@ -21,11 +21,12 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from routes.misc import _asset_version, _api_version_hash, _api_ping
+from starlette.datastructures import Headers, State
 from starlette.requests import Request
-from starlette.datastructures import State, Headers
+
+from routes.misc import _api_ping, _api_version_hash, _asset_version
 
 
 class AssetVersionTests(unittest.TestCase):
@@ -139,9 +140,10 @@ class VersionHashEndpointTests(unittest.IsolatedAsyncioTestCase):
     """
 
     async def test_returns_version_json(self):
+        from starlette.datastructures import Headers, State
         from starlette.requests import Request
-        from starlette.datastructures import State, Headers
         from starlette.testclient import TestClient
+
         import app as app_mod
         # Use a session cookie so AuthMiddleware passes the request through
         client = TestClient(app_mod.app, raise_server_exceptions=False)
@@ -187,6 +189,7 @@ class PingEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from starlette.testclient import TestClient
+
         import app as app_mod
         self.client = TestClient(app_mod.app, raise_server_exceptions=False)
 

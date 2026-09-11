@@ -84,7 +84,7 @@ class JavaScriptParsesTests(unittest.TestCase):
             with self.subTest(module=path.name):
                 try:
                     _parse(path.read_text())
-                except Exception as exc:  # noqa: BLE001 -- report any parse failure
+                except Exception as exc:
                     self.fail(f"{path.name} is not valid JavaScript: {exc}")
 
     def test_gate_rejects_broken_source(self):

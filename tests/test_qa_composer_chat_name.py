@@ -61,7 +61,7 @@ def _driver_missing() -> bool:
         driver = compute_driver_executable()
         driver = driver[0] if isinstance(driver, (list, tuple)) else driver
         return not Path(driver).exists()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return True
 
 

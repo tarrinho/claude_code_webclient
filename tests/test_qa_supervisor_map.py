@@ -27,8 +27,15 @@ import db
 import resource_guard
 import transcripts
 from routes.db_supervisor_map import (
-    _MAX_CHILDREN, _aggregate_status, _capped, _chat_node, _chat_transport,
-    _machine_status, _normalise, _task_status, supervisor_map,
+    _MAX_CHILDREN,
+    _aggregate_status,
+    _capped,
+    _chat_node,
+    _chat_transport,
+    _machine_status,
+    _normalise,
+    _task_status,
+    supervisor_map,
 )
 from tests.testing_model import TESTING_MODEL
 
@@ -37,6 +44,7 @@ HTTPS = "https://testserver"
 
 def _client():
     from fastapi.testclient import TestClient
+
     from app import app as web_app
     return TestClient(
         web_app, raise_server_exceptions=False, base_url=HTTPS,

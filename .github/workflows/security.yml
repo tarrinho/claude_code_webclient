@@ -46,7 +46,7 @@ jobs:
       - name: Bandit
         run: bandit -r app.py auth.py claude_proxy.py config.py db.py runner.py -ll --ini .bandit
       - name: Ruff security and correctness checks
-        run: ruff check app.py auth.py claude_proxy.py config.py db.py runner.py tests test_functional.py
+        run: ruff check app.py auth.py claude_proxy.py config.py db.py runner.py tests
 
   secret-scan:
     name: Secret scan

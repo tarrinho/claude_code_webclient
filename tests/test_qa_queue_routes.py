@@ -6,10 +6,10 @@ Covers:
   handle_queue_release  — POST /api/chats/{id}/queue/{queue_id}/release
 """
 from __future__ import annotations
-import unittest
 
 import secrets
 import tempfile
+import unittest
 from unittest.mock import AsyncMock, patch
 
 import auth

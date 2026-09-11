@@ -82,7 +82,7 @@ def _available_here(cap: Capability) -> bool:
         exec(compile(cap.probe, "<probe>", "exec"), {})  # noqa: S102 - fixed source
     except SystemExit as exit_:
         return not exit_.code
-    except Exception:  # noqa: BLE001 -- any failure means unusable
+    except Exception:
         return False
     return True
 
@@ -132,7 +132,7 @@ def _available_in_venv() -> dict[str, bool]:
             capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, check=False,
         )
         return json.loads(result.stdout.strip() or "{}")
-    except Exception:  # noqa: BLE001 -- an unaskable venv is not a finding
+    except Exception:
         return {}
 
 

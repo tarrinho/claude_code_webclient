@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from tests.test_frontend_browser import _BrowserFixture, CHROMIUM, DRIVER_OK, DRIVER_WHY
+from tests.test_frontend_browser import CHROMIUM, DRIVER_OK, DRIVER_WHY, _BrowserFixture
 
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")

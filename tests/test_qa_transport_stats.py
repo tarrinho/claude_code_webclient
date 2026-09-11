@@ -214,8 +214,8 @@ class CollectorStorageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_unreadable_collection_stores_nothing(self):
         """Rather than a row of zeros that reads as a healthy idle host."""
-        from tunnel_manager_health import collect_stats
         import tunnel_manager
+        from tunnel_manager_health import collect_stats
 
         calls = []
 
@@ -236,8 +236,8 @@ class CollectorStorageTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_machine_with_no_transport_id_still_gets_attributed(self):
         """Falling back to the machine id keeps the sample attributable rather
         than dropping it, which is the safer direction of the two."""
-        from tunnel_manager_health import collect_stats
         import tunnel_manager
+        from tunnel_manager_health import collect_stats
 
         calls = []
 
@@ -259,8 +259,8 @@ class CollectorStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [{"host_type": "transport", "host_id": "m9"}])
 
     async def test_a_readable_collection_is_stored_attributed(self):
-        from tunnel_manager_health import collect_stats
         import tunnel_manager
+        from tunnel_manager_health import collect_stats
 
         calls = []
 
@@ -478,13 +478,15 @@ class SystemEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(patcher.stop)
         await db.init()
         self.addAsyncCleanup(db.close)
-        import auth
         import secrets
+
+        import auth
         self.password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(self.password))
 
     def _client(self):
         from fastapi.testclient import TestClient
+
         from app import app as web_app
         client = TestClient(
             web_app, raise_server_exceptions=False, base_url="https://testserver")

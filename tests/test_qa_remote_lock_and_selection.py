@@ -74,9 +74,8 @@ class ResolveNamedTransportTests(_WithTransportsDb):
 
     async def test_refuses_409_when_not_active(self):
         await self._make_transport("t1", "One", "m1")
-        with self._tunnel_down():
-            with self.assertRaises(qa_remote.QaRefusal) as ctx:
-                await qa_remote.resolve_transport("admin", "One")
+        with self._tunnel_down(), self.assertRaises(qa_remote.QaRefusal) as ctx:
+            await qa_remote.resolve_transport("admin", "One")
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertIn("Check or Init it first", ctx.exception.reason)
 
@@ -173,9 +172,8 @@ class ResolveUnnamedTransportTests(_WithTransportsDb):
 
     async def test_refuses_503_when_none_qualify(self):
         await self._make_transport("t1", "Dead", "m1")
-        with self._tunnel_down():
-            with self.assertRaises(qa_remote.QaRefusal) as ctx:
-                await qa_remote.resolve_transport("admin", None, floor_mb=700)
+        with self._tunnel_down(), self.assertRaises(qa_remote.QaRefusal) as ctx:
+            await qa_remote.resolve_transport("admin", None, floor_mb=700)
         self.assertEqual(ctx.exception.status_code, 503)
 
     async def test_never_falls_back_to_running_locally(self):

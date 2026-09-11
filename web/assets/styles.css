@@ -31,6 +31,7 @@
   --map-provider-anthropic:#b45309;
   --map-provider-gateway:#6d28d9;
   --map-provider-local:#0e7490;--map-comms:#a78bfa;
+  --map-pin:#f59e0b;
 }
 html[data-theme="light"] {
   --bg:#f6f8fa; --panel:#fff; --panel2:#eaeef2; --line:#d0d7de;
@@ -54,6 +55,7 @@ html[data-theme="light"] {
   --map-provider-anthropic:#d97706;
   --map-provider-gateway:#9333ea;
   --map-provider-local:#155e75;--map-comms:#a78bfa;
+  --map-pin:#f59e0b;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -1194,3 +1196,24 @@ button{touch-action:manipulation}
   #supervisorMapPanel .map-comms-edge { animation: none; }
 }
 #supervisorMapPanel .map-comms-note { color: var(--map-comms, #7c3aed); }
+
+#supervisorMapPanel .map-pinned-list {
+  display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+  font-size: 11px; color: var(--fg);
+}
+#supervisorMapPanel .map-pinned-pill {
+  background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 2px 6px; font-size: 10px;
+  cursor: pointer; user-select: none;
+}
+#supervisorMapPanel .map-pinned-pill:hover {
+  background: var(--map-pin);
+}
+
+/* ── History scrubber slider ─────────────────────────────────────────
+   The slider is reversed so 0 (right) is always live.  A scrub goes
+   read-only: the JS clamps back when a new poll arrives. */
+.map-history {
+  width: 80px; accent-color: var(--map-comms, #7c3aed);
+  cursor: pointer;
+}

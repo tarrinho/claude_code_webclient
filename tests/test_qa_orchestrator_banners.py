@@ -228,7 +228,7 @@ class CompletionBannerCountingTests(unittest.TestCase):
                 # If subprocess works, parse output
                 try:
                     return result.stdout.strip()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     return ""
         return ""
 

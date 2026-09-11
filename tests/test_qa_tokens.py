@@ -6,10 +6,10 @@ Covers:
   handle_tokens_revoke  — POST /api/tokens/{token_id}/revoke
 """
 from __future__ import annotations
-import unittest
 
 import secrets
 import tempfile
+import unittest
 from unittest.mock import patch
 
 import auth
@@ -73,7 +73,7 @@ class TokenRouteTests(unittest.IsolatedAsyncioTestCase):
         client, headers = self._login("alice")
         r = client.post("/api/tokens", json={"name": "alice-token"}, headers=headers)
         self.assertEqual(r.status_code, 200)
-        pass  # Token create response: {"id", "name", "token", ...}
+        # Token create response: {"id", "name", "token", ...}
 
         bob, bob_headers = self._login("bob")
         r2 = bob.get("/api/tokens", headers=bob_headers)

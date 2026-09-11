@@ -14,7 +14,6 @@ import asyncio
 
 import pytest
 
-
 pytest.importorskip("paramiko")
 
 

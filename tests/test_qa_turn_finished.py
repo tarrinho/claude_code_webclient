@@ -38,14 +38,14 @@ def _driver_ok() -> tuple[bool, str]:
         return False, "playwright not installed"
     try:
         from playwright._impl._driver import compute_driver_executable
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"playwright not importable: {exc.__class__.__name__}"
     try:
         # Private helper; it is the only way to learn whether the bundled node
         # is actually present without paying for a browser launch.
         path = compute_driver_executable()
         path = path[0] if isinstance(path, (tuple, list)) else path
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"driver path unavailable: {exc.__class__.__name__}"
     if not Path(path).exists():
         return False, f"driver missing: {path} (try: playwright install)"

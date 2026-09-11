@@ -12,10 +12,10 @@ SSE streams (200 paths) use `while True` loops — TestClient blocks. We test th
 streaming loop itself only via browser/integration tests.
 """
 from __future__ import annotations
-import unittest
 
 import secrets
 import tempfile
+import unittest
 import uuid
 from unittest.mock import patch
 

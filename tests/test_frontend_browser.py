@@ -50,11 +50,11 @@ def _driver_status() -> tuple[bool, str]:
     """
     try:
         from playwright._impl._driver import compute_driver_executable
-    except Exception as exc:  # noqa: BLE001 -- any import failure means unusable
+    except Exception as exc:
         return False, f"playwright not importable: {exc.__class__.__name__}"
     try:
         parts = compute_driver_executable()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"driver path unresolvable: {exc.__class__.__name__}"
     for path in (parts if isinstance(parts, (list, tuple)) else [parts]):
         if not os.path.exists(path):
@@ -1671,7 +1671,7 @@ class SupervisorRenameBrowserTests(_BrowserFixture):
                 row.locator(".sl-rename").click(force=True, timeout=4_000)
                 self.page.wait_for_selector(".sl-rename-input", timeout=4_000)
                 return self.page.locator(".sl-rename-input")
-            except Exception as exc:  # noqa: BLE001 -- retried below
+            except Exception as exc:
                 last = exc
                 self.page.wait_for_timeout(400)
         raise AssertionError(f"could not open the rename control for {title!r}: {last}")

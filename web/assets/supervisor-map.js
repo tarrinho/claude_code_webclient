@@ -1273,6 +1273,7 @@ function stopCommsTicker() {
  *  that is still there is already known.  The first time the map opens it
  *  sets the baseline silently.
  */
+let _alertTimer = null;
 let _supervisorAlertBaseline = null;
 let _lastAlertedAgents = new Set();
 

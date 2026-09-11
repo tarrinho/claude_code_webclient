@@ -199,10 +199,8 @@ if [ "${WC_EXEC:-0}" = "1" ]; then
 fi
 
 python3 -m uvicorn app:app \
-    --host "${TAILNET_IP}" \
-    --port 443 \
-    --ssl-certfile "$CERT_FILE" \
-    --ssl-keyfile "$KEY_FILE" \
+    --host 127.0.0.1 \
+    --port 8080 \
     --log-level info >> logs/uvicorn.out.log 2>&1 &
 
 WC_PID=$!

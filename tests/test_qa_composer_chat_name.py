@@ -102,6 +102,17 @@ class ComposerChatNameTests(unittest.TestCase):
             "WC_COOKIE_ALLOW_INSECURE": "1",
         }
 
+        # HOME= overrides strip the user site path from sys.path; restore it.
+        user_site = next(
+            (p for p in __import__("sys").path
+             if ".local/lib" in p and "site-packages" in p),
+            None,
+        )
+        if user_site:
+            cls.env.setdefault("PYTHONPATH", user_site)
+            cls.env["PYTHONPATH"] += ":" + user_site if cls.env.get("PYTHONPATH") else ""
+            cls.env["PYTHONPATH"] = user_site
+
         bootstrap = (
             "import asyncio, auth, db\n"
             "async def go():\n"

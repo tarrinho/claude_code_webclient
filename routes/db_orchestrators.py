@@ -322,12 +322,14 @@ async def orchestrator_task_update(
     result: str | None = None,
     progress_pct: float | None = None,
     model: str | None = None,
+    title: str | None = None,
 ) -> bool:
     """Update a task's fields.  Returns rowcount."""
     pairs: list[tuple[str, Any]] = [
         ("status", status),
         ("result", result),
         ("model", model),
+        ("title", title),
     ]
     sets: list[str] = []
     vals: list[Any] = []

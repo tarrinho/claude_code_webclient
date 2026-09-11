@@ -850,6 +850,7 @@ class OrchestratorEngine:
                 self.owner_id,
             )
             # Human-readable agent name for the planning turn.
+            _task_name: str | None = None
             try:
                 from routes.naming import generate_name as _generate_name
                 _transport = "local"
@@ -868,8 +869,8 @@ class OrchestratorEngine:
                                 _transport = _st["ssh_host"]
                 except Exception:
                     pass
-                _name = _generate_name(_transport, prompt_text)
-                db.write_claude_session_file(f"supervisor_{plan_chat_id}", _name, work_dir)
+                _task_name = _generate_name(_transport, prompt_text)
+                db.write_claude_session_file(f"supervisor_{plan_chat_id}", _task_name, work_dir)
             except Exception:
                 pass  # Non-critical
             result = "".join(chunks) if chunks else ""
@@ -1054,6 +1055,7 @@ class OrchestratorEngine:
                 self.owner_id,
             )
             # Human-readable agent name for the subtask turn.
+            _task_name: str | None = None
             try:
                 from routes.naming import generate_name as _generate_name
                 _transport = "local"
@@ -1070,10 +1072,23 @@ class OrchestratorEngine:
                                 _transport = _st["ssh_host"]
                 except Exception:
                     pass
-                _name = _generate_name(_transport, full_prompt)
-                db.write_claude_session_file(f"supervisor_{task_chat_id}", _name, work_dir)
+                _task_name = _generate_name(_transport, full_prompt)
+                db.write_claude_session_file(f"supervisor_{task_chat_id}", _task_name, work_dir)
             except Exception:
                 pass  # Non-critical
+            # Persist the generated name into the tasks table so the orchestrator
+            # panel shows a human-readable title instead of the raw plan line.
+            if _task_name:
+                try:
+                    import db
+                    await db.orchestrator_task_update(
+                        orchestrator_id=self.orchestrator_id,
+                        task_id=task_id,
+                        owner_id=self.owner_id,
+                        title=_task_name,
+                    )
+                except Exception:
+                    pass
             result = "".join(chunks) if chunks else ""
             await self._record_usage(task_chat_id, model)
 

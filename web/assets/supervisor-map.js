@@ -1,6 +1,6 @@
 /** Supervisor Map — D3 horizontal (left-to-right) mind map renderer. */
 
-import {_alertsEnabled} from './device-alerts.js?v=7745989';
+import {_alertsEnabled} from './device-alerts.js?v=12607362';
 
 // Every colour here is read from a CSS custom property, with the old literal
 // kept as the fallback argument. The map was the one SVG in this app that

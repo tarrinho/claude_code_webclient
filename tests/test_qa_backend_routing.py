@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import auth
 import config
 import db
 import runner
@@ -59,7 +60,11 @@ class BackendResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.root_patch.start()
         await db.init()
         Path(f"{self.tmp.name}/p").mkdir(parents=True, exist_ok=True)
-        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/p", "admin")
+        # chat_create requires a real UUID, not the literal "admin" -- see
+        # routes/db_chats.py's own guard.
+        await db.user_create("admin", None, auth.hash_password("admin"))
+        self.admin_id = (await db.user_get_by_name("admin"))["id"]
+        await db.chat_create("c1", "Chat", None, f"{self.tmp.name}/p", self.admin_id)
 
     async def asyncTearDown(self):
         await db.close()
@@ -172,6 +177,12 @@ class ProxyTargetResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.root_patch.start()
         await db.init()
         Path(f"{self.tmp.name}/p").mkdir(parents=True, exist_ok=True)
+        # chat_create requires a real UUID, not the literal "admin" -- see
+        # routes/db_chats.py's own guard. ssh_transports/ai_machines have no
+        # such guard (owner_id is unscoped metadata for them since
+        # 2026-09-11), so "admin" stays fine as a literal for those.
+        await db.user_create("admin", None, auth.hash_password("admin"))
+        self.admin_id = (await db.user_get_by_name("admin"))["id"]
 
     async def asyncTearDown(self):
         await db.close()
@@ -187,7 +198,7 @@ class ProxyTargetResolutionTests(unittest.IsolatedAsyncioTestCase):
             transport_id="t1",
         )
         await db.ai_machine_activate("m1", "admin")
-        await db.chat_create("c1", "Test", None, f"{self.tmp.name}/p", "admin")
+        await db.chat_create("c1", "Test", None, f"{self.tmp.name}/p", self.admin_id)
 
         fake_status = {"tunnel_up": True, "proxy_ok": True, "local_port": 9005}
         with patch("tunnel_manager.tunnel_status", AsyncMock(return_value=fake_status)):

@@ -75,18 +75,29 @@ async def _resolve_transport_name(chat_id: str, owner: str | None) -> str:
     return "local"
 
 
-async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: str | None) -> None:
-    """Generate and persist the human-readable agent name for *session_id*.
+async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: str | None) -> str | None:
+    """Generate and persist the human-readable agent name for *chat_id*.
 
     Resolves the transport name, calls :func:`routes.naming.generate_name`,
-    and writes the result into the session JSON so the session listing shows it.
+    and writes the result into both the DB title (so the sidebar shows it)
+    and the session JSON file (so the CLI sees it).  Returns the generated
+    name so callers can store it beside their own work-unit.
     """
     try:
         transport_name = await _resolve_transport_name(chat_id, owner)
         name = _generate_agent_name(transport_name, prompt)
         db.write_claude_session_file(session_id, name, "")
+        # The sidebar reads chats.title, not the session file, so the DB
+        # column is the real source of truth for the sidebar.  Only set it
+        # when the chat still reads "Untitled" — if the user renamed manually
+        # we keep their choice.
+        chat = await db.chat_get(chat_id, owner, include_archived=True)
+        if chat and (chat.get("title") == "Untitled"):
+            await db.chat_update(chat_id, owner, title=name)
+        return name
     except Exception:
         pass  # Naming is non-critical — don't break the turn
+        return None
 
 
 def _transcript_mtimes_sync(session_ids: list[str]) -> dict[str, str]:

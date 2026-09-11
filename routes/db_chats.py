@@ -75,8 +75,10 @@ async def chat_create(
     title: str,
     description: str | None,
     work_dir: str,
-    owner_id: str = "admin",
+    owner_id: str,
 ) -> str:
+    if not owner_id or owner_id == "admin":
+        raise ValueError("owner_id must be a real user UUID, not 'admin'")
     now = db._now()
     await db.db_conn.execute(
         "INSERT INTO chats (id, title, description, work_dir, owner_id, created_at, updated_at) "

@@ -373,8 +373,12 @@ production database or any shared state.
 All dependencies must be installable and importable in a clean environment:
 
 ```bash
-pip install -r requirements.txt --quiet --dry-run 2>/dev/null && echo "requirements.txt OK" || echo "FAIL: requirements.txt"
-python3 -c "import fastapi; import aiosqlite; import argon2; import uvicorn; print('All imports OK')" 2>/dev/null || echo "FAIL: imports"
+# Use the venv so we never hit "externally-managed-environment" (PEP 668)
+# on distros that enforce it (Kali, Fedora, openSUSE, Arch, etc.).
+# The dry-run flag doesn't touch the filesystem, but pip's guard fires
+# anyway — it's a check on how pip was invoked, not on what it would do.
+.venv/bin/pip install -r requirements.txt --quiet --dry-run 2>/dev/null && echo "requirements.txt OK" || echo "FAIL: requirements.txt"
+.venv/bin/python -c "import fastapi; import aiosqlite; import argon2; import uvicorn; print('All imports OK')" 2>/dev/null || echo "FAIL: imports"
 ```
 
 Run §0b immediately before this and let it stop the run on a non-`OK` verdict.

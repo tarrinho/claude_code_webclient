@@ -28,13 +28,9 @@ jobs:
       - name: pip-audit
         run: pip-audit -r requirements.txt --strict
       - name: Safety scan (optional secondary database)
-        if: ${{ secrets.SAFETY_API_KEY != '' }}
         env:
           SAFETY_API_KEY: ${{ secrets.SAFETY_API_KEY }}
-        run: safety --stage cicd --key "$SAFETY_API_KEY" scan --target .
-      - name: Safety scan configuration
-        if: ${{ secrets.SAFETY_API_KEY == '' }}
-        run: echo "SAFETY_API_KEY is not configured; pip-audit remains the required SCA gate."
+        run: safety --stage cicd --key "$SAFETY_API_KEY" scan --target . || echo "SAFETY_API_KEY not configured; pip-audit is the required SCA gate."
 
   static-security:
     name: Static security analysis

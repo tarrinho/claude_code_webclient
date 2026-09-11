@@ -815,10 +815,12 @@ async def usage_model_series(
 
     `top` defaults to 12 rather than 6: this table holds 19 distinct ids over
     30 days, and the old default hid 13 of them inside "Other".
+
+    Shared across every account -- see :func:`usage_by_origin`.
     """
     expr, expr_params = _bucket_expr(bucket)
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
+    params: list[Any] = []
+    where = "1=1"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
@@ -887,10 +889,12 @@ async def usage_agent_series(
     Names are resolved by the caller, not here: this module has no business
     reading session files, and the title of a chat is one join away in a table
     this query has no reason to touch.
+
+    Shared across every account -- see :func:`usage_by_origin`.
     """
     expr, expr_params = _bucket_expr(bucket)
-    params: list[Any] = [owner_id]
-    where = "owner_id = ?"
+    params: list[Any] = []
+    where = "1=1"
     if days is not None:
         where += " AND created_at >= ?"
         params.append(_cutoff(days))
@@ -952,6 +956,8 @@ async def usage_agent_names(
 
     Ids with no row are simply absent from the mapping; the caller decides
     what an unnamed agent looks like.
+
+    Shared across every account -- see :func:`usage_by_origin`.
     """
     wanted = [i for i in agent_ids if i and i != "Other"]
     if not wanted:
@@ -964,9 +970,9 @@ async def usage_agent_names(
         marks = ",".join("?" for _ in chunk)
         cur = await db.db_conn.execute(
             "SELECT id, session_id, title FROM chats "  # nosec B608: generated
-            f"WHERE owner_id = ? AND deleted_at IS NULL "
+            f"WHERE deleted_at IS NULL "
             f"  AND (session_id IN ({marks}) OR id IN ({marks}))",
-            [owner_id, *chunk, *chunk],
+            [*chunk, *chunk],
         )
         for row in await cur.fetchall():
             title = (row["title"] or "").strip()

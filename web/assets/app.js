@@ -530,7 +530,7 @@ async function loadStats(force = false) {
 
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
-import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=8469847';
+import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=5278923';
 export { notifyResult, setStatus };
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=15159128';
@@ -538,7 +538,7 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=10108884';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=1541541';
 
 import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=2281096';
 
@@ -2077,7 +2077,20 @@ export async function loadModelsFor(machineId, force = false) {
   // need the derived state refreshed on a cache hit -- _activateMachine, where
   // the models are already loaded but which machine is active has changed --
   // call _refreshServedModels() themselves.
-  if (!force && _modelsByMachine.has(machineId)) return;
+  //
+  // A cached entry only skips the fetch when it has no `reason` -- a real
+  // list, or an expected empty state the server itself marks with
+  // reason=null (e.g. "No machine is active", or an Anthropic machine with no
+  // stored key). An entry WITH a reason means something went wrong (a timed
+  // out probe, an unreadable response, or this function's own catch block on
+  // a network failure), and that condition can clear on its own -- caching it
+  // forever left a chat's model picker empty for the rest of the tab's life
+  // even after the machine's model list became available server-side, since
+  // nothing here ever looked again.
+  if (!force) {
+    const cached = _modelsByMachine.get(machineId);
+    if (cached && !cached.reason) return;
+  }
   try {
     const url = `/api/models?machine_id=${encodeURIComponent(machineId)}${force ? '&force=1' : ''}`;
     const response = await apiFetch(url);

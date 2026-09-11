@@ -2044,9 +2044,16 @@ def build_remote_reply_command(remote_path: str, target: str, text: str) -> str:
     payload = base64.b64encode(
         json.dumps({"to": target, "text": text}).encode("utf-8")
     ).decode("ascii")
+    # $HOME is set by the SSH daemon; ~ is not expanded in non-interactive
+    # exec shells.  Also add remote_path to sys.path so the `import transcripts`
+    # on the far side can actually find the module (python3 -c runs from $PWD,
+    # but the cd lands in remote_path which is not on sys.path by default).
+    resolved_path = remote_path.replace("~/", "$HOME/", 1)
     script = (
-        "import base64,json,transcripts;"
+        "import base64,json,os,sys;"
+        f"path=os.path.expanduser('{remote_path}');"
+        "sys.path.insert(0,path);"
         f"d=json.loads(base64.b64decode('{payload}'));"
         "print(json.dumps(transcripts.agent_reply_to(d['to'], d['text'])))"
     )
-    return f"cd {remote_path} && python3 -c \"{script}\""
+    return f"cd {resolved_path} && python3 -c \"{script}\""

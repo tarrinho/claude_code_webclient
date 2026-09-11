@@ -7,7 +7,7 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
 import {createChatListController} from './chat-list.js?v=12165920';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=4128716';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=1434625';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
@@ -538,9 +538,9 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=14224854';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups } from './machines.js?v=10108884';
 
-import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=12802782';
+import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=2281096';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();
@@ -1972,7 +1972,7 @@ async function ensurePinnedModels(chat) {
 
 // Open the Backends tab: machines first so the cards exist, then the models
 // each one serves. Only Anthropic-protocol backends publish a list.
-async function loadBackends() {
+async function loadBackends(forceModels = false) {
   await loadMachines();
   await loadTransports();
   // Tunnel status BEFORE the first render, and turn counts after it. Both
@@ -2012,8 +2012,28 @@ async function loadBackends() {
   await Promise.all(
     _machines
       .filter(machine => machine.provider === 'claude_code')
-      .map(machine => loadModelsFor(machine.id)),
+      .map(machine => loadModelsFor(machine.id, forceModels)),
   );
+}
+
+/** "Refresh all" button in the Backends panel: re-run loadBackends(), forcing
+ *  every machine's model list past its cache rather than only filling in
+ *  machines loadModelsFor has not seen yet. The tab-switch call does not
+ *  force, since re-opening the tab is not a request to re-hit every gateway. */
+async function _refreshBackends() {
+  const btn = byId('refreshBackendsBtn');
+  const status = byId('refreshBackendsStatus');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Refreshing…';
+  try {
+    await loadBackends(true);
+    if (status) status.textContent = 'Refreshed';
+  } catch (err) {
+    if (status) status.textContent = 'Refresh failed';
+  } finally {
+    if (btn) btn.disabled = false;
+    setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+  }
 }
 
 // Traffic is what makes the map worth reading: without it the panel says where
@@ -2341,6 +2361,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('resize', () => {
     if (settingsVisible && _currentTab === 'backends') _drawMapWires();
   });
+  byId('refreshBackendsBtn')?.addEventListener('click', _refreshBackends);
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);

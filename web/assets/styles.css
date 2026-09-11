@@ -531,6 +531,10 @@ button{touch-action:manipulation}
    uninitialized: not knowing yet is not a problem being reported. */
 .transport-status-badge-unknown{color:var(--muted);background:rgba(139,148,158,.12)}
 .transport-status-badge-disabled{color:var(--muted);background:rgba(139,148,158,.12)}
+/* Was reachable before (Init or an earlier Check proved it), a later Check
+   failed, and nothing since has proved it working again -- distinct from
+   uninitialized's amber, which means "never proved" rather than "stopped". */
+.transport-status-badge-broken{color:var(--danger,#c0504d);background:rgba(192,80,77,.14)}
 .transport-count{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 .machine-form{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:8px;background:var(--panel)}
 .machine-form h3{font-size:14px;margin-bottom:10px}
@@ -538,6 +542,8 @@ button{touch-action:manipulation}
 .machine-models{margin:8px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
 .machine-models .models-body{max-height:220px}
 .machine-models input[type=checkbox],.machine-models input[type=radio]{accent-color:var(--accent);cursor:pointer}
+.backend-refresh-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.backend-refresh-status{font-size:.78rem;color:var(--muted)}
 /* The map. A fixed From column, a gutter the wires are painted into, and the
    backends. The gutter is a plain grid column so the SVG can be sized from its
    measured box rather than guessed at. */

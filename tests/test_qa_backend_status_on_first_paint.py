@@ -90,7 +90,7 @@ class LoadBackendsOrderingTests(unittest.TestCase):
     def setUp(self):
         js = APP_JS.read_text(encoding="utf-8")
         match = re.search(
-            r"async function loadBackends\(\)\s*\{(.*?)\n\}", js, re.DOTALL)
+            r"async function loadBackends\([^)]*\)\s*\{(.*?)\n\}", js, re.DOTALL)
         self.assertIsNotNone(match, "loadBackends not found in app.js")
         self.body = _strip_comments(match.group(1))
 

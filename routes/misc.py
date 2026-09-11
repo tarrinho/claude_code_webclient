@@ -1577,10 +1577,17 @@ async def handle_sessions_resume(request: Request, session_id: str):
                 detail="Conversation not found — no running session and no transcript",
             )
 
+    # Resolve username to real user UUID; the session stores only the login
+    # name ("admin"), but chat DB functions expect the UUID hex.
+    _owner_id = session["user"]
+    _user_obj = await db.user_get_by_name(_owner_id)
+    if _user_obj:
+        _owner_id = _user_obj["id"]
+
     existing = next(
         (
             chat
-            for chat in await db.chat_list(session["user"])
+            for chat in await db.chat_list(_owner_id)
             if chat.get("session_id") == session_id
         ),
         None,
@@ -1642,7 +1649,7 @@ async def handle_sessions_resume(request: Request, session_id: str):
     title = _generate_chat_name(transport_name, prompt_text)
 
     work_dir = _adopt_session_cwd(source.get("cwd"), session_id)
-    await db.chat_create(chat_id, title, None, work_dir, session["user"])
+    await db.chat_create(chat_id, title, None, work_dir, _owner_id)
     # Link the CLI session ID
     await db.chat_set_session(chat_id, session_id)
     # Seed the chat with the conversation already on disk, so it opens where

@@ -852,5 +852,115 @@ class TurnPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn["backend"]["api_key"], "sk-test")
 
 
+class DirectProviderTestButtonTests(unittest.IsolatedAsyncioTestCase):
+    """Test on a `direct` machine must ask the API, not just open a socket.
+
+    It used to call asyncio.open_connection and report "reachable" as soon as
+    anything accepted, which answered a question nobody asked: a listening
+    port says nothing about whether the key is accepted or the configured
+    model is served. azure_ai/gpt-5.6-sol was the live case -- 403 to every
+    real turn from a gateway whose port was wide open, and Test passed.
+
+    So these pin the verdicts rather than the transport: a socket that accepts
+    is not a pass, and a rejected key is not a pass.
+    """
+
+    OWNER = "a" * 32  # a real uuid-shaped owner; "admin" is rejected by chat_create
+
+    async def asyncSetUp(self):
+        await _setup_db(self)
+        await db.ai_machine_create(
+            "m-direct", "Gateway", "gw.example.com", 443, "sk-test",
+            "azure_ai/gpt-5.4-mini", "https://gw.example.com", None,
+            self.OWNER, provider="direct",
+        )
+
+    async def asyncTearDown(self):
+        await _teardown_db(self)
+
+    def _request(self):
+        req = _make_request()
+        req.state = SimpleNamespace(session={"user": self.OWNER, "role": "admin"})
+        return req
+
+    async def _test_with(self, probe):
+        with patch.object(machine_routes, "_resolve_host", return_value="93.184.216.34"), \
+                patch.object(machine_routes, "_probe_anthropic", probe):
+            response = await machine_routes.handle_machine_test(
+                self._request(), "m-direct")
+        import json as _json
+        return response, _json.loads(response.body)
+
+    @staticmethod
+    def _models(*ids):
+        import json as _json
+        body = _json.dumps({"data": [{"id": i, "display_name": i} for i in ids]})
+        return lambda *_a, **_kw: (200, body.encode())
+
+    async def test_a_served_model_and_accepted_key_pass(self):
+        response, body = await self._test_with(
+            self._models("azure_ai/gpt-5.4-mini", "azure_ai/gpt-5-mini"))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["model_ok"])
+        self.assertEqual(body["models"], 2)
+        self.assertIn("key accepted", body["detail"])
+
+    async def test_a_rejected_key_is_not_a_pass(self):
+        """The old socket probe called this reachable, because it was."""
+        response, body = await self._test_with(lambda *_a, **_kw: (401, b"nope"))
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "rejected")
+        self.assertEqual(response.status_code, 502)
+
+    async def test_a_403_is_not_a_pass(self):
+        _response, body = await self._test_with(lambda *_a, **_kw: (403, b"blocked"))
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "rejected")
+
+    async def test_an_error_status_is_not_a_pass(self):
+        _response, body = await self._test_with(lambda *_a, **_kw: (500, b"boom"))
+        self.assertFalse(body["ok"])
+        self.assertIn("500", body["error"])
+
+    async def test_an_unreadable_list_is_not_a_pass(self):
+        _response, body = await self._test_with(lambda *_a, **_kw: (200, b"not json"))
+        self.assertFalse(body["ok"])
+        self.assertIn("unreadable", body["error"])
+
+    async def test_an_unreachable_endpoint_is_reported(self):
+        import urllib.error as _urlerr
+
+        def _boom(*_a, **_kw):
+            raise _urlerr.URLError("no route")
+        _response, body = await self._test_with(_boom)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "unreachable")
+
+    async def test_a_missing_configured_model_is_reported_not_hidden(self):
+        """The endpoint is genuinely up, so this is not a failure -- but the
+        machine cannot run a turn on the model it is set to, and saying
+        "Connected" alone is how sol looked healthy for weeks."""
+        _response, body = await self._test_with(self._models("something/else"))
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["model_ok"])
+        self.assertIn("azure_ai/gpt-5.4-mini", body["detail"])
+        self.assertIn("not among them", body["detail"])
+
+    async def test_it_never_opens_a_bare_socket(self):
+        """The property that regressed: a socket that accepts is not a verdict."""
+        called = []
+
+        async def _open(*a, **_kw):
+            called.append(a)
+            raise AssertionError("handle_machine_test opened a raw socket")
+
+        with patch.object(machine_routes.asyncio, "open_connection", _open):
+            _response, body = await self._test_with(
+                self._models("azure_ai/gpt-5.4-mini"))
+        self.assertTrue(body["ok"])
+        self.assertEqual(called, [])
+
+
 if __name__ == "__main__":
     unittest.main()

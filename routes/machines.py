@@ -618,35 +618,88 @@ async def handle_machine_test(request: Request, machine_id: str):
     if provider == "claude_code":
         api_key = await db.ai_machine_api_key(machine_id, session["user"])
         return await _test_anthropic_endpoint(machine, api_key)
-    host = machine["host"]
-    port = machine["port"]
+
+    # provider == "direct". This used to open a TCP socket and report
+    # "reachable" the moment anything accepted the connection, which answered a
+    # question nobody asked: a listening port says nothing about whether the
+    # API works, whether the stored key is accepted, or whether the model the
+    # machine is configured for is served. A blocked model returns 403 to every
+    # real turn while the port stays wide open, so Test passed on a backend
+    # that could not run a single turn.
+    #
+    # Asks the endpoint instead, through the same /v1/models probe
+    # handle_models_list already uses -- a metadata endpoint, not a model API,
+    # so this does not reintroduce the direct-inference client that CLAUDE.md
+    # §0 forbids and that _test_anthropic_endpoint's docstring records being
+    # removed. A 200 with a parseable list proves DNS, TLS, the route, and the
+    # credential in one request.
+    api_key = await db.ai_machine_api_key(machine_id, session["user"])
+    base_url = (
+        runner.normalise_base_url(machine.get("base_url"))
+        or f"https://{machine['host']}"
+    )
+    # Same SSRF blocklist the old socket path applied, before we connect out.
+    _resolve_host(_base_url_host(base_url))
     try:
-        # Resolve and validate before connecting.
-        ip = _resolve_host(host)
-        _reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=5.0,
+        status, body = await asyncio.wait_for(
+            asyncio.to_thread(
+                _probe_anthropic, f"{base_url}/v1/models?limit=1000",
+                api_key, provider="direct",
+            ),
+            timeout=10.0,
         )
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except (ConnectionError, OSError):
-            pass
-        return JSONResponse({"ok": True, "status": "reachable"})
     except HTTPException:
         raise  # re-raise validation errors (403/400) as-is
-    except asyncio.TimeoutError:
-        _log.warning("machine test timeout %s:%d", host, port)
+    except (asyncio.TimeoutError, TimeoutError):
+        _log.warning("machine test timeout %s", base_url)
         return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection timed out"},
+            {"ok": False, "status": "unreachable", "error": "The endpoint timed out"},
             status_code=502,
         )
-    except (OSError, ConnectionRefusedError) as exc:
-        _log.warning("machine test failed %s:%d: %s", host, port, exc)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        _log.warning("machine test failed %s: %s", base_url, exc)
         return JSONResponse(
-            {"ok": False, "status": "unreachable", "error": "Connection failed"},
+            {"ok": False, "status": "unreachable",
+             "error": "Could not reach the endpoint"},
             status_code=502,
         )
+
+    if status in (401, 403):
+        return JSONResponse(
+            {"ok": False, "status": "rejected",
+             "error": "The endpoint rejected the API key"},
+            status_code=502,
+        )
+    if status != 200:
+        return JSONResponse(
+            {"ok": False, "status": "error",
+             "error": f"The endpoint returned HTTP {status}"},
+            status_code=502,
+        )
+    try:
+        models = _parse_model_list(body)
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse(
+            {"ok": False, "status": "error",
+             "error": "The endpoint returned an unreadable model list"},
+            status_code=502,
+        )
+
+    # Reaching the API is not the same as being able to run this machine's
+    # turns: a model can be withdrawn or blocked for this key while the
+    # endpoint stays perfectly healthy, which is what the removed
+    # azure_ai/gpt-5.6-sol did. Reported rather than treated as a failure --
+    # the backend genuinely is up, and the model list can be refreshed.
+    served = {entry["id"] for entry in models}
+    configured = (machine.get("model") or "").strip()
+    detail = f"API answered, key accepted, {len(served)} models served"
+    if configured and configured not in served:
+        detail += f" — but '{configured}' is not among them"
+    return JSONResponse(
+        {"ok": True, "status": "reachable", "detail": detail,
+         "models": len(served),
+         "model_ok": bool(configured) and configured in served}
+    )
 
 
 def _parse_model_list(body: bytes) -> list[dict[str, str]]:

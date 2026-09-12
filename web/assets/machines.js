@@ -1160,7 +1160,11 @@ async function _testMachine(id, btn) {
     }
     const target = machine ? `${machine.host}:${machine.port}` : 'machine';
     if (data.ok) {
-      notifyResult(`Connected to ${target}`);
+      // `detail` says what was actually verified -- the direct-provider test
+      // asks the API and reports whether the key was accepted and whether the
+      // configured model is served, which "Connected" on its own hid.
+      notifyResult(data.detail ? `${target}: ${data.detail}` : `Connected to ${target}`,
+                   data.model_ok === false ? 'error' : undefined);
     } else {
       notifyResult(`Could not reach ${target}: ${data.error || data.status || 'unreachable'}`, 'error');
     }

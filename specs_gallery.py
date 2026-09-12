@@ -8,6 +8,8 @@ docs/superpowers/specs/2026-09-12-design-specs-gallery-design.md.
 from __future__ import annotations
 
 import base64
+import html as _html
+import markdown as _markdown
 import re
 import subprocess
 from pathlib import Path
@@ -181,3 +183,16 @@ def enrich(repo_root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     out["date"] = provenance["date"] if provenance else None
 
     return out
+
+
+def render_markdown(text: str) -> str:
+    """Server-side render via the Markdown package. Falls back to escaped
+    plain text on any rendering failure -- malformed input must never
+    surface as a 500 (spec section 5). Specs are written by agents/humans
+    working this repo, not untrusted external input, but escaping the
+    fallback path costs nothing and closes the obvious XSS case regardless.
+    """
+    try:
+        return _markdown.markdown(text, extensions=["fenced_code", "tables"])
+    except Exception:
+        return f"<pre>{_html.escape(text)}</pre>"

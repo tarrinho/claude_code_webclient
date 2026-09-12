@@ -235,7 +235,21 @@ function Sel(tag, opts) {
     return s;
   };
   sel.data = function (arr) { sel.__data = arr.slice(); return sel; };
-  sel.join = function (t) {
+  sel.join = function (t, enterFn, updateFn, exitFn) {
+    // D3 v6+ three-argument form: join(tag, enter, update, exit)
+    if (typeof t === "function" || typeof enterFn === "function") {
+      // The first argument is an enter-callback, not a tag.
+      var actualFn = typeof t === "function" ? t : enterFn;
+      var parent = sel.__origin || sel;
+      var joined = Sel("__merged__", {data: sel.__data});
+      joined.__joinedOntoClass = parent.__attrs["class"] || null;
+      joined.__joinedOntoTag = parent.__tag;
+      parent.__children.push(joined);
+      if (typeof t === "function") t(joined);
+      if (updateFn) updateFn(joined);
+      if (exitFn) exitFn(Sel("exit", {data: []}));
+      return joined;
+    }
     var parent = sel.__origin || sel;
     var joined = Sel(t, {data: sel.__data});
     joined.__joinedOntoClass = parent.__attrs["class"] || null;
@@ -259,6 +273,21 @@ function Sel(tag, opts) {
       fn.call(per, d, i);
     });
     return sel;
+  };
+  // ── enter / exit ──────────────────────────────────────────────────
+  // Minimal support so the enter-update-exit flow works in tests.
+  // .enter() returns a synthetic "enter" Sel carrying the same data
+  // as the parent — it delegates appends to the parent (__origin).
+  sel.enter = function () {
+    var e = Sel("enter", {data: sel.__data || []});
+    e.__isEnter = true;
+    e.__origin = sel.__origin || sel;
+    return e;
+  };
+  sel.exit = function () {
+    var e = Sel("exit", {data: []});
+    e.__isExit = true;
+    return e;
   };
   sel.on = function (name, fn) { sel.__handlers[name] = fn; return sel; };
   sel.node = function () { return sel.__node || sel; };

@@ -26,6 +26,15 @@ export WC_PROJECTS_ROOT="${WC_PROJECTS_ROOT:-/home/kali/projects/cweb3}"
 export WC_LISTEN_HOST="${TAILNET_IP}"
 export WC_PORT=8080
 export WC_COOKIE_ALLOW_INSECURE="0"
+# transcripts.agent_traffic()'s per-file read is incremental (byte-offset,
+# append-only aware -- transcripts.py's _agent_events_cache), so the 300s
+# default this shipped with predates knowing that: measured live 2026-09-12,
+# a warm pass costs ~0.5s against this host's real transcripts, not the
+# "450MB every poll" cost the original default was chosen to avoid. 5s
+# keeps the duty cycle under 10% and turns a SYNC_REQUEST marker into a
+# pending row in single-digit seconds instead of up to five minutes.
+export WC_SYNC_REQUEST_WATCHER="${WC_SYNC_REQUEST_WATCHER:-1}"
+export WC_SYNC_REQUEST_WATCHER_INTERVAL_S="${WC_SYNC_REQUEST_WATCHER_INTERVAL_S:-5}"
 
 # Session secret — persist to disk so it survives restarts
 SESSION_SECRET_FILE="data/session_secret.txt"

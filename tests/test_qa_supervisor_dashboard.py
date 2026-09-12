@@ -1026,8 +1026,8 @@ class SpokesExistTests(unittest.TestCase):
         """)
         classes = out["classes"]
         self.assertIn("map-spokes", classes)
-        self.assertIn("node", classes)
-        self.assertLess(classes.index("map-spokes"), classes.index("node"))
+        self.assertIn("map-nodes", classes)
+        self.assertLess(classes.index("map-spokes"), classes.index("map-nodes"))
 
     def test_the_spokes_do_not_take_pointer_events(self):
         """A hairline curve is otherwise a click target sitting on top of the

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 import uuid
 import weakref
@@ -39,8 +40,8 @@ from shared import (
     _turn_to_message,
     acquire_sse_slot,
     backend_kind,
-    release_sse_slot,
     owner_of,
+    release_sse_slot,
 )
 
 _log = logging.getLogger("wc.app")
@@ -325,6 +326,7 @@ async def handle_chats_list(request: Request):
                     "voice_mode": bool(c.get("voice_mode")),
                     "parent_chat_id": c.get("parent_chat_id"),
                     "is_temporary": bool(c.get("is_temporary")),
+                    "goal": c.get("goal"),
                 }
                 for c in chats
             ],
@@ -379,15 +381,31 @@ async def handle_chat_create(request: Request):
             detail="Could not create conversation directory — check server logs for details",
         )
     chat_id = uuid.uuid4().hex
-    now = await db.chat_create(
-        chat_id, title, data.get("description"), work_dir, await owner_of(session)
     # owner_of, not session["user"]: a session minted before login switched to
     # the user's id carries the login name, and chat_create rejects a name --
     # so this raised ValueError and answered 500. The resume endpoint had the
     # translation inline and this one did not, which is why the same stale
     # session broke one endpoint and not the other.
+    now = await db.chat_create(
+        chat_id, title, data.get("description"), work_dir, await owner_of(session)
     )
     _log.info("chat_created chat_id=%s work_dir=%s", chat_id, work_dir)
+    # Seed the goal from the initial prompt text so the chat has something
+    # to show immediately — the user's own words, before any model editing.
+    goal_text = None
+    if data.get("prompt"):
+        goal_text = (data["prompt"] or "").strip()[:1000] or None
+    elif session_id and not data.get("title"):
+        # Title was auto-generated from the session prompt, so use the same
+        # text as the goal too.
+        try:
+            goal_text = (await transcripts.session_title(session_id)).strip()[:1000] or None
+        except Exception:
+            pass
+    elif goal_text is None:
+        goal_text = title[:1000]
+    if goal_text:
+        await db.chat_update(chat_id, session["user"], goal=goal_text)
     voice_mode = bool(data.get("voice_mode"))
     parent_chat_id = data.get("parent_chat_id") or None
     # `is_temporary` in the request body is deliberately NOT read. Temporariness
@@ -576,7 +594,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
     session = request.state.session
     data = await request.json()
 
-    allowed = {"title", "description", "archived", "pinned", "ai_machine_id", "model", "voice_mode"}
+    allowed = {"title", "description", "goal", "archived", "pinned", "ai_machine_id", "model", "voice_mode"}
     if not data or not set(data).issubset(allowed):
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
@@ -595,6 +613,11 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 status_code=400, detail="Description must be text or null"
             )
         fields["description"] = description[:500] if description is not None else None
+    if "goal" in data:
+        goal = data["goal"]
+        if goal is not None and not isinstance(goal, str):
+            raise HTTPException(status_code=400, detail="Goal must be text or null")
+        fields["goal"] = goal[:1000] if goal is not None else None
     if "archived" in data:
         if not isinstance(data["archived"], bool):
             raise HTTPException(status_code=400, detail="Archived must be a boolean")
@@ -694,6 +717,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 "id": chat["id"],
                 "title": chat.get("title", ""),
                 "description": chat.get("description"),
+                "goal": chat.get("goal"),
                 "voice_mode": bool(chat.get("voice_mode")),
                 "pinned": bool(chat.get("pinned")),
                 "archived": bool(chat.get("archived")),

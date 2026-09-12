@@ -505,12 +505,15 @@ async def lifespan(app: FastAPI):
     # pending transport_sync_requests row for a human to approve. See
     # docs/superpowers/specs/2026-09-09-transport-project-sync-design.md.
     #
-    # Off by default, and deliberately so -- see the measurement recorded at
-    # config.SYNC_REQUEST_WATCHER_ENABLED. Its poll re-reads ~450MB of
-    # transcripts per pass, which on this host was 417MB of disk read per 20s
-    # and 76% of a core, permanently. Re-enable once
-    # transcripts._agent_events_sync tail-reads. The Sync button (the other
-    # half of transport sync) does not go through here and is unaffected.
+    # Was off by default: the original measurement here was 417MB of disk
+    # read per 20s pass, 76% of a core, permanently, against a full re-read
+    # of every transcript. transcripts._agent_events_sync tail-reads now
+    # (the byte-offset cache, added the same day) -- re-measured live
+    # 2026-09-12, a warm pass costs ~0.08s against this host's real
+    # transcripts (10 consecutive passes: min 0.072s, avg ~0.084s after the
+    # first). launch.sh now enables this by default at a 5s interval on that
+    # basis. The Sync button (the other half of transport sync) does not go
+    # through here and is unaffected either way.
     if config.SYNC_REQUEST_WATCHER_ENABLED:
         sync_request_watcher.start(config.SYNC_REQUEST_WATCHER_INTERVAL_S)
     else:

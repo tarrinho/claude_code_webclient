@@ -141,12 +141,10 @@ def _session_conn() -> sqlite3.Connection | None:
     """
     _ensure_session_db_file()
     try:
-        conn = sqlite3.connect(
+        return sqlite3.connect(
             str(config.SESSION_DB_PATH),
             timeout=_BUSY_TIMEOUT_MS / 1000,
         )
-        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-        return conn
     except sqlite3.Error:
         return None
 
@@ -229,7 +227,7 @@ def _ensure_session_db_file() -> None:
     if _db_dir:
         os.makedirs(_db_dir, exist_ok=True)
     try:
-        conn = sqlite3.connect(config.SESSION_DB_PATH)
+        conn = sqlite3.connect(config.SESSION_DB_PATH, timeout=_BUSY_TIMEOUT_MS / 1000)
         conn.execute(
             """CREATE TABLE IF NOT EXISTS sessions (
                 sid_key    TEXT PRIMARY KEY,
@@ -242,8 +240,17 @@ def _ensure_session_db_file() -> None:
         )
         conn.commit()
         conn.close()
+    except sqlite3.OperationalError:
+        # Transient contention (e.g. "database is locked"), not corruption.
+        # OperationalError is a subclass of DatabaseError, so this must be
+        # caught first: without it, ordinary lock contention fell into the
+        # branch below and deleted a perfectly good sessions file, logging
+        # out every session on the next restart for a problem that would
+        # have cleared itself on the next call.
+        _log.warning("session_db_busy_during_ensure")
     except sqlite3.DatabaseError:
-        # Corrupted file – remove and recreate
+        # Genuinely corrupted file (e.g. left over from a crash) -- remove
+        # and recreate.
         try:
             os.remove(config.SESSION_DB_PATH)
         except OSError:
@@ -253,7 +260,7 @@ def _ensure_session_db_file() -> None:
 
 def _get_session_db() -> sqlite3.Connection:
     """A persistent connection to the sessions database."""
-    return sqlite3.connect(str(config.SESSION_DB_PATH))
+    return sqlite3.connect(str(config.SESSION_DB_PATH), timeout=_BUSY_TIMEOUT_MS / 1000)
 
 
 def _persist(key: str, record: dict) -> None:

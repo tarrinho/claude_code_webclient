@@ -129,6 +129,12 @@ export function createChatListController(dependencies) {
   // {waiting: [...], working: [...]} from GET /api/orchestrator.
   let orchestrator = {waiting: [], working: []};
   let dragging = null;
+  // Stable dot elements keyed by chat-id so they persist across renders
+  // instead of being created/destroyed every poll cycle.  Only attributes
+  // (class, aria-label, title, animation-delay) change, never the element
+  // itself — this prevents the visible flash the old replaceChildren+rebuild
+  // pattern caused every time a chat's running state flipped.
+  const _chatDots = new Map();
 
   // Persist the order of one section. Sends the whole section rather than a
   // single moved id: the server writes it as one transaction, so a drop cannot
@@ -275,68 +281,92 @@ export function createChatListController(dependencies) {
       title.className = 'chat-title' + (stale ? ' stale' : '');
       title.textContent = chat.title;
       title.title = chat.title;
+      // Persist dot elements across renders: _chatDots survives replaceChildren()
+      // because the Map holds references that persist when the DOM rows are wiped
+      // and rebuilt.  Each render either reuses an existing dot (updating class,
+      // aria-label, title, and animation-delay in-place) or creates a new one and
+      // stores it.  Stale entries for chats that no longer need a dot are removed
+      // so the Map does not grow unbounded.
+      let dot = null;
+
       if (activeTurnIds.has(chat.id)) {
-        const dot = document.createElement('span');
-        dot.className = 'chat-running';
-        // render() rebuilds every row from scratch each poll (replaceChildren
-        // above), so a fresh dot always starts its CSS animation at 0% --
-        // opacity:1 -- regardless of where the "true" continuous pulse would
-        // be by wall-clock time. A negative delay keyed to Date.now() puts it
-        // at the right phase immediately, so a rebuild is invisible instead
-        // of reading as a periodic flash. Matches chat-pulse's 1.2s duration
-        // (styles.css); update both together if that ever changes.
-        dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
-        dot.setAttribute('aria-label', 'Response in progress');
-        dot.title = 'Response in progress';
+        dot = _chatDots.get(chat.id);
+        if (dot) {
+          dot.className = 'chat-running';
+          dot.setAttribute('aria-label', 'Response in progress');
+          dot.title = 'Response in progress';
+          dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
+        } else {
+          dot = document.createElement('span');
+          dot.className = 'chat-running';
+          dot.setAttribute('aria-label', 'Response in progress');
+          dot.title = 'Response in progress';
+          dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
+          _chatDots.set(chat.id, dot);
+        }
         title.prepend(dot);
       } else if (chat.terminal_busy) {
-        // Work is happening in a terminal linked to this conversation. Worth a
-        // dot -- it was showing nothing at all -- but a different one, because
-        // there is no stream here to open.
-        const dot = document.createElement('span');
-        dot.className = 'chat-terminal-busy';
-        dot.setAttribute('aria-label', 'Working in its terminal');
-        dot.title = 'Working in the terminal session running this conversation';
+        dot = _chatDots.get(chat.id);
+        if (dot) {
+          dot.className = 'chat-terminal-busy';
+          dot.setAttribute('aria-label', 'Working in its terminal');
+          dot.title = 'Working in the terminal session running this conversation';
+          dot.removeAttribute('style');
+        } else {
+          dot = document.createElement('span');
+          dot.className = 'chat-terminal-busy';
+          dot.setAttribute('aria-label', 'Working in its terminal');
+          dot.title = 'Working in the terminal session running this conversation';
+          _chatDots.set(chat.id, dot);
+        }
         title.prepend(dot);
       } else if (unreadIds.has(chat.id)) {
-        const mark = document.createElement('span');
-        mark.className = 'chat-unread';
-        mark.setAttribute('aria-label', 'New reply');
-        mark.title = 'Replied while you were elsewhere';
-        title.prepend(mark);
+        dot = _chatDots.get(chat.id);
+        if (dot) {
+          dot.className = 'chat-unread';
+          dot.setAttribute('aria-label', 'New reply');
+          dot.title = 'Replied while you were elsewhere';
+          dot.removeAttribute('style');
+        } else {
+          dot = document.createElement('span');
+          dot.className = 'chat-unread';
+          dot.setAttribute('aria-label', 'New reply');
+          dot.title = 'Replied while you were elsewhere';
+          _chatDots.set(chat.id, dot);
+        }
+        title.prepend(dot);
       } else if (endedIds.has(chat.id)) {
-        // Lowest tier: running, terminal work and an unread reply all already
-        // say enough about this conversation's state, so this only shows when
-        // none of them apply -- a quiet "it finished" for a chat you already
-        // know about.
-        const mark = document.createElement('span');
-        mark.className = 'chat-ended';
-        mark.setAttribute('aria-label', 'Finished responding');
-        mark.title = 'Finished responding';
-        title.prepend(mark);
+        dot = _chatDots.get(chat.id);
+        if (dot) {
+          dot.className = 'chat-ended';
+          dot.setAttribute('aria-label', 'Finished responding');
+          dot.title = 'Finished responding';
+          dot.removeAttribute('style');
+        } else {
+          dot = document.createElement('span');
+          dot.className = 'chat-ended';
+          dot.setAttribute('aria-label', 'Finished responding');
+          dot.title = 'Finished responding';
+          _chatDots.set(chat.id, dot);
+        }
+        title.prepend(dot);
       } else if (!chat.queued) {
-        // Nothing running, nothing happening in a linked terminal, no unread
-        // reply, no just-finished marker, and nothing queued to send once
-        // something else wraps up -- genuinely nothing outstanding. Checked
-        // last and gated on !chat.queued specifically because queued is
-        // otherwise independent of this chain (rendered as its own badge
-        // below): a chat with prompts waiting to send is still "waiting for
-        // tasks to end" even when none of the tiers above apply to it right
-        // now, so it must not read as free.
-        //
-        // Deliberately does NOT check for a pending, unanswered question --
-        // that would mean reading each chat's transcript or live terminal on
-        // every poll, for every chat, which is the kind of per-poll cost that
-        // was already reported as making the whole page slow. A chat left
-        // free here that actually has an old unanswered question sitting in
-        // it is the accepted gap; opening it still shows the question bar as
-        // normal regardless of what the sidebar icon said.
-        const mark = document.createElement('span');
-        mark.className = 'chat-free';
-        mark.setAttribute('aria-label', 'Nothing outstanding');
-        mark.title = 'Nothing running or queued for this conversation';
-        title.prepend(mark);
+        dot = _chatDots.get(chat.id);
+        if (dot) {
+          dot.className = 'chat-free';
+          dot.setAttribute('aria-label', 'Nothing outstanding');
+          dot.title = 'Nothing running or queued for this conversation';
+          dot.removeAttribute('style');
+        } else {
+          dot = document.createElement('span');
+          dot.className = 'chat-free';
+          dot.setAttribute('aria-label', 'Nothing outstanding');
+          dot.title = 'Nothing running or queued for this conversation';
+          _chatDots.set(chat.id, dot);
+        }
+        title.prepend(dot);
       }
+
       if (chat.queued) {
         const held = chat.queued_held || 0;
         const queued = document.createElement('span');
@@ -483,6 +513,25 @@ export function createChatListController(dependencies) {
 
       item.append(open, actions);
       target.appendChild(item);
+    });
+    // Stale-map cleanup runs once per section, after all rows are rendered.
+    // Chats that lost their dot in this pass (removed from list, or transitioned
+    // from an active state to a no-dot state like "free while queued") keep
+    // their Map entry only while they still have a DOM row that references the
+    // element — title still holds the dot, so the element is alive until the
+    // next replaceChildren().  Once the row is gone the stale entry drops
+    // here.  This keeps _chatDots bounded and prevents a stale-class dot from
+    // persisting when the chat was deleted or moved off-screen.
+    //
+    // To know which chats are on screen we read the DOM the rows just built.
+    // (Collecting ids ahead of time would require threading a list through the
+    // block above; reading the DOM after is a single query over already-built
+    // rows, which is what replaceChildren was destroying anyway.)
+    const _screenIds = new Set([
+      ...target.querySelectorAll(':scope > .chat-item[data-chat-id]')
+    ].map(el => el.dataset.chatId));
+    _chatDots.forEach((_, id) => {
+      if (!_screenIds.has(id)) { _chatDots.delete(id); }
     });
   }
 

@@ -1,7 +1,7 @@
 // Transport CRUD: the SSH connection a backend can optionally run over.
 // See docs/superpowers/specs/2026-09-06-ssh-transport-backend-split-design.md.
 import {apiFetch} from './api.js?v=2741508';
-import {byId} from './app.js?v=15418713';
+import {byId} from './app.js?v=2257495';
 // notifyResult comes from server-stats.js directly, not via app.js -- app.js
 // only re-exports it there as part of unrelated, uncommitted work elsewhere
 // in this shared tree; machines.js already imports it the same direct way.
@@ -161,6 +161,17 @@ export async function _checkTransport(transport, header, btn) {
       throw new Error(data.detail || data.error || `Check failed (${resp.status})`);
     }
     _renderReadiness(header, data);
+    // machines.js owns the group badge and the broken/active distinction; a
+    // CustomEvent rather than importing machines.js from here, same reason
+    // wc:tunnel-start-queued is an event and not a call -- machines.js already
+    // imports from transports.js, and the reverse import would be a cycle.
+    // ready flips the badge back to active on its own poll tick (proxy_ok),
+    // but a failing Check needs to say so immediately: the group otherwise
+    // keeps reading the last successful poll's "Active" while the four-line
+    // breakdown right next to it lists everything that just failed.
+    document.dispatchEvent(new CustomEvent('wc:transport-check-result', {
+      detail: {transportId: transport.id, broken: !data.ready},
+    }));
     if (data.ready && data.tunnel_started) {
       notifyResult(`${transport.name} is ready and connecting…`);
       // machines.js listens for this to refresh the status badge immediately
@@ -174,6 +185,14 @@ export async function _checkTransport(transport, header, btn) {
       notifyResult(`${transport.name} is not ready — see the checks`, 'error');
     }
   } catch (error) {
+    // Covers both a non-ok response (thrown above, before _renderReadiness --
+    // there is no checks/ready shape to trust from an error body) and a
+    // network-level failure the fetch itself threw on. Either way this
+    // transport just failed a Check, and the badge must say so -- the success
+    // path's own dispatch (above) never runs to tell it.
+    document.dispatchEvent(new CustomEvent('wc:transport-check-result', {
+      detail: {transportId: transport.id, broken: true},
+    }));
     notifyResult(error.message, 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = original; }

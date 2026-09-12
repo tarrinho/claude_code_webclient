@@ -8,13 +8,17 @@ ends in a file-writing operation queued for a human to approve.
 """
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import config
 import db
 import sync_request_watcher as watcher
+
+_LAUNCH_SH = Path(__file__).resolve().parents[1] / "launch.sh"
 
 
 class MarkerRegexTests(unittest.TestCase):
@@ -76,6 +80,43 @@ class WatcherIsOffByDefaultTests(unittest.TestCase):
         import inspect
         default = inspect.signature(watcher.start).parameters["interval_s"].default
         self.assertGreaterEqual(default, 60)
+
+
+class LaunchScriptEnablesWatcherOnThisHostTests(unittest.TestCase):
+    """config.py's own bare defaults stay conservative (pinned above) for any
+    checkout that has not measured its own transcripts -- but this host has:
+    transcripts._agent_events_sync tail-reads now (test_qa_agent_events_
+    incremental.py pins that), and a live warm pass measured 2026-09-12 cost
+    ~0.5s against this host's real transcripts, not the ~450MB/pass the
+    conservative default exists to avoid. launch.sh is where that host-
+    specific knowledge belongs -- these pin its two export lines by pattern
+    rather than sourcing the script (which requires a live tailscale
+    connection and would make this test an integration test with a
+    dependency the rest of this file does not have).
+    """
+
+    def setUp(self):
+        self.text = _LAUNCH_SH.read_text()
+
+    def _default_for(self, var: str) -> str:
+        m = re.search(rf'export {re.escape(var)}="\$\{{{re.escape(var)}:-([^}}]*)\}}"',
+                      self.text)
+        self.assertIsNotNone(
+            m, f"{var} is not exported with an overridable ${{VAR:-default}} form")
+        return m.group(1)
+
+    def test_watcher_is_enabled_by_default_on_this_host(self):
+        self.assertEqual(self._default_for("WC_SYNC_REQUEST_WATCHER"), "1")
+
+    def test_interval_is_five_seconds_by_default_on_this_host(self):
+        self.assertEqual(self._default_for("WC_SYNC_REQUEST_WATCHER_INTERVAL_S"), "5")
+
+    def test_an_operator_can_still_override_either_value(self):
+        """The ${VAR:-default} form, not a bare assignment -- an operator's
+        own exported value must win, the same as every other WC_* default in
+        this file."""
+        for var in ("WC_SYNC_REQUEST_WATCHER", "WC_SYNC_REQUEST_WATCHER_INTERVAL_S"):
+            self.assertIn(f'${{{var}:-', self.text)
 
 
 class PassTests(unittest.IsolatedAsyncioTestCase):

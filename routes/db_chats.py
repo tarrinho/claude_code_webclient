@@ -24,6 +24,7 @@ _CHAT_COLUMNS = (
 _ALLOWED_CHAT_FIELDS = {
     "title",
     "description",
+    "goal",
     "archived",
     "pinned",
     "pinned_at",

@@ -18,7 +18,16 @@ _log = logging.getLogger("wc.db.backup")
 def _db_backup_sync(backup_path: str) -> bytes:
     """Copy the database and return it gzip-compressed. Blocking; call off-loop."""
     sync_conn = sqlite3.connect(backup_path)
-    db_conn_sync = sqlite3.connect(str(db.config.DB_PATH))
+    # A raw connection to the live file, separate from db.db_conn's own
+    # aiosqlite connection -- which already sets a busy_timeout (db.py).
+    # Without one here, this connection has none at all (sqlite3's default is
+    # 5s, itself none too generous), and .backup() holds the source locked for
+    # as long as the copy takes -- exactly what collides with everything else
+    # still writing through db.db_conn while a backup runs. Reuses db.py's own
+    # constant rather than a second literal, so the two cannot quietly drift.
+    db_conn_sync = sqlite3.connect(
+        str(db.config.DB_PATH), timeout=db._BUSY_TIMEOUT_MS / 1000
+    )
     try:
         db_conn_sync.backup(sync_conn)
     finally:

@@ -1,7 +1,7 @@
 // ── Skills ────────────────────────────────────────────────────────────────────────
 
 import {apiFetch} from './api.js?v=2741508';
-import {state} from './app.js?v=15418713';
+import {state} from './app.js?v=2257495';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share

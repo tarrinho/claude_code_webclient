@@ -301,7 +301,10 @@ async def init() -> None:
             -- Voice conversations can link to a parent chat (handoff).
             parent_chat_id TEXT,
             -- 1 if this chat was created as a temporary voice brainstorm.
-            is_temporary  INTEGER NOT NULL DEFAULT 0
+            is_temporary  INTEGER NOT NULL DEFAULT 0,
+            -- Free-text summary of what this conversation is working on.
+            -- Set from the initial prompt at creation; editable by the user.
+            goal          TEXT
         );
 
         CREATE TABLE IF NOT EXISTS ai_machines (
@@ -1129,6 +1132,7 @@ async def _ensure_chat_columns() -> None:
         ),
         "parent_chat_id": "ALTER TABLE chats ADD COLUMN parent_chat_id TEXT",
         "is_temporary": "ALTER TABLE chats ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 0",
+        "goal": "ALTER TABLE chats ADD COLUMN goal TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:

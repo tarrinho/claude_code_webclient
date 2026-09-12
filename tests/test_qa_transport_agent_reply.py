@@ -20,8 +20,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import pathlib
 import json
+import pathlib
 import subprocess
 import sys
 import tempfile

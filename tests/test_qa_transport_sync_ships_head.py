@@ -49,22 +49,22 @@ class _FakeSFTP:
         self.removed: list[str] = []
 
     # paramiko's SFTPClient surface, only the parts apply_plan uses.
-    def put(self, localpath, remotepath):  # noqa: D102
+    def put(self, localpath, remotepath):
         self.written[remotepath] = Path(localpath).read_bytes()
 
-    def putfo(self, fileobj, remotepath, **kwargs):  # noqa: D102
+    def putfo(self, fileobj, remotepath, **kwargs):
         self.written[remotepath] = fileobj.read()
 
-    def remove(self, remotepath):  # noqa: D102
+    def remove(self, remotepath):
         self.removed.append(remotepath)
 
-    def stat(self, path):  # noqa: D102
+    def stat(self, path):
         raise FileNotFoundError(path)
 
-    def mkdir(self, path):  # noqa: D102
+    def mkdir(self, path):
         return None
 
-    def close(self):  # noqa: D102
+    def close(self):
         return None
 
 
@@ -119,10 +119,12 @@ class SyncShipsCommittedContentTests(unittest.IsolatedAsyncioTestCase):
         state that never existed on the far host."""
         self.tracked.write_text("drifted\n")
         plan = await self._push_all()
-        from_git = subprocess.run(
-            ["git", "-C", str(self.repo), "show", f"{plan.head_sha}:module.py"],
-            capture_output=True, check=True,
-        ).stdout
+        from_git = await asyncio.to_thread(
+            lambda: subprocess.run(
+                ["git", "-C", str(self.repo), "show", f"{plan.head_sha}:module.py"],
+                capture_output=True, check=True,
+            ).stdout
+        )
         self.assertEqual(self.sftp.written["/remote/module.py"], from_git)
         self.assertEqual(plan.head_sha, self.head)
 

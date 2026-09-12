@@ -282,6 +282,7 @@ def _read_remote_sessions_sync() -> list[dict[str, Any]]:
     """
     sessions: list[dict[str, Any]] = []
     import sqlite3 as _sqlite3
+
     import config
     try:
         conn = _sqlite3.connect(os.environ.get("WC_DB_PATH", config.DB_PATH))
@@ -404,6 +405,7 @@ async def update_sessions_cache() -> None:
     """
     try:
         import sqlite3 as _sqlite3
+
         import config
 
         def _read_transports() -> list[Any]:
@@ -521,7 +523,7 @@ async def update_sessions_cache() -> None:
             final = _dedupe_sessions(merged)
 
             with _cache_lock:
-                global _sessions_cache, _cache_timestamp  # noqa: PLW0603
+                global _sessions_cache, _cache_timestamp
                 _sessions_cache = final
                 _cache_timestamp = time.time()
             _log.info("update_sessions_cache: refreshed with %d sessions", len(final))

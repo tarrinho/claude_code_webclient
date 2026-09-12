@@ -209,7 +209,7 @@ async def _api_ping(request: Request):
             remaining = max(0, int(ttl - elapsed))
         else:
             remaining = ttl
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Reporting the full TTL is the safe fallback, but it is also
         # indistinguishable from a fresh session -- so a clock or session-store
         # fault here would look like normal operation for ever.
@@ -1260,7 +1260,7 @@ async def handle_settings_patch(request: Request):
             _validate_host(value.split("://", 1)[1].split(":", 1)[0])
             await db.setting_set("webconsole_url", value)
             await db.admin_action_record(
-                session["user"], "settings_webconsole_url", f"url=*",
+                session["user"], "settings_webconsole_url", "url=*",
             )
             _log.info("WebConsole URL updated by user=%s", session["user"])
         else:

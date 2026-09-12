@@ -1217,6 +1217,15 @@ export function createConversationController(dependencies) {
         setStreamState('ready');
       } else if (payload.type === 'status' && payload.status === 'waiting_for_slot') {
         setStreamState('thinking', payload.error || 'Waiting for a free slot…');
+      } else if (payload.type === 'status' && payload.status === 'low_memory') {
+        // The turn never started -- refused by the host's own memory guard
+        // (runner.memory_refusal(), routes/chats.py), not a failure of the
+        // turn itself. `done` follows immediately in that same code path,
+        // which already closes the source and resets state to ready; this
+        // branch's only job is telling the user why nothing happened, which
+        // previously fell through unhandled and looked like a silently
+        // broken chat.
+        showToast(payload.error || 'Not enough memory on the host right now — try again shortly', 'error');
       } else if (payload.type === 'error') {
         source.close(); liveSource = null;
         setStreamState('failed');
@@ -1368,6 +1377,16 @@ export function createConversationController(dependencies) {
             const delay = event.retry_delay_ms ? Math.ceil(event.retry_delay_ms / 1000) : null;
             const detail = `Retry ${event.attempt || '?'}/${event.max_retries || '?'}${delay ? ` in ${delay}s` : ''}…`;
             setStreamState('retrying', detail);
+          } else if (event.type === 'status' && event.status === 'low_memory') {
+            // Same treatment as a genuine error: the turn never started
+            // (runner.memory_refusal(), routes/chats.py), and the catch
+            // block below already does the right thing for a thrown
+            // error here -- restores the typed prompt so the user is not
+            // made to retype it, sets 'failed' so Retry appears, and
+            // shows the message as a toast. Previously fell through
+            // unhandled, straight to "Response stream ended before
+            // completion" below with no explanation of why.
+            throw new Error(event.error || 'Not enough memory on the host right now — try again shortly');
           } else if (event.type === 'error') {
             throw new Error(event.error || 'Claude failed');
           } else if (event.type === 'done') {

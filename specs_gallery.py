@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import html as _html
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -96,6 +97,14 @@ def discover_specs(root: Path) -> list[dict[str, Any]]:
     file count here is small (dozens), and a cached list is exactly the
     "list went stale" class of bug this project has already hit twice with
     cached status elsewhere.
+
+    Walked with os.walk, pruning _EXCLUDED_DIRS from dirnames in place,
+    rather than Path.rglob() filtered afterwards. rglob has already found
+    every file under an excluded directory before the exclusion check ever
+    runs -- measured 2026-09-12, 49 of this tree's 157 .md files are inside
+    .venv (package READMEs/CHANGELOGs), every one read and marker-checked
+    only to be discarded. Pruning stops the walk from descending into
+    .venv/.git/node_modules/__pycache__/.claude at all.
     """
     root = root.resolve()
     specs_dir = root / "docs" / "superpowers" / "specs"
@@ -111,21 +120,24 @@ def discover_specs(root: Path) -> list[dict[str, Any]]:
                 "mtime": path.stat().st_mtime,
             })
 
-    for path in root.rglob("*.md"):
-        if path.is_relative_to(specs_dir):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+        dir_path = Path(dirpath)
+        if dir_path == specs_dir or dir_path.is_relative_to(specs_dir):
             continue  # already covered above
-        rel_parts = path.relative_to(root).parts
-        if any(part in _EXCLUDED_DIRS for part in rel_parts):
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if not _MARKER_RE.search(text):
-            continue
-        rel = str(path.relative_to(root))
-        found.append({
-            "path": rel,
-            "title": _extract_title(text, path.name),
-            "mtime": path.stat().st_mtime,
-        })
+        for filename in filenames:
+            if not filename.endswith(".md"):
+                continue
+            path = dir_path / filename
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if not _MARKER_RE.search(text):
+                continue
+            rel = str(path.relative_to(root))
+            found.append({
+                "path": rel,
+                "title": _extract_title(text, path.name),
+                "mtime": path.stat().st_mtime,
+            })
 
     found.sort(key=lambda s: s["mtime"], reverse=True)
     return found
@@ -136,8 +148,14 @@ def find_references(repo_root: Path, filename: str) -> list[str]:
     already gets referenced back from code today (routes/transports.py's
     own docstring names its design doc). Read-only, never raises: grep
     exiting non-zero (no matches) is a normal, empty result, not a failure.
+
+    -F: *filename* is matched as a literal string, not a regex -- a spec's
+    own filename always contains unescaped dots, which in BRE match any
+    character, so this quietly over-matched before (harmless in practice
+    since it only over-matches by widening a real hit into a slightly less
+    exact one, but not the contract this function documents).
     """
-    cmd = ["grep", "-rl"]
+    cmd = ["grep", "-rlF"]
     for excluded in _EXCLUDED_DIRS:
         cmd.append(f"--exclude-dir={excluded}")
     cmd += ["--", filename, str(repo_root)]
@@ -152,6 +170,97 @@ def find_references(repo_root: Path, filename: str) -> list[str]:
     hits = [line for line in result.stdout.splitlines() if line.strip()]
     return [str(Path(h).relative_to(repo_root)) for h in hits
             if Path(h).name != filename]
+
+
+def find_all_references(repo_root: Path, filenames: list[str]) -> dict[str, list[str]]:
+    """find_references() for every name in *filenames*, in two grep passes
+    total instead of one grep pass per name.
+
+    Measured 2026-09-12 on the real checkout: /api/specs took 15.2s for 23
+    specs, and enrich() alone was 12.55s of it -- 0.55s per spec, all of it
+    find_references() re-walking the whole repo tree from scratch for each
+    spec in turn. discover_specs()'s own docstring already commits this
+    project to never caching the list (a cached membership set went stale
+    before, see routes/specs.py's _is_known_spec), so the fix has to make
+    the walk itself cheap rather than skip it on a repeat call.
+
+    A first attempt read each candidate hit file's content back in Python
+    and checked `name in text` per filename -- correct, but *slower* than
+    the original (31.4s): this repo's own PT_request.md and
+    data/webconsole.db* have grown to several MB over one long session, and
+    a hit against any of them meant decoding a multi-megabyte file to text
+    and running up to 23 linear substring scans over it, repeated for every
+    such large hit. grep's own matcher does not have that problem -- it
+    scans bytes, not decoded Python strings -- so per-file attribution is
+    handed back to grep instead of re-implemented slower in Python.
+
+    A second attempt got that part right but still spawned one grep process
+    per hit file for the attribution pass -- measured on this checkout, 106
+    files reference *some* spec, so that was 106 processes and process-spawn
+    overhead alone (not tree-walking, not matching) was most of the
+    remaining ~2s. grep accepts more than one file argument in a single
+    invocation and, combined with -H, prefixes each output line with which
+    of them it came from -- so the attribution pass is one process no
+    matter how many hit files there are, same as the discovery pass:
+
+    Pass 1: one `grep -rlF` with a `-e` per filename -- every file
+    mentioning *any* of them, one tree walk regardless of how many specs
+    there are.
+    Pass 2: one `grep -HoF` with the same `-e` list, given every hit file
+    from pass 1 as separate arguments. -H prefixes each output line with
+    its filename ("path:match"); the matched text itself is which filename
+    it hit, since the patterns are themselves literal filenames -- so one
+    pass over the output attributes every hit to every file it came from.
+    """
+    result: dict[str, list[str]] = {name: [] for name in filenames}
+    if not filenames:
+        return result
+    list_cmd = ["grep", "-rlF"]
+    for excluded in _EXCLUDED_DIRS:
+        list_cmd.append(f"--exclude-dir={excluded}")
+    for name in filenames:
+        list_cmd += ["-e", name]
+    list_cmd += ["--", str(repo_root)]
+    try:
+        proc = subprocess.run(list_cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    if proc.returncode not in (0, 1):  # 1 == no matches, still fine
+        return result
+    hit_files = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not hit_files:
+        return result
+
+    name_set = set(filenames)
+    match_cmd = ["grep", "-HoF"]
+    for name in filenames:
+        match_cmd += ["-e", name]
+    match_cmd += ["--", *hit_files]
+    try:
+        matched = subprocess.run(match_cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    if matched.returncode not in (0, 1):
+        return result
+    seen: dict[str, set[str]] = {}  # filename -> set of names it matched
+    for line in matched.stdout.splitlines():
+        # rsplit, not split: a hit's own path may itself contain ":" (rare,
+        # but the matched text -- one of *filenames* -- never does), so
+        # splitting from the right is the side guaranteed safe to cut on.
+        hit, _, name = line.rpartition(":")
+        if not hit or name not in name_set:
+            continue
+        seen.setdefault(hit, set()).add(name)
+    for hit, names in seen.items():
+        hit_path = Path(hit)
+        rel = str(hit_path.relative_to(repo_root))
+        for name in names:
+            # Same self-reference exclusion as find_references(): a spec
+            # mentioning its own filename is not a reference to itself.
+            if hit_path.name == name:
+                continue
+            result[name].append(rel)
+    return result
 
 
 def spec_status(repo_root: Path, spec_path: str) -> str:
@@ -195,10 +304,21 @@ def git_provenance(repo_root: Path, spec_path: str) -> dict[str, str] | None:
     return {"author": author, "date": date}
 
 
-def enrich(repo_root: Path, spec: dict[str, Any]) -> dict[str, Any]:
+def enrich(
+    repo_root: Path, spec: dict[str, Any], *, references: list[str] | None = None,
+) -> dict[str, Any]:
     """Adds referenced_by/status/author/date to one discover_specs() entry.
     Each enrichment is isolated: one failing must never affect the others
-    or fail the whole entry (spec section 5)."""
+    or fail the whole entry (spec section 5).
+
+    *references*, when given, is this spec's already-computed
+    referenced_by list -- routes/specs.py's list endpoint calls
+    find_all_references() once for every spec and passes each result
+    through, rather than every enrich() call re-running its own grep over
+    the whole tree (that was 0.55s x 23 specs = 12.5s of a 15.2s request,
+    see find_all_references()'s docstring). None (the default) keeps the
+    old one-spec-at-a-time behavior for direct callers, tests included.
+    """
     out = dict(spec)
 
     # The id a client needs to view/delete this spec through the API --
@@ -207,10 +327,13 @@ def enrich(repo_root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     # and view/delete were both silently non-functional.
     out["id"] = encode_id(spec["path"])
 
-    try:
-        out["referenced_by"] = find_references(repo_root, Path(spec["path"]).name)
-    except Exception:
-        out["referenced_by"] = []
+    if references is not None:
+        out["referenced_by"] = references
+    else:
+        try:
+            out["referenced_by"] = find_references(repo_root, Path(spec["path"]).name)
+        except Exception:
+            out["referenced_by"] = []
 
     try:
         out["status"] = spec_status(repo_root, spec["path"])

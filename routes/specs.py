@@ -33,9 +33,18 @@ def _discover_and_enrich(root: Path) -> list[dict[str, Any]]:
     blocking subprocess.run calls (grep, git log) once per spec with no
     executor wrapping of its own, and handle_specs_list is async -- with
     20+ specs that stalls the event loop, and every other in-flight
-    request/turn, for the whole duration of one /api/specs call."""
-    return [specs_gallery.enrich(root, s)
-            for s in specs_gallery.discover_specs(root)]
+    request/turn, for the whole duration of one /api/specs call.
+
+    references is computed once for every spec via find_all_references()
+    (one grep pass) rather than once per spec inside enrich() -- measured
+    2026-09-12, that alone was 12.5s of a 15.2s call for 23 specs. See
+    find_all_references()'s and enrich()'s docstrings.
+    """
+    specs = specs_gallery.discover_specs(root)
+    references = specs_gallery.find_all_references(
+        root, [Path(s["path"]).name for s in specs])
+    return [specs_gallery.enrich(root, s, references=references[Path(s["path"]).name])
+            for s in specs]
 
 
 def _is_known_spec(root: Path, candidate: Path) -> bool:

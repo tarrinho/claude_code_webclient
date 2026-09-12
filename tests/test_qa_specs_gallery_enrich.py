@@ -47,6 +47,84 @@ class FindReferencesTests(unittest.TestCase):
         self.assertEqual(refs, [])
 
 
+class FindAllReferencesTests(unittest.TestCase):
+    """find_all_references() must agree with calling find_references() once
+    per name -- it exists to make the same answer cheaper to compute
+    (measured 2026-09-12: 15.2s for 23 specs down to 1.5s), not a different
+    answer. See its docstring for why (grep -H across every hit file in one
+    process, rather than one grep -l per spec)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_finds_references_for_multiple_names_in_one_call(self):
+        (self.root / "routes.py").write_text(
+            '"""See docs/superpowers/specs/2026-01-01-a-design.md."""\n')
+        (self.root / "other.py").write_text(
+            '"""See docs/superpowers/specs/2026-01-02-b-design.md."""\n')
+        refs = specs_gallery.find_all_references(
+            self.root, ["2026-01-01-a-design.md", "2026-01-02-b-design.md"])
+        self.assertIn("routes.py", refs["2026-01-01-a-design.md"])
+        self.assertIn("other.py", refs["2026-01-02-b-design.md"])
+        # Neither file mentions the other spec.
+        self.assertNotIn("other.py", refs["2026-01-01-a-design.md"])
+        self.assertNotIn("routes.py", refs["2026-01-02-b-design.md"])
+
+    def test_one_file_referencing_two_specs_is_attributed_to_both(self):
+        (self.root / "routes.py").write_text(
+            "# See 2026-01-01-a-design.md and 2026-01-02-b-design.md\n")
+        refs = specs_gallery.find_all_references(
+            self.root, ["2026-01-01-a-design.md", "2026-01-02-b-design.md"])
+        self.assertIn("routes.py", refs["2026-01-01-a-design.md"])
+        self.assertIn("routes.py", refs["2026-01-02-b-design.md"])
+
+    def test_a_name_with_no_references_maps_to_an_empty_list(self):
+        (self.root / "routes.py").write_text('"""unrelated."""\n')
+        refs = specs_gallery.find_all_references(self.root, ["no-such-spec.md"])
+        self.assertEqual(refs["no-such-spec.md"], [])
+
+    def test_self_reference_is_excluded(self):
+        """Same exclusion find_references() applies: a spec file
+        mentioning its own filename (e.g. in its own frontmatter) is not a
+        reference to itself."""
+        (self.root / "2026-01-01-a-design.md").write_text(
+            "# A\nSee also 2026-01-01-a-design.md for background.\n")
+        refs = specs_gallery.find_all_references(
+            self.root, ["2026-01-01-a-design.md"])
+        self.assertNotIn("2026-01-01-a-design.md", refs["2026-01-01-a-design.md"])
+
+    def test_an_excluded_directory_does_not_count(self):
+        hideout = self.root / ".venv"
+        hideout.mkdir()
+        (hideout / "stale.py").write_text(
+            '"""See 2026-01-01-a-design.md."""\n')
+        refs = specs_gallery.find_all_references(self.root, ["2026-01-01-a-design.md"])
+        self.assertEqual(refs["2026-01-01-a-design.md"], [])
+
+    def test_empty_filename_list_returns_empty_dict(self):
+        self.assertEqual(specs_gallery.find_all_references(self.root, []), {})
+
+    def test_agrees_with_calling_find_references_once_per_name(self):
+        """The property that actually matters: same input, same answer as
+        the slower one-call-per-name version, for a case with real overlap
+        and real gaps."""
+        (self.root / "a.py").write_text("2026-01-01-a-design.md\n")
+        (self.root / "b.py").write_text(
+            "2026-01-01-a-design.md and 2026-01-02-b-design.md\n")
+        (self.root / "c.py").write_text("nothing relevant here\n")
+        names = ["2026-01-01-a-design.md", "2026-01-02-b-design.md", "2026-01-03-c-design.md"]
+        bulk = specs_gallery.find_all_references(self.root, names)
+        individually = {
+            name: specs_gallery.find_references(self.root, name) for name in names
+        }
+        self.assertEqual(
+            {k: sorted(v) for k, v in bulk.items()},
+            {k: sorted(v) for k, v in individually.items()},
+        )
+
+
 class SpecStatusTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

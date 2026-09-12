@@ -40,6 +40,7 @@
     <button class="btn-icon" id="alertToggle" aria-label="Alert me when an agent needs me" title="Alert me when an agent needs me" aria-pressed="false" hidden>🔔</button>
     <button class="theme-toggle" id="themeToggle" aria-label="Switch color theme" aria-pressed="false">◐</button>
     <button class="btn-logout" id="logoutBtn">Log out</button>
+    <button class="btn-icon" id="hardRefreshBtn" aria-label="Hard refresh (bypass cache)" title="Hard refresh — clears cached files and reloads the page">↻</button>
   </header>
   <div class="workspace-strip" id="workspaceStrip">
     <span class="workspace-name" id="workspaceName"></span>
@@ -61,7 +62,6 @@
       <button class="btn-icon strip-action" id="voiceModeToggleBtn"
               aria-label="Toggle voice mode" title="Toggle voice mode" hidden>🎙</button>
       <button class="btn-icon strip-action" id="syncBtn" aria-label="Refresh history from the terminal session" title="Refresh history" hidden>⟳</button>
-      <button class="btn-icon strip-action" id="hardRefreshBtn" aria-label="Hard refresh (bypass cache)" title="Hard refresh — clears cached files and reloads the page">↻</button>
       <!-- Auto-answer: approves permission and plan-approval prompts for this
            chat without asking. The label says what it does, not "Auto-answer" -
            this is a real transfer of authority, not a display preference.

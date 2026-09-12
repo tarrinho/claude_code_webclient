@@ -343,9 +343,15 @@ async def handle_chat_create(request: Request):
     # If the user provided no title, generate one from the last prompt in the
     # linked session (if any).  Otherwise fall back to the "Untitled" path
     # which gives the slug a sensible work-dir prefix.
+    #
+    # session_id is read again below (goal seeding) regardless of which title
+    # path was taken, so it is assigned unconditionally here -- it used to
+    # live inside the "Untitled" branch only, which left it unbound and
+    # crashed every create carrying a user-given title and no "prompt" field
+    # with UnboundLocalError.
+    session_id = data.get("session_id")
     title = user_title if user_title else "Untitled"
     if title == "Untitled":
-        session_id = data.get("session_id")
         if session_id:
             try:
                 prompt_text = (await transcripts.session_title(session_id)).strip()

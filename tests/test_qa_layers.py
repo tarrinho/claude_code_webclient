@@ -573,7 +573,11 @@ class SystemE2EQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
             await chat_routes.handle_submit_message(submit_request, chat_id)
         export = await chat_routes.handle_chat_export(self.request, chat_id)
         body = export.body.decode()
-        self.assertIn("# Export Flow", body)
+        # A user-typed title is folded into the standard "{transport} : {n}
+        # : {task}" skeleton on its first turn (2026-09-12) -- the user's own
+        # words stay verbatim as the task slot, so the export heading now
+        # reads "local : 1 : Export Flow" rather than "Export Flow" alone.
+        self.assertRegex(body.splitlines()[0], r"^# .*: Export Flow$")
         self.assertIn("complete this", body)
         self.assertIn("finished", body)
 

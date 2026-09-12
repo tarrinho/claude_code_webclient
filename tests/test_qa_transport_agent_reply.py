@@ -20,7 +20,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import pathlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -29,6 +32,8 @@ import config
 import db
 import runner
 import transcripts
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class BuildRemoteReplyCommandTests(unittest.TestCase):
@@ -58,6 +63,43 @@ class BuildRemoteReplyCommandTests(unittest.TestCase):
         cmd = transcripts.build_remote_reply_command(
             "/home/kali/projects/claude-code-webconsole", "x", "y")
         self.assertTrue(cmd.startswith("cd /home/kali/projects/claude-code-webconsole && "))
+
+    def test_the_generated_script_actually_runs(self):
+        """Every other test here inspects the command as a string. None of them
+        ran it, and that is exactly how the relay shipped broken: the script
+        inserted *remote_path* into sys.path and then called
+        `transcripts.agent_reply_to(...)` without ever importing `transcripts`,
+        so the remote side died with
+
+            NameError: name 'transcripts' is not defined
+
+        on every attempt, on every host. Found on 2026-09-12 by running the
+        real command against a live transport, not by reading it -- the string
+        looks correct, and the security assertions around it all passed.
+
+        Executed with the repo itself as *remote_path*, which is what a synced
+        transport looks like. The target deliberately does not exist: the point
+        is that the script reaches a structured answer instead of a traceback,
+        so `ok: False, reason: "no session named ..."` is a pass. A NameError
+        or a non-zero exit is the failure this pins.
+        """
+        cmd = transcripts.build_remote_reply_command(
+            str(ROOT), "no-such-session-xyz", "hello")
+        # Strip the leading `cd <path> && ` so this runs here rather than
+        # depending on a shell that honours $HOME the way sshd does.
+        script = cmd.split("&& ", 1)[1]
+        assert script.startswith("python3 -c ")
+        body = script[len('python3 -c "'):-1]
+        result = subprocess.run(
+            [sys.executable, "-c", body],
+            capture_output=True, text=True, cwd=str(ROOT), timeout=60,
+        )
+        self.assertNotIn("NameError", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr[-400:])
+        payload = json.loads(result.stdout)
+        self.assertIn("ok", payload)
+        self.assertFalse(payload["ok"])
+        self.assertIn("no session named", payload.get("reason", ""))
 
     def test_base64_alphabet_has_no_shell_metacharacters(self):
         # Defence in depth: even if the surrounding quoting were ever changed,

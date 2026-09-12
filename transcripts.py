@@ -2053,6 +2053,12 @@ def build_remote_reply_command(remote_path: str, target: str, text: str) -> str:
         "import base64,json,os,sys;"
         f"path=os.path.expanduser('{remote_path}');"
         "sys.path.insert(0,path);"
+        # The import the sys.path line exists to make possible. Without it the
+        # remote side reached `transcripts.agent_reply_to(...)` with the name
+        # unbound and died with NameError on every attempt, on every host --
+        # which is why agent_reply_log had no rows rather than failed ones.
+        # Imported after the path insert, which is the whole point of the order.
+        "import transcripts;"
         f"d=json.loads(base64.b64decode('{payload}'));"
         "print(json.dumps(transcripts.agent_reply_to(d['to'], d['text'])))"
     )

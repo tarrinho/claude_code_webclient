@@ -160,6 +160,29 @@ async def _api_version_hash(request: Request):
     return JSONResponse({"version": _asset_version()})
 
 
+@router.get("/api/hard-refresh")
+async def _api_hard_refresh(request: Request):
+    """GET /api/hard-refresh -- force browser cache invalidation.
+
+    Serves a 302 redirect with Cache-Control: no-store. Caddy (the reverse
+    proxy) does not cache the 302, so the browser lands on the target URL
+    with no cached HTML/CSS/JS in flight — it must re-fetch everything from
+    the server. Works on every browser including mobile Safari where
+    Clear-Site-Data is unreliable.
+    """
+    from fastapi.responses import RedirectResponse
+    ref = request.query_params.get("to", "/")
+    return RedirectResponse(
+        url=ref,
+        status_code=302,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 @router.post("/api/ping")
 async def _api_ping(request: Request):
     """POST /api/ping -- refresh session TTL without side effects.

@@ -342,6 +342,28 @@ button{touch-action:manipulation}
 /* The conversation name is a title, not a path: normal UI font and colour so
    it does not read as one long monospace run with the directory. */
 .workspace-name{font:600 13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40%}
+.workspace-goal{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:italic;max-width:30%;font-size:12px}
+/* Goal icon: small flag badge before the goal text */
+.goal-icon{font-size:13px;margin-right:4px;flex:none}
+.workspace-goal-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:620px){
+  .workspace-strip{display:flex;flex-wrap:wrap;padding:8px 12px;min-height:auto;gap:4px;align-items:center}
+  .workspace-name{flex:1 1 100%;order:1;margin-bottom:2px;font-size:14px}
+  .workspace-goal{flex:1 1 100%;order:2;margin-bottom:6px;white-space:normal;max-width:none;font-size:12px;line-height:1.3;color:var(--fg);background:var(--panel);padding:4px 8px;border-radius:4px;border:1px solid var(--line);display:flex;align-items:center;gap:6px}
+  .workspace-goal-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Hide backend selector on mobile */
+  .conversation-model-wrap:first-of-type{display:none}
+  /* Model selector: compact pill next to status, not full-width */
+  .conversation-model-wrap:last-of-type{order:3}
+  .conversation-model-wrap label{display:none}
+  .conversation-model{max-width:80px;padding:2px 3px;font-size:9px;border-width:1px;min-height:24px}
+  .run-state{order:4;font-size:10px}
+  .model-label{order:5;font-size:9px;max-width:100px}
+  /* Buttons on their own row */
+  .strip-right{order:6;flex-basis:100%;justify-content:flex-start;flex-wrap:wrap;gap:2px;margin-top:4px}
+  .strip-action{min-width:28px;min-height:28px;padding:0;font-size:12px}
+  .auto-answer-group{display:inline-flex;gap:2px}
+}
 /* .btn-icon carries a 34px minimum that would fatten a 34px strip. Coarse
    pointers still get the 44px target from the media query further down. */
 .strip-action{min-width:24px;min-height:24px;font-size:13px;line-height:1;padding:0}
@@ -730,7 +752,7 @@ button{touch-action:manipulation}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 @media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn,.queue-toggle{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn,.queue-toggle{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}.strip-action{min-width:28px;min-height:28px}}
 /* Reclaim chrome on small screens so the scrolling panel gets usable height. */
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(max-width:480px){.usage-row{grid-template-columns:minmax(0,1fr) 2.6rem 3.6rem 3.6rem}.usage-row>:nth-child(5){display:none}.usage-turn{grid-template-columns:minmax(0,1fr) 5.5rem auto}.usage-turn>.usage-when,.usage-turn>.usage-turn-model{display:none}}

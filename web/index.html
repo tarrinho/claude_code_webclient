@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=9002573">
+<link rel="stylesheet" href="/assets/styles.css?v=9002576">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -43,6 +43,7 @@
   </header>
   <div class="workspace-strip" id="workspaceStrip">
     <span class="workspace-name" id="workspaceName"></span>
+    <span class="workspace-goal" id="workspaceGoal" hidden title="Chat goal"><span class="goal-icon" aria-hidden="true">&#127919;</span></span>
     <label class="conversation-model-wrap" for="conversationBackend">Backend</label>
     <select id="conversationBackend" class="conversation-model" aria-label="Backend for this conversation">
       <option value="">Follow active</option>
@@ -60,6 +61,7 @@
       <button class="btn-icon strip-action" id="voiceModeToggleBtn"
               aria-label="Toggle voice mode" title="Toggle voice mode" hidden>🎙</button>
       <button class="btn-icon strip-action" id="syncBtn" aria-label="Refresh history from the terminal session" title="Refresh history" hidden>⟳</button>
+      <button class="btn-icon strip-action" id="hardRefreshBtn" aria-label="Hard refresh (bypass cache)" title="Hard refresh — clears cached files and reloads the page">↻</button>
       <!-- Auto-answer: approves permission and plan-approval prompts for this
            chat without asking. The label says what it does, not "Auto-answer" -
            this is a real transfer of authority, not a display preference.
@@ -196,6 +198,7 @@
     <h2 id="dialogTitle">New conversation</h2><p id="dialogHelp">Name the workspace so it is easy to find later.</p>
     <div id="chatFields">
       <label for="chatTitleInput">Title</label><input id="chatTitleInput" maxlength="200" required autocomplete="off">
+      <label for="chatGoalInput">Goal <span aria-hidden="true">· optional</span></label><textarea id="chatGoalInput" maxlength="1000"></textarea>
       <label for="chatDescriptionInput">Description <span aria-hidden="true">· optional</span></label><textarea id="chatDescriptionInput" maxlength="500"></textarea>
       <label class="checkbox-label" id="voiceModeLabel" hidden>
         <input type="checkbox" id="chatVoiceModeToggle"> Voice mode (hands-free conversation)
@@ -536,11 +539,11 @@
 <script type="module" src="/assets/usage.js?v=6329126"></script>
 <script type="module" src="/assets/server-stats.js?v=5278923"></script>
 <script type="module" src="/assets/skills.js?v=15159128"></script>
-<script type="module" src="/assets/machines.js?v=13880237"></script>
+<script type="module" src="/assets/machines.js?v=3055851"></script>
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=2257495"></script>
+<script type="module" src="/assets/app.js?v=2257498"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

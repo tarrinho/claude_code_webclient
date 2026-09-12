@@ -11,7 +11,7 @@ import {createConversationController, parseTimestamp, prefersAutoFocus} from './
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
-import {loadImages, _wireImagesLoadMore} from './images.js?v=3085723';
+import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -206,6 +206,7 @@ function openChatDialog(mode, chat = state.currentChat, options = {}) {
   byId('chatFields').hidden = deleting;
   byId('chatTitleInput').required = !deleting;
   byId('chatTitleInput').value = editing && chat ? chat.title : '';
+  byId('chatGoalInput').value = editing && chat ? (chat.goal || '') : '';
   byId('chatDescriptionInput').value = editing && chat ? (chat.description || '') : '';
   // Voice-mode toggle: only visible when editing an existing chat.
   // Create uses the separate "create from voice" path (dialogVoiceMode).
@@ -541,7 +542,7 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=13880237';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=3055851';
 
 import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=8330273';
 
@@ -630,6 +631,7 @@ async function saveChatDialog(event) {
     }
 
     const title = byId('chatTitleInput').value.trim();
+    const goal = byId('chatGoalInput').value.trim();
     const description = byId('chatDescriptionInput').value.trim();
     if (!title) {
       byId('chatTitleInput').focus();
@@ -638,7 +640,7 @@ async function saveChatDialog(event) {
     if (dialogMode === 'create') {
       const response = await apiFetch('/api/chats', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({title, description: description || null, voice_mode: dialogVoiceMode}),
+        body: JSON.stringify({title, goal: goal || null, description: description || null, voice_mode: dialogVoiceMode}),
       });
       if (!response.ok) throw new Error('Could not create conversation');
       const data = await response.json();
@@ -650,7 +652,7 @@ async function saveChatDialog(event) {
       const voiceMode = byId('chatVoiceModeToggle').checked;
       const response = await apiFetch(`/api/chats/${encodeURIComponent(editedId)}`, {
         method: 'PATCH', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({title, description, voice_mode: voiceMode}),
+        body: JSON.stringify({title, goal: goal || null, description, voice_mode: voiceMode}),
       });
       if (!response.ok) throw new Error('Could not save conversation');
       const data = await response.json();
@@ -664,6 +666,7 @@ async function saveChatDialog(event) {
         if (row) {
           row.title = data.chat.title;
           row.description = data.chat.description;
+          row.goal = data.chat.goal;
           row.voice_mode = data.chat.voice_mode;
           row.pinned = data.chat.pinned;
           row.archived = data.chat.archived;
@@ -672,6 +675,7 @@ async function saveChatDialog(event) {
         if (state.currentChat?.id === editedId) {
           state.currentChat.title = data.chat.title;
           state.currentChat.description = data.chat.description;
+          state.currentChat.goal = data.chat.goal;
           state.currentChat.voice_mode = data.chat.voice_mode;
           state.currentChat.pinned = data.chat.pinned;
           state.currentChat.archived = data.chat.archived;
@@ -794,6 +798,23 @@ function updateCurrentUi(chat) {
   byId('topbarTitle').textContent = 'WebConsole';
   byId('workspaceName').textContent = chat.title;
   byId('workspaceName').title = chat.title;
+  // Goal bar between the name and the backend selector.
+  const goalEl = byId('workspaceGoal');
+  if (chat.goal) {
+    const textNode = goalEl.querySelector('.workspace-goal-text');
+    if (textNode) {
+      textNode.textContent = chat.goal;
+    } else {
+      const textSpan = document.createElement('span');
+      textSpan.className = 'workspace-goal-text';
+      textSpan.textContent = chat.goal;
+      goalEl.appendChild(textSpan);
+    }
+    goalEl.title = chat.goal;
+    goalEl.hidden = false;
+  } else {
+    goalEl.hidden = true;
+  }
   // Same name, repeated by the composer: the strip scrolls out of view on a
   // long conversation and a phone keyboard covers the rest of the screen, so
   // "which chat am I typing into" has nothing left to answer it up there.
@@ -2317,6 +2338,15 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('editChatBtn').addEventListener('click', () => openChatDialog('edit'));
   byId('voiceModeToggleBtn').addEventListener('click', toggleChatVoiceMode);
   byId('syncBtn').addEventListener('click', () => syncTranscript({announce: true}));
+  byId('hardRefreshBtn').addEventListener('click', () => {
+    // Hard refresh: navigate through an endpoint that returns a 302 redirect
+    // with Cache-Control: no-store headers. This forces the browser to hit
+    // the server (bypassing its HTML cache), then follow the redirect which
+    // also re-fetches all CSS/JS linked with their ?v= parameters.
+    // Works on every browser including mobile Safari/Chrome where
+    // Clear-Site-Data and SW cache APIs are unreliable.
+    window.location.href = '/api/hard-refresh?to=' + encodeURIComponent(location.pathname);
+  });
   byId('autoAnswerToggle').addEventListener('click', toggleAutoAnswer);
   byId('autoAnswerInfo').addEventListener('click', toggleAutoAnswerMenu);
   byId('questionDismiss')?.addEventListener('click', _dismissQuestion);

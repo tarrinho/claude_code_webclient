@@ -46,6 +46,21 @@ BOOT_TIMEOUT_S = 45
 LONG_TITLE = "Investigate why the nightly export silently drops rows " * 3
 
 
+def _admin_id(conn: sqlite3.Connection) -> str:
+    """The admin's real user id, for seeding `chats.owner_id` directly.
+
+    A literal "admin" used to work here and silently stopped: app.py's login
+    calls `auth.session_new(user["id"], ...)`, so `session["user"]` is a user
+    id and `GET /api/chats` lists with `db.chat_list(session["user"])`. A chat
+    owned by the string "admin" belongs to nobody the session can be, so the
+    sidebar never renders it and the test dies on a locator timeout rather
+    than on anything it set out to check.
+    """
+    row = conn.execute("SELECT id FROM users WHERE name = 'admin'").fetchone()
+    assert row, "no admin user; the server seeds one from WC_ADMIN_PASSWORD"
+    return row[0]
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -173,7 +188,7 @@ class ComposerChatNameTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO chats (id, title, description, work_dir, owner_id, "
                 "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-                (chat_id, title, None, work_dir, "admin",
+                (chat_id, title, None, work_dir, _admin_id(conn),
                  "2026-09-01T08:00:00Z", "2026-09-01T08:00:00Z"),
             )
             conn.commit()
@@ -187,7 +202,7 @@ class ComposerChatNameTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO usage_events (chat_id, owner_id, model, provider, "
                 "created_at) VALUES (?,?,?,?,?)",
-                (chat_id, "admin", model, "anthropic-compatible",
+                (chat_id, _admin_id(conn), model, "anthropic-compatible",
                  "2026-09-01T09:00:00Z"),
             )
             conn.commit()

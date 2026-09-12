@@ -64,6 +64,25 @@ SEEDED = [*PROMPTS[:MARKUP_AT], MARKUP_PROMPT, *PROMPTS[MARKUP_AT:]]
 EXPECTED_ROWS = list(reversed(SEEDED))[:10]
 
 
+def _admin_id(conn: sqlite3.Connection) -> str:
+    """The admin's real user id, for seeding `chats.owner_id` directly.
+
+    A literal "admin" used to work here and silently stopped: app.py's login
+    calls `auth.session_new(user["id"], ...)`, so `session["user"]` is a user
+    id, and `GET /api/chats` lists with `db.chat_list(session["user"])`. A chat
+    owned by the string "admin" therefore belongs to nobody the session can be,
+    the sidebar never renders it, and every test here died in
+    `_open_seeded_chat` on a 15s locator timeout -- 14 failures reported
+    against the picker, which was working the whole time.
+
+    Measured on the QA node 2026-09-12: 14 failed in 223s before this, 14
+    passed in 13.5s after, the difference being the timeouts no longer firing.
+    """
+    row = conn.execute("SELECT id FROM users WHERE name = 'admin'").fetchone()
+    assert row, "no admin user; the server seeds one from WC_ADMIN_PASSWORD"
+    return row[0]
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -173,7 +192,7 @@ class LastRequestPickerTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO chats (id, title, description, work_dir, owner_id, "
                 "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-                (chat_id, "Seeded", None, work_dir, "admin",
+                (chat_id, "Seeded", None, work_dir, _admin_id(conn),
                  "2026-09-01T08:00:00Z", "2026-09-01T08:00:00Z"),
             )
             # Ascending timestamps so "newest" is unambiguous, and an assistant

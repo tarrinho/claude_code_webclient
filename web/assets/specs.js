@@ -43,6 +43,14 @@ function _row(spec) {
   top.appendChild(status);
   row.appendChild(top);
 
+  // The repo-relative path, so a title alone (which says nothing about
+  // where the file lives, and two specs can share a similar title) is never
+  // the only way to tell which file this is.
+  const path = document.createElement('div');
+  path.className = 'spec-row-path';
+  path.textContent = spec.path;
+  row.appendChild(path);
+
   const meta = document.createElement('div');
   meta.className = 'spec-row-meta';
   const parts = [];
@@ -98,6 +106,11 @@ async function _openSpec(spec) {
     // blockers would likely kill it -- and the spec (section 3/4) asked for
     // a panel, not a new tab, in the first place.
     byId('specViewerTitle').textContent = spec.title;
+    // Same file-path identifier the row already carries, so which file is
+    // open stays visible for as long as the viewer is -- not only at the
+    // moment of picking it from the list.
+    const pathEl = byId('specViewerPath');
+    if (pathEl) pathEl.textContent = spec.path;
     // Same orientation the row already gave before opening it -- a long
     // document with no status/author/date visible while reading loses the
     // context that made you pick it.

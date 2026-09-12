@@ -509,6 +509,7 @@ button{touch-action:manipulation}
 .spec-row:hover .spec-row-title{color:var(--accent)}
 .spec-row-status{flex:none;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--muted)}
 .spec-row-status.status-planned{color:var(--ok);border-color:var(--ok)}
+.spec-row-path{color:var(--muted);font-size:11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .spec-row-meta{color:var(--muted);font-size:12px}
 .spec-row-delete{position:absolute;top:8px;right:8px;width:24px;height:24px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:14px;line-height:1;padding:0;cursor:pointer;opacity:0}
 .spec-row:hover .spec-row-delete,.spec-row:focus-within .spec-row-delete,.spec-row-delete:focus{opacity:1}
@@ -523,6 +524,7 @@ button{touch-action:manipulation}
 .dialog.spec-viewer-dialog{width:min(760px,100%)}
 .spec-viewer-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex:none;margin-bottom:14px}
 .spec-viewer-header h2{margin-bottom:2px}
+.spec-viewer-path{color:var(--muted);font-size:11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin-bottom:2px}
 .spec-viewer-meta{color:var(--muted);font-size:12px}
 .spec-viewer-content{flex:1 1 auto;min-height:120px;overflow-y:auto;overscroll-behavior:contain;font-size:14px;line-height:1.65}
 .spec-viewer-content h1,.spec-viewer-content h2,.spec-viewer-content h3,.spec-viewer-content h4,.spec-viewer-content h5,.spec-viewer-content h6{color:var(--fg);font-weight:600;margin:22px 0 8px}

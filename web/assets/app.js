@@ -7,10 +7,11 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
 import {createChatListController} from './chat-list.js?v=16066203';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=1434625';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=16308196';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
+import {loadImages, _wireImagesLoadMore} from './images.js?v=3085723';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -440,10 +441,11 @@ function _switchTab(tab) {
   const map = {
     backends: 'panelBackends', usage: 'panelUsage', stats: 'panelStats',
     server: 'panelServer', skills: 'panelSkills', app: 'panelApp',
+    images: 'panelImages',
   };
   const activeId = map[tab] || 'panelBackends';
   ['panelBackends', 'panelUsage', 'panelStats', 'panelServer', 'panelSkills',
-   'panelApp'].forEach(id => {
+   'panelApp', 'panelImages'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -472,6 +474,7 @@ function _switchTab(tab) {
     stopServerPolling();
   }
   if (tab === 'skills') loadSkills();
+  if (tab === 'images') loadImages(true);
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
@@ -538,7 +541,7 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=852595';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=13880237';
 
 import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=8330273';
 
@@ -2375,6 +2378,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (settingsVisible && _currentTab === 'backends') _drawMapWires();
   });
   byId('refreshBackendsBtn')?.addEventListener('click', _refreshBackends);
+  _wireImagesLoadMore();
   byId('addMachineBtn').addEventListener('click', _showAddMachine);
   byId('cancelMachine').addEventListener('click', () => { byId('machineForm').hidden = true; byId('addMachineBtn').hidden = false; _machineEditing = null; });
   byId('saveMachine').addEventListener('click', _saveMachine);

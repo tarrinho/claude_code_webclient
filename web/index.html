@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=7666610">
+<link rel="stylesheet" href="/assets/styles.css?v=9002573">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -222,6 +222,7 @@
       <button class="settings-tab" id="tabServer" role="tab" tabindex="-1" aria-selected="false" data-tab="server" aria-controls="panelServer">Server</button>
       <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
+      <button class="settings-tab" id="tabImages" role="tab" tabindex="-1" aria-selected="false" data-tab="images" aria-controls="panelImages">Images</button>
     </div>
     <div class="settings-body">
       <!-- Backends tab: a machine and the models it serves are one thing -->
@@ -348,6 +349,17 @@
           <span class="skills-count" id="usageCount" role="status" aria-live="polite"></span>
         </div>
         <div class="usage-body" id="usageBody"></div>
+      </div>
+      <!-- Images tab: every image any conversation has generated, across
+           all chats. Seeing one inline (in the chat it came from) already
+           works without this tab; this is the cross-chat management view. -->
+      <div class="settings-panel" id="panelImages" role="tabpanel" aria-labelledby="tabImages" tabindex="0" hidden>
+        <p>Every image a conversation has generated. Deleting one here removes the file; the conversation it came from is left as-is.</p>
+        <div class="skills-toolbar usage-toolbar">
+          <span class="skills-count" id="imagesCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="images-grid" id="imagesGrid"></div>
+        <button type="button" class="btn-secondary" id="imagesLoadMore" hidden>Load more</button>
       </div>
       <!-- Statistics tab: the same rows as Usage, over time rather than summed.
            Terminal and website are separate series on purpose -- they differ by
@@ -524,11 +536,11 @@
 <script type="module" src="/assets/usage.js?v=6329126"></script>
 <script type="module" src="/assets/server-stats.js?v=5278923"></script>
 <script type="module" src="/assets/skills.js?v=15159128"></script>
-<script type="module" src="/assets/machines.js?v=852595"></script>
+<script type="module" src="/assets/machines.js?v=13880237"></script>
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=15418713"></script>
+<script type="module" src="/assets/app.js?v=2257495"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

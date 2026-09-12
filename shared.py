@@ -62,6 +62,15 @@ async def owner_of(session: dict | None) -> str:
     # that will fail at the write, which is where it should fail.
     import db
 
+    # No database to ask is a "cannot translate", not an error. Without this
+    # the lookup raised `AttributeError: 'NoneType' object has no attribute
+    # 'execute'` from db_users.py:16, so a route that resolves identity before
+    # touching the database answered 500 -- which is how this helper broke
+    # test_qa_layers.py's ComponentAPIQA, a suite that exercises the route
+    # layer deliberately without one behind it.
+    if db.db_conn is None:
+        return user
+
     row = await db.user_get_by_name(user)
     return row["id"] if row else user
 

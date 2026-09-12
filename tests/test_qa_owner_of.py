@@ -70,6 +70,26 @@ class OwnerOfTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(session=session):
                 self.assertEqual(await owner_of(session), "")
 
+    async def test_no_database_is_not_an_error_here(self):
+        """Its own docstring promises it "translates when it can and otherwise
+        returns what it was given". An uninitialised `db.db_conn` is precisely
+        "cannot", and it was the one way to reach it that raised instead:
+        `AttributeError: 'NoneType' object has no attribute 'execute'`, thrown
+        from db_users.py:16 and surfacing as a 500 from any route that resolves
+        identity before touching the database.
+
+        That is not hypothetical -- it is what
+        test_qa_layers.py::ComponentAPIQA::test_chat_create_defaults_title_and_
+        truncates_input has been failing on, and that test exercises the route
+        layer deliberately without a database behind it.
+
+        Passing the name through is safe because it is not a validator: the
+        write layer still rejects anything it cannot store, which
+        test_the_write_layer_still_rejects_a_raw_name pins.
+        """
+        with patch.object(db, "db_conn", None):
+            self.assertEqual(await owner_of({"user": "alice"}), "alice")
+
     async def test_a_chat_can_be_created_through_a_legacy_name_session(self):
         """End to end: the write that used to raise ValueError now lands."""
         owner = await owner_of({"user": "admin"})

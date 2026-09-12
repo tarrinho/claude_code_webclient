@@ -471,8 +471,16 @@ class ComponentAPIQA(unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(session={"user": "alice"}),
             json=AsyncMock(return_value={"title": "x" * 300}),
         )
+        # chat_update is mocked as well as chat_create because the route now
+        # seeds a goal from the title right after the insert. This test is
+        # about the title defaulting and truncation, and it deliberately runs
+        # with no database behind it, so an unmocked write reached
+        # `db.db_conn` as None and failed with `AttributeError: 'NoneType'
+        # object has no attribute 'execute'` from db_chats.py:106 -- a failure
+        # about test setup wearing the costume of a route defect.
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(config, "PROJECTS_ROOT", tmp), \
+             patch.object(app.db, "chat_update", AsyncMock(return_value=True)), \
              patch.object(app.db, "chat_create", AsyncMock(return_value="now")):
             response = await chat_routes.handle_chat_create(request)
             payload = json.loads(response.body)

@@ -289,6 +289,68 @@ def _reset_settings_cache():
     yield
 
 
+# ── Leaked database connections must not hold the interpreter open ───────────
+#
+# A test whose `asyncSetUp` raises never reaches its `asyncTearDown`, so
+# `db.close()` is never called. aiosqlite's connection worker is a *non-daemon*
+# thread, so `threading._shutdown()` then waits on it for ever: pytest prints
+# its full result summary and the process hangs until the caller's timeout
+# kills it. The results are real and the exit code is a lie -- 124 or 143 on a
+# run that actually finished in under two seconds.
+#
+# Measured 2026-09-12, isolated with a probe rather than inferred: with the
+# connection left open, one thread survives (`_connection_worker_thread`,
+# daemon=False) and the interpreter hangs; closing it first leaves zero threads
+# and exits 0. faulthandler shows nothing, because the hang happens after
+# pytest has torn its own hooks down.
+#
+# That cost real time before it was understood: this session chased it as four
+# separate "timeouts" and nearly attributed it to the code under test, and a
+# peer session independently ruled it "pre-existing, out of scope" seven times
+# in one evening. The trigger today is 154 call sites still passing
+# owner_id="admin" to `chat_create`, which now rejects it -- but the trap is
+# not specific to that. *Any* future setUp failure, for any reason, hangs the
+# run instead of reporting it, which is the worst failure mode a suite can
+# have: it hides its own result.
+#
+# So this is deliberately a safety net and not a fix for whatever raised. It
+# runs after every test, closes a connection only if one was left open, and
+# never fails a test for it -- a leak is the other bug's symptom to report, not
+# this fixture's to punish.
+#
+# Closing from a *different* event loop than the one that opened it is the part
+# worth verifying, and it was: by teardown the test's loop is gone, and
+# `asyncio.run(db.close())` on a fresh loop succeeds and joins the thread.
+# One file (`self.addCleanup(lambda: asyncio.run(db.close()))`) had already
+# found that independently.
+@_pytest.fixture(autouse=True)
+def _close_leaked_db_connection():
+    """Close a connection a failed setUp left behind, so the run can exit."""
+    yield
+    try:
+        import asyncio as _asyncio
+
+        import db as _db
+    except Exception:  # pragma: no cover - a run that cannot import the app
+        return
+    if getattr(_db, "db_conn", None) is None:
+        return  # the test closed it properly; nothing leaked
+    try:
+        _asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no loop running, which is the expected teardown state
+    else:  # pragma: no cover - an async runner would own the close itself
+        return
+    try:
+        _asyncio.run(_asyncio.wait_for(_db.close(), timeout=10))
+    except Exception as exc:  # noqa: BLE001 - best effort, never fail a test
+        # Said out loud rather than swallowed: a close that cannot complete
+        # means the run may still hang, and silence would send the next person
+        # back to chasing a phantom timeout.
+        print(f"\nconftest: could not close a leaked db connection: "
+              f"{type(exc).__name__}: {exc}")
+
+
 # ── Capability guard ─────────────────────────────────────────────────────────
 #
 # Refuses a run that would silently skip a whole layer of the suite because of

@@ -163,7 +163,7 @@ class TurnAppendsGeneratedImagesQA(unittest.IsolatedAsyncioTestCase):
     async def test_a_generated_image_is_recorded_in_the_gallery_table(self):
         write = lambda: (self.work / "chart.png").write_bytes(b"x")
         await self._run(_events("Here is the result.", write=write))
-        rows, _ = await db.generated_images_list("admin")
+        rows, _, _ = await db.generated_images_list("admin")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["path"], "chart.png")
         self.assertEqual(rows[0]["chat_id"], self.chat_id)
@@ -177,7 +177,7 @@ class TurnAppendsGeneratedImagesQA(unittest.IsolatedAsyncioTestCase):
         old.write_bytes(b"x")
         os.utime(old, (1_000_000.0, 1_000_000.0))
         await self._run(_events("Done."))
-        rows, _ = await db.generated_images_list("admin")
+        rows, _, _ = await db.generated_images_list("admin")
         self.assertEqual(rows, [])
 
 

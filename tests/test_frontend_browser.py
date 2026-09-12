@@ -385,7 +385,8 @@ class BackendsPanelBrowserTests(_BrowserFixture):
         self._open_backends()
         tabs = [t.inner_text() for t in self.page.query_selector_all(".settings-tab")]
         self.assertEqual(
-            tabs, ["Backends", "Usage", "Statistics", "Server", "Skills", "App"]
+            tabs,
+            ["Backends", "Usage", "Statistics", "Server", "Skills", "App", "Images"],
         )
         # The old standalone Models tab is what got merged into Backends; a
         # backend and the models it serves are one thing.

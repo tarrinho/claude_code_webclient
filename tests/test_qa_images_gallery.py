@@ -62,21 +62,21 @@ class GeneratedImageReachesTheGalleryQA(unittest.IsolatedAsyncioTestCase):
 
     async def test_image_appears_in_the_gallery_with_no_extra_step(self):
         await self._run_turn()
-        rows, _ = await db.generated_images_list(self.owner)
+        rows, _, _ = await db.generated_images_list(self.owner)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["path"], "chart.png")
         self.assertEqual(rows[0]["chat_id"], self.chat_id)
 
     async def test_deleting_from_the_gallery_leaves_the_message_untouched(self):
         await self._run_turn()
-        rows, _ = await db.generated_images_list(self.owner)
+        rows, _, _ = await db.generated_images_list(self.owner)
         image_id = rows[0]["id"]
 
         from types import SimpleNamespace
         req = SimpleNamespace(state=SimpleNamespace(session={"user": self.owner}))
         await images_routes.handle_image_delete(req, image_id)
 
-        rows_after, _ = await db.generated_images_list(self.owner)
+        rows_after, _, _ = await db.generated_images_list(self.owner)
         self.assertEqual(rows_after, [])
 
         assistant_rows = [

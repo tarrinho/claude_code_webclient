@@ -48,7 +48,7 @@ class ImagesApiTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def _image_id(self):
-        rows, _ = await db.generated_images_list(_OWNER)
+        rows, _, _ = await db.generated_images_list(_OWNER)
         return rows[0]["id"]
 
     async def test_list_returns_the_owners_image(self):
@@ -103,6 +103,23 @@ class ImagesApiTests(unittest.IsolatedAsyncioTestCase):
             await images_routes.handle_image_delete(_Req(user=_OTHER), image_id)
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertTrue((self.work / "shot.png").exists())
+
+    async def test_negative_limit_is_floored_at_one(self):
+        """SQLite treats a negative LIMIT as unbounded, so an unfloored
+        negative limit would return the owner's entire table in one
+        response instead of being clamped to a small page."""
+        (self.work / "shot2.png").write_bytes(b"x")
+        (self.work / "shot3.png").write_bytes(b"x")
+        await db.generated_image_record(
+            "c1", "Chat One", str(self.work), _OWNER, ["shot2.png"])
+        await db.generated_image_record(
+            "c1", "Chat One", str(self.work), _OWNER, ["shot3.png"])
+
+        resp = await images_routes.handle_images_list(
+            _Req(query={"limit": "-5"}))
+        import json
+        data = json.loads(resp.body)
+        self.assertEqual(len(data["images"]), 1)
 
 
 if __name__ == "__main__":

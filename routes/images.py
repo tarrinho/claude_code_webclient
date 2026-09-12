@@ -40,13 +40,13 @@ async def handle_images_list(request: Request):
     session = request.state.session
     limit_raw = request.query_params.get("limit")
     try:
-        limit = min(int(limit_raw), 200) if limit_raw else 60
+        limit = max(1, min(int(limit_raw), 200)) if limit_raw else 60
     except ValueError:
         limit = 60
     before_raw = request.query_params.get("before_id")
     before_id = int(before_raw) if before_raw and before_raw.isdigit() else None
 
-    rows, has_more = await db.generated_images_list(
+    rows, has_more, next_before_id = await db.generated_images_list(
         session["user"], limit=limit, before_id=before_id)
     return JSONResponse({
         "images": [
@@ -60,6 +60,7 @@ async def handle_images_list(request: Request):
             for r in rows
         ],
         "has_more": has_more,
+        "next_before_id": next_before_id,
     })
 
 

@@ -27,8 +27,15 @@ function _tile(image) {
   img.loading = 'lazy';
   img.alt = image.path;
   img.src = _fileUrl(image);
-  img.addEventListener('click', () => {
-    openImageViewer(_fileUrl(image), image.path, `${image.chat_title} — ${image.path}`);
+  img.tabIndex = 0;
+  img.setAttribute('role', 'button');
+  img.setAttribute('aria-label', `View ${image.path}`);
+  const _open = () => openImageViewer(_fileUrl(image), image.path, `${image.chat_title} — ${image.path}`);
+  img.addEventListener('click', _open);
+  img.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    _open();
   });
 
   const meta = document.createElement('div');
@@ -56,11 +63,22 @@ function _tile(image) {
 async function _deleteImage(imageId, tile) {
   try {
     const response = await apiFetch(`/api/images/${encodeURIComponent(imageId)}`, {method: 'DELETE'});
-    if (response.ok) tile.remove();
+    if (response.ok) {
+      tile.remove();
+      _updateCount();
+    }
   } catch {
     // The tile staying put on a failed delete is the correct fallback --
     // no silent "it worked" when it did not.
   }
+}
+
+function _updateCount() {
+  const countEl = byId('imagesCount');
+  const grid = byId('imagesGrid');
+  if (!countEl || !grid) return;
+  const total = grid.children.length;
+  countEl.textContent = `${total} image${total === 1 ? '' : 's'}`;
 }
 
 /** Load the first page. force=true (Settings tab just opened) always
@@ -77,7 +95,6 @@ export async function loadImages(force = false) {
 
 async function _loadPage() {
   const grid = byId('imagesGrid');
-  const countEl = byId('imagesCount');
   const moreBtn = byId('imagesLoadMore');
   if (!grid) return;
 
@@ -96,12 +113,15 @@ async function _loadPage() {
   const images = payload.images || [];
   images.forEach(image => grid.appendChild(_tile(image)));
   _hasMore = !!payload.has_more;
-  _nextBeforeId = images.length ? images[images.length - 1].id : _nextBeforeId;
+  // Server-provided cursor, not derived from the received images: an
+  // entire page can come back empty after the server's self-healing
+  // filter (every file in that page was gone), and deriving the cursor
+  // from an empty array would leave it stuck forever on the same dead
+  // page. next_before_id is the lowest id the server actually saw before
+  // filtering, so it always advances when the raw page was non-empty.
+  if (payload.next_before_id != null) _nextBeforeId = payload.next_before_id;
 
-  if (countEl) {
-    const total = grid.children.length;
-    countEl.textContent = `${total} image${total === 1 ? '' : 's'}`;
-  }
+  _updateCount();
   if (moreBtn) moreBtn.hidden = !_hasMore;
 }
 

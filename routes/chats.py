@@ -1341,14 +1341,18 @@ async def _start_turn(
         if images:
             image_text = _image_markdown(images)
             assistant = f"{assistant}\n\n{image_text}" if assistant.strip() else image_text
-            # Same discovery, recorded once for the cross-chat gallery in
-            # Settings. No new scan -- images is already in hand.
-            await db.generated_image_record(
-                chat_id, chat["title"], chat["work_dir"], owner, images,
-            )
         if assistant.strip():
             await db.messages_batch(
                 chat_id, [("user", prompt), ("assistant", assistant)]
+            )
+        if images:
+            # Same discovery, recorded once for the cross-chat gallery in
+            # Settings. No new scan -- images is already in hand.
+            # Deliberately after messages_batch: a failure here must never
+            # risk losing the turn's actual transcript write, which is the
+            # primary artifact -- this is a secondary index.
+            await db.generated_image_record(
+                chat_id, chat["title"], chat["work_dir"], owner, images,
             )
         await db.bump_chat_updated_at(chat_id)
         if session_id and session_id != chat["session_id"]:

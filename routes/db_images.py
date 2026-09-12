@@ -32,27 +32,47 @@ async def generated_image_record(
     await db.db_conn.commit()
 
 
+def _resolved_inside(work_dir: str, path: str) -> Path | None:
+    """Resolve *path* against *work_dir* and return it only if it stays
+    inside -- the same resolve-then-is_relative_to containment check
+    routes/images.py's handle_image_file already applies on the serve
+    path. Used before both reading (_file_exists) and the destructive
+    unlink in generated_image_delete, so a row with a traversal-shaped
+    path can neither be reported as existing nor be used to delete a
+    file outside the workspace."""
+    root = Path(work_dir).resolve()
+    try:
+        candidate = (root / path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return candidate if candidate.is_relative_to(root) else None
+
+
 def _file_exists(row: dict[str, Any]) -> bool:
     """Self-healing check: a row whose file is gone (deleted outside this
     feature, or a workspace removed by hand) is skipped on read rather than
     requiring a reconciliation job to keep the table honest."""
-    try:
-        return (Path(row["work_dir"]) / row["path"]).is_file()
-    except (OSError, ValueError):
-        return False
+    resolved = _resolved_inside(row["work_dir"], row["path"])
+    return resolved is not None and resolved.is_file()
 
 
 async def generated_images_list(
     owner_id: str, limit: int = 60, before_id: int | None = None,
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], bool, int | None]:
     """One page of an owner's generated images, newest first.
 
     Mirrors routes/db_chats.py's messages_page: fetch limit+1 so "more
     remain" is a fact about this page, not a guess from limit alone. Rows
     whose file no longer exists are filtered out and do not count against
-    the page or the has_more calculation from the caller's point of view --
-    a page can come back shorter than `limit` for that reason, which is
-    fine; the client's "Load more" just asks again with the next cursor.
+    the page or the has_more calculation from the caller's point of view.
+
+    Returns (visible_rows, has_more, next_before_id). next_before_id is the
+    lowest id seen in the *raw* page, before the self-healing filter --
+    using the filtered rows' own ids for the cursor would stall forever if
+    an entire page's files were gone (the exact case self-healing exists
+    to handle): the client would receive an empty page with has_more still
+    true, and have no id left to page past. next_before_id is always a
+    real, advancing value as long as the raw page was non-empty.
     """
     if before_id is None:
         cur = await db.db_conn.execute(
@@ -68,11 +88,12 @@ async def generated_images_list(
             "ORDER BY id DESC LIMIT ?",
             (owner_id, before_id, limit + 1),
         )
-    rows = [dict(r) for r in await cur.fetchall()]
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    rows = [r for r in rows if _file_exists(r)]
-    return rows, has_more
+    raw_rows = [dict(r) for r in await cur.fetchall()]
+    has_more = len(raw_rows) > limit
+    raw_page = raw_rows[:limit]
+    next_before_id = raw_page[-1]["id"] if raw_page else None
+    rows = [r for r in raw_page if _file_exists(r)]
+    return rows, has_more, next_before_id
 
 
 async def generated_image_get(image_id: int, owner_id: str) -> dict[str, Any] | None:
@@ -103,10 +124,12 @@ async def generated_image_delete(image_id: int, owner_id: str) -> bool:
     row = await cur.fetchone()
     if row is None:
         return False
-    try:
-        (Path(row["work_dir"]) / row["path"]).unlink(missing_ok=True)
-    except OSError:
-        pass
+    resolved = _resolved_inside(row["work_dir"], row["path"])
+    if resolved is not None:
+        try:
+            resolved.unlink(missing_ok=True)
+        except OSError:
+            pass
     cur = await db.db_conn.execute(
         "DELETE FROM generated_images WHERE id = ? AND owner_id = ?",
         (image_id, owner_id),

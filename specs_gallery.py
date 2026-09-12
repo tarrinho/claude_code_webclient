@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Final
 
@@ -93,3 +94,90 @@ def discover_specs(root: Path) -> list[dict[str, Any]]:
 
     found.sort(key=lambda s: s["mtime"], reverse=True)
     return found
+
+
+def find_references(repo_root: Path, filename: str) -> list[str]:
+    """Every file (relative path) that mentions *filename* -- a spec
+    already gets referenced back from code today (routes/transports.py's
+    own docstring names its design doc). Read-only, never raises: grep
+    exiting non-zero (no matches) is a normal, empty result, not a failure.
+    """
+    try:
+        result = subprocess.run(
+            ["grep", "-rl", "--", filename, str(repo_root)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode not in (0, 1):  # 1 == no matches, still fine
+        return []
+    hits = [line for line in result.stdout.splitlines() if line.strip()]
+    return [str(Path(h).relative_to(repo_root)) for h in hits
+            if Path(h).name != filename]
+
+
+def spec_status(repo_root: Path, spec_path: str) -> str:
+    """"planned" if docs/superpowers/plans/ has a same-dated file, else
+    "spec_only". Matches on the date prefix a spec's own filename carries
+    (YYYY-MM-DD-<topic>-design.md); a spec with no date prefix (a
+    self-declared root file) always reads as spec_only -- there is no
+    reliable date to match a plan against.
+    """
+    plans_dir = repo_root / "docs" / "superpowers" / "plans"
+    if not plans_dir.is_dir():
+        return "spec_only"
+    name = Path(spec_path).name
+    prefix = name[:10]  # "YYYY-MM-DD"
+    if len(prefix) != 10 or prefix[4] != "-" or prefix[7] != "-":
+        return "spec_only"
+    for plan in plans_dir.glob(f"{prefix}-*.md"):
+        return "planned"
+    return "spec_only"
+
+
+def git_provenance(repo_root: Path, spec_path: str) -> dict[str, str] | None:
+    """{"author", "date"} for the commit that introduced *spec_path*, or
+    None if the file has no git history yet (freshly created, uncommitted)
+    or git itself is unavailable. \\x1f (unit separator) as the field
+    delimiter rather than a space or comma: author names can contain both.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "--follow", "--format=%an\x1f%as", "-1", "--", spec_path],
+            cwd=repo_root, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    line = result.stdout.strip().splitlines()[0]
+    if "\x1f" not in line:
+        return None
+    author, date = line.split("\x1f", 1)
+    return {"author": author, "date": date}
+
+
+def enrich(repo_root: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Adds referenced_by/status/author/date to one discover_specs() entry.
+    Each enrichment is isolated: one failing must never affect the others
+    or fail the whole entry (spec section 5)."""
+    out = dict(spec)
+
+    try:
+        out["referenced_by"] = find_references(repo_root, Path(spec["path"]).name)
+    except Exception:
+        out["referenced_by"] = []
+
+    try:
+        out["status"] = spec_status(repo_root, spec["path"])
+    except Exception:
+        out["status"] = "spec_only"
+
+    try:
+        provenance = git_provenance(repo_root, spec["path"])
+    except Exception:
+        provenance = None
+    out["author"] = provenance["author"] if provenance else None
+    out["date"] = provenance["date"] if provenance else None
+
+    return out

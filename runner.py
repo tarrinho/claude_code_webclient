@@ -461,6 +461,12 @@ def normalise_base_url(base_url: str | None) -> str | None:
     return base_url or None
 
 
+# Machine ids already reported as unroutable, so the warning in get_backend is
+# one line per machine per process rather than one per turn -- it is called on
+# every turn and again by _prepare_transcript_for_backend.
+_unroutable_warned: set[str] = set()
+
+
 async def get_backend(chat_id: str, owner: str | None = None) -> dict[str, str]:
     """Return the provider settings for the machine *chat_id* should run on.
 
@@ -494,6 +500,31 @@ async def get_backend(chat_id: str, owner: str | None = None) -> dict[str, str]:
                    "machine": await db.ai_machine_backend(owner), "pinned": False}
     machine = routing["machine"]
     if not machine or machine.get("provider") != "claude_code":
+        # Say so once per machine, because the alternative is silence. A
+        # machine whose provider is not "claude_code" -- `direct` is the other
+        # one the create endpoint accepts, and it requires a host and stores an
+        # api_key like any other -- is configured in the UI, pinned to a
+        # conversation, and then contributes nothing: this returns {}, and
+        # backend_env.deltas sets no endpoint and no credential for it, only
+        # unsetting the three Anthropic variables. Measured 2026-09-12:
+        # provider='direct' sets nothing, so its stored base_url and api_key
+        # are discarded and the turn goes out on whatever the host's own login
+        # points at -- routed "somewhere nobody selected", which is the exact
+        # failure deltas' own comment describes. Whether `direct` should apply
+        # the OPENAI_* trio that CLAUDE.md §3 documents is a credential-flow
+        # decision and is deliberately not made here; this only stops it being
+        # invisible while it is not made.
+        if machine and machine.get("provider") != "claude_code":
+            machine_id = str(machine.get("id") or "")
+            if machine_id not in _unroutable_warned:
+                _unroutable_warned.add(machine_id)
+                _log.warning(
+                    "machine_not_routable chat_id={} machine={} provider={} "
+                    "-- its base_url and api_key are not applied to turns; the "
+                    "CLI will use whatever the host login points at",
+                    chat_id, machine.get("name") or machine_id,
+                    machine.get("provider"),
+                )
         return {}
     backend: dict[str, str] = {"provider": "claude_code"}
     base_url = normalise_base_url(machine.get("base_url"))

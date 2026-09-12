@@ -1330,7 +1330,7 @@ export function _closeConfirmDialog() {
  * @param {string} message - Body paragraph (p)
  * @param {function} [onYes] - Callback when user clicks Yes
  */
-function _showConfirmDialog(title, message, onYes) {
+export function _showConfirmDialog(title, message, onYes) {
   const overlay = byId('confirmDialog');
   const overlayBody = byId('confirmDialogBody');
   const titleEl = byId('confirmTitle');

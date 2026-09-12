@@ -66,9 +66,12 @@ function imageChip(label, path) {
   chip.className = isPdf ? 'file-chip pdf-chip' : 'image-chip';
   chip.textContent = label || path.split('/').pop();
   chip.title = isPdf ? `Open ${path}` : `Show ${path}`;
-  chip.addEventListener('click', () => (
-    isPdf ? openPdfViewer(path, label) : openImageViewer(path, label)
-  ));
+  chip.addEventListener('click', () => {
+    if (isPdf) return openPdfViewer(path, label);
+    if (!_imageChatId) return;
+    const url = `/api/chats/${encodeURIComponent(_imageChatId)}/file?path=${encodeURIComponent(path)}`;
+    openImageViewer(url, label, path);
+  });
   return chip;
 }
 
@@ -110,23 +113,25 @@ export function openPdfViewer(path, label) {
 
 /** Full-size viewer. A CSS tooltip cannot be dismissed, zoomed or scrolled,
  *  and a screenshot is usually taller than the message it sits in. */
-export function openImageViewer(path, label) {
-  if (!_imageChatId) return;
+/** Full-size viewer, given a direct URL rather than a chat-scoped path --
+ *  used both by imageChip (which builds the /api/chats/.../file URL itself)
+ *  and by the Images gallery (which builds an /api/images/{id}/file URL). */
+export function openImageViewer(srcUrl, label, captionText) {
   const back = document.createElement('div');
   back.className = 'image-viewer';
   back.setAttribute('role', 'dialog');
   back.setAttribute('aria-modal', 'true');
-  back.setAttribute('aria-label', label || path);
+  back.setAttribute('aria-label', label || captionText || srcUrl);
 
   const img = document.createElement('img');
-  img.alt = label || path;
-  img.src = `/api/chats/${encodeURIComponent(_imageChatId)}/file?path=${encodeURIComponent(path)}`;
+  img.alt = label || captionText || srcUrl;
+  img.src = srcUrl;
 
   const cap = document.createElement('div');
   cap.className = 'image-viewer-cap';
-  cap.textContent = path;
+  cap.textContent = captionText || srcUrl;
 
-  img.addEventListener('error', () => { cap.textContent = `Could not load ${path}`; });
+  img.addEventListener('error', () => { cap.textContent = `Could not load ${captionText || srcUrl}`; });
 
   const shut = () => {
     back.remove();

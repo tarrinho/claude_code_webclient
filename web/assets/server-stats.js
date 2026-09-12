@@ -5,7 +5,7 @@
 // empty until the server has been up for a sampling interval.
 
 import {apiFetch} from './api.js?v=2741508';
-import {showToast, settingsVisible} from './app.js?v=12087674';
+import {showToast, settingsVisible} from './app.js?v=3370431';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share

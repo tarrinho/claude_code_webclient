@@ -223,6 +223,7 @@
       <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
       <button class="settings-tab" id="tabImages" role="tab" tabindex="-1" aria-selected="false" data-tab="images" aria-controls="panelImages">Images</button>
+      <button class="settings-tab" id="tabSpecs" role="tab" tabindex="-1" aria-selected="false" data-tab="specs" aria-controls="panelSpecs">Specs</button>
     </div>
     <div class="settings-body">
       <!-- Backends tab: a machine and the models it serves are one thing -->
@@ -360,6 +361,14 @@
         </div>
         <div class="images-grid" id="imagesGrid"></div>
         <button type="button" class="btn-secondary" id="imagesLoadMore" hidden>Load more</button>
+      </div>
+      <!-- Specs tab: every design spec in the repo, browsable and (admin-only)
+           deletable. See docs/superpowers/specs/2026-09-12-design-specs-gallery-design.md. -->
+      <div class="settings-panel" id="panelSpecs" role="tabpanel" aria-labelledby="tabSpecs" tabindex="0" hidden>
+        <div class="skills-header">
+          <span class="skills-count" id="specsCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="specs-list" id="specsList"></div>
       </div>
       <!-- Statistics tab: the same rows as Usage, over time rather than summed.
            Terminal and website are separate series on purpose -- they differ by
@@ -534,13 +543,13 @@
   </div>
 </div>
 <script type="module" src="/assets/usage.js?v=6329126"></script>
-<script type="module" src="/assets/server-stats.js?v=5278923"></script>
+<script type="module" src="/assets/server-stats.js?v=8469847"></script>
 <script type="module" src="/assets/skills.js?v=15159128"></script>
-<script type="module" src="/assets/machines.js?v=13880237"></script>
+<script type="module" src="/assets/machines.js?v=3055851"></script>
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=2257495"></script>
+<script type="module" src="/assets/app.js?v=180899"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

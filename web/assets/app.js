@@ -6,12 +6,13 @@
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
-import {createChatListController} from './chat-list.js?v=16066203';
+import {createChatListController} from './chat-list.js?v=12165920';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=16308196';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
-import {loadImages, _wireImagesLoadMore} from './images.js?v=3085723';
+import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
+import {loadSpecs} from './specs.js?v=8277281';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -441,11 +442,11 @@ function _switchTab(tab) {
   const map = {
     backends: 'panelBackends', usage: 'panelUsage', stats: 'panelStats',
     server: 'panelServer', skills: 'panelSkills', app: 'panelApp',
-    images: 'panelImages',
+    images: 'panelImages', specs: 'panelSpecs',
   };
   const activeId = map[tab] || 'panelBackends';
   ['panelBackends', 'panelUsage', 'panelStats', 'panelServer', 'panelSkills',
-   'panelApp', 'panelImages'].forEach(id => {
+   'panelApp', 'panelImages', 'panelSpecs'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -475,6 +476,7 @@ function _switchTab(tab) {
   }
   if (tab === 'skills') loadSkills();
   if (tab === 'images') loadImages(true);
+  if (tab === 'specs') loadSpecs(true);
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
@@ -533,7 +535,7 @@ async function loadStats(force = false) {
 
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
-import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=5278923';
+import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=8469847';
 export { notifyResult, setStatus };
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=15159128';
@@ -541,9 +543,9 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=13880237';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=3055851';
 
-import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=8330273';
+import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=12802782';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();

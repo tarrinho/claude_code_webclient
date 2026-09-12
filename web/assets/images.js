@@ -7,7 +7,7 @@
 // routes/db_images.py already recorded and lets you delete or re-view one.
 import {apiFetch} from './api.js?v=2741508';
 import {openImageViewer} from './conversation.js?v=16308196';
-import {_showConfirmDialog} from './machines.js?v=13880237';
+import {_showConfirmDialog} from './machines.js?v=3055851';
 
 const byId = id => document.getElementById(id);
 

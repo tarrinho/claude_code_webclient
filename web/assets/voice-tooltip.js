@@ -5,7 +5,7 @@
 // Agree/Summarize/Reject and the streaming hooks live in voice-handoff.js.
 
 import {apiFetch} from './api.js?v=2741508';
-import {showToast} from './app.js?v=15418713';
+import {showToast} from './app.js?v=180899';
 import {
   setVoiceStatus, startListening, updateVoiceButtonVisibility,
   stopListeningForClose, refreshButtonRefs, resetTranscript, voiceStatus,

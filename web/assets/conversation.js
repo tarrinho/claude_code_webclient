@@ -615,25 +615,51 @@ export function createConversationController(dependencies) {
   function renderMessages(messages, hasMore = false) {
     // Voice temp chats: only the tooltip, never the workspace right-panel.
     if (state.currentChat?.voice_mode) return;
-    elements.messages.replaceChildren();
-    oldestLoadedId = messages.length ? messages[0].id : null;
-    hasOlderMessages = Boolean(hasMore);
-    if (!messages.length) {
-      const empty = document.createElement('div');
-      empty.className = 'empty-state';
-      const strong = document.createElement('strong');
-      strong.textContent = 'This workspace is ready';
-      const text = document.createElement('p');
-      text.textContent = 'Ask Claude to inspect, explain, or change something.';
-      empty.append(strong, text);
-      elements.messages.appendChild(empty);
-    } else {
-      if (hasOlderMessages) elements.messages.appendChild(createLoadMoreButton());
-      messages.forEach(message => elements.messages.appendChild(
+    // Don't wipe the DOM here — messages rendered inline (e.g. the user's
+    // latest send) must survive.  Clear the container only when a new chat
+    // is loaded (oldestLoadedId changes); otherwise only append new messages
+    // from the server that aren't already in the DOM.
+    const newOldest = messages.length ? messages[0].id : null;
+    if (newOldest !== oldestLoadedId) {
+      // New chat loaded — wipe everything, render all.
+      elements.messages.replaceChildren();
+      oldestLoadedId = newOldest;
+      hasOlderMessages = Boolean(hasMore);
+      if (!messages.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        const strong = document.createElement('strong');
+        strong.textContent = 'This workspace is ready';
+        const text = document.createElement('p');
+        text.textContent = 'Ask Claude to inspect, explain, or change something.';
+        empty.append(strong, text);
+        elements.messages.appendChild(empty);
+      } else {
+        if (hasOlderMessages) elements.messages.appendChild(createLoadMoreButton());
+        messages.forEach(message => elements.messages.appendChild(
+          createMessage(message.role, message.content, message.created_at,
+                        message.question)
+        ));
+      }
+      scrollToBottom();
+      return;
+    }
+    // Same chat (or same oldest message) — only add new messages.
+    // The inline user message is already on screen; the server now returns it
+    // with a real id. Skip it instead of re-rendering.
+    const existing = new Set();
+    elements.messages.querySelectorAll(':scope > .message-row').forEach(el => {
+      if (el.dataset.msgId) existing.add(el.dataset.msgId);
+    });
+    messages.forEach(message => {
+      if (!message.id) return; // inline, skip
+      if (existing.has(String(message.id))) return; // already on screen
+      existing.add(String(message.id));
+      elements.messages.appendChild(
         createMessage(message.role, message.content, message.created_at,
                       message.question)
-      ));
-    }
+      );
+    });
     scrollToBottom();
   }
 

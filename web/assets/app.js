@@ -647,7 +647,11 @@ async function saveChatDialog(event) {
       if (!response.ok) throw new Error('Could not create conversation');
       const data = await response.json();
       closeDialog();
-      await refreshChats();
+      // Insert into state so selectChat can find it, then let the poll
+      // normalise timestamps and model fields.  A plain push is safe because
+      // the poll's refreshChats() overwrites state.chats anyway.
+      state.chats.push({id: data.id, title, archived: false, model: '', last_model_used: '', ai_machine_id: null});
+      listController.render(state.chats, data.id);
       await selectChat(data.id);
     } else {
       const editedId = dialogChat.id;

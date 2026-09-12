@@ -1455,7 +1455,7 @@ def _sanitize_session_id(session_id: str) -> str:
     return session_id
 
 
-def _fix_stale_work_dir(chat_id: str) -> None:
+async def _fix_stale_work_dir(chat_id: str) -> None:
     """Repair a chat whose work_dir escapes PROJECTS_ROOT.
 
     Old chats were created with work_dir set to bare session UUIDs, ``/tmp``,
@@ -1470,10 +1470,12 @@ def _fix_stale_work_dir(chat_id: str) -> None:
         return
 
     try:
-        row = db.db_conn.execute(
+        cursor = await db.db_conn.execute(
             "SELECT work_dir FROM chats WHERE id = ?", (chat_id,)
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
     except Exception:
+        _log.warning("work_dir_read_failed chat_id=%s", chat_id, exc_info=True)
         return
     if not row:
         return
@@ -1494,18 +1496,20 @@ def _fix_stale_work_dir(chat_id: str) -> None:
     new_work_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        db.db_conn.execute(
+        await db.db_conn.execute(
             "UPDATE chats SET work_dir = ? WHERE id = ?",
             (str(new_work_dir), chat_id),
         )
-        db.db_conn.commit()
+        await db.db_conn.commit()
         _log.info(
             "work_dir_repaired chat_id=%s old=%s new=%s",
             chat_id, old_work_dir, new_work_dir,
         )
     except Exception:
+        # exc_info, not the connection object: the first version logged
+        # `db.db_conn` as the "reason", which says nothing about what failed.
         _log.warning(
-            "work_dir_repair_failed chat_id=%s: %s", chat_id, db.db_conn,
+            "work_dir_repair_failed chat_id=%s", chat_id, exc_info=True,
         )
 
 
@@ -1601,7 +1605,7 @@ async def handle_sessions_resume(request: Request, session_id: str):
         # had work_dir set to bare session UUIDs or /tmp or any path outside
         # PROJECTS_ROOT. runner.py line 1268 rejects those as escaping the
         # root, so we must repair here or the chat is permanently broken.
-        _fix_stale_work_dir(existing["id"])
+        await _fix_stale_work_dir(existing["id"])
         return JSONResponse(
             {
                 "id": existing["id"],

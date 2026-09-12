@@ -62,10 +62,20 @@ async function _openSpec(spec) {
     const response = await apiFetch(`/api/specs/${encodeURIComponent(spec.id)}/content`);
     if (!response.ok) return;
     const html = await response.text();
+    // Sanitized at the point of insertion, not trusted from the server:
+    // discover_specs() scans this repo tree for any markdown file carrying
+    // the marker line, not only a curated directory, and render_markdown()'s
+    // success path passes embedded raw HTML through unchanged (only its
+    // own failure fallback escapes). A spec file with injected
+    // <script>/event-handler HTML would otherwise execute here, in an
+    // authenticated same-origin tab -- DOMPurify (vendored, purify.min.js)
+    // is the real boundary against that, applied right at the innerHTML
+    // sink rather than trusted upstream.
+    const clean = window.DOMPurify.sanitize(html);
     const win = window.open('', '_blank');
     if (win) {
       win.document.title = spec.title;
-      win.document.body.innerHTML = html;
+      win.document.body.innerHTML = clean;
     }
   } catch {
     // Silent: same fallback stance as images.js -- a failed open leaves

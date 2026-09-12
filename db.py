@@ -19,6 +19,11 @@ import config
 def __getattr__(name: str):
     """Resolve extracted-db symbols lazily (circular-import guard)."""
     _SYMBOLS: dict[str, str] = {
+        # generated images
+        "generated_image_record": "routes.db_images",
+        "generated_images_list": "routes.db_images",
+        "generated_image_get": "routes.db_images",
+        "generated_image_delete": "routes.db_images",
         # queue
         "QUEUE_MAX": "routes.db_queue",
         "last_model_used": "routes.db_queue",
@@ -693,6 +698,28 @@ async def init() -> None:
             proc_cpu_pct  REAL NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_system_samples_at ON system_samples(created_at);
+
+        -- One row per image a turn generated, recorded the moment
+        -- routes/chats.py's existing _new_workspace_images() finds it (no
+        -- new scan). chat_title and work_dir are snapshotted, not joined
+        -- live: ARCHITECTURE.md already documents that deleting a chat
+        -- deliberately leaves its workspace on disk, so an image must stay
+        -- servable and identifiable after its chat row is gone. No foreign
+        -- key to chats for the same reason -- a chats row can disappear
+        -- without this table needing an explicit cascade decision.
+        CREATE TABLE IF NOT EXISTS generated_images (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id     TEXT NOT NULL,
+            chat_title  TEXT NOT NULL,
+            work_dir    TEXT NOT NULL,
+            owner_id    TEXT NOT NULL,
+            path        TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_generated_images_owner
+            ON generated_images(owner_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_chat_path
+            ON generated_images(chat_id, path);
     """)
     await _ensure_chat_columns()
     await _ensure_machines_columns()

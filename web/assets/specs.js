@@ -127,9 +127,17 @@ export async function loadSpecs(force = false) {
   let payload;
   try {
     const response = await apiFetch('/api/specs');
-    if (!response.ok) return;
+    if (!response.ok) {
+      // Same discipline as _deleteSpec: a failed load must not read the
+      // same as "there are genuinely no specs" -- an expired session or a
+      // 500 used to leave the list silently empty with nothing to explain
+      // why.
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || 'Could not load specs');
+    }
     payload = await response.json();
-  } catch {
+  } catch (error) {
+    notifyResult(error.message, 'error');
     return;
   }
 

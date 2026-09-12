@@ -17,6 +17,6 @@ paramiko==5.0.0
 # Required by routes/voice.py's stream_voice_turn -- the one deliberate
 # exception to this project's CLI-only rule (see repo-root CLAUDE.md).
 openai==3.8.0
-Markdown==3.7
 # Required by specs_gallery.render_markdown for the Settings > Specs
 # gallery -- was dev-only until this feature needed it at runtime.
+Markdown==3.7

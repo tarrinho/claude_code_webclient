@@ -415,19 +415,24 @@ class TheTwoPassSplitIsCompleteTests(unittest.TestCase):
 
     def test_the_host_coupled_files_are_in_the_local_pass(self):
         """Each of these fails on a remote node for a reason that is not a
-        defect: test_qa_head_consistency needs a real git checkout, and the
-        bench and reclaim tests need the claude CLI on PATH. Measured on
-        2026-09-09 -- they were exactly the remote failures once the browser
-        files were excluded.
+        defect: they need the claude CLI on PATH. Measured on 2026-09-09 --
+        they were exactly the remote failures once the browser files were
+        excluded.
 
         This file used to be in that list too, because it reads rules.md and
         rules.md was gitignored. rules.md is tracked as of 2026-09-09, so it
         travels with the checkout and these tests run on the node -- which is
         asserted below rather than left as a comment, because a stale entry
-        here would quietly keep 36 tests in the slow local pass."""
-        for name in ("tests/test_qa_head_consistency.py",
-                     "tests/test_qa_bench_harness.py",
-                     "tests/test_qa_launch_reclaim.py",
+        here would quietly keep 36 tests in the slow local pass.
+
+        head_consistency and launch_reclaim were named here too until
+        1f39408 (2026-09-11) moved them off LOCAL_ONLY, which is what that
+        last sentence warns about: this tuple kept demanding them for a day
+        after the list stopped listing them, so the test failed rather than
+        the split drifting. The remote run on 2026-09-12 confirms the move:
+        head_consistency skips 5 tests with "not a git checkout" and
+        launch_reclaim neither failed nor skipped. Neither belongs here."""
+        for name in ("tests/test_qa_bench_harness.py",
                      # Runs bin/wc-claude.sh for real, which reads the
                      # console's database: "no such table: ai_machines" on a
                      # node that has no reason to have one.
@@ -541,11 +546,49 @@ class RemoteSuiteBlockTests(unittest.TestCase):
     def setUp(self):
         self.block = _block("remote-suite-block")
 
-    def test_the_manifest_comes_from_git_ls_files(self):
+    def test_what_is_sent_is_decided_by_git(self):
         """transport_sync.py's stated security property, and it holds here for
         the same reason: a caller may trigger that a sync happens, never what
-        is sent."""
-        self.assertIn("git ls-files -z | tar", self.block)
+        is sent.
+
+        Asserted as `git archive HEAD` rather than the `git ls-files -z | tar`
+        this used to name. Both take the file list from git, so both satisfy
+        the property, and `git archive` satisfies it more strictly -- the paths
+        come from a commit's tree and cannot come from anywhere else at all.
+
+        The comment lines are stripped before asserting, and that is the whole
+        point of the test rather than tidiness: the block explains the old
+        `ls-files` form in prose above the command, so `assertIn` against the
+        raw block passed while the command itself was mutated back to
+        `ls-files`. Checked by mutation on 2026-09-12.
+        """
+        command = "\n".join(
+            line for line in self.block.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        self.assertIn("git archive", command)
+        self.assertIn("HEAD", command)
+
+    def test_the_sync_cannot_ship_uncommitted_work(self):
+        """The reason for the change, and the property worth pinning.
+
+        `git ls-files` supplies only a manifest: tar then reads each path off
+        disk, so every uncommitted edit in the tree reached the node and a
+        remote result described a tree no commit corresponded to. Measured
+        2026-09-12 -- an uncommitted line in routes/chats.py was in the tarball
+        and absent from HEAD, and produced 20 UnboundLocalError failures for a
+        defect that existed in no committed version. Six sessions share this
+        tree, so that is the normal case rather than bad luck.
+
+        Pinned as the absence of the piped-manifest form, because that is the
+        shape that reintroduces it -- asserting only that "git archive" appears
+        would stay green if someone added an ls-files pipe beside it.
+        """
+        for line in self.block.splitlines():
+            if line.lstrip().startswith("#"):
+                continue  # prose may name the old form to explain it
+            with self.subTest(line=line.strip()[:60]):
+                self.assertNotIn("ls-files", line)
 
     def test_every_pip_invocation_disables_pip_user(self):
         """PIP_USER is set on at least one transport. pip then refuses every

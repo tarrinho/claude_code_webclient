@@ -542,10 +542,17 @@ fi
 # <<< node-pick-block
 ```
 
-Sync and run the remote pass. The manifest is always `git ls-files` **on this
+Sync and run the remote pass. What is sent is always decided by git **on this
 host** — never a path list from anywhere else. That is `transport_sync.py`'s
 stated security property and it holds here for the same reason: a request may
 trigger *that* a sync happens, never *what* is sent.
+
+It ships `git archive HEAD`, so what runs on the node is a **commit**, not the
+working tree. The distinction is not pedantry: `git ls-files | tar`, which this
+used before, took its manifest from git and then read every path off disk, so a
+remote number described a blend of however many sessions had unsaved edits at
+that moment and could not be compared with the next run. Uncommitted work is
+deliberately not tested remotely — test it here, or commit it first.
 
 ```bash
 # >>> remote-suite-block
@@ -577,7 +584,35 @@ esac
 # PIP_USER is set on at least one transport and breaks every venv install with
 # "Can not perform a '--user' install"; pip reports it and carries on, so the
 # suite then fails on missing imports rather than on anything real.
-git ls-files -z | tar --null -T - -czf - \
+# `git archive HEAD`, not `git ls-files | tar`. Both take their file list from
+# git -- that is the security property, and it is why the old form was chosen --
+# but `ls-files` supplies only the *manifest*: tar then reads each path off
+# disk, so every uncommitted edit in the tree travelled to the node. A remote
+# result therefore described a tree that no commit corresponded to.
+#
+# Measured 2026-09-12: an uncommitted line in `routes/chats.py` was present in
+# the tarball and absent from HEAD, and it produced 20 `UnboundLocalError`
+# failures on the node for a defect that did not exist in any committed
+# version. Six sessions share this tree, so at any moment the working tree is a
+# blend of several half-finished changes; a number measured against it cannot be
+# compared with the next run, which is what a baseline is for.
+#
+# Registry #103 reached this conclusion and stopped one step short of applying
+# it: "A clean `git archive` export of HEAD is the right way to rule out
+# working-tree contamination." That was written about *investigating* a stale
+# node and never made it into the sync the same section describes.
+#
+# `git archive` is also the stricter of the two on the property the old form
+# was picked for: the paths come from a commit's tree and cannot come from
+# anywhere else at all. It drops one entry `ls-files` reports -- the
+# `.claude/worktrees/db-modularize` gitlink -- which is a nested worktree that
+# should never have been shipped (see tests/test_qa_transport_sync.py on mode
+# 160000). 468 real files either way.
+#
+# The consequence to accept, rather than discover: uncommitted work is no
+# longer tested remotely. That is the point. Test your own changes here, or
+# commit them first.
+git archive --format=tar.gz HEAD \
   | $SSH "$QA_NODE" "mkdir -p $REMOTE_DIR \
       && find $REMOTE_DIR -mindepth 1 -maxdepth 1 ! -name .venv -exec rm -rf {} + \
       && tar -xzf - -C $REMOTE_DIR" || exit 1

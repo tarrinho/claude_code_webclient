@@ -8,10 +8,18 @@
 # the session id, its cwd, and the friendly name it registered (e.g. "cweb2"),
 # all already written by the CLI itself to ~/.claude/sessions/<pid>.json.
 #
-# Refuses on a session mid-turn ("status":"busy") rather than killing it out
-# from under a running turn -- same class of risk as a webconsole.service
-# restart cancelling an in-flight turn (CLAUDE.md rule 9), and the session's
-# own status field already tells us which state it is in.
+# Suspends only a session whose status is "idle", and only once it has been
+# idle for WC_STANDBY_MIN_IDLE_S seconds (default 3600). Everything else is
+# refused: "busy" is mid-turn, and killing that is the same class of risk as a
+# webconsole.service restart cancelling an in-flight turn (CLAUDE.md rule 9);
+# "waiting" is blocked asking its user a question, which is worse, because it
+# destroys the question at the moment a person is needed. The original gate
+# named only "busy", so "waiting" passed it.
+#
+# The hour exists because idle is not the same as finished with -- a session
+# that stopped four seconds ago is a pause for thought. Override deliberately
+# with WC_STANDBY_MIN_IDLE_S rather than a --force flag, so that relaxing the
+# age cannot also relax the state check.
 #
 # JSON via python3, not jq: jq is not installed on this host and python3
 # already is (every other bin/ script that touches JSON uses it).
@@ -74,6 +82,7 @@ print('session_id=' + shlex.quote(str(d.get('sessionId', ''))))
 print('cwd=' + shlex.quote(str(d.get('cwd', ''))))
 print('name=' + shlex.quote(str(d.get('name', ''))))
 print('status=' + shlex.quote(str(d.get('status', ''))))
+print('status_updated_at=' + shlex.quote(str(d.get('statusUpdatedAt', ''))))
 ")"
 
 if ! kill -0 "$pid" 2>/dev/null; then
@@ -81,10 +90,45 @@ if ! kill -0 "$pid" 2>/dev/null; then
     exit 1
 fi
 
-if [ "$status" = "busy" ]; then
-    echo "session '${name:-$target}' (pid ${pid}) is mid-turn (status: busy) -- refusing to" >&2
-    echo "standby it. Wait for it to finish, or confirm you want to interrupt the turn and" >&2
-    echo "re-run; this script does not force past that on its own." >&2
+# Only `idle` is suspendable, and this is an allowlist on purpose: `busy` is
+# mid-turn, `waiting` is blocked asking its user a question -- suspending that
+# one destroys the question at the moment a person is needed -- and a value
+# nobody has seen yet must fall on the safe side rather than be suspended
+# because no rule happened to name it. classification.py:294 allowlists the
+# same field for the same reason.
+if [ "$status" != "idle" ]; then
+    case "$status" in
+        busy)    why="mid-turn" ;;
+        waiting) why="blocked waiting for an answer from you" ;;
+        "")      why="of unknown state (no status in its session file)" ;;
+        *)       why="in an unrecognised state '${status}'" ;;
+    esac
+    echo "session '${name:-$target}' (pid ${pid}) is ${why} -- refusing to standby it." >&2
+    echo "Only a session whose status is 'idle' can be suspended." >&2
+    exit 1
+fi
+
+# Idle is not the same as finished with: a session that stopped four seconds
+# ago is a pause for thought, not an abandoned one. Measured from the record's
+# own statusUpdatedAt.
+min_idle="${WC_STANDBY_MIN_IDLE_S:-3600}"
+if [ -z "$status_updated_at" ]; then
+    echo "session '${name:-$target}' (pid ${pid}) has no statusUpdatedAt, so it cannot show" >&2
+    echo "how long it has been idle -- refusing rather than assuming it is old enough." >&2
+    exit 1
+fi
+idle_for="$(python3 -c "
+import time
+print(int(time.time() - int('${status_updated_at}') / 1000))
+" 2>/dev/null)"
+if [ -z "$idle_for" ]; then
+    echo "could not read statusUpdatedAt ('${status_updated_at}') from ${match} -- refusing." >&2
+    exit 1
+fi
+if [ "$idle_for" -lt "$min_idle" ]; then
+    echo "session '${name:-$target}' (pid ${pid}) has only been idle ${idle_for}s, and the" >&2
+    echo "minimum is ${min_idle}s -- refusing to standby it. Override deliberately with" >&2
+    echo "WC_STANDBY_MIN_IDLE_S=<seconds> if you know it is finished with." >&2
     exit 1
 fi
 

@@ -30,6 +30,22 @@ class FindReferencesTests(unittest.TestCase):
         refs = specs_gallery.find_references(self.root, "no-such-spec.md")
         self.assertEqual(refs, [])
 
+    def test_a_hit_inside_an_excluded_dir_does_not_count(self):
+        """Regression test for C3/I3: the grep used to walk the entire repo
+        tree, including .git/.venv/__pycache__/node_modules/.claude -- on
+        the real checkout that took over 10s per call and hit its own
+        timeout, silently returning [], indistinguishable from "genuinely no
+        references". A file whose *only* mention sits inside an excluded
+        directory must not produce a hit -- if it did, --exclude-dir was
+        not actually applied."""
+        for excluded_dir in ("__pycache__", ".git"):
+            hideout = self.root / excluded_dir
+            hideout.mkdir()
+            (hideout / "stale.py").write_text(
+                '"""See docs/superpowers/specs/2026-01-01-a-design.md."""\n')
+        refs = specs_gallery.find_references(self.root, "2026-01-01-a-design.md")
+        self.assertEqual(refs, [])
+
 
 class SpecStatusTests(unittest.TestCase):
     def setUp(self):

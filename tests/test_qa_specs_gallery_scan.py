@@ -92,6 +92,19 @@ class DiscoverSpecsTests(unittest.TestCase):
         found = {s["path"] for s in specs_gallery.discover_specs(self.root)}
         self.assertNotIn("README.md", found)
 
+    def test_marker_bearing_file_inside_excluded_dir_is_not_a_spec(self):
+        """I3: the same exclusion list C3 added to find_references's grep
+        also has to cover this rglob walk, or a marker-bearing file sitting
+        inside .git/.venv/__pycache__/node_modules/.claude (which on this
+        checkout holds *other sessions'* worktrees) would surface as a spec
+        of this repo."""
+        hideout = self.root / ".claude" / "worktrees" / "other-session"
+        hideout.mkdir(parents=True)
+        (hideout / "SOMETHING.md").write_text(
+            "# Other\nProduced via `/brainstorming`, today.\n")
+        found = {s["path"] for s in specs_gallery.discover_specs(self.root)}
+        self.assertFalse(any(".claude" in p for p in found))
+
     def test_sorted_by_mtime_descending(self):
         import os
         import time

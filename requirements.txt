@@ -20,3 +20,7 @@ openai==3.8.0
 # Required by specs_gallery.render_markdown for the Settings > Specs
 # gallery -- was dev-only until this feature needed it at runtime.
 Markdown==3.7
+# Required by specs_gallery.render_markdown to sanitize its server-rendered
+# HTML before it ever leaves the server -- the client-side DOMPurify pass in
+# specs.js is defense-in-depth, not the only boundary.
+nh3==0.3.7

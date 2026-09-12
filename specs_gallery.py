@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import base64
 import html as _html
-import markdown as _markdown
 import re
 import subprocess
 from pathlib import Path
 from typing import Any, Final
+
+import markdown as _markdown
+import nh3
 
 # Anchored to the start of a line (MULTILINE), not a bare substring search --
 # auto_answer.py's own docstring states the reason for this discipline on
@@ -26,6 +28,34 @@ _MARKER_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 _TITLE_RE: Final[re.Pattern[str]] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+
+# Shared by discover_specs()'s tree walk and find_references()'s grep: both
+# would otherwise wander into .git/.venv/__pycache__/node_modules, and into
+# .claude, which on this checkout holds *other sessions'* worktrees. Walking
+# those made discover_specs slow and made find_references's grep take over
+# 10s and hit its own timeout (returning [] -- indistinguishable from a
+# genuine "no references"). One list, defined once, used by both.
+_EXCLUDED_DIRS: Final[frozenset[str]] = frozenset({
+    ".git", ".venv", "__pycache__", "node_modules", ".claude",
+})
+
+# What a design spec actually needs to render: headings, paragraphs, lists,
+# code/pre, tables, emphasis, links, blockquotes. Deliberately narrower than
+# nh3's own defaults (which include img/div/span/nav/... none of which a spec
+# document needs) -- no script/style/iframe/form/object/embed, and nothing
+# else either.
+_ALLOWED_TAGS: Final[frozenset[str]] = frozenset({
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "p", "ul", "ol", "li",
+    "pre", "code",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "b", "i", "strong", "em",
+    "a", "blockquote",
+})
+# nh3 strips event-handler attributes (onerror, onclick, ...) and non-listed
+# schemes (javascript:) by default -- only href needs to be named explicitly
+# here to survive at all.
+_ALLOWED_ATTRIBUTES: Final[dict[str, set[str]]] = {"a": {"href"}}
 
 
 def encode_id(relative_path: str) -> str:
@@ -84,6 +114,9 @@ def discover_specs(root: Path) -> list[dict[str, Any]]:
     for path in root.rglob("*.md"):
         if path.is_relative_to(specs_dir):
             continue  # already covered above
+        rel_parts = path.relative_to(root).parts
+        if any(part in _EXCLUDED_DIRS for part in rel_parts):
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if not _MARKER_RE.search(text):
             continue
@@ -104,10 +137,13 @@ def find_references(repo_root: Path, filename: str) -> list[str]:
     own docstring names its design doc). Read-only, never raises: grep
     exiting non-zero (no matches) is a normal, empty result, not a failure.
     """
+    cmd = ["grep", "-rl"]
+    for excluded in _EXCLUDED_DIRS:
+        cmd.append(f"--exclude-dir={excluded}")
+    cmd += ["--", filename, str(repo_root)]
     try:
         result = subprocess.run(
-            ["grep", "-rl", "--", filename, str(repo_root)],
-            capture_output=True, text=True, timeout=10,
+            cmd, capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -165,6 +201,12 @@ def enrich(repo_root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     or fail the whole entry (spec section 5)."""
     out = dict(spec)
 
+    # The id a client needs to view/delete this spec through the API --
+    # encode_id() existed from Task 1 but nothing on the list path ever
+    # called it, so every entry served to the gallery carried no id at all
+    # and view/delete were both silently non-functional.
+    out["id"] = encode_id(spec["path"])
+
     try:
         out["referenced_by"] = find_references(repo_root, Path(spec["path"]).name)
     except Exception:
@@ -191,8 +233,16 @@ def render_markdown(text: str) -> str:
     surface as a 500 (spec section 5). Specs are written by agents/humans
     working this repo, not untrusted external input, but escaping the
     fallback path costs nothing and closes the obvious XSS case regardless.
+
+    The success path is sanitized through nh3 too, not just the fallback --
+    the client-side DOMPurify pass in specs.js is defense-in-depth, not the
+    only boundary. This app's CSP (script-src 'self', no unsafe-inline)
+    happens to also block an injected <script> today, but that is incidental
+    protection for anyone hitting /api/specs/{id}/content directly rather
+    than through the gallery UI, not the actual fix.
     """
     try:
-        return _markdown.markdown(text, extensions=["fenced_code", "tables"])
+        rendered = _markdown.markdown(text, extensions=["fenced_code", "tables"])
+        return nh3.clean(rendered, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRIBUTES)
     except Exception:
         return f"<pre>{_html.escape(text)}</pre>"

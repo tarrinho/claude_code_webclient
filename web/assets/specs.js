@@ -5,6 +5,7 @@
 // going stale, per specs_gallery.py's own discover_specs() docstring.
 import {apiFetch} from './api.js?v=2741508';
 import {_showConfirmDialog} from './machines.js?v=3055851';
+import {notifyResult} from './server-stats.js?v=8469847';
 
 const byId = id => document.getElementById(id);
 
@@ -12,7 +13,7 @@ function _statusLabel(status) {
   return status === 'planned' ? 'Planned' : 'Spec only';
 }
 
-function _row(spec, isAdmin) {
+function _row(spec) {
   const row = document.createElement('div');
   row.className = 'spec-row';
   row.dataset.specId = spec.id;
@@ -34,22 +35,24 @@ function _row(spec, isAdmin) {
   meta.textContent = parts.join(' · ');
   row.appendChild(meta);
 
-  if (isAdmin) {
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'spec-row-delete';
-    del.textContent = '×';
-    del.setAttribute('aria-label', `Delete ${spec.title}`);
-    del.addEventListener('click', event => {
-      event.stopPropagation();
-      _showConfirmDialog(
-        'Delete this spec?',
-        `This removes the file from disk. It is not committed to git automatically -- delete ${spec.title}?`,
-        () => _deleteSpec(spec.id, row),
-      );
-    });
-    row.appendChild(del);
-  }
+  // Shown to every user, same convention as every other admin-gated action
+  // in this app (machines.js's delete, transports.js's delete, etc.): none
+  // hide the control client-side, they all rely on the server's 403 as the
+  // real enforcement. _deleteSpec surfaces that 403 through notifyResult.
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'spec-row-delete';
+  del.textContent = '×';
+  del.setAttribute('aria-label', `Delete ${spec.title}`);
+  del.addEventListener('click', event => {
+    event.stopPropagation();
+    _showConfirmDialog(
+      'Delete this spec?',
+      `This removes the file from disk. It is not committed to git automatically -- delete ${spec.title}?`,
+      () => _deleteSpec(spec.id, row),
+    );
+  });
+  row.appendChild(del);
 
   return row;
 }
@@ -73,13 +76,19 @@ async function _openSpec(spec) {
 async function _deleteSpec(specId, row) {
   try {
     const response = await apiFetch(`/api/specs/${encodeURIComponent(specId)}`, {method: 'DELETE'});
-    if (response.ok) {
-      row.remove();
-      _updateCount();
+    if (!response.ok) {
+      // 403 (non-admin) and 404 (already gone) both land here with the
+      // server's own detail text -- same pattern as machines.js's
+      // _deleteMachine, so a rejected delete is never silent.
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || 'Could not delete spec');
     }
-  } catch {
+    row.remove();
+    _updateCount();
+  } catch (error) {
     // The row staying put on a failed delete is the correct fallback --
     // no silent "it worked" when it did not.
+    notifyResult(error.message, 'error');
   }
 }
 
@@ -109,8 +118,7 @@ export async function loadSpecs(force = false) {
     return;
   }
 
-  const isAdmin = window.state?.session?.role === 'admin';
   list.replaceChildren();
-  (payload.specs || []).forEach(spec => list.appendChild(_row(spec, isAdmin)));
+  (payload.specs || []).forEach(spec => list.appendChild(_row(spec)));
   _updateCount();
 }

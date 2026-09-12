@@ -277,7 +277,22 @@ async def _cli_maps(marks: dict) -> tuple[dict, dict, dict, dict]:
         session_id = entry.get("sessionId", "")
         if not session_id:
             continue
-        status[session_id] = (entry.get("status") or "").lower()
+        # A process that has exited has no current status, only the last one it
+        # wrote. Taking that verbatim kept a session that died while `waiting`
+        # in the blocked list for ever -- nobody can satisfy it, because the
+        # thing that would clear the status is gone -- and spent a
+        # `prompts.has_prompt` subprocess on the dead pid every poll.
+        #
+        # `live` is set from `_pid_is_running` in routes/db_sessions.py and the
+        # sidebar already honours it; this is the one consumer that did not.
+        # Only an explicit False counts: remote sessions carry no `live` key at
+        # all, since a remote pid cannot be checked locally, and treating
+        # missing as dead would silently stop every one of them asking for
+        # help. Unknown liveness is not death.
+        if entry.get("live") is False:
+            status[session_id] = ""
+        else:
+            status[session_id] = (entry.get("status") or "").lower()
         dismissed[session_id] = marks.get(
             ("session", session_id), {}).get("dismissed_at", "")
         updated[session_id] = entry.get("status_updated_at", "")

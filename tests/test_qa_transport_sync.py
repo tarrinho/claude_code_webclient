@@ -184,11 +184,19 @@ class ApplyPlanTests(unittest.IsolatedAsyncioTestCase):
 
         plan = ts.SyncPlan(to_push=["db.py"], to_delete=["old.py"], head_sha="abc123")
 
-        with unittest.mock.patch("tunnel_manager_ssh.open_sftp", fake_open_sftp):
+        # apply_plan now reads each file's bytes from the commit rather than
+        # from disk, so head_sha reaches `git show`. This test is about which
+        # paths move, not what is in them, and "abc123" is not a real object --
+        # stubbed so it stays a test about the plan.
+        async def fake_committed_bytes(sha, rel_path):
+            return b"contents of " + rel_path.encode()
+
+        with unittest.mock.patch("tunnel_manager_ssh.open_sftp", fake_open_sftp), \
+             unittest.mock.patch.object(ts, "_committed_bytes", fake_committed_bytes):
             changed = await ts.apply_plan("m1", "/home/u/wc-proxy", plan)
 
         self.assertEqual(changed, 2)
-        sftp.put.assert_called_once()
+        sftp.putfo.assert_called_once()
         sftp.remove.assert_called_once_with("/home/u/wc-proxy/old.py")
         sftp.close.assert_called_once()
 

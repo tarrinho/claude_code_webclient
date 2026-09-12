@@ -11,6 +11,7 @@ connection via SFTP; no new connection, no new credential.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +40,7 @@ class SyncError(Exception):
         self.reason = reason
 
 
-async def _run_git(*args: str) -> str:
+async def _run_git_bytes(*args: str) -> bytes:
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", str(_REPO_ROOT), *args,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -47,7 +48,27 @@ async def _run_git(*args: str) -> str:
     out, err = await proc.communicate()
     if proc.returncode != 0:
         raise SyncError(f"git {' '.join(args)} failed: {err.decode('utf-8', 'replace').strip()}")
-    return out.decode("utf-8", "replace")
+    return out
+
+
+async def _run_git(*args: str) -> str:
+    return (await _run_git_bytes(*args)).decode("utf-8", "replace")
+
+
+async def _committed_bytes(sha: str, rel_path: str) -> bytes:
+    """The file's content *at that commit*, never from the working tree.
+
+    `git show <sha>:<path>` rather than reading the path off disk. The
+    manifest was always commit-derived -- that is this module's stated
+    security property -- but the bytes were not, so a sync shipped whatever
+    happened to be saved in a checkout six sessions edit concurrently, and
+    then advanced last_synced_sha to head_sha, recording that the transport
+    matched a commit it may never have received.
+
+    Read as bytes and never decoded: the tree contains PNGs and other binary
+    files, and a decode round trip would corrupt them.
+    """
+    return await _run_git_bytes("show", f"{sha}:{rel_path}")
 
 
 def _safe_relative(path: str) -> str:
@@ -154,12 +175,15 @@ async def apply_plan(
 
     changed = 0
     try:
-        def _do_push(rel_path: str) -> None:
-            local_path = _REPO_ROOT / rel_path
+        def _do_push(rel_path: str, blob: bytes) -> None:
             remote_path = f"{remote_root.rstrip('/')}/{rel_path}"
             remote_dir = remote_path.rsplit("/", 1)[0]
             _sftp_makedirs_sync(sftp, remote_dir)
-            sftp.put(str(local_path), remote_path)
+            # putfo, not put: the bytes come from the commit (see
+            # _committed_bytes), so there is no local path to read. A file
+            # deleted or half-saved in the working tree no longer aborts a
+            # sync partway through either.
+            sftp.putfo(io.BytesIO(blob), remote_path)
 
         def _do_delete(rel_path: str) -> None:
             remote_path = f"{remote_root.rstrip('/')}/{rel_path}"
@@ -169,7 +193,8 @@ async def apply_plan(
                 pass  # already gone -- deleting it is still the goal met
 
         for rel_path in plan.to_push:
-            await asyncio.to_thread(_do_push, rel_path)
+            blob = await _committed_bytes(plan.head_sha, rel_path)
+            await asyncio.to_thread(_do_push, rel_path, blob)
             changed += 1
         for rel_path in plan.to_delete:
             await asyncio.to_thread(_do_delete, rel_path)

@@ -43,6 +43,12 @@ print('cwd=' + shlex.quote(str(d.get('cwd', ''))))
 print('standby_at=' + shlex.quote(str(d.get('standbyAt', ''))))
 ")"
 
+if [ -z "$session_id" ]; then
+    echo "standby record ${record} has no sessionId -- refusing to print" >&2
+    echo "'claude --resume' with an empty id, which cannot resume anything." >&2
+    exit 1
+fi
+
 echo "# '${name}' was put on standby at ${standby_at}" >&2
 echo "# session id: ${session_id}" >&2
 if [ -n "$cwd" ]; then
@@ -51,8 +57,15 @@ else
     echo "claude --resume ${session_id}"
 fi
 
-# Once resumed, the CLI writes a fresh <new-pid>.json for the new process and
-# re-registers the same name via its own naming handshake -- this record's job
-# is done. Leaving it behind would let a stale cwd/session pairing resurface
-# if the name is ever reused for an unrelated session later.
-rm -f "$record"
+# The record is deliberately kept. This script prints rather than execs --
+# see the header -- so it cannot know whether the command it printed was ever
+# run, and it used to `rm -f "$record"` here regardless. Close the terminal
+# without running the line, or lose it in scrollback, and the only pointer
+# back to a suspended session was gone with it.
+#
+# The deletion was there to stop a stale cwd/session pairing resurfacing if
+# the name were later reused. That is the milder failure of the two: a stale
+# record prints a resume command that simply does not resume, which is
+# visible and recoverable, and standing the same name by again overwrites it.
+# Losing the session id is neither.
+echo "# record kept at ${record} -- re-run this if the resume did not happen" >&2

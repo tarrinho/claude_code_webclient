@@ -35,6 +35,7 @@ from shared import (
     _SSE_INTERNAL,
     _question_to_text,
     _turn_to_message,
+    owner_of,
 )
 
 _log = logging.getLogger("wc.app")
@@ -1577,12 +1578,10 @@ async def handle_sessions_resume(request: Request, session_id: str):
                 detail="Conversation not found — no running session and no transcript",
             )
 
-    # Resolve username to real user UUID; the session stores only the login
-    # name ("admin"), but chat DB functions expect the UUID hex.
-    _owner_id = session["user"]
-    _user_obj = await db.user_get_by_name(_owner_id)
-    if _user_obj:
-        _owner_id = _user_obj["id"]
+    # One place answers "who owns this?" -- see shared.owner_of. This was the
+    # same translation inline, and its absence in handle_chat_create is what
+    # made that endpoint fail the same way.
+    _owner_id = await owner_of(session)
 
     existing = next(
         (

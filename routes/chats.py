@@ -40,6 +40,7 @@ from shared import (
     acquire_sse_slot,
     backend_kind,
     release_sse_slot,
+    owner_of,
 )
 
 _log = logging.getLogger("wc.app")
@@ -379,7 +380,12 @@ async def handle_chat_create(request: Request):
         )
     chat_id = uuid.uuid4().hex
     now = await db.chat_create(
-        chat_id, title, data.get("description"), work_dir, session["user"]
+        chat_id, title, data.get("description"), work_dir, await owner_of(session)
+    # owner_of, not session["user"]: a session minted before login switched to
+    # the user's id carries the login name, and chat_create rejects a name --
+    # so this raised ValueError and answered 500. The resume endpoint had the
+    # translation inline and this one did not, which is why the same stale
+    # session broke one endpoint and not the other.
     )
     _log.info("chat_created chat_id=%s work_dir=%s", chat_id, work_dir)
     voice_mode = bool(data.get("voice_mode"))

@@ -29,6 +29,42 @@ import turns
 
 _QUESTION_PENDING_NOTE = "(answer this in the terminal)"
 
+# A user id is 32 hex characters (uuid4().hex). Used to tell an id from a login
+# name without a database round trip on the common path.
+_USER_ID_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-fA-F]{32}")
+
+
+async def owner_of(session: dict | None) -> str:
+    """The real user id behind *session*, translating a legacy login name.
+
+    ``session["user"]`` has been the user's id since login switched from
+    ``user["name"]`` to ``user["id"]``. Sessions are persisted and survive a
+    restart, though, so one minted before that fix carries the *name* instead
+    and keeps doing so for its whole TTL.
+
+    That mattered because ``chat_create`` rejects a name outright. The resume
+    endpoint hit it as a 500 -- reported live -- and was patched with this
+    translation inline; ``handle_chat_create`` was not, so POST /api/chats
+    still raised ValueError on such a session. One caller defending itself
+    while its neighbour does not is the shape that says the check belongs at
+    the point identity enters rather than at the point a row is written.
+
+    So this is the single place that answers "who owns this?", and it is
+    deliberately *not* a validator: it translates when it can and otherwise
+    returns what it was given, leaving the write layer to reject a value it
+    cannot store. A lookup only happens for a value that is not already an id,
+    so the normal path costs one regex.
+    """
+    user = ((session or {}).get("user") or "").strip()
+    if not user or _USER_ID_RE.fullmatch(user):
+        return user
+    # Not an id: either a pre-fix session carrying a login name, or something
+    # that will fail at the write, which is where it should fail.
+    import db
+
+    row = await db.user_get_by_name(user)
+    return row["id"] if row else user
+
 # Concurrent-SSE-connection cap, shared by every stream endpoint: chat
 # /stream and /live, orchestrator /stream and task /stream, transcript
 # /stream. Each open connection holds a Python generator, an event buffer,

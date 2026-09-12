@@ -1341,6 +1341,11 @@ async def _start_turn(
         if images:
             image_text = _image_markdown(images)
             assistant = f"{assistant}\n\n{image_text}" if assistant.strip() else image_text
+            # Same discovery, recorded once for the cross-chat gallery in
+            # Settings. No new scan -- images is already in hand.
+            await db.generated_image_record(
+                chat_id, chat["title"], chat["work_dir"], owner, images,
+            )
         if assistant.strip():
             await db.messages_batch(
                 chat_id, [("user", prompt), ("assistant", assistant)]

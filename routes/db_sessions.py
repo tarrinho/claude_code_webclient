@@ -635,6 +635,23 @@ def _read_claude_sessions_sync() -> list[dict[str, Any]]:
         if not model and session_id:
             model = db._lookup_session_model(session_id) or ""
 
+        # A process that has exited has no *current* status, only the last one
+        # it happened to write, and this is the one place that knows which of
+        # the two it is -- so the rule belongs here rather than in each reader.
+        #
+        # Three readers took the stale value as current: classification's
+        # `_cli_maps` (so a session that died while `waiting` asked for a
+        # person for ever, and cost a `prompts.has_prompt` subprocess per poll
+        # on a dead pid), routes/chats.py's busy set (so its linked chat showed
+        # as working for ever), and db_supervisor_map's `_cli_session_nodes`,
+        # which passes the raw entry to `_classify_cli_session`. Fixing readers
+        # one at a time is how CLAUDE.md's "this rule used to exist three
+        # times" happens; this fixes the other two without touching them.
+        #
+        # `status_updated_at` is left alone on purpose: a timestamp does not
+        # stop being true when the process dies, and chat-list.js:548 greys a
+        # stale row with it, which is what an ended session should look like.
+        running = db._pid_is_running(pid)
         sessions.append(
             {
                 "id": session_id if session_id else fpath.stem,
@@ -646,9 +663,9 @@ def _read_claude_sessions_sync() -> list[dict[str, Any]]:
                 "sessionId": session_id,
                 "model": model,
                 "entrypoint": data.get("entrypoint", ""),
-                "status": data.get("status") or "",
+                "status": (data.get("status") or "") if running else "",
                 "status_updated_at": _format_timestamp(data.get("statusUpdatedAt")) or "",
-                "live": db._pid_is_running(pid),
+                "live": running,
                 "file": fpath.name,
             }
         )

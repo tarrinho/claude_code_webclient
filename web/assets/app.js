@@ -12,6 +12,7 @@ import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeS
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
+import {loadSpecs, _closeSpecViewer} from './specs.js?v=15231701';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -442,11 +443,11 @@ function _switchTab(tab) {
   const map = {
     backends: 'panelBackends', usage: 'panelUsage', stats: 'panelStats',
     server: 'panelServer', skills: 'panelSkills', app: 'panelApp',
-    images: 'panelImages',
+    images: 'panelImages', specs: 'panelSpecs',
   };
   const activeId = map[tab] || 'panelBackends';
   ['panelBackends', 'panelUsage', 'panelStats', 'panelServer', 'panelSkills',
-   'panelApp', 'panelImages'].forEach(id => {
+   'panelApp', 'panelImages', 'panelSpecs'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -476,6 +477,7 @@ function _switchTab(tab) {
   }
   if (tab === 'skills') loadSkills();
   if (tab === 'images') loadImages(true);
+  if (tab === 'specs') loadSpecs(true);
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
@@ -2360,6 +2362,8 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });
   byId('settingsSave').addEventListener('click', saveSettings);
+  byId('specViewerClose')?.addEventListener('click', _closeSpecViewer);
+  byId('specViewerDialog')?.addEventListener('click', event => { if (event.target === byId('specViewerDialog')) _closeSpecViewer(); });
   byId('debugConsole')?.addEventListener('click', () => {
     const el = byId('debugConsole');
     const on = el.getAttribute('aria-pressed') === 'true';
@@ -2577,9 +2581,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', event => {
     trapDialogFocus(event);
     if (event.key === 'Escape') {
-      // Checked first because it is the only dialog that can sit over another,
-      // being opened from a row menu rather than the topbar.
+      // Checked first because these can sit over another dialog rather than
+      // being opened from the topbar: supervisorPickDialog from a row menu,
+      // specViewerDialog from a row inside the Settings dialog itself (see
+      // its z-index override in styles.css for the same reason). Checking
+      // settingsDialog first would close the dialog underneath instead of
+      // the one actually on top.
       if (document.getElementById('supervisorPickDialog')) _closeSupervisorPicker();
+      else if (byId('specViewerDialog')?.classList.contains('open')) _closeSpecViewer();
       else if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
       else if (byId('chatDialog').classList.contains('open')) closeDialog();
       else if (byId('confirmDialog')?.classList.contains('open')) _closeConfirmDialog();

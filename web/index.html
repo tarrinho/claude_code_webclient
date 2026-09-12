@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=1705583">
+<link rel="stylesheet" href="/assets/styles.css?v=4859720">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -215,6 +215,22 @@
     <div class="dialog-actions"><button type="button" class="btn-secondary" id="confirmNo">No</button><button type="button" class="btn-danger" id="confirmYes">Yes</button></div>
   </div>
 </div>
+<!-- Spec viewer: renders one spec's sanitized HTML in-page. Replaces an
+     earlier window.open('', '_blank') approach -- that call landed after an
+     await, outside the click's user-gesture window, so popup blockers would
+     likely kill it, and the spec itself (section 3/4) asked for a panel, not
+     a new tab. Same dialog-backdrop/.dialog pattern as #settingsDialog. -->
+<div class="dialog-backdrop" id="specViewerDialog" role="dialog" aria-modal="true" aria-labelledby="specViewerTitle">
+  <div class="dialog spec-viewer-dialog" id="specViewerBody">
+    <div class="spec-viewer-header">
+      <h2 id="specViewerTitle"></h2>
+      <button type="button" class="btn-secondary" id="specViewerClose">Close</button>
+    </div>
+    <!-- Sanitized (nh3 server-side, DOMPurify again at this innerHTML sink)
+         before it ever reaches here -- see specs.js's _openSpec. -->
+    <div class="spec-viewer-content" id="specViewerContent"></div>
+  </div>
+</div>
 <div class="dialog-backdrop" id="settingsDialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
   <div class="dialog settings-dialog" id="settingsForm">
     <h2 id="settingsTitle">Settings</h2>
@@ -226,6 +242,7 @@
       <button class="settings-tab" id="tabSkills" role="tab" tabindex="-1" aria-selected="false" data-tab="skills" aria-controls="panelSkills">Skills</button>
       <button class="settings-tab" id="tabApp" role="tab" tabindex="-1" aria-selected="false" data-tab="app" aria-controls="panelApp">App</button>
       <button class="settings-tab" id="tabImages" role="tab" tabindex="-1" aria-selected="false" data-tab="images" aria-controls="panelImages">Images</button>
+      <button class="settings-tab" id="tabSpecs" role="tab" tabindex="-1" aria-selected="false" data-tab="specs" aria-controls="panelSpecs">Specs</button>
     </div>
     <div class="settings-body">
       <!-- Backends tab: a machine and the models it serves are one thing -->
@@ -363,6 +380,14 @@
         </div>
         <div class="images-grid" id="imagesGrid"></div>
         <button type="button" class="btn-secondary" id="imagesLoadMore" hidden>Load more</button>
+      </div>
+      <!-- Specs tab: every design spec in the repo, browsable and (admin-only)
+           deletable. See docs/superpowers/specs/2026-09-12-design-specs-gallery-design.md. -->
+      <div class="settings-panel" id="panelSpecs" role="tabpanel" aria-labelledby="tabSpecs" tabindex="0" hidden>
+        <div class="skills-header">
+          <span class="skills-count" id="specsCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="specs-list" id="specsList"></div>
       </div>
       <!-- Statistics tab: the same rows as Usage, over time rather than summed.
            Terminal and website are separate series on purpose -- they differ by
@@ -543,7 +568,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=11134710"></script>
+<script type="module" src="/assets/app.js?v=5159321"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>
@@ -551,6 +576,9 @@
 
 <!-- D3 for supervisor map radial tree -->
 <script src="/assets/d3.min.js"></script>
+<!-- DOMPurify for sanitizing server-rendered spec markdown before innerHTML
+     insertion (specs.js's _openSpec) -->
+<script src="/assets/purify.min.js"></script>
 <script type="module" src="/assets/supervisor-map.js?v=8939591"></script>
 
 <!-- Supervisor Map Panel -->

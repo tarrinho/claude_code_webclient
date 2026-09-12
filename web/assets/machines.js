@@ -18,7 +18,7 @@ import {
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
   backendKindLabel,
-} from './app.js?v=15382680';
+} from './app.js?v=15418713';
 import {apiFetch} from './api.js?v=2741508';
 import {notifyResult, setStatus} from './server-stats.js?v=5278923';
 import {_transports, loadTransports, populateTransportPicker,
@@ -27,7 +27,7 @@ import {_transports, loadTransports, populateTransportPicker,
   // Check / Init on the transport header -- see _buildTransportHeader.
   _checkTransport, _initTransport,
   // Sync + its pending-request queue; see _buildTransportHeader.
-  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=2281096';
+  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=8330273';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the

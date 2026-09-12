@@ -6,7 +6,7 @@
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
-import {createChatListController} from './chat-list.js?v=12165920';
+import {createChatListController} from './chat-list.js?v=16066203';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=1434625';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
@@ -538,9 +538,9 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=1541541';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=852595';
 
-import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=2281096';
+import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=8330273';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();

@@ -64,7 +64,11 @@ async def handle_spec_content(request: Request, spec_id: str):
     """GET /api/specs/{id}/content -- one spec's content, rendered."""
     session = request.state.session
     path = specs_gallery.decode_id(spec_id, _REPO_ROOT)
-    if path is None or not _is_known_spec(_REPO_ROOT, path):
+    # _is_known_spec re-scans the whole tree (discover_specs), same blocking
+    # cost class as _discover_and_enrich above -- off the event loop for the
+    # same reason.
+    known = path is not None and await asyncio.to_thread(_is_known_spec, _REPO_ROOT, path)
+    if not known:
         if path is not None:
             _log.warning(
                 "spec_outside_allowed_dirs: user=%s spec_id=%s path=%s",
@@ -86,7 +90,8 @@ async def handle_spec_delete(request: Request, spec_id: str):
     if session.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     path = specs_gallery.decode_id(spec_id, _REPO_ROOT)
-    if path is None or not _is_known_spec(_REPO_ROOT, path):
+    known = path is not None and await asyncio.to_thread(_is_known_spec, _REPO_ROOT, path)
+    if not known:
         if path is not None:
             _log.warning(
                 "spec_outside_allowed_dirs: user=%s spec_id=%s path=%s",

@@ -58,6 +58,7 @@ from routes.misc import router as misc_router
 from routes.orchestrators import router as orchestrators_router
 from routes.images import router as images_router
 from routes.qa import router as qa_router
+from routes.specs import router as specs_router
 from routes.supervisor_map import router as supervisor_map_router
 from routes.transports import router as transports_router
 
@@ -596,6 +597,7 @@ app.include_router(supervisor_map_router)
 app.include_router(misc_router)
 app.include_router(transports_router)
 app.include_router(qa_router)
+app.include_router(specs_router)
 
 app.add_middleware(
     CORSMiddleware, allow_origins=[], allow_methods=["*"], allow_headers=["*"]

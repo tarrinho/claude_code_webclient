@@ -29,6 +29,30 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+
+def _admin_id(con) -> str:
+    """The admin's real user id, for seeding owner-scoped rows directly.
+
+    A literal 'admin' used to work in these SQL strings and silently stopped:
+    app.py's login calls auth.session_new(user["id"], ...), so session["user"]
+    is a user id, and every owner-scoped read -- db.chat_list, queue_counts,
+    last_models_used, the orchestrator list -- filters on it. A row owned by
+    the string "admin" belongs to nobody the session can be, so the sidebar
+    never renders it and the test dies on a locator timeout rather than on
+    anything it set out to check.
+
+    Interpolated into the SQL rather than bound, because these seeds sit in
+    concatenated literals whose parameter tuples vary per call site. The value
+    is a hex UUID this test just created, so there is nothing to inject.
+
+    ssh_transports seeds deliberately keep the literal: that list has been
+    unscoped since 2026-09-11, so the owner there is never read.
+    """
+    row = con.execute("SELECT id FROM users WHERE name = 'admin'").fetchone()
+    assert row, "no admin user; the server seeds one from WC_ADMIN_PASSWORD"
+    return row[0]
+
+
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:  # pragma: no cover - exercised only without the dev deps
@@ -538,13 +562,13 @@ class BackendsTurnCountBrowserTests(_BrowserFixture):
             con.execute(
                 "INSERT INTO chats (id, title, description, work_dir, "
                 "owner_id, created_at, updated_at) VALUES (?,?,NULL,'/tmp',"
-                "'admin','2026-09-01T08:00:00Z','2026-09-01T08:00:00Z')",
+                f"'{_admin_id(con)}','2026-09-01T08:00:00Z','2026-09-01T08:00:00Z')",
                 (chat_id, f"Turns fixture {chat_id}"),
             )
             for _ in range(cls.SEEDED_TURNS):
                 con.execute(
                     "INSERT INTO usage_events (chat_id, owner_id, model, "
-                    "provider, created_at) VALUES (?, 'admin', ?, 'anthropic', "
+                    f"provider, created_at) VALUES (?, '{_admin_id(con)}', ?, 'anthropic', "
                     "'2026-09-02T09:00:00Z')",
                     (chat_id, cls.SEEDED_MODEL),
                 )
@@ -920,7 +944,7 @@ class SupervisorBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (self.chat_id, self.chat_title, stamp, stamp),
         )
         con.execute(
@@ -1133,7 +1157,7 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,created_at,"
-            "updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (chat_id, f"Alert {chat_id}", stamp, stamp),
         )
         con.execute(
@@ -1518,7 +1542,7 @@ class SupervisorDismissBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,created_at,"
-            "updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (chat_id, f"Waiting {chat_id}", stamp, stamp),
         )
         con.execute(
@@ -1793,7 +1817,7 @@ class SupervisorListEscapingBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO orchestrators (id,title,description,owner_id,status,"
-            "created_at,updated_at) VALUES (?,?,NULL,'admin',?,?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'{_admin_id(con)}',?,?,?)",
             (sup_id, title, status, stamp, stamp),
         )
         con.commit()
@@ -1899,7 +1923,7 @@ class QuestionDismissBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "session_id,created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',"
+            f"session_id,created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',"
             "?,?,?)",
             (chat_id, f"Question {chat_id}", f"sess-{chat_id}", stamp, stamp),
         )
@@ -2082,7 +2106,7 @@ class AutoAnswerCycleBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "session_id,created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',"
+            f"session_id,created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',"
             "?,?,?)",
             (chat_id, f"Auto-answer {chat_id}", f"sess-{chat_id}", stamp, stamp),
         )
@@ -2235,7 +2259,7 @@ class LoadMoreMessagesBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (chat_id, f"Long chat {chat_id}", stamp, stamp),
         )
         con.executemany(
@@ -2309,12 +2333,12 @@ class QueuePanelBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (chat_id, f"Queue {chat_id}", stamp, stamp),
         )
         con.executemany(
             "INSERT INTO turn_queue (chat_id,owner_id,prompt,model,state,"
-            "created_at) VALUES (?,'admin',?,NULL,?,?)",
+            f"created_at) VALUES (?,'{_admin_id(con)}',?,NULL,?,?)",
             [(chat_id, prompt, state, stamp) for prompt, state in rows],
         )
         con.commit()
@@ -2398,7 +2422,7 @@ class QueuePanelBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO turn_queue (chat_id,owner_id,prompt,model,state,"
-            "created_at) VALUES (?,'admin',?,NULL,?,?)",
+            f"created_at) VALUES (?,'{_admin_id(con)}',?,NULL,?,?)",
             (chat_id, prompt, state, stamp),
         )
         con.commit()
@@ -2511,7 +2535,7 @@ class ChatRowMenuBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (chat_id, "MenuRowChat", stamp, stamp),
         )
         con.commit()
@@ -2619,12 +2643,12 @@ class ChatRowMenuBrowserTests(_BrowserFixture):
         for i in range(8):
             con.execute(
                 "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-                "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+                f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
                 (f"{target}-f{i}", f"Filler {i}", stamp, stamp),
             )
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (target, "LowRowChat", stamp, stamp),
         )
         con.commit()
@@ -2972,7 +2996,7 @@ class SupervisorMapBrowserTests(_BrowserFixture):
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
-            "created_at,updated_at) VALUES (?,?,NULL,'/tmp','admin',?,?)",
+            f"created_at,updated_at) VALUES (?,?,NULL,'/tmp','{_admin_id(con)}',?,?)",
             (chat_id, f"Map {chat_id}", stamp, stamp),
         )
         con.commit()
@@ -3739,7 +3763,7 @@ class StatisticsPanelBrowserTests(_BrowserFixture):
             "(id, title, description, session_id, work_dir, owner_id, "
             " created_at, updated_at) "
             "VALUES ('c-named', 'cweb2 - supervisor plan', NULL, 's-named', "
-            "        '/tmp', 'admin', ?, ?)",
+            f"        '/tmp', '{_admin_id(con)}', ?, ?)",
             (stamp, stamp),
         )
         con.commit()

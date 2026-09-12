@@ -19,7 +19,7 @@ _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
     "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
     "transcript_offset, degraded, degraded_reason, degraded_at, voice_mode, type, "
-    "parent_chat_id, is_temporary"
+    "parent_chat_id, is_temporary, goal"
 )
 _ALLOWED_CHAT_FIELDS = {
     "title",

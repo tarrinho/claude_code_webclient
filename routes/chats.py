@@ -525,6 +525,7 @@ async def handle_chat_get(request: Request, chat_id: str):
                         # workspace picker cannot show which backend this
                         # conversation is on when it is reopened.
                         "ai_machine_id",
+                        "goal",
                     )
                 },
                 # What actually answered the last turn -- distinct from

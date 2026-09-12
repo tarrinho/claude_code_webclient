@@ -111,11 +111,17 @@ class SeedSurvivesTheProviderMigrationTests(_SeedFixture):
         self.assertEqual(returned, "mine")
         self.assertEqual(self._count(), 1)
 
-    async def test_seeding_is_per_owner(self):
-        """Scoping is the one thing the original guard got right."""
-        await self.db.ai_machine_seed_anthropic("admin")
-        await self.db.ai_machine_seed_anthropic("someone-else")
-        self.assertEqual(self._count(), 2)
+    async def test_seeding_is_shared_across_owners(self):
+        """Machines became a shared pool on 2026-09-11 -- a second account
+        calling this finds the first account's row instead of creating its
+        own duplicate. This used to assert per-owner scoping
+        (test_seeding_is_per_owner), which is exactly the duplication three
+        pre-existing rows in this deployment came from; see
+        ai_machine_seed_anthropic's docstring in routes/db_machines.py."""
+        first = await self.db.ai_machine_seed_anthropic("admin")
+        second = await self.db.ai_machine_seed_anthropic("someone-else")
+        self.assertEqual(first, second)
+        self.assertEqual(self._count(), 1)
 
 
 if __name__ == "__main__":

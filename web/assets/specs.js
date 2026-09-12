@@ -57,6 +57,12 @@ function _row(spec) {
   return row;
 }
 
+/** Close the spec viewer. Exported for Escape-key handling in app.js, same
+ *  convention as machines.js's _closeConfirmDialog. */
+export function _closeSpecViewer() {
+  byId('specViewerDialog')?.classList.remove('open');
+}
+
 async function _openSpec(spec) {
   try {
     const response = await apiFetch(`/api/specs/${encodeURIComponent(spec.id)}/content`);
@@ -64,19 +70,18 @@ async function _openSpec(spec) {
     const html = await response.text();
     // Sanitized at the point of insertion, not trusted from the server:
     // discover_specs() scans this repo tree for any markdown file carrying
-    // the marker line, not only a curated directory, and render_markdown()'s
-    // success path passes embedded raw HTML through unchanged (only its
-    // own failure fallback escapes). A spec file with injected
-    // <script>/event-handler HTML would otherwise execute here, in an
-    // authenticated same-origin tab -- DOMPurify (vendored, purify.min.js)
-    // is the real boundary against that, applied right at the innerHTML
-    // sink rather than trusted upstream.
+    // the marker line, not only a curated directory. render_markdown()'s
+    // success path is now sanitized server-side too (nh3), but DOMPurify
+    // stays here as defense-in-depth rather than a replacement -- applied
+    // right at the innerHTML sink rather than trusted upstream.
     const clean = window.DOMPurify.sanitize(html);
-    const win = window.open('', '_blank');
-    if (win) {
-      win.document.title = spec.title;
-      win.document.body.innerHTML = clean;
-    }
+    // In-page panel, not window.open(): that call used to land after an
+    // await, outside the click's original user-gesture window, so popup
+    // blockers would likely kill it -- and the spec (section 3/4) asked for
+    // a panel, not a new tab, in the first place.
+    byId('specViewerTitle').textContent = spec.title;
+    byId('specViewerContent').innerHTML = clean;
+    byId('specViewerDialog').classList.add('open');
   } catch {
     // Silent: same fallback stance as images.js -- a failed open leaves
     // the list intact rather than surfacing a broken viewer.

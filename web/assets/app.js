@@ -12,7 +12,7 @@ import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeS
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
-import {loadSpecs} from './specs.js?v=10256299';
+import {loadSpecs, _closeSpecViewer} from './specs.js?v=15231701';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -2332,6 +2332,8 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('settingsForm').addEventListener('submit', saveSettings);
   byId('settingsDialog').addEventListener('click', event => { if (event.target === byId('settingsDialog')) closeSettingsDialog(); });
   byId('settingsSave').addEventListener('click', saveSettings);
+  byId('specViewerClose')?.addEventListener('click', _closeSpecViewer);
+  byId('specViewerDialog')?.addEventListener('click', event => { if (event.target === byId('specViewerDialog')) _closeSpecViewer(); });
   byId('debugConsole')?.addEventListener('click', () => {
     const el = byId('debugConsole');
     const on = el.getAttribute('aria-pressed') === 'true';
@@ -2555,6 +2557,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
       else if (byId('chatDialog').classList.contains('open')) closeDialog();
       else if (byId('confirmDialog')?.classList.contains('open')) _closeConfirmDialog();
+      else if (byId('specViewerDialog')?.classList.contains('open')) _closeSpecViewer();
       else if (!byId('autoAnswerTooltip')?.hidden) closeAutoAnswerTooltip();
       else if (!byId('autoAnswerMenu')?.hidden) {
         closeAutoAnswerMenu();

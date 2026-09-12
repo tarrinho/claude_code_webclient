@@ -467,6 +467,18 @@ button{touch-action:manipulation}
 .backend-add-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .btn-add-transport,.btn-add-machine{min-height:36px;font-size:13px;flex:1 1 auto}
 .dialog.settings-dialog{width:min(1037px,100%)}
+/* Spec viewer: same dialog-backdrop/.dialog pattern as #settingsDialog,
+   wide enough for a rendered markdown doc (tables especially) rather than
+   the narrow default .dialog width. .spec-viewer-content is the scrolling
+   element, same as .settings-body -- the header stays put while a long
+   spec scrolls underneath it. */
+.dialog.spec-viewer-dialog{width:min(760px,100%)}
+.spec-viewer-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;margin-bottom:12px}
+.spec-viewer-header h2{margin-bottom:0}
+.spec-viewer-content{flex:1 1 auto;min-height:120px;overflow-y:auto;overscroll-behavior:contain;line-height:1.5}
+.spec-viewer-content table{border-collapse:collapse;width:100%;margin:10px 0}
+.spec-viewer-content th,.spec-viewer-content td{border:1px solid var(--line);padding:6px 8px;text-align:left}
+.spec-viewer-content pre{overflow-x:auto;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--input-bg)}
 /* Per-chat edit: voice-mode checkbox rows laid out as inline row. */
 #voiceModeLabel{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin:6px 0 0;cursor:pointer}
 #voiceModeLabel input{margin:0}

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=9002573">
+<link rel="stylesheet" href="/assets/styles.css?v=7852560">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -210,6 +210,22 @@
     <p id="confirmMessage"></p>
     <div id="confirmInputWrap" hidden><label for="confirmInput" id="confirmInputLabel"></label><input id="confirmInput" autocomplete="off"></div>
     <div class="dialog-actions"><button type="button" class="btn-secondary" id="confirmNo">No</button><button type="button" class="btn-danger" id="confirmYes">Yes</button></div>
+  </div>
+</div>
+<!-- Spec viewer: renders one spec's sanitized HTML in-page. Replaces an
+     earlier window.open('', '_blank') approach -- that call landed after an
+     await, outside the click's user-gesture window, so popup blockers would
+     likely kill it, and the spec itself (section 3/4) asked for a panel, not
+     a new tab. Same dialog-backdrop/.dialog pattern as #settingsDialog. -->
+<div class="dialog-backdrop" id="specViewerDialog" role="dialog" aria-modal="true" aria-labelledby="specViewerTitle">
+  <div class="dialog spec-viewer-dialog" id="specViewerBody">
+    <div class="spec-viewer-header">
+      <h2 id="specViewerTitle"></h2>
+      <button type="button" class="btn-secondary" id="specViewerClose">Close</button>
+    </div>
+    <!-- Sanitized (nh3 server-side, DOMPurify again at this innerHTML sink)
+         before it ever reaches here -- see specs.js's _openSpec. -->
+    <div class="spec-viewer-content" id="specViewerContent"></div>
   </div>
 </div>
 <div class="dialog-backdrop" id="settingsDialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
@@ -549,7 +565,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=180899"></script>
+<script type="module" src="/assets/app.js?v=12087674"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

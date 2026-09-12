@@ -379,15 +379,40 @@ audit row per attempt in `agent_reply_log`, a wake-up turn through the
 transport's own tunnel, and treats remote stdout strictly as data
 (`json.loads`, never `eval`). Design: `2026-09-08-transport-aware-agent-reply-design.md`.
 
-The prerequisite is unmet. Every `ssh_transports` row has
-`remote_path = '~/wc-proxy'`, and on the pentester transport
-`~/wc-proxy/transcripts.py` **does not exist** — checked 2026-09-12 — so the
-remote command would fail on import. `agent_reply_log` is empty, which reads as
-"never used" but is better explained by "never able to run". Before relying on
-agent-to-agent messaging in a delegation tree, populate `remote_path` on each
-transport (`transport_sync.py` is the supported mechanism) and verify with one
-real relay, because the first failure mode otherwise is a silent import error on
-a machine nobody is watching.
+It had never once run, for two separate reasons, both since addressed.
+
+**The code was broken.** `build_remote_reply_command` inserted `remote_path`
+into `sys.path` and then called `transcripts.agent_reply_to(...)` without ever
+importing `transcripts`, so every remote relay died with
+`NameError: name 'transcripts' is not defined`. Four tests covered that function
+and all four passed, because each inspects the command as a string and none had
+ever executed it. Fixed in 031e337 with a test that runs the generated script.
+
+**The prerequisite was unmet.** `~/wc-proxy` is not a checkout — on the
+pentester transport it held four files (`claude_proxy.py`, `backend_env.py`,
+`proxy.env`, `proxy_token.txt`), a purpose-built proxy deployment. Reaching a
+successful relay needed `transcripts.py`, `db.py`, `config.py` and
+`routes/db_sessions.py` (the last reached lazily through `db.__getattr__`).
+
+**Verified end to end on 2026-09-12**: the relay delivered to session
+`9cdf80ea-060d-4e97-b8ba-f7cd32cbe1c6` on that host, and the
+`<cross-session-message>` record is in its transcript. That is the first
+message this path has ever carried.
+
+**Current deployed state, recorded so it is not drift.** `~/wc-proxy` on the
+pentester transport now holds the original four files plus those five modules,
+placed there by hand during that verification. `claude_proxy.py` and
+`backend_env.py` were deliberately not touched — the remote proxy imports only
+stdlib and `backend_env`, so the additions change nothing it loads — and the
+remote `claude_proxy.py` differs from HEAD (`bb117e85…` against `691fe393…`),
+so a full sync would replace the proxy that host is running. **Resolving that
+drift is a deployment decision, not a side effect of provisioning**, and it
+should be settled before any transport is synced wholesale.
+
+Provisioning is at least safe now: until 0d3f6ac, `transport_sync` took its
+manifest from git and its *bytes* from disk, so syncing a transport shipped
+whatever six sessions had half-saved and then recorded `last_synced_sha` as
+though the transport matched that commit.
 
 Note also that the socket-based channel (`SendMessage`, `/run/user/1000/cc-socks`)
 is **local only** and cannot be used for this: a unix domain socket is a

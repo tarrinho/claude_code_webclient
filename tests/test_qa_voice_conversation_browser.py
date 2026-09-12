@@ -11,6 +11,22 @@ import unittest
 from tests.test_frontend_browser import CHROMIUM, DRIVER_OK, DRIVER_WHY, _BrowserFixture
 
 
+def _admin_id(conn) -> str:
+    """The admin's real user id, for seeding `chats.owner_id` directly.
+
+    A literal "admin" used to work here and silently stopped: app.py's login
+    calls `auth.session_new(user["id"], ...)`, so `session["user"]` is a user
+    id and `GET /api/chats` lists with `db.chat_list(session["user"])`. A chat
+    owned by the string "admin" belongs to nobody the session can be, so the
+    sidebar never renders it and both tests here failed waiting 30s for
+    `.chat-item[data-chat-id=...] .chat-open` -- a timeout that reads as a
+    browser or host problem rather than as one wrong string.
+    """
+    row = conn.execute("SELECT id FROM users WHERE name = 'admin'").fetchone()
+    assert row, "no admin user; the server seeds one from WC_ADMIN_PASSWORD"
+    return row[0]
+
+
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class VoiceConversationBrowserTests(_BrowserFixture):
@@ -46,13 +62,15 @@ class VoiceConversationBrowserTests(_BrowserFixture):
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
             "created_at,updated_at,voice_mode,model) VALUES "
             "(?,?,?,?,?,?,?,1,'azure_ai/gpt-5.6-luna')",
-            (cls.voice_chat_id, "Voice Test Chat", None, "/tmp", "admin", stamp, stamp),
+            (cls.voice_chat_id, "Voice Test Chat", None, "/tmp", _admin_id(con),
+             stamp, stamp),
         )
         con.execute(
             "INSERT INTO chats (id,title,description,work_dir,owner_id,"
             "created_at,updated_at,voice_mode) VALUES "
             "(?,?,?,?,?,?,?,0)",
-            (cls.regular_chat_id, "Regular Test Chat", None, "/tmp", "admin", stamp, stamp),
+            (cls.regular_chat_id, "Regular Test Chat", None, "/tmp", _admin_id(con),
+             stamp, stamp),
         )
         con.commit()
         con.close()

@@ -12,7 +12,7 @@ import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeS
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
-import {loadSpecs, _closeSpecViewer} from './specs.js?v=5165003';
+import {loadSpecs, _closeSpecViewer} from './specs.js?v=11187541';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot

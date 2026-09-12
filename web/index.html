@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=4859720">
+<link rel="stylesheet" href="/assets/styles.css?v=15819526">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -223,7 +223,10 @@
 <div class="dialog-backdrop" id="specViewerDialog" role="dialog" aria-modal="true" aria-labelledby="specViewerTitle">
   <div class="dialog spec-viewer-dialog" id="specViewerBody">
     <div class="spec-viewer-header">
-      <h2 id="specViewerTitle"></h2>
+      <div>
+        <h2 id="specViewerTitle"></h2>
+        <div class="spec-viewer-meta" id="specViewerMeta"></div>
+      </div>
       <button type="button" class="btn-secondary" id="specViewerClose">Close</button>
     </div>
     <!-- Sanitized (nh3 server-side, DOMPurify again at this innerHTML sink)

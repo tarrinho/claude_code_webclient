@@ -494,18 +494,55 @@ button{touch-action:manipulation}
 .backend-add-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .btn-add-transport,.btn-add-machine{min-height:36px;font-size:13px;flex:1 1 auto}
 .dialog.settings-dialog{width:min(1037px,100%)}
+/* Specs gallery list: same bordered-card treatment as .machine-card
+   (Settings > Backends, the tab next to this one) -- both are "pick one
+   from a set" panels inside Settings, so they should read as the same kind
+   of list. The whole card is the click target (specs.js wires the listener
+   on .spec-row, not just the title), the delete button stays out of the
+   way until hovered/focused, same reveal-on-hover convention as the chat
+   list's .chat-actions. */
+.specs-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.spec-row{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--line);border-radius:8px;padding:10px 40px 10px 12px;background:var(--input-bg);cursor:pointer}
+.spec-row:hover,.spec-row:focus-within{background:var(--panel2)}
+.spec-row-top{display:flex;align-items:baseline;gap:8px}
+.spec-row-title{flex:1 1 auto;min-width:0;border:0;background:none;color:var(--fg);font-size:14px;font-weight:600;padding:0;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spec-row:hover .spec-row-title{color:var(--accent)}
+.spec-row-status{flex:none;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--muted)}
+.spec-row-status.status-planned{color:var(--ok);border-color:var(--ok)}
+.spec-row-meta{color:var(--muted);font-size:12px}
+.spec-row-delete{position:absolute;top:8px;right:8px;width:24px;height:24px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:14px;line-height:1;padding:0;cursor:pointer;opacity:0}
+.spec-row:hover .spec-row-delete,.spec-row:focus-within .spec-row-delete,.spec-row-delete:focus{opacity:1}
+.spec-row-delete:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+
 /* Spec viewer: same dialog-backdrop/.dialog pattern as #settingsDialog,
    wide enough for a rendered markdown doc (tables especially) rather than
    the narrow default .dialog width. .spec-viewer-content is the scrolling
    element, same as .settings-body -- the header stays put while a long
-   spec scrolls underneath it. */
+   spec scrolls underneath it. Typography is airier (1.65 line-height) than
+   the 1.5 UI default: this panel is read as prose, not scanned as controls. */
 .dialog.spec-viewer-dialog{width:min(760px,100%)}
-.spec-viewer-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;margin-bottom:12px}
-.spec-viewer-header h2{margin-bottom:0}
-.spec-viewer-content{flex:1 1 auto;min-height:120px;overflow-y:auto;overscroll-behavior:contain;line-height:1.5}
-.spec-viewer-content table{border-collapse:collapse;width:100%;margin:10px 0}
+.spec-viewer-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex:none;margin-bottom:14px}
+.spec-viewer-header h2{margin-bottom:2px}
+.spec-viewer-meta{color:var(--muted);font-size:12px}
+.spec-viewer-content{flex:1 1 auto;min-height:120px;overflow-y:auto;overscroll-behavior:contain;font-size:14px;line-height:1.65}
+.spec-viewer-content h1,.spec-viewer-content h2,.spec-viewer-content h3,.spec-viewer-content h4,.spec-viewer-content h5,.spec-viewer-content h6{color:var(--fg);font-weight:600;margin:22px 0 8px}
+.spec-viewer-content h1:first-child,.spec-viewer-content h2:first-child{margin-top:0}
+.spec-viewer-content h1{font-size:20px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.spec-viewer-content h2{font-size:17px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.spec-viewer-content h3{font-size:15px}
+.spec-viewer-content h4,.spec-viewer-content h5,.spec-viewer-content h6{font-size:14px}
+.spec-viewer-content p{margin:0 0 12px}
+.spec-viewer-content ul,.spec-viewer-content ol{margin:0 0 12px;padding-left:22px}
+.spec-viewer-content li{margin-bottom:4px}
+.spec-viewer-content a{color:var(--accent);text-decoration:none}
+.spec-viewer-content a:hover{text-decoration:underline}
+.spec-viewer-content blockquote{margin:0 0 12px;padding:2px 14px;border-left:3px solid var(--line);color:var(--muted)}
+.spec-viewer-content code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--input-bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.spec-viewer-content table{border-collapse:collapse;width:100%;margin:0 0 12px}
 .spec-viewer-content th,.spec-viewer-content td{border:1px solid var(--line);padding:6px 8px;text-align:left}
-.spec-viewer-content pre{overflow-x:auto;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--input-bg)}
+.spec-viewer-content th{background:var(--panel2)}
+.spec-viewer-content pre{overflow-x:auto;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--input-bg);margin:0 0 12px}
+.spec-viewer-content pre code{border:0;padding:0;background:none;font-size:.85em}
 /* Per-chat edit: voice-mode checkbox rows laid out as inline row. */
 #voiceModeLabel{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin:6px 0 0;cursor:pointer}
 #voiceModeLabel input{margin:0}

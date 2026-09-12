@@ -13,21 +13,39 @@ function _statusLabel(status) {
   return status === 'planned' ? 'Planned' : 'Spec only';
 }
 
+function _statusClass(status) {
+  return status === 'planned' ? 'status-planned' : 'status-spec-only';
+}
+
 function _row(spec) {
   const row = document.createElement('div');
   row.className = 'spec-row';
   row.dataset.specId = spec.id;
+  // The row itself is the click target, not just the title -- a card you
+  // can click anywhere on reads as browsable; a title-sized hit zone inside
+  // a bordered card that looks clickable everywhere does not. The title
+  // stays a real <button> underneath for keyboard/AT focus, but does not
+  // carry its own listener: its native click bubbles here, so Enter/Space
+  // on it and a mouse click anywhere else on the card go through one path.
+  row.addEventListener('click', () => _openSpec(spec));
 
+  const top = document.createElement('div');
+  top.className = 'spec-row-top';
   const title = document.createElement('button');
   title.type = 'button';
   title.className = 'spec-row-title';
   title.textContent = spec.title;
-  title.addEventListener('click', () => _openSpec(spec));
-  row.appendChild(title);
+  top.appendChild(title);
+
+  const status = document.createElement('span');
+  status.className = `spec-row-status ${_statusClass(spec.status)}`;
+  status.textContent = _statusLabel(spec.status);
+  top.appendChild(status);
+  row.appendChild(top);
 
   const meta = document.createElement('div');
   meta.className = 'spec-row-meta';
-  const parts = [_statusLabel(spec.status)];
+  const parts = [];
   if (spec.author) parts.push(`${spec.author}${spec.date ? ` · ${spec.date}` : ''}`);
   if (spec.referenced_by && spec.referenced_by.length) {
     parts.push(`referenced by ${spec.referenced_by.length} file${spec.referenced_by.length === 1 ? '' : 's'}`);
@@ -80,6 +98,15 @@ async function _openSpec(spec) {
     // blockers would likely kill it -- and the spec (section 3/4) asked for
     // a panel, not a new tab, in the first place.
     byId('specViewerTitle').textContent = spec.title;
+    // Same orientation the row already gave before opening it -- a long
+    // document with no status/author/date visible while reading loses the
+    // context that made you pick it.
+    const metaEl = byId('specViewerMeta');
+    if (metaEl) {
+      const parts = [_statusLabel(spec.status)];
+      if (spec.author) parts.push(`${spec.author}${spec.date ? ` · ${spec.date}` : ''}`);
+      metaEl.textContent = parts.join(' · ');
+    }
     byId('specViewerContent').innerHTML = clean;
     byId('specViewerDialog').classList.add('open');
   } catch {

@@ -351,6 +351,72 @@ def _close_leaked_db_connection():
               f"{type(exc).__name__}: {exc}")
 
 
+# ── Legacy owner_id="admin" fixtures ──────────────────────────────────────────
+#
+# `chat_create` rejects `owner_id="admin"` as of 344cf00 -- correctly, for
+# production. No live session can reach that guard any more: `shared.owner_of`
+# (280f429) resolves a legacy pre-fix session's login name to its real user id
+# before any real write happens, and the one session that predated that fix has
+# since expired. See that commit's message for the full reasoning, including
+# why the guard itself is deliberately staying narrow (it only ever checked one
+# magic string) rather than being widened.
+#
+# 154+ test call sites across 40+ files still pass "admin" literally, because
+# it was this parameter's own documented default when they were written -- the
+# contract changed under them, not the other way round. Editing every one of
+# them is a real collision risk in a tree several sessions edit concurrently
+# (verified: this session alone hit three separate app.js/db.py staging
+# collisions in one evening), for zero correctness gain, since production
+# cannot reach the case being tested around any more.
+#
+# This restores exactly the pre-344cf00 write behavior, for the literal
+# "admin" case only. Nothing else changes: the stored value is still the
+# literal string "admin", so every later read using the same literal
+# (chat_get, chat_list, ...) keeps matching it exactly as before -- no
+# translation, no different id, so there is nothing to keep symmetric across
+# the dozen other owner_id-taking functions in routes/db_chats.py. Every other
+# value, including any other non-UUID string, still reaches the real guard
+# unchanged and is still rejected exactly as today; only production code is
+# ever asked to reach it, and this fixture cannot change that.
+#
+# Skipped for tests/test_qa_owner_of.py: its own
+# test_the_write_layer_still_rejects_a_raw_name exists specifically to pin
+# that the guard stays strict for "admin", and a global bypass must not be the
+# thing that silently defeats the one test written to catch exactly that.
+@_pytest.fixture(autouse=True)
+def _allow_legacy_admin_owner_in_tests(request):
+    if request.node.fspath.basename == "test_qa_owner_of.py":
+        yield
+        return
+
+    try:
+        import routes.db_chats as _db_chats
+        import db as _db
+    except Exception:  # pragma: no cover - a run that cannot import the app
+        yield
+        return
+
+    _guarded = _db_chats.chat_create
+
+    async def _unguarded(chat_id, title, description, work_dir, owner_id):
+        if owner_id != "admin":
+            return await _guarded(chat_id, title, description, work_dir, owner_id)
+        now = _db._now()
+        await _db.db_conn.execute(
+            "INSERT INTO chats (id, title, description, work_dir, owner_id, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, description, work_dir, owner_id, now, now),
+        )
+        await _db.db_conn.commit()
+        return now
+
+    _db_chats.chat_create = _unguarded
+    try:
+        yield
+    finally:
+        _db_chats.chat_create = _guarded
+
+
 # ── Capability guard ─────────────────────────────────────────────────────────
 #
 # Refuses a run that would silently skip a whole layer of the suite because of

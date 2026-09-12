@@ -2551,13 +2551,17 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', event => {
     trapDialogFocus(event);
     if (event.key === 'Escape') {
-      // Checked first because it is the only dialog that can sit over another,
-      // being opened from a row menu rather than the topbar.
+      // Checked first because these can sit over another dialog rather than
+      // being opened from the topbar: supervisorPickDialog from a row menu,
+      // specViewerDialog from a row inside the Settings dialog itself (see
+      // its z-index override in styles.css for the same reason). Checking
+      // settingsDialog first would close the dialog underneath instead of
+      // the one actually on top.
       if (document.getElementById('supervisorPickDialog')) _closeSupervisorPicker();
+      else if (byId('specViewerDialog')?.classList.contains('open')) _closeSpecViewer();
       else if (byId('settingsDialog').classList.contains('open')) closeSettingsDialog();
       else if (byId('chatDialog').classList.contains('open')) closeDialog();
       else if (byId('confirmDialog')?.classList.contains('open')) _closeConfirmDialog();
-      else if (byId('specViewerDialog')?.classList.contains('open')) _closeSpecViewer();
       else if (!byId('autoAnswerTooltip')?.hidden) closeAutoAnswerTooltip();
       else if (!byId('autoAnswerMenu')?.hidden) {
         closeAutoAnswerMenu();

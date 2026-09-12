@@ -25,10 +25,15 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import auth
 import config
 import db
+import runner
+import turns
 from routes import chats as chat_routes
 
 
@@ -163,6 +168,104 @@ class RepairAfterRefusalTests(unittest.IsolatedAsyncioTestCase):
             await chat_routes._repair_after_refusal("c1", None)
         spawn.assert_not_awaited()
         chat = await db.chat_get("c1", "admin")
+        self.assertEqual(chat["degraded"], 0)
+
+
+class RefusalReachesTheHandlerTests(unittest.IsolatedAsyncioTestCase):
+    """The wiring, end to end: a real refusal arriving from the runner.
+
+    The tests above exercise the two helpers directly. This one proves the
+    thing neither of them can: that a refusal actually *reaches* them. A
+    failed turn is delivered as an event rather than an exception (CLAUDE.md
+    rule 4), so if `on_event` were not relaying error frames the helpers would
+    be correct and never called -- which is exactly the shape of bug CLAUDE.md
+    rule 2 describes, a chain whose every link is right and whose ends never
+    meet.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(
+            config, "PROJECTS_ROOT", f"{self.tmp.name}/projects"
+        )
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+        self.work_dir = Path(config.PROJECTS_ROOT) / "stream"
+        self.work_dir.mkdir(parents=True)
+        self.chat_id = "r" * 32
+        await db.chat_create(
+            self.chat_id, "Refused", None, str(self.work_dir), "admin"
+        )
+        await db.chat_set_session(self.chat_id, "sess-refused")
+        self.request = SimpleNamespace(
+            cookies={"wc_session": "valid"},
+            state=SimpleNamespace(session={"user": "admin"}),
+            json=AsyncMock(return_value={"content": "hello"}),
+        )
+
+    async def asyncTearDown(self):
+        # turns.py holds live turns as module state; leaving one registered
+        # makes the next test queue behind a corpse.
+        await turns.shutdown()
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def _stream(self, events):
+        async def fake_stream(*args, **kwargs):
+            for event in events:
+                yield event
+
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"repaired", b""))
+        proc.returncode = 0
+        with patch.object(auth, "session_get", return_value={"user": "admin"}), \
+             patch.object(runner, "stream_turn", fake_stream), \
+             patch.object(
+                 chat_routes.asyncio, "create_subprocess_exec",
+                 AsyncMock(return_value=proc),
+             ) as spawn:
+            response = await chat_routes.stream_handler(self.request, self.chat_id)
+            async for _ in response.body_iterator:
+                pass
+            await turns.shutdown()
+        return spawn
+
+    async def test_a_refusal_from_the_runner_repairs_and_flags_the_chat(self):
+        spawn = await self._stream([
+            {"type": "error", "error": (
+                "API Error: 400 messages.52.content.1.thinking: each thinking "
+                "block must contain non-whitespace"
+            )},
+            {"type": "done"},
+        ])
+        spawn.assert_awaited_once()
+        self.assertIn("sess-refused", spawn.await_args.args)
+        chat = await db.chat_get(self.chat_id, "admin")
+        self.assertEqual(chat["degraded"], 1)
+        self.assertIn("transcript:", chat["degraded_reason"])
+
+    async def test_an_ordinary_failure_leaves_the_transcript_alone(self):
+        """The destructive-action guard, proven on the real path rather than
+        on the predicate alone."""
+        spawn = await self._stream([
+            {"type": "error", "error": "API Error: 529 overloaded_error"},
+            {"type": "done"},
+        ])
+        spawn.assert_not_awaited()
+        chat = await db.chat_get(self.chat_id, "admin")
+        self.assertEqual(chat["degraded"], 0)
+
+    async def test_a_successful_turn_never_runs_the_doctor(self):
+        spawn = await self._stream([
+            {"type": "text", "content": "an ordinary answer"},
+            {"type": "done"},
+        ])
+        spawn.assert_not_awaited()
+        chat = await db.chat_get(self.chat_id, "admin")
         self.assertEqual(chat["degraded"], 0)
 
 

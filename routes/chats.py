@@ -1264,6 +1264,126 @@ async def _prepare_transcript_for_backend(chat: dict) -> None:
         )
 
 
+# The two API refusals that mean the stored conversation itself cannot be
+# replayed, rather than that this one turn was unlucky. Both reject the whole
+# request, and `--resume` re-sends the whole history every turn, so once either
+# block is in the file every later turn fails identically -- permanently, and
+# with nothing in the interface to say why.
+#
+# Matched narrowly and deliberately. Arming this on a looser pattern would let
+# an unrelated failure rewrite a transcript, which is a destructive answer to a
+# problem the transcript did not cause. A context-window 400 is the trap worth
+# naming: it is also a 400 about message content, and repairing history because
+# the conversation grew too long would destroy real turns to fix nothing.
+_TRANSCRIPT_REFUSALS: Final[tuple[str, ...]] = (
+    "each thinking block must contain non-whitespace",
+    "text content blocks must be non-empty",
+)
+
+# Where a repaired chat's notice tells the user they must act.
+_REFUSAL_NOTICE: Final[str] = (
+    "the stored history was refused by the API and has been repaired -- "
+    "send the message again. If a terminal session is open on this same "
+    "conversation, close it first: a live session writes its in-memory copy "
+    "back over the repair."
+)
+
+
+# A repair rewrites one session file; the doctor's own scan walks every one of
+# them first. Bounded so a slow or wedged scan cannot hold a turn's event
+# handler open indefinitely.
+_DOCTOR_TIMEOUT_S: Final[int] = 120
+
+
+def _is_transcript_refusal(message: str) -> bool:
+    """True when *message* is the API refusing the transcript, not the turn."""
+    lowered = str(message or "").lower()
+    return any(marker in lowered for marker in _TRANSCRIPT_REFUSALS)
+
+
+async def _repair_after_refusal(chat_id: str, session_id: str | None) -> None:
+    """Run the transcript doctor for a conversation the API just refused.
+
+    Reactive rather than preventive: the doctor is a subprocess that reads
+    every session file, so running it on every turn would put that cost on the
+    hot path to catch a failure that is rare. This runs at the one moment the
+    failure is known to have happened.
+
+    The turn that tripped it is already lost -- the API rejected the request
+    before the model ran -- so nothing is retried here. Retrying would re-send
+    the prompt, which this repo has already been bitten by once (80c00e5). The
+    chat is flagged instead, and the user re-sends.
+
+    `bin/claude-transcript-doctor.py` is used rather than
+    `transcripts.repair_if_needed` because it has the guards that matter when a
+    repair runs unattended: it keeps `<file>.orig` (first repair only, never
+    overwritten) and a `.bak` per run, and refuses to install a result that
+    does not parse, empties a message, or breaks the uuid chain.
+
+    Never raises. This runs inside a turn's event handler, where an exception
+    would turn a recoverable refusal into a second failure on top of it.
+    """
+    if not session_id:
+        # No linked CLI session means no transcript to repair, so spawning the
+        # doctor could only produce a subprocess that reports nothing.
+        return
+
+    doctor = Path(__file__).resolve().parent.parent / "bin" / "claude-transcript-doctor.py"
+    detail = _REFUSAL_NOTICE
+    try:
+        # By session id, never by name: the console only ever holds the id.
+        # `--fix` takes either, but a name is derived from a session's first
+        # prompt and the console has no reason to know it.
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(doctor), "--fix", session_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=_DOCTOR_TIMEOUT_S
+        )
+        text = (output or b"").decode("utf-8", errors="replace").strip()
+        if proc.returncode == 0:
+            _log.info(
+                "transcript_doctor_repaired chat_id=%s session_id=%s",
+                chat_id, session_id,
+            )
+        else:
+            _log.warning(
+                "transcript_doctor_failed chat_id=%s session_id=%s rc=%s: %s",
+                chat_id, session_id, proc.returncode, text[-500:],
+            )
+            detail = (
+                "the stored history was refused by the API and the automatic "
+                "repair could not complete -- run "
+                f"bin/claude-transcript-doctor.py --fix {session_id} by hand."
+            )
+    except asyncio.TimeoutError:
+        _log.warning(
+            "transcript_doctor_timeout chat_id=%s session_id=%s", chat_id, session_id,
+        )
+        detail = (
+            "the stored history was refused by the API and the automatic "
+            "repair could not complete -- run "
+            f"bin/claude-transcript-doctor.py --fix {session_id} by hand."
+        )
+    except OSError as exc:
+        _log.warning(
+            "transcript_doctor_unavailable chat_id=%s session_id=%s: %s",
+            chat_id, session_id, exc,
+        )
+        detail = (
+            "the stored history was refused by the API and the automatic "
+            "repair could not complete -- run "
+            f"bin/claude-transcript-doctor.py --fix {session_id} by hand."
+        )
+
+    # Marked whatever happened above. A refusal that heals silently still cost
+    # the user a turn, and one that could not be healed leaves the chat
+    # permanently broken -- staying quiet is the only unacceptable outcome.
+    await db.chat_mark_degraded(chat_id, "transcript", detail)
+
+
 async def _start_turn(
     chat: dict, owner: str, prompt: str, model: str | None
 ) -> turns.LiveTurn:
@@ -1321,6 +1441,14 @@ async def _start_turn(
             # Recorded as it arrives: the tokens were spent whether or not the
             # rest of the turn completes, and whether or not anyone is watching.
             await _record_turn_usage(chat_id, owner, event)
+        elif event.get("type") == "error" and _is_transcript_refusal(
+            str(event.get("error") or "")
+        ):
+            # CLAUDE.md rule 4: a failed turn arrives here as an event, it does
+            # not raise -- so this is the only place the refusal is visible.
+            # Left to itself the conversation is now permanently dead: every
+            # later turn replays the same history and is refused identically.
+            await _repair_after_refusal(chat_id, chat.get("session_id"))
 
     async def finish(
         *,

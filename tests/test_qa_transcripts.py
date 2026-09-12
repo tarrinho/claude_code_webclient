@@ -713,7 +713,18 @@ class ResumeFromTranscriptTests(TranscriptRootMixin, unittest.IsolatedAsyncioTes
         chat = await db.chat_get(payload["id"], "admin")
         self.assertEqual(chat["session_id"], "dead1")
         self.assertEqual(chat["work_dir"], str(self.workspace))
-        self.assertEqual(chat["title"], "Investigate the outage")
+        # A generated name, not the raw prompt: this session is gone and never
+        # registered a name of its own, so {transport} : {n} : {task} is all
+        # there is to go on. A session that *does* have a name keeps it --
+        # test_a_live_session_name_wins_over_the_prompt is the other half of
+        # the rule, and the two together are the whole of it.
+        #
+        # Matched by shape, not equality: the {n} is a running count of
+        # local-named chats, so pinning "local : 1" makes this assertion
+        # depend on how many other tests in the class created one first.
+        # Asserting the exact string passed here and would have failed the
+        # moment a test above it started resuming a nameless session.
+        self.assertRegex(chat["title"], r"^local : \d+ : Investigate Outage$")
 
     async def test_a_live_session_name_wins_over_the_prompt(self):
         write_transcript(self.root, "live1", [user("Some prompt"),

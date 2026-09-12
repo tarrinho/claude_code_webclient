@@ -1667,12 +1667,23 @@ async def handle_sessions_resume(request: Request, session_id: str):
     except Exception:
         pass
 
-    # Generate a human-readable title: {transport} : {n} : {task}
-    # Same logic as the session file name, so the sidebar shows one consistent
-    # format whether the chat is the sidebar or the messages panel.
+    # A session that registered a name keeps it. 8095ecc set out to match the
+    # session file's own name and the comment here said so -- "same logic as
+    # the session file name, so the sidebar shows one consistent format" --
+    # but it never read `name`, so a session calling itself "cweb8" became
+    # "local : 1 : Read Project Claude-code-webconsole". The two names then
+    # disagreed, which is the opposite of the stated goal, and it is not a
+    # cosmetic problem: asked which chat belonged to cweb8, the answer had to
+    # be worked out by matching session ids in the database, because nothing
+    # on screen connected them.
+    #
+    # Only a session with no name of its own is named here, which is the case
+    # the generator was written for: a finished conversation reopened from its
+    # transcript, where {transport} : {n} : {task} is all there is to go on.
     from routes.naming import generate_name as _generate_chat_name
     prompt_text = (await transcripts.session_title(session_id)).strip()
-    title = _generate_chat_name(transport_name, prompt_text)
+    title = (source.get("name") or "").strip() or _generate_chat_name(
+        transport_name, prompt_text)
 
     work_dir = _adopt_session_cwd(source.get("cwd"), session_id)
     await db.chat_create(chat_id, title, None, work_dir, _owner_id)

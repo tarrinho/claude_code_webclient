@@ -366,6 +366,35 @@ run on 2026-09-04, with 4–8 samples per cell. They are sound enough to rank
 models 25× apart and not sound enough to rank models 20% apart. Re-measure
 before treating any near-tie as settled.
 
+**Parent-to-child messaging across a transport exists, and its remote half is
+not deployed.** A node placed on a transport still reports results through
+`runner.run_turn` over the proxy, which works — so the design does not depend on
+this. But out-of-band messaging between agents does have a real implementation:
+`POST /api/chats/{id}/agent-reply` tries `transcripts.agent_reply_to` locally,
+then walks live (`tunnel_up=1`) transports running
+`transcripts.build_remote_reply_command`, which base64-encodes `{to, text}`,
+executes `python3 -c` inside the transport's `remote_path`, and calls the *same*
+`agent_reply_to` on the far host. It carries a 5-minute per-target cooldown, an
+audit row per attempt in `agent_reply_log`, a wake-up turn through the
+transport's own tunnel, and treats remote stdout strictly as data
+(`json.loads`, never `eval`). Design: `2026-09-08-transport-aware-agent-reply-design.md`.
+
+The prerequisite is unmet. Every `ssh_transports` row has
+`remote_path = '~/wc-proxy'`, and on the pentester transport
+`~/wc-proxy/transcripts.py` **does not exist** — checked 2026-09-12 — so the
+remote command would fail on import. `agent_reply_log` is empty, which reads as
+"never used" but is better explained by "never able to run". Before relying on
+agent-to-agent messaging in a delegation tree, populate `remote_path` on each
+transport (`transport_sync.py` is the supported mechanism) and verify with one
+real relay, because the first failure mode otherwise is a silent import error on
+a machine nobody is watching.
+
+Note also that the socket-based channel (`SendMessage`, `/run/user/1000/cc-socks`)
+is **local only** and cannot be used for this: a unix domain socket is a
+filesystem object and does not cross a host. The remote agents on pentester hold
+their sockets at `/tmp/cc-socks/`, reachable from that host and nowhere else.
+The two channels are unrelated, and only the file-based one routes.
+
 ---
 
 ## 7. Decisions taken with Pedro

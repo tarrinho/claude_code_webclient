@@ -73,7 +73,7 @@ class CalledEveryTimeThePanelOpensTests(unittest.TestCase):
     def setUp(self):
         self.js = APP_JS.read_text(encoding="utf-8")
         match = re.search(
-            r"async function loadBackends\(\)\s*\{(.*?)\n\}", self.js, re.DOTALL)
+            r"async function loadBackends\([^)]*\)\s*\{(.*?)\n\}", self.js, re.DOTALL)
         self.assertIsNotNone(match, "loadBackends not found in app.js")
         # Comment lines stripped before any ordering assertion below. The
         # ordering tests use body.index(), which matches a *mention* as

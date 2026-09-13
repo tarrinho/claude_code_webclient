@@ -158,6 +158,34 @@ class AnchoredNamingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(chat1["title"], chat2["title"])
 
+    async def test_trivial_follow_up_does_not_change_the_suffix(self):
+        """A one-word reply ("yes") must not overwrite the real goal
+        with a suffix that describes nothing."""
+        chat_id = "cccccc0000000000"
+        session_id = "sess00000000000005"
+
+        # First turn: real task.
+        await db.chat_create(chat_id, "Untitled", None, f"{self.tmp.name}/proj", _OWNER)
+        with patch.object(db, "write_claude_session_file"), \
+             patch.object(chat_routes, "_resolve_transport_name", AsyncMock(return_value="kali")), \
+             patch.object(chat_routes.db, "chat_get", await self._make_mock_get("Untitled")):
+            await chat_routes._write_agent_name(
+                session_id, "fix memory leak in app", chat_id, _OWNER
+            )
+        chat1 = await db.chat_get(chat_id, _OWNER)
+        self.assertIn("Memory", chat1["title"])
+
+        # Second turn: a trivial reply.
+        with patch.object(db, "write_claude_session_file"), \
+             patch.object(chat_routes, "_resolve_transport_name", AsyncMock(return_value="kali")), \
+             patch.object(chat_routes.db, "chat_get", await self._make_mock_get(chat1["title"])):
+            await chat_routes._write_agent_name(
+                session_id, "yes", chat_id, _OWNER
+            )
+        chat2 = await db.chat_get(chat_id, _OWNER)
+
+        self.assertEqual(chat1["title"], chat2["title"])
+
     async def test_naming_task_part_strips_transport_prefix(self):
         """_naming_task_part removes the 'transport : n :' prefix."""
         name = _gen("kali", "fix memory leak")

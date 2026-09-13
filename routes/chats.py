@@ -99,15 +99,26 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
     untouched user title accumulated ``" - {latest task}"`` on every turn
     forever, since a title with no ``" - "`` in it treated the whole thing
     as the prefix to keep appending to.
+
+    The two auto-refreshing branches below (first name, and the repeat
+    refresh) only take the new turn's words when
+    :func:`routes.naming._is_substantial` says the prompt actually carries
+    one — a bare reply like "yes" or "sounds good" is not a goal and must
+    not overwrite whatever goal was showing before it.
     """
     try:
+        from routes.naming import _is_substantial
+
         transport_name = await _resolve_transport_name(chat_id, owner)
         task = _generate_agent_name(transport_name, prompt)
         db.write_claude_session_file(session_id, task, "")
+        substantial = _is_substantial(prompt)
         chat = await db.chat_get(chat_id, owner, include_archived=True)
         if chat and (chat.get("title") == "Untitled"):
-            # First name: use task words without transport prefix.
-            task_words = _naming_task_part(task)
+            # First name: use task words without transport prefix. A
+            # trivial first prompt falls back to the same "Untitled task"
+            # wording generate_name itself uses for an empty prompt.
+            task_words = _naming_task_part(task) if substantial else "Untitled task"
             title = f"{chat_id[:6]} - {task_words}"
             await db.chat_update(chat_id, owner, title=title)
             return title
@@ -117,7 +128,7 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
         #    leave it alone;
         #  - this function's own "{chat_id[:6]} - {task}" format from the
         #    Untitled branch above -- not user-given, keep refreshing the
-        #    suffix every turn as before;
+        #    suffix on every substantial turn, same as before;
         #  - anything else is what the user actually typed -- fold it into
         #    the standard skeleton once, then it matches the first case
         #    and is never touched again.
@@ -126,10 +137,12 @@ async def _write_agent_name(session_id: str, prompt: str, chat_id: str, owner: s
             if _NAME_RE.match(existing):
                 pass
             elif existing.startswith(f"{chat_id[:6]} - "):
-                task_words = _naming_task_part(task)
-                title = f"{chat_id[:6]} - {task_words}"
-                if existing != title:
-                    await db.chat_update(chat_id, owner, title=title)
+                if substantial:
+                    task_words = _naming_task_part(task)
+                    title = f"{chat_id[:6]} - {task_words}"
+                    if existing != title:
+                        await db.chat_update(chat_id, owner, title=title)
+                # else: a trivial reply -- leave the existing suffix alone.
             else:
                 skeleton = _NAME_RE.match(task)  # task = "{transport} : {n} : ..."
                 if skeleton:
@@ -327,6 +340,7 @@ async def handle_chats_list(request: Request):
                     "parent_chat_id": c.get("parent_chat_id"),
                     "is_temporary": bool(c.get("is_temporary")),
                     "goal": c.get("goal"),
+                    "standby_reason": c.get("standby_reason"),
                 }
                 for c in chats
             ],
@@ -554,6 +568,7 @@ async def handle_chat_get(request: Request, chat_id: str):
                 "voice_mode": bool(chat.get("voice_mode")),
                 "degraded": bool(chat.get("degraded")),
                 "degraded_reason": chat.get("degraded_reason"),
+                "standby_reason": chat.get("standby_reason"),
             },
             # `question` marks the rows that asked the user something, so the
             # conversation can show which ones are still owed an answer.
@@ -732,6 +747,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 "work_dir": chat.get("work_dir"),
                 "ai_machine_id": chat.get("ai_machine_id"),
                 "model": chat.get("model") or "",
+                "standby_reason": chat.get("standby_reason"),
             },
         }
     )
@@ -744,6 +760,119 @@ async def handle_voice_handoff(request: Request, chat_id: str):
     if result is None:
         raise HTTPException(status_code=400, detail="Could not generate handoff summary")
     return JSONResponse({"ok": True, "summary": result})
+
+
+async def handle_chat_standby(request: Request, chat_id: str):
+    """POST /api/chats/{id}/standby — kill the linked CLI process via wc-session-standby.sh."""
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Chat must be linked to a CLI session (session_id).
+    session_id = chat.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Chat has no linked session")
+
+    # Map session_id → friendly name from ~/.claude/sessions/*.json.
+    name = _find_session_name(session_id)
+    if not name:
+        raise HTTPException(status_code=400, detail="Could not resolve session name")
+
+    # Call the standby script with a timeout so we don't hang if the process
+    # refuses to die. The record is already written, so the user can resume
+    # manually if the process is stuck.
+    try:
+        script = Path(__file__).resolve().parent.parent / "bin" / "wc-session-standby.sh"
+        result = await asyncio.create_subprocess_exec(
+            "bash", str(script), name,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        stdout, stderr = await result.communicate()
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Standby script failed: {stderr.decode()[:200]}",
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Mark the chat as standby so the sidebar can show it and wake clears it.
+    reason = "Standby requested via webchat at " + datetime.datetime.now(datetime.UTC).isoformat()
+    await db.chat_update(chat_id, session["user"], standby_reason=reason)
+
+    return JSONResponse({
+        "ok": True,
+        "standby": True,
+        "resume_command": f"eval \"$(bash {Path(__file__).resolve().parent.parent / 'bin' / 'wc-session-wake.sh'} {name})\"",
+    })
+
+
+async def handle_chat_wake(request: Request, chat_id: str):
+    """POST /api/chats/{id}/wake — resume a standby'd CLI process via wc-session-wake.sh."""
+    session = request.state.session
+    chat = await db.chat_get(chat_id, session["user"])
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Must be in standby.
+    if not chat.get("standby_reason"):
+        raise HTTPException(status_code=400, detail="Chat is not on standby")
+
+    session_id = chat.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Chat has no linked session")
+
+    name = _find_session_name(session_id)
+    if not name:
+        # Session was already resumed elsewhere — clear the standby flag.
+        await db.chat_update(chat_id, session["user"], standby_reason=None)
+        raise HTTPException(status_code=400, detail="Session was already resumed")
+
+    try:
+        script = Path(__file__).resolve().parent.parent / "bin" / "wc-session-wake.sh"
+        result = await asyncio.create_subprocess_exec(
+            "bash", str(script), name,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        stdout, stderr = await result.communicate()
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Wake script failed: {stderr.decode()[:200]}",
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Clear standby flag.
+    await db.chat_update(chat_id, session["user"], standby_reason=None)
+
+    return JSONResponse({
+        "ok": True,
+        "standby": False,
+        "resume_command": stdout.decode().strip() if stdout else "",
+    })
+
+
+def _find_session_name(session_id: str) -> str | None:
+    """Find the friendly name for a claude session ID from ~/.claude/sessions/*.json."""
+    import glob
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    for f in glob.glob(str(sessions_dir / "*.json")):
+        try:
+            with open(f) as fh:
+                data = json.load(fh)
+            if data.get("sessionId") == session_id:
+                return data.get("name")
+        except Exception:
+            pass
+    return None
 
 
 async def handle_chats_reorder(request: Request):
@@ -2208,6 +2337,16 @@ async def _api_chat_search(request: Request):
 @router.post("/api/chats/{chat_id}/fork")
 async def _api_chat_fork(request: Request, chat_id: str):
     return await handle_chat_fork(request, chat_id)
+
+
+@router.post("/api/chats/{chat_id}/standby")
+async def _api_chat_standby(request: Request, chat_id: str):
+    return await handle_chat_standby(request, chat_id)
+
+
+@router.post("/api/chats/{chat_id}/wake")
+async def _api_chat_wake(request: Request, chat_id: str):
+    return await handle_chat_wake(request, chat_id)
 
 
 async def handle_chat_search(request: Request):

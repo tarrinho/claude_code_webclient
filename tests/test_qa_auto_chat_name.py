@@ -67,6 +67,40 @@ class NamingFallbackTests(unittest.TestCase):
         self.assertNotIn("to", lower_words)
 
 
+class SubstantialityTests(unittest.TestCase):
+    """_is_substantial gates whether a prompt's words replace the goal."""
+
+    def test_single_word_reply_is_trivial(self):
+        from routes.naming import _is_substantial
+
+        for reply in ("yes", "no", "ok", "continue", "sure", "go"):
+            self.assertFalse(_is_substantial(reply), reply)
+
+    def test_stock_two_word_ack_is_trivial(self):
+        from routes.naming import _is_substantial
+
+        for reply in ("sounds good", "looks good", "yes please",
+                      "sounds great", "thank you", "works for me"):
+            self.assertFalse(_is_substantial(reply), reply)
+
+    def test_short_real_instruction_is_substantial(self):
+        from routes.naming import _is_substantial
+
+        self.assertTrue(_is_substantial("fix bug"))
+        self.assertTrue(_is_substantial("add login validation"))
+
+    def test_case_and_punctuation_do_not_evade_the_stoplist(self):
+        from routes.naming import _is_substantial
+
+        self.assertFalse(_is_substantial("Sounds good!"))
+        self.assertFalse(_is_substantial("  THANK YOU.  "))
+
+    def test_empty_prompt_is_trivial(self):
+        from routes.naming import _is_substantial
+
+        self.assertFalse(_is_substantial(""))
+
+
 class NamingFormatTests(unittest.TestCase):
     """generate_name produces the expected {transport} : {n} : {task} format."""
 

@@ -481,9 +481,26 @@ export function createChatListController(dependencies) {
           chat.id,
           chat.title,
         ),
+      );
+      // Standby / Wake buttons — only shown when the chat has a linked session.
+      // Inserted before the delete separator so they sit with routing actions.
+      if (chat.session_id) {
+        menu.append(
+          makeButton('Standby', 'standby', chat.id, chat.title),
+          makeButton('Wake', 'wake', chat.id, chat.title),
+        );
+        // Standby hidden when already on standby; Wake hidden when not on standby.
+        menu.querySelectorAll('[data-action="standby"]').forEach(btn => {
+          btn.hidden = Boolean(chat.standby_reason);
+        });
+        menu.querySelectorAll('[data-action="wake"]').forEach(btn => {
+          btn.hidden = !chat.standby_reason;
+        });
+      }
+      // Delete is irreversible, so it is set apart rather than sitting flush
+      // against the routing controls above.
+      menu.append(
         separator,
-        // Delete is irreversible, so it is set apart rather than sitting flush
-        // against Export as one more equal-weight choice.
         makeButton('Delete', 'delete', chat.id, chat.title, 'danger'),
       );
       actions.append(trigger, menu);

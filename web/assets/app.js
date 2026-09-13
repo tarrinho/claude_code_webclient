@@ -1775,6 +1775,10 @@ async function handleChatAction(action, id) {
       await copyTerminalCommand(chat);
     } else if (action === 'delete') {
       openChatDialog('delete', chat);
+    } else if (action === 'standby') {
+      await standbyChat(chat);
+    } else if (action === 'wake') {
+      await wakeChat(chat);
     }
   } catch (error) {
     showToast(action === 'export' ? 'Could not export conversation. Try again.' : error.message, 'error');
@@ -1818,6 +1822,41 @@ async function forkChat(chat) {
     closeSidebar();
     showToast(`Forked as “${data.title}”`);
     await selectChat(data.id);
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function standbyChat(chat) {
+  try {
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}/standby`, {method: 'POST'});
+    if (!response.ok) throw new Error('Could not standby conversation');
+    const data = await response.json();
+    // Show the resume command so the user can paste it into the terminal
+    // when they want to bring the session back.
+    if (data.resume_command) {
+      showToast(`Conversation on standby — resume:\n${data.resume_command}`);
+    } else {
+      showToast('Conversation on standby');
+    }
+    await refreshChats();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function wakeChat(chat) {
+  try {
+    const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}/wake`, {method: 'POST'});
+    if (!response.ok) throw new Error('Could not wake conversation');
+    const data = await response.json();
+    // Show the resume command for the user to paste into their terminal.
+    if (data.resume_command) {
+      showToast(`Conversation woken — resume:\n${data.resume_command}`);
+    } else {
+      showToast('Conversation woken');
+    }
+    await refreshChats();
   } catch (error) {
     showToast(error.message, 'error');
   }

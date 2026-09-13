@@ -1133,6 +1133,7 @@ async def _ensure_chat_columns() -> None:
         "parent_chat_id": "ALTER TABLE chats ADD COLUMN parent_chat_id TEXT",
         "is_temporary": "ALTER TABLE chats ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 0",
         "goal": "ALTER TABLE chats ADD COLUMN goal TEXT",
+        "standby_reason": "ALTER TABLE chats ADD COLUMN standby_reason TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:

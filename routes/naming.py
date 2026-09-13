@@ -34,6 +34,17 @@ _NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"^([^\s:]+)\s*:\s*(\d+)\s*:\s*(.+)$"
 )
 
+# Stock acknowledgments that survive _extract_task_words' word-count filter
+# (>= 2 kept words) but still carry no task information -- e.g. "sounds
+# good" extracts to two real words yet describes nothing. Checked as a
+# whole-prompt exact match, after lowercasing/stripping punctuation, so it
+# never misfires on a real instruction that happens to share a word.
+_TRIVIAL_PHRASES: Final[set[str]] = {
+    "sounds good", "looks good", "yes please", "sounds great",
+    "thank you", "works for me",
+}
+_PUNCT_RE: Final[re.Pattern[str]] = re.compile(r"[^a-z0-9\s]")
+
 
 # --- name generation ------------------------------------------------------------
 
@@ -77,6 +88,24 @@ def _extract_task_words(prompt: str) -> list[str]:
 
     # Cap at 5 words.
     return cleaned[:5]
+
+
+def _is_substantial(prompt: str) -> bool:
+    """Return False for a prompt too thin to describe a goal.
+
+    A one-word reply ("yes", "ok", "continue") extracts to fewer than two
+    kept words and is rejected on that alone. A short stock acknowledgment
+    ("sounds good", "thank you") can clear that bar while still describing
+    nothing, so it is also rejected via ``_TRIVIAL_PHRASES`` -- an exact,
+    whole-prompt match after lowercasing and stripping punctuation, so it
+    never misfires on a real instruction that happens to share a word.
+    """
+    words = _extract_task_words(prompt)
+    if len(words) < 2:
+        return False
+    normalized = _PUNCT_RE.sub("", prompt.strip().lower())
+    normalized = " ".join(normalized.split())
+    return normalized not in _TRIVIAL_PHRASES
 
 
 def _title(s: str) -> str:

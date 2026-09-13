@@ -1,52 +1,20 @@
 # Tiered agent delegation: routing a goal across models by capability, cost and host load
 
-**Date:** 2026-09-12
-**Status:** design, complete and implementable; not implemented. Every figure it
-routes on is now measured; no outstanding measurement blocks starting. The one
-mechanism it needs built rather than configured is the coding oracle (§3.3).
-**Amended:** 2026-09-13 (second pass) — §3.3 added, defining what a failure *is*.
-The escalation ladder fired on "timeout or failure" and the document never said
-what failure meant, so §2's answer to the free tier's accuracy rested on an
-undefined event. §3.3 names four signals that already exist in the codebase, and
-states what they cannot catch: a well-formed wrong answer. §2's rung 0 is
-narrowed to `coding` and `long-context` accordingly — the two types where a kept
-answer is either checkable or measured at 100% — reverting the universal rung 0
-of the first pass. §5 and §6 updated to match.
+**Date:** 2026-09-12 · **Last revised:** 2026-09-13
+**Status:** design, complete and implementable; not implemented.
 
-**Amended:** 2026-09-13 — three changes, all in response to review by Pedro.
-(1) §3.2 added: write-capable tasks stay local, reconciled in from
-`AGENT-MODELS-DECISION.md`, which is deleted in the same commit so this is the
-single spec for model and agent routing. (2) §2 rewritten: the free model is
-now rung 0 for every task type with no capacity gate, since the gate the
-previous amendment left in place could never open (§2.1). (3) §1.4 records the
-`109.1% CPU` misreading that motivated that gate, so it is not rebuilt.
+Every figure this routes on is measured — there is no outstanding benchmark
+blocking a start. The one mechanism it needs *built* rather than configured is
+the coding oracle (§3.3); everything else is configuration over code that
+already exists.
 
-**Amended again:** 2026-09-13, after a full re-check of every figure and
-citation against the code and the benchmark data. One decision-changing finding:
-the 45s deadline and the ≥70% target are inconsistent with each other on the
-only data that exists — 45s yields **65.2%** free-tier completion on coding, the
-type this model is measured best at (§2, "What the deadline actually costs").
-The deadline is raised to **90s**. Two smaller fixes: §1.1 now carries the
-rung-0 model's own row rather than omitting it, and two stale code references
-are corrected.
-
-**Measured and re-tuned:** 2026-09-13. The one outstanding measurement was taken:
-`vllm/Qwen3.6-35B-A3B-NVFP4` ran all six task types for the first time
-(`bench/qwen35b_alltypes_20260913b.json`, 78 responses). Rung 0 turns out **not**
-to be uniformly strong — 100% on long-context down to 67% on planning and
-reasoning — and the 96% the policy had been built on was a coding-only figure.
-`TIER0_DEADLINE` becomes **per task type** (45s to 240s) rather than one global
-90s: that serves every correct answer the model produced (80.8% vs 78.2%) while
-cutting the worst observed reasoning runaway from 1903s to a bounded 240s. §1.1,
-§2 and §4 carry the new numbers.
-
-**Completed:** 2026-09-13. Two gaps that would have stopped an implementer are
-closed. §2.2 writes out all six escalation ladders — `MAX_ATTEMPTS = 3` requires
-three named rungs per task type, and the third was not derivable from the entry
-rung. §3.1's table gains the `mutates` column that §3.2 requires; without it
-every pattern would have fallen to §3.2's `True` default and no task could ever
-have been placed on a transport, which is the same shape of bug as the capacity
-gate that could never open. §4 and §5 follow both through.
+**This document states the current policy only.** It went through five revisions
+on 2026-09-13 and several of them reversed each other — the free rung was
+universal, then scoped; the deadline was 45s, then 90s, then per-type. Carrying
+that history inline made the spec contradict itself in four places, so the
+superseded decisions now live in §7's decision log, with the reasoning that
+retired each one. **If §7 and a section here disagree, this text is current and
+§7 is history.**
 
 A goal is decomposed recursively into sub-agents, and every node is routed to
 the cheapest model measured capable of its task type, placed on a host with the
@@ -330,93 +298,43 @@ interleave, "so no deadline separates them". The claim is now carried by the
 checked by the oracle in §3.3, and on `long-context` there is no measured gap to
 catch.
 
-#### What the deadline actually costs
+#### Setting it: two values, each the slowest correct run
 
-An earlier draft set this at 45s and justified it as "comfortably above the 8.5s
-coding median, far below the 161s p90." Both halves of that sentence are true and
-the conclusion drawn from them was wrong, because **the latency distribution is
-bimodal and the median describes only the lower mode.** The 23 measured
-latencies, in seconds:
+Only `coding` and `long-context` reach rung 0, so only those two need a
+deadline. Both come from `bench/qwen35b_alltypes_20260913b.json` — 78 responses,
+26 tasks, three repeats each, 2026-09-13:
 
-```
-4.1 4.6 4.8 4.8 4.8 5.2 5.2 5.6 6.3 7.8 7.9 8.5
-        <- nothing at all between 8.5 and 31.8 ->
-31.8 32.7 37.6 38.4 56.0 79.9 96.5 161.4 284.8 367.9 498.5
-```
+| task type | accuracy | median | slowest **correct** | `TIER0_DEADLINE` |
+|---|---|---|---|---|
+| long-context | 100.0% | 17.3s | 22.6s | **45s** |
+| coding | 87.5% | 11.6s | 70.8s | **90s** |
 
-Twelve turns finish under 8.5s; the rest start at 31.8s and run to 498.5s.
-Nothing lands in between, so any deadline from 9s to 31s selects the same twelve
-turns, and the median is not evidence about where the tail begins.
+Each value is the slowest correct run rounded up. **The rounding is the safety
+margin and it is deliberately generous** — 45s is double long-context's slowest
+correct answer, 90s is a third above coding's. A deadline set near the observed
+maximum would discard correct work the first time the gateway ran slightly
+slower than it did on benchmark day, and a discarded correct answer costs a full
+paid rung to reproduce.
 
-Completion rate against deadline, counting only turns that finished *and* were
-correct — this is exactly the quantity §2's target is stated in:
+**Do not set these from the median.** Coding's median is 11.6s and its slowest
+correct answer is 70.8s — a factor of six. An earlier draft reasoned from the
+median and chose 45s, which would have thrown away correct answers on this
+type; §7 records that. The distribution is bimodal, not centred, so the median
+describes one mode and says nothing about where the tail starts.
 
-| deadline | finish within it | correct within it |
-|---|---|---|
-| 30s | 12/23 (52.2%) | 47.8% |
-| **45s** | 16/23 (69.6%) | **65.2%** |
-| 60s | 17/23 (73.9%) | 69.6% |
-| **90s** | 18/23 (78.3%) | **73.9%** |
-| 180s | 20/23 (87.0%) | 82.6% |
+**What these values are not.** They bound *slowness*, not wrongness. §2's
+correctness argument rests entirely on rung 0's scope — the coding oracle in
+§3.3 and long-context's measured 100% — and not at all on the deadline. The
+clearest evidence is a type that no longer uses rung 0: on `planning`, correct
+runs span 32.2s to 95.7s while wrong runs span 57.7s to 75.5s. The two
+distributions interleave, so **no deadline whatsoever separates right from
+wrong there.** That is why planning is excluded by §3.3's argument rather than
+managed by a timer.
 
-**At 45s the target of ≥70% is unreachable on the only data that exists**, on
-the one task type this model is measured best at. All seven turns that exceeded
-45s returned *correct* answers — the deadline would have discarded good work and
-paid for a second rung to redo it. 60s still misses. **90s was the smallest round
-deadline clearing 70% on this data** — superseded the next day by the per-type
-values below, which keep 90s for coding and move the other five.
-
-That reasoning was sound on the data it had, and the data it had was coding
-only. The six-type run replaced it the next day.
-
-#### The deadline is per task type, because the types are not alike
-
-`bench/qwen35b_alltypes_20260913b.json`, 78 runs. **A single global 90s serves
-78.2% of leaves free, which clears the ≥70% target** — so the global value was
-not wrong. It was just leaving work on the table at both ends, being loose for
-four types and tight for two.
-
-Per type, the deadline that retains *every* correct answer observed:
-
-| task type | accuracy | median | slowest **correct** | fastest **wrong** | `TIER0_DEADLINE` |
-|---|---|---|---|---|---|
-| long-context | 100.0% | 17.3s | 22.6s | — (none wrong) | **45s** |
-| multi-turn | 75.0% | 16.9s | 19.6s | 18.7s | **45s** |
-| comprehension | 75.0% | 17.8s | 34.8s | 12.9s | **45s** |
-| coding | 87.5% | 11.6s | 70.8s | 19.9s | **90s** |
-| planning | 66.7% | 70.4s | 95.7s | 57.7s | **120s** |
-| reasoning | 66.7% | 123.3s | 216.4s | 1168.2s | **240s** |
-
-Each value is the slowest correct run rounded up to the next round number. The
-whole table is worth more than the sum of its rows for two reasons.
-
-**Reasoning is the case the global deadline handled worst, and per-type handles
-best.** Its three `reasoning-puzzle` repeats ran 216s (correct), 1168s (wrong,
-24,758 output tokens, hit the cap) and 1903s (wrong, 38,461 tokens, hit the
-cap); `reasoning-math` ran 16–30s and was correct all three times. A 90s
-deadline throws away the one correct puzzle answer *and* still waits 90s on the
-two runaways. A 240s deadline keeps the correct answer and kills each runaway
-after 240s instead of 1903s. **Here the deadline discriminates perfectly: every
-correct run is under it, every wrong run is far above it.** Worst-case wasted
-time per reasoning leaf drops from 1903s observed to 240s bounded.
-
-**Planning is the opposite case, and the deadline is nearly useless there.** Its
-correct runs span 32.2s to 95.7s and its wrong runs span 57.7s to 75.5s — the
-two distributions interleave, so no deadline separates them. 120s is chosen to
-stop discarding correct work (90s was cutting the 95.7s one), not because it
-filters anything. Planning's 66.7% is a capability limit, and the escalation
-ladder is what addresses it.
-
-Per-type deadlines serve **63/78 = 80.8%** free — every correct answer the model
-produced — against 78.2% for a global 90s, while *also* bounding the reasoning
-tail. Both improve at once because the two types pulling in opposite directions
-stop being averaged together.
-
-**Two types individually miss the ≥70% target**: planning at 66.7% and reasoning
-at 66.7%. That is a capability result, not a deadline result — it survives any
-deadline, because those are simply the fractions the model gets right. §2's
-target is a fleet-wide number and the fleet clears it at 80.8%; these two rows
-are where the paid ladder earns its place.
+**The four excluded types keep no deadline entry**, because a value that can
+never be read is configuration that will drift out of step with the code and
+mislead the next reader. Their measured latencies stay in §1.1 as the evidence
+for excluding them.
 
 **Why no gate:** an earlier draft gated this on the gateway host's
 `cpu_pct`/`load1` via `system_latest_by_host()`. That gate could never open.
@@ -766,14 +684,10 @@ MAX_DEPTH      = 3      # goal -> sub -> sub
 MAX_CHILDREN   = 4      # per node
 MAX_NODES      = 40     # whole tree
 BUDGET_USD     = 1.00   # per goal, checked before each spawn
-TIER0_DEADLINE = {         # seconds, free tier only -- derived in §2
+TIER0_DEADLINE = {         # seconds; only the types that reach rung 0 (§2)
     "long-context":    45,
-    "multi-turn":      45,
-    "comprehension":   45,
     "coding":          90,
-    "planning":       120,
-    "reasoning":      240,
-}
+}                          # a type absent here never uses the free rung
 MAX_ATTEMPTS   = 3      # per leaf, across the ladder
 ```
 
@@ -826,7 +740,8 @@ because the alternative needs five live backends to run a unit test.
 | rung 0 is scoped to two types | asserting the free model appears *somewhere* in the ladder. Assert it is attempt 1 for `coding` and `long-context`, and **absent from the other five ladders entirely** — a model that reappears at rung 2 on `planning` would keep the accuracy exposure §3.3 removed, while still passing any "is it attempt 1" check |
 | the free tier has no capacity gate | asserting behaviour only when samples exist; assert routing is unchanged when `system_latest_by_host()` returns nothing at all, which is the real gateway case |
 | the deadline is configuration, not a literal | hardcoding a number in the router and again in the test, so both agree and neither tracks `TIER0_DEADLINE`. These values are known-provisional and will be re-tuned from production (§2) — assert the router reads the mapping, by setting a type's value to something else in the test and checking the deadline follows |
-| the deadline is per task type | asserting one value and assuming the rest. Assert all six, and assert specifically that reasoning gets 240s and long-context 45s — those are the two ends, and collapsing the mapping back to a single value is the regression this row exists to catch |
+| `TIER0_DEADLINE` holds exactly the rung-0 types | asserting the two present values and stopping. Also assert the four *absent* keys — a `comprehension` or `planning` entry reappearing means someone widened rung 0 without going through §3.3's detectability argument, and the deadline is where that shows up first |
+| an excluded type never reaches rung 0 | testing only that the right model comes back for coding. Feed a `planning` leaf and assert attempt 1 is its *paid* entry rung, not the free model — the whole §3.3 scope argument is unenforced otherwise |
 | a task type missing from `TIER0_DEADLINE` | letting a `KeyError` reach the turn, or silently defaulting to the shortest value. Assert the fallback explicitly — an unknown type must get the *longest* deadline, not the shortest, for the same fail-safe reason §3.1 defaults unmatched text to comprehension |
 | the full ladder (§2.2) | testing only the two types named in prose. Assert all six three-rung sequences by table, including the two that break positional order: reasoning skips Sonnet, comprehension ends on a model measured worse than its own rung 2 |
 | each failure signal escalates (§3.3) | testing only the deadline, which is the one signal that is easy to fake. Assert all four independently: an `{"type":"error"}` frame, a `<synthetic>` model id, empty text, and expiry. An error frame in particular **does not raise** (CLAUDE.md §4), so a test that only expects an exception passes against code that treats a failed turn as a successful empty one |
@@ -972,6 +887,8 @@ The two channels are unrelated, and only the file-based one routes.
 | success criterion (2026-09-13) | ≥70% of leaves complete on rung 0, measured from `usage_events` | leave "mostly free" as an untested assumption |
 | rung-0 deadline (2026-09-13, re-check) | 90s — the smallest round value that clears the ≥70% target on the coding-only data then available | 45s, which yields 65.2% and so shipped a policy predicting its own failure; 60s, which yields 69.6% and still misses |
 | rung-0 deadline (2026-09-13, after the six-type run) | per task type, 45s to 240s, each the slowest correct run rounded up | keeping one global 90s, which discards correct planning and reasoning answers at one end and waits needlessly on three fast types at the other |
+| rung-0 deadline (2026-09-13, final — supersedes both rows above) | two entries only, `long-context` 45s and `coding` 90s, still the slowest correct run rounded up. The other four types were scoped out of rung 0 by the row above this block, so their deadlines became unreachable configuration | keeping all six entries "in case rung 0 widens later" — a value no code path can read drifts out of step with the code silently, and §5 now asserts the four keys are *absent* so widening has to go through §3.3's argument rather than through a config edit |
+| document shape (2026-09-13) | state current policy only; superseded decisions live in this table | keep the five dated amendment blocks in the header, which by the fifth had the spec asserting both "rung 0 for every task type" and "rung 0 for coding and long-context only", and both "the deadline is 90s" and "the deadline is per task type" |
 | planning and reasoning below target (2026-09-13) | accept 67% on both; it is a capability limit no deadline changes, and the paid ladder is what catches it | tune the deadline until those rows clear 70%, which would be fitting the gate to the metric rather than to the work |
 | escalation order (2026-09-13, re-check) | all six ladders written out in §2.2, generated by walking `vllm → luna → mini → sonnet → opus` and skipping any model measured worse on that type | leaving the third rung to be inferred from the entry rung, which is not derivable and would have put reasoning on Sonnet at 75% against mini's 86% |
 | comprehension's third rung (2026-09-13, re-check) | Opus, despite measuring 50% against Sonnet's 100%, because both cells are n=2 and the type most needs a retry | stopping at Sonnet with no escalation — correct on the skip rule, but trading a well-evidenced cost for a badly-evidenced one |

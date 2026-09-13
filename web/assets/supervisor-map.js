@@ -93,6 +93,13 @@ let _detailNode = null;
 // live pixel box against viewBox coordinates would fit the tree to the wrong
 // rectangle.
 let _canvas = {w: 800, h: 400};
+// True once the SVG structure (background, viewport, layers, zoom) is created.
+// Prevents `_svg.selectAll("*").remove()` on every poll — the first render
+// builds the DOM; subsequent renders update it via enter/update/exit.
+let _svgInit = false;
+// D3 selection refs so enter/update/exit arms can address stable groups
+// without re-querying or relying on stale selections.
+let _bgRect, _spokesGroup, _nodesGroup;
 // ── Layout geometry ────────────────────────────────────────────────────
 // Module-level and shared by the render and by zoomToFit, because those two
 // disagreeing was the bug this replaced: the render drew each node through the
@@ -185,6 +192,66 @@ function _mapSummary(data) {
     + `${nodes - 1} node${nodes - 1 === 1 ? "" : "s"}`;
 }
 
+// Build SVG DOM structure once.  Called by renderSupervisorMap on first run,
+// before the enter/update/exit arms.  Keeps background, viewport, layers and
+// zoom alive between polls so the node DOM survives each refresh.
+function initMapSVG() {
+  _svg = d3.select("#supervisorMapSvg");
+  const {w: CANVAS_W, h: CANVAS_H} = _canvasSize(_svg.node());
+  _svg.attr("viewBox", `0 0 ${CANVAS_W} ${CANVAS_H}`)
+    .attr("preserveAspectRatio", "xMidYMid meet")
+    .attr("role", "tree")
+    .attr("aria-label", "Supervisor map: nothing running");
+  _canvas = {w: CANVAS_W, h: CANVAS_H};
+
+  // Background — fills the box, captures pointer events.
+  _bgRect = _svg.append("rect")
+    .attr("class", "map-bg")
+    .attr("x", 0).attr("y", 0)
+    .attr("width", CANVAS_W).attr("height", CANVAS_H)
+    .attr("fill", _cssVar("--panel2", "#fff"));
+
+  // Everything except background joins onto this group (zoom target).
+  _viewport = _svg.append("g").attr("class", "map-viewport");
+
+  // Zoom — bound to SVG, transforms the viewport.
+  _zoom = d3.zoom()
+    .scaleExtent([0.2, 5])
+    .on("zoom", (event) => {
+      _viewport.attr("transform", event.transform);
+      _lastTransform = event.transform;
+      // Zoom-based LOD: collapse siblings when the zoom scale drops below
+      // the threshold so only hubs are visible, expand when zooming in.
+      const scale = event.transform.k;
+      if (scale < 0.5) {
+        _collapsed = new Set(_root.descendants()
+          .filter(d => d.depth >= 2 && d.children).map(d => d.data.id));
+        _redraw();
+      } else if (scale >= 0.5 && _collapsed.size > 0) {
+        _collapsed = new Set([..._collapsed].filter(id => _pinned.has(id)));
+        _redraw();
+      }
+    });
+  _svg.call(_zoom);
+
+  // SVG layer groups — each gets its own <g> so enters/exits don't collide.
+  _spokesGroup   = _viewport.append("g").attr("class", "map-spokes");
+  _viewport.append("g").attr("class", "map-comms-layer");
+  _nodesGroup    = _viewport.append("g").attr("class", "map-nodes");
+
+  _svgInit = true;
+}
+
+// The comms layer group is now created in initMapSVG (map-comms-layer <g>).
+// This wrapper finds it so the existing _drawComms body works without changes.
+let _cachedCommsLayer;
+function _getCommsLayer() {
+  if (!_cachedCommsLayer) {
+    _cachedCommsLayer = d3.select(".map-comms-layer");
+  }
+  return _cachedCommsLayer;
+}
+
 export function renderSupervisorMap(data, options = {}) {
   // The full payload is kept, and a filtered copy is what gets drawn. Keeping
   // only the filtered tree would make the filters destructive: clearing
@@ -214,19 +281,18 @@ export function renderSupervisorMap(data, options = {}) {
   // yank a zoomed-in reader back to the whole tree without being asked.
   const restoreTransform = _lastTransform;
 
+  // ── First render: create SVG structure once (enter/update/exit foundation)
+  if (!_svgInit) {
+    initMapSVG();
+  }
+
   if (!data || !data.children || data.children.length === 0) {
-    _svg = d3.select("#supervisorMapSvg");
-    if (_svg && _svg.node()) {
-      const {w, h} = _canvasSize(_svg.node());
-      _svg.attr("viewBox", `0 0 ${w} ${h}`)
-        .attr("preserveAspectRatio", "xMidYMid meet")
-        .attr("role", "tree")
-        .attr("aria-label", "Supervisor map: nothing running");
-      _svg.selectAll("*").remove();
-      _viewport = null;
-      _zoom = d3.zoom().scaleExtent([0.2, 5]);
-      _svg.call(_zoom);
-    }
+    // Empty state: clear node/spoke data, show status message
+    if (_spokesGroup) _spokesGroup.selectAll("*").remove();
+    if (_nodesGroup) _nodesGroup.selectAll("*").remove();
+    _commsEdges = [];
+    // Clear comms layer (created in initMapSVG) so empty state shows no arrows.
+    if (_cachedCommsLayer) _cachedCommsLayer.selectAll("*").remove();
     const statusEl = document.getElementById("mapStatusEmpty");
     if (statusEl) statusEl.hidden = false;
     return;
@@ -238,65 +304,20 @@ export function renderSupervisorMap(data, options = {}) {
 
   _svg = d3.select("#supervisorMapSvg");
   const {w: CANVAS_W, h: CANVAS_H} = _canvasSize(_svg.node());
-  // A viewBox is what ties the coordinate system to the rendered box. Without
-  // one, `width:100%` CSS stretched the element while its interior stayed a
-  // 400x400 space, so anything past 400 units was simply outside the drawable
-  // area -- unreachable, because zoom did not work either (below).
+  // Update viewBox in place (no re-create needed).
   _svg.attr("viewBox", `0 0 ${CANVAS_W} ${CANVAS_H}`)
     .attr("preserveAspectRatio", "xMidYMid meet");
-  // Without these the figure reaches a screen reader as a stack of unlabelled
-  // groups with no statement of what it is. Each node already carries its own
-  // aria-label; this names the whole thing and counts what is in it, which is
-  // the part no individual node can say.
   _svg.attr("role", "tree")
     .attr("aria-label", _mapSummary(data));
   _canvas = {w: CANVAS_W, h: CANVAS_H};
 
-  _svg.selectAll("*").remove();
-  // Opaque background rect so the SVG captures all pointer events — prevents
-  // underlying main-content elements (empty-state, chat messages) from stealing
-  // clicks that land inside the SVG viewport. Sized to the measured box, not
-  // to 400x400, or it covers only the top region of a tall panel.
-  const bgFill = _cssVar("--panel2", "#fff");
-  _svg.append("rect")
-    .attr("class", "map-bg")
-    .attr("x", 0).attr("y", 0)
-    .attr("width", CANVAS_W).attr("height", CANVAS_H)
-    .attr("fill", bgFill);
+  // Update background in place.
+  if (_bgRect) {
+    _bgRect.attr("width", CANVAS_W).attr("height", CANVAS_H)
+      .attr("fill", _cssVar("--panel2", "#fff"));
+  }
 
-  // Everything except the background joins onto this group, and this group is
-  // what zoom transforms. A `transform` on a root <svg> is not rendered, so
-  // without a container there is nothing for a zoom handler to move -- which
-  // is half of why zoom did nothing. The other half was that no
-  // `.on("zoom", ...)` handler existed at all.
-  _viewport = _svg.append("g").attr("class", "map-viewport");
-
-  _zoom = d3.zoom()
-    .scaleExtent([0.2, 5])
-    .on("zoom", (event) => {
-      // The line whose absence made every zoom control inert: wheel, drag,
-      // Fit, +/- and the percentage buttons all mutate this transform, and
-      // nothing else writes to the viewport's transform.
-      _viewport.attr("transform", event.transform);
-      _lastTransform = event.transform;
-      // Zoom-based LOD: collapse siblings when the zoom scale drops below
-      // the threshold so only hubs are visible, expand when zooming in.
-      // This is the "map-style level-of-detail" the spec asks for — rather
-      // than a manual compact toggle, the view simplifies itself.
-      const scale = event.transform.k;
-      if (scale < 0.5) {
-        // Hide all agent-level children (depth 2) when zoomed out.
-        _collapsed = new Set(_root.descendants()
-          .filter(d => d.depth >= 2 && d.children).map(d => d.data.id));
-        _redraw();
-      } else if (scale >= 0.5 && _collapsed.size > 0) {
-        // Restore: only keep explicitly pinned collapsed nodes.
-        _collapsed = new Set([..._collapsed].filter(id => _pinned.has(id)));
-        _redraw();
-      }
-    });
-  _svg.call(_zoom);
-
+  // Compute layout -------------------------------------------------------
   const root = d3.hierarchy(data, d => d.children || []);
   // Re-apply what the user collapsed. This has to happen before the layout
   // runs: d3.tree() assigns positions to whatever is in `children` at the
@@ -336,7 +357,7 @@ export function renderSupervisorMap(data, options = {}) {
   tree(root);
   _root = root;
 
-  // -- Spokes ------------------------------------------------------
+  // -- Spokes (enter/update/exit — D3 .join already handles all three arms)
   // The hub-and-spoke figure had no spokes: nodes were positioned by the tree
   // layout and drawn, and nothing joined a child to its parent. So which hub
   // an agent belonged to was conveyed by proximity alone, which the moment two
@@ -345,9 +366,7 @@ export function renderSupervisorMap(data, options = {}) {
   //
   // Appended before the nodes so the nodes paint over the lines, and so a
   // pointer near a node hits the node rather than a line passing behind it.
-  _viewport.append("g")
-    .attr("class", "map-spokes")
-    .selectAll("path")
+  _spokesGroup.selectAll("path")
     .data(root.links())
     .join("path")
     .attr("class", "map-spoke")
@@ -356,15 +375,12 @@ export function renderSupervisorMap(data, options = {}) {
     .attr("stroke-width", 1)
     .attr("d", d => _spokePath(d.source, d.target));
 
-  // Own layer, and above the spokes: a comms edge is a different relation
-  // from containment and must not be mistaken for one, so it is drawn on its
-  // own group with its own style rather than added to the spoke join.
-  const commsLayer = _viewport.append("g").attr("class", "map-comms-layer");
-
+  // -- Node enter/update/exit (Fix #1: no DOM wipe on poll) --------------
   // Depth map: center=0, transport=1, machine=2, orchestrator=2, chat=3
-  const node = _viewport.selectAll(".node")
+  const nodeEnter = _nodesGroup.selectAll(".node")
     .data(root.descendants(), d => d.data.id)
-    .join("g")
+    .enter()
+    .append("g")
     .attr("class", "node")
     .attr("tabindex", "0")
     .attr("role", "button")
@@ -388,8 +404,11 @@ export function renderSupervisorMap(data, options = {}) {
   // Machine: medium filled circle (neutral)
   // Orchestrator: small filled circle with ring if expandable
   // Chat (leaf): small filled circle
+  //
+  // Enter arm: create shapes. Update arm: mutate attrs. D3 propagates event
+  // handlers from enter to merged selection automatically.
 
-  node.each(function(d) {
+  nodeEnter.each(function(d) {
     const g = d3.select(this);
     const r = nodeRadius(d);
     // Provider family, not status. Nodes with no family -- orchestrators, the
@@ -401,9 +420,10 @@ export function renderSupervisorMap(data, options = {}) {
     const outline = _cssVar("--map-outline", "#fff");
     const neutral = _cssVar("--map-machine", "#9ca3af");
 
-    // Glow ring for expandable nodes
+    // Glow ring for expandable nodes (enter: create)
     if (d._children || d.children) {
       g.append("circle")
+        .attr("class", "map-expand-halo")
         .attr("r", r + 3)
         .attr("fill", "none")
         .attr("stroke", outline)
@@ -415,6 +435,7 @@ export function renderSupervisorMap(data, options = {}) {
     if (d.depth === 0) {
       // Center node
       g.append("circle")
+        .attr("class", "map-node-shape")
         .attr("r", 8)
         .attr("fill", _cssVar("--map-label", "#1a1a2e"))
         .attr("stroke", statusColor("running"))
@@ -426,11 +447,12 @@ export function renderSupervisorMap(data, options = {}) {
       const heat = loadColor(
         d.data.load_index === undefined ? null : d.data.load_index);
       g.append("circle")
-        .attr("r", r + 4)
         .attr("class", "map-hub-glow")
+        .attr("r", r + 4)
         .attr("fill", heat)
         .attr("opacity", d.data.load_index === undefined ? 0 : 0.22);
       g.append("circle")
+        .attr("class", "map-node-shape")
         .attr("r", r)
         .attr("fill", "none")
         .attr("stroke", heat)
@@ -440,6 +462,7 @@ export function renderSupervisorMap(data, options = {}) {
       // the map could not tell an Anthropic backend from a free local one --
       // which is the single thing the operator most wants to see at a glance.
       g.append("circle")
+        .attr("class", "map-node-shape")
         .attr("r", r)
         .attr("fill", fillColor)
         .attr("stroke", outline)
@@ -449,6 +472,7 @@ export function renderSupervisorMap(data, options = {}) {
       // that is running. It reports how many nodes the server left out of
       // this group; there is nothing behind it to open.
       g.append("circle")
+        .attr("class", "map-node-shape")
         .attr("r", r)
         .attr("fill", "none")
         .attr("stroke", neutral)
@@ -459,6 +483,7 @@ export function renderSupervisorMap(data, options = {}) {
       // These are shells a person is sitting at, not work the console
       // started, and telling them apart at a glance is the point of the map.
       g.append("rect")
+        .attr("class", "map-node-shape")
         .attr("x", -r).attr("y", -r)
         .attr("width", r * 2).attr("height", r * 2)
         .attr("fill", fillColor)
@@ -467,6 +492,7 @@ export function renderSupervisorMap(data, options = {}) {
     } else {
       // Orchestrator or chat: small filled
       g.append("circle")
+        .attr("class", "map-node-shape")
         .attr("r", r)
         .attr("fill", fillColor)
         .attr("stroke", d._children || d.children ? outline : "none")
@@ -479,13 +505,16 @@ export function renderSupervisorMap(data, options = {}) {
     // put two unrelated meanings on the same mark.
     const ring = stateRing(d.data.agent_state);
     if (ring && d.data.type !== "transport" && d.depth > 0) {
-      const circle = g.append("circle")
+      g.append("circle")
+        .attr("class", "map-status-ring")
         .attr("r", r + 3.5)
         .attr("fill", "none")
         .attr("stroke", ring.stroke)
         .attr("stroke-width", 2)
         .attr("class", ring.pulse ? "map-ring map-ring-pulse" : "map-ring");
-      if (ring.dash) circle.attr("stroke-dasharray", ring.dash);
+      if (ring.dash) {
+        g.selectAll(".map-status-ring").attr("stroke-dasharray", ring.dash);
+      }
       // A shape as well as a colour, for the state the operator has to act
       // on. Colour alone fails anyone who cannot separate amber from green,
       // and this is the one state that asks something of them.
@@ -494,6 +523,7 @@ export function renderSupervisorMap(data, options = {}) {
         // Without one the "?" blends into the ring stroke and the fill, and
         // the shape that tells the operator what to do becomes unreadable.
         g.append("circle")
+          .attr("class", "map-wait-pill")
           .attr("r", 5.5)
           .attr("cx", 0).attr("cy", -(r + 7))
           .attr("fill", _cssVar("--panel", "#fff"))
@@ -518,6 +548,7 @@ export function renderSupervisorMap(data, options = {}) {
     // not a state the agent reports.
     if (_pinned.has(d.data.id)) {
       g.append("circle")
+        .attr("class", "map-pin-ring")
         .attr("r", r + 5.5)
         .attr("fill", "none")
         .attr("stroke", "#f59e0b")
@@ -537,6 +568,7 @@ export function renderSupervisorMap(data, options = {}) {
       // (not an ellipse) because the node itself is circular and the badge
       // sits on the node's perimeter; an ellipse would clip or overflow.
       g.append("circle")
+        .attr("class", "map-mech-pill")
         .attr("r", 7)
         .attr("cx", r + 3).attr("cy", -(r + 1))
         .attr("fill", _cssVar("--panel", "#fff"))
@@ -561,6 +593,7 @@ export function renderSupervisorMap(data, options = {}) {
       // it also separates this mark from the mechanism badge which shares
       // the same vertical zone but lives on the opposite side.
       g.append("circle")
+        .attr("class", "map-comms-pill")
         .attr("r", 5)
         .attr("cx", -(r + 9)).attr("cy", -(r + 1))
         .attr("fill", _cssVar("--panel", "#fff"))
@@ -577,61 +610,370 @@ export function renderSupervisorMap(data, options = {}) {
     }
   });
 
-  // ── Labels (right-aligned, left of the node) ────────────────────
-  // Horizontal layout: labels sit to the left of each node (or right for the
-  // root's first child, which starts at the far left edge). Labels are
-  // right-aligned so the node sits naturally to the right of the text.
-  //
-  // Agent labels are drawn over the provider-colour fill, so they need a
-  // background pill.  Transport hub labels sit on the neutral SVG background
-  // rect, so they are plain text.
-  // Hub labels: plain text on the neutral background rect — no pill needed.
-  node.filter(d => d.depth > 0 && d.data.type === "transport")
-    .append("text")
-    .attr("dy", "0.35em")
-    .attr("x", d => (d.children ? 10 : -10))
-    .attr("text-anchor", d => (d.children ? "start" : "end"))
-    .text(d => {
-      const name = d.data.label || "";
-      return name.length > 20 ? name.slice(0, 18) + "…" : name;
-    })
-    .attr("font-size", "11px")
-    .attr("font-weight", "500")
-    .attr("fill", () => _cssVar("--fg", "#1a1a2e"));
+  // Update arm: position existing nodes (transform moves them smoothly).
+  // Event handlers propagate from enter selection to merged selection in D3.
+  const nodeUpdate = _nodesGroup.selectAll(".node")
+    .data(root.descendants(), d => d.data.id);
 
-  // Agent labels need a background pill because they are drawn over the
-  // provider-colour fill.  The pill is a small capsule that the text
-  // sits inside, so the fill never bleeds through.
-  node.filter(d => d.depth > 0 && d.data.type !== "transport")
-    .each(function(d) {
-      const g = d3.select(this);
+  nodeUpdate
+    .attr("transform", d => {
+      const {x, y} = _nodeXY(d);
+      return `translate(${x}, ${y})`;
+    })
+    .attr("cursor", d =>
+      (d.children || d._children || _hasDetail(d.data.type)) ? "pointer" : "default"
+    )
+    .attr("aria-label", d =>
+      `${d.data.type || "node"} · ${STATUS_LABEL[d.data.status] || d.data.status} · ${d.data.label || ""}`
+    );
+
+  // ── Node shapes — update arm (mutate attrs in place, no DOM wipe) ────
+  // Provider family, not status. Nodes with no family -- orchestrators, the
+  // centre, overflow markers -- are containers rather than agents and keep
+  // the status colour they always had, because there is no provider to show
+  // and a neutral grey would make a failing group look inert.
+  //
+  // We update by class selectors on the merged selection. D3's .classed and
+  // .attr operate on every matching descendant, so this is one pass per
+  // element type.
+
+  nodeUpdate.each(function(d) {
+    const g = d3.select(this);
+    const r = nodeRadius(d);
+    const family = d.data.provider_family;
+    const fillColor = family ? providerColor(family) : statusColor(d.data.status);
+    const outline = _cssVar("--map-outline", "#fff");
+    const neutral = _cssVar("--map-machine", "#9ca3af");
+
+    // Expand halo: show/hide based on children state.
+    const hasChildren = !!(d._children || d.children);
+    g.selectAll(".map-expand-halo")
+      .data(hasChildren ? [true] : [])
+      .join(
+        enter => enter.append("circle")
+          .attr("class", "map-expand-halo")
+          .attr("r", r + 3)
+          .attr("fill", "none")
+          .attr("stroke", outline)
+          .attr("stroke-width", 1.5)
+          .attr("stroke-dasharray", "2 2"),
+        update => update
+          .attr("r", r + 3)
+          .attr("stroke", outline),
+        exit => exit.remove()
+      );
+
+    // Main shape: update fill/stroke by type.
+    if (d.depth === 0) {
+      // Center node — shape stays same, update fill/stroke.
+      g.selectAll(".map-node-shape")
+        .data([true])
+        .join("circle")
+        .attr("r", 8)
+        .attr("fill", _cssVar("--map-label", "#1a1a2e"))
+        .attr("stroke", statusColor("running"))
+        .attr("stroke-width", 2);
+    } else if (d.data.type === "transport") {
+      // Hub glow + ring.
+      const heat = loadColor(
+        d.data.load_index === undefined ? null : d.data.load_index);
+      g.selectAll(".map-hub-glow")
+        .data(d.data.load_index !== undefined ? [true] : [])
+        .join(
+          enter => enter.append("circle")
+            .attr("class", "map-hub-glow")
+            .attr("r", r + 4)
+            .attr("fill", heat)
+            .attr("opacity", 0.22),
+          update => update
+            .attr("r", r + 4)
+            .attr("fill", heat),
+          exit => exit.remove()
+        );
+      g.selectAll(".map-node-shape")
+        .data([true])
+        .join("circle")
+        .attr("r", r)
+        .attr("fill", "none")
+        .attr("stroke", heat)
+        .attr("stroke-width", 2.5);
+    } else if (d.data.type === "machine") {
+      g.selectAll(".map-node-shape")
+        .data([true])
+        .join("circle")
+        .attr("r", r)
+        .attr("fill", fillColor)
+        .attr("stroke", outline)
+        .attr("stroke-width", 1);
+    } else if (d.data.type === "more") {
+      g.selectAll(".map-node-shape")
+        .data([true])
+        .join("circle")
+        .attr("r", r)
+        .attr("fill", "none")
+        .attr("stroke", neutral)
+        .attr("stroke-width", 1)
+        .attr("stroke-dasharray", "2 2");
+    } else if (d.data.type === "session") {
+      g.selectAll(".map-node-shape")
+        .data([true])
+        .join("rect")
+        .attr("x", -r).attr("y", -r)
+        .attr("width", r * 2).attr("height", r * 2)
+        .attr("fill", fillColor)
+        .attr("stroke", outline)
+        .attr("stroke-width", 1);
+    } else {
+      // Orchestrator or chat.
+      g.selectAll(".map-node-shape")
+        .data([true])
+        .join("circle")
+        .attr("r", r)
+        .attr("fill", fillColor)
+        .attr("stroke", d._children || d.children ? outline : "none")
+        .attr("stroke-width", 1);
+    }
+
+    // ── Status ring — update ──────────────────────────────────────────
+    const ring = stateRing(d.data.agent_state);
+    if (ring && d.data.type !== "transport" && d.depth > 0) {
+      g.selectAll(".map-status-ring")
+        .data([true])
+        .join(
+          enter => enter.append("circle")
+            .attr("r", r + 3.5)
+            .attr("fill", "none")
+            .attr("stroke", ring.stroke)
+            .attr("stroke-width", 2)
+            .attr("class", ring.pulse ? "map-ring map-ring-pulse" : "map-ring"),
+          update => update
+            .attr("r", r + 3.5)
+            .attr("stroke", ring.stroke),
+          exit => exit.remove()
+        )
+        .attr("stroke-dasharray", ring.dash || null);
+
+      // Waiting-for-input badge.
+      if (d.data.agent_state === "waiting_for_input") {
+        g.selectAll(".map-wait-pill")
+          .data([true])
+          .join(
+            enter => enter.append("circle")
+              .attr("r", 5.5)
+              .attr("cx", 0).attr("cy", -(r + 7))
+              .attr("fill", _cssVar("--panel", "#fff"))
+              .attr("stroke", ring.stroke)
+              .attr("stroke-width", 1),
+            update => update
+              .attr("r", 5.5)
+              .attr("cx", 0).attr("cy", -(r + 7))
+              .attr("stroke", ring.stroke),
+            exit => exit.remove()
+          );
+        g.selectAll(".map-wait-badge")
+          .data([true])
+          .join(
+            enter => enter.append("text")
+              .attr("x", 0).attr("y", -(r + 7))
+              .attr("text-anchor", "middle")
+              .attr("dominant-baseline", "central")
+              .attr("font-size", "10px")
+              .attr("font-weight", "700")
+              .attr("fill", ring.stroke)
+              .text("?"),
+            update => update
+              .attr("y", -(r + 7))
+              .attr("fill", ring.stroke),
+            exit => exit.remove()
+          );
+      }
+    } else {
+      // Remove status ring and related badges.
+      g.selectAll(".map-status-ring").remove();
+      g.selectAll(".map-wait-pill").remove();
+      g.selectAll(".map-wait-badge").remove();
+    }
+
+    // ── Pin ring — update ───────────────────────────────────────────
+    if (_pinned.has(d.data.id)) {
+      g.selectAll(".map-pin-ring")
+        .data([true])
+        .join(
+          enter => enter.append("circle")
+            .attr("r", r + 5.5)
+            .attr("fill", "none")
+            .attr("stroke", "#f59e0b")
+            .attr("stroke-width", 2)
+            .attr("stroke-dasharray", "3 2"),
+          update => update
+            .attr("r", r + 5.5)
+            .attr("stroke", "#f59e0b"),
+          exit => exit.remove()
+        );
+    } else {
+      g.selectAll(".map-pin-ring").remove();
+    }
+
+    // ── Transport mechanism badge — update ──────────────────────────
+    if (d.data.transport_mechanism) {
+      const isCli = d.data.transport_mechanism === "cli";
+      g.selectAll(".map-mech-pill")
+        .data([true])
+        .join(
+          enter => enter.append("circle")
+            .attr("r", 7)
+            .attr("cx", r + 3).attr("cy", -(r + 1))
+            .attr("fill", _cssVar("--panel", "#fff"))
+            .attr("stroke", _cssVar("--line", "#d4d4d8"))
+            .attr("stroke-width", 0.5),
+          update => update
+            .attr("r", 7)
+            .attr("cx", r + 3).attr("cy", -(r + 1))
+            .attr("stroke", _cssVar("--line", "#d4d4d8")),
+          exit => exit.remove()
+        );
+      g.selectAll(".map-mech-badge")
+        .data([true])
+        .join(
+          enter => enter.append("text")
+            .attr("x", r + 3).attr("y", -(r + 1))
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "central")
+            .attr("font-size", "7px")
+            .attr("font-weight", "700")
+            .attr("fill", _cssVar("--fg", "#1a1a2e")),
+          update => update
+            .attr("x", r + 3).attr("y", -(r + 1))
+            .attr("fill", _cssVar("--fg", "#1a1a2e")),
+          exit => exit.remove()
+        )
+        .text(isCli ? "CLI" : "API");
+    } else {
+      g.selectAll(".map-mech-pill").remove();
+      g.selectAll(".map-mech-badge").remove();
+    }
+
+    // ── Comms capability badge — update ─────────────────────────────
+    if (d.data.comms) {
+      g.selectAll(".map-comms-pill")
+        .data([true])
+        .join(
+          enter => enter.append("circle")
+            .attr("r", 5)
+            .attr("cx", -(r + 9)).attr("cy", -(r + 1))
+            .attr("fill", _cssVar("--panel", "#fff"))
+            .attr("stroke", _cssVar("--line", "#d4d4d8"))
+            .attr("stroke-width", 0.5),
+          update => update
+            .attr("r", 5)
+            .attr("cx", -(r + 9)).attr("cy", -(r + 1))
+            .attr("stroke", _cssVar("--line", "#d4d4d8")),
+          exit => exit.remove()
+        );
+      g.selectAll(".map-comms-icon")
+        .data([true])
+        .join(
+          enter => enter.append("text")
+            .attr("x", -(r + 9)).attr("y", -(r + 1))
+            .attr("text-anchor", "middle")
+            .attr("font-size", "8px")
+            .attr("fill", _cssVar("--fg", "#1a1a2e")),
+          update => update
+            .attr("x", -(r + 9)).attr("y", -(r + 1))
+            .attr("fill", _cssVar("--fg", "#1a1a2e")),
+          exit => exit.remove()
+        )
+        .text(d.data.comms === "both" ? "\u{1F5E8}\u{1F3A4}" : "\u{1F5E8}");
+    } else {
+      g.selectAll(".map-comms-pill").remove();
+      g.selectAll(".map-comms-icon").remove();
+    }
+
+    // ── Labels (inside node <g> — inherits node transform automatically) ──
+    // Hub labels: plain text. Agent labels: pill + text.
+    if (d.depth > 0) {
       const name = (d.data.label || "").length > 20
         ? d.data.label.slice(0, 18) + "…" : d.data.label;
-      // Rough width estimate: 11px font × ~6px per char.
       const w = name.length * 6 + 8;
       const anchor = d.children ? "start" : "end";
       const xOffset = d.children ? 6 : -6;
-      // Pill rectangle (drawn under the text).
-      g.insert("rect", "text")
-        .attr("x", anchor === "start" ? xOffset : xOffset - w)
-        .attr("y", -7)
-        .attr("width", w)
-        .attr("height", 14)
-        .attr("rx", 3)
-        .attr("fill", _cssVar("--panel", "#fff"))
-        .attr("opacity", 0.85);
-      g.append("text")
-        .attr("dy", "0.35em")
-        .attr("x", xOffset)
-        .attr("text-anchor", anchor)
-        .text(name)
-        .attr("font-size", "11px")
-        .attr("font-weight", "500")
-        .attr("fill", () => _cssVar("--fg", "#1a1a2e"));
-    });
 
-  // ── Tooltip (hover) ─────────────────────────────────────────────
-  node.on("contextmenu", function(event, d) {
+      if (d.data.type === "transport") {
+        g.selectAll(".hub-label")
+          .data([true])
+          .join(
+            enter => enter.append("text")
+              .attr("class", "hub-label")
+              .attr("dy", "0.35em")
+              .attr("font-size", "11px")
+              .attr("font-weight", "500")
+              .attr("fill", () => _cssVar("--fg", "#1a1a2e")),
+            update => update,
+            exit => exit.remove()
+          )
+          .attr("x", xOffset)
+          .attr("text-anchor", anchor)
+          .text(name);
+      } else {
+        // Agent label with pill.
+        g.selectAll(".agent-label-pill")
+          .data([true])
+          .join(
+            enter => enter.insert("rect", "text")
+              .attr("class", "agent-label-pill")
+              .attr("y", -7).attr("height", 14).attr("rx", 3)
+              .attr("fill", _cssVar("--panel", "#fff"))
+              .attr("opacity", 0.85),
+            update => update,
+            exit => exit.remove()
+          )
+          .attr("x", anchor === "start" ? xOffset : xOffset - w)
+          .attr("width", w);
+
+        g.selectAll(".agent-label-text")
+          .data([true])
+          .join(
+            enter => g.append("text")
+              .attr("class", "agent-label-text")
+              .attr("dy", "0.35em")
+              .attr("font-size", "11px")
+              .attr("font-weight", "500")
+              .attr("fill", () => _cssVar("--fg", "#1a1a2e")),
+            update => update,
+            exit => exit.remove()
+          )
+          .attr("x", xOffset)
+          .attr("text-anchor", anchor)
+          .text(name);
+      }
+    }
+  });
+
+  // Comms edges — drawn by the original curved-arrow logic.
+  _drawComms(_getCommsLayer(), root);
+
+  // ── Click handlers (attached to merged selection covers enter + update) ───
+  nodeUpdate.on("click", function(event, d) {
+    event.stopPropagation();
+    // Center node: tooltip on click (no drawer, no expand/collapse)
+    if (d.depth === 0) return;
+    // Expand/collapse for nodes with children
+    if (d.children || d._children) {
+      if (d.children) {
+        d._children = d.children;
+        d.children = null;
+        _collapsed.add(d.data.id);
+      } else {
+        d.children = d._children;
+        d._children = null;
+        _collapsed.delete(d.data.id);
+      }
+      renderSupervisorMap(_data);
+    } else if (_hasDetail(d.data.type)) {
+      // Leaf nodes: open detail drawer (Fix 2)
+      showDetail(d.data);
+    }
+  }).on("contextmenu", function(event, d) {
     // Right-click: pin or unpin.  Left-click opens the detail panel.
     // Ctrl-click on a normal click also toggles the pin so the operator
     // can pin without reaching for the context menu.
@@ -644,9 +986,7 @@ export function renderSupervisorMap(data, options = {}) {
     }
     _updatePinnedPills();
     _redraw();
-  });
-
-  node.on("mouseenter", function(event, d) {
+  }).on("mouseenter", function(event, d) {
     const tooltip = document.getElementById("mapTooltip");
     if (tooltip) {
       let text = `${STATUS_LABEL[d.data.status] || d.data.status} · ${d.data.label}`;
@@ -679,33 +1019,7 @@ export function renderSupervisorMap(data, options = {}) {
   }).on("mouseleave", function() {
     const tooltip = document.getElementById("mapTooltip");
     if (tooltip) tooltip.hidden = true;
-  });
-
-  // ── Click handler ───────────────────────────────────────────────
-  node.on("click", function(event, d) {
-    event.stopPropagation();
-    // Center node: tooltip on click (no drawer, no expand/collapse)
-    if (d.depth === 0) return;
-    // Expand/collapse for nodes with children
-    if (d.children || d._children) {
-      if (d.children) {
-        d._children = d.children;
-        d.children = null;
-        _collapsed.add(d.data.id);
-      } else {
-        d.children = d._children;
-        d._children = null;
-        _collapsed.delete(d.data.id);
-      }
-      renderSupervisorMap(_data);
-    } else if (_hasDetail(d.data.type)) {
-      // Leaf nodes: open detail drawer (Fix 2)
-      showDetail(d.data);
-    }
-  });
-
-  // ── Keyboard accessibility (Fix 1) ──────────────────────────────
-  node.on("keydown", function(event, d) {
+  }).on("keydown", function(event, d) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       event.stopPropagation();
@@ -724,21 +1038,6 @@ export function renderSupervisorMap(data, options = {}) {
       } else if (_hasDetail(d.data.type)) {
         showDetail(d.data);
       }
-    }
-  });
-
-  _drawComms(commsLayer, root);
-
-  // ── Click empty SVG background to close drawer (Fix 5) ──────────
-  _svg.on("click", function(event) {
-    // The background rect counts as background: it is painted over the whole
-    // viewport, so it -- not the <svg> -- is the click target for every empty
-    // spot on the map, and testing only for the svg element meant this handler
-    // could never fire once that rect existed.
-    const target = event.target;
-    const cls = target && target.getAttribute ? target.getAttribute("class") : null;
-    if (target === this || (target && target.tagName === "svg") || cls === "map-bg") {
-      hideDetail();
     }
   });
 
@@ -1895,14 +2194,24 @@ export function closeSupervisorMap() {
   // panel is the same class of leak the map's own poll guard exists to avoid.
   stopFreshnessTicker();
   stopCommsTicker();
-  if (_svg) _svg.selectAll("*").remove();
-  _viewport = null;  // removed above; keep the handle from outliving the node
+  // Clear node/spoke/comms data but keep the SVG structure alive so the next
+  // open reuses the same DOM groups instead of rebuilding from scratch.
+  if (_spokesGroup) _spokesGroup.selectAll("*").remove();
+  if (_nodesGroup) _nodesGroup.selectAll("*").remove();
+  if (_cachedCommsLayer) _cachedCommsLayer.selectAll("*").remove();
+  _cachedCommsLayer = null;
+  _spokesGroup = null;
+  _nodesGroup = null;
+  _bgRect = null;
+  _viewport = null;
   hideDetail();
   _data = null;
   _collapsed.clear();
+  _pinned.clear();
   // Closing the panel is the one place a view is deliberately forgotten:
   // reopening the map should fit the tree, not restore a zoom from earlier.
   _lastTransform = null;
+  _svgInit = false;
 }
 
 export function zoomToFit() {

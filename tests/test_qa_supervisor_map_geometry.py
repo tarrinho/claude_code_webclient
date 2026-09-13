@@ -157,7 +157,11 @@ class MapZoomWiringTests(unittest.TestCase):
 
     def test_nodes_are_joined_onto_the_viewport_group(self):
         """Defect 1: `_svg.selectAll(".node")` put every node outside the
-        group the zoom transform moves, so panning moved nothing."""
+        group the zoom transform moves, so panning moved nothing.
+
+        Under the enter/update/exit refactor, nodes are joined inside a
+        map-nodes sub-group rather than directly on map-viewport, but zoom
+        still reaches them because map-nodes sits inside map-viewport."""
         out = _run("""
           renderSupervisorMap(DATA);
           var calls = STUB.selectAllCalls.filter(function (c) { return c.selector === ".node"; });
@@ -166,7 +170,7 @@ class MapZoomWiringTests(unittest.TestCase):
         """)
         self.assertTrue(out["calls"], 'no selectAll(".node") happened at all')
         for call in out["calls"]:
-            self.assertEqual(call["onClass"], "map-viewport")
+            self.assertIn(call["onClass"], ["map-viewport", "map-nodes"])
         self.assertTrue(out["foundUnderViewport"])
 
     # test_the_percentage_buttons_set_an_absolute_scale removed with the

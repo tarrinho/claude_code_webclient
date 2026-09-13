@@ -1,6 +1,6 @@
 # Generated images gallery — design
 
-**Status:** approved in chat 2026-09-12, not yet implemented.
+**Status:** implemented (auto-detected from codebase evidence).
 
 **Goal:** let Pedro browse and delete every image any conversation has ever
 generated, from one place in Settings, without hunting back through old

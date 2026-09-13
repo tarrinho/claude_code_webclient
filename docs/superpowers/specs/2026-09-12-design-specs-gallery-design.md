@@ -1,5 +1,30 @@
 # Design Specs Gallery
 
+**Status:** done — verified against the codebase on 2026-09-13, item by item,
+not inferred. Every §3 component exists and is wired (`app.py:61` imports the
+router, `app.py:603` includes it, and the live release answers `/api/specs`
+with 401 rather than 404, so it is serving and auth-gated). All three §3.1
+enrichments are present: reverse-links via `find_references`, the status badge
+via `spec_status_v2`, and provenance via
+`git log --follow --format=%an\x1f%as`. `Markdown==3.7` and `nh3==0.3.7` are in
+`requirements.txt` as §3 requires. Both §7 open items are resolved — the id
+scheme is base64 (`encode_id`/`decode_id`) and the anchored marker regex is
+`_MARKER_RE`. Every item in §6's testing plan has a test, and the six
+specs-gallery suites pass 66 tests.
+
+Two divergences, both additive. The status badge shipped with four states plus
+an admin-settable manual override (`PUT /api/specs/{id}/status`) rather than
+§3.1's two, "Spec only / Planned". And the §3.2 deferrals — stale-spec
+detection and full-text search — are correctly still absent; they are not gaps.
+
+**A caution worth leaving here, since this spec is about a status badge.** On
+2026-09-13 that badge reported nearly every spec in the repository as
+"implemented", because `spec_status_v2` inferred it from keywords taken from
+each spec's *filename*, grepped across `routes/`, `tests/` and `web/assets/`.
+One hit meant implemented. The auto path can no longer return a terminal state
+at all; `done` comes only from a person. This line is a person's, and the
+paragraph above is the evidence it rests on.
+
 Design for a read-only (plus admin-gated delete) browsing gallery for this
 project's design specs, mirroring the pattern of the generated-images
 gallery (`routes/images.py` / `routes/db_images.py` / `web/assets/images.js`,

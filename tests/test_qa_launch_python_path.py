@@ -26,7 +26,6 @@ of them, so a block that could not succeed passed all nine.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 import unittest

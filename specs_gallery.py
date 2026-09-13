@@ -307,38 +307,81 @@ def git_provenance(repo_root: Path, spec_path: str) -> dict[str, str] | None:
 def spec_implementation(repo_root: Path, spec_path: str) -> int:
     """Count of implementation artifacts for *spec_path*.
 
-    Looks under ``docs/superpowers/plans/{YYYY-MM-DD-{topic}}`` for an
-    ``output/`` directory, a ``complete`` marker file, or a ``exec`` file.
-    The plan dir's name is derived from the spec's filename: strip the
-    ``-design.md`` suffix and look for a same-dated plan file in that
-    directory. Returns 0 when no artifact is found.
+    Extracts topic keywords from the spec filename (strips date prefix,
+    ``-design.md`` suffix, splits kebab-case, filters stop words) and then
+    runs ``grep -rl`` across ``routes/``, ``tests/``, and ``web/assets/``.
+
+    Strategy: use compound kebab-case queries first (two words joined with
+    ``-``) because they are highly specific. Fall back to individual ≥ 4
+    char keywords only when no compound hit is found. Cap individual hits
+    at 1 per subdir to avoid noise inflation.
+
+    Returns 0 when no codebase evidence is found.
     """
-    plans_dir = repo_root / "docs" / "superpowers" / "plans"
-    if not plans_dir.is_dir():
-        return 0
-    # Derive the plan directory name from the spec filename.
-    # "2026-09-12-supervisor-map-design.md" → "2026-09-12-supervisor-map"
+    import re as _re
+    import subprocess as _sub
+
     name = Path(spec_path).name
-    stem = name
-    if stem.endswith("-design.md"):
-        stem = stem[: -len("-design.md")]
-    if stem.endswith(".md"):
-        stem = stem[: -len(".md")]
-    candidates = list(plans_dir.glob(f"{stem}/**/*"))
-    if not candidates:
-        # No plan dir at all.
+    # Strip date prefix (YYYY-MM-DD-) and -design.md / .md suffix.
+    stem = _re.sub(r"^\d{4}-\d{2}-\d{2}-", "", name)
+    stem = _re.sub(r"-design\.md$", ".md", stem)
+    stem = _re.sub(r"\.md$", "", stem)
+    # Split kebab-case into words.
+    words = stem.split("-")
+    # Stop words to filter out.
+    STOP_WORDS = {
+        "design", "specs", "spec", "gallery", "next", "ux", "file", "map",
+        "branch", "tree", "diff", "new", "v2", "v3", "update", "change",
+        "rename", "move", "switch", "add", "implement", "create", "fix",
+        "improve", "enhance", "improvement", "migration",
+        "refactor", "refactoring", "support", "adding", "handling",
+        "handle", "enable", "enabled",
+        "integration", "integrate", "switched",
+    }
+    keywords = [w for w in words if w and w not in STOP_WORDS]
+    candidates: list[str] = []
+
+    # Edge: all words filtered (e.g. "design-specs-gallery").
+    # Fall back to full compound search so we still find evidence.
+    if not keywords and len(words) >= 2:
+        for sep in ("-", "_"):
+            candidates.append(sep.join(words))
+        candidates.extend(words)
+    elif keywords:
+        long_kws = [w for w in keywords if len(w) >= 4]
+        # 1) full compound (both hyphen and underscore forms)
+        if len(keywords) >= 2:
+            for sep in ("-", "_"):
+                candidates.append(sep.join(keywords))
+        # 2) adjacent pairs (both forms)
+        for i in range(len(keywords) - 1):
+            for sep in ("-", "_"):
+                candidates.append(sep.join((keywords[i], keywords[i + 1])))
+        # 3) individual long keywords (fallback only)
+        if not candidates or (len(candidates) >= 3 and len(keywords) >= 2):
+            candidates.extend(long_kws)
+    else:
         return 0
+
+    seen_targets: set[tuple[str, str]] = set()
     count = 0
-    for c in candidates:
-        # output/ directory
-        if c.is_dir() and c.name == "output":
-            count += 1
-        # complete marker
-        if c.name == "complete" and c.is_file():
-            count += 1
-        # exec file
-        if c.name == "exec" and c.is_file():
-            count += 1
+    for subdir in ("routes", "tests", "web/assets"):
+        target = repo_root / subdir
+        if not target.is_dir():
+            continue
+        for kw in candidates:
+            if (subdir, kw) in seen_targets:
+                continue
+            seen_targets.add((subdir, kw))
+            try:
+                r = _sub.run(
+                    ["grep", "-rl", "--fixed-strings", kw, str(target)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r.stdout.strip():
+                    count += 1
+            except Exception:
+                pass
     return count
 
 

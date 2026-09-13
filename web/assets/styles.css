@@ -465,8 +465,11 @@ button{touch-action:manipulation}
 /* Opened from within the Settings dialog (also a .dialog-backdrop, z-index
    400) -- without a higher z-index the later-painted Settings backdrop
    covers it entirely, same reason .image-viewer sits at z-index 600 above
-   this same layer for the same "opened from Settings" case. */
-#specViewerDialog{z-index:401}
+   this same layer for the same "opened from Settings" case. #confirmDialog
+   is every delete confirmation in Settings (images.js, machines.js,
+   specs.js) -- reported by Pedro for the Images tab specifically, but the
+   cause is shared with every other tab's delete, not particular to images. */
+#specViewerDialog,#confirmDialog{z-index:401}
 /* Cap the dialog to the viewport and let the body scroll, so a long panel can
    never push the footer buttons off-screen. */
 .dialog{width:min(430px,100%);max-height:calc(100dvh - 36px);display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.4)}

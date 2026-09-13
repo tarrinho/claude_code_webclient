@@ -48,6 +48,41 @@ var _groupStatusKey = {
 // auto-computed status, so it always needs one of its own 4 options selected.
 var _autoToManualDefault = {implemented: 'done', planned: 'planning', spec_only: 'spec_only'};
 
+/** Set an existing <select>'s value/color-class and wire its change handler
+ *  for *spec* -- shared by a freshly-built row select and the viewer
+ *  dialog's static #specViewerStatus, so both stay in sync with exactly
+ *  one place that knows the preselect rule and the color-class swap. */
+function _wireStatusSelect(select, spec) {
+  select.value = spec.status_manual ? spec.status : (_autoToManualDefault[spec.status] || 'spec_only');
+  select.classList.remove(...Object.values(_statusClasses));
+  select.classList.add(_statusClass(select.value));
+  select.onchange = () => {
+    select.classList.remove(...Object.values(_statusClasses));
+    select.classList.add(_statusClass(select.value));
+    _setSpecStatus(spec, select.value, select);
+  };
+}
+
+/** A fresh <select> for the row -- the viewer dialog reuses the static one
+ *  already in index.html instead (see _openSpec), wired the same way. */
+function _makeStatusSelect(spec, extraClass) {
+  const select = document.createElement('select');
+  select.className = `conversation-model${extraClass ? ' ' + extraClass : ''}`;
+  select.setAttribute('aria-label', `Manually set the status of ${spec.title}`);
+  for (const [value, label] of [
+    ['spec_only', 'Spec only'], ['planning', 'Planning'],
+    ['implementing', 'Implementing'], ['done', 'Done'],
+  ]) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  }
+  select.addEventListener('click', event => event.stopPropagation());
+  _wireStatusSelect(select, spec);
+  return select;
+}
+
 function _row(spec) {
   const row = document.createElement('div');
   row.className = 'spec-row';
@@ -62,9 +97,7 @@ function _row(spec) {
   title.textContent = spec.title;
   top.appendChild(title);
 
-  const status = document.createElement('span');
-  status.className = `spec-row-status ${_statusClass(spec.status)}`;
-  status.textContent = _statusLabel(spec.status);
+  const status = _makeStatusSelect(spec, 'spec-row-status');
   top.appendChild(status);
   row.appendChild(top);
 
@@ -131,10 +164,7 @@ async function _openSpec(spec) {
     }
     byId('specViewerContent').innerHTML = clean;
     var statusSelect = byId('specViewerStatus');
-    if (statusSelect) {
-      statusSelect.value = spec.status_manual ? spec.status : (_autoToManualDefault[spec.status] || 'spec_only');
-      statusSelect.onchange = () => _setSpecStatus(spec, statusSelect.value, statusSelect);
-    }
+    if (statusSelect) _wireStatusSelect(statusSelect, spec);
     byId('specViewerDialog').classList.add('open');
   } catch {
     // Silent: same fallback stance as images.js -- a failed open leaves
@@ -162,6 +192,8 @@ async function _setSpecStatus(spec, status, selectEl) {
     loadSpecs(true);
   } catch (error) {
     selectEl.value = previous;
+    selectEl.classList.remove(...Object.values(_statusClasses));
+    selectEl.classList.add(_statusClass(previous));
     notifyResult(error.message, 'error');
   }
 }

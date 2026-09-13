@@ -23,12 +23,35 @@ StartLimitBurst=5
 
 [Service]
 Type=exec
-WorkingDirectory=%h/projects/claude-code-webconsole
+# The release snapshot, not the shared working tree. bin/wc-deploy.sh:12
+# exports a commit here and flips `current`; until 2026-09-13 nothing ran
+# from it, so `current` and --rollback described a directory the service
+# never executed, and every restart shipped whatever six sessions had
+# half-saved.
+WorkingDirectory=%h/.local/share/webconsole/releases/current
+# launch.sh resolves the tailnet address, the certificate and the proxy token.
+# WC_EXEC makes it exec uvicorn instead of backgrounding it, so systemd
+# supervises the server rather than a shell that has already exited.
 # launch.sh resolves the tailnet address, the certificate and the proxy token.
 # WC_EXEC makes it exec uvicorn instead of backgrounding it, so systemd
 # supervises the server rather than a shell that has already exited.
 Environment=WC_EXEC=1
-ExecStart=/usr/bin/env bash launch.sh proxy
+# State stays with the repo, source comes from the release. Every one of
+# these defaults to a path relative to config.py, so without them running
+# from a release dir would open an EMPTY database (the live one is 119MB)
+# and move PROJECTS_ROOT, blanking every chat and breaking every work_dir.
+# Verified 2026-09-13 by importing the release's config with exactly these
+# set: the four paths come out identical to the running server's.
+Environment=WC_DB_PATH=/home/kali/projects/claude-code-webconsole/data/webconsole.db
+Environment=WC_SESSION_DB_PATH=/home/kali/projects/claude-code-webconsole/data/webconsole-sessions.db
+Environment=WC_PROJECTS_ROOT=/home/kali/projects/claude-code-webconsole/projects
+Environment=WC_LOG_FILE=/home/kali/projects/claude-code-webconsole/logs/webconsole.log
+# bin/wc-resolve-python.sh anchors to its own path, so from a release dir
+# it would look for <release>/.venv, find none (releases are source-only
+# by design, wc-deploy.sh:16) and fall back to system python -- the exact
+# outage of 2026-09-12. Named explicitly; the resolver respects it.
+Environment=WC_PYTHON=/home/kali/projects/claude-code-webconsole/.venv/bin/python
+ExecStart=/usr/bin/env bash %h/.local/share/webconsole/releases/current/launch.sh proxy
 Restart=always
 RestartSec=3
 # StartLimitIntervalSec / StartLimitBurst live in [Unit] above -- systemd

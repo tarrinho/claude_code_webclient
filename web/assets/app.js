@@ -1839,7 +1839,10 @@ async function forkChat(chat) {
 async function standbyChat(chat) {
   try {
     const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}/standby`, {method: 'POST'});
-    if (!response.ok) throw new Error('Could not standby conversation');
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || 'Could not standby conversation');
+    }
     const data = await response.json();
     // Show the resume command so the user can paste it into the terminal
     // when they want to bring the session back.

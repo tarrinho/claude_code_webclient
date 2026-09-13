@@ -278,7 +278,7 @@ def spec_status(repo_root: Path, spec_path: str) -> str:
     if len(prefix) != 10 or prefix[4] != "-" or prefix[7] != "-":
         return "spec_only"
     for plan in plans_dir.glob(f"{prefix}-*.md"):
-        return "planned"
+        return "planning"
     return "spec_only"
 
 
@@ -386,11 +386,35 @@ def spec_implementation(repo_root: Path, spec_path: str) -> int:
 
 
 def spec_status_v2(repo_root: Path, spec_path: str) -> str:
-    """"implemented" if implementation artifacts exist, "planned" if a
-    same-dated plan file exists (but no artifacts), else "spec_only".
+    """Auto-detected status, from `routes.db_specs.ALLOWED_STATUSES` only.
+
+    "implementing" when implementation artifacts exist, "planning" when a
+    same-dated plan file does but no artifacts, else "spec_only".
+
+    **It cannot return "done", and that is the point.** It used to return
+    "implemented" the moment `spec_implementation` counted a single artifact —
+    and that count comes from keywords taken from the spec's *filename*,
+    grepped across routes/, tests/ and web/assets/. So a spec was reported
+    complete because a word from its title occurred somewhere in the tree.
+
+    Measured 2026-09-13, four specs whose own status lines say otherwise:
+    tiered-agent-delegation ("not implemented") scored 4, resource-guard
+    ("not yet implemented") scored 8, usage-statistics-billing-route ("not yet
+    implemented") 14, orchestrator-next ("draft for review") 3. resource-guard
+    scores 8 because the words "resource" and "guard" appear in files.
+
+    A keyword hit is evidence that work *started*, which is exactly
+    "implementing". Whether it finished is a judgement no grep can make, so
+    "done" comes only from a person, through the manual override in
+    routes/specs.py.
+
+    The vocabulary matters too: this returned "implemented" and "planned",
+    neither of which is in the set the override endpoint validates against, so
+    one field had two vocabularies and an auto status could not be compared
+    with a manual one.
     """
     if spec_implementation(repo_root, spec_path) > 0:
-        return "implemented"
+        return "implementing"
     # Check for a plan file (same prefix).
     plans_dir = repo_root / "docs" / "superpowers" / "plans"
     if not plans_dir.is_dir():
@@ -403,14 +427,14 @@ def spec_status_v2(repo_root: Path, spec_path: str) -> str:
         stem = stem[: -len(".md")]
     for plan in plans_dir.glob(f"{stem}/**"):
         if plan.is_file() and plan.name.endswith(".md") and plan.name != stem + ".md":
-            return "planned"
+            return "planning"
         if plan.is_dir():
-            return "planned"
+            return "planning"
     # Also try the old single-file match as fallback.
     prefix = name[:10] if len(name) >= 10 else ""
     if len(prefix) == 10 and prefix[4] == "-" and prefix[7] == "-":
         for plan in plans_dir.glob(f"{prefix}-*.md"):
-            return "planned"
+            return "planning"
     return "spec_only"
 
 

@@ -1283,6 +1283,73 @@ def _repair_sync(path: Path) -> dict[str, Any]:
     }
 
 
+def poison_written_since(session_id: str, offset: int) -> dict[str, Any]:
+    """Count refusable blocks written to *session_id* after byte *offset*.
+
+    Instrumentation for one question the source could not answer: a
+    gateway-backed conversation is repaired at the start of every turn and is
+    poisoned again by the time anyone looks, so which backend is putting it
+    back, and does it ever happen on one that should not?
+
+    Reads only the bytes the turn appended. Scanning the whole file would cost
+    a full parse of a transcript that routinely runs to tens of megabytes, and
+    would also misattribute an earlier turn's backlog to this one -- every turn
+    on a long conversation would report the same numbers for ever.
+
+    Bound to `_is_refused_block`, never its own copy of that rule. The repair
+    and the measurement disagreeing about what poison is would make the
+    measurement worthless for judging the repair, and this repo has already
+    watched one duplicated rule drift into being wrong twice over.
+
+    Returns ``{"foreign_thinking": int, "empty_text": int, "models": [str]}``.
+    Never raises: this runs on the turn-completion path, where a failure to
+    measure must not become a failure to finish.
+    """
+    empty: dict[str, Any] = {"foreign_thinking": 0, "empty_text": 0, "models": []}
+    path = transcript_path(session_id)
+    if path is None:
+        return empty
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, int(offset or 0)))
+            raw = handle.read()
+    except (OSError, ValueError):
+        return empty
+
+    foreign = blank_text = 0
+    models: list[str] = []
+    for line in raw.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, AttributeError):
+            # A transcript is appended to by the CLI while this reads it, so a
+            # torn final line is ordinary rather than exceptional.
+            continue
+        if not isinstance(record, dict):
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        hit = False
+        for block in content:
+            if _is_foreign_thinking(block):
+                foreign += 1
+                hit = True
+            elif _is_refused_block(block):
+                blank_text += 1
+                hit = True
+        if hit:
+            model = str(message.get("model") or "").strip()
+            if model and model not in models:
+                models.append(model)
+    return {"foreign_thinking": foreign, "empty_text": blank_text, "models": models}
+
+
 async def repair_if_needed(session_id: str) -> dict[str, Any]:
     """Make *session_id* replayable on a strict API, if it is not already."""
     path = transcript_path(session_id)

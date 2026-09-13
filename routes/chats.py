@@ -1703,7 +1703,8 @@ async def stream_handler(request: Request, chat_id: str):
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    chat = await db.chat_get(chat_id, session["user"])
+    owner = await owner_of(session)
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         _log.error(
             "stream_handler: chat not found user=%s chat_id=%s "

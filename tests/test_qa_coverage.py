@@ -1133,13 +1133,13 @@ class ChatCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["title"], "Untitled")
 
     async def test_create_default_title_for_whitespace(self):
-        """Whitespace-only title strips to empty (no fallback in handler)."""
+        """Whitespace-only title strips to empty → falls back to 'Untitled'."""
         r = self._req(title="   ")
         r.state.session = _make_admin_session()
         resp = await chat_routes.handle_chat_create(r)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.body)
-        self.assertEqual(data["title"], "")  # stripped, no reversion
+        self.assertEqual(data["title"], "Untitled")
 
     async def test_create_long_title_truncated(self):
         """Title longer than 200 chars is truncated."""

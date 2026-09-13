@@ -1603,19 +1603,12 @@ async def handle_sessions_resume(request: Request, session_id: str):
         if cwd:
             source = {"sessionId": session_id, "cwd": cwd}
         else:
-            _log.error(
-                "cli_session_not_found: user=%s session_id=%s "
-                "(no running session and no transcript on disk) — "
-                "ensure claude-code is running, or that the conversation "
-                "exists under the projects directory",
-                owner, session_id,
-            )
             raise HTTPException(
                 status_code=404,
                 detail="Conversation not found — no running session and no transcript",
             )
 
-    # One place answers "who owns this?" -- see shared.owner_of. This was the
+    # One place answers "who owns this?" — see shared.owner_of. This was the
     # same translation inline, and its absence in handle_chat_create is what
     # made that endpoint fail the same way.
     _owner_id = await owner_of(session)

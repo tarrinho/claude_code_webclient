@@ -458,6 +458,7 @@ async def handle_chat_create(request: Request):
         )
     # Temp voice chat with parent context
     if parent_chat_id:
+        owner = await owner_of(session)
         parent = await db.chat_get(parent_chat_id, session["user"])
         if not parent:
             raise HTTPException(status_code=404, detail="Parent chat not found")
@@ -480,6 +481,7 @@ async def handle_chat_create(request: Request):
 async def handle_chat_get(request: Request, chat_id: str):
     """GET /api/chats/{id} -- get chat metadata and transcript."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         _log.warning(
@@ -705,6 +707,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 status_code=400, detail="type must be 'normal' or 'brainstorming'"
             )
 
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -765,6 +768,7 @@ async def handle_voice_handoff(request: Request, chat_id: str):
 async def handle_chat_standby(request: Request, chat_id: str):
     """POST /api/chats/{id}/standby — kill the linked CLI process via wc-session-standby.sh."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -814,6 +818,7 @@ async def handle_chat_standby(request: Request, chat_id: str):
 async def handle_chat_wake(request: Request, chat_id: str):
     """POST /api/chats/{id}/wake — resume a standby'd CLI process via wc-session-wake.sh."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -1020,6 +1025,7 @@ def _image_markdown(paths: list[str]) -> str:
 async def handle_chat_file(request: Request, chat_id: str):
     """GET /api/chats/{id}/file?path=... -- share an image or PDF in workspace."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -1070,6 +1076,7 @@ async def handle_chat_file(request: Request, chat_id: str):
 async def handle_chat_export(request: Request, chat_id: str):
     """GET /api/chats/{id}/export -- download chat as Markdown."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
         _log.warning(
@@ -1885,6 +1892,7 @@ async def handle_chat_live(request: Request, chat_id: str):
     client saw, so a reattach costs only the gap rather than the conversation.
     """
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -1950,6 +1958,7 @@ async def handle_turn_stop(request: Request, chat_id: str):
     distinguish "I am leaving" from "stop working".
     """
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -1971,6 +1980,7 @@ async def handle_turn_stop(request: Request, chat_id: str):
 async def handle_queue_list(request: Request, chat_id: str):
     """GET /api/chats/{id}/queue -- prompts waiting behind the running turn."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -1984,6 +1994,7 @@ async def handle_queue_list(request: Request, chat_id: str):
 async def handle_queue_delete(request: Request, chat_id: str, queue_id: int):
     """DELETE /api/chats/{id}/queue/{queue_id} -- discard a queued prompt."""
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"], include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -2004,6 +2015,7 @@ async def handle_queue_release(request: Request, chat_id: str, queue_id: int):
     immediately; otherwise it returns to the queue and drains normally.
     """
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -2385,6 +2397,7 @@ async def handle_chat_fork(request: Request, chat_id: str):
     POST /api/chats/{chat_id}/fork returns the new chat dict.
     """
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -2479,6 +2492,7 @@ async def handle_chat_question_get(request: Request):
     """
     session = request.state.session
     chat_id = request.path_params["chat_id"]
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -2517,6 +2531,7 @@ async def handle_chat_question_answer(request: Request):
     """POST /api/chats/{id}/question -- choose one of the prompt's options."""
     session = request.state.session
     chat_id = request.path_params["chat_id"]
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -2582,6 +2597,7 @@ async def handle_chat_question_dismiss(request: Request):
     """
     session = request.state.session
     chat_id = request.path_params["chat_id"]
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -2693,6 +2709,7 @@ async def handle_chat_auto_answer_get(request: Request, chat_id: str):
     answers and skips.
     """
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -2973,6 +2990,7 @@ async def handle_chat_sync(request: Request, chat_id: str):
     _sync_linked_chat; this only resolves and scopes the conversation.
     """
     session = request.state.session
+    owner = await owner_of(session)
     chat = await db.chat_get(chat_id, session["user"])
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")

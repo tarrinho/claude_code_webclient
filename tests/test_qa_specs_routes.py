@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+import config
+import db
 import routes.specs as specs_routes
 import specs_gallery
 
@@ -26,7 +28,11 @@ class _RealSpecsRootMixin:
     next to the specs root -- the exact shape C2's exploit used
     (decode_id(encode_id("config.py"), repo_root) resolving successfully).
     Patches routes.specs._REPO_ROOT for the test's duration so the real
-    (unmocked) discover_specs/enrich/decode_id/encode_id run against it."""
+    (unmocked) discover_specs/enrich/decode_id/encode_id run against it.
+
+    Also inits a real temp DB: handle_specs_list now reads the spec_status
+    table (routes/db_specs.py) to overlay a manual status override, so
+    db.db_conn must be a real connection, not None."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -41,6 +47,18 @@ class _RealSpecsRootMixin:
         self._patcher = patch.object(specs_routes, "_REPO_ROOT", self.root)
         self._patcher.start()
         self.addCleanup(self._patcher.stop)
+
+    async def asyncSetUp(self):
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
 
 
 class ListRouteTests(_RealSpecsRootMixin, unittest.IsolatedAsyncioTestCase):

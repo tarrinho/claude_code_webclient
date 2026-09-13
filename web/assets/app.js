@@ -6,13 +6,13 @@
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
-import {createChatListController} from './chat-list.js?v=16066203';
+import {createChatListController} from './chat-list.js?v=5906913';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=13571435';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
-import {loadSpecs, _closeSpecViewer} from './specs.js?v=2093202';
+import {loadSpecs, _closeSpecViewer} from './specs.js?v=14070098';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot

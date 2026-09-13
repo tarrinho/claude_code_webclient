@@ -9,21 +9,44 @@ import {notifyResult} from './server-stats.js?v=5278923';
 
 const byId = id => document.getElementById(id);
 
+// The 3 auto-computed values (specs_gallery.spec_status_v2, git/filesystem
+// derived) and the 4 manually-settable ones (routes/db_specs.ALLOWED_STATUSES)
+// are deliberately different words -- "planned"/"implemented" (auto) vs
+// "planning"/"done" (manual) -- so a status string alone tells you which kind
+// it is, the same way spec.status_manual does structurally.
+var _statusLabels = {
+  implemented: 'Implemented', planned: 'Planned', spec_only: 'Spec only',
+  planning: 'Planning', implementing: 'Implementing', done: 'Done',
+};
+var _statusClasses = {
+  implemented: 'status-implemented', planned: 'status-planned', spec_only: 'status-spec-only',
+  planning: 'status-planning', implementing: 'status-implementing', done: 'status-done',
+};
+
 function _statusLabel(status) {
-  if (status === 'implemented') return 'Implemented';
-  if (status === 'planned') return 'Planned';
-  return 'Spec only';
+  return _statusLabels[status] || 'Spec only';
 }
 
 function _statusClass(status) {
-  if (status === 'implemented') return 'status-implemented';
-  if (status === 'planned') return 'status-planned';
-  return 'status-spec-only';
+  return _statusClasses[status] || 'status-spec-only';
 }
 
-var _groupOrder = {implemented: 0, planned: 1, 'spec-only': 2};
-var _groupLabel = {implemented: 'Implemented', planned: 'Planned', 'spec-only': 'Spec only'};
-var _groupStatusKey = {implemented: 'implemented', planned: 'planned', 'spec-only': 'spec_only'};
+var _groupOrder = {
+  implemented: 0, done: 1, implementing: 2, planned: 3, planning: 4, 'spec-only': 5,
+};
+var _groupLabel = {
+  implemented: 'Implemented', done: 'Done', implementing: 'Implementing',
+  planned: 'Planned', planning: 'Planning', 'spec-only': 'Spec only',
+};
+var _groupStatusKey = {
+  implemented: 'implemented', done: 'done', implementing: 'implementing',
+  planned: 'planned', planning: 'planning', 'spec-only': 'spec_only',
+};
+
+// Preselect a sensible manual value for a spec that has no override yet --
+// the combo box is a "set this" control, not a read-only mirror of the
+// auto-computed status, so it always needs one of its own 4 options selected.
+var _autoToManualDefault = {implemented: 'done', planned: 'planning', spec_only: 'spec_only'};
 
 function _row(spec) {
   const row = document.createElement('div');
@@ -107,10 +130,39 @@ async function _openSpec(spec) {
       metaEl.textContent = parts.join(' · ');
     }
     byId('specViewerContent').innerHTML = clean;
+    var statusSelect = byId('specViewerStatus');
+    if (statusSelect) {
+      statusSelect.value = spec.status_manual ? spec.status : (_autoToManualDefault[spec.status] || 'spec_only');
+      statusSelect.onchange = () => _setSpecStatus(spec, statusSelect.value, statusSelect);
+    }
     byId('specViewerDialog').classList.add('open');
   } catch {
     // Silent: same fallback stance as images.js -- a failed open leaves
     // the list intact rather than surfacing a broken viewer.
+  }
+}
+
+/** Set a spec's manual status. Reverts the select on failure and refreshes
+ *  the list on success so its grouping reflects the new status -- same
+ *  "server truth over local patching" stance as the rest of this file. */
+async function _setSpecStatus(spec, status, selectEl) {
+  var previous = selectEl.value;
+  try {
+    const response = await apiFetch(`/api/specs/${encodeURIComponent(spec.id)}/status`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status}),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || 'Could not set status');
+    }
+    spec.status = status;
+    spec.status_manual = true;
+    loadSpecs(true);
+  } catch (error) {
+    selectEl.value = previous;
+    notifyResult(error.message, 'error');
   }
 }
 

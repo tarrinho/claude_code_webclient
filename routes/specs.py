@@ -1,8 +1,12 @@
 """Routes for /api/specs: the design-specs gallery.
 
 List, view, and admin-gated delete for this repo's design specs
-(specs_gallery.py). No database table -- specs are shared, git-tracked
-files with no per-owner concept, unlike routes/images.py's generated_images.
+(specs_gallery.py). specs_gallery.py itself keeps no database table --
+specs are shared, git-tracked files with no per-owner concept, unlike
+routes/images.py's generated_images -- but this route module does read one
+small table (routes/db_specs.py's spec_status) to overlay a manually-set
+status (spec_only/planning/implementing/done) on top of the auto-computed
+one, for specs an admin has explicitly moved past what git history implies.
 See docs/superpowers/specs/2026-09-12-design-specs-gallery-design.md.
 """
 from __future__ import annotations
@@ -15,7 +19,9 @@ from typing import Any, Final
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+import db
 import specs_gallery
+from routes.db_specs import ALLOWED_STATUSES
 
 _log = logging.getLogger("wc.app")
 
@@ -64,8 +70,22 @@ def _is_known_spec(root: Path, candidate: Path) -> bool:
 
 
 async def handle_specs_list(request: Request):
-    """GET /api/specs -- every spec, enriched, newest (by mtime) first."""
+    """GET /api/specs -- every spec, enriched, newest (by mtime) first.
+
+    A manual status (routes/db_specs.spec_status) overrides the
+    auto-computed one wherever an admin has set it; specs with no override
+    keep exactly the git/filesystem-derived status specs_gallery.py always
+    computed. ``status_manual`` tells the client which case it is looking
+    at, so the viewer's combo box can distinguish "nobody has said
+    otherwise" from "someone explicitly marked this done".
+    """
     specs = await asyncio.to_thread(_discover_and_enrich, _REPO_ROOT)
+    overrides = await db.spec_status_get_all({s["path"] for s in specs})
+    for spec in specs:
+        override = overrides.get(spec["path"])
+        spec["status_manual"] = override is not None
+        if override is not None:
+            spec["status"] = override
     return JSONResponse({"specs": specs})
 
 
@@ -112,6 +132,35 @@ async def handle_spec_delete(request: Request, spec_id: str):
     return JSONResponse({"ok": True})
 
 
+async def handle_spec_status_set(request: Request, spec_id: str):
+    """PUT /api/specs/{id}/status -- admin-only. Body: {"status": "..."},
+    one of ALLOWED_STATUSES. Sets a manual override that handle_specs_list
+    returns in place of the auto-computed status from then on."""
+    session = request.state.session
+    if session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    path = specs_gallery.decode_id(spec_id, _REPO_ROOT)
+    known = path is not None and await asyncio.to_thread(_is_known_spec, _REPO_ROOT, path)
+    if not known:
+        if path is not None:
+            _log.warning(
+                "spec_outside_allowed_dirs: user=%s spec_id=%s path=%s",
+                session["user"], spec_id, path,
+            )
+        raise HTTPException(status_code=404, detail="Spec not found")
+    data = await request.json()
+    status = data.get("status") if isinstance(data, dict) else None
+    if status not in ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status must be one of: {', '.join(sorted(ALLOWED_STATUSES))}",
+        )
+    rel = str(path.relative_to(_REPO_ROOT))
+    await db.spec_status_set(rel, status)
+    _log.info("spec_status_set user=%s path=%s status=%s", session["user"], rel, status)
+    return JSONResponse({"ok": True, "status": status})
+
+
 @router.get("/api/specs")
 async def _api_specs_list(request: Request):
     return await handle_specs_list(request)
@@ -125,3 +174,8 @@ async def _api_spec_content(request: Request, spec_id: str):
 @router.delete("/api/specs/{spec_id}")
 async def _api_spec_delete(request: Request, spec_id: str):
     return await handle_spec_delete(request, spec_id)
+
+
+@router.put("/api/specs/{spec_id}/status")
+async def _api_spec_status_set(request: Request, spec_id: str):
+    return await handle_spec_status_set(request, spec_id)

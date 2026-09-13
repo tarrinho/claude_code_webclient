@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=12217735">
+<link rel="stylesheet" href="/assets/styles.css?v=2864241">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -228,6 +228,15 @@
         <div class="spec-viewer-path" id="specViewerPath"></div>
         <div class="spec-viewer-meta" id="specViewerMeta"></div>
       </div>
+      <label class="spec-viewer-status-wrap" for="specViewerStatus">
+        Status
+        <select id="specViewerStatus" class="conversation-model" aria-label="Manually set this spec's status">
+          <option value="spec_only">Spec only</option>
+          <option value="planning">Planning</option>
+          <option value="implementing">Implementing</option>
+          <option value="done">Done</option>
+        </select>
+      </label>
       <button type="button" class="btn-secondary" id="specViewerClose">Close</button>
     </div>
     <!-- Sanitized (nh3 server-side, DOMPurify again at this innerHTML sink)
@@ -572,7 +581,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=3433972"></script>
+<script type="module" src="/assets/app.js?v=8972672"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

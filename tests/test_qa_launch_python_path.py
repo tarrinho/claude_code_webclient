@@ -77,6 +77,29 @@ class ResolverTests(unittest.TestCase):
         self.assertRegex(result.stdout, r"RESOLVED=\S*python3?\b")
         self.assertIn("WARNING", result.stderr)
 
+    def test_it_finds_the_venv_from_any_working_directory(self):
+        """Anchored to the resolver's own path, not to $PWD.
+
+        The first version keyed off $PWD, so sourcing it from anywhere but the
+        repo root fell back to the system interpreter *silently* -- the exact
+        failure this file exists to end, reintroduced by the fix for it.
+        Measured from bin/: /usr/bin/python3, with no warning that a venv sat
+        one directory up. Both real callers happen to cd to the root first, so
+        nothing would have caught it.
+        """
+        real_venv = ROOT / ".venv" / "bin" / "python"
+        if not real_venv.is_file():
+            self.skipTest("no .venv in this checkout to resolve to")
+        for cwd in ("/tmp", str(ROOT / "bin")):
+            with self.subTest(cwd=cwd):
+                result = subprocess.run(
+                    ["bash", "-c", f'cd {cwd} && . {RESOLVER} 2>/dev/null; '
+                                   'echo "RESOLVED=$WC_PYTHON"'],
+                    capture_output=True, text=True, timeout=30,
+                    env={k: v for k, v in os.environ.items() if k != "WC_PYTHON"},
+                )
+                self.assertIn(f"RESOLVED={real_venv}", result.stdout)
+
     def test_an_existing_choice_is_respected(self):
         """So a deployment that already knows its interpreter is not overridden
         -- the same contract WC_CLAUDE_PATH has."""
@@ -117,6 +140,63 @@ class LaunchUsesTheResolvedInterpreterTests(unittest.TestCase):
         self.assertTrue(RESOLVER.is_file(), f"{RESOLVER} does not exist")
         result = subprocess.run(
             ["bash", "-n", str(RESOLVER)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ProxyRunUsesTheResolvedInterpreterTests(unittest.TestCase):
+    """The second caller, and the reason the resolver is a sourced file.
+
+    bin/wc-proxy-run.sh ran `exec python3 claude_proxy.py`. That is harmless
+    today only because claude_proxy.py imports nothing but stdlib and
+    backend_env -- it becomes the same outage launch.sh had the day the proxy
+    gains a dependency, and the proxy is on the turn hot path, so its failure
+    takes every turn with it rather than the web UI alone.
+
+    wc-resolve-claude-path.sh's own comment already names this shape: it was
+    split out of this very script because "a second inline copy in launch.sh
+    would have been a second place to forget". The python resolver gets the
+    same treatment for the same reason, before the forgetting rather than
+    after.
+    """
+
+    PROXY_RUN = ROOT / "bin" / "wc-proxy-run.sh"
+
+    @staticmethod
+    def _code_lines(text: str) -> list[str]:
+        """Comment lines are excluded, and that is not tidiness: the header
+        says "Run claude_proxy.py in the foreground", so a check that matches
+        any line naming the script fails on prose describing it. The same trap
+        passed a mutated command in test_qa_rules_preflight.py until the
+        comments were stripped there too."""
+        return [
+            line for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    def test_it_does_not_exec_bare_python3(self):
+        offenders = [
+            line.strip()
+            for line in self._code_lines(self.PROXY_RUN.read_text(encoding="utf-8"))
+            if "claude_proxy.py" in line and "python3" in line
+        ]
+        self.assertEqual(offenders, [], f"bare python3 runs the proxy: {offenders}")
+
+    def test_it_sources_the_resolver(self):
+        self.assertIn(
+            "wc-resolve-python.sh",
+            self.PROXY_RUN.read_text(encoding="utf-8"))
+
+    def test_the_proxy_is_started_with_the_resolved_interpreter(self):
+        text = self.PROXY_RUN.read_text(encoding="utf-8")
+        starts = [line for line in self._code_lines(text) if "claude_proxy.py" in line]
+        self.assertTrue(starts, "wc-proxy-run.sh no longer starts the proxy")
+        for line in starts:
+            with self.subTest(line=line.strip()):
+                self.assertIn("WC_PYTHON", line)
+
+    def test_it_still_parses(self):
+        result = subprocess.run(
+            ["bash", "-n", str(self.PROXY_RUN)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

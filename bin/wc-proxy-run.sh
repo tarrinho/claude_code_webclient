@@ -20,8 +20,17 @@ wc_resolve_proxy_token
 # shellcheck source=bin/wc-resolve-claude-path.sh
 . "$(dirname "$0")/wc-resolve-claude-path.sh"
 
+# Resolve the interpreter the same way launch.sh does. claude_proxy.py imports
+# only stdlib and backend_env today, so a bare python3 happens to work -- but
+# that is luck, not design, and it is exactly the luck that ran out for
+# launch.sh on 2026-09-12 when a new dependency landed in .venv and the service
+# spent two and a half hours failing to start. The proxy is on the turn hot
+# path, so the same failure here takes every turn with it, not just the web UI.
+# shellcheck source=bin/wc-resolve-python.sh
+. "$(dirname "$0")/wc-resolve-python.sh"
+
 # exec, so the supervisor watches the proxy itself rather than this wrapper --
 # otherwise a crashed proxy leaves a live shell and looks healthy.
-exec python3 claude_proxy.py \
+exec "$WC_PYTHON" claude_proxy.py \
     --host "${WC_PROXY_HOST:-127.0.0.1}" \
     --port "${WC_PROXY_PORT:-9000}"

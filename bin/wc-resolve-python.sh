@@ -31,9 +31,17 @@
 # and was found only by running it (031e337).
 # >>> python-path-block
 if [ -z "${WC_PYTHON:-}" ]; then
+    # Anchored to this file, not to $PWD. Keying off the caller's working
+    # directory meant sourcing it from anywhere else fell silently back to the
+    # system interpreter -- which is the precise failure this file exists to
+    # end, reintroduced by the fix for it. Measured: sourced from bin/, $PWD
+    # resolution returned /usr/bin/python3 with no warning that a venv was
+    # sitting one directory up.
+    _py_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
     for _py_candidate in \
-        "$PWD/.venv/bin/python" \
-        "$PWD/.venv/bin/python3"
+        "$_py_root/.venv/bin/python" \
+        "$_py_root/.venv/bin/python3" \
+        "$PWD/.venv/bin/python"
     do
         if [ -x "$_py_candidate" ]; then
             WC_PYTHON="$_py_candidate"

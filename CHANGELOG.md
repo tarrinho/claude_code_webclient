@@ -20,6 +20,96 @@ churn.
 
 ---
 
+## [Unreleased]
+
+## [0.17.3] — 2026-09-13
+
+Two days of concurrent work across multiple sessions sharing one host and one
+working tree. Grouped by theme below rather than one line per commit — several
+dozen of the commits between 0.17.2 and here are lint/style/asset-resync
+fixups of work already covered by another bullet.
+
+### Added
+
+- **Settings > Specs**: browse every design spec in the repo — list, rendered
+  markdown view, delete, status grouping (auto-computed from git/plan
+  history), reverse-reference tracking, file path display, and a manual
+  status override (spec only / planning / implementing / done) that takes
+  precedence over the auto-computed value once an admin sets it, from both
+  the list row and the viewer dialog.
+- **Settings > Images**: a cross-chat gallery of every image any conversation
+  has ever generated — list, view, delete — independent of whether the
+  originating chat still exists (the file's location is snapshotted at
+  index time, not looked up live). Each tile links back to its chat when the
+  chat still exists, or reads "(chat deleted)" when it does not.
+- **Standby/wake for terminal Claude sessions** — suspend an idle CLI session
+  to free its memory without losing its state, and resume it later.
+- **Refresh all** button in Settings > Backends (machines, transports, tunnel
+  status and every machine's model list in one pass, rather than needing to
+  leave and re-enter the tab).
+- Hard refresh button, a mobile layout fix, and a chat goal bar in the
+  conversation topbar.
+
+### Changed
+
+- **Chat auto-naming no longer overwrites the visible task name on a trivial
+  follow-up.** A reply like "yes" or "sounds good" used to become the whole
+  visible name of an untitled chat, silently erasing whatever real goal was
+  showing; now only a prompt carrying real content updates it. Separately, a
+  session that has registered its own name (e.g. a terminal session resumed
+  from its transcript) keeps that name permanently rather than being renamed
+  by the generator on its next turn.
+- **Every chat/session ownership lookup now resolves through one `owner_of()`
+  helper** instead of each route handler reading `session["user"]` directly.
+  Closes a long-tail of name-vs-UUID mismatches: a session minted before
+  login switched from username to UUID identity carries the username for its
+  whole TTL, and any handler that assumed otherwise 500'd or silently
+  mis-scoped its query the moment such a session hit it.
+- **Production now runs from an isolated release snapshot**
+  (`bin/wc-deploy.sh`), not the shared working tree six-plus sessions edit
+  concurrently. A restart used to ship whichever half-finished edit happened
+  to be on disk at that moment; a deploy now exports a specific commit to its
+  own directory first, so "is the fix live" is answerable from a commit id
+  rather than by exploiting the running server.
+- **`launch.sh` and the proxy resolve the venv interpreter explicitly**
+  rather than trusting a bare `python3` on `PATH` — the second time a wrong
+  interpreter has caused a production outage on this host (see #106 below).
+
+### Fixed
+
+- **#104/#105** — chat creation crashed with `UnboundLocalError` for a
+  title-only request carrying no prompt.
+- **#106** — the live service was down 2h36m after a new dependency (`nh3`)
+  reached `requirements.txt` and `.venv` but never the system Python
+  interpreter the deployed service actually ran under; every restart
+  crash-looped on `ModuleNotFoundError` before it could bind a socket.
+- **#107** — Settings > Specs showed no files at all whenever the list
+  request failed for any reason (expired session, 500, network error) —
+  indistinguishable from a genuinely empty gallery.
+- **#108** — Settings > Specs took 15.2s to load 23 specs; batched what had
+  been one subprocess spawn per spec into two calls total, cutting it to
+  roughly 1.5s.
+- **#109** — a delete-confirmation dialog opened from Settings > Images
+  rendered behind the Settings panel itself, both dialogs sharing one
+  z-index and falling back to DOM order.
+- **#110** — `GET /api/images` and every `routes/transports.py` endpoint
+  returned 500 in production: the `owner_of` refactor above left both files
+  without the import it depends on.
+- A turn refused for low host memory used to fail silently in the composer;
+  it now shows a toast explaining why.
+- Messages could render twice, or concatenate, after a stalled response or a
+  race with new-chat creation.
+- The model picker stayed empty forever after one failed or empty load.
+- The health check built a bare-IP URL that always failed under this host's
+  SNI-only TLS routing, so it could never tell a healthy server from a dead
+  one.
+- The cross-transport agent relay never imported the module it called.
+- A resumed CLI session's own registered name is preserved rather than
+  overwritten by the auto-generated one.
+- Transcript repair for strict-backend replay ran against too few backends.
+- A dead session's status is blanked where it is computed, once, rather than
+  left for every reader of it to notice independently.
+
 ## [0.17.2] — 2026-09-11
 
 0.17.1 was a version bump with no release of its own: it landed between two

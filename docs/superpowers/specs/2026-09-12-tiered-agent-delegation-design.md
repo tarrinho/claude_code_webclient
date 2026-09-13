@@ -1,7 +1,8 @@
 # Tiered agent delegation: routing a goal across models by capability, cost and host load
 
 **Date:** 2026-09-12
-**Status:** design, approved in chat; not implemented
+**Status:** design, complete and implementable; not implemented. One measurement
+is outstanding and is named as such in §2 — it does not block starting.
 **Amended:** 2026-09-13 — three changes, all in response to review by Pedro.
 (1) §3.2 added: write-capable tasks stay local, reconciled in from
 `AGENT-MODELS-DECISION.md`, which is deleted in the same commit so this is the
@@ -18,6 +19,14 @@ type this model is measured best at (§2, "What the deadline actually costs").
 The deadline is raised to **90s**. Two smaller fixes: §1.1 now carries the
 rung-0 model's own row rather than omitting it, and two stale code references
 are corrected.
+
+**Completed:** 2026-09-13. Two gaps that would have stopped an implementer are
+closed. §2.2 writes out all six escalation ladders — `MAX_ATTEMPTS = 3` requires
+three named rungs per task type, and the third was not derivable from the entry
+rung. §3.1's table gains the `mutates` column that §3.2 requires; without it
+every pattern would have fallen to §3.2's `True` default and no task could ever
+have been placed on a transport, which is the same shape of bug as the capacity
+gate that could never open. §4 and §5 follow both through.
 
 A goal is decomposed recursively into sub-agents, and every node is routed to
 the cheapest model measured capable of its task type, placed on a host with the
@@ -355,13 +364,60 @@ RAM is the real local constraint — a 4 GB box running six agents — which is 
 stop at the first paid rung, which is 100% on four of the six task types.
 
 **A leaf gets at most three rungs, so the ladder is never walked end to end.**
-`vllm → luna → mini` for a coding leaf, `vllm → sonnet → opus` for a
-comprehension one. `MAX_ATTEMPTS` is what stops a pathological leaf from
-spending five models' worth of budget before failing.
+`MAX_ATTEMPTS` is what stops a pathological leaf from spending five models'
+worth of budget before failing.
+
+### 2.2 The full ladder, written out
+
+`MAX_ATTEMPTS = 3` means every task type needs exactly three rungs named, and
+an implementer cannot derive the third from the entry rung alone. All six:
+
+| task type | attempt 1 | attempt 2 | attempt 3 |
+|---|---|---|---|
+| coding | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
+| long-context | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
+| multi-turn | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
+| planning | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
+| comprehension | `vllm/Qwen3.6-35B-A3B-NVFP4` | `claude-sonnet-5` | `claude-opus-5` |
+| reasoning | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.4-mini` | `claude-opus-5` |
+| split decision | `claude-sonnet-5` | — | — |
+
+**The generating rule:** start at the type's entry rung from §2's table, then
+walk the global order `vllm → luna → mini → sonnet → opus`, **skipping any model
+measured worse on this task type than the one it is replacing.** Two rows come
+out of that rule rather than out of position, and both are worth stating because
+both look like mistakes otherwise.
+
+**Reasoning skips Sonnet.** The global order puts Sonnet between mini and Opus,
+but Sonnet measures 75% on reasoning against mini's 86% — escalating into it is
+a downgrade. mini goes straight to Opus, which is the 100% the §2 cost
+arithmetic already prices (`0.86 × 1.13 + 0.14 × (1.13 + 17.25) = $3.54/1k`).
+
+**Comprehension escalates into a model measured worse, deliberately.** Opus is
+50% on comprehension against Sonnet's 100%, so the skip rule says stop at Sonnet
+and give the type no third attempt. It gets one anyway, for three reasons: those
+cells are n=2 and n=2, far too thin to rank two models 50 points apart; Opus at
+50% still doubles luna and mini at 25%, so it is not a *cheap* model in
+disguise; and comprehension is the type most likely to need a retry, so leaving
+it with no escalation trades a well-evidenced cost for a badly-evidenced one.
+**This is the weakest cell in the table.** If a re-run with real sample sizes
+confirms Opus below Sonnet on comprehension, delete the third rung rather than
+reordering it — there is nothing else measured above Sonnet on this type.
+
+**Where every 100% ladder is really a provider change, not a capability
+change.** For coding, long-context, multi-turn and planning, all four of vllm,
+luna, mini and Sonnet measure 100%. Escalating there buys nothing in capability
+and is not meant to: the second and third attempts exist to survive a transient
+gateway failure or a timeout, which is why they cross from the self-hosted model
+to Azure and then to a second Azure deployment. Read those three rows as
+*retries on independent infrastructure*, and do not "optimise" them by
+collapsing to a single model — that is the property they are buying.
 
 **Excluded outright:** `vllm/Qwen3.5-0.8B` (23% correct, 0% on reasoning),
 `claude-haiku-4-5` (dearer and slower than Sonnet), `claude-fable-5` (100% but
-$23.15/1k, 4.1× Sonnet).
+$23.15/1k, 4.1× Sonnet). Note that Haiku measures 100% on comprehension and is
+still excluded — the exclusion is on cost and latency, so if comprehension's
+third rung is ever reopened, Haiku is the candidate to re-price first.
 
 ---
 
@@ -396,20 +452,41 @@ The tier table is keyed by `task_type`, and **nothing in the codebase computes
 one.** `_score_complexity` yields 1–5, not a type; the benchmark's types were
 labelled by hand in the harness.
 
-Extend `orchestrator.COMPLEXITY_PATTERNS` into a map emitting `(type, score)`
-together. Its keys already read like types:
+Extend `orchestrator.COMPLEXITY_PATTERNS` into a map emitting
+`(type, score, mutates)` together — the third field is required by §3.2, which
+is why it is filled in here rather than left to the implementer. Its keys
+already read like types:
 
-| existing pattern | score | type it implies |
-|---|---|---|
-| `architect\|design.*system\|create.*framework` | 4 | planning |
-| `implement.*multiple\|coordinate.*agent\|orchestrate` | 5 | planning |
-| `debug.*complex\|trace.*error.*chain\|performance.*bottleneck` | 4 | reasoning |
-| `write.*test.*suite\|integration.*test\|e2e.*test` | 3 | coding |
-| `analyze.*code.*review\|refactor.*large\|migrate.*database` | 4 | coding |
-| `write.*doc.*umentation\|create.*tutorial\|explain.*concept` | 2 | comprehension |
-| `research.*api.*document\|find.*replacement\|evaluate.*option` | 3 | comprehension |
-| `read.*file\|list.*directory\|grep.*pattern\|summarize.*log` | 1 | long-context |
-| `simple\|small\|quick\|minor\|fix.*typo` | 1 | coding |
+| existing pattern | score | type it implies | `mutates` |
+|---|---|---|---|
+| `architect\|design.*system\|create.*framework` | 4 | planning | False |
+| `implement.*multiple\|coordinate.*agent\|orchestrate` | 5 | planning | **True** |
+| `debug.*complex\|trace.*error.*chain\|performance.*bottleneck` | 4 | reasoning | False |
+| `write.*test.*suite\|integration.*test\|e2e.*test` | 3 | coding | **True** |
+| `analyze.*code.*review\|refactor.*large\|migrate.*database` | 4 | coding | **True** |
+| `write.*doc.*umentation\|create.*tutorial\|explain.*concept` | 2 | comprehension | **True** |
+| `research.*api.*document\|find.*replacement\|evaluate.*option` | 3 | comprehension | False |
+| `read.*file\|list.*directory\|grep.*pattern\|summarize.*log` | 1 | long-context | False |
+| `simple\|small\|quick\|minor\|fix.*typo` | 1 | coding | **True** |
+
+**How the `mutates` column was assigned.** The test is whether the *verb* in the
+pattern produces a changed file, a git operation, or a database write — not
+whether the task sounds difficult. `architect` and `design.*system` produce a
+document by way of a decision, so they read; `implement.*multiple` and
+`orchestrate` produce code, so they write. `write.*test.*suite`,
+`refactor.*large` and `migrate.*database` are unambiguous writes —
+`migrate.*database` is the one on this list where a wrong answer is least
+recoverable, which is the whole reason §3.2 exists. `write.*doc.*umentation`
+writes a file even though its type is comprehension, and that pairing is the
+point: **`mutates` is orthogonal to `task_type`**, so a comprehension task can
+be write-capable and a coding task (`research.*api.*document`-style lint or
+review) can be read-only. `debug.*complex` reads to find the cause; the fix that
+follows arrives as its own node and matches a writing pattern then.
+
+Five of nine are `True`. That is the expected shape, not a sign the test is too
+loose — §3.2's default is `True`, so the question this column answers is only
+"which patterns are safe to *exempt*," and four is a defensible number of
+exemptions out of nine.
 
 That last row is the awkward one, and it is listed rather than dropped because
 dropping it is what an earlier version of this table did. It is the only key in
@@ -462,10 +539,18 @@ way to undo it from here.
 
 ## 4. Data model and caps
 
-`TaskNode` gains `depth`, `attempt`, `tier`, `machine_id`, `deadline_s`, and
-begins actually using `parent_id` — already plumbed through `TaskGraph` and the
-API payload at `orchestrator.py:417`, but `None` at the only construction site
-(`orchestrator.py:754`), which is why the hierarchy is flat today.
+`TaskNode` gains `depth`, `attempt`, `tier`, `machine_id`, `deadline_s`,
+`task_type`, `mutates`, and begins actually using `parent_id` — already plumbed
+through `TaskGraph` and the API payload at `orchestrator.py:417`, but `None` at
+the only construction site (`orchestrator.py:754`), which is why the hierarchy
+is flat today.
+
+`task_type` and `mutates` are both outputs of §3.1's classifier and both have to
+be stored, not recomputed: `task_type` keys the ladder in §2.2 and is needed
+again on every escalation, and `mutates` gates placement in §3.2 and must not be
+re-derived from a prompt that a retry may have reworded. `deadline_s` is set
+only for attempt 1 — it carries `TIER0_DEADLINE` on rung 0 and is `None` on
+every paid rung, per §3 gate 4.
 
 ```
 MAX_DEPTH      = 3      # goal -> sub -> sub
@@ -525,6 +610,13 @@ because the alternative needs five live backends to run a unit test.
 | rung 0 is always tried first | asserting the free model appears *somewhere* in the ladder; assert it is attempt 1 for every task type except `split decision` |
 | the free tier has no capacity gate | asserting behaviour only when samples exist; assert routing is unchanged when `system_latest_by_host()` returns nothing at all, which is the real gateway case |
 | the deadline is configuration, not a literal | hardcoding 90 in the router and again in the test, so both agree and neither tracks `TIER0_DEADLINE`. This value is known-provisional and will be re-tuned from production (§2) — assert the router reads the constant, by setting it to a different value in the test and checking the deadline follows |
+| the full ladder (§2.2) | testing only the two types named in prose. Assert all six three-rung sequences by table, including the two that break positional order: reasoning skips Sonnet, comprehension ends on a model measured worse than its own rung 2 |
+| `mutates` gates placement independently of `task_type` | asserting a read-only `coding` task and a writing `coding` task take the same path. They must not: assert the writing one is refused a transport *while a transport has headroom*, which is the only condition under which the rule does anything |
+| the `mutates` default | testing only the nine patterns in §3.1's table, all of which have an explicit value. Assert that text matching *no* pattern comes back `mutates=True`, since that default is the safety property |
+
+The last two are the ones most likely to pass vacuously. A test that never puts
+a transport in the pool proves nothing about a rule whose entire job is to
+decline one.
 
 Every test is mutation-checked before it is claimed to work: break the ladder
 order, break the guard, break the termination rule, and confirm a specific test
@@ -638,3 +730,6 @@ The two channels are unrelated, and only the file-based one routes.
 | gateway capacity signal (2026-09-13) | none — accept it is unmeasurable and bound exposure with the deadline | invent a proxy signal, or keep refusing the free tier when unknown |
 | success criterion (2026-09-13) | ≥70% of leaves complete on rung 0, measured from `usage_events` | leave "mostly free" as an untested assumption |
 | rung-0 deadline (2026-09-13, re-check) | 90s — the smallest round value that clears the ≥70% target on measured data | 45s, which yields 65.2% and so shipped a policy predicting its own failure; 60s, which yields 69.6% and still misses |
+| escalation order (2026-09-13, re-check) | all six ladders written out in §2.2, generated by walking `vllm → luna → mini → sonnet → opus` and skipping any model measured worse on that type | leaving the third rung to be inferred from the entry rung, which is not derivable and would have put reasoning on Sonnet at 75% against mini's 86% |
+| comprehension's third rung (2026-09-13, re-check) | Opus, despite measuring 50% against Sonnet's 100%, because both cells are n=2 and the type most needs a retry | stopping at Sonnet with no escalation — correct on the skip rule, but trading a well-evidenced cost for a badly-evidenced one |
+| `mutates` per pattern (2026-09-13, re-check) | assigned explicitly for all nine patterns in §3.1, five True | leaving §3.2's rule stated but unspecified, so every pattern would have hit the `True` default and no task could ever reach a transport |

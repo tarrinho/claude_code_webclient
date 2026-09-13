@@ -59,7 +59,9 @@ async def _start_tunnel_for_transport(transport_id: str, owner: str) -> bool:
 @router.get("/api/transports")
 async def handle_transports_list(request: Request):
     session = request.state.session
-    transports = await db.ssh_transports_list(session["user"])
+    owner = await owner_of(session)
+
+    transports = await db.ssh_transports_list(owner)
     return JSONResponse({"transports": transports})
 
 
@@ -69,14 +71,18 @@ async def handle_transports_list(request: Request):
 @router.get("/api/transports/sync-requests/pending")
 async def handle_sync_requests_pending(request: Request):
     session = request.state.session
-    requests = await db.sync_request_list_pending(session["user"])
+    owner = await owner_of(session)
+
+    requests = await db.sync_request_list_pending(owner)
     return JSONResponse({"requests": requests})
 
 
 @router.get("/api/transports/{transport_id}")
 async def handle_transport_get(request: Request, transport_id: str):
     session = request.state.session
-    transport = await db.ssh_transport_get(transport_id, session["user"])
+    owner = await owner_of(session)
+
+    transport = await db.ssh_transport_get(transport_id, owner)
     if not transport:
         raise HTTPException(status_code=404, detail="Transport not found")
     return JSONResponse(transport)
@@ -85,6 +91,8 @@ async def handle_transport_get(request: Request, transport_id: str):
 @router.post("/api/transports")
 async def handle_transport_create(request: Request):
     session = request.state.session
+    owner = await owner_of(session)
+
     data = await request.json()
     name = (data.get("name") or "").strip()[:100]
     ssh_host = (data.get("ssh_host") or "").strip()
@@ -102,7 +110,7 @@ async def handle_transport_create(request: Request):
     _validate_host(ssh_host)
     transport_id = uuid.uuid4().hex
     await db.ssh_transport_create(
-        transport_id, name, session["user"], ssh_host, ssh_user, ssh_key_path,
+        transport_id, name, owner, ssh_host, ssh_user, ssh_key_path,
         remote_path=remote_path or "~/wc-proxy",
     )
     _log.info("ssh_transport created by user=%s name=%s", session["user"], name)
@@ -112,6 +120,8 @@ async def handle_transport_create(request: Request):
 @router.patch("/api/transports/{transport_id}")
 async def handle_transport_patch(request: Request, transport_id: str):
     session = request.state.session
+    owner = await owner_of(session)
+
     data = await request.json()
     allowed = {"name", "ssh_host", "ssh_user", "ssh_key_path", "remote_path"}
     if not data or not set(data).issubset(allowed):
@@ -149,7 +159,7 @@ async def handle_transport_patch(request: Request, transport_id: str):
         if not remote_path:
             raise HTTPException(status_code=400, detail="Remote path cannot be empty")
         data["remote_path"] = remote_path
-    updated = await db.ssh_transport_update(transport_id, session["user"], **data)
+    updated = await db.ssh_transport_update(transport_id, owner, **data)
     if not updated:
         raise HTTPException(status_code=404, detail="Transport not found")
     return JSONResponse({"ok": True})
@@ -158,10 +168,12 @@ async def handle_transport_patch(request: Request, transport_id: str):
 @router.delete("/api/transports/{transport_id}")
 async def handle_transport_delete(request: Request, transport_id: str):
     session = request.state.session
+    owner = await owner_of(session)
+
     # ai_machines has no foreign key on transport_id, so a delete here would
     # otherwise leave any referencing backend permanently broken -- its
     # tunnel connect fails forever with "no transport row". Refuse instead.
-    machines = await db.ai_machines_list(session["user"])
+    machines = await db.ai_machines_list(owner)
     referencing = [m for m in machines if m.get("transport_id") == transport_id]
     if referencing:
         raise HTTPException(
@@ -171,7 +183,7 @@ async def handle_transport_delete(request: Request, transport_id: str):
                 "delete or repoint them first"
             ),
         )
-    deleted = await db.ssh_transport_delete(transport_id, session["user"])
+    deleted = await db.ssh_transport_delete(transport_id, owner)
     if not deleted:
         raise HTTPException(status_code=404, detail="Transport not found")
     return JSONResponse({"ok": True})
@@ -202,7 +214,9 @@ async def handle_transport_test_saved(request: Request, transport_id: str):
     from tunnel_manager_ssh import test_ssh_connection
 
     session = request.state.session
-    transport = await db.ssh_transport_get(transport_id, session["user"])
+    owner = await owner_of(session)
+
+    transport = await db.ssh_transport_get(transport_id, owner)
     if not transport:
         raise HTTPException(status_code=404, detail="Transport not found")
     result = await test_ssh_connection(

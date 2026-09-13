@@ -398,11 +398,12 @@ def _discover_plugin_skills() -> list[dict]:
 async def handle_skills_get(request: Request):
     """GET /api/skills -- list installed skills and session activity."""
     session = request.state.session
+    owner = await owner_of(session)
     session_id = request.query_params.get("session_id")
     if not session_id:
         chat_id = request.query_params.get("chat_id")
         if chat_id:
-            chat = await db.chat_get(chat_id, session["user"])
+            chat = await db.chat_get(chat_id, owner)
             session_id = chat.get("session_id") if chat else None
 
     skills = (_discover_user_skills() + _discover_plugin_skills())[:_SKILL_LIMIT]
@@ -445,11 +446,12 @@ async def handle_skills_get(request: Request):
 async def handle_db_backup(request: Request):
     """Download a gzip-compressed database backup."""
     session = request.state.session
+    owner = await owner_of(session)
     if session.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
     data = await db.db_backup()
-    await db.admin_action_record(session["user"], "db_backup", "backup downloaded")
+    await db.admin_action_record(owner, "db_backup", "backup downloaded")
     date_str = (
         datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     )
@@ -468,6 +470,7 @@ async def handle_db_backup(request: Request):
 async def handle_db_restore(request: Request):
     """POST /api/admin/import -- restore database from uploaded backup."""
     session = request.state.session
+    owner = await owner_of(session)
     if session.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
@@ -488,7 +491,7 @@ async def handle_db_restore(request: Request):
     success = await db.db_restore(data)
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed — invalid or corrupted backup")
-    await db.admin_action_record(session["user"], "db_restore", "database restored")
+    await db.admin_action_record(owner, "db_restore", "database restored")
 
     return JSONResponse({"ok": True, "message": "Database restored successfully"})
 
@@ -548,7 +551,7 @@ async def handle_usage_get(request: Request):
     """
     await _import_cli_usage()
     session = request.state.session
-    owner = session["user"]
+    owner = await owner_of(session)
 
     raw_days = request.query_params.get("days", "30")
     days: int | None
@@ -619,7 +622,8 @@ async def handle_usage_series_get(request: Request):
     authenticated user because it is their own data and carries no secret.
     """
     await _import_cli_usage()
-    owner = request.state.session["user"]
+    session = request.state.session
+    owner = await owner_of(session)
 
     raw_days = request.query_params.get("days", "30")
     days: int | None
@@ -748,7 +752,8 @@ async def _transport_stats(session) -> list[dict[str, Any]]:
     if not session:
         return []
     try:
-        transports = await db.ssh_transports_list(session["user"])
+        owner = await owner_of(session)
+        transports = await db.ssh_transports_list(owner)
         samples = {row["host_id"]: row for row in await db.system_latest_by_host()}
     except Exception:
         _log.exception("transport stats unavailable")
@@ -909,7 +914,7 @@ async def handle_settings_get(request: Request):
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    owner_id = session["user"]
+    owner_id = await owner_of(session)
 
     # Fast path: cache hit.
     cached = await _settings_cache_get(owner_id)
@@ -1072,6 +1077,7 @@ async def handle_settings_patch(request: Request):
     equivalent to choosing where Claude may run.
     """
     session = request.state.session
+    owner = await owner_of(session)
     if session.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     data = await request.json()
@@ -1087,9 +1093,9 @@ async def handle_settings_patch(request: Request):
         # SSRF protection: block internal IPs before persisting.
         _validate_host(host)
         await db.setting_set("ai_machine_host", host)
-        _log.info("AI machine host updated by user=%s host=%s", session["user"], host)
+        _log.info("AI machine host updated by user=%s host=%s", owner, host)
         await db.admin_action_record(
-            session["user"], "settings_ai_machine_host", f"host={host}",
+            owner, "settings_ai_machine_host", f"host={host}",
         )
 
     for setting_name, field_name, error in (
@@ -1102,7 +1108,7 @@ async def handle_settings_patch(request: Request):
         if value is not None and not isinstance(value, str):
             raise HTTPException(status_code=400, detail=error)
         machine_id = (value or "").strip()
-        if machine_id and not await db.ai_machine_get(machine_id, session["user"]):
+        if machine_id and not await db.ai_machine_get(machine_id, owner):
             raise HTTPException(status_code=404, detail="Voice backend not found")
         await db.setting_set(setting_name, machine_id)
     if "voice_model" in data:
@@ -1117,7 +1123,7 @@ async def handle_settings_patch(request: Request):
                 cur = await db.db_conn.execute(
                     "SELECT active_models FROM ai_machines "
                     "WHERE id = ? AND owner_id = ?",
-                    (backend_id, session["user"]),
+                    (backend_id, owner),
                 )
                 row = await cur.fetchone()
                 if row and row["active_models"]:
@@ -1215,7 +1221,7 @@ async def handle_settings_patch(request: Request):
             await db.setting_set(db_key, value.strip() if value is not None else None)
             # Log the change (value omitted to avoid writing secrets).
             await db.admin_action_record(
-                session["user"], "settings_change", f"{db_key}=*",
+                owner, "settings_change", f"{db_key}=*",
             )
 
     # fallback_model was accepted and stored here but never read by anything --
@@ -1260,13 +1266,13 @@ async def handle_settings_patch(request: Request):
             _validate_host(value.split("://", 1)[1].split(":", 1)[0])
             await db.setting_set("webconsole_url", value)
             await db.admin_action_record(
-                session["user"], "settings_webconsole_url", "url=*",
+                owner, "settings_webconsole_url", "url=*",
             )
-            _log.info("WebConsole URL updated by user=%s", session["user"])
+            _log.info("WebConsole URL updated by user=%s", owner)
         else:
             # Empty string clears the stored value.
             await db.setting_set("webconsole_url", "")
-            _log.info("WebConsole URL cleared by user=%s", session["user"])
+            _log.info("WebConsole URL cleared by user=%s", owner)
     # Bust the settings cache so the next GET rebuilds from DB.
     _settings_invalidate()
     return JSONResponse(
@@ -1290,7 +1296,8 @@ async def handle_tokens_get(request: Request):
     that another account holds one is not this account's business.
     """
     session = request.state.session
-    rows = await db.api_token_list(session["user"])
+    owner = await owner_of(session)
+    rows = await db.api_token_list(owner)
     return JSONResponse({"tokens": rows, "count": len(rows)})
 
 
@@ -1309,6 +1316,7 @@ async def handle_tokens_create(request: Request):
     turns one leaked credential into an unrevocable supply of them.
     """
     session = request.state.session
+    owner = await owner_of(session)
     if session.get("via") == "api_token":
         raise HTTPException(
             status_code=403,
@@ -1359,17 +1367,17 @@ async def handle_tokens_create(request: Request):
 
     token_id, secret, token_hash = auth.new_api_token()
     await db.api_token_create(
-        token_id, name, token_hash, session["user"],
+        token_id, name, token_hash, owner,
         session.get("role") or "user", expires_at,
     )
     # The id, never the secret. A log line is exactly the sort of place a
     # credential should not end up, and the id is enough to revoke by.
     _log.info(
         "api_token_created id=%s user=%s name=%s expires=%s",
-        token_id, session["user"], name, expires_at or "never",
+        token_id, owner, name, expires_at or "never",
     )
     await db.admin_action_record(
-        session["user"], "api_token_created", f"id={token_id} name={name} expires={expires_at or 'never'}",
+        owner, "api_token_created", f"id={token_id} name={name} expires={expires_at or 'never'}",
     )
     return JSONResponse({
         "id": token_id,
@@ -1390,16 +1398,17 @@ async def handle_tokens_revoke(request: Request):
     credential you have lost.
     """
     session = request.state.session
+    owner = await owner_of(session)
     token_id = request.path_params["token_id"]
-    if not await db.api_token_revoke(token_id, session["user"]):
+    if not await db.api_token_revoke(token_id, owner):
         # 404 whether it never existed, belongs to somebody else, or was already
         # revoked -- distinguishing those tells a caller about tokens that are
         # not theirs.
         raise HTTPException(status_code=404, detail="Token not found")
     _token_touched.pop(token_id, None)
-    _log.info("api_token_revoked id=%s user=%s", token_id, session["user"])
+    _log.info("api_token_revoked id=%s user=%s", token_id, owner)
     await db.admin_action_record(
-        session["user"], "api_token_revoked", f"id={token_id}",
+        owner, "api_token_revoked", f"id={token_id}",
     )
     return JSONResponse({"ok": True, "revoked": token_id})
 
@@ -1433,8 +1442,9 @@ def _validate_projects_root(value: str) -> str:
 async def handle_sessions_list(request: Request):
     """GET /api/sessions -- list CLI sessions + Web chats for sidebar."""
     session = request.state.session
+    owner = await owner_of(session)
     cli_sessions = await db.read_claude_sessions()
-    web_chats = await db.chat_list(session["user"])
+    web_chats = await db.chat_list(owner)
     linked_session_ids = {
         chat.get("session_id") for chat in web_chats if chat.get("session_id")
     }
@@ -1598,7 +1608,7 @@ async def handle_sessions_resume(request: Request, session_id: str):
                 "(no running session and no transcript on disk) — "
                 "ensure claude-code is running, or that the conversation "
                 "exists under the projects directory",
-                session["user"], session_id,
+                owner, session_id,
             )
             raise HTTPException(
                 status_code=404,
@@ -1798,18 +1808,19 @@ async def handle_session_delete(request: Request, session_id: str):
     running session cannot be cleared out of the sidebar by accident.
     """
     session = request.state.session
+    owner = await owner_of(session)
     session_id = _sanitize_session_id(session_id)
     try:
         removed = await asyncio.to_thread(db.delete_claude_session_file, session_id)
     except ValueError as exc:
         _log.warning(
             "session_delete_refused: user=%s session_id=%s (%s)",
-            session["user"], session_id, exc,
+            owner, session_id, exc,
         )
         raise HTTPException(status_code=409, detail=str(exc))
     if not removed:
         raise HTTPException(status_code=404, detail="Session entry not found")
-    _log.info("session_entry_removed session_id=%s user=%s", session_id, session["user"])
+    _log.info("session_entry_removed session_id=%s user=%s", session_id, owner)
     return JSONResponse({"ok": True})
 
 

@@ -38,6 +38,8 @@ async def handle_images_list(request: Request):
     """GET /api/images?limit=60&before_id=<id> -- an owner's generated
     images, newest first."""
     session = request.state.session
+    owner = await owner_of(session)
+
     limit_raw = request.query_params.get("limit")
     try:
         limit = max(1, min(int(limit_raw), 200)) if limit_raw else 60
@@ -47,7 +49,7 @@ async def handle_images_list(request: Request):
     before_id = int(before_raw) if before_raw and before_raw.isdigit() else None
 
     rows, has_more, next_before_id = await db.generated_images_list(
-        session["user"], limit=limit, before_id=before_id)
+        owner, limit=limit, before_id=before_id)
     return JSONResponse({
         "images": [
             {
@@ -71,7 +73,9 @@ async def handle_image_file(request: Request, image_id: int):
     applies, authorized against owner_id on the row instead of a live
     chat_get lookup."""
     session = request.state.session
-    row = await db.generated_image_get(image_id, session["user"])
+    owner = await owner_of(session)
+
+    row = await db.generated_image_get(image_id, owner)
     if row is None:
         raise HTTPException(status_code=404, detail="Image not found")
 
@@ -83,7 +87,7 @@ async def handle_image_file(request: Request, image_id: int):
     if not candidate.is_relative_to(root):
         _log.warning(
             "generated_image_outside_workspace: user=%s image_id=%s",
-            session["user"], image_id,
+            owner, image_id,
         )
         raise HTTPException(status_code=404, detail="Image not found")
 
@@ -97,7 +101,9 @@ async def handle_image_file(request: Request, image_id: int):
 async def handle_image_delete(request: Request, image_id: int):
     """DELETE /api/images/{id} -- remove the file (if present) and the row."""
     session = request.state.session
-    deleted = await db.generated_image_delete(image_id, session["user"])
+    owner = await owner_of(session)
+
+    deleted = await db.generated_image_delete(image_id, owner)
     if not deleted:
         raise HTTPException(status_code=404, detail="Image not found")
     return JSONResponse({"ok": True})

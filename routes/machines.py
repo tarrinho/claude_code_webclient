@@ -98,10 +98,12 @@ _models_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 async def handle_machines_list(request: Request):
     """GET /api/machines -- list AI machines for the current user."""
     session = request.state.session
+    owner = await owner_of(session)
+
     # Claude Code's native backend should always be on offer, so materialise it
     # for accounts created before the provider column existed.
-    await db.ai_machine_seed_anthropic(session["user"])
-    machines = await db.ai_machines_list(session["user"])
+    await db.ai_machine_seed_anthropic(owner)
+    machines = await db.ai_machines_list(owner)
     # How many conversations depend on each backend. Disabling one is refused
     # while anything is pinned to it, and without this count the client can only
     # pre-empt the *default* case -- so the Disable button on a pinned backend
@@ -109,7 +111,7 @@ async def handle_machines_list(request: Request):
     # also logged by the browser as a failed request whatever the handler does,
     # so the request that was always going to fail is the thing to remove.
     # One GROUP BY for the whole list, not one query per machine.
-    pinned = await db.chats_pinned_counts(session["user"])
+    pinned = await db.chats_pinned_counts(owner)
     # Don't leak API keys in the listing
     return JSONResponse(
         {
@@ -128,7 +130,9 @@ async def handle_machines_list(request: Request):
 async def handle_machine_get(request: Request, machine_id: str):
     """GET /api/machines/{id} -- get AI machine details."""
     session = request.state.session
-    machine = await db.ai_machine_get(machine_id, session["user"])
+    owner = await owner_of(session)
+
+    machine = await db.ai_machine_get(machine_id, owner)
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
     m = {k: v for k, v in machine.items() if k != "api_key"}
@@ -142,6 +146,8 @@ async def handle_machine_get(request: Request, machine_id: str):
 async def handle_machine_create(request: Request):
     """POST /api/machines -- create a new AI machine."""
     session = request.state.session
+    owner = await owner_of(session)
+
     data = await request.json()
     name = (data.get("name") or "").strip()[:100]
     provider = (data.get("provider") or "claude_code").strip()
@@ -193,7 +199,7 @@ async def handle_machine_create(request: Request):
     api_key = (data.get("api_key") or "").strip() or None
     description = (data.get("description") or "").strip()[:500] or None
     transport_id = (data.get("transport_id") or "").strip() or None
-    if transport_id and not await db.ssh_transport_get(transport_id, session["user"]):
+    if transport_id and not await db.ssh_transport_get(transport_id, owner):
         raise HTTPException(status_code=404, detail="Transport not found")
     machine_id = uuid.uuid4().hex
     await db.ai_machine_create(
@@ -205,13 +211,13 @@ async def handle_machine_create(request: Request):
         model,
         base_url,
         description,
-        session["user"],
+        owner,
         provider=provider,
         transport_id=transport_id,
     )
     _log.info(
         "ai_machine created by user=%s name=%s provider=%s",
-        session["user"],
+        owner,
         name,
         provider,
     )
@@ -228,6 +234,8 @@ async def handle_machine_create(request: Request):
 async def handle_machine_patch(request: Request, machine_id: str):
     """PATCH /api/machines/{id} -- update AI machine."""
     session = request.state.session
+    owner = await owner_of(session)
+
     data = await request.json()
     if not data or not set(data).issubset(_MACHINE_ALLOWED_FIELDS):
         raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -244,14 +252,14 @@ async def handle_machine_patch(request: Request, machine_id: str):
             raise HTTPException(
                 status_code=400, detail="enabled must be true or false")
         wanted = data.pop("enabled")
-        machine = await db.ai_machine_get(machine_id, session["user"])
+        machine = await db.ai_machine_get(machine_id, owner)
         if not machine:
             raise HTTPException(status_code=404, detail="Machine not found")
 
         # Enabling is never refused: a backend returning to service breaks
         # nothing that depends on it.
         if not wanted:
-            pins = await db.chats_pinned_to_machine(machine_id, session["user"])
+            pins = await db.chats_pinned_to_machine(machine_id, owner)
             is_default = bool(machine.get("active"))
             if is_default or pins["total"]:
                 # Named, not counted. "8 conversations are pinned" sends the
@@ -270,7 +278,7 @@ async def handle_machine_patch(request: Request, machine_id: str):
                         f"{pins['total']} conversation(s) are pinned to it: {shown}")
                 _log.info(
                     "ai_machine disable refused user=%s id=%s default=%s pinned=%d",
-                    session["user"], machine_id, is_default, pins["total"],
+                    owner, machine_id, is_default, pins["total"],
                 )
                 return JSONResponse(
                     {
@@ -288,10 +296,10 @@ async def handle_machine_patch(request: Request, machine_id: str):
                     status_code=409,
                 )
 
-        await db.ai_machine_set_enabled(machine_id, session["user"], wanted)
+        await db.ai_machine_set_enabled(machine_id, owner, wanted)
         _log.info(
             "ai_machine %s user=%s id=%s",
-            "enabled" if wanted else "disabled", session["user"], machine_id,
+            "enabled" if wanted else "disabled", owner, machine_id,
         )
         # A request carrying only `enabled` is complete; anything else in
         # `data` falls through to the normal update path below.
@@ -353,12 +361,12 @@ async def handle_machine_patch(request: Request, machine_id: str):
         data["api_key"] = data["api_key"].strip() or None
     if "transport_id" in data:
         tid = (data["transport_id"] or "").strip() or None
-        if tid and not await db.ssh_transport_get(tid, session["user"]):
+        if tid and not await db.ssh_transport_get(tid, owner):
             raise HTTPException(status_code=404, detail="Transport not found")
         if tid is None:
             # Explicit clear -- ai_machine_update's None-means-omit rule
             # can't express this (Task 2, Step 7).
-            cleared = await db.ai_machine_clear_transport(machine_id, session["user"])
+            cleared = await db.ai_machine_clear_transport(machine_id, owner)
             data.pop("transport_id")
             if not data:
                 # Clearing was the only requested change -- ai_machine_update
@@ -368,11 +376,11 @@ async def handle_machine_patch(request: Request, machine_id: str):
                 # failed for a machine that isn't this owner's).
                 if not cleared:
                     raise HTTPException(status_code=404, detail="Machine not found")
-                _log.info("ai_machine updated by user=%s id=%s", session["user"], machine_id)
+                _log.info("ai_machine updated by user=%s id=%s", owner, machine_id)
                 return JSONResponse({"ok": True})
         else:
             data["transport_id"] = tid
-    updated = await db.ai_machine_update(machine_id, session["user"], **data)
+    updated = await db.ai_machine_update(machine_id, owner, **data)
     if not updated:
         raise HTTPException(status_code=404, detail="Machine not found")
     _log.info("ai_machine updated by user=%s id=%s", session["user"], machine_id)
@@ -382,18 +390,22 @@ async def handle_machine_patch(request: Request, machine_id: str):
 async def handle_machine_activate(request: Request, machine_id: str):
     """POST /api/machines/{id}/activate -- activate an AI machine."""
     session = request.state.session
-    exists = await db.ai_machine_get(machine_id, session["user"])
+    owner = await owner_of(session)
+
+    exists = await db.ai_machine_get(machine_id, owner)
     if not exists:
         raise HTTPException(status_code=404, detail="Machine not found")
-    activated = await db.ai_machine_activate(machine_id, session["user"])
-    _log.info("ai_machine activated by user=%s id=%s", session["user"], machine_id)
+    activated = await db.ai_machine_activate(machine_id, owner)
+    _log.info("ai_machine activated by user=%s id=%s", owner, machine_id)
     return JSONResponse({"ok": True, "activated": activated})
 
 
 async def handle_machine_delete(request: Request, machine_id: str):
     """DELETE /api/machines/{id} -- delete AI machine."""
     session = request.state.session
-    deleted = await db.ai_machine_delete(machine_id, session["user"])
+    owner = await owner_of(session)
+
+    deleted = await db.ai_machine_delete(machine_id, owner)
     if not deleted:
         raise HTTPException(status_code=404, detail="Machine not found")
     _log.info("ai_machine deleted by user=%s id=%s", session["user"], machine_id)
@@ -594,7 +606,9 @@ async def _test_anthropic_endpoint(machine: dict, api_key: str | None):
 async def handle_machine_test(request: Request, machine_id: str):
     """POST /api/machines/{id}/test -- test connection to AI machine."""
     session = request.state.session
-    machine = await db.ai_machine_get(machine_id, session["user"])
+    owner = await owner_of(session)
+
+    machine = await db.ai_machine_get(machine_id, owner)
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
     provider = machine.get("provider")
@@ -616,7 +630,7 @@ async def handle_machine_test(request: Request, machine_id: str):
 
         return JSONResponse(await ssh_proxy_test_result(machine_id, provider))
     if provider == "claude_code":
-        api_key = await db.ai_machine_api_key(machine_id, session["user"])
+        api_key = await db.ai_machine_api_key(machine_id, owner)
         return await _test_anthropic_endpoint(machine, api_key)
 
     # provider == "direct". This used to open a TCP socket and report
@@ -633,7 +647,7 @@ async def handle_machine_test(request: Request, machine_id: str):
     # §0 forbids and that _test_anthropic_endpoint's docstring records being
     # removed. A 200 with a parseable list proves DNS, TLS, the route, and the
     # credential in one request.
-    api_key = await db.ai_machine_api_key(machine_id, session["user"])
+    api_key = await db.ai_machine_api_key(machine_id, owner)
     base_url = (
         runner.normalise_base_url(machine.get("base_url"))
         or f"https://{machine['host']}"
@@ -925,7 +939,9 @@ async def handle_machine_models_set(request: Request, machine_id: str):
     advertise.
     """
     session = request.state.session
-    machine = await db.ai_machine_get(machine_id, session["user"])
+    owner = await owner_of(session)
+
+    machine = await db.ai_machine_get(machine_id, owner)
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
     data = await request.json()
@@ -964,10 +980,10 @@ async def handle_machine_models_set(request: Request, machine_id: str):
             )
         default = default[:200]
 
-    await db.ai_machine_set_models(machine_id, session["user"], active, default or None)
+    await db.ai_machine_set_models(machine_id, owner, active, default or None)
     _log.info(
         "machine models set by user=%s id=%s active=%d default=%s",
-        session["user"],
+        owner,
         machine_id,
         len(active),
         default or "(unchanged)",

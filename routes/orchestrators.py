@@ -356,6 +356,8 @@ async def handle_orchestrator_member_remove(
 async def handle_orchestrator_read(request: Request):
     """POST /api/orchestrator/read -- mark an agent as seen, clearing its badge."""
     session = request.state.session
+    owner = await owner_of(session)
+
     data = await request.json()
     if data.get("all"):
         # Clear everything currently listed. Deliberate, so it silences
@@ -364,10 +366,10 @@ async def handle_orchestrator_read(request: Request):
         cleared = 0
         for entry in [*current.get("waiting", []), *current.get("updated", [])]:
             await db.read_mark_set(
-                session["user"], entry["kind"], entry["id"], dismiss=True
+                owner, entry["kind"], entry["id"], dismiss=True
             )
             cleared += 1
-        _log.info("orchestrator cleared by user=%s entries=%d", session["user"], cleared)
+        _log.info("orchestrator cleared by user=%s entries=%d", owner, cleared)
         return JSONResponse({"ok": True, "cleared": cleared})
     kind = (data.get("kind") or "").strip()
     ref_id = (data.get("id") or "").strip()
@@ -378,7 +380,7 @@ async def handle_orchestrator_read(request: Request):
     if not ref_id or not _HEX_SESSION_ID_RE.match(ref_id):
         raise HTTPException(status_code=400, detail="Invalid id")
     read_at = await db.read_mark_set(
-        session["user"], kind, ref_id, dismiss=bool(data.get("dismiss"))
+        owner, kind, ref_id, dismiss=bool(data.get("dismiss"))
     )
     return JSONResponse({"ok": True, "read_at": read_at})
 

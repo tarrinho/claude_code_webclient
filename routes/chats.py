@@ -2694,7 +2694,7 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
     # voice_mode branch of handle_chat_update now clears the flag instead,
     # which is the ordering that actually occurs.
     ok = await db.chat_auto_answer_set(
-        chat_id, session["user"], enabled, accept_recommended,
+        chat_id, owner, enabled, accept_recommended,
     )
     if not ok:
         # Covers both "no such chat" and "not this user's chat" with the same
@@ -2703,7 +2703,7 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
         raise HTTPException(status_code=404, detail="Chat not found")
     _log.info(
         "auto_answer_set chat_id=%s user=%s enabled=%s accept_recommended=%s",
-        chat_id, session["user"], enabled, accept_recommended,
+        chat_id, owner, enabled, accept_recommended,
     )
     return JSONResponse({
         "ok": True, "enabled": enabled, "accept_recommended": accept_recommended,
@@ -3048,7 +3048,9 @@ async def handle_chats_sync_all(request: Request):
     are linked, not by how much history they hold.
     """
     session = request.state.session
-    chats = await db.chat_list(session["user"])
+    owner = await owner_of(session)
+
+    chats = await db.chat_list(owner)
     changed: dict[str, int] = {}
     scanned = 0
     for chat in chats:
@@ -3067,6 +3069,6 @@ async def handle_chats_sync_all(request: Request):
     if changed:
         _log.info(
             "sync_all user=%s scanned=%d changed=%d turns=%d",
-            session["user"], scanned, len(changed), sum(changed.values()),
+            owner, scanned, len(changed), sum(changed.values()),
         )
     return JSONResponse({"scanned": scanned, "changed": changed})

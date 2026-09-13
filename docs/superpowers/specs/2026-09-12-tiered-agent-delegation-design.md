@@ -10,6 +10,15 @@ now rung 0 for every task type with no capacity gate, since the gate the
 previous amendment left in place could never open (§2.1). (3) §1.4 records the
 `109.1% CPU` misreading that motivated that gate, so it is not rebuilt.
 
+**Amended again:** 2026-09-13, after a full re-check of every figure and
+citation against the code and the benchmark data. One decision-changing finding:
+the 45s deadline and the ≥70% target are inconsistent with each other on the
+only data that exists — 45s yields **65.2%** free-tier completion on coding, the
+type this model is measured best at (§2, "What the deadline actually costs").
+The deadline is raised to **90s**. Two smaller fixes: §1.1 now carries the
+rung-0 model's own row rather than omitting it, and two stale code references
+are corrected.
+
 A goal is decomposed recursively into sub-agents, and every node is routed to
 the cheapest model measured capable of its task type, placed on a host with the
 memory to run it, and escalated up a ladder only when it fails.
@@ -35,7 +44,14 @@ responses, exec-verified correctness, collected 2026-09-04. Cells are
 | `claude-sonnet-5` | 100% / 4s | 100% / 7s | 100% / 8s | 100% / 7s | 100% / 18s | 75% / 9s |
 | `claude-opus-5` | 100% / 6s | 50% / 22s | 100% / 8s | 100% / 10s | 100% / 51s | **100% / 27s** |
 | `claude-haiku-4-5` | 100% / 7s | 100% / 21s | 100% / 4s | 100% / 13s | 100% / 16s | 75% / 85s |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 96% / 8.5s | – | – | – | – | – |
 | `vllm/Qwen3.5-0.8B` | 26% / 13s | – | – | – | – | 0% / 226s |
+
+**The dashes on the 35B row are the most important cells in this table**, because
+that model is rung 0 for every task type in §2. All 23 of its graded responses
+were coding tasks. The other nine models in this table were each measured on all
+six types; this one was measured on one. See §2's provisional note — and read the
+row as the reason that note exists, not as a gap the policy already covers.
 
 Aggregate across all types, same source:
 
@@ -156,7 +172,7 @@ design.
 
 Its price is still not literally zero — it is paid in GPU occupancy shared with
 every other user of that gateway — but that cost is not ours to meter, and the
-45s deadline is what bounds our share of it.
+90s deadline is what bounds our share of it.
 
 ### 1.5 Host resources
 
@@ -186,7 +202,7 @@ resource by a wide margin; the transports have headroom.
 ## 2. Tier policy
 
 **Rung 0, for every task type, is `vllm/Qwen3.6-35B-A3B-NVFP4` at $0.00 with a
-45s deadline.** The table below is the *fallback* ladder: where a leaf goes
+90s deadline.** The table below is the *fallback* ladder: where a leaf goes
 when the free rung times out or fails.
 
 | task type | first paid rung | $/1k tasks | why this one |
@@ -226,11 +242,50 @@ paying the Opus price only on the 14% that need it. The trade is latency on that
 capacity gate in front of it. The paid ladder exists to catch what it drops,
 not to be reached first.
 
-The 45s deadline is the entire backpressure mechanism. A node placed on the
-free tier is abandoned at 45s — comfortably above its 8.5s coding median, far
-below its 161s p90 — and retried on the paid rung its task type names. So a
-slow gateway costs 45 wasted seconds per affected leaf, never a wrong answer
-kept and never a stall.
+The deadline is the entire backpressure mechanism. A node placed on the free
+tier is abandoned when it expires and retried on the paid rung its task type
+names. So a slow gateway costs one deadline's worth of wasted seconds per
+affected leaf, never a wrong answer kept and never a stall.
+
+#### What the deadline actually costs
+
+An earlier draft set this at 45s and justified it as "comfortably above the 8.5s
+coding median, far below the 161s p90." Both halves of that sentence are true and
+the conclusion drawn from them was wrong, because **the latency distribution is
+bimodal and the median describes only the lower mode.** The 23 measured
+latencies, in seconds:
+
+```
+4.1 4.6 4.8 4.8 4.8 5.2 5.2 5.6 6.3 7.8 7.9 8.5
+        <- nothing at all between 8.5 and 31.8 ->
+31.8 32.7 37.6 38.4 56.0 79.9 96.5 161.4 284.8 367.9 498.5
+```
+
+Twelve turns finish under 8.5s; the rest start at 31.8s and run to 498.5s.
+Nothing lands in between, so any deadline from 9s to 31s selects the same twelve
+turns, and the median is not evidence about where the tail begins.
+
+Completion rate against deadline, counting only turns that finished *and* were
+correct — this is exactly the quantity §2's target is stated in:
+
+| deadline | finish within it | correct within it |
+|---|---|---|
+| 30s | 12/23 (52.2%) | 47.8% |
+| **45s** | 16/23 (69.6%) | **65.2%** |
+| 60s | 17/23 (73.9%) | 69.6% |
+| **90s** | 18/23 (78.3%) | **73.9%** |
+| 180s | 20/23 (87.0%) | 82.6% |
+
+**At 45s the target of ≥70% is unreachable on the only data that exists**, on
+the one task type this model is measured best at. All seven turns that exceeded
+45s returned *correct* answers — the deadline would have discarded good work and
+paid for a second rung to redo it. 60s still misses. **90s is the smallest round
+deadline that clears 70%, so `TIER0_DEADLINE` is 90 seconds (§4).**
+
+This is not a claim that 90s is right. It is the smallest value not already
+contradicted by our own measurements, chosen so the policy does not ship
+predicting its own failure. n = 23, coding only; §5's production measurement is
+what settles it.
 
 **Why no gate:** an earlier draft gated this on the gateway host's
 `cpu_pct`/`load1` via `system_latest_by_host()`. That gate could never open.
@@ -247,6 +302,14 @@ misreading that motivated the gate.
 runs here (§1.4). The target below is not aspirational; it is the status quo
 that the gated draft would have switched off.
 
+**But 87% is measured without a deadline, and that is the whole difference.**
+Those 20,304 production requests ran to completion however long they took;
+nothing abandoned the slow ones. This design adds an abandonment rule that
+production has never had, so 87% is evidence the gateway can carry the volume —
+not evidence the target survives the deadline. On the benchmark data it does not
+survive 45s, which is why the deadline moved. Treat 87% as the ceiling the
+deadline spends down from, not as a floor it inherits.
+
 **Target: ≥70% of orchestrator leaves completed on the free tier.** Measurable
 from `usage_events` — rows carrying `origin="orchestrator"`, grouped by model,
 counting attempts that completed within deadline against total leaves. If it
@@ -259,8 +322,10 @@ no measured accuracy for this model on comprehension, long-context, multi-turn,
 planning, or reasoning at all, not weaker evidence but *zero* evidence. Add
 `vllm/Qwen3.6-35B-A3B-NVFP4` to the next run of
 `bench/judge_delegation_deterministic_*.json` across all six types. Until then
-the 45s deadline and the escalation ladder are what stand in for measurement —
-which is exactly why trying it first is safe: being wrong is bounded at 45s.
+the 90s deadline and the escalation ladder are what stand in for measurement —
+which is exactly why trying it first is safe: being wrong is bounded at 90s.
+The bench harness now carries four tasks for each of those five types, so that
+re-run is a matter of scheduling it, not of writing it.
 
 ### 2.1 Placement gates
 
@@ -275,7 +340,7 @@ Qwen or luna costs no local RAM beyond the CLI process itself.
 | any sample older than 120s | treated as **unknown**, and unknown is not eligible | `created_at` |
 
 Samples arrive every 30s, so 120s is four missed intervals. Unknown is refused
-rather than assumed healthy, for the reason `db_supervisor_map.py:356` already
+rather than assumed healthy, for the reason `routes/db_supervisor_map.py:356` already
 gives about the hub glow: "nothing measured and nothing happening must not look
 alike". That rule is sound for hosts we actually sample; it is precisely what
 made the deleted gateway gate unopenable, since the gateway is not a host we
@@ -304,7 +369,7 @@ $23.15/1k, 4.1× Sonnet).
 
 Five gates. Only the second ever spends a model call on *deciding* anything.
 
-1. **Score** — `orchestrator._score_complexity(text)`, free, returns 1–5.
+1. **Score** — `PlanParser._score_complexity(text)` (`orchestrator.py:253`), free, returns 1–5.
 2. **Split** — 1–2 execute now; 4–5 decompose now; exactly 3 costs one Sonnet
    call. A worker never judges its own scope: the models best at executing
    (luna, 100% on coding at 4s) are the worst at judging (25% on
@@ -321,7 +386,7 @@ Five gates. Only the second ever spends a model call on *deciding* anything.
    table, with no deadline beyond the runner's own.
 5. **Escalate** — timeout or failure moves one rung. Usage is recorded per
    attempt with `origin="orchestrator"`, per CLAUDE.md §5, **including
-   failures**: a turn that ran 45s and then timed out has been paid for, and
+   failures**: a turn that ran 90s and then timed out has been paid for, and
    recording only successes makes the cheapest-looking tier the one that fails
    most.
 
@@ -344,6 +409,16 @@ together. Its keys already read like types:
 | `write.*doc.*umentation\|create.*tutorial\|explain.*concept` | 2 | comprehension |
 | `research.*api.*document\|find.*replacement\|evaluate.*option` | 3 | comprehension |
 | `read.*file\|list.*directory\|grep.*pattern\|summarize.*log` | 1 | long-context |
+| `simple\|small\|quick\|minor\|fix.*typo` | 1 | coding |
+
+That last row is the awkward one, and it is listed rather than dropped because
+dropping it is what an earlier version of this table did. It is the only key in
+`COMPLEXITY_PATTERNS` that names a *difficulty* rather than a kind of work, so it
+has no honest type; `coding` is assigned because `fix.*typo` is the only concrete
+thing in it. Leaving it out of the map does not leave it unclassified — it makes
+it fall through to the default below, which sends "fix a typo" to Sonnet at
+$5.68/1k. Re-check this row first if cheap tasks start arriving on expensive
+rungs.
 
 **Unmatched text defaults to `comprehension`**, deliberately. That is the type
 where cheap models collapse to 25%, so an unclassifiable task routes to Sonnet.
@@ -397,7 +472,7 @@ MAX_DEPTH      = 3      # goal -> sub -> sub
 MAX_CHILDREN   = 4      # per node
 MAX_NODES      = 40     # whole tree
 BUDGET_USD     = 1.00   # per goal, checked before each spawn
-TIER0_DEADLINE = 45     # seconds, free tier only
+TIER0_DEADLINE = 90     # seconds, free tier only -- see §2
 MAX_ATTEMPTS   = 3      # per leaf, across the ladder
 ```
 
@@ -449,6 +524,7 @@ because the alternative needs five live backends to run a unit test.
 | usage recording | asserting successes only; a failed and a timed-out attempt must each produce a row |
 | rung 0 is always tried first | asserting the free model appears *somewhere* in the ladder; assert it is attempt 1 for every task type except `split decision` |
 | the free tier has no capacity gate | asserting behaviour only when samples exist; assert routing is unchanged when `system_latest_by_host()` returns nothing at all, which is the real gateway case |
+| the deadline is configuration, not a literal | hardcoding 90 in the router and again in the test, so both agree and neither tracks `TIER0_DEADLINE`. This value is known-provisional and will be re-tuned from production (§2) — assert the router reads the constant, by setting it to a different value in the test and checking the deadline follows |
 
 Every test is mutation-checked before it is claimed to work: break the ladder
 order, break the guard, break the termination rule, and confirm a specific test
@@ -474,15 +550,16 @@ buys is cost — the entry rung is free, and what escapes it lands on a paid run
 25× cheaper than Sonnet.
 
 **The free tier is unmetered, not unlimited.** Nothing in this design measures
-the gateway's load, and nothing can: it is external and unsampled. The 45s
+the gateway's load, and nothing can: it is external and unsampled. The 90s
 deadline is the only thing bounding what we ask of it. If the gateway degrades
 under someone else's load, the symptom here is leaves timing out and escalating
 — more spend and more latency, never a stall — and the fix is to re-tune the
 deadline, not to invent a capacity signal we cannot read.
 
-**Some share of leaves will pay the 45s tax twice over.** A leaf that times out
-on the free tier has spent 45 seconds and produced nothing before the paid rung
-even starts. At the ≥70% target that is a minority of leaves, and the arithmetic
+**Roughly a fifth of leaves will pay the deadline twice over.** A leaf that
+times out on the free tier has spent 90 seconds and produced nothing before the
+paid rung even starts. On the measured coding data that is 5 of 23 leaves, 21.7%
+-- a minority, but a larger one than "some share" suggested, and the arithmetic
 still favours trying free first — but it is a real latency cost, not a free
 option, and it is why the target is measured rather than assumed.
 
@@ -554,9 +631,10 @@ The two channels are unrelated, and only the file-based one routes.
 | flow shape | recursive: a worker may decompose further, to a depth cap | fixed 3-role plan/work/verify pipeline |
 | split trigger | hybrid: score gates, Sonnet decides only the ambiguous band (score 3) | deterministic score alone; the worker judging itself |
 | failure handling | retry once on the next tier up, ≤3 attempts per leaf | route by task type with no retry; escalate to the parent for re-planning |
-| free vs fast | free first, abandon at a 45s deadline and escalate | free only for background work; cheapest-that-works ignoring latency |
+| free vs fast | free first, abandon at a deadline and escalate | free only for background work; cheapest-that-works ignoring latency |
 | Azure pricing | use the supplied billing lines, `Opt` read as output | leave Azure unpriced, as `bench_rates.json` had it |
 | write-capable placement (2026-09-13) | forced local, unconditionally, independent of headroom | route by task_type/cost/load alone, same as a read |
-| free-tier scope (2026-09-13) | rung 0 for every task type, no capacity gate, 45s deadline as the only backpressure | coding-only; or any-type but gated on gateway CPU — a gate that could never open |
+| free-tier scope (2026-09-13) | rung 0 for every task type, no capacity gate, a deadline as the only backpressure | coding-only; or any-type but gated on gateway CPU — a gate that could never open |
 | gateway capacity signal (2026-09-13) | none — accept it is unmeasurable and bound exposure with the deadline | invent a proxy signal, or keep refusing the free tier when unknown |
 | success criterion (2026-09-13) | ≥70% of leaves complete on rung 0, measured from `usage_events` | leave "mostly free" as an untested assumption |
+| rung-0 deadline (2026-09-13, re-check) | 90s — the smallest round value that clears the ≥70% target on measured data | 45s, which yields 65.2% and so shipped a policy predicting its own failure; 60s, which yields 69.6% and still misses |

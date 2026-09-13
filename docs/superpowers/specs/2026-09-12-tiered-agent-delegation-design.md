@@ -2,9 +2,13 @@
 
 **Date:** 2026-09-12
 **Status:** design, approved in chat; not implemented
-**Amended:** 2026-09-13 — added §3.2 (write-capable tasks stay local, reconciled
-in from `AGENT-MODELS-DECISION.md`, now superseded by this spec) and widened
-the free-tier rule in §2 from coding-only to all task types (§2, §1.4).
+**Amended:** 2026-09-13 — three changes, all in response to review by Pedro.
+(1) §3.2 added: write-capable tasks stay local, reconciled in from
+`AGENT-MODELS-DECISION.md`, which is deleted in the same commit so this is the
+single spec for model and agent routing. (2) §2 rewritten: the free model is
+now rung 0 for every task type with no capacity gate, since the gate the
+previous amendment left in place could never open (§2.1). (3) §1.4 records the
+`109.1% CPU` misreading that motivated that gate, so it is not rebuilt.
 
 A goal is decomposed recursively into sub-agents, and every node is routed to
 the cheapest model measured capable of its task type, placed on a host with the
@@ -134,10 +138,25 @@ Supplied by Pedro, 2026-09-12.
 | `azure_ai/gpt-5-mini` | 113 | 817,435 | — | — |
 | `azure_ai/gpt-5.6-sol` | 76 | 658,087 | — | — |
 
-The self-hosted model is at **109.1% CPU** — already oversubscribed, which is
-consistent with its 161.4s p90. Its price is not zero; it is paid in GPU
-occupancy shared with every other user of that gateway. luna is the proven
-external workhorse at 1,996 requests; mini has served 166.
+**Qwen is the workhorse, by an order of magnitude.** 20,304 requests against
+luna's 1,996 — about 87% of this month's traffic already runs on the free
+model. Any policy that ends up routing most work to paid models is a
+regression against what the system does today, not an improvement.
+
+**The 109.1% figure was misread in an earlier draft, and the misreading is
+recorded here so it is not repeated.** It was taken as "already
+oversubscribed" and used to justify a capacity gate that kept the free tier
+closed. It is `svc CPU` for the serving process — top-style percent-of-one-core
+— so 109.1% alongside 33.1 GB RSS describes roughly one core busy on a large
+inference box: a healthy, working service, not a saturated host. It says
+nothing about whether that host has room, and nothing readable by this policy
+in any case: the gateway is an external HTTPS endpoint, absent from
+`system_samples` entirely (§2.1). CPU is no longer gated anywhere in this
+design.
+
+Its price is still not literally zero — it is paid in GPU occupancy shared with
+every other user of that gateway — but that cost is not ours to meter, and the
+45s deadline is what bounds our share of it.
 
 ### 1.5 Host resources
 
@@ -166,7 +185,11 @@ resource by a wide margin; the transports have headroom.
 
 ## 2. Tier policy
 
-| task type | model | $/1k tasks | why this one |
+**Rung 0, for every task type, is `vllm/Qwen3.6-35B-A3B-NVFP4` at $0.00 with a
+45s deadline.** The table below is the *fallback* ladder: where a leaf goes
+when the free rung times out or fails.
+
+| task type | first paid rung | $/1k tasks | why this one |
 |---|---|---|---|
 | coding | `azure_ai/gpt-5.6-luna` | 0.23 | 100% at 4s — same accuracy as Opus at 75× less |
 | long-context | `azure_ai/gpt-5.6-luna` | 0.23 | 100% at 3s |
@@ -176,8 +199,13 @@ resource by a wide margin; the transports have headroom.
 | reasoning | `azure_ai/gpt-5.4-mini` → `claude-opus-5` | 3.54 expected | see below |
 | split decision | `claude-sonnet-5` | 5.68 | judging scope is comprehension work, where cheap models fail |
 
-**The tier column is an *entry rung*, not a fixed assignment.** A leaf starts at
-the rung its task type names and escalates upward through the remaining rungs,
+**The split decision is the one exception to rung 0.** Deciding whether to
+decompose is comprehension work, the type where cheap models collapse to 25%,
+and a wrong split is not caught by any deadline — it silently shapes the whole
+subtree. It goes straight to Sonnet, no free attempt.
+
+**Each cell is an *entry rung*, not a fixed assignment.** A leaf that falls off
+rung 0 starts here and escalates upward through the remaining rungs,
 capped at `MAX_ATTEMPTS`. A type whose entry rung is already the top has one
 attempt and no escalation.
 
@@ -193,33 +221,55 @@ against $17.25 for always-Opus — 4.9x cheaper for the same final accuracy,
 paying the Opus price only on the 14% that need it. The trade is latency on that
 14%: 8s then 27s, rather than 27s once.
 
-**Free tier.** `vllm/Qwen3.6-35B-A3B-NVFP4` is offered *ahead of* the entry-rung
-paid model for **any task type**, when, and only when, its gateway transport
-reports headroom (§2.1) — widened from coding-only, per Pedro's 2026-09-13
-observation that a free model with real spare capacity was being left idle on
-five of six task types. It is free and 96% correct, but **every one of the 23
-measured responses behind that number was a coding task** — there is no
-measured accuracy for this model on comprehension, long-context, multi-turn,
-planning, or reasoning at all, not weaker evidence but *zero* evidence. Its p90
-is 161s. A node placed there carries a 45s deadline — comfortably above its
-8.5s coding median, far below its p90 — after which it is abandoned and
-retried on the paid ladder, so a bad guess on an unmeasured type costs 45
-wasted seconds, not a wrong answer kept.
+**Free tier — the default entry rung for every task type.**
+`vllm/Qwen3.6-35B-A3B-NVFP4` is tried *first*, for all six task types, with no
+capacity gate in front of it. The paid ladder exists to catch what it drops,
+not to be reached first.
 
-**Treat the five unmeasured types as provisional until re-benchmarked.** Add
+The 45s deadline is the entire backpressure mechanism. A node placed on the
+free tier is abandoned at 45s — comfortably above its 8.5s coding median, far
+below its 161s p90 — and retried on the paid rung its task type names. So a
+slow gateway costs 45 wasted seconds per affected leaf, never a wrong answer
+kept and never a stall.
+
+**Why no gate:** an earlier draft gated this on the gateway host's
+`cpu_pct`/`load1` via `system_latest_by_host()`. That gate could never open.
+The gateway is `https://llm.ai-machine.cfappsecurity.com`, an external HTTPS
+endpoint; `system_samples` only ever contains `local` and the three SSH
+transports (`f6f52152…`, `11f0d67a…`, `ba872597…`). With no sample for the
+gateway, §2.1's staleness rule resolved it to *unknown*, and unknown was
+refused — so the free tier was closed permanently, by construction, and the
+policy would have routed 100% of work to paid models. See §1.4 for the
+misreading that motivated the gate.
+
+**It is free and it is already the workhorse.** Production this month:
+20,304 requests against luna's 1,996 — roughly 87% of real traffic already
+runs here (§1.4). The target below is not aspirational; it is the status quo
+that the gated draft would have switched off.
+
+**Target: ≥70% of orchestrator leaves completed on the free tier.** Measurable
+from `usage_events` — rows carrying `origin="orchestrator"`, grouped by model,
+counting attempts that completed within deadline against total leaves. If it
+falls below 70%, the deadline or the ladder is wrong and should be re-tuned,
+not the target.
+
+**The five unmeasured types stay provisional until re-benchmarked.** Every one
+of the 23 judged responses behind the 96% figure was a coding task — there is
+no measured accuracy for this model on comprehension, long-context, multi-turn,
+planning, or reasoning at all, not weaker evidence but *zero* evidence. Add
 `vllm/Qwen3.6-35B-A3B-NVFP4` to the next run of
-`bench/judge_delegation_deterministic_*.json` across all six task types before
-trusting this row the way the other five models' rows are trusted. Until then,
-the 45s deadline is the safety margin standing in for measurement.
+`bench/judge_delegation_deterministic_*.json` across all six types. Until then
+the 45s deadline and the escalation ladder are what stand in for measurement —
+which is exactly why trying it first is safe: being wrong is bounded at 45s.
 
-### 2.1 "Headroom", defined
+### 2.1 Placement gates
 
-Used in three places above and below, so it gets one definition rather than a
-judgement call at each site.
+Placement is about *where an agent process runs* — local box or SSH transport.
+It is orthogonal to model choice: selecting a gateway-served model such as
+Qwen or luna costs no local RAM beyond the CLI process itself.
 
 | gate | condition | source |
 |---|---|---|
-| free tier offered | `cpu_pct < 80` **and** `load1 / cores < 1.0` on the gateway's host | `system_latest_by_host()` |
 | transport eligible for placement | `mem_pct <= 75` | `system_latest_by_host()` |
 | local spawn permitted | `resource_guard.check().ok` | `/proc/meminfo`, live |
 | any sample older than 120s | treated as **unknown**, and unknown is not eligible | `created_at` |
@@ -227,16 +277,22 @@ judgement call at each site.
 Samples arrive every 30s, so 120s is four missed intervals. Unknown is refused
 rather than assumed healthy, for the reason `db_supervisor_map.py:356` already
 gives about the hub glow: "nothing measured and nothing happening must not look
-alike".
+alike". That rule is sound for hosts we actually sample; it is precisely what
+made the deleted gateway gate unopenable, since the gateway is not a host we
+sample at all.
 
-Against the numbers in §1.4 and §1.5 these gates currently resolve to: free tier
-**closed** (109.1% CPU), all three transports **eligible** (18.4%, 31.5%, 51.5%),
-local **refused** (`ok=False`). So a tree started today routes coding to luna and
-places it on a transport.
+RAM is the real local constraint — a 4 GB box running six agents — which is why
+`resource_guard` stays. CPU is not gated anywhere.
 
 **Escalation ladder:** `vllm → luna → mini → sonnet → opus`, one retry per rung,
-**≤3 attempts per leaf**, then the node reports failed. Typical leaves cost one
-attempt, since the entry tier is 100% on four of the six task types.
+**≤3 attempts per leaf**, then the node reports failed. The target is that
+**≥70% of leaves stop at rung 0** and cost nothing; most of the remainder should
+stop at the first paid rung, which is 100% on four of the six task types.
+
+**A leaf gets at most three rungs, so the ladder is never walked end to end.**
+`vllm → luna → mini` for a coding leaf, `vllm → sonnet → opus` for a
+comprehension one. `MAX_ATTEMPTS` is what stops a pathological leaf from
+spending five models' worth of budget before failing.
 
 **Excluded outright:** `vllm/Qwen3.5-0.8B` (23% correct, 0% on reasoning),
 `claude-haiku-4-5` (dearer and slower than Sonnet), `claude-fable-5` (100% but
@@ -246,13 +302,13 @@ $23.15/1k, 4.1× Sonnet).
 
 ## 3. Node lifecycle
 
-Five gates. Only the third ever spends a model call on *deciding* anything.
+Five gates. Only the second ever spends a model call on *deciding* anything.
 
 1. **Score** — `orchestrator._score_complexity(text)`, free, returns 1–5.
 2. **Split** — 1–2 execute now; 4–5 decompose now; exactly 3 costs one Sonnet
    call. A worker never judges its own scope: the models best at executing
    (luna, 100% on coding at 4s) are the worst at judging (25% on
-   comprehension).
+   comprehension). This is the one decision that skips rung 0 (§2).
 3. **Placement** — `resource_guard.check()` before every spawn. When local is
    full, select a `proxy`-provider machine whose `transport_id` host has
    headroom per `system_latest_by_host()`. `runner.py:370` states the mechanism:
@@ -260,8 +316,9 @@ Five gates. Only the third ever spends a model call on *deciding* anything.
    With no host available, the node queues rather than failing. **A
    write-capable task type is never offered a transport at all, regardless of
    headroom** — see §3.2.
-4. **Execute** — model and machine from the tier table, with the tier-0
-   deadline where it applies.
+4. **Execute** — attempt 1 is always rung 0 (`vllm/Qwen3.6-35B-A3B-NVFP4`,
+   `TIER0_DEADLINE`); later attempts take model and machine from the tier
+   table, with no deadline beyond the runner's own.
 5. **Escalate** — timeout or failure moves one rung. Usage is recorded per
    attempt with `origin="orchestrator"`, per CLAUDE.md §5, **including
    failures**: a turn that ran 45s and then timed out has been paid for, and
@@ -390,10 +447,20 @@ because the alternative needs five live backends to run a unit test.
 | termination guard | asserting intent; assert node count for a decomposition whose children score ≥ parent |
 | budget ceiling | asserting per node; spend accumulates across the tree, so assert the tree total |
 | usage recording | asserting successes only; a failed and a timed-out attempt must each produce a row |
+| rung 0 is always tried first | asserting the free model appears *somewhere* in the ladder; assert it is attempt 1 for every task type except `split decision` |
+| the free tier has no capacity gate | asserting behaviour only when samples exist; assert routing is unchanged when `system_latest_by_host()` returns nothing at all, which is the real gateway case |
 
 Every test is mutation-checked before it is claimed to work: break the ladder
 order, break the guard, break the termination rule, and confirm a specific test
 fails for each.
+
+**The ≥70% target is measured in production, not asserted in a unit test.** It
+is a property of real traffic, and no fixture can establish it. Query
+`usage_events` for `origin="orchestrator"`, group by model, and compare leaves
+completed on `vllm/Qwen3.6-35B-A3B-NVFP4` against total leaves. Below 70%, read
+the timeout rate before changing the policy: a deadline set too tight and a
+gateway genuinely too slow need opposite fixes, and only the per-attempt rows
+tell them apart.
 
 ---
 
@@ -403,13 +470,21 @@ fails for each.
 `existing 6, total 6`, a recursive tree runs today only by placing work on
 transports. If none is available it degrades to a single serialised agent slot:
 correct, bounded, and no faster than doing the work in one conversation. What it
-buys is cost — the entry tier is 25× cheaper than Sonnet and free where the
-self-hosted model has headroom.
+buys is cost — the entry rung is free, and what escapes it lands on a paid rung
+25× cheaper than Sonnet.
 
-**The free tier is contended.** At 109.1% CPU, the self-hosted gateway will
-often fail its headroom check, and the policy will route to luna instead. That
-is the intended behaviour, not a degradation, but it means "free" should not be
-assumed in cost projections.
+**The free tier is unmetered, not unlimited.** Nothing in this design measures
+the gateway's load, and nothing can: it is external and unsampled. The 45s
+deadline is the only thing bounding what we ask of it. If the gateway degrades
+under someone else's load, the symptom here is leaves timing out and escalating
+— more spend and more latency, never a stall — and the fix is to re-tune the
+deadline, not to invent a capacity signal we cannot read.
+
+**Some share of leaves will pay the 45s tax twice over.** A leaf that times out
+on the free tier has spent 45 seconds and produced nothing before the paid rung
+even starts. At the ≥70% target that is a minority of leaves, and the arithmetic
+still favours trying free first — but it is a real latency cost, not a free
+option, and it is why the target is measured rather than assumed.
 
 **The cost figures will drift.** They are output-side, from a single benchmark
 run on 2026-09-04, with 4–8 samples per cell. They are sound enough to rank
@@ -482,4 +557,6 @@ The two channels are unrelated, and only the file-based one routes.
 | free vs fast | free first, abandon at a 45s deadline and escalate | free only for background work; cheapest-that-works ignoring latency |
 | Azure pricing | use the supplied billing lines, `Opt` read as output | leave Azure unpriced, as `bench_rates.json` had it |
 | write-capable placement (2026-09-13) | forced local, unconditionally, independent of headroom | route by task_type/cost/load alone, same as a read |
-| free-tier scope (2026-09-13) | any task type, gated by the existing headroom check | coding-only, as originally scoped to its measured data |
+| free-tier scope (2026-09-13) | rung 0 for every task type, no capacity gate, 45s deadline as the only backpressure | coding-only; or any-type but gated on gateway CPU — a gate that could never open |
+| gateway capacity signal (2026-09-13) | none — accept it is unmeasurable and bound exposure with the deadline | invent a proxy signal, or keep refusing the free tier when unknown |
+| success criterion (2026-09-13) | ≥70% of leaves complete on rung 0, measured from `usage_events` | leave "mostly free" as an untested assumption |

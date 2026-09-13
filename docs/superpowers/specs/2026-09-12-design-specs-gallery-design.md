@@ -32,11 +32,14 @@ drifts:
    substring match — see the false-positive lesson `auto_answer.py`'s own
    docstring already states for exactly this class of matching: *"matching
    phrases against model-authored prose is what made [it] fire on unrelated
-   text elsewhere in this tree."*). `AGENT-MODELS-DECISION.md` already
-   carries a qualifying line unprompted: *"Produced via `/brainstorming`...
-   this document is the spec."* Any future root-level spec needs the same
-   kind of line; anything without it (`README.md`, `CHANGELOG.md`,
-   `TODO.md`, `SECURITY.md`, etc.) is silently excluded.
+   text elsewhere in this tree."*). The marker this was written against is
+   the line `/brainstorming` already emits into specs it produces:
+   *"Produced via `/brainstorming`... this document is the spec."*
+   (`AGENT-MODELS-DECISION.md` was the worked example here until it was
+   folded into `2026-09-12-tiered-agent-delegation-design.md` and deleted on
+   2026-09-13.) Any future root-level spec needs the same kind of line;
+   anything without it (`README.md`, `CHANGELOG.md`, `TODO.md`,
+   `SECURITY.md`, etc.) is silently excluded.
 
 This mirrors the "declared, not guessed" discipline this project already
 applies to `ai_machines.active_models` (`CLAUDE.md` §0.1) — same shape of

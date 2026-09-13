@@ -2,7 +2,17 @@
 
 **Date:** 2026-09-12
 **Status:** design, complete and implementable; not implemented. Every figure it
-routes on is now measured; no outstanding measurement blocks starting.
+routes on is now measured; no outstanding measurement blocks starting. The one
+mechanism it needs built rather than configured is the coding oracle (§3.3).
+**Amended:** 2026-09-13 (second pass) — §3.3 added, defining what a failure *is*.
+The escalation ladder fired on "timeout or failure" and the document never said
+what failure meant, so §2's answer to the free tier's accuracy rested on an
+undefined event. §3.3 names four signals that already exist in the codebase, and
+states what they cannot catch: a well-formed wrong answer. §2's rung 0 is
+narrowed to `coding` and `long-context` accordingly — the two types where a kept
+answer is either checkable or measured at 100% — reverting the universal rung 0
+of the first pass. §5 and §6 updated to match.
+
 **Amended:** 2026-09-13 — three changes, all in response to review by Pedro.
 (1) §3.2 added: write-capable tasks stay local, reconciled in from
 `AGENT-MODELS-DECISION.md`, which is deleted in the same commit so this is the
@@ -67,7 +77,9 @@ responses, exec-verified correctness, collected 2026-09-04. Cells are
 | `vllm/Qwen3.5-0.8B` | 26% / 13s | – | – | – | – | 0% / 226s |
 
 † **The 35B row is from a different run**, and it matters which: this model is
-rung 0 for every task type in §2, and until 2026-09-13 it had been measured on
+rung 0 for `coding` and `long-context` in §2 — and the four types it is *not*
+rung 0 for were excluded on the strength of exactly these figures, so their
+provenance carries weight. Until 2026-09-13 it had been measured on
 coding only — all 23 of its responses in the 2026-09-04 run were coding tasks,
 so the five other cells were empty and §2 called them provisional. They are no
 longer. The figures above come from
@@ -234,9 +246,39 @@ resource by a wide margin; the transports have headroom.
 
 ## 2. Tier policy
 
-**Rung 0, for every task type, is `vllm/Qwen3.6-35B-A3B-NVFP4` at $0.00, with a
-per-type deadline of 45s to 240s.** The table below is the *fallback* ladder: where a leaf goes
-when the free rung times out or fails.
+**Rung 0 is `vllm/Qwen3.6-35B-A3B-NVFP4` at $0.00, for `coding` and
+`long-context` only**, with a per-type deadline. The table below is the
+*fallback* ladder: where a coding or long-context leaf goes when the free rung
+times out or fails, and where every other type starts.
+
+The 2026-09-13 amendment made rung 0 universal. That is reverted here, and the
+reason is §3.3: escalation fires on "timeout or failure", and the only failures
+this design can *detect* are hard ones — an error frame, a `<synthetic>` model
+id, empty text, or the deadline. A well-formed wrong answer is indistinguishable
+from a right one, so on a type where the free model is measurably less accurate
+than its paid rung, the difference is not escalated. It is kept.
+
+Measured, free model against the rung it would replace:
+
+| type | rung 0 | paid rung | wrong answers kept | oracle available? |
+|---|---|---|---|---|
+| long-context | 100% | 100% | **0%** | not needed |
+| coding | 88% | 100% | 12% | **yes** — parse/compile/run |
+| comprehension | 75% | 100% | 25% | no |
+| multi-turn | 75% | 100% | 25% | no |
+| planning | 67% | 100% | 33% | no |
+| reasoning | 67% | ~100% | 33% | no |
+
+Rung 0 survives exactly where a kept answer is defensible: `long-context`,
+where it measures 100% and there is nothing to catch, and `coding`, where the
+benchmark's own correctness was **exec-verified** — the check that graded it is
+the check §3.3 requires at runtime. The other four enter at their paid rung.
+
+This costs less saving than it looks: coding and long-context are the bulk of
+agent leaves, and the four dropped types are the expensive-per-leaf minority.
+The alternative — a Sonnet-tier judge on rung-0 output — is the right long-term
+answer and is deliberately not specified here, because judge accuracy is
+unmeasured and this document's standard is measured-not-assumed (§1.1).
 
 | task type | first paid rung | $/1k tasks | why this one |
 |---|---|---|---|
@@ -270,15 +312,23 @@ against $17.25 for always-Opus — 4.9x cheaper for the same final accuracy,
 paying the Opus price only on the 14% that need it. The trade is latency on that
 14%: 8s then 27s, rather than 27s once.
 
-**Free tier — the default entry rung for every task type.**
-`vllm/Qwen3.6-35B-A3B-NVFP4` is tried *first*, for all six task types, with no
-capacity gate in front of it. The paid ladder exists to catch what it drops,
-not to be reached first.
+**Free tier — the entry rung for `coding` and `long-context`.**
+`vllm/Qwen3.6-35B-A3B-NVFP4` is tried *first* for those two types, with no
+capacity gate in front of it (§2.1). The paid ladder exists to catch what it
+drops, not to be reached first.
 
-The deadline is the entire backpressure mechanism. A node placed on the free
-tier is abandoned when it expires and retried on the paid rung its task type
-names. So a slow gateway costs one deadline's worth of wasted seconds per
-affected leaf, never a wrong answer kept and never a stall.
+The deadline is the backpressure mechanism for *slowness*. A node placed on the
+free tier is abandoned when it expires and retried on the paid rung its task
+type names, so a slow gateway costs one deadline's worth of wasted seconds per
+affected leaf, never a stall.
+
+An earlier draft added "never a wrong answer kept" to that sentence. A deadline
+cannot make that true — it measures elapsed time, not correctness, and the
+spec's own analysis of planning says so outright: the correct and wrong runs
+interleave, "so no deadline separates them". The claim is now carried by the
+*scope* of rung 0 rather than by the deadline: correctness on `coding` is
+checked by the oracle in §3.3, and on `long-context` there is no measured gap to
+catch.
 
 #### What the deadline actually costs
 
@@ -455,18 +505,27 @@ worth of budget before failing.
 
 ### 2.2 The full ladder, written out
 
-`MAX_ATTEMPTS = 3` means every task type needs exactly three rungs named, and
-an implementer cannot derive the third from the entry rung alone. All six:
+`MAX_ATTEMPTS = 3` is a ceiling, not a quota: a type needs its rungs named
+because an implementer cannot derive them from the entry rung alone, and two
+types stop at two because nothing measured sits above their second. All six:
 
 | task type | attempt 1 | attempt 2 | attempt 3 |
 |---|---|---|---|
 | coding | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
 | long-context | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
-| multi-turn | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
-| planning | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` |
-| comprehension | `vllm/Qwen3.6-35B-A3B-NVFP4` | `claude-sonnet-5` | `claude-opus-5` |
-| reasoning | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.4-mini` | `claude-opus-5` |
+| multi-turn | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` | `claude-sonnet-5` |
+| planning | `azure_ai/gpt-5.6-luna` | `azure_ai/gpt-5.4-mini` | `claude-sonnet-5` |
+| comprehension | `claude-sonnet-5` | `claude-opus-5` | — |
+| reasoning | `azure_ai/gpt-5.4-mini` | `claude-opus-5` | — |
 | split decision | `claude-sonnet-5` | — | — |
+
+Only `coding` and `long-context` begin on the free model, per §2 and §3.3. The
+other four begin one rung up and keep three-provider depth where they have it —
+`multi-turn` and `planning` still cross two Azure deployments and then
+Anthropic, which is the independent-infrastructure property described below.
+`comprehension` and `reasoning` have two rungs rather than three because
+nothing measured sits above their second, and inventing a third would mean
+escalating into a model measured worse.
 
 **The generating rule:** start at the type's entry rung from §2's table, then
 walk the global order `vllm → luna → mini → sonnet → opus`, **skipping any model
@@ -491,8 +550,10 @@ confirms Opus below Sonnet on comprehension, delete the third rung rather than
 reordering it — there is nothing else measured above Sonnet on this type.
 
 **Where every 100% ladder is really a provider change, not a capability
-change.** For coding, long-context, multi-turn and planning, all four of vllm,
-luna, mini and Sonnet measure 100%. Escalating there buys nothing in capability
+change.** For coding, long-context, multi-turn and planning, luna, mini and
+Sonnet all measure 100% — the free model does not, which is why it appears only
+in the first two rows (67% on planning, 75% on multi-turn; §2). Above it, and
+throughout those four ladders, escalating buys nothing in capability
 and is not meant to: the second and third attempts exist to survive a transient
 gateway failure or a timeout, which is why they cross from the self-hosted model
 to Azure and then to a second Azure deployment. Read those three rows as
@@ -623,6 +684,68 @@ way to undo it from here.
 
 ---
 
+### 3.3 What counts as a failure
+
+§3's step 5 escalates on "timeout or failure". Until 2026-09-13 this document
+never said what a failure *is*, which left the escalation ladder — the mechanism
+§2 relies on to answer for the free tier's accuracy — firing on an undefined
+event. This section is that definition.
+
+**Four signals, all of which already exist in this codebase.** None of them is
+new work, and each is a distinct way a turn can come back useless:
+
+| signal | where it comes from | what it means |
+|---|---|---|
+| `{"type": "error", ...}` in the event stream | `runner.py:171-177`; CLAUDE.md §4 | the turn failed. It **does not raise** — code that only catches exceptions reads it as a successful empty turn |
+| model id is `<synthetic>` | the CLI writes it on a failed turn; already read by `classification.py:611` | the turn produced no real completion, whatever the text says |
+| empty text | `runner.py:277` calls this "the primary signal", **observed on small gateway models** | the rung-0 class specifically. A model that answers with an empty text block has failed, not answered |
+| deadline expiry | `TIER0_DEADLINE[task_type]` (§2) | slowness, bounded per type |
+
+Any one of them is a failure and escalates one rung. All four are free: no extra
+call, no judge, no heuristic over the answer's content.
+
+**What they do not catch, stated plainly: a well-formed wrong answer.** A model
+that returns fluent, correctly-shaped, confidently wrong output trips none of
+these signals. It looks exactly like success, and the orchestrator keeps it.
+
+This is why rung 0's scope is what it is in §2, and it is the whole argument:
+
+- **`coding` has an oracle.** The benchmark graded it by *execution*
+  (`bench/judge_delegation_deterministic_20260904.json`, "exec-verified
+  correctness"), so the same check is available at runtime — does the produced
+  code parse, import, compile, or pass the test it was asked to satisfy. A leaf
+  whose output fails that check is a **failure** under this section and
+  escalates like any other. This fifth signal is the only one that costs
+  anything to implement, and it is what makes rung 0 defensible for the type
+  that carries the most traffic.
+- **`long-context` needs no oracle.** The free model measures 100% there; there
+  is no gap for a check to close.
+- **The other four have neither.** Which is why they do not start on rung 0.
+
+**The failing direction is the safe one.** An output that cannot be checked is
+not assumed good: where no oracle exists, the type does not use the free rung at
+all, rather than using it and hoping. That is the same fail-safe shape as
+§3.1's unmatched-text default and §3.2's `mutates=True` default — when the
+system cannot tell, it takes the more expensive branch, not the cheaper one.
+
+**Every attempt is recorded, including the failed ones**, per §3 step 5 and
+CLAUDE.md §5. This matters more here than anywhere else in the design: the
+production check in §5 compares free-tier completions against total leaves, and
+if a failed rung-0 attempt writes no row, the free tier looks *more* successful
+the more often it fails — the exact inversion CLAUDE.md §5 warns about, where
+"recording only successes makes the cheapest-looking caller the one that fails
+most".
+
+**The upgrade path, named but not specified.** A Sonnet-tier judge over rung-0
+output would give the other four types a real failure signal and let them use
+the free rung too. It is not written into this design because its accuracy is
+unmeasured, and a judge that is wrong 25% of the time on comprehension — which
+is what the cheap models measure on that type — would be worse than no judge.
+Specifying it needs a benchmark run of judge-vs-exec-verified agreement first,
+on the same task set. Until that exists, §2's scope stands.
+
+---
+
 ## 4. Data model and caps
 
 `TaskNode` gains `depth`, `attempt`, `tier`, `machine_id`, `deadline_s`,
@@ -700,12 +823,16 @@ because the alternative needs five live backends to run a unit test.
 | termination guard | asserting intent; assert node count for a decomposition whose children score ≥ parent |
 | budget ceiling | asserting per node; spend accumulates across the tree, so assert the tree total |
 | usage recording | asserting successes only; a failed and a timed-out attempt must each produce a row |
-| rung 0 is always tried first | asserting the free model appears *somewhere* in the ladder; assert it is attempt 1 for every task type except `split decision` |
+| rung 0 is scoped to two types | asserting the free model appears *somewhere* in the ladder. Assert it is attempt 1 for `coding` and `long-context`, and **absent from the other five ladders entirely** — a model that reappears at rung 2 on `planning` would keep the accuracy exposure §3.3 removed, while still passing any "is it attempt 1" check |
 | the free tier has no capacity gate | asserting behaviour only when samples exist; assert routing is unchanged when `system_latest_by_host()` returns nothing at all, which is the real gateway case |
 | the deadline is configuration, not a literal | hardcoding a number in the router and again in the test, so both agree and neither tracks `TIER0_DEADLINE`. These values are known-provisional and will be re-tuned from production (§2) — assert the router reads the mapping, by setting a type's value to something else in the test and checking the deadline follows |
 | the deadline is per task type | asserting one value and assuming the rest. Assert all six, and assert specifically that reasoning gets 240s and long-context 45s — those are the two ends, and collapsing the mapping back to a single value is the regression this row exists to catch |
 | a task type missing from `TIER0_DEADLINE` | letting a `KeyError` reach the turn, or silently defaulting to the shortest value. Assert the fallback explicitly — an unknown type must get the *longest* deadline, not the shortest, for the same fail-safe reason §3.1 defaults unmatched text to comprehension |
 | the full ladder (§2.2) | testing only the two types named in prose. Assert all six three-rung sequences by table, including the two that break positional order: reasoning skips Sonnet, comprehension ends on a model measured worse than its own rung 2 |
+| each failure signal escalates (§3.3) | testing only the deadline, which is the one signal that is easy to fake. Assert all four independently: an `{"type":"error"}` frame, a `<synthetic>` model id, empty text, and expiry. An error frame in particular **does not raise** (CLAUDE.md §4), so a test that only expects an exception passes against code that treats a failed turn as a successful empty one |
+| the coding oracle rejects bad output | asserting only that good code passes. Assert that output which does not parse escalates — and that the escalation is attributed to the oracle, not to a timeout, or a broken oracle is indistinguishable from a slow gateway in the §5 production numbers |
+| rung 0 is scoped, not universal | asserting the free model is attempt 1 somewhere. Assert it is attempt 1 for `coding` and `long-context` **and attempt 1 for nothing else** — the 2026-09-13 amendment made it universal and the revert is the property worth pinning |
+| a failed rung-0 attempt still writes a usage row | asserting the successful path only. A free attempt that fails and escalates must produce its own row, or the free tier looks better the more it fails (CLAUDE.md §5) |
 | `mutates` gates placement independently of `task_type` | asserting a read-only `coding` task and a writing `coding` task take the same path. They must not: assert the writing one is refused a transport *while a transport has headroom*, which is the only condition under which the rule does anything |
 | the `mutates` default | testing only the nine patterns in §3.1's table, all of which have an explicit value. Assert that text matching *no* pattern comes back `mutates=True`, since that default is the safety property |
 
@@ -728,6 +855,24 @@ tell them apart.
 ---
 
 ## 6. Consequences accepted
+
+**Four task types never touch the free model, and that is a cost decision made
+knowingly.** `comprehension`, `multi-turn`, `planning` and `reasoning` enter at
+their paid rung because nothing in this design can tell a wrong answer from a
+right one on those types (§3.3), and the free model measures 25–33% worse than
+the rung it would replace. The saving forgone is real. It is forgone because the
+alternative is keeping a wrong answer 25–33% of the time on the types whose
+mistakes propagate furthest — a planning error shapes every child beneath it.
+Recovering that saving is a measurement problem, not a design problem: benchmark
+a Sonnet-tier judge against the exec-verified labels, and if it agrees closely
+enough, those four types gain a failure signal and rung 0 with it.
+
+**The coding oracle is the one piece of this design that must be built rather
+than configured.** Everything else routes, gates or records; that check has to
+actually run the output. If it is stubbed to always pass, rung 0 silently
+returns to keeping 12% wrong answers on the highest-traffic type, and no test in
+§5 that only asserts routing would notice. That is why §5 pins the rejecting
+direction specifically.
 
 **This design does not create capacity.** With local `capacity()` at
 `existing 6, total 6`, a recursive tree runs today only by placing work on
@@ -821,7 +966,8 @@ The two channels are unrelated, and only the file-based one routes.
 | free vs fast | free first, abandon at a deadline and escalate | free only for background work; cheapest-that-works ignoring latency |
 | Azure pricing | use the supplied billing lines, `Opt` read as output | leave Azure unpriced, as `bench_rates.json` had it |
 | write-capable placement (2026-09-13) | forced local, unconditionally, independent of headroom | route by task_type/cost/load alone, same as a read |
-| free-tier scope (2026-09-13) | rung 0 for every task type, no capacity gate, a deadline as the only backpressure | coding-only; or any-type but gated on gateway CPU — a gate that could never open |
+| free-tier scope (2026-09-13, first pass) | rung 0 for every task type, no capacity gate, a deadline as the only backpressure | coding-only; or any-type but gated on gateway CPU — a gate that could never open |
+| free-tier scope (2026-09-13, second pass — supersedes the row above) | rung 0 for `coding` and `long-context` only, once §3.3 established that a deadline cannot detect a wrong answer and only those two types have an oracle or no measured gap | keep it universal and accept 25–33% wrong answers kept on four types; or add a Sonnet judge, whose accuracy is unmeasured |
 | gateway capacity signal (2026-09-13) | none — accept it is unmeasurable and bound exposure with the deadline | invent a proxy signal, or keep refusing the free tier when unknown |
 | success criterion (2026-09-13) | ≥70% of leaves complete on rung 0, measured from `usage_events` | leave "mostly free" as an untested assumption |
 | rung-0 deadline (2026-09-13, re-check) | 90s — the smallest round value that clears the ≥70% target on the coding-only data then available | 45s, which yields 65.2% and so shipped a policy predicting its own failure; 60s, which yields 69.6% and still misses |

@@ -196,7 +196,7 @@ class ForkAPITests(unittest.IsolatedAsyncioTestCase):
         await db.chat_set_model(chat_id, TESTING_MODEL)
         fork_resp = await chat_routes.handle_chat_fork(self._req(chat_id), chat_id)
         fork_id = json.loads(fork_resp.body)["id"]
-        forked = await db.chat_get(fork_id, "admin")
+        forked = await db.chat_get(fork_id, self._owner)
         self.assertEqual(forked["model"], TESTING_MODEL)
 
 

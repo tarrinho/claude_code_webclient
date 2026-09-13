@@ -31,7 +31,7 @@ one shell, empty in the next.
 # >>> preflight-block
 # Thresholds. Overridable so the gate can be tested without waiting for a full
 # box -- the same seam wc-health.sh uses for systemctl (registry #44).
-MIN_MEM_KB="${WC_PREFLIGHT_MIN_MEM_KB:-1572864}"      # 1.5 GB available
+MIN_MEM_KB="${WC_PREFLIGHT_MIN_MEM_KB:-1048576}"      # 1 GB available
 MAX_SWAP_PCT="${WC_PREFLIGHT_MAX_SWAP_PCT:-80}"
 STATE="${WC_PREFLIGHT_STATE:-${TMPDIR:-/tmp}/wc-rules-preflight-$(id -u)}"
 

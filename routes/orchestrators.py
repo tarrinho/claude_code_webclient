@@ -24,7 +24,7 @@ import transcripts
 import turns
 from classification import _classify_cli_session, _cli_maps, classify_chat
 from routes.misc import handle_sessions_resume
-from shared import _HEX_SESSION_ID_RE
+from shared import _HEX_SESSION_ID_RE, owner_of
 
 _log = logging.getLogger("wc.app")
 

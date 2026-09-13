@@ -36,7 +36,7 @@ from net_validation import (
     _validate_base_url,
     _validate_host,
 )
-from shared import _MODEL_RE, backend_kind
+from shared import _MODEL_RE, backend_kind, owner_of
 
 _log = logging.getLogger("wc.app")
 

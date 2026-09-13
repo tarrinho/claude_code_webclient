@@ -370,11 +370,32 @@ def _close_leaked_db_connection():
 # cannot reach the case being tested around any more.
 #
 # This restores exactly the pre-344cf00 write behavior, for the literal
-# "admin" case only. Nothing else changes: the stored value is still the
-# literal string "admin", so every later read using the same literal
-# (chat_get, chat_list, ...) keeps matching it exactly as before -- no
-# translation, no different id, so there is nothing to keep symmetric across
-# the dozen other owner_id-taking functions in routes/db_chats.py. Every other
+# "admin" case only. The stored value is still the literal string "admin", so
+# every *direct* read using the same literal (chat_get, chat_list, ...) keeps
+# matching it exactly as before.
+#
+# THAT SYMMETRY DOES NOT HOLD THROUGH A ROUTE, and an earlier version of this
+# comment claimed it did -- "no translation, no different id, so there is
+# nothing to keep symmetric". routes/chats.py resolves identity through
+# shared.owner_of() (lines 293, 355, 463, 486, 622, 773), which *translates*
+# the login name "admin" into that user's real id. So a route reads by uuid
+# while the row this fixture wrote is owned by the string, the row is not
+# found, and the endpoint answers 404.
+#
+# Measured 2026-09-14: 19 failures across the three voice suites, every one a
+# 404 or a knock-on from it. They read as voice bugs. They were identity
+# mismatches, and the direct-read tests in the same files passed throughout,
+# which is what made it look like the feature rather than the fixture.
+#
+# So: seeding through this fixture is safe for a test that only reads back
+# directly. A test that goes through an HTTP route must seed the owner with
+# the user's real id -- see _admin_id() in tests/test_voice_turn.py or
+# _owner_id() in tests/test_qa_voice_auto_answer_unblocked.py, and f602de3
+# for the same fix applied to seventeen browser-test call sites.
+#
+# Note the guard rejects only the single literal "admin", so seeding any other
+# name ("alice", "pedro") is accepted at the write and fails the same way at
+# the read, with nothing pointing at the cause. Every other
 # value, including any other non-UUID string, still reaches the real guard
 # unchanged and is still rejected exactly as today; only production code is
 # ever asked to reach it, and this fixture cannot change that.

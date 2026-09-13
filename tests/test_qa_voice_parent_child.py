@@ -23,6 +23,35 @@ import auth
 import config
 import db
 
+
+async def _admin_id() -> str:
+    """The admin's real user id, for owner arguments.
+
+    The literal "admin" used to work on both sides of these tests and stopped
+    working on the route side only. tests/conftest.py's shim lets chat_create
+    store the literal, and its docstring assumed "every later read using the
+    same literal" would match -- true when it was written. routes/chats.py now
+    resolves identity through shared.owner_of(), which *translates* "admin"
+    into this id, so a route reads by uuid while the row is owned by the
+    string. The row is not found and the endpoint answers 404.
+
+    Direct db.chat_get(chat_id, "admin") calls stayed symmetric and kept
+    passing, which is why the failure looked like a voice bug rather than an
+    identity one.
+    Creates the user when absent rather than asserting: several tests here
+    seed a chat without ever making an account, and under the old literal that
+    worked fine. Failing them on a missing user would be this helper inventing
+    a new requirement rather than fixing the identity mismatch it exists for.
+    """
+    import auth as _auth
+    import db as _db
+    row = await _db.user_get_by_name("admin")
+    if row is None:
+        await _db.user_create("admin", None, _auth.hash_password("x"), role="admin")
+        row = await _db.user_get_by_name("admin")
+    return row["id"]
+
+
 HTTPS = "https://testserver"
 
 
@@ -87,7 +116,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
+        await db.chat_create(parent_id, "Parent Chat", None, wd, await _admin_id())
 
         resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
@@ -98,7 +127,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200, resp.json())
         child_id = resp.json()["id"]
 
-        child = await db.chat_get(child_id, "admin")
+        child = await db.chat_get(child_id, await _admin_id())
         self.assertEqual(child["parent_chat_id"], parent_id)
 
     async def test_voice_child_is_temporary(self):
@@ -107,7 +136,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
+        await db.chat_create(parent_id, "Parent Chat", None, wd, await _admin_id())
 
         resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
@@ -117,7 +146,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(resp.status_code, 200)
 
-        child = await db.chat_get(resp.json()["id"], "admin")
+        child = await db.chat_get(resp.json()["id"], await _admin_id())
         self.assertEqual(child["is_temporary"], 1)
 
     async def test_voice_child_is_voice_mode(self):
@@ -126,7 +155,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
+        await db.chat_create(parent_id, "Parent Chat", None, wd, await _admin_id())
 
         resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
@@ -136,7 +165,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(resp.status_code, 200)
 
-        child = await db.chat_get(resp.json()["id"], "admin")
+        child = await db.chat_get(resp.json()["id"], await _admin_id())
         self.assertEqual(child["voice_mode"], 1)
 
     async def test_parent_chat_not_modified(self):
@@ -145,10 +174,10 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
+        await db.chat_create(parent_id, "Parent Chat", None, wd, await _admin_id())
 
         # Read parent before
-        parent_before = await db.chat_get(parent_id, "admin")
+        parent_before = await db.chat_get(parent_id, await _admin_id())
         parent_voice_before = parent_before.get("voice_mode", 0)
         parent_temp_before = parent_before.get("is_temporary", 0)
 
@@ -162,7 +191,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200)
 
         # Read parent after
-        parent_after = await db.chat_get(parent_id, "admin")
+        parent_after = await db.chat_get(parent_id, await _admin_id())
         self.assertEqual(
             parent_after["voice_mode"], parent_voice_before,
             "parent voice_mode must not change",
@@ -182,7 +211,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
+        await db.chat_create(parent_id, "Parent Chat", None, wd, await _admin_id())
 
         resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
@@ -193,7 +222,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200)
         child_id = resp.json()["id"]
 
-        chats = await db.chat_list("admin")
+        chats = await db.chat_list(await _admin_id())
         ids = {c["id"] for c in chats}
         self.assertIn(parent_id, ids, "parent must be in chat list")
         self.assertIn(child_id, ids, "child must be in chat list")
@@ -204,7 +233,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "My Workspace", None, wd, "admin")
+        await db.chat_create(parent_id, "My Workspace", None, wd, await _admin_id())
 
         resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Untitled",
@@ -214,7 +243,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(resp.status_code, 200)
 
-        child = await db.chat_get(resp.json()["id"], "admin")
+        child = await db.chat_get(resp.json()["id"], await _admin_id())
         self.assertEqual(child["title"], "My Workspace")
 
     async def test_voice_child_has_own_workspace_dir(self):
@@ -223,7 +252,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         parent_id = f"parent-{secrets.token_hex(4)}"
         wd = f"{self.tmpdir.name}/projects/{parent_id}"
         Path(wd).mkdir(parents=True, exist_ok=True)
-        await db.chat_create(parent_id, "Parent Chat", None, wd, "admin")
+        await db.chat_create(parent_id, "Parent Chat", None, wd, await _admin_id())
 
         resp = self.client.post("/api/chats", headers=headers, json={
             "title": "Voice Child",
@@ -233,7 +262,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(resp.status_code, 200)
 
-        child = await db.chat_get(resp.json()["id"], "admin")
+        child = await db.chat_get(resp.json()["id"], await _admin_id())
         self.assertTrue(Path(child["work_dir"]).is_dir())
 
     async def test_voice_child_without_parent_is_regular_voice_chat(self):
@@ -245,7 +274,7 @@ class VoiceParentChildTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(resp.status_code, 200)
 
-        child = await db.chat_get(resp.json()["id"], "admin")
+        child = await db.chat_get(resp.json()["id"], await _admin_id())
         self.assertEqual(child["voice_mode"], 1)
         self.assertIsNone(child.get("parent_chat_id"))
         self.assertEqual(child.get("is_temporary"), 0)

@@ -44,6 +44,26 @@ import auth
 import config
 import db
 
+
+async def _owner_id(name: str = "alice") -> str:
+    """*name*'s real user id, for owner arguments.
+
+    The literal used to work on both sides and now works on neither that goes
+    through a route: routes/chats.py resolves identity with shared.owner_of(),
+    which translates a login name into the user's id, so a route reads by uuid
+    while a row seeded with the name is owned by the string. The row is not
+    found and the endpoint answers 404.
+
+    Note the guard in routes/db_chats.py only rejects the single literal
+    "admin", so seeding "alice" was accepted and failed later at the read --
+    which is why this file had no "admin" in it and failed the same way.
+    """
+    import db as _db
+    row = await _db.user_get_by_name(name)
+    assert row, f"no user {name!r} -- create it before seeding rows"
+    return row["id"]
+
+
 HTTPS = "https://testserver"
 
 
@@ -72,9 +92,9 @@ class _Fixture(unittest.IsolatedAsyncioTestCase):
 
         self.password = secrets.token_urlsafe(16)
         await db.user_create("alice", None, auth.hash_password(self.password))
-        await db.chat_create("voice", "Voice chat", None, f"{self.tmp.name}/p", "alice")
-        await db.chat_create("plain", "Plain chat", None, f"{self.tmp.name}/p", "alice")
-        await db.chat_update("voice", "alice", voice_mode=1)
+        await db.chat_create("voice", "Voice chat", None, f"{self.tmp.name}/p", await _owner_id())
+        await db.chat_create("plain", "Plain chat", None, f"{self.tmp.name}/p", await _owner_id())
+        await db.chat_update("voice", await _owner_id(), voice_mode=1)
 
     def _login(self):
         client = _client()
@@ -98,7 +118,7 @@ class ArmingItOnAVoiceChatTests(_Fixture):
         `enabled: False` for any voice chat, so the UI showed the knob off
         while a stored `true` was rejecting every turn."""
         client, headers = self._login()
-        await db.chat_auto_answer_set("voice", "alice", True)
+        await db.chat_auto_answer_set("voice", await _owner_id(), True)
         r = client.get("/api/chats/voice/auto-answer", headers=headers)
         self.assertEqual(r.status_code, 200)
         self.assertTrue(
@@ -130,14 +150,14 @@ class TurningOnVoiceModeClearsItTests(_Fixture):
     """
 
     async def test_enabling_voice_mode_disarms_auto_answer(self):
-        await db.chat_auto_answer_set("plain", "alice", True)
-        self.assertTrue(await db.chat_auto_answer_get("plain", "alice"))
+        await db.chat_auto_answer_set("plain", await _owner_id(), True)
+        self.assertTrue(await db.chat_auto_answer_get("plain", await _owner_id()))
         client, headers = self._login()
         r = client.patch("/api/chats/plain", json={"voice_mode": True},
                          headers=headers)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertFalse(
-            await db.chat_auto_answer_get("plain", "alice"),
+            await db.chat_auto_answer_get("plain", await _owner_id()),
             "converting an armed chat to voice must disarm it, or the flag is "
             "carried into a mode where it does nothing")
 
@@ -148,16 +168,16 @@ class TurningOnVoiceModeClearsItTests(_Fixture):
         r = client.patch("/api/chats/voice", json={"voice_mode": False},
                          headers=headers)
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertFalse(await db.chat_auto_answer_get("voice", "alice"))
+        self.assertFalse(await db.chat_auto_answer_get("voice", await _owner_id()))
 
     async def test_the_accept_recommended_flag_is_cleared_too(self):
         """Both halves of the knob, or the second one survives into voice mode
         and re-arms as soon as the chat is switched back."""
-        await db.chat_auto_answer_set("plain", "alice", True, True)
+        await db.chat_auto_answer_set("plain", await _owner_id(), True, True)
         client, headers = self._login()
         client.patch("/api/chats/plain", json={"voice_mode": True}, headers=headers)
         self.assertFalse(
-            await db.chat_auto_answer_recommend_get("plain", "alice"))
+            await db.chat_auto_answer_recommend_get("plain", await _owner_id()))
 
 
 class TheStreamNoLongerRefusesTests(_Fixture):
@@ -170,7 +190,7 @@ class TheStreamNoLongerRefusesTests(_Fixture):
 
     async def test_a_voice_turn_with_auto_answer_armed_is_not_a_400(self):
         client, headers = self._login()
-        await db.chat_auto_answer_set("voice", "alice", True)
+        await db.chat_auto_answer_set("voice", await _owner_id(), True)
         r = client.post("/api/chats/voice/stream", json={"content": "hello"},
                         headers=headers)
         self.assertNotEqual(

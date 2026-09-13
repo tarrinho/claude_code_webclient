@@ -18,6 +18,35 @@ import auth
 import config
 import db
 
+
+async def _admin_id() -> str:
+    """The admin's real user id, for owner arguments.
+
+    The literal "admin" used to work on both sides of these tests and stopped
+    working on the route side only. tests/conftest.py's shim lets chat_create
+    store the literal, and its docstring assumed "every later read using the
+    same literal" would match -- true when it was written. routes/chats.py now
+    resolves identity through shared.owner_of(), which *translates* "admin"
+    into this id, so a route reads by uuid while the row is owned by the
+    string. The row is not found and the endpoint answers 404.
+
+    Direct db.chat_get(chat_id, "admin") calls stayed symmetric and kept
+    passing, which is why the failure looked like a voice bug rather than an
+    identity one.
+    Creates the user when absent rather than asserting: several tests here
+    seed a chat without ever making an account, and under the old literal that
+    worked fine. Failing them on a missing user would be this helper inventing
+    a new requirement rather than fixing the identity mismatch it exists for.
+    """
+    import auth as _auth
+    import db as _db
+    row = await _db.user_get_by_name("admin")
+    if row is None:
+        await _db.user_create("admin", None, _auth.hash_password("x"), role="admin")
+        row = await _db.user_get_by_name("admin")
+    return row["id"]
+
+
 HTTPS = "https://testserver"
 
 
@@ -72,21 +101,21 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
     async def _make_admin_and_chat(self, chat_id: str, voice_mode: bool = False):
         password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(password))
-        await db.chat_create(chat_id, "Test Chat", None, f"{self.tmp.name}/p/{chat_id}", "admin")
+        await db.chat_create(chat_id, "Test Chat", None, f"{self.tmp.name}/p/{chat_id}", await _admin_id())
         if voice_mode:
-            await db.chat_update(chat_id, "admin", voice_mode=1)
+            await db.chat_update(chat_id, await _admin_id(), voice_mode=1)
         return password
 
     async def test_voice_mode_column_exists_and_defaults_to_zero(self):
-        await db.chat_create("c1", "Test Chat", None, f"{self.tmp.name}/p/c1", "admin")
-        chat = await db.chat_get("c1", "admin")
+        await db.chat_create("c1", "Test Chat", None, f"{self.tmp.name}/p/c1", await _admin_id())
+        chat = await db.chat_get("c1", await _admin_id())
         self.assertEqual(chat["voice_mode"], 0)
 
     async def test_chat_update_accepts_voice_mode(self):
-        await db.chat_create("c2", "Test Chat", None, f"{self.tmp.name}/p/c2", "admin")
-        updated = await db.chat_update("c2", "admin", voice_mode=1)
+        await db.chat_create("c2", "Test Chat", None, f"{self.tmp.name}/p/c2", await _admin_id())
+        updated = await db.chat_update("c2", await _admin_id(), voice_mode=1)
         self.assertTrue(updated)
-        chat = await db.chat_get("c2", "admin")
+        chat = await db.chat_get("c2", await _admin_id())
         self.assertEqual(chat["voice_mode"], 1)
 
     async def test_voice_turn_timing_records_and_averages(self):
@@ -185,17 +214,17 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         """
         await db.ai_machine_create(
             f"m-{chat_id}", "Test gateway", "", 0, "fake-key",
-            "azure_ai/gpt-5.6-luna", "https://example.test", None, "admin",
+            "azure_ai/gpt-5.6-luna", "https://example.test", None, await _admin_id(),
             provider="direct",
         )
         await db.chat_create(
-            chat_id, "Voice Chat", None, f"{self.tmp.name}/p/{chat_id}", "admin",
+            chat_id, "Voice Chat", None, f"{self.tmp.name}/p/{chat_id}", await _admin_id(),
         )
         await db.chat_update(
-            chat_id, "admin", voice_mode=1, model="azure_ai/gpt-5.6-luna",
+            chat_id, await _admin_id(), voice_mode=1, model="azure_ai/gpt-5.6-luna",
             ai_machine_id=f"m-{chat_id}",
         )
-        return await db.chat_get(chat_id, "admin")
+        return await db.chat_get(chat_id, await _admin_id())
 
     async def test_stream_voice_turn_yields_matching_sse_frames(self):
         from types import SimpleNamespace
@@ -379,7 +408,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         from routes import chats
 
         password = await self._make_admin_and_chat("c6", voice_mode=True)
-        await db.chat_update("c6", "admin", model="azure_ai/gpt-5.6-luna",
+        await db.chat_update("c6", await _admin_id(), model="azure_ai/gpt-5.6-luna",
                               ai_machine_id="fake-machine-id")
 
         async def fake_stream_voice_turn(chat, prompt, owner):
@@ -404,15 +433,21 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         from routes import chats
 
         password = await self._make_admin_and_chat("c10", voice_mode=True)
-        await db.chat_update("c10", "admin", model="azure_ai/gpt-5.6-luna",
+        await db.chat_update("c10", await _admin_id(), model="azure_ai/gpt-5.6-luna",
                               ai_machine_id="fake-machine-id")
 
         async def fake_stream_voice_turn(chat, prompt, owner):
             yield 'data: {"type": "done"}\n\n'
 
         client, headers = self._login("admin", password)
-        self.addCleanup(shared._sse_slots.pop, "admin", None)
-        shared._sse_slots["admin"] = shared._MAX_SSE_PER_OWNER
+        # Keyed on the user id, not the name. app.py:231 mints the session with
+        # auth.session_new(user["id"], ...), so session["user"] -- which every
+        # acquire_sse_slot call site passes -- is a uuid. Filling the slot under
+        # "admin" filled a bucket the endpoint never reads, so the cap could not
+        # trip and this asserted 429 against a request that was never counted.
+        slot_key = await _admin_id()
+        self.addCleanup(shared._sse_slots.pop, slot_key, None)
+        shared._sse_slots[slot_key] = shared._MAX_SSE_PER_OWNER
 
         with patch.object(chats, "stream_voice_turn", fake_stream_voice_turn):
             response = client.post(
@@ -423,7 +458,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             "voice stream must be capped the same as every other SSE endpoint",
         )
 
-        shared._sse_slots["admin"] = 0
+        shared._sse_slots[slot_key] = 0
         with patch.object(chats, "stream_voice_turn", fake_stream_voice_turn):
             response = client.post(
                 "/api/chats/c10/stream", json={"content": "hi"}, headers=headers,
@@ -431,7 +466,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         # The generator's finally must release the slot even on a clean
         # finish, or a handful of ordinary voice turns would exhaust the cap.
-        self.assertEqual(shared._sse_slots.get("admin", 0), 0)
+        self.assertEqual(shared._sse_slots.get(slot_key, 0), 0)
 
     async def test_chat_create_with_voice_mode_pins_machine_and_model(self):
         password = secrets.token_urlsafe(16)
@@ -441,7 +476,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         # surfaced only later, at turn time, as a voice chat with no reachable
         # backend -- the owner-scoped lookup finds nothing for a machine the
         # caller does not own.
-        await self._make_voice_machine("voice-machine-1", "admin")
+        await self._make_voice_machine("voice-machine-1", await _admin_id())
         await db.setting_set("voice_ai_machine_id", "voice-machine-1")
         await db.setting_set("voice_model", "azure_ai/gpt-5.6-luna")
 
@@ -451,7 +486,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         chat_id = response.json()["id"]
-        chat = await db.chat_get(chat_id, "admin")
+        chat = await db.chat_get(chat_id, await _admin_id())
         self.assertEqual(chat["voice_mode"], 1)
         self.assertEqual(chat["ai_machine_id"], "voice-machine-1")
         self.assertEqual(chat["model"], "azure_ai/gpt-5.6-luna")
@@ -463,7 +498,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         # A real owned machine rather than a patched lookup: /api/settings only
         # offers the models of a backend the caller actually has, so stubbing
         # the read tested a path the endpoint no longer takes.
-        await self._make_voice_machine("voice-machine-2", "admin")
+        await self._make_voice_machine("voice-machine-2", await _admin_id())
         await db.setting_set("voice_ai_machine_id", "voice-machine-2")
         await voice.record_voice_turn_timing("azure_ai/gpt-5.6-luna", 1100, 1200)
 

@@ -336,6 +336,345 @@ assert count_words("a b a") == {"a": 2, "b": 1}
 ''')
 
 
+# --- filling in the four one-task types --------------------------------------
+#
+# comprehension, planning, long-context and multi-turn each had exactly one
+# task, so a model measured on them at --repeats 5 produced five runs of the
+# same prompt. That is a measurement of one task, not of a type, and reading it
+# as a type was how `vllm/Qwen3.6-35B-A3B-NVFP4` ended up with 23 responses that
+# were all coding while the tier policy spoke about six types. Three tasks each
+# below.
+#
+# Every existing task above is left byte-identical on purpose: changing a
+# prompt would silence the comparison with the 2026-09-04 run rather than
+# extend it.
+
+DIFF_UNDER_REVIEW = '''\
+@@ -1,7 +1,7 @@
+ def active_sessions(rows, now):
+     out = []
+     for r in rows:
+-        if r["last_seen"] > now - 3600:
++        if r["last_seen"] >= now - 3600:
+             out.append(r)
+-    return out
++    return out[:50]
+'''
+
+FAILING_SUMMARISE = '''\
+def summarise(rows):
+    total, counts = {}, {}
+    for r in rows:
+        total[r["env"]] = total.get(r["env"], 0) + r["value"]
+        if r.get("ok"):
+            counts[r["env"]] = counts.get(r["env"], 0) + 1
+    return {k: total[k] / counts[k] for k in total}
+'''
+
+SUMMARISE_TRACEBACK = '''\
+Traceback (most recent call last):
+  File "report.py", line 12, in <module>
+    print(summarise(rows))
+  File "report.py", line 8, in summarise
+    return {k: total[k] / counts[k] for k in total}
+KeyError: 'staging'
+'''
+
+RETRY_POLICY = '''\
+timeout_s: 30
+retries: 2
+backoff: exponential, base 2s
+retry_on: [502, 503, 504]
+'''
+
+
+def _verify_comprehension_diff(response: str) -> verify.Verdict:
+    """Claim check on a two-change diff where only one change is dangerous.
+
+    Both edits are visible in three lines; the discriminator is the fourth
+    claim, which asks what `out[:50]` actually selects. Nothing sorts `rows`,
+    so the slice keeps the first fifty in whatever order the caller supplied --
+    a model that reports the cap without noticing that has read the diff but
+    not the consequence.
+    """
+    return verify.check_claims(response, [
+        ("the boundary became inclusive",
+         r">=|inclusive|boundary|equal|exactly 3600|on the hour"),
+        ("the result is now capped at 50", r"\b50\b|truncat|\bcap\b|limit|slice"),
+        ("the cap can drop sessions silently",
+         r"silent|drop|lose|lost|miss|hidden|without (warning|notice|error)"),
+        ("which 50 is undefined, because nothing sorts first",
+         r"order|sort|arbitrar|unsorted|undefined|which 50|non.?determin"),
+    ])
+
+
+def _verify_comprehension_traceback(response: str) -> verify.Verdict:
+    """Claim check on a KeyError whose cause is two dicts filled unequally.
+
+    `total` gains a key for every row; `counts` only for rows with `ok`. The
+    comprehension then iterates `total`. The shallow reading is "'staging' is
+    missing from counts", which restates the traceback; the discriminating one
+    names the condition that produces it -- an env whose rows are all not-ok.
+    """
+    return verify.check_claims(response, [
+        ("names the KeyError on 'staging'", r"KeyError|missing key|'staging'|\"staging\""),
+        ("counts is only populated for ok rows",
+         r"if r\.get|only.*\bok\b|\bok\b.*only|conditional|guard|truthy"),
+        ("the comprehension iterates total, not counts",
+         r"for k in total|iterat\w*\s+(over\s+)?total|keys of total|total.*keys"),
+        ("an env with zero ok rows is what triggers it",
+         r"(zero|no|none|not a single|never)\b[^.]{0,40}\bok\b|all.*fail|every.*not ok"),
+    ])
+
+
+def _verify_comprehension_config(response: str) -> verify.Verdict:
+    """Claim check with a trap: `retries: 2` is present but does not apply.
+
+    The scenario's first response is 500, which is absent from `retry_on`, so
+    the call fails on attempt one and the 503 in the scenario is never reached.
+    A model that pattern-matches the retries field answers "three attempts".
+    """
+    return verify.check_claims(response, [
+        ("exactly one attempt is made",
+         r"\b(one|1|single)\b[^.]{0,30}(attempt|try|request|call)|"
+         r"(attempt|try|request|call)[^.]{0,20}\b(one|1|once)\b|no retr|not retr"),
+        ("because 500 is not in retry_on",
+         r"500[^.]{0,40}(not|absent|excluded|missing)|"
+         r"(not|absent|excluded|missing)[^.]{0,40}500|only.*50[234]"),
+        ("no backoff delay is waited",
+         r"no\s+(backoff|wait|delay|sleep)|zero\s+(wait|delay)|"
+         r"\b0\s*s(econds)?\b|immediat"),
+        ("the 503 is never reached", r"never|not reach|no second|moot|irrelevant|does not get"),
+    ])
+
+
+def _verify_planning_migration(response: str) -> verify.Verdict:
+    """Claim check on the ordering that makes the migration safe, not on prose.
+
+    The steps are individually obvious and the order is the whole answer: a
+    plan that adds the constraint before the backfill has described an outage.
+    """
+    return verify.check_claims(response, [
+        ("add the column nullable first",
+         r"nullable|allow null|without\s+NOT NULL|no default|DEFAULT NULL"),
+        ("backfill in batches", r"batch|chunk|increment|in\s+slices|rate.?limit"),
+        ("keep old and new readers working during the change",
+         r"dual.?write|write.*both|backward.?compat|deploy.*first|tolerat"),
+        ("apply NOT NULL only after the backfill",
+         r"(NOT NULL|constraint)[^.]{0,60}(last|after|final|then|once)|"
+         r"(after|once)[^.]{0,60}(NOT NULL|constraint)|VALIDATE CONSTRAINT"),
+        ("a rollback path", r"rollback|revert|undo|back out|roll back"),
+    ])
+
+
+def _verify_planning_incident(response: str) -> verify.Verdict:
+    """Claim check on mitigate-before-diagnose.
+
+    The trap is that the interesting work is the investigation, so a plan that
+    opens with it reads as thorough while leaving the error rate running.
+    """
+    return verify.check_claims(response, [
+        ("restore service first", r"rollback|revert|roll back|mitigat|stop the bleed|restore|disable"),
+        ("investigate after restoring, not before",
+         r"(then|after|once)[^.]{0,60}(investigat|root cause|diagnos)|"
+         r"(investigat|root cause|diagnos)[^.]{0,60}(after|later|once restored)|"
+         r"before[^.]{0,40}(investigat|debug)"),
+        ("preserve evidence before it rotates away",
+         r"log|evidence|capture|snapshot|preserve|retain|trace"),
+        ("tell people it is happening", r"communicat|status page|notify|inform|stakeholder|announce"),
+        ("a follow-up that prevents a repeat",
+         r"post.?mortem|prevent|follow.?up|action item|regression test|guard"),
+    ])
+
+
+def _verify_planning_testing(response: str) -> verify.Verdict:
+    """Claim check on a test plan for money-moving code.
+
+    Idempotency is the discriminator: a retry feature that is not idempotent
+    charges twice, and a plan that lists unit/integration/edge cases without
+    naming it has planned tests for the wrong feature.
+    """
+    return verify.check_claims(response, [
+        ("unit tests", r"unit test|unit-level|\bunit\b"),
+        ("integration or end-to-end coverage", r"integration|end.to.end|e2e|contract test"),
+        ("the failure paths, not just the happy one",
+         r"fail|error|timeout|network|exception|5\d\d|unavailab"),
+        ("idempotency, so a retry cannot double-charge",
+         r"idempoten|double.?charg|duplicate|exactly.?once|dedup"),
+        ("how you would know it works in production",
+         r"monitor|metric|alert|observab|canary|dashboard|log"),
+    ])
+
+
+def _log_filler(lines: int = 400) -> list[str]:
+    """Deterministic transcript-shaped noise, shared by the long-context tasks.
+
+    Kept separate from `_long_context_prompt`'s own inline copy so the original
+    task's bytes do not move; this one is free to differ.
+    """
+    return [
+        f"[turn {i:04d}] user: check chat {i} status\n"
+        f"[turn {i:04d}] assistant: chat {i} is idle, last activity "
+        f"2026-08-{(i % 28) + 1:02d}T0{i % 10}:00:00Z, no pending question"
+        for i in range(lines)
+    ]
+
+
+#: Indices where the countable event is planted. Seven of them, and the count
+#: is the answer -- so the number must not also be derivable from the filler.
+_TIMEOUT_AT = (17, 88, 141, 202, 263, 318, 377)
+
+
+def _long_context_count_prompt() -> str:
+    """Aggregation rather than retrieval: the answer is a count, not a value.
+
+    A needle task rewards finding one line and stopping. This one cannot be
+    answered without traversing the whole log, which is the property the
+    product actually depends on when a model reads a long transcript.
+    """
+    filler = _log_filler()
+    for idx in _TIMEOUT_AT:
+        filler[idx] = (
+            f"[turn {idx:04d}] assistant: chat 42 turn timed out after "
+            f"the deadline and was abandoned"
+        )
+    return (
+        "Below is an excerpt from a WebConsole session log.\n\n"
+        + "\n".join(filler)
+        + "\n\nQuestion: how many turns for chat 42 timed out in this log? "
+          "Answer with just the number."
+    )
+
+
+def _long_context_pair_prompt() -> str:
+    """Two facts, far apart, and the question needs both.
+
+    Either alone gives a plausible-looking wrong answer, so this separates a
+    model that retrieved from one that retrieved *and* combined.
+    """
+    filler = _log_filler()
+    filler[62] = "[turn 0062] assistant: note for the record — the session TTL is 900 seconds."
+    filler[341] = "[turn 0341] assistant: note for the record — the cache TTL is 300 seconds."
+    return (
+        "Below is an excerpt from a WebConsole session log.\n\n"
+        + "\n".join(filler)
+        + "\n\nQuestion: according to the log, how much longer is the session "
+          "TTL than the cache TTL? Answer with just the number and its unit."
+    )
+
+
+def _long_context_absent_prompt() -> str:
+    """The fact is not in the log. Saying so is the correct answer.
+
+    This is the only task in the set whose pass condition is a refusal, and it
+    is here because the failure it catches is invisible to every other one: a
+    model that invents a plausible number scores identically to one that found
+    a real one, on any task where a number exists to be found.
+    """
+    return (
+        "Below is an excerpt from a WebConsole session log.\n\n"
+        + "\n".join(_log_filler())
+        + "\n\nQuestion: according to the log, what is the database connection "
+          "pool size? Answer with just the number, or say so if the log does "
+          "not state it."
+    )
+
+
+def _verify_long_context_count(response: str) -> verify.Verdict:
+    """Exact count, with the near-misses excluded explicitly.
+
+    Off-by-one is the expected failure here -- a model that skims finds six or
+    eight -- so 6 and 8 are checked for and rejected rather than merely not
+    rewarded.
+    """
+    return verify.check_claims(response, [
+        ("the count 7", r"\b(7|seven)\b"),
+        ("no off-by-one answer alongside it", r"^(?!.*\b(6|8|six|eight)\b).*$"),
+    ])
+
+
+def _verify_long_context_pair(response: str) -> verify.Verdict:
+    """The difference, not either input value.
+
+    900 and 300 are both in the log and both wrong as answers, so each is
+    excluded: quoting a retrieved number instead of computing with it is the
+    specific failure this task exists to see.
+    """
+    return verify.check_claims(response, [
+        ("the difference, 600", r"\b600\b|six hundred"),
+        ("the unit (seconds)", r"second|\bs\b|sec"),
+        ("not just one of the two retrieved values",
+         r"^(?!.*\b(900|300)\s*(second|s\b|sec)).*$"),
+    ])
+
+
+def _verify_long_context_absent(response: str) -> verify.Verdict:
+    """Passes only on an admission, and fails on any invented figure.
+
+    The second claim is the real one: a response can say "the log does not
+    state it" and then guess anyway, and a check that only looked for the
+    admission would score that as correct.
+    """
+    return verify.check_claims(response, [
+        ("says the log does not state it",
+         r"not (present|mention|found|stated|specified|in the log|given)|"
+         r"does not (appear|mention|contain|state|specify)|"
+         r"no (mention|record|entry|reference|information)|absent|"
+         r"can(not|'t) (find|determine)|isn'?t (there|mentioned|stated)|unknown"),
+        ("does not invent a pool size anyway",
+         r"^(?!.*\b\d+\s*(connection|pool)).*$"),
+    ])
+
+
+def _verify_multi_turn_rename(response: str) -> verify.Verdict:
+    """The second turn renames *and* changes a rule, so a lost thread shows up.
+
+    A model that kept context ships `parse_config` with last-wins duplicates; a
+    model that lost it either keeps the old name or the old first-wins rule,
+    and each is a separate assertion.
+    """
+    return verify.run_checks(verify.extract_code(response), '''
+assert parse_config("a=1;b=2") == {"a": "1", "b": "2"}
+assert parse_config("a=1;a=2") == {"a": "2"}, \\
+    "the second turn's last-duplicate-wins rule was not applied"
+assert parse_config("") == {}
+''', '''
+assert parse_config("a=1;") == {"a": "1"}
+assert parse_config("a=b=c") == {"a": "b=c"}, "only the first = separates"
+''')
+
+
+def _verify_multi_turn_constraint(response: str) -> verify.Verdict:
+    """The second turn adds a constraint the first turn's code did not have."""
+    return verify.run_checks(verify.extract_code(response), '''
+assert average([1, 2, 3]) == 2
+assert average([5]) == 5
+try:
+    average([])
+except ValueError:
+    pass
+else:
+    raise AssertionError("the second turn's ValueError on empty input is missing")
+''')
+
+
+def _verify_multi_turn_recall(response: str) -> verify.Verdict:
+    """Round-trip, which tests recall without the harness knowing the answer.
+
+    The first turn picks a delimiter; the second must reuse *that* one, and the
+    harness never learns which it was. A model that forgets and picks a second
+    delimiter fails the round trip, so this measures context retention with an
+    executed check rather than a claim -- the only task here that can.
+    """
+    return verify.run_checks(verify.extract_code(response), '''
+assert split_fields(join_fields(["a", "b", "c"])) == ["a", "b", "c"], \\
+    "split_fields did not reverse join_fields -- the delimiter was not carried over"
+assert split_fields(join_fields(["one"])) == ["one"]
+''', '''
+assert split_fields(join_fields([])) == []
+''')
+
+
 # --- the set -----------------------------------------------------------------
 
 
@@ -464,6 +803,130 @@ Also add a docstring and type hints. Keep the function name. Return valid Python
         verifier=_verify_multi_turn,
         prompt="""Write a Python function count_words(text) that returns a dict mapping each whitespace-separated word to how many times it appears. Return valid Python code only.""",
         followup="""Now make it case-insensitive, lowercasing every key. Keep the name. Return the full function as valid Python code only.""",
+        tags=("multi-turn",),
+    ),
+
+    # --- comprehension, the other two ---------------------------------------
+    Task(
+        id="comprehension-diff",
+        description="Read a two-change diff and name the consequence of each",
+        task_type="comprehension",
+        verifier=_verify_comprehension_diff,
+        prompt=f"""Read this diff and answer three questions.
+
+```diff
+{DIFF_UNDER_REVIEW}```
+
+1. What behaviour changed?
+2. Which change could cause a caller to silently miss data?
+3. Of the rows that survive, which ones are they?""",
+    ),
+    Task(
+        id="comprehension-traceback",
+        description="Find the root cause of a KeyError from code plus traceback",
+        task_type="comprehension",
+        verifier=_verify_comprehension_traceback,
+        prompt=f"""Here is a function and the traceback it produced.
+
+```python
+{FAILING_SUMMARISE}```
+
+```
+{SUMMARISE_TRACEBACK}```
+
+Explain why the KeyError happens. Say what has to be true of the input for it
+to occur, not just which key was missing.""",
+    ),
+    Task(
+        id="comprehension-config",
+        description="Apply a retry policy to a scenario it does not cover",
+        task_type="comprehension",
+        verifier=_verify_comprehension_config,
+        prompt=f"""Here is a client's retry policy.
+
+```yaml
+{RETRY_POLICY}```
+
+A request returns 500, and the server would return 503 if asked again. How
+many attempts does the client make in total, how long does it spend waiting in
+backoff, and does it reach the 503? Explain why.""",
+    ),
+
+    # --- planning, the other two ---------------------------------------------
+    Task(
+        id="planning-migration",
+        description="Zero-downtime NOT NULL column on a 50M-row table",
+        task_type="planning",
+        verifier=_verify_planning_migration,
+        prompt="""Plan adding a NOT NULL column with a default to a 50-million-row PostgreSQL table, with the application serving traffic throughout and deploys happening independently of migrations. Give the steps in the order you would run them, and say what you would do if step three failed halfway. Use numbered lists.""",
+    ),
+    Task(
+        id="planning-incident",
+        description="Respond to a deploy that is currently raising errors",
+        task_type="planning",
+        verifier=_verify_planning_incident,
+        prompt="""A deploy went out twenty minutes ago and the API error rate went from 0.1% to 7%. It is still live and users are affected. Plan what you do, in order, from now until the incident is closed. Use numbered lists.""",
+    ),
+    Task(
+        id="planning-testing",
+        description="Test plan for a payment retry feature",
+        task_type="planning",
+        verifier=_verify_planning_testing,
+        prompt="""Plan how you would test a new feature that automatically retries failed card payments up to three times over 24 hours. Cover what you test, at which level, and how you would know it was working once released. Use numbered lists.""",
+    ),
+
+    # --- long-context, the other two -----------------------------------------
+    Task(
+        id="long-context-count",
+        description="Count matching events across a transcript-shaped log",
+        task_type="long-context",
+        verifier=_verify_long_context_count,
+        prompt=_long_context_count_prompt(),
+        tags=("long-input",),
+    ),
+    Task(
+        id="long-context-pair",
+        description="Combine two facts stated far apart in a long log",
+        task_type="long-context",
+        verifier=_verify_long_context_pair,
+        prompt=_long_context_pair_prompt(),
+        tags=("long-input",),
+    ),
+    Task(
+        id="long-context-absent",
+        description="Report that a requested fact is not in the log",
+        task_type="long-context",
+        verifier=_verify_long_context_absent,
+        prompt=_long_context_absent_prompt(),
+        tags=("long-input",),
+    ),
+
+    # --- multi-turn, the other two -------------------------------------------
+    Task(
+        id="multi-turn-rename",
+        description="Rename and change a rule in the first turn's function",
+        task_type="multi-turn",
+        verifier=_verify_multi_turn_rename,
+        prompt="""Write a Python function parse_pairs(text) that parses "a=1;b=2" into {"a": "1", "b": "2"}. Values stay strings. If a key repeats, the first occurrence wins. Return valid Python code only.""",
+        followup="""Rename it to parse_config and change the duplicate rule so the last occurrence wins instead. Return the full function as valid Python code only.""",
+        tags=("multi-turn",),
+    ),
+    Task(
+        id="multi-turn-constraint",
+        description="Add an error case to the first turn's function",
+        task_type="multi-turn",
+        verifier=_verify_multi_turn_constraint,
+        prompt="""Write a Python function average(nums) that returns the arithmetic mean of a list of numbers. Return valid Python code only.""",
+        followup="""Now make it raise ValueError when the list is empty. Keep the name. Return the full function as valid Python code only.""",
+        tags=("multi-turn",),
+    ),
+    Task(
+        id="multi-turn-recall",
+        description="Reuse a choice made in the first turn, unnamed in the second",
+        task_type="multi-turn",
+        verifier=_verify_multi_turn_recall,
+        prompt="""Choose a single delimiter character and write a Python function join_fields(fields) that joins a list of strings with it. State which delimiter you chose. Return the explanation and valid Python code.""",
+        followup="""Now write split_fields(s) that reverses it, using the same delimiter you chose. Return valid Python code only.""",
         tags=("multi-turn",),
     ),
 )

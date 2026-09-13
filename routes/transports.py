@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 import db
 from net_validation import _HOST_PATTERN_LOCAL, _validate_host
+from shared import owner_of
 
 _log = logging.getLogger("wc.app")
 

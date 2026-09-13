@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 import db
+from shared import owner_of
 
 _log = logging.getLogger("wc.app")
 

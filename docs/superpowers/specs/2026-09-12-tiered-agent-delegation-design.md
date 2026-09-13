@@ -2,6 +2,9 @@
 
 **Date:** 2026-09-12
 **Status:** design, approved in chat; not implemented
+**Amended:** 2026-09-13 — added §3.2 (write-capable tasks stay local, reconciled
+in from `AGENT-MODELS-DECISION.md`, now superseded by this spec) and widened
+the free-tier rule in §2 from coding-only to all task types (§2, §1.4).
 
 A goal is decomposed recursively into sub-agents, and every node is routed to
 the cheapest model measured capable of its task type, placed on a host with the
@@ -190,12 +193,24 @@ against $17.25 for always-Opus — 4.9x cheaper for the same final accuracy,
 paying the Opus price only on the 14% that need it. The trade is latency on that
 14%: 8s then 27s, rather than 27s once.
 
-**Free tier.** `vllm/Qwen3.6-35B-A3B-NVFP4` is offered *ahead of* luna for
-coding when, and only when, its gateway transport reports headroom. It is free
-and 96% correct, but every one of those 23 responses was a coding task and its
-p90 is 161s. A node placed there carries a 45s deadline — comfortably above its
-8.5s median, far below its p90 — after which it is abandoned and retried on the
-paid ladder.
+**Free tier.** `vllm/Qwen3.6-35B-A3B-NVFP4` is offered *ahead of* the entry-rung
+paid model for **any task type**, when, and only when, its gateway transport
+reports headroom (§2.1) — widened from coding-only, per Pedro's 2026-09-13
+observation that a free model with real spare capacity was being left idle on
+five of six task types. It is free and 96% correct, but **every one of the 23
+measured responses behind that number was a coding task** — there is no
+measured accuracy for this model on comprehension, long-context, multi-turn,
+planning, or reasoning at all, not weaker evidence but *zero* evidence. Its p90
+is 161s. A node placed there carries a 45s deadline — comfortably above its
+8.5s coding median, far below its p90 — after which it is abandoned and
+retried on the paid ladder, so a bad guess on an unmeasured type costs 45
+wasted seconds, not a wrong answer kept.
+
+**Treat the five unmeasured types as provisional until re-benchmarked.** Add
+`vllm/Qwen3.6-35B-A3B-NVFP4` to the next run of
+`bench/judge_delegation_deterministic_*.json` across all six task types before
+trusting this row the way the other five models' rows are trusted. Until then,
+the 45s deadline is the safety margin standing in for measurement.
 
 ### 2.1 "Headroom", defined
 
@@ -242,7 +257,9 @@ Five gates. Only the third ever spends a model call on *deciding* anything.
    full, select a `proxy`-provider machine whose `transport_id` host has
    headroom per `system_latest_by_host()`. `runner.py:370` states the mechanism:
    "A backend with transport_id set runs its claude process on that" transport.
-   With no host available, the node queues rather than failing.
+   With no host available, the node queues rather than failing. **A
+   write-capable task type is never offered a transport at all, regardless of
+   headroom** — see §3.2.
 4. **Execute** — model and machine from the tier table, with the tier-0
    deadline where it applies.
 5. **Escalate** — timeout or failure moves one rung. Usage is recorded per
@@ -275,6 +292,39 @@ together. Its keys already read like types:
 where cheap models collapse to 25%, so an unclassifiable task routes to Sonnet.
 Guessing wrong toward the capable model costs $5.68 per thousand; guessing wrong
 toward the cheap one costs a wrong answer.
+
+### 3.2 Write-capable tasks stay local
+
+Every gate above routes on capability, cost, and host load. None of them asks
+whether a task *mutates* anything — so as written, a task that edits files,
+runs `git`, or touches the database is exactly as eligible for transport
+placement as one that only reads. That is a gap, not a decision: this project
+already treats read vs. write on a transport as different trust tiers
+everywhere else it appears (`transports.js`'s own Check/Init split: "everything
+else the console does to a transport reads, so the one operation that writes
+gets its own deliberate click" — a transport is a host this console does not
+own, and a write landing there is a different risk than a read failing there).
+Placement should carry the same asymmetry.
+
+**The classifier extension in §3.1 gains a third field.** `(type, score,
+mutates)`, not just `(type, score)`. A task whose pattern implies file edits,
+git operations, or any other state change is `mutates=True`; everything else
+(`read.*file|list.*directory|grep.*pattern|summarize.*log` and similar) is
+`mutates=False`.
+
+**Placement rule:** `mutates=True` forces local placement unconditionally —
+`resource_guard.check()` still gates whether it can spawn at all, but it is
+never offered a transport regardless of headroom. `mutates=False` is placed
+exactly as §3 already describes (local first, transport on headroom, queue
+otherwise). This is orthogonal to task_type and to the tier table: a `coding`
+task that only reads (e.g. a lint pass) is transport-eligible; a `coding` task
+that edits is not, even though both route to the same model on the same tier.
+
+**Unmatched or ambiguous mutation intent defaults to `mutates=True`** — the
+same reasoning as §3.1's comprehension default: guessing wrong toward "stays
+local" costs queue time; guessing wrong toward "eligible for a transport"
+risks an edit or a delete landing on a host this console does not own, with no
+way to undo it from here.
 
 ---
 
@@ -431,3 +481,5 @@ The two channels are unrelated, and only the file-based one routes.
 | failure handling | retry once on the next tier up, ≤3 attempts per leaf | route by task type with no retry; escalate to the parent for re-planning |
 | free vs fast | free first, abandon at a 45s deadline and escalate | free only for background work; cheapest-that-works ignoring latency |
 | Azure pricing | use the supplied billing lines, `Opt` read as output | leave Azure unpriced, as `bench_rates.json` had it |
+| write-capable placement (2026-09-13) | forced local, unconditionally, independent of headroom | route by task_type/cost/load alone, same as a read |
+| free-tier scope (2026-09-13) | any task type, gated by the existing headroom check | coding-only, as originally scoped to its measured data |

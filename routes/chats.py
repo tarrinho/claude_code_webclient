@@ -1239,7 +1239,8 @@ async def _mark_routed(chat: dict, owner: str, prompt: str) -> None:
 async def handle_submit_message(request: Request, chat_id: str):
     """POST /api/chats/{id}/messages -- submit a prompt, return the assistant's response."""
     session = request.state.session
-    chat = await db.chat_get(chat_id, session["user"])
+    owner = await owner_of(session)
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         _log.warning(
             "submit_message: chat not found user=%s chat_id=%s "

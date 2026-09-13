@@ -132,11 +132,17 @@ class SpecStatusTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "docs" / "superpowers" / "plans").mkdir(parents=True)
 
-    def test_matching_plan_file_yields_planned(self):
+    def test_matching_plan_file_yields_planning(self):
+        """"planning", not "planned": the status vocabulary is
+        routes.db_specs.ALLOWED_STATUSES, which the manual-override endpoint
+        validates against. This function used to return "planned" and
+        "implemented", neither of which is in that set, so one field had two
+        vocabularies and an auto status could not be compared with a manual
+        one. See tests/test_qa_specs_status_is_not_invented.py."""
         (self.root / "docs" / "superpowers" / "plans" / "2026-01-01-a.md").write_text("plan")
         status = specs_gallery.spec_status(
             self.root, "docs/superpowers/specs/2026-01-01-a-design.md")
-        self.assertEqual(status, "planned")
+        self.assertEqual(status, "planning")
 
     def test_no_matching_plan_yields_spec_only(self):
         status = specs_gallery.spec_status(

@@ -51,12 +51,18 @@ async def handle_images_list(request: Request):
 
     rows, has_more, next_before_id = await db.generated_images_list(
         owner, limit=limit, before_id=before_id)
+    # One batched existence check for the whole page rather than a
+    # per-row chat_get -- see chat_ids_that_exist's docstring. This is
+    # purely for the client's "link back or say (chat deleted)" decision;
+    # it never gates access to anything, so it does not need owner_id.
+    existing = await db.chat_ids_that_exist({r["chat_id"] for r in rows})
     return JSONResponse({
         "images": [
             {
                 "id": r["id"],
                 "chat_id": r["chat_id"],
                 "chat_title": r["chat_title"],
+                "chat_exists": r["chat_id"] in existing,
                 "path": r["path"],
                 "created_at": r["created_at"],
             }

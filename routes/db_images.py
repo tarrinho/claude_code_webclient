@@ -96,6 +96,25 @@ async def generated_images_list(
     return rows, has_more, next_before_id
 
 
+async def chat_ids_that_exist(chat_ids: set[str]) -> set[str]:
+    """Which of *chat_ids* still have a row in ``chats`` -- one batched
+    query rather than a per-row chat_get, so a page of up to 60 images costs
+    one extra query, not up to 60 (spec: docs/superpowers/specs/
+    2026-09-12-generated-images-gallery-design.md's "Descoped from v1" note).
+    Deliberately does not care whose chat it is -- routes/images.py only
+    uses this to decide "link back or say (chat deleted)", never to
+    authorize anything; ownership of the image row is already checked
+    before this is ever called."""
+    if not chat_ids:
+        return set()
+    placeholders = ",".join("?" for _ in chat_ids)
+    cur = await db.db_conn.execute(
+        f"SELECT id FROM chats WHERE id IN ({placeholders})",
+        tuple(chat_ids),
+    )
+    return {row["id"] for row in await cur.fetchall()}
+
+
 async def generated_image_get(image_id: int, owner_id: str) -> dict[str, Any] | None:
     """One row, owner-checked. None if it does not exist, belongs to
     someone else, or its file is gone -- all three read as "not found" to

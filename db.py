@@ -24,6 +24,7 @@ def __getattr__(name: str):
         "generated_images_list": "routes.db_images",
         "generated_image_get": "routes.db_images",
         "generated_image_delete": "routes.db_images",
+        "chat_ids_that_exist": "routes.db_images",
         # queue
         "QUEUE_MAX": "routes.db_queue",
         "last_model_used": "routes.db_queue",

@@ -66,6 +66,22 @@ class ImagesApiTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(resp.body)
         self.assertEqual(data["images"], [])
 
+    async def test_chat_exists_is_false_for_a_deleted_or_never_created_chat(self):
+        """The fixture's image is recorded for chat_id "c1" but no such row
+        was ever created in ``chats`` -- exactly the orphaned-image shape
+        this field exists to detect."""
+        resp = await images_routes.handle_images_list(_Req())
+        import json
+        data = json.loads(resp.body)
+        self.assertFalse(data["images"][0]["chat_exists"])
+
+    async def test_chat_exists_is_true_for_a_real_chat(self):
+        await db.chat_create("c1", "Chat One", None, str(self.work), _OWNER)
+        resp = await images_routes.handle_images_list(_Req())
+        import json
+        data = json.loads(resp.body)
+        self.assertTrue(data["images"][0]["chat_exists"])
+
     async def test_serve_returns_the_file(self):
         image_id = await self._image_id()
         resp = await images_routes.handle_image_file(_Req(), image_id)

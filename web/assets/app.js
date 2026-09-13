@@ -11,7 +11,7 @@ import {createConversationController, parseTimestamp, prefersAutoFocus} from './
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
-import {loadImages, _wireImagesLoadMore} from './images.js?v=8508216';
+import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer} from './specs.js?v=2250047';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
@@ -1551,6 +1551,15 @@ async function selectChat(id) {
   startTranscriptSync();
   markAgentSeen('chat', chat.id);
   if (chat.session_id) markAgentSeen('session', chat.session_id);
+}
+
+/** Jump to a chat from somewhere outside the sidebar/conversation view --
+ *  currently only the Images gallery's per-tile "originating chat" link
+ *  (images.js). Closes Settings first since that dialog sits on top of the
+ *  conversation it is about to switch away to. */
+export async function jumpToChatFromGallery(id) {
+  closeSettingsDialog();
+  await selectChat(id);
 }
 
 // ── Live transcript sync ────────────────────────────────────────────────────────────

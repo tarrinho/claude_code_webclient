@@ -8,6 +8,7 @@
 import {apiFetch} from './api.js?v=2741508';
 import {openImageViewer} from './conversation.js?v=13571435';
 import {_showConfirmDialog} from './machines.js?v=3055851';
+import {jumpToChatFromGallery} from './app.js?v=16339554';
 
 const byId = id => document.getElementById(id);
 
@@ -38,9 +39,25 @@ function _tile(image) {
     _open();
   });
 
+  // chat_exists (routes/images.py's batched chat_ids_that_exist check) is
+  // the only signal that decides link vs plain text -- the design's own
+  // "Descoped from v1" note called this out explicitly as the missing
+  // piece, not a UI polish detail.
   const meta = document.createElement('div');
   meta.className = 'image-tile-meta';
-  meta.textContent = image.chat_title;
+  if (image.chat_exists) {
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'image-tile-chat-link';
+    link.textContent = image.chat_title;
+    link.addEventListener('click', event => {
+      event.stopPropagation();
+      jumpToChatFromGallery(image.chat_id);
+    });
+    meta.appendChild(link);
+  } else {
+    meta.textContent = `${image.chat_title} (chat deleted)`;
+  }
 
   const del = document.createElement('button');
   del.type = 'button';

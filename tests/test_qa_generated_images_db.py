@@ -168,6 +168,15 @@ class GeneratedImagesDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(next_before_id2, next_before_id1)
         self.assertFalse(has_more2)
 
+    async def test_chat_ids_that_exist_returns_only_real_chats(self):
+        await db.chat_create("c1", "Chat One", None, str(self.work), _OWNER)
+        result = await db.chat_ids_that_exist({"c1", "c-deleted"})
+        self.assertEqual(result, {"c1"})
+
+    async def test_chat_ids_that_exist_empty_set_is_empty_result(self):
+        result = await db.chat_ids_that_exist(set())
+        self.assertEqual(result, set())
+
 
 if __name__ == "__main__":
     unittest.main()

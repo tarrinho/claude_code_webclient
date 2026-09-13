@@ -26,6 +26,7 @@ of them, so a block that could not succeed passed all nine.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -198,6 +199,89 @@ class ProxyRunUsesTheResolvedInterpreterTests(unittest.TestCase):
         result = subprocess.run(
             ["bash", "-n", str(self.PROXY_RUN)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class DeployedProxyUnitTests(unittest.TestCase):
+    """The template is the durable instance: it *writes* the unit.
+
+    bin/wc-deploy-proxy.sh generated
+    `ExecStart=/usr/bin/env python3 claude_proxy.py`, which is exactly the
+    ExecStart read off the pentester transport on 2026-09-13. That unit did not
+    drift into bare python3 -- it was produced that way, and provisioning a new
+    transport or re-running the deploy on an existing one recreates it. Fixing
+    the local callers and hand-correcting one host leaves the generator intact.
+
+    It has to degrade, not refuse: transports have no venv today (pentester has
+    none), and claude_proxy.py imports only stdlib plus backend_env, so a bare
+    python3 is *correct* there. The launcher therefore prefers a venv if one
+    exists and falls back otherwise, which is the same "being able to work
+    beats being routed" rule CLAUDE.md §8 applies to the CLI.
+    """
+
+    DEPLOY = ROOT / "bin" / "wc-deploy-proxy.sh"
+    LAUNCHER = ROOT / "bin" / "wc-proxy-start.sh"
+
+    def test_the_generated_unit_does_not_hardcode_bare_python3(self):
+        text = self.DEPLOY.read_text(encoding="utf-8")
+        offenders = [
+            line.strip() for line in text.splitlines()
+            if line.strip().startswith("ExecStart=") and "python3 claude_proxy" in line
+        ]
+        self.assertEqual(offenders, [], f"unit template hardcodes python3: {offenders}")
+
+    def test_the_generated_unit_starts_through_the_launcher(self):
+        text = self.DEPLOY.read_text(encoding="utf-8")
+        execs = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("ExecStart=")]
+        self.assertTrue(execs, "the deploy script no longer writes an ExecStart")
+        for line in execs:
+            with self.subTest(line=line):
+                self.assertIn("wc-proxy-start.sh", line)
+
+    def test_the_launcher_is_shipped_with_the_proxy(self):
+        """A unit pointing at a file the deploy never copies is a host that
+        will not start at all -- strictly worse than the bug being fixed."""
+        text = self.DEPLOY.read_text(encoding="utf-8")
+        copy_lines = [ln for ln in text.splitlines() if "scp " in ln]
+        self.assertTrue(
+            any("wc-proxy-start.sh" in ln for ln in copy_lines),
+            f"launcher never copied to the transport: {copy_lines}",
+        )
+
+    def test_the_launcher_prefers_a_venv_but_runs_without_one(self):
+        """Executed, not read -- the same reason the resolver block is."""
+        self.assertTrue(self.LAUNCHER.is_file(), f"{self.LAUNCHER} does not exist")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "claude_proxy.py").write_text("")
+            shutil.copy(self.LAUNCHER, root / "wc-proxy-start.sh")
+
+            # No venv: must still choose an interpreter rather than give up.
+            probe = 'WC_PROXY_PRINT_ONLY=1 sh ./wc-proxy-start.sh'
+            bare = subprocess.run(["bash", "-c", f"cd {root} && {probe}"],
+                                  capture_output=True, text=True, timeout=30)
+            self.assertEqual(bare.returncode, 0, bare.stderr)
+            self.assertRegex(bare.stdout.strip(), r"python3?$")
+
+            # With a venv: it must win.
+            venv_bin = root / ".venv" / "bin"
+            venv_bin.mkdir(parents=True)
+            (venv_bin / "python").write_text("#!/bin/sh\nexit 0\n")
+            (venv_bin / "python").chmod(0o755)
+            withvenv = subprocess.run(["bash", "-c", f"cd {root} && {probe}"],
+                                      capture_output=True, text=True, timeout=30)
+            self.assertEqual(withvenv.returncode, 0, withvenv.stderr)
+            self.assertIn(".venv/bin/python", withvenv.stdout)
+
+    def test_launch_does_not_print_bare_python3_instructions(self):
+        """launch.sh:85 echoed manual start instructions telling a human to run
+        `python3 claude_proxy.py` -- advice the codebase itself no longer
+        follows."""
+        text = LAUNCH.read_text(encoding="utf-8")
+        offenders = [
+            ln.strip() for ln in text.splitlines()
+            if "echo" in ln and "python3 claude_proxy" in ln
+        ]
+        self.assertEqual(offenders, [], f"prints stale instructions: {offenders}")
 
 
 class TestDastBootsUnderTheTestInterpreterTests(unittest.TestCase):

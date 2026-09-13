@@ -96,8 +96,10 @@ ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p ~/$REMOTE_DIR ~/.config/systemd/user"
 
 # Only what the proxy imports: claude_proxy.py plus backend_env (its one local
 # dependency; everything else it uses is stdlib).
-scp "${SSH_OPTS[@]}" claude_proxy.py backend_env.py "$TARGET:$REMOTE_DIR/"
-echo "  copied claude_proxy.py backend_env.py"
+scp "${SSH_OPTS[@]}" claude_proxy.py backend_env.py bin/wc-proxy-start.sh \
+    "$TARGET:$REMOTE_DIR/"
+ssh "${SSH_OPTS[@]}" "$TARGET" "chmod +x ~/$REMOTE_DIR/wc-proxy-start.sh"
+echo "  copied claude_proxy.py backend_env.py wc-proxy-start.sh"
 
 printf '%s' "$TOKEN" | ssh "${SSH_OPTS[@]}" "$TARGET" \
     "umask 077; cat > ~/$REMOTE_DIR/proxy_token.txt"
@@ -117,7 +119,11 @@ Environment=WC_PROXY_LISTEN_HOST=127.0.0.1
 Environment=WC_PROXY_PORT=$PORT
 Environment=WC_CLAUDE_PATH=%h/.local/bin/claude
 EnvironmentFile=%h/$REMOTE_DIR/proxy.env
-ExecStart=/usr/bin/env python3 claude_proxy.py --host 127.0.0.1 --port $PORT
+# Through the launcher rather than a hardcoded interpreter: it prefers a venv
+# on hosts that have one and falls back on hosts that do not. An interpreter
+# named here is regenerated onto every transport at each deploy, which is why
+# fixing launch.sh and wc-proxy-run.sh left this producing the old shape.
+ExecStart=/usr/bin/env sh %h/$REMOTE_DIR/wc-proxy-start.sh --host 127.0.0.1 --port $PORT
 Restart=always
 RestartSec=3
 

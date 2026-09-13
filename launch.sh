@@ -82,7 +82,7 @@ except Exception:
         echo "      If it was started with a different WC_PROXY_TOKEN, every turn"
         echo "      will fail at the handshake. Restart it with:"
         echo "        export WC_PROXY_TOKEN=\"\$(cat $PROXY_TOKEN_FILE)\""
-        echo "        python3 claude_proxy.py --host 127.0.0.1 --port ${WC_PROXY_PORT:-9000}"
+        echo "        bin/wc-proxy-run.sh"
         echo ""
     fi
 else

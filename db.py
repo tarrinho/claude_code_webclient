@@ -156,6 +156,8 @@ def __getattr__(name: str):
         "setting_get": "routes.db_users",
         "setting_get_all": "routes.db_users",
         "setting_set": "routes.db_users",
+        "spec_status_get_all": "routes.db_specs",
+        "spec_status_set": "routes.db_specs",
         "api_token_create": "routes.db_users",
         "api_token_by_hash": "routes.db_users",
         "api_token_touch": "routes.db_users",
@@ -449,6 +451,19 @@ async def init() -> None:
         CREATE TABLE IF NOT EXISTS settings (
             key        TEXT PRIMARY KEY,
             value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        -- Manual status override for a design spec (Settings > Specs), keyed
+        -- by the spec's repo-relative path. specs_gallery.py's own status
+        -- (implemented/planned/spec_only) stays purely git/filesystem-derived
+        -- and this table is never read from there -- routes/specs.py overlays
+        -- a row here on top of that computed value when one exists, so the
+        -- gallery's "no database table, shared git-tracked files" design
+        -- (specs_gallery.py's module docstring) stays true for the auto side.
+        CREATE TABLE IF NOT EXISTS spec_status (
+            path       TEXT PRIMARY KEY,
+            status     TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
 

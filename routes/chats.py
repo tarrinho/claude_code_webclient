@@ -290,13 +290,14 @@ async def handle_chats_list(request: Request):
     # running=True alongside an already-current updated_at, which every
     # consumer already treats as normal (still-running chats update their
     # timestamp too), not a state combination nothing was built to expect.
-    running = turns.running_ids(session["user"])
-    chats = await db.chat_list(session["user"])
+    owner = await owner_of(session)
+    running = turns.running_ids(owner)
+    chats = await db.chat_list(owner)
     live_updated = await _live_updated_at(chats)
-    queued = await db.queue_counts(session["user"])
-    queued_held = await db.queue_held_counts(session["user"])
+    queued = await db.queue_counts(owner)
+    queued_held = await db.queue_held_counts(owner)
     busy_sessions = await _busy_terminal_sessions()
-    last_models = await db.last_models_used(session["user"])
+    last_models = await db.last_models_used(owner)
     return JSONResponse(
         {
             "chats": [
@@ -351,6 +352,7 @@ async def handle_chats_list(request: Request):
 async def handle_chat_create(request: Request):
     """POST /api/chats -- create a new chat with its project directory."""
     session = request.state.session
+    owner = await owner_of(session)
     data = await request.json()
     user_title = (data.get("title") or "").strip()[:200]
 
@@ -401,7 +403,7 @@ async def handle_chat_create(request: Request):
             detail="Could not create conversation directory — check server logs for details",
         )
     chat_id = uuid.uuid4().hex
-    # owner_of, not session["user"]: a session minted before login switched to
+    # owner_of, not owner: a session minted before login switched to
     # the user's id carries the login name, and chat_create rejects a name --
     # so this raised ValueError and answered 500. The resume endpoint had the
     # translation inline and this one did not, which is why the same stale
@@ -425,7 +427,7 @@ async def handle_chat_create(request: Request):
     elif goal_text is None:
         goal_text = title[:1000]
     if goal_text:
-        await db.chat_update(chat_id, session["user"], goal=goal_text)
+        await db.chat_update(chat_id, owner, goal=goal_text)
     voice_mode = bool(data.get("voice_mode"))
     parent_chat_id = data.get("parent_chat_id") or None
     # `is_temporary` in the request body is deliberately NOT read. Temporariness
@@ -448,31 +450,31 @@ async def handle_chat_create(request: Request):
             or config.VOICE_BACKEND_ID_DEFAULT
             or config.VOICE_AI_MACHINE_ID_DEFAULT
         )
-        if voice_backend_id and not await db.ai_machine_get(voice_backend_id, session["user"]):
+        if voice_backend_id and not await db.ai_machine_get(voice_backend_id, owner):
             raise HTTPException(status_code=404, detail="Voice backend not found")
         voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
         await db.chat_update(
-            chat_id, session["user"],
+            chat_id, owner,
             voice_mode=1, model=voice_model, ai_machine_id=voice_backend_id,
             type="brainstorming",
         )
     # Temp voice chat with parent context
     if parent_chat_id:
         owner = await owner_of(session)
-        parent = await db.chat_get(parent_chat_id, session["user"])
+        parent = await db.chat_get(parent_chat_id, owner)
         if not parent:
             raise HTTPException(status_code=404, detail="Parent chat not found")
         await db.chat_update(
-            chat_id, session["user"],
+            chat_id, owner,
             parent_chat_id=parent_chat_id,
             is_temporary=1,
         )
         # Prevent the parent's auto_answer from blocking voice turns.
-        await db.chat_auto_answer_set(chat_id, session["user"], False, False)
+        await db.chat_auto_answer_set(chat_id, owner, False, False)
         # Set title to match parent so the tooltip knows its source
         if title == "Untitled":
             title = (parent.get("title") or "Untitled")[:200]
-            await db.chat_update(chat_id, session["user"], title=title)
+            await db.chat_update(chat_id, owner, title=title)
     return JSONResponse(
         {"id": chat_id, "title": title, "work_dir": work_dir, "created_at": now}
     )
@@ -482,11 +484,11 @@ async def handle_chat_get(request: Request, chat_id: str):
     """GET /api/chats/{id} -- get chat metadata and transcript."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         _log.warning(
             "chat_not_found: user=%s chat_id=%s (chat may have been deleted)",
-            session["user"], chat_id,
+            owner, chat_id,
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -550,7 +552,7 @@ async def handle_chat_get(request: Request, chat_id: str):
                 # response; without it here, the top-of-conversation model
                 # label went back to hidden every time a chat was (re)opened,
                 # since this is the endpoint that path actually reads from.
-                "last_model_used": await db.last_model_used(chat_id, session["user"]),
+                "last_model_used": await db.last_model_used(chat_id, owner),
                 "archived": bool(chat["archived"]),
                 "pinned": bool(chat["pinned"]),
                 # Opening a conversation has to be able to tell whether a turn
@@ -560,7 +562,7 @@ async def handle_chat_get(request: Request, chat_id: str):
                 # events are replayed only if the client asks for them.
                 "running": turns.is_running(chat_id),
                 "turn_seq": (turns.get(chat_id).seq if turns.get(chat_id) else 0),
-                "queued": len(await db.queue_list(chat_id, session["user"])),
+                "queued": len(await db.queue_list(chat_id, owner)),
                 # Voice conversations answer through a different turn path and
                 # own the mic / live-conversation controls in the composer.
                 # Without this the client could not tell one apart after a
@@ -617,6 +619,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
     """
     session = request.state.session
     data = await request.json()
+    owner = await owner_of(session)
 
     allowed = {"title", "description", "goal", "archived", "pinned", "ai_machine_id", "model", "voice_mode"}
     if not data or not set(data).issubset(allowed):
@@ -660,7 +663,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
         machine_id = (machine_id or "").strip() or None
         # Confirm the machine exists and belongs to this user, so a pin can
         # never route a conversation at somebody else's backend.
-        if machine_id and not await db.ai_machine_get(machine_id, session["user"]):
+        if machine_id and not await db.ai_machine_get(machine_id, owner):
             raise HTTPException(status_code=404, detail="Machine not found")
         fields["ai_machine_id"] = machine_id
     if "model" in data:
@@ -685,7 +688,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 or config.VOICE_BACKEND_ID_DEFAULT
                 or config.VOICE_AI_MACHINE_ID_DEFAULT
             )
-            if voice_machine_id and not await db.ai_machine_get(voice_machine_id, session["user"]):
+            if voice_machine_id and not await db.ai_machine_get(voice_machine_id, owner):
                 raise HTTPException(status_code=404, detail="Voice backend not found")
             voice_model = await db.setting_get("voice_model") or config.VOICE_MODEL_DEFAULT
             fields["ai_machine_id"] = voice_machine_id
@@ -699,7 +702,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
             # or `accept_recommended` survives and re-arms if the chat is ever
             # switched back. Cleared only on the way in -- turning voice off
             # must not invent a value for a chat that was never armed.
-            await db.chat_auto_answer_set(chat_id, session["user"], False, False)
+            await db.chat_auto_answer_set(chat_id, owner, False, False)
 
     if "type" in data:
         if data["type"] not in ("normal", "brainstorming"):
@@ -707,8 +710,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
                 status_code=400, detail="type must be 'normal' or 'brainstorming'"
             )
 
-    owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -727,7 +729,7 @@ async def handle_chat_patch(request: Request, chat_id: str):
     if data.get("voice_mode") is False and chat.get("type") == "brainstorming":
         fields.setdefault("type", "normal")
 
-    updated = await db.chat_update(chat_id, session["user"], **fields)
+    updated = await db.chat_update(chat_id, owner, **fields)
     if not updated:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -769,7 +771,7 @@ async def handle_chat_standby(request: Request, chat_id: str):
     """POST /api/chats/{id}/standby — kill the linked CLI process via wc-session-standby.sh."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -806,7 +808,7 @@ async def handle_chat_standby(request: Request, chat_id: str):
 
     # Mark the chat as standby so the sidebar can show it and wake clears it.
     reason = "Standby requested via webchat at " + datetime.datetime.now(datetime.UTC).isoformat()
-    await db.chat_update(chat_id, session["user"], standby_reason=reason)
+    await db.chat_update(chat_id, owner, standby_reason=reason)
 
     return JSONResponse({
         "ok": True,
@@ -819,7 +821,7 @@ async def handle_chat_wake(request: Request, chat_id: str):
     """POST /api/chats/{id}/wake — resume a standby'd CLI process via wc-session-wake.sh."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -834,7 +836,7 @@ async def handle_chat_wake(request: Request, chat_id: str):
     name = _find_session_name(session_id)
     if not name:
         # Session was already resumed elsewhere — clear the standby flag.
-        await db.chat_update(chat_id, session["user"], standby_reason=None)
+        await db.chat_update(chat_id, owner, standby_reason=None)
         raise HTTPException(status_code=400, detail="Session was already resumed")
 
     try:
@@ -856,7 +858,7 @@ async def handle_chat_wake(request: Request, chat_id: str):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # Clear standby flag.
-    await db.chat_update(chat_id, session["user"], standby_reason=None)
+    await db.chat_update(chat_id, owner, standby_reason=None)
 
     return JSONResponse({
         "ok": True,
@@ -890,6 +892,7 @@ async def handle_chats_reorder(request: Request):
     ``{"order": []}`` clears every placement and returns the list to recency.
     """
     session = request.state.session
+    owner = await owner_of(session)
     try:
         data = await request.json()
     except Exception:
@@ -904,23 +907,24 @@ async def handle_chats_reorder(request: Request):
         raise HTTPException(status_code=400, detail="order must contain ids")
 
     if not order:
-        cleared = await db.chats_clear_order(session["user"])
-        _log.info("chat_order_cleared user=%s count=%d", session["user"], cleared)
+        cleared = await db.chats_clear_order(owner)
+        _log.info("chat_order_cleared user=%s count=%d", owner, cleared)
         return JSONResponse({"ok": True, "placed": 0, "cleared": cleared})
 
-    placed = await db.chats_reorder(session["user"], order)
-    _log.info("chat_order_set user=%s placed=%d", session["user"], placed)
+    placed = await db.chats_reorder(owner, order)
+    _log.info("chat_order_set user=%s placed=%d", owner, placed)
     return JSONResponse({"ok": True, "placed": placed})
 
 
 async def handle_chat_delete(request: Request, chat_id: str):
     """DELETE /api/chats/{id} -- hard delete (never rm -rf)."""
     session = request.state.session
-    deleted = await db.chat_delete(chat_id, session["user"])
+    owner = await owner_of(session)
+    deleted = await db.chat_delete(chat_id, owner)
     if not deleted:
         _log.warning(
             "chat_delete: user=%s chat_id=%s (not found or no permission)",
-            session["user"], chat_id,
+            owner, chat_id,
         )
         raise HTTPException(status_code=404, detail="Chat not found")
     _log.info("chat_deleted chat_id=%s", chat_id)
@@ -1026,7 +1030,7 @@ async def handle_chat_file(request: Request, chat_id: str):
     """GET /api/chats/{id}/file?path=... -- share an image or PDF in workspace."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    chat = await db.chat_get(chat_id, owner, include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -1044,7 +1048,7 @@ async def handle_chat_file(request: Request, chat_id: str):
     if not candidate.is_relative_to(root):
         _log.warning(
             "chat_file_outside_workspace: user=%s chat_id=%s path=%r",
-            session["user"], chat_id, raw,
+            owner, chat_id, raw,
         )
         raise HTTPException(status_code=403, detail="Path is outside the workspace")
 
@@ -1077,11 +1081,11 @@ async def handle_chat_export(request: Request, chat_id: str):
     """GET /api/chats/{id}/export -- download chat as Markdown."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    chat = await db.chat_get(chat_id, owner, include_archived=True)
     if not chat:
         _log.warning(
             "chat_export_not_found: user=%s chat_id=%s (deleted or no access)",
-            session["user"], chat_id,
+            owner, chat_id,
         )
         raise HTTPException(status_code=404, detail="Chat not found")
     messages = await db.messages_get(chat_id)
@@ -1252,14 +1256,14 @@ async def handle_submit_message(request: Request, chat_id: str):
         _log.warning(
             "submit_message: chat not found user=%s chat_id=%s "
             "(may have been deleted) — cannot send prompt",
-            session["user"], chat_id,
+            owner, chat_id,
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
     data = await request.json()
     prompt = (data.get("content") or "").strip()
     if not prompt:
-        _log.warning("submit_message: empty prompt from user=%s chat_id=%s", session["user"], chat_id)
+        _log.warning("submit_message: empty prompt from user=%s chat_id=%s", owner, chat_id)
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     if len(prompt) > config.PROMPT_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Prompt is too long")
@@ -1279,7 +1283,7 @@ async def handle_submit_message(request: Request, chat_id: str):
     routed = await _route_to_live_terminal(chat, prompt)
     if routed:
         session_id = chat.get("session_id")
-        await _mark_routed(chat, session["user"], prompt)
+        await _mark_routed(chat, owner, prompt)
         await db.messages_batch(chat_id, [("user", prompt)])
         # Same as the streaming path: the turn is also on disk, so advance
         # the sync offset to avoid a second import on the next poll.
@@ -1354,12 +1358,12 @@ async def handle_submit_message(request: Request, chat_id: str):
     # Nothing is lost by not storing it: the served model is recorded per turn
     # in `usage_events`, it is returned in the response below, and the UI has
     # its own label for it that is not the picker.
-    await _record_turn_usage(chat_id, session["user"], runner.take_last_usage(chat_id))
+    await _record_turn_usage(chat_id, owner, runner.take_last_usage(chat_id))
     # Attempts a retry discarded still spent real tokens (CLAUDE.md rule 5:
     # record failures too), and take_last_usage above only carries the kept
     # attempt.
     for frame in runner.take_retried_usage(chat_id):
-        await _record_turn_usage(chat_id, session["user"], frame)
+        await _record_turn_usage(chat_id, owner, frame)
     return JSONResponse(
         {"response": full_response, "chunks": len(chunks), "model": model}
     )
@@ -1718,7 +1722,7 @@ async def stream_handler(request: Request, chat_id: str):
             "stream_handler: chat not found user=%s chat_id=%s "
             "(may have been deleted, broken session reference) — "
             "reload the page or create a new conversation",
-            session["user"], chat_id,
+            owner, chat_id,
         )
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -1893,7 +1897,7 @@ async def handle_chat_live(request: Request, chat_id: str):
     """
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    chat = await db.chat_get(chat_id, owner, include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     try:
@@ -1902,12 +1906,12 @@ async def handle_chat_live(request: Request, chat_id: str):
         since = 0
 
     turn = turns.get(chat_id)
-    if turn is None or turn.owner != session["user"]:
+    if turn is None or turn.owner != owner:
         # No live turn, and no error either: "nothing is running" is a normal
         # answer to this question, and the client uses it to settle its UI.
         return JSONResponse({"running": False, "state": "idle"})
 
-    acquire_sse_slot(session["user"])
+    acquire_sse_slot(owner)
 
     async def event_generator():
         try:
@@ -1936,7 +1940,7 @@ async def handle_chat_live(request: Request, chat_id: str):
                 _log.exception("live stream failed chat_id=%s", chat_id)
                 yield f"data: {json.dumps({'type': 'error', 'error': _SSE_INTERNAL})}\n\n"
         finally:
-            release_sse_slot(session["user"])
+            release_sse_slot(owner)
 
     return StreamingResponse(
         event_generator(),
@@ -1959,11 +1963,11 @@ async def handle_turn_stop(request: Request, chat_id: str):
     """
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    chat = await db.chat_get(chat_id, owner, include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     turn = turns.get(chat_id)
-    if turn is not None and turn.owner != session["user"]:
+    if turn is not None and turn.owner != owner:
         raise HTTPException(status_code=404, detail="Chat not found")
     stopped = await turns.cancel(chat_id)
     # A stop also abandons what was queued behind it: the user is not asking to
@@ -1972,7 +1976,7 @@ async def handle_turn_stop(request: Request, chat_id: str):
     if stopped:
         _log.info(
             "turn_stopped chat_id=%s user=%s held=%d",
-            chat_id, session["user"], held,
+            chat_id, owner, held,
         )
     return JSONResponse({"ok": True, "stopped": stopped, "held": held})
 
@@ -1981,11 +1985,11 @@ async def handle_queue_list(request: Request, chat_id: str):
     """GET /api/chats/{id}/queue -- prompts waiting behind the running turn."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    chat = await db.chat_get(chat_id, owner, include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return JSONResponse({
-        "queue": await db.queue_list(chat_id, session["user"]),
+        "queue": await db.queue_list(chat_id, owner),
         "max": db.QUEUE_MAX,
         "running": turns.is_running(chat_id),
     })
@@ -1995,14 +1999,14 @@ async def handle_queue_delete(request: Request, chat_id: str, queue_id: int):
     """DELETE /api/chats/{id}/queue/{queue_id} -- discard a queued prompt."""
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"], include_archived=True)
+    chat = await db.chat_get(chat_id, owner, include_archived=True)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    if not await db.queue_delete(queue_id, session["user"]):
+    if not await db.queue_delete(queue_id, owner):
         raise HTTPException(status_code=404, detail="Queued prompt not found")
     _log.info(
         "queue_discarded chat_id=%s queue_id=%s user=%s",
-        chat_id, queue_id, session["user"],
+        chat_id, queue_id, owner,
     )
     return JSONResponse({"ok": True})
 
@@ -2016,18 +2020,18 @@ async def handle_queue_release(request: Request, chat_id: str, queue_id: int):
     """
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    if not await db.queue_release(queue_id, session["user"]):
+    if not await db.queue_release(queue_id, owner):
         raise HTTPException(status_code=404, detail="Queued prompt not found")
     if turns.is_running(chat_id):
         return JSONResponse({"ok": True, "started": False})
     row = await db.queue_next(chat_id)
     if row is None:
         return JSONResponse({"ok": True, "started": False})
-    await db.queue_delete(row["id"], session["user"])
-    await _start_turn(chat, session["user"], row["prompt"], row["model"])
+    await db.queue_delete(row["id"], owner)
+    await _start_turn(chat, owner, row["prompt"], row["model"])
     return JSONResponse({"ok": True, "started": True})
 
 
@@ -2371,6 +2375,7 @@ async def handle_chat_search(request: Request):
     from routes.db_chats import _fts_validate_query
 
     session = request.state.session
+    owner = await owner_of(session)
     try:
         body = await request.json()
     except Exception:
@@ -2387,7 +2392,7 @@ async def handle_chat_search(request: Request):
             detail="Search query contains invalid characters",
         )
 
-    results = await db.chat_search(session["user"], query)
+    results = await db.chat_search(owner, query)
     return JSONResponse({"results": results, "count": len(results)})
 
 
@@ -2398,11 +2403,11 @@ async def handle_chat_fork(request: Request, chat_id: str):
     """
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    new_chat = await db.chat_fork(chat_id, session["user"])
+    new_chat = await db.chat_fork(chat_id, owner)
     if not new_chat:
         raise HTTPException(
             status_code=500,
@@ -2493,7 +2498,7 @@ async def handle_chat_question_get(request: Request):
     session = request.state.session
     chat_id = request.path_params["chat_id"]
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     session_id = chat.get("session_id")
@@ -2532,7 +2537,7 @@ async def handle_chat_question_answer(request: Request):
     session = request.state.session
     chat_id = request.path_params["chat_id"]
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     session_id = chat.get("session_id")
@@ -2570,7 +2575,7 @@ async def handle_chat_question_answer(request: Request):
         raise HTTPException(status_code=409, detail=result.get("reason") or "Failed")
     _log.info(
         "question_answered chat_id=%s user=%s index=%s label=%s",
-        chat_id, session["user"], want, result.get("label"),
+        chat_id, owner, want, result.get("label"),
     )
     # Clear question_ids so the UI bar disappears immediately.
     await db.chat_set_question_ids(chat_id, [])
@@ -2598,7 +2603,7 @@ async def handle_chat_question_dismiss(request: Request):
     session = request.state.session
     chat_id = request.path_params["chat_id"]
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     session_id = chat.get("session_id")
@@ -2619,7 +2624,7 @@ async def handle_chat_question_dismiss(request: Request):
     if not target:
         _log.info(
             "question_dismiss_unreachable chat_id=%s user=%s",
-            chat_id, session["user"],
+            chat_id, owner,
         )
         return JSONResponse(
             status_code=409,
@@ -2635,7 +2640,7 @@ async def handle_chat_question_dismiss(request: Request):
     if not result.get("ok"):
         _log.warning(
             "question_dismiss_failed chat_id=%s user=%s delivered=%s reason=%s",
-            chat_id, session["user"], result.get("delivered"), result.get("reason"),
+            chat_id, owner, result.get("delivered"), result.get("reason"),
         )
         return JSONResponse(
             status_code=409,
@@ -2646,7 +2651,7 @@ async def handle_chat_question_dismiss(request: Request):
         )
     _log.info(
         "question_dismissed chat_id=%s user=%s question_id=%s",
-        chat_id, session["user"], pending.get("id"),
+        chat_id, owner, pending.get("id"),
     )
     # Clear question_ids so the UI bar disappears immediately.
     await db.chat_set_question_ids(chat_id, [])
@@ -2663,6 +2668,7 @@ async def handle_chat_auto_answer_set(request: Request, chat_id: str):
     docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
     """
     session = request.state.session
+    owner = await owner_of(session)
     try:
         data = await request.json()
     except Exception:
@@ -2710,7 +2716,7 @@ async def handle_chat_auto_answer_get(request: Request, chat_id: str):
     """
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     # A voice-mode chat used to get a hardcoded `enabled: False` plus a
@@ -2720,11 +2726,11 @@ async def handle_chat_auto_answer_get(request: Request, chat_id: str):
     # knob was off. Nothing under web/assets ever read `voice_mode_blocked`
     # either, so the flag bought nothing and the lie cost real debugging time.
     # Every chat now reports what is actually stored.
-    enabled = await db.chat_auto_answer_get(chat_id, session["user"])
+    enabled = await db.chat_auto_answer_get(chat_id, owner)
     accept_recommended = await db.chat_auto_answer_recommend_get(
-        chat_id, session["user"],
+        chat_id, owner,
     )
-    log = await db.chat_auto_answer_log_get(chat_id, session["user"])
+    log = await db.chat_auto_answer_log_get(chat_id, owner)
     return JSONResponse({
         "enabled": enabled, "accept_recommended": accept_recommended, "log": log,
     })
@@ -2991,7 +2997,7 @@ async def handle_chat_sync(request: Request, chat_id: str):
     """
     session = request.state.session
     owner = await owner_of(session)
-    chat = await db.chat_get(chat_id, session["user"])
+    chat = await db.chat_get(chat_id, owner)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     if not chat.get("session_id"):

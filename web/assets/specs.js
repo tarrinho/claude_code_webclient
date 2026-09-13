@@ -10,23 +10,25 @@ import {notifyResult} from './server-stats.js?v=5278923';
 const byId = id => document.getElementById(id);
 
 function _statusLabel(status) {
-  return status === 'planned' ? 'Planned' : 'Spec only';
+  if (status === 'implemented') return 'Implemented';
+  if (status === 'planned') return 'Planned';
+  return 'Spec only';
 }
 
 function _statusClass(status) {
-  return status === 'planned' ? 'status-planned' : 'status-spec-only';
+  if (status === 'implemented') return 'status-implemented';
+  if (status === 'planned') return 'status-planned';
+  return 'status-spec-only';
 }
+
+var _groupOrder = {implemented: 0, planned: 1, 'spec-only': 2};
+var _groupLabel = {implemented: 'Implemented', planned: 'Planned', 'spec-only': 'Spec only'};
+var _groupStatusKey = {implemented: 'implemented', planned: 'planned', 'spec-only': 'spec_only'};
 
 function _row(spec) {
   const row = document.createElement('div');
   row.className = 'spec-row';
   row.dataset.specId = spec.id;
-  // The row itself is the click target, not just the title -- a card you
-  // can click anywhere on reads as browsable; a title-sized hit zone inside
-  // a bordered card that looks clickable everywhere does not. The title
-  // stays a real <button> underneath for keyboard/AT focus, but does not
-  // carry its own listener: its native click bubbles here, so Enter/Space
-  // on it and a mouse click anywhere else on the card go through one path.
   row.addEventListener('click', () => _openSpec(spec));
 
   const top = document.createElement('div');
@@ -43,9 +45,6 @@ function _row(spec) {
   top.appendChild(status);
   row.appendChild(top);
 
-  // The repo-relative path, so a title alone (which says nothing about
-  // where the file lives, and two specs can share a similar title) is never
-  // the only way to tell which file this is.
   const path = document.createElement('div');
   path.className = 'spec-row-path';
   path.textContent = spec.path;
@@ -54,17 +53,18 @@ function _row(spec) {
   const meta = document.createElement('div');
   meta.className = 'spec-row-meta';
   const parts = [];
-  if (spec.author) parts.push(`${spec.author}${spec.date ? ` · ${spec.date}` : ''}`);
+  if (spec.author) parts.push(spec.author);
+  if (spec.date) parts.push('commits ' + spec.date);
+  if (spec.mtime_iso) parts.push('edited ' + spec.mtime_iso);
   if (spec.referenced_by && spec.referenced_by.length) {
-    parts.push(`referenced by ${spec.referenced_by.length} file${spec.referenced_by.length === 1 ? '' : 's'}`);
+    parts.push(spec.referenced_by.length + ' ref' + (spec.referenced_by.length === 1 ? '' : 's'));
   }
   meta.textContent = parts.join(' · ');
   row.appendChild(meta);
 
-  // Shown to every user, same convention as every other admin-gated action
-  // in this app (machines.js's delete, transports.js's delete, etc.): none
-  // hide the control client-side, they all rely on the server's 403 as the
-  // real enforcement. _deleteSpec surfaces that 403 through notifyResult.
+  // The repo-relative path for accessibility context (used in viewer too)
+  row.title = spec.path;
+
   const del = document.createElement('button');
   del.type = 'button';
   del.className = 'spec-row-delete';
@@ -94,30 +94,16 @@ async function _openSpec(spec) {
     const response = await apiFetch(`/api/specs/${encodeURIComponent(spec.id)}/content`);
     if (!response.ok) return;
     const html = await response.text();
-    // Sanitized at the point of insertion, not trusted from the server:
-    // discover_specs() scans this repo tree for any markdown file carrying
-    // the marker line, not only a curated directory. render_markdown()'s
-    // success path is now sanitized server-side too (nh3), but DOMPurify
-    // stays here as defense-in-depth rather than a replacement -- applied
-    // right at the innerHTML sink rather than trusted upstream.
     const clean = window.DOMPurify.sanitize(html);
-    // In-page panel, not window.open(): that call used to land after an
-    // await, outside the click's original user-gesture window, so popup
-    // blockers would likely kill it -- and the spec (section 3/4) asked for
-    // a panel, not a new tab, in the first place.
     byId('specViewerTitle').textContent = spec.title;
-    // Same file-path identifier the row already carries, so which file is
-    // open stays visible for as long as the viewer is -- not only at the
-    // moment of picking it from the list.
     const pathEl = byId('specViewerPath');
     if (pathEl) pathEl.textContent = spec.path;
-    // Same orientation the row already gave before opening it -- a long
-    // document with no status/author/date visible while reading loses the
-    // context that made you pick it.
     const metaEl = byId('specViewerMeta');
     if (metaEl) {
       const parts = [_statusLabel(spec.status)];
-      if (spec.author) parts.push(`${spec.author}${spec.date ? ` · ${spec.date}` : ''}`);
+      if (spec.author) parts.push(spec.author);
+      if (spec.date) parts.push('commits ' + spec.date);
+      if (spec.mtime_iso) parts.push('edited ' + spec.mtime_iso);
       metaEl.textContent = parts.join(' · ');
     }
     byId('specViewerContent').innerHTML = clean;
@@ -139,7 +125,8 @@ async function _deleteSpec(specId, row) {
       throw new Error(data.detail || 'Could not delete spec');
     }
     row.remove();
-    _updateCount();
+    // Update the overall count from the remaining rows.
+    _updateCount(null);
   } catch (error) {
     // The row staying put on a failed delete is the correct fallback --
     // no silent "it worked" when it did not.
@@ -147,31 +134,39 @@ async function _deleteSpec(specId, row) {
   }
 }
 
-function _updateCount() {
-  const countEl = byId('specsCount');
-  const list = byId('specsList');
-  if (!countEl || !list) return;
-  const total = list.children.length;
-  countEl.textContent = `${total} spec${total === 1 ? '' : 's'}`;
+function _makeGroup(label, key) {
+  var details = document.createElement('details');
+  details.className = 'spec-group';
+  details.dataset.groupKey = key;
+  var summary = document.createElement('summary');
+  summary.className = 'spec-section-label';
+  summary.textContent = label;
+  details.appendChild(summary);
+  return details;
+}
+
+function _updateCount(specs) {
+  var countEl = byId('specsCount');
+  if (!countEl) return;
+  countEl.textContent = specs.length + ' spec' + (specs.length !== 1 ? 's' : '');
 }
 
 /** Load the full list. force=true (Settings tab just opened) always
  *  refetches -- the server itself never caches (specs_gallery.discover_specs
  *  re-scans every call), so a stale in-memory render is the only staleness
- *  risk left, and this closes it. */
+ *  risk left, and this closes it.
+
+ *  Groups results into collapsible sections by status
+ *  (Implemented, Planned, Spec only), with a count badge. */
 export async function loadSpecs(force = false) {
-  const list = byId('specsList');
+  var list = byId('specsList');
   if (!list) return;
   if (!force && list.children.length) return;
 
-  let payload;
+  var payload;
   try {
     const response = await apiFetch('/api/specs');
     if (!response.ok) {
-      // Same discipline as _deleteSpec: a failed load must not read the
-      // same as "there are genuinely no specs" -- an expired session or a
-      // 500 used to leave the list silently empty with nothing to explain
-      // why.
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || data.error || 'Could not load specs');
     }
@@ -181,7 +176,31 @@ export async function loadSpecs(force = false) {
     return;
   }
 
+  var allSpecs = payload.specs || [];
   list.replaceChildren();
-  (payload.specs || []).forEach(spec => list.appendChild(_row(spec)));
-  _updateCount();
+
+  // Group by status key
+  var groups = {};
+  for (var i = 0; i < allSpecs.length; i++) {
+    var s = allSpecs[i];
+    var key = s.status === 'spec_only' ? 'spec-only' : s.status.replace(' ', '-');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(s);
+  }
+
+  // Sort groups by _groupOrder
+  var sortedKeys = Object.keys(groups).sort(function(a, b) {
+    return (_groupOrder[a] || 9) - (_groupOrder[b] || 9);
+  });
+
+  for (var g = 0; g < sortedKeys.length; g++) {
+    var key = sortedKeys[g];
+    var group = _makeGroup(_groupLabel[key] + ' · ' + groups[key].length, key);
+    for (var i = 0; i < groups[key].length; i++) {
+      group.appendChild(_row(groups[key][i]));
+    }
+    list.appendChild(group);
+  }
+
+  _updateCount(allSpecs);
 }

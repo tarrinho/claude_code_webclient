@@ -304,12 +304,79 @@ def git_provenance(repo_root: Path, spec_path: str) -> dict[str, str] | None:
     return {"author": author, "date": date}
 
 
+def spec_implementation(repo_root: Path, spec_path: str) -> int:
+    """Count of implementation artifacts for *spec_path*.
+
+    Looks under ``docs/superpowers/plans/{YYYY-MM-DD-{topic}}`` for an
+    ``output/`` directory, a ``complete`` marker file, or a ``exec`` file.
+    The plan dir's name is derived from the spec's filename: strip the
+    ``-design.md`` suffix and look for a same-dated plan file in that
+    directory. Returns 0 when no artifact is found.
+    """
+    plans_dir = repo_root / "docs" / "superpowers" / "plans"
+    if not plans_dir.is_dir():
+        return 0
+    # Derive the plan directory name from the spec filename.
+    # "2026-09-12-supervisor-map-design.md" → "2026-09-12-supervisor-map"
+    name = Path(spec_path).name
+    stem = name
+    if stem.endswith("-design.md"):
+        stem = stem[: -len("-design.md")]
+    if stem.endswith(".md"):
+        stem = stem[: -len(".md")]
+    candidates = list(plans_dir.glob(f"{stem}/**/*"))
+    if not candidates:
+        # No plan dir at all.
+        return 0
+    count = 0
+    for c in candidates:
+        # output/ directory
+        if c.is_dir() and c.name == "output":
+            count += 1
+        # complete marker
+        if c.name == "complete" and c.is_file():
+            count += 1
+        # exec file
+        if c.name == "exec" and c.is_file():
+            count += 1
+    return count
+
+
+def spec_status_v2(repo_root: Path, spec_path: str) -> str:
+    """"implemented" if implementation artifacts exist, "planned" if a
+    same-dated plan file exists (but no artifacts), else "spec_only".
+    """
+    if spec_implementation(repo_root, spec_path) > 0:
+        return "implemented"
+    # Check for a plan file (same prefix).
+    plans_dir = repo_root / "docs" / "superpowers" / "plans"
+    if not plans_dir.is_dir():
+        return "spec_only"
+    name = Path(spec_path).name
+    stem = name
+    if stem.endswith("-design.md"):
+        stem = stem[: -len("-design.md")]
+    if stem.endswith(".md"):
+        stem = stem[: -len(".md")]
+    for plan in plans_dir.glob(f"{stem}/**"):
+        if plan.is_file() and plan.name.endswith(".md") and plan.name != stem + ".md":
+            return "planned"
+        if plan.is_dir():
+            return "planned"
+    # Also try the old single-file match as fallback.
+    prefix = name[:10] if len(name) >= 10 else ""
+    if len(prefix) == 10 and prefix[4] == "-" and prefix[7] == "-":
+        for plan in plans_dir.glob(f"{prefix}-*.md"):
+            return "planned"
+    return "spec_only"
+
+
 def enrich(
     repo_root: Path, spec: dict[str, Any], *, references: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Adds referenced_by/status/author/date to one discover_specs() entry.
-    Each enrichment is isolated: one failing must never affect the others
-    or fail the whole entry (spec section 5).
+    """Adds referenced_by/status/author/date/impl_count/mtime_iso to one
+    discover_specs() entry.  Each enrichment is isolated: one failing must
+    never affect the others or fail the whole entry (spec section 5).
 
     *references*, when given, is this spec's already-computed
     referenced_by list -- routes/specs.py's list endpoint calls
@@ -336,9 +403,23 @@ def enrich(
             out["referenced_by"] = []
 
     try:
-        out["status"] = spec_status(repo_root, spec["path"])
+        out["status"] = spec_status_v2(repo_root, spec["path"])
     except Exception:
         out["status"] = "spec_only"
+
+    try:
+        out["impl_count"] = spec_implementation(repo_root, spec["path"])
+    except Exception:
+        out["impl_count"] = 0
+
+    try:
+        mtime = spec["mtime"]  # epoch float from discover_specs
+        from datetime import datetime, timezone
+        out["mtime_iso"] = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+    except Exception:
+        out["mtime_iso"] = None
 
     try:
         provenance = git_provenance(repo_root, spec["path"])

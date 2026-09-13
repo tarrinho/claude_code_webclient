@@ -198,14 +198,20 @@ mkdir -p logs
 # supervisor watches the server itself. Backgrounded, the server dies with
 # whatever shell started it, which is how it has gone down mid-change more than
 # once. systemd captures stdout to the journal, so no redirect here.
+# Resolve the interpreter before either branch: the dependencies live in
+# .venv and a bare python3 is not it -- see bin/wc-resolve-python.sh for
+# the outage that established this.
+# shellcheck source=bin/wc-resolve-python.sh
+. "$(dirname "$0")/bin/wc-resolve-python.sh"
+
 if [ "${WC_EXEC:-0}" = "1" ]; then
-    exec python3 -m uvicorn app:app \
+    exec "$WC_PYTHON" -m uvicorn app:app \
         --host 127.0.0.1 \
         --port 8080 \
         --log-level info
 fi
 
-python3 -m uvicorn app:app \
+"$WC_PYTHON" -m uvicorn app:app \
     --host 127.0.0.1 \
     --port 8080 \
     --log-level info >> logs/uvicorn.out.log 2>&1 &

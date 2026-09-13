@@ -11,6 +11,7 @@ import os
 import random
 import socket
 import subprocess
+import sys
 import time
 from urllib.parse import urlparse
 
@@ -64,7 +65,12 @@ def live_server():
 
     global SERVER_PROC
     SERVER_PROC = subprocess.Popen(
-        ["python3", "-m", "uvicorn", "app:app",
+        # sys.executable, not "python3": the dependencies live in .venv, so
+        # booting the app under the system interpreter fails on import and
+        # every test here reports *skipped* rather than failed -- the suite
+        # goes greener while covering less. Measured on the QA node
+        # 2026-09-13: 16 skipped in 9.27s, `import app` failing on nh3.
+        [sys.executable, "-m", "uvicorn", "app:app",
          "--host", "127.0.0.1", "--port", str(_PORT), "--log-level", "error"],
         env=env,
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

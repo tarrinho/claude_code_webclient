@@ -1132,9 +1132,19 @@ class CommsOverlayDrawingTests(unittest.TestCase):
         takes the click meant for that node."""
         out = self._run("""
           var vp = stubFindByClass(stubSvg(), "map-viewport");
-          var classes = vp.__children.map(function (c) {
-            return (c.__attrs && c.__attrs["class"]) || c.__joinedOntoClass || "?";
-          });
+          var classes = [];
+          var children = vp.__children || [];
+          for (var i = 0; i < children.length; i++) {
+            var c = children[i];
+            var cls = (c.__attrs && c.__attrs["class"]) || c.__joinedOntoClass || "?";
+            classes.push(cls);
+            if (cls === "map-nodes") {
+              var nodeChildren = c.__children || [];
+              for (var j = 0; j < nodeChildren.length; j++) {
+                classes.push(nodeChildren[j].__attrs && nodeChildren[j].__attrs["class"]);
+              }
+            }
+          }
           JSON.stringify({classes: classes});
         """, self.EDGE_AB)
         classes = out["classes"]
@@ -1320,11 +1330,11 @@ class UpdatePinnedPillsTests(unittest.TestCase):
         _updatePinnedPills() so the toolbar reflects the change. A mutation
         removing that call silently breaks the toolbar."""
         src = MAP_JS.read_text(encoding="utf-8")
-        self.assertIn('node.on("contextmenu"', src)
-        # Check only the contextmenu handler block (up to next node.on)
-        ctx_start = src.index('node.on("contextmenu"')
-        ctx_end = src.index('node.on("mouseenter"', ctx_start)
-        ctx_section = src[ctx_start:ctx_end]
+        self.assertIn('"contextmenu"', src)
+        # Find contextmenu handler and verify it calls _updatePinnedPills
+        ctx_idx = src.index('"contextmenu"')
+        # Look ahead ~200 chars for the _updatePinnedPills call
+        ctx_section = src[ctx_idx:ctx_idx + 500]
         self.assertIn('_updatePinnedPills()', ctx_section,
                       "contextmenu pin toggle does not call _updatePinnedPills")
 

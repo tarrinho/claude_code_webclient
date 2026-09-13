@@ -1,3 +1,12 @@
+/* QuickJS has no console built-in. Provide no-op console so the module can
+ * log without crashing, plus a recorder so probes can inspect calls. */
+var _nativeConsole = typeof console !== 'undefined' ? console : null;
+var console = {
+  log: function() { STUB.logCalls = STUB.logCalls || []; var a=[]; for(var i=0;i<arguments.length;i++) a[i]=String(arguments[i]); STUB.logCalls.push(a.join(" ")); if(_nativeConsole) _nativeConsole.log.apply(console, arguments); },
+  error: function() { STUB.errors = STUB.errors || []; var a=[]; for(var i=0;i<arguments.length;i++) a[i]=String(arguments[i]); STUB.errors.push(a.join(" ")); if(_nativeConsole) _nativeConsole.error.apply(console, arguments); },
+  warn: function() { if(_nativeConsole) _nativeConsole.warn.apply(console, arguments); },
+};
+
 /* Minimal d3 + DOM stand-ins, so web/assets/supervisor-map.js can be executed
  * for real inside QuickJS instead of being read and paraphrased in Python.
  *
@@ -92,7 +101,19 @@ function FakeEl(id) {
       STUB.elHandlers[id] = STUB.elHandlers[id] || {};
       STUB.elHandlers[id][type] = fn;
     },
-    appendChild: function (child) { el._children = el._children || []; el._children.push(child); },
+    appendChild: function (child) {
+      if (!el._children) el._children = [];
+      el._children.push(child);
+      // Sync to connected Sel's __children so d3 selections see it.
+      if (el._sel && el._sel.__children === el._children) {
+        // already sharing the same array
+      } else {
+        // Push directly to the Sel's __children if connected.
+        if (el._sel && el._sel.__children !== el._children) {
+          el._sel.__children.push(child);
+        }
+      }
+    },
     prepend: function (child) { el._children = el._children || []; el._children.unshift(child); },
     removeChild: function (child) {
       if (el._children) el._children = el._children.filter(c => c !== child);
@@ -232,23 +253,180 @@ function Sel(tag, opts) {
       onClass: sel.__attrs["class"] || null,
     });
     s.remove = function () { sel.__children.length = 0; return s; };
+    if (typeof selector === "function") {
+      // Real D3: iterate over children DOM nodes, passing bound datum as d.
+      // Each placeholder carries its own datum via __data.
+      var children = this.__children || [];
+      for (var i = 0; i < children.length; i++) {
+        var child = children[i];
+        var datum = child.__data;
+        if (datum !== undefined && datum !== null && datum !== true && datum !== false) {
+          if (selector(datum, i, child)) s.__children.push(child);
+        }
+      }
+      s.__data = this.__data || [];
+    } else if (typeof selector === "string") {
+      var selTag = null, selClass = null;
+      if (selector.indexOf(".") !== -1) {
+        var parts = selector.split(".");
+        selTag = parts[0] || null;
+        selClass = parts[1];
+      } else {
+        selTag = selector;
+      }
+      var parentData = (this.__data && Array.isArray(this.__data)) ? this.__data : null;
+      var children = this.__children || [];
+      for (var i = 0; i < children.length; i++) {
+        var child = children[i];
+        if (!child.__attrs) continue;
+        var tagMatch = !selTag || (child.__attrs[selTag] === true);
+        var classMatch = !selClass || (child.__attrs["class"] === selClass);
+        if (tagMatch && classMatch) {
+          if (parentData && parentData[i] !== undefined) {
+            child.__data = parentData[i];
+          }
+          s.__children.push(child);
+        }
+      }
+      // Inherit data from the parent selection — when no matching nodes exist
+      // yet (first render), the parent holds the full data array via __origin.
+      s.__data = parentData || (sel.__origin && sel.__origin.__data) || [];
+    }
     return s;
   };
-  sel.data = function (arr) { sel.__data = arr.slice(); return sel; };
+  sel.data = function (arr) {
+    sel.__data = arr.slice();
+    // Propagate to all existing node children so .each() and .filter() work.
+    var kids = sel.__children || [];
+    for (var i = 0; i < kids.length; i++) {
+      if (arr[i] !== undefined) kids[i].__data = arr[i];
+    }
+    return sel;
+  };
   sel.join = function (t, enterFn, updateFn, exitFn) {
     // D3 v6+ three-argument form: join(tag, enter, update, exit)
     if (typeof t === "function" || typeof enterFn === "function") {
       // The first argument is an enter-callback, not a tag.
-      var actualFn = typeof t === "function" ? t : enterFn;
+      // Create real placeholder nodes in the parent's __children so
+      // selectALL(tag.class) finds them. Each placeholder holds its own
+      // data item and its enter-child (e.g. <g class="node">).
       var parent = sel.__origin || sel;
-      var joined = Sel("__merged__", {data: sel.__data});
-      joined.__joinedOntoClass = parent.__attrs["class"] || null;
-      joined.__joinedOntoTag = parent.__tag;
-      parent.__children.push(joined);
-      if (typeof t === "function") t(joined);
-      if (updateFn) updateFn(joined);
+      var data = sel.__data || [];
+      var placeholders = [];
+      for (var i = 0; i < data.length; i++) {
+        var ph = Sel("__placeholder__", {data: data[i]});
+        ph.__attrs = {"class": "node"};
+        ph.__tag = t;
+        ph.__children = [];
+        placeholders.push(ph);
+      }
+      // Helper: return a chainable fake selection over *children* created by append/insert.
+      function _enterChain(created, data) {
+        var r = Sel("__enter__", {data: data});
+        r.__children = created;
+        r.append = function (tag) { return _enterChain(created.map(function (c) { var child = Sel(tag, {data: c.__data}); return child; }), data); };
+        r.insert = function (tag, ref) { return _enterChain(created.map(function (c) { var child = Sel(tag, {data: c.__data}); return child; }), data); };
+        r.attr = function (k, v) {
+          for (var j = 0; j < created.length; j++) { created[j].__attrs[k] = v; }
+          return r;
+        };
+        r.text = function (t) {
+          for (var j = 0; j < created.length; j++) { created[j].__text = String(t); }
+          return r;
+        };
+        r.each = function (fn) {
+          for (var j = 0; j < created.length; j++) { fn.call(created[j], created[j].__data, j); }
+          return r;
+        };
+        r.selectAll = function (s) { return Sel("selection", {}); };
+        r.on = function () { return r; };
+        r.remove = function () { return r; };
+        return r;
+      }
+      // Attach placeholders to the parent so selectALL finds them.
+      for (var i = 0; i < placeholders.length; i++) {
+        parent.__children.push(placeholders[i]);
+      }
+      // The merged selection returned by join() contains the same
+      // placeholder nodes. updateFn iterates them; enterFn delegates to them.
+      var merged = Sel("__joined__", {data: data});
+      merged.__attrs = parent.__attrs;
+      merged.__children = placeholders;
+      // Propagate .attr() recursively through ALL descendants so chained
+      // .attr("x").attr("width") after .join() reaches nested rect/text nodes.
+      merged.attr = function (k, v) {
+        function walk(n) {
+          if (n.__attrs !== undefined) { n.__attrs[k] = v; }
+          if (n.__children) {
+            for (var j = 0; j < n.__children.length; j++) { walk(n.__children[j]); }
+          }
+        }
+        if (placeholders.length > 0) {
+          for (var j = 0; j < placeholders.length; j++) { walk(placeholders[j]); }
+        } else {
+          // No placeholders (empty data, enter-only path). Walk the parent
+          // tree where enter created nodes — the real D3 DOM where these
+          // newly-inserted elements live.
+          walk(parent);
+        }
+        return merged;
+      };
+
+      // enterFake receives the full data array and a single call with .each()
+      // semantics. .append("g") must create one child per placeholder, each
+      // carrying its own datum. D3 does this: enterFn(d, i) is called once per
+      // item, and append() returns a selection carrying that item's data.
+      var enterFake = Sel("__merged__", {data: data});
+      enterFake.__dataIsDescendants = true;
+      enterFake.each = function (fn) {
+        for (var i = 0; i < placeholders.length; i++) {
+          fn.call(placeholders[i], data[i], i);
+        }
+        return enterFake;
+      };
+      enterFake.append = function (tag) {
+        var created = [];
+        for (var j = 0; j < placeholders.length; j++) {
+          placeholders[j].__data = data[j];
+          var child = Sel(tag, {data: data[j]});
+          placeholders[j].__children.push(child);
+          created.push(child);
+        }
+        return _enterChain(created, data);
+      };
+      enterFake.insert = function (tag, ref) {
+        var created = [];
+        for (var j = 0; j < placeholders.length; j++) {
+          var child = Sel(tag, {data: data[j]});
+          if (ref && placeholders[j].__children.length) {
+            var idx = placeholders[j].__children.findIndex(function (c) { return c.__tag === ref; });
+            if (idx >= 0) { placeholders[j].__children.splice(idx, 0, child); } else { placeholders[j].__children.push(child); }
+          } else {
+            placeholders[j].__children.push(child);
+          }
+          created.push(child);
+        }
+        return _enterChain(created, data);
+      };
+      enterFake.selectAll = function (s) { return Sel("selection", {}); };
+      enterFake.attr = function (k, v) {
+        for (var j = 0; j < placeholders.length; j++) {
+          placeholders[j].__attrs[k] = v;
+        }
+        return enterFake;
+      };
+      enterFake.text = function (t) {
+        for (var j = 0; j < placeholders.length; j++) {
+          placeholders[j].__text = String(t);
+        }
+        return enterFake;
+      };
+      enterFake.on = function () { return enterFake; };
+      enterFake.remove = function () { return enterFake; };
+      if (typeof t === "function") t(enterFake);
+      if (updateFn) updateFn(merged);
       if (exitFn) exitFn(Sel("exit", {data: []}));
-      return joined;
+      return merged;
     }
     var parent = sel.__origin || sel;
     var joined = Sel(t, {data: sel.__data});
@@ -263,25 +441,150 @@ function Sel(tag, opts) {
     return out;
   };
   sel.each = function (fn) {
-    sel.__data.forEach(function (d, i) {
-      var per = Sel(sel.__tag, {data: [d]});
-      // Attach to the origin (the real tree) rather than sel, because
-      // sel might be a disconnected filter() result that was never
-      // appended to the viewport.
-      var parent = (sel.__origin || sel);
-      parent.__children.push(per);
-      fn.call(per, d, i);
-    });
+    var data = sel.__data;
+    if (Array.isArray(data) && data.length > 0) {
+      data.forEach(function (d, i) {
+        var per = Sel(sel.__tag, {data: [d]});
+        // Attach to the origin (the real tree) rather than sel, because
+        // sel might be a disconnected filter() result that was never
+        // appended to the viewport.
+        var parent = (sel.__origin || sel);
+        parent.__children.push(per);
+        fn.call(per, d, i);
+      });
+      return sel;
+    }
+    // Fallback: iterate children that have bound data (test stub pattern).
+    // In real D3, .data().enter().append() creates nodes carrying their datum.
+    // When the parent group has no __data array (just a layer <g>), delegate.
+    var kids = sel.__children || [];
+    var found = false;
+    for (var i = 0; i < kids.length; i++) {
+      if (kids[i].__data !== undefined && kids[i].__data !== null && kids[i].__data !== true && kids[i].__data !== false) {
+        fn.call(kids[i], kids[i].__data, i);
+        found = true;
+      }
+    }
+    if (found) return sel;
+    // Last resort: if __data is a single item (not array), call once.
+    if (typeof fn === "function" && data !== null && data !== undefined) {
+      fn.call(sel, data, 0);
+    }
     return sel;
   };
   // ── enter / exit ──────────────────────────────────────────────────
   // Minimal support so the enter-update-exit flow works in tests.
   // .enter() returns a synthetic "enter" Sel carrying the same data
-  // as the parent — it delegates appends to the parent (__origin).
+  // as the parent — it delegates appends to create one node per datum.
+  // The returned selection is chainable: .attr(), .text(), .each() all
+  // delegate to the real children so the enter chain is fully executable.
   sel.enter = function () {
     var e = Sel("enter", {data: sel.__data || []});
     e.__isEnter = true;
     e.__origin = sel.__origin || sel;
+    var createdChildren = [];  // holds nodes created by append/insert
+    // Helper: return a chainable fake selection over *children*
+    function makeResult(children) {
+      var r = Sel("__enter__", {data: e.__data || []});
+      r.__children = children;
+      r.append = function (tag) {
+        var out = [];
+        for (var i = 0; i < children.length; i++) {
+          var c = children[i];
+          var child = Sel(tag, {data: c.__data});
+          var parent = (e.__origin || e);
+          parent.__children.push(child);
+          out.push(child);
+        }
+        return makeResult(out);
+      };
+      r.insert = function (tag, ref) {
+        var out = [];
+        for (var i = 0; i < children.length; i++) {
+          var c = children[i];
+          var child = Sel(tag, {data: c.__data});
+          var parent = (e.__origin || e);
+          if (ref) {
+            var idx = parent.__children.findIndex(function (x) { return x.__tag === ref; });
+            if (idx >= 0) { parent.__children.splice(idx, 0, child); continue; }
+          }
+          parent.__children.push(child);
+          out.push(child);
+        }
+        return makeResult(out);
+      };
+      r.selectAll = function (s) { return Sel("selection", {}); };
+      r.attr = function (k, v) {
+        for (var i = 0; i < children.length; i++) {
+          children[i].__attrs = children[i].__attrs || {};
+          if (typeof k === "string") {
+            children[i].__attrs[k] = v;
+          } else if (typeof k === "object") {
+            for (var key in k) children[i].__attrs[key] = k[key];
+          }
+        }
+        return r;
+      };
+      r.text = function (t) {
+        if (typeof t === "function") {
+          for (var i = 0; i < children.length; i++) {
+            children[i].__text = String(t(children[i].__data, i, children[i]));
+          }
+        } else {
+          for (var i = 0; i < children.length; i++) {
+            children[i].__text = String(t);
+          }
+        }
+        return r;
+      };
+      r.each = function (fn) {
+        for (var i = 0; i < children.length; i++) {
+          fn.call(children[i], children[i].__data, i);
+        }
+        return r;
+      };
+      r.on = function () { return r; };
+      r.remove = function () {
+        for (var i = 0; i < children.length; i++) {
+          var parent = (e.__origin || e);
+          var idx = parent.__children.indexOf(children[i]);
+          if (idx >= 0) parent.__children.splice(idx, 1);
+        }
+        return r;
+      };
+      return r;
+    }
+    // Override append to create one child per data item
+    e.append = function (tag) {
+      var data = e.__data || [];
+      for (var i = 0; i < data.length; i++) {
+        var child = Sel(tag, {data: data[i]});
+        var parent = (e.__origin || e);
+        parent.__children.push(child);
+        createdChildren.push(child);
+      }
+      return makeResult(createdChildren);
+    };
+    e.insert = function (tag, ref) {
+      var data = e.__data || [];
+      for (var i = 0; i < data.length; i++) {
+        var child = Sel(tag, {data: data[i]});
+        var parent = (e.__origin || e);
+        if (ref) {
+          var idx = parent.__children.findIndex(function (c) { return c.__tag === ref; });
+          if (idx >= 0) { parent.__children.splice(idx, 0, child); continue; }
+        }
+        parent.__children.push(child);
+        createdChildren.push(child);
+      }
+      return makeResult(createdChildren);
+    };
+    e.selectAll = function (s) { return Sel("selection", {}); };
+    e.attr = function () { return e; };
+    e.text = function () { return e; };
+    e.each = function (fn) { return e; };
+    e.on = function () { return e; };
+    e.remove = function () { return e; };
     return e;
   };
   sel.exit = function () {
@@ -289,7 +592,15 @@ function Sel(tag, opts) {
     e.__isExit = true;
     return e;
   };
-  sel.on = function (name, fn) { sel.__handlers[name] = fn; return sel; };
+  sel.on = function (name, fn) {
+    sel.__handlers[name] = fn;
+    // Propagate to the group-level so stubFindNodeSelection() returns
+    // a selection that carries handlers for test probes that access
+    // nodeSel.__handlers.click directly.
+    var g = (sel.__origin || sel);
+    if (g !== sel) g.__handlers[name] = fn;
+    return sel;
+  };
   sel.node = function () { return sel.__node || sel; };
   sel.remove = function () { sel.__children.length = 0; return sel; };
   sel.call = function (fn) {
@@ -487,12 +798,53 @@ var d3 = {
   select: function (target) {
     if (target && target.__tag) return target;
     if (typeof target === "string" && target.charAt(0) === "#") {
-      var el = document.getElementById(target.slice(1));
+      var id = target.slice(1);
       if (!STUB.selections) STUB.selections = {};
       if (!STUB.selections[target]) {
-        STUB.selections[target] = Sel("svg", {node: el});
+        var el = document.getElementById(id);
+        if (el) {
+          var sel = Sel("svg", {node: el});
+          // Share the FakeEl's _children with the Sel's __children so the module's
+          // DOM mutations are visible to all callers.
+          if (!el._children) el._children = [];
+          sel.__children = el._children;
+          el._sel = sel;  // so append/insert on FakeEl can sync back
+          STUB.selections[target] = sel;
+        }
       }
       return STUB.selections[target];
+    }
+    // Class or tag selector: walk the fake DOM tree for the first matching element.
+    if (typeof target === "string") {
+      var svgSel = d3.select("#supervisorMapSvg");
+      if (svgSel && svgSel.__children) {
+        var isClassSel = target.charAt(0) === ".";
+        var selCls = null, selTag = null;
+        if (isClassSel) {
+          selCls = target.slice(1);
+        } else {
+          selTag = target;
+        }
+        var found = null;
+        function findFirst(children) {
+          for (var i = 0; i < children.length; i++) {
+            var c = children[i];
+            if (!c.__attrs) continue;
+            var tagMatch = !selTag || (c.__tag === selTag || c.__attrs["class"] === selCls);
+            var classMatch = !selCls || (c.__attrs["class"] === selCls);
+            if ((isClassSel && classMatch) || (!isClassSel && (tagMatch || classMatch))) {
+              found = c;
+              return;
+            }
+            if (c.__children) findFirst(c.__children);
+          }
+        }
+        findFirst(svgSel.__children);
+        if (found) {
+          found.__origin = svgSel;
+          return found;
+        }
+      }
     }
     return Sel("unknown", {});
   },
@@ -562,6 +914,28 @@ function stubFindNodeSelection() {
   var vp = stubFindByClass(stubSvg(), "map-viewport");
   if (!vp) return null;
   var kids = vp.__children || [];
+  for (var i = 0; i < kids.length; i++) {
+    if (kids[i].__attrs && kids[i].__attrs["class"] === "map-nodes") {
+      // Return the layer group so .each(), .filter(), .selectALL() and
+      // __handlers all work on the full set of node data.
+      // Populate __data from children if empty (the test pattern where
+      // .data() was called on a selectAll result, not on the group itself).
+      if (!kids[i].__data || !kids[i].__data.length || kids[i].__data[0] === false) {
+        var nodeChildren = kids[i].__children || [];
+        var nodeData = [];
+        for (var j = 0; j < nodeChildren.length; j++) {
+          if (nodeChildren[j].__data &&
+              nodeChildren[j].__data !== true &&
+              nodeChildren[j].__data !== false) {
+            nodeData.push(nodeChildren[j].__data);
+          }
+        }
+        kids[i].__data = nodeData;
+      }
+      return kids[i];
+    }
+  }
+  // Fallback for direct children of viewport (older layout without layer groups).
   for (var i = 0; i < kids.length; i++) {
     if (kids[i].__attrs && kids[i].__attrs["class"] === "node") return kids[i];
   }

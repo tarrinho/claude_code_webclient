@@ -85,10 +85,42 @@ class SessionDedupeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(rows[0]["live"])
 
     async def test_running_process_is_reported_live(self):
-        _write(self.dir, "9.json", pid=os.getpid(), sessionId="cccc3333",
-               entrypoint="webconsole", name="alive")
+        """A *cli* record's pid is the session's own, so it decides liveness.
+
+        This used to seed entrypoint="webconsole" and assert live -- which
+        contradicted its sibling below, test_refuses_when_a_sibling_cli_record
+        _is_live, whose docstring already says "liveness comes from the CLI's
+        own file, not the shadow's stale pid". A shadow stores the pid of the
+        WebConsole process that wrote it (db.write_claude_session_file records
+        os.getpid()), so asking whether that pid runs answers a question about
+        the console. While the server was up it made every shadow report a
+        live session that did not exist -- 34 such records on 2026-09-14.
+        """
+        # Not os.getpid(): _read_claude_sessions_sync skips a record whose pid
+        # is the current process unless its entrypoint is "webconsole" (the
+        # same_process carve-out), so the row would vanish rather than report
+        # liveness. Orphaned so init reaps it instead of leaving a zombie,
+        # which answers kill -0 after death.
+        import asyncio as _aio
+        import subprocess as _sp
+        _out = await _aio.to_thread(
+            lambda: _sp.run(["bash", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"],
+                            capture_output=True, text=True, timeout=10))
+        _live = int(_out.stdout.strip())
+        self.addCleanup(lambda: os.path.exists(f"/proc/{_live}") and os.kill(_live, 9))
+        _write(self.dir, "9.json", pid=_live, sessionId="cccc3333",
+               entrypoint="cli", name="alive")
         rows = await db.read_claude_sessions()
         self.assertTrue(rows[0]["live"])
+
+    async def test_a_shadow_record_is_never_reported_live(self):
+        """The other half, and the reason the case above changed."""
+        _write(self.dir, "10.json", pid=os.getpid(), sessionId="cccc4444",
+               entrypoint="webconsole", name="shadow")
+        rows = await db.read_claude_sessions()
+        shadow = [r for r in rows if r["sessionId"] == "cccc4444"]
+        self.assertTrue(shadow, "the shadow must still be listed")
+        self.assertFalse(shadow[0]["live"])
 
 
 class SessionFileDeleteTests(unittest.TestCase):
@@ -117,8 +149,17 @@ class SessionFileDeleteTests(unittest.TestCase):
         self.assertTrue(path.exists())
 
     def test_refuses_while_the_process_is_running(self):
+        """Refusal needs a live *cli* record, not a shadow claiming the
+        server's pid.
+
+        Seeded as "webconsole" this asserted that a record the running server
+        had just written could not be deleted -- which is what blocked the
+        cleanup path entirely: delete refuses a live session, and every fresh
+        shadow looked live. The protection itself is unchanged and is proved
+        by test_refuses_when_a_sibling_cli_record_is_live below.
+        """
         path = _write(self.dir, "dddd4444.json", pid=os.getpid(),
-                      sessionId="dddd4444", entrypoint="webconsole")
+                      sessionId="dddd4444", entrypoint="cli")
         with self.assertRaises(ValueError):
             db.delete_claude_session_file("dddd4444")
         self.assertTrue(path.exists())

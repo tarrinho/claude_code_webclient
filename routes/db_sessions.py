@@ -187,7 +187,19 @@ def _session_is_live(session_id: str) -> bool:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        if data.get("sessionId") == session_id and _pid_is_running(data.get("pid")):
+        if data.get("sessionId") != session_id:
+            continue
+        # A webconsole-written record's pid is the *server's*, not the
+        # session's -- db.write_claude_session_file stores os.getpid(), which
+        # prompts.py's _self_and_ancestors already documents. Counting it as
+        # evidence of a live session made every shadow record look alive while
+        # the server was up, and blocked the cleanup path outright:
+        # delete_claude_session_file refuses a live session, so a record the
+        # running server had just written could never be removed. Measured
+        # 2026-09-14 with 34 such records in the registry.
+        if data.get("entrypoint") == "webconsole":
+            continue
+        if _pid_is_running(data.get("pid")):
             return True
     return False
 
@@ -653,7 +665,13 @@ def _read_claude_sessions_sync() -> list[dict[str, Any]]:
         # `status_updated_at` is left alone on purpose: a timestamp does not
         # stop being true when the process dies, and chat-list.js:548 greys a
         # stale row with it, which is what an ended session should look like.
-        running = db._pid_is_running(pid)
+        # Same reason as _session_is_live: a webconsole shadow record carries
+        # the server's pid, so asking whether that pid runs answers a question
+        # about the console, not about this session. The record stays listed --
+        # it is how a console-created session appears at all -- it just stops
+        # claiming to be alive.
+        running = (data.get("entrypoint") != "webconsole"
+                   and db._pid_is_running(pid))
         sessions.append(
             {
                 "id": session_id if session_id else fpath.stem,

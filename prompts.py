@@ -48,6 +48,23 @@ _TEXT_MAX: Final[int] = 25000
 # so it stays well under any plausible ARG_MAX rather than close to it.
 _STUFF_CHUNK: Final[int] = 900
 
+# Bracketed paste. A multi-call send arrives at the TUI as thousands of
+# individual keystrokes spread over the time the calls take, so anything the
+# person at that terminal types lands *between* them -- measured 2026-09-15,
+# a 24,080-character delivery interleaved with typing and one message was
+# stored as "reply with just the number\rAdd this test to the test batter",
+# the \r being this module's own Enter caught mid-word. Wrapping the payload
+# tells the TUI to take everything between the markers as one paste rather
+# than as typing, which is what the sequence exists for.
+#
+# Verified rather than assumed: `screen -X stuff` passes the escape bytes
+# through unaltered (probed against `cat -A`, which showed
+# ^[[200~HELLO PASTE^[[201~). Applied only when the text needs more than one
+# call -- a short prompt already arrives atomically, and leaving it alone
+# keeps the common path byte-identical to what it has always sent.
+_PASTE_START: Final[str] = "\x1b[200~"
+_PASTE_END: Final[str] = "\x1b[201~"
+
 # The frame Claude draws around the command a prompt is asking about. Used as a
 # stop when reading the question text upwards, so the framed command does not
 # get read back as the question.
@@ -461,7 +478,12 @@ def send_text(
     chunks = [
         cleaned[i:i + _STUFF_CHUNK] for i in range(0, len(cleaned), _STUFF_CHUNK)
     ]
-    _note(chunks_total=len(chunks), chunks_sent=0)
+    # Only a multi-call send needs the paste brackets; see _PASTE_START.
+    bracketed = len(chunks) > 1
+    if bracketed:
+        chunks[0] = _PASTE_START + chunks[0]
+        chunks[-1] = chunks[-1] + _PASTE_END
+    _note(chunks_total=len(chunks), chunks_sent=0, bracketed=bracketed)
 
     kind = target.get("kind")
     if kind == "screen":
@@ -486,6 +508,13 @@ def send_text(
     for index, chunk in enumerate(chunks):
         typed = _run(argv_for(chunk))
         if not (typed and typed.returncode == 0):
+            # A bracketed send that stops part-way has opened a paste the TUI
+            # is still inside: every subsequent keystroke from the person at
+            # that terminal would be swallowed into it. Close the bracket so
+            # the window is usable again. Enter is still not sent -- the
+            # fragment stays visible and unsubmitted, which is the point.
+            if bracketed and index > 0:
+                _run(argv_for(_PASTE_END))
             _note(
                 chunks_sent=index,
                 refused=f"chunk {index + 1} of {len(chunks)} was refused",

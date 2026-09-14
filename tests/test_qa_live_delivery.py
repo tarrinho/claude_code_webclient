@@ -61,6 +61,22 @@ class SendTextTests(unittest.TestCase):
             ok = prompts.send_text(target, text)
         return ok, seen
 
+    @staticmethod
+    def _payload(calls):
+        """What actually reached the window, with the paste brackets removed.
+
+        A multi-call send is wrapped in bracketed-paste markers so the TUI
+        takes it as one paste rather than as typing. The markers are framing,
+        not content -- what these tests care about is that the text inside
+        them is exactly what was sent.
+        """
+        joined = "".join(c[-1] for c in calls if c[-1] != "\r")
+        if joined.startswith(prompts._PASTE_START):
+            joined = joined[len(prompts._PASTE_START):]
+        if joined.endswith(prompts._PASTE_END):
+            joined = joined[:-len(prompts._PASTE_END)]
+        return joined
+
     def test_screen_types_then_presses_enter_separately(self):
         """Two calls, so a failure to type cannot still submit a blank line."""
         ok, calls = self._calls(SCREEN, "make it 20% wider")
@@ -119,14 +135,15 @@ class SendTextTests(unittest.TestCase):
         self.assertTrue(ok)
         typed = [c for c in calls if c[-1] != "\r"]
         self.assertGreater(len(typed), 1, "9000 chars should not be one call")
-        self.assertEqual("".join(c[-1] for c in typed), text,
+        self.assertEqual(self._payload(calls), text,
                          "the text that reached the window is not what was sent")
 
     def test_no_chunk_exceeds_the_per_call_limit(self):
         ok, calls = self._calls(SCREEN, "y" * 5000)
         self.assertTrue(ok)
+        overhead = len(prompts._PASTE_START) + len(prompts._PASTE_END)
         for call in (c for c in calls if c[-1] != "\r"):
-            self.assertLessEqual(len(call[-1]), prompts._STUFF_CHUNK)
+            self.assertLessEqual(len(call[-1]), prompts._STUFF_CHUNK + overhead)
 
     def test_enter_is_pressed_once_and_only_after_every_chunk(self):
         ok, calls = self._calls(SCREEN, "z" * 5000)
@@ -222,7 +239,7 @@ class SendTextTests(unittest.TestCase):
         typed = [c for c in calls if c[-1] != "\r"]
         self.assertGreater(len(typed), 20, "24k chars should span many calls")
 
-        arrived = "".join(c[-1] for c in typed)
+        arrived = self._payload(calls)
         self.assertEqual(arrived, text, "the padded request did not arrive whole")
         # The parts that carry meaning, checked by name rather than only via
         # the equality above: this is what the terminal has to be able to act
@@ -234,6 +251,56 @@ class SendTextTests(unittest.TestCase):
         enters = [i for i, c in enumerate(calls) if c[-1] == "\r"]
         self.assertEqual(len(enters), 1, "submitted more than once")
         self.assertEqual(enters[0], len(calls) - 1, "Enter was not last")
+
+    # --- bracketed paste ---------------------------------------------------
+
+    def test_a_multi_call_send_is_wrapped_as_one_paste(self):
+        """Thousands of keystrokes spread over 27 calls let anything typed at
+        that terminal land between them. The markers make the TUI take the
+        whole thing as one paste instead."""
+        ok, calls = self._calls(SCREEN, "m" * 5000)
+        self.assertTrue(ok)
+        typed = [c[-1] for c in calls if c[-1] != "\r"]
+        self.assertTrue(typed[0].startswith(prompts._PASTE_START))
+        self.assertTrue(typed[-1].endswith(prompts._PASTE_END))
+        # Exactly one bracket pair, not one per chunk.
+        joined = "".join(typed)
+        self.assertEqual(joined.count(prompts._PASTE_START), 1)
+        self.assertEqual(joined.count(prompts._PASTE_END), 1)
+
+    def test_the_payload_inside_the_brackets_is_unchanged(self):
+        text = "".join(str(i % 10) for i in range(5000))
+        ok, calls = self._calls(SCREEN, text)
+        self.assertTrue(ok)
+        joined = "".join(c[-1] for c in calls if c[-1] != "\r")
+        inner = joined[len(prompts._PASTE_START):-len(prompts._PASTE_END)]
+        self.assertEqual(inner, text, "the brackets altered the payload")
+
+    def test_a_single_call_send_is_not_bracketed(self):
+        """A short prompt already arrives atomically; leaving it alone keeps
+        the common path byte-identical to what it has always sent."""
+        ok, calls = self._calls(SCREEN, "make it 20% wider")
+        self.assertTrue(ok)
+        self.assertEqual(calls[0][-1], "make it 20% wider")
+        self.assertNotIn(prompts._PASTE_START, calls[0][-1])
+
+    def test_a_failed_chunk_closes_the_paste_it_opened(self):
+        """Otherwise the TUI stays inside the paste and swallows whatever the
+        person at that terminal types next."""
+        seen = []
+
+        def _fake(argv):
+            seen.append(argv)
+            return SimpleNamespace(returncode=0 if len(seen) <= 2 else 1,
+                                   stdout="", stderr="")
+
+        with patch.object(prompts, "_run", _fake):
+            ok = prompts.send_text(SCREEN, "f" * 5000)
+
+        self.assertFalse(ok)
+        self.assertEqual(seen[-1][-1], prompts._PASTE_END,
+                         "the paste was left open after a failed chunk")
+        self.assertNotIn("\r", [c[-1] for c in seen], "the fragment was submitted")
 
     def test_text_over_the_absolute_limit_is_refused_and_nothing_is_typed(self):
         """Refused outright rather than truncated -- the old behaviour typed a
@@ -255,7 +322,7 @@ class SendTextTests(unittest.TestCase):
         self.assertTrue(ok)
         typed = [c for c in calls if c[-1] != "\r"]
         self.assertGreater(len(typed), 1)
-        self.assertEqual("".join(c[-1] for c in typed), text)
+        self.assertEqual(self._payload(calls), text)
 
     def test_unknown_target_kind_refused(self):
         ok, calls = self._calls({"kind": "carrier-pigeon"}, "hello")
@@ -554,10 +621,15 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(routed["chunks_total"], 20)
 
         typed = [c for c in seen if c[-1] != "\r"]
-        self.assertEqual("".join(c[-1] for c in typed), payload,
+        arrived = "".join(c[-1] for c in typed)
+        # Framing, not content: a multi-call send is wrapped as one paste.
+        self.assertTrue(arrived.startswith(prompts._PASTE_START))
+        self.assertTrue(arrived.endswith(prompts._PASTE_END))
+        inner = arrived[len(prompts._PASTE_START):-len(prompts._PASTE_END)]
+        self.assertEqual(inner, payload,
                          "the request did not reach the window intact")
-        self.assertTrue("".join(c[-1] for c in typed).startswith(head))
-        self.assertTrue("".join(c[-1] for c in typed).endswith(tail))
+        self.assertTrue(inner.startswith(head))
+        self.assertTrue(inner.endswith(tail))
 
         enters = [i for i, c in enumerate(seen) if c[-1] == "\r"]
         self.assertEqual(len(enters), 1)

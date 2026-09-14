@@ -232,6 +232,63 @@ class SessionWakeTests(unittest.TestCase):
         )
         self.assertIn(SESSION_ID, marker.read_text())
 
+    def test_the_woken_session_does_not_inherit_claude_session_markers(self):
+        """Wake is normally run from *inside* a Claude session, so the child
+        inherits that session's environment. Measured 2026-09-14 on cweb4:
+
+            CLAUDE_CODE_CHILD_SESSION, CLAUDE_CODE_SESSION_ID,
+            CLAUDE_PID, CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_CODE_SESSION_ATTENDED
+
+        all arrived from the waking session. The visible symptom was the
+        resumed window printing "Transcript saving is off -- inherited
+        CLAUDE_CODE_CHILD_SESSION marker", which means the work done in a woken
+        session is not persisted -- the opposite of what standby/wake exists
+        for. It also left the session absent from ~/.claude/sessions, so it
+        could not be listed or stood down again, and pointed its messaging
+        socket at the *waking* session.
+
+        Scrubbed by name rather than by prefix: CLAUDE_CODE_MAX_OUTPUT_TOKENS
+        and similar are deliberate deployment settings on this host, and
+        clearing the whole CLAUDE_* family to fix an identity leak would take
+        those with it.
+        """
+        import os
+        self._record(cwd=str(self.home))
+        bindir = self.home / "envbin"
+        bindir.mkdir(exist_ok=True)
+        dump = self.home / "claude-env"
+        (bindir / "claude").write_text(
+            f'#!/bin/sh\nenv | grep "^CLAUDE" > {dump}\ntrue\n')
+        (bindir / "claude").chmod(0o755)
+        (bindir / "screen").write_text(
+            '#!/bin/sh\n'
+            'while [ $# -gt 0 ]; do\n'
+            '  case "$1" in -d|-m) shift ;; -S) shift 2 ;; *) break ;; esac\n'
+            'done\n'
+            'exec "$@"\n'
+        )
+        (bindir / "screen").chmod(0o755)
+
+        polluted = dict(
+            os.environ, HOME=str(self.home),
+            PATH=f"{bindir}:{os.environ['PATH']}",
+            CLAUDE_CODE_CHILD_SESSION="1",
+            CLAUDE_CODE_SESSION_ID="the-waking-session",
+            CLAUDE_PID="99999",
+            CLAUDE_CODE_MESSAGING_SOCKET="/run/user/1000/cc-socks/99999.sock",
+            CLAUDE_CODE_SESSION_ATTENDED="1",
+        )
+        subprocess.run(["bash", str(SCRIPT), "cwebtest"],
+                       capture_output=True, text=True, timeout=30, env=polluted)
+
+        leaked = dump.read_text() if dump.is_file() else ""
+        for marker in ("CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID",
+                       "CLAUDE_PID", "CLAUDE_CODE_MESSAGING_SOCKET",
+                       "CLAUDE_CODE_SESSION_ATTENDED"):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, leaked,
+                                 f"{marker} reached the woken session")
+
 
 if __name__ == "__main__":
     unittest.main()

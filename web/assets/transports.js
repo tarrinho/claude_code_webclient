@@ -46,6 +46,7 @@ export function _showAddTransport() {
   byId('transportSshHost').value = '';
   byId('transportSshUser').value = 'kali';
   byId('transportSshKeyPath').value = '';
+  byId('transportRemotePath').value = '';
   byId('transportTestResult').textContent = '';
   byId('transportForm').hidden = false;
   byId('addTransportBtn').hidden = true;
@@ -73,6 +74,7 @@ export function _showEditTransport(transport) {
   byId('transportSshHost').value = transport.ssh_host || '';
   byId('transportSshUser').value = transport.ssh_user || 'kali';
   byId('transportSshKeyPath').value = transport.ssh_key_path || '';
+  byId('transportRemotePath').value = transport.remote_path || '';
   byId('transportTestResult').textContent = '';
   byId('transportForm').hidden = false;
   byId('addTransportBtn').hidden = true;
@@ -338,6 +340,12 @@ export async function _saveTransport(onSaved) {
   const ssh_host = byId('transportSshHost').value.trim();
   const ssh_user = byId('transportSshUser').value.trim() || 'kali';
   const ssh_key_path = byId('transportSshKeyPath').value.trim();
+  // Blank means the server's own default rather than an empty string: POST
+  // substitutes '~/wc-proxy' for an empty value, but PATCH rejects one
+  // outright (routes/transports.py:158-160), so sending '' would make an
+  // edit that touched nothing else fail. Defaulting here keeps both verbs
+  // accepting the same payload.
+  const remote_path = byId('transportRemotePath').value.trim() || '~/wc-proxy';
   if (!name) { byId('transportName').focus(); return; }
   if (!ssh_host) { byId('transportSshHost').focus(); return; }
   if (!ssh_key_path) { byId('transportSshKeyPath').focus(); return; }
@@ -345,7 +353,7 @@ export async function _saveTransport(onSaved) {
   const save = byId('saveTransport');
   save.disabled = true;
   try {
-    const body = {name, ssh_host, ssh_user, ssh_key_path};
+    const body = {name, ssh_host, ssh_user, ssh_key_path, remote_path};
     const resp = _transportEditing
       ? await apiFetch(`/api/transports/${encodeURIComponent(_transportEditing)}`, {
           method: 'PATCH', headers: {'Content-Type': 'application/json'},

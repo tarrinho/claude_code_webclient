@@ -665,6 +665,7 @@ class TransportUIBrowserTests(_BrowserFixture):
         self.page.fill("#transportSshHost", "localhost")
         self.page.fill("#transportSshUser", "kali")
         self.page.fill("#transportSshKeyPath", "/tmp/does-not-exist-key")
+        self.page.fill("#transportRemotePath", "~/wc-proxy-test")
         self.page.click("#saveTransport")
         # 20s, not 10s: several agent sessions share this host and a save that
         # normally lands in well under a second has been measured taking longer
@@ -834,6 +835,14 @@ class TransportUIBrowserTests(_BrowserFixture):
         self.assertEqual(self.page.input_value("#transportSshUser"), "kali")
         self.assertEqual(
             self.page.input_value("#transportSshKeyPath"), "/tmp/does-not-exist-key",
+        )
+        # remote_path round-trips through save and prefill. It is the setting
+        # that points a transport at a directory holding transcripts.py, which
+        # agent-reply imports on the far side; until 2026-09-14 the backend
+        # accepted it (routes/transports.py:127) and no form offered it, so it
+        # could only be set through the API.
+        self.assertEqual(
+            self.page.input_value("#transportRemotePath"), "~/wc-proxy-test",
         )
         self.assertEqual(
             self.page.inner_text("#transportFormTitle"), "Edit transport",

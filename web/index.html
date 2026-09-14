@@ -321,6 +321,9 @@
           <label for="transportSshKeyPath">SSH Key Path</label>
           <input id="transportSshKeyPath" maxlength="500" placeholder="~/.ssh/id_ed25519">
           <p class="machine-hint">Key must be readable by the server process (mode 0600 recommended).</p>
+          <label for="transportRemotePath">Remote Path</label>
+          <input id="transportRemotePath" maxlength="500" placeholder="~/wc-proxy">
+          <p class="machine-hint">Directory on the transport that holds the proxy and the modules agent-reply imports. Leave blank for <code>~/wc-proxy</code>.</p>
           <div class="machine-form-actions">
             <button class="btn-secondary" id="testTransport">Test connection</button>
             <span id="transportTestResult" role="status" aria-live="polite"></span>

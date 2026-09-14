@@ -53,7 +53,10 @@ _settings_cache: dict[tuple[str, int], tuple[dict, float]] = {}
 
 async def _settings_cache_get(owner_id: str) -> dict[str, Any] | None:
     """Return cached settings for *owner_id* if still valid, else None."""
-    global _settings_cache_version
+    # No `global` declaration: this function only reads the version.
+    # Declaring it here is what flake8 reports as F824, and it also reads as
+    # if the cache version were mutated on a GET, which it is not --
+    # _settings_invalidate is the only writer.
     key = (owner_id, _settings_cache_version)
     entry = _settings_cache.get(key)
     if entry is None:
@@ -67,7 +70,7 @@ async def _settings_cache_get(owner_id: str) -> dict[str, Any] | None:
 
 def _settings_cache_put(owner_id: str, payload: dict[str, Any]) -> None:
     """Store *payload* for *owner_id* at the current cache_version."""
-    global _settings_cache_version
+    # Read-only, same as _settings_cache_get -- no `global` needed.
     key = (owner_id, _settings_cache_version)
     _settings_cache[key] = (payload, time.monotonic())
 
@@ -1603,6 +1606,19 @@ async def handle_sessions_resume(request: Request, session_id: str):
         if cwd:
             source = {"sessionId": session_id, "cwd": cwd}
         else:
+            # Logged here, not only by the central HTTP error handler: that one
+            # records the status and the detail, which says what is missing but
+            # not which of the two lookups failed or where either looked. This
+            # line went away in d4719a4 (2026-09-13) along with the old
+            # "the CLI session stopped" wording, and nothing replaced it, so a
+            # 404 on this route stopped explaining itself. Caught by
+            # test_session_not_found_logs_guidance, which had been asserting a
+            # marker string that no longer existed anywhere in the tree.
+            _log.info(
+                "cli_session_not_found session_id=%s -- not in "
+                "~/.claude/sessions and no transcript on disk",
+                session_id,
+            )
             raise HTTPException(
                 status_code=404,
                 detail="Conversation not found — no running session and no transcript",

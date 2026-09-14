@@ -188,13 +188,18 @@ class OriginRecordedQA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["session_id"], "orphan-sess")
         self.assertIsNone(rows[0]["title"])
 
-    async def test_another_owner_sees_none_of_it(self):
+    async def test_another_owner_sees_all_of_it(self):
+        """usage_by_origin and usage_by_session are account-wide since d7b0ecc
+        (2026-09-11); both docstrings say *owner_id* never filters. Written as
+        the opposite, inverted rather than deleted -- see tests/test_qa_usage.py
+        :: test_rows_are_reported_across_every_owner.
+        """
         await db.usage_import("admin", "sess-agent", [
             {"model": "m", "input_tokens": 5, "output_tokens": 1,
              "cache_read_tokens": 0, "cache_creation_tokens": 0,
              "context_unsplit": False, "offset": 1}], 1)
-        self.assertEqual(await db.usage_by_origin("someone-else", None), [])
-        self.assertEqual(await db.usage_by_session("someone-else", None), [])
+        self.assertNotEqual(await db.usage_by_origin("someone-else", None), [])
+        self.assertNotEqual(await db.usage_by_session("someone-else", None), [])
 
 
 class BackfillQA(unittest.IsolatedAsyncioTestCase):

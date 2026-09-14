@@ -336,9 +336,17 @@ class SeriesByRouteTests(_UsageFixture):
             25_000,
         )
 
-    async def test_another_owners_rows_are_not_counted(self):
+    async def test_another_owners_rows_are_counted_too(self):
+        """usage_series is account-wide since d7b0ecc (2026-09-11); its
+        docstring says *owner_id* never filters. Written as the opposite, and
+        inverted rather than deleted so a return to per-owner scoping fails a
+        test instead of passing quietly. See tests/test_qa_usage.py ::
+        test_rows_are_reported_across_every_owner for the same note.
+        """
         await self._row(owner_id="someone-else", input_tokens=999)
-        self.assertEqual(await db.usage_series("admin", None, "day"), [])
+        rows = await db.usage_series("admin", None, "day")
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["requests"], 1)
 
 
 class ModelSeriesTests(_UsageFixture):
@@ -430,13 +438,23 @@ class AgentSeriesTests(_UsageFixture):
         self.assertEqual(names.get("s-named"), "cweb2 - supervisor plan")
         self.assertNotIn("s-unknown", names)
 
-    async def test_another_owners_conversation_does_not_name_an_agent(self):
+    async def test_another_owners_conversation_names_its_agent_too(self):
+        """Same d7b0ecc change, and the one with the most visible consequence:
+        usage_agent_names returns conversation *titles*, so an account-wide
+        reader puts another account's chat title on this account's chart.
+
+        That is the accepted design for a single-operator deployment. It is
+        spelled out here because a title is content, not just a number, and a
+        future reader should meet that fact in a test rather than discover it
+        on a dashboard.
+        """
         await db.chat_create(
             "c-theirs", "Their private title", None, "/tmp", "someone-else")
         await db.db_conn.execute(
             "UPDATE chats SET session_id = 's-theirs' WHERE id = 'c-theirs'")
         await db.db_conn.commit()
-        self.assertEqual(await db.usage_agent_names("admin", ["s-theirs"]), {})
+        self.assertEqual(await db.usage_agent_names("admin", ["s-theirs"]),
+                         {"s-theirs": "Their private title"})
 
 
 class SeriesEndpointTests(_UsageFixture):

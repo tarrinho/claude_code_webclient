@@ -222,9 +222,16 @@ class NarrowViewportTests(unittest.TestCase):
         name them. _drawMapWires must then fall back to the two-column path
         rather than drawing nothing."""
         css = STYLES.read_text(encoding="utf-8")
-        media = re.search(r"@media\(max-width:620px\)\s*\{(.*?)\n\}", css, re.DOTALL)
-        self.assertIsNotNone(media)
-        self.assertIn(".map-via", media.group(1))
+        # Every 620px block, not the first one. styles.css has had two since a
+        # second was added further down (line 693 as of 2026-09-14), and
+        # re.search returns the earlier one -- which does not contain .map-via
+        # and never did. The rule was still present at line 701 the whole time;
+        # the test was reading the wrong block, so it reported a hidden column
+        # as unhidden.
+        blocks = re.findall(r"@media\(max-width:620px\)\s*\{(.*?)\n\}",
+                            css, re.DOTALL)
+        self.assertTrue(blocks, "no @media(max-width:620px) block in styles.css")
+        self.assertIn(".map-via", "\n".join(blocks))
 
         js = MACHINES_JS.read_text(encoding="utf-8")
         body = re.search(

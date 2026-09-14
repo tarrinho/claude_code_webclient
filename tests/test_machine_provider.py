@@ -267,7 +267,17 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
         created = await db.ai_machine_get(machine_id, "admin")
         self.assertEqual(created["transport_id"], "t1")
 
-    async def test_create_with_someone_elses_transport_id_is_rejected(self):
+    async def test_create_with_someone_elses_transport_id_is_accepted(self):
+        """Transports became a shared pool on 2026-09-11: ssh_transport_get
+        takes an owner_id that "is accepted but no longer filters"
+        (routes/db_transports.py:44). This asserted a 404 and was right when
+        written; inverted rather than deleted so restoring per-owner scoping
+        fails a test instead of passing silently.
+
+        The unknown-id case below is the half that still matters -- the 404
+        must come from the id not existing, not from it belonging to someone
+        else, and asserting only the first case would not tell them apart.
+        """
         await db.ssh_transport_create(
             "t2", "Someone Else's", "not-admin", "10.0.0.9", "kali", "k"
         )
@@ -277,6 +287,13 @@ class MachineCreateProviderTests(unittest.IsolatedAsyncioTestCase):
                 "provider": "claude_code",
                 "transport_id": "t2",
             }
+        )
+        response = await machine_routes.handle_machine_create(request)
+        self.assertEqual(response.status_code, 200)
+
+    async def test_create_with_an_unknown_transport_id_is_still_rejected(self):
+        request = _make_request(
+            {"name": "y", "provider": "claude_code", "transport_id": "nope"}
         )
         with self.assertRaises(HTTPException) as ctx:
             await machine_routes.handle_machine_create(request)
@@ -325,11 +342,20 @@ class MachinePatchProviderTests(unittest.IsolatedAsyncioTestCase):
         machine = await db.ai_machine_get("m1", "admin")
         self.assertEqual(machine["transport_id"], "t1")
 
-    async def test_patch_with_someone_elses_transport_id_is_rejected(self):
+    async def test_patch_with_someone_elses_transport_id_is_accepted(self):
+        """The PATCH half of the shared-transport-pool change -- see
+        test_create_with_someone_elses_transport_id_is_accepted above."""
         await db.ssh_transport_create(
             "t2", "Someone Else's", "not-admin", "10.0.0.9", "kali", "k"
         )
         request = _make_request({"transport_id": "t2"})
+        response = await machine_routes.handle_machine_patch(request, "m1")
+        self.assertEqual(response.status_code, 200)
+        machine = await db.ai_machine_get("m1", "admin")
+        self.assertEqual(machine["transport_id"], "t2")
+
+    async def test_patch_with_an_unknown_transport_id_is_still_rejected(self):
+        request = _make_request({"transport_id": "nope"})
         with self.assertRaises(HTTPException) as ctx:
             await machine_routes.handle_machine_patch(request, "m1")
         self.assertEqual(ctx.exception.status_code, 404)

@@ -40,6 +40,14 @@ class QaRunApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(self.password))
+        # user_create returns None and mints the id internally, so read it back.
+        # The route passes the session's *user id* to resolve_transport, not the
+        # login name -- app.py:231 has called auth.session_new(user["id"], ...)
+        # since login switched from name to id. Asserting on the literal "admin"
+        # is what made the two mock assertions below fail.
+        cur = await db.db_conn.execute(
+            "SELECT id FROM users WHERE name = ?", ("admin",))
+        self.admin_id = (await cur.fetchone())["id"]
         await db.ssh_transport_create(
             "t1", "One", "admin", "one.example.net", "kali", "~/.ssh/id_ed25519")
 
@@ -65,19 +73,41 @@ class QaRunApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 409)
         self.assertIn("no live tunnel", resp.text)
 
-    async def test_a_transport_owned_by_someone_else_is_not_found(self):
-        """resolve_transport itself is owner-scoped (it reads via
-        db.ssh_transports_list(owner)) -- this pins that a second user's
-        request against the first user's transport name gets treated the
-        same as a nonexistent one, never leaks whether the name exists."""
+    async def test_a_transport_created_by_someone_else_is_reachable(self):
+        """Transports are a shared pool, not per-owner property.
+
+        This test used to assert the opposite -- that another account's
+        transport name 404s -- and it was right when it was written. On
+        2026-09-11 the scoping was deliberately removed:
+        `routes/db_transports.py:44` records that `owner_id` "is accepted but
+        no longer filters -- transports are a shared pool across every account",
+        and `ssh_transports_list` and `ssh_transport_update` say the same.
+        `resolve_transport` reads through `db.ssh_transports_list(owner)`, so
+        it inherited the change.
+
+        The old assertion kept passing by accident for three days: it looked
+        for 404 and any refusal ahead of the backend check would have given
+        one. What it actually gets now is 400 "One has no backend assigned" --
+        the *next* check along, which only runs once the name has already
+        resolved. So the failure was the test noticing a contract change, not
+        an access-control hole. Asserting the reachable case keeps that visible:
+        if scoping is ever restored, this fails rather than silently passing.
+        """
         other_password = secrets.token_urlsafe(16)
         await db.user_create("other", None, auth.hash_password(other_password))
         client = _client()
         resp = client.post("/login", json={"username": "other", "password": other_password})
+        self.assertEqual(resp.status_code, 200, resp.text)
         headers = {"X-CSRF-Token": client.cookies.get("wc_csrf")}
 
         resp = client.post("/api/qa/run", json={"transport": "One"}, headers=headers)
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("no backend assigned", resp.text)
+
+        # And a name nobody created still 404s -- the refusal above is about
+        # the backend, not about the lookup having quietly stopped working.
+        resp = client.post("/api/qa/run", json={"transport": "Nope"}, headers=headers)
+        self.assertEqual(resp.status_code, 404, resp.text)
 
     async def test_successful_run_streams_events_in_order(self):
         prepared = qa_remote.Prepared(
@@ -106,7 +136,7 @@ class QaRunApiTests(unittest.IsolatedAsyncioTestCase):
             AsyncMock(side_effect=qa_remote.QaRefusal(503, "none qualify")),
         ) as mocked:
             client.post("/api/qa/run", json={}, headers=headers)
-        mocked.assert_awaited_once_with("admin", None)
+        mocked.assert_awaited_once_with(self.admin_id, None)
 
     async def test_a_non_object_json_body_is_treated_like_an_empty_one(self):
         """A valid-but-non-object body (e.g. a JSON array or a bare number)
@@ -122,7 +152,7 @@ class QaRunApiTests(unittest.IsolatedAsyncioTestCase):
                 headers={**headers, "Content-Type": "application/json"},
             )
         self.assertNotEqual(resp.status_code, 500)
-        mocked.assert_awaited_once_with("admin", None)
+        mocked.assert_awaited_once_with(self.admin_id, None)
 
     async def test_an_exception_mid_run_reaches_the_client_as_run_done(self):
         prepared = qa_remote.Prepared(

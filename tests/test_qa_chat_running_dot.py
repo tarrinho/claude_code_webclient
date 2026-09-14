@@ -165,9 +165,33 @@ class ChatRunningDotBrowserTests(_BrowserFixture):
         self.assertIsNotNone(row, f"chat {chat_id} is not in the list at all")
         return row.query_selector(".chat-running") is not None
 
-    def test_running_agents_each_get_their_own_dot(self):
+    def _wait_for_dots(self):
+        """Block until the running dots have been applied to the rendered list.
+
+        Waiting on the c3 row alone is not enough, and that is what made these
+        tests flaky: the rows are rendered first and the running dots are
+        applied on a later tick, so an assertion fired immediately after the
+        row appears sometimes reads the list mid-decoration. Measured
+        2026-09-14 -- the same single test passed, failed, then passed again
+        over three consecutive runs with no code change in between.
+
+        A dot arriving one tick after its row is not something a person can
+        perceive, so this is a defect in the test's timing assumption and not
+        in the indicator. Waiting for the last dot rather than sleeping keeps
+        the test fast when it is fast, and the negative assertions stay
+        meaningful because the dots are applied to the whole list in one pass:
+        once c2's dot is present, c3's absence is a decision rather than a
+        race.
+        """
         self.page.wait_for_selector(
             f'{self.DESKTOP} .chat-item[data-chat-id="c3"]', timeout=15_000)
+        for chat_id in ("c1", "c2"):
+            self.page.wait_for_selector(
+                f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] '
+                f'.chat-running', timeout=15_000)
+
+    def test_running_agents_each_get_their_own_dot(self):
+        self._wait_for_dots()
         self.assertTrue(self._has_dot("c1"), "c1 is running and must show the dot")
         self.assertTrue(self._has_dot("c2"), "c2 is running and must show the dot")
         self.assertFalse(self._has_dot("c3"), "c3 is idle and must not show one")
@@ -180,8 +204,7 @@ class ChatRunningDotBrowserTests(_BrowserFixture):
         caught by asserting the count matches the number of running chats,
         not just that each individually named one has one.
         """
-        self.page.wait_for_selector(
-            f'{self.DESKTOP} .chat-item[data-chat-id="c3"]', timeout=15_000)
+        self._wait_for_dots()
         dots = self.page.query_selector_all(f'{self.DESKTOP} .chat-running')
         self.assertEqual(len(dots), 2)
 
@@ -191,8 +214,7 @@ class ChatRunningDotBrowserTests(_BrowserFixture):
         so this also proves the disappearance is per-row, not the list
         deciding nothing is running anymore.
         """
-        self.page.wait_for_selector(
-            f'{self.DESKTOP} .chat-item[data-chat-id="c3"]', timeout=15_000)
+        self._wait_for_dots()
         self.assertTrue(self._has_dot("c1"))
 
         self._payload["chats"][0]["running"] = False

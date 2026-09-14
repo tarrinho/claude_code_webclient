@@ -58,11 +58,21 @@ class OrchestratorSubRouteTests(unittest.IsolatedAsyncioTestCase):
         await db.user_create(
             "bob", None, auth.hash_password(self.passwords["bob"]), role="user"
         )
+        # The owner column holds a user *id*, not a login name: app.py:231 has
+        # called auth.session_new(user["id"], ...) since login switched from
+        # name to id, so every owner-scoped read compares against a UUID.
+        # Seeding the orchestrator with the literal "alice" made it belong to
+        # nobody -- bob saw no tasks (right answer, wrong reason) and alice saw
+        # none either, which is what test_tasks_get_is_owner_scoped caught.
+        cur = await db.db_conn.execute(
+            "SELECT name, id FROM users WHERE name IN ('alice', 'bob')")
+        self.user_ids = {r["name"]: r["id"] for r in await cur.fetchall()}
         self.orchestrator_id = uuid.uuid4().hex
 
     async def _create_orchestrator(self):
         await db_orchestrators.orchestrator_create(
-            self.orchestrator_id, "Test supervisor", "desc", "alice", None,
+            self.orchestrator_id, "Test supervisor", "desc",
+            self.user_ids["alice"], None,
         )
 
     def _login(self, who: str):

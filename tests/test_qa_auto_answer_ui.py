@@ -109,8 +109,32 @@ class AutoAnswerUiTests(unittest.TestCase):
             self.app,
         )
 
+    def _body_after(self, opener, closer="\n}\n"):
+        """The source of *opener*'s block, bounded by its closing brace.
+
+        These assertions used to take a fixed character window --
+        `split(opener, 1)[1][:2000]` -- which silently stops meaning anything
+        the moment the function grows past the window. Measured 2026-09-14:
+        updateCurrentUi is 2,634 characters, so the 2,000-character window cut
+        off before the startAutoAnswerPolling() call and the test failed while
+        the call was still there at app.js:852. The Escape handler failed the
+        same way against an 800-character window on a 1,691-character handler.
+
+        A window that is too small reports a defect that does not exist; one
+        made "safely large" runs into the next function and reports a passing
+        test for a string that belongs to different code. Bounding on the
+        closing brace has neither failure mode.
+        """
+        self.assertIn(opener, self.app, f"{opener} is gone from app.js")
+        body = self.app.split(opener, 1)[1].split(closer, 1)[0]
+        self.assertNotEqual(body, self.app.split(opener, 1)[1],
+                            f"no {closer!r} found after {opener} -- the block "
+                            "was not bounded and the assertions below would "
+                            "search the rest of the file")
+        return body
+
     def test_polling_starts_when_a_chat_is_selected(self):
-        body = self.app.split("function updateCurrentUi(chat)", 1)[1][:2000]
+        body = self._body_after("function updateCurrentUi(chat)")
         self.assertIn("startAutoAnswerPolling()", body)
 
     def test_the_controls_are_cleared_on_deselect(self):
@@ -126,13 +150,13 @@ class AutoAnswerUiTests(unittest.TestCase):
         eligibility rule as db.chats_with_auto_answer. Showing an armed-looking
         toggle here would be a control that looks live and can never fire.
         """
-        body = self.app.split("async function refreshAutoAnswer()", 1)[1][:600]
+        body = self._body_after("async function refreshAutoAnswer()")
         self.assertIn("chat.session_id", body)
         self.assertIn("toggle.hidden = true", body)
 
     def test_escape_closes_the_menu_and_restores_focus(self):
         """The mobile spec's rule for any menu/drawer/dialog."""
-        block = self.app.split("document.addEventListener('keydown'", 1)[1][:800]
+        block = self._body_after("document.addEventListener('keydown'", "\n});")
         self.assertIn("autoAnswerMenu", block)
         self.assertIn("closeAutoAnswerMenu()", block)
         self.assertIn("byId('autoAnswerInfo')?.focus()", block)

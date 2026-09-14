@@ -66,13 +66,36 @@ async (transitions) => {
     setAttribute(){}, addEventListener(){}, removeEventListener(){},
     hidden: false, scrollHeight: 20, value: '',
   });
-  const elements = {
+  // Named explicitly: the ones the assertions read back.
+  const declared = {
     messages: Object.assign(make(), {addEventListener(){}}),
     composerInput: make(), modelPicker: make(), sendButton: make(),
     retryButton: make(), jumpButton: make(), runState: make(),
     composerStatus: make(), queueBar: make(), queueList: make(),
     queueTag: make(), queueNote: make(),
   };
+  // Anything else the controller reaches for gets a stub on demand.
+  //
+  // This list used to be the whole fixture, and it went stale: 850880f
+  // (2026-09-10) added a refresh button to the composer toolbar, so
+  // createConversationController began calling
+  // elements.refreshChatBtn.addEventListener and every test in this file died
+  // on "Cannot read properties of undefined (reading 'addEventListener')".
+  // Nothing about a refresh button has anything to do with whether a turn
+  // reports that it finished, which is all this file measures -- so the
+  // fixture should not be a tripwire for unrelated composer changes.
+  //
+  // The cost, stated rather than hidden: an element the controller needs but
+  // index.html does not define would be stubbed here instead of failing.
+  // That property is covered elsewhere -- tests/test_qa_queue_button.py
+  // asserts app.js wires each name into its elements dict -- and it was never
+  // what this file was checking.
+  const elements = new Proxy(declared, {
+    get(target, key) {
+      if (!(key in target) && typeof key === 'string') target[key] = make();
+      return target[key];
+    },
+  });
   const state = {};
   const controller = mod.createConversationController({
     state, elements,

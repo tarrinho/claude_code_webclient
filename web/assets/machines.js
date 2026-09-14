@@ -27,7 +27,7 @@ import {_transports, loadTransports, populateTransportPicker,
   // Check / Init on the transport header -- see _buildTransportHeader.
   _checkTransport, _initTransport,
   // Sync + its pending-request queue; see _buildTransportHeader.
-  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=8330273';
+  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=6434176';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the

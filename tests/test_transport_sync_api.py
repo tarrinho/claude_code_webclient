@@ -32,13 +32,22 @@ class TransportSyncApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.password = secrets.token_urlsafe(16)
         await db.user_create("admin", None, auth.hash_password(self.password))
+        # The owner column holds a user id, not a login name. The routes
+        # resolve the session to a UUID, and sync_request_get is genuinely
+        # owner-scoped ("WHERE id = ? AND owner_id = ?", db_transport_sync.py:38)
+        # -- unlike transports, which stopped filtering on 2026-09-11. Seeding
+        # the requests with the literal "admin" therefore made every approve
+        # and reject 404 "Sync request not found".
+        cur = await db.db_conn.execute(
+            "SELECT id FROM users WHERE name = ?", ("admin",))
+        self.owner_id = (await cur.fetchone())["id"]
         self.transport_id = "t1"
         await db.ssh_transport_create(
-            self.transport_id, "Kali3", "admin", "kali-3.example.net", "kali",
-            "~/.ssh/id_ed25519",
+            self.transport_id, "Kali3", self.owner_id, "kali-3.example.net",
+            "kali", "~/.ssh/id_ed25519",
         )
         await db.ai_machine_create(
-            "m1", "Kali3 backend", "", 0, None, "", None, None, "admin",
+            "m1", "Kali3 backend", "", 0, None, "", None, None, self.owner_id,
             transport_id=self.transport_id,
         )
 
@@ -107,7 +116,7 @@ class TransportSyncApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.json(), {"requests": []})
 
     async def test_approve_runs_the_sync_and_resolves_done(self):
-        req_id = await db.sync_request_create(self.transport_id, "admin", "cweb-remote")
+        req_id = await db.sync_request_create(self.transport_id, self.owner_id, "cweb-remote")
         client, headers = self._login()
         fake_result = {"ok": True, "files_changed": 5, "reason": "", "head_sha": "sha456"}
         with (
@@ -119,12 +128,12 @@ class TransportSyncApiTests(unittest.IsolatedAsyncioTestCase):
                 headers=headers,
             )
         self.assertEqual(resp.status_code, 200, resp.text)
-        row = await db.sync_request_get(req_id, "admin")
+        row = await db.sync_request_get(req_id, self.owner_id)
         self.assertEqual(row["status"], "done")
         self.assertEqual(row["files_changed"], 5)
 
     async def test_reject_pushes_nothing(self):
-        req_id = await db.sync_request_create(self.transport_id, "admin", "cweb-remote")
+        req_id = await db.sync_request_create(self.transport_id, self.owner_id, "cweb-remote")
         client, headers = self._login()
         sync_called = AsyncMock()
         with patch("transport_sync.sync_transport", sync_called):
@@ -134,11 +143,11 @@ class TransportSyncApiTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(resp.status_code, 200, resp.text)
         sync_called.assert_not_awaited()
-        row = await db.sync_request_get(req_id, "admin")
+        row = await db.sync_request_get(req_id, self.owner_id)
         self.assertEqual(row["status"], "rejected")
 
     async def test_cannot_approve_an_already_resolved_request(self):
-        req_id = await db.sync_request_create(self.transport_id, "admin", "cweb-remote")
+        req_id = await db.sync_request_create(self.transport_id, self.owner_id, "cweb-remote")
         await db.sync_request_resolve(req_id, "rejected")
         client, headers = self._login()
         resp = client.post(

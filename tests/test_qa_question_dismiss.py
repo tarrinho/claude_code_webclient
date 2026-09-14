@@ -240,8 +240,17 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
         attributable, or a session that stopped waiting has no explanation
         anywhere for why."""
         import app
+        # chat_set_question_ids is patched because the success path is the only
+        # one that reaches it: every other test in this file stops at a 409
+        # first. It was added to the handler in c42710c (2026-09-11) to clear
+        # the UI bar, and this test kept calling into a module whose db_conn is
+        # None -- AttributeError on NoneType, not a routing failure. Asserting
+        # the call rather than only silencing it pins the clearing behaviour,
+        # which is the visible half of a dismissal.
+        clear = AsyncMock()
         with patch.object(app.db, "chat_get",
                           AsyncMock(return_value={"session_id": "s1"})), \
+             patch.object(app.db, "chat_set_question_ids", clear), \
              patch.object(transcripts, "pending_question",
                           return_value=dict(self.PENDING)), \
              patch.object(prompts, "find_target",
@@ -251,6 +260,9 @@ class DismissAPIQA(unittest.IsolatedAsyncioTestCase):
              self.assertLogs("wc.app", level="INFO") as logs:
             response = await chat_routes.handle_chat_question_dismiss(self._req())
         self.assertEqual(response.status_code, 200)
+        clear.assert_awaited_once()
+        self.assertEqual(clear.await_args.args[1], [],
+                         "a dismissal must clear the pending question ids")
         self.assertTrue(json.loads(response.body)["dismissed"])
         line = "\n".join(logs.output)
         self.assertIn("question_dismissed", line)

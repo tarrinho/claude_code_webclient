@@ -306,12 +306,29 @@ class IntegrationQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(overall["input_tokens"], 157)
         self.assertEqual(overall["models"], 2)
 
-    async def test_rows_are_scoped_to_their_owner(self):
+    async def test_rows_are_reported_across_every_owner(self):
+        """Usage reporting is deliberately account-wide since d7b0ecc
+        (2026-09-11, "usage/statistics endpoints report across all accounts,
+        not per-owner"). Every reader in routes/db_usage.py says so in its own
+        docstring: *owner_id* "is accepted for a stable signature but never
+        filters".
+
+        This test asserted the opposite -- 10 for admin, 999 for bob, nothing
+        for carol -- and was correct when written. Inverting it rather than
+        deleting it keeps the change visible: if per-owner scoping is ever
+        restored, this fails instead of the suite silently agreeing with
+        whichever behaviour happens to be in place.
+
+        The owner column is still written and still identifies who spent what;
+        what changed is that the aggregate readers do not filter on it.
+        """
         await db.usage_record("c1", "admin", "m", "claude_code", input_tokens=10)
         await db.usage_record("c1", "bob", "m", "claude_code", input_tokens=999)
-        self.assertEqual((await db.usage_overall("admin"))["input_tokens"], 10)
-        self.assertEqual((await db.usage_overall("bob"))["input_tokens"], 999)
-        self.assertEqual(await db.usage_totals("carol"), [])
+        total = 10 + 999
+        self.assertEqual((await db.usage_overall("admin"))["input_tokens"], total)
+        self.assertEqual((await db.usage_overall("bob"))["input_tokens"], total)
+        # Even an account that spent nothing sees the shared totals.
+        self.assertNotEqual(await db.usage_totals("carol"), [])
 
     async def test_incomplete_rows_are_refused(self):
         self.assertIsNone(await db.usage_record("", "admin", "m", "claude_code"))
@@ -514,12 +531,22 @@ class ComponentAPIQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len((await self._get({"limit": "99999"}))["recent"]), 4)
         self.assertGreaterEqual(len((await self._get({"limit": "nope"}))["recent"]), 1)
 
-    async def test_one_user_cannot_see_another_users_usage(self):
+    async def test_the_endpoint_reports_every_users_usage(self):
+        """The HTTP half of the same d7b0ecc change -- see
+        test_rows_are_reported_across_every_owner above for why this reads the
+        opposite way round to how it was written.
+
+        Worth being explicit about what this means operationally: any
+        logged-in account can see the whole host's spend, including the model
+        names another account used. That is the accepted design for a
+        single-operator deployment, not an oversight, and the test says so
+        rather than leaving a reader to guess from a passing assertion.
+        """
         await db.usage_record("c1", "bob", "secret-model", "claude_code",
                               input_tokens=4242)
         body = await self._get()
-        self.assertEqual(body["overall"]["requests"], 0)
-        self.assertNotIn("secret-model", json.dumps(body))
+        self.assertEqual(body["overall"]["requests"], 1)
+        self.assertIn("secret-model", json.dumps(body))
 
     async def test_no_credential_appears_in_the_response(self):
         await db.ai_machine_create("m1", "GW", "llm.invalid", 443, "super-secret",

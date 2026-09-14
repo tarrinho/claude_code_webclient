@@ -289,6 +289,30 @@ class SessionWakeTests(unittest.TestCase):
                 self.assertNotIn(marker, leaked,
                                  f"{marker} reached the woken session")
 
+    def test_the_record_carries_the_name_wake_needs(self):
+        """The standby record keeps the friendly name, and wake must not lose
+        it.
+
+        A note in 2083f6d claimed wake could not restore the name -- cweb2 was
+        observed coming back as "projects-9b" while cweb4 kept "cweb4". That
+        was wrong: the reading was taken about twelve seconds after launch,
+        before the CLI finished its own naming handshake. Re-checked later,
+        both were correctly named with nameSource "user", and stayed so.
+
+        So there is nothing for wake to restore -- the CLI resolves the name
+        from the resumed session itself. What wake must not do is *lose* the
+        name from the record before a launch succeeds, which the failure-path
+        test beside this one already covers. This test pins the record's own
+        shape so a future change cannot quietly drop the field and make the
+        earlier, mistaken conclusion true.
+        """
+        import json as _json
+        record = self._record(name="cwebtest")
+        data = _json.loads(record.read_text())
+        self.assertEqual(data["name"], "cwebtest")
+        self.assertIn("sessionId", data)
+        self.assertIn("cwd", data)
+
 
 if __name__ == "__main__":
     unittest.main()

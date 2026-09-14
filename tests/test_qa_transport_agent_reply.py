@@ -85,13 +85,13 @@ class BuildRemoteReplyCommandTests(unittest.TestCase):
         """
         cmd = transcripts.build_remote_reply_command(
             str(ROOT), "no-such-session-xyz", "hello")
-        # Strip the leading `cd <path> && ` so this runs here rather than
-        # depending on a shell that honours $HOME the way sshd does.
-        script = cmd.split("&& ", 1)[1]
-        assert script.startswith("python3 -c ")
-        body = script[len('python3 -c "'):-1]
+        # The whole command is run through a shell, not just the python body.
+        # It now selects its interpreter on the far side (venv if present, else
+        # python3), and that selection is part of what has to work -- an
+        # earlier version of this test sliced the string at `python3 -c ` and
+        # would have broken on the fix rather than checking it.
         result = subprocess.run(
-            [sys.executable, "-c", body],
+            ["sh", "-c", cmd],
             capture_output=True, text=True, cwd=str(ROOT), timeout=60,
         )
         self.assertNotIn("NameError", result.stderr)
@@ -100,6 +100,39 @@ class BuildRemoteReplyCommandTests(unittest.TestCase):
         self.assertIn("ok", payload)
         self.assertFalse(payload["ok"])
         self.assertIn("no session named", payload.get("reason", ""))
+
+    def test_it_prefers_a_venv_interpreter_when_the_host_has_one(self):
+        """The design's §1 pseudo-code specifies `{remote_venv}/bin/python`;
+        the shipped command hardcoded `python3`.
+
+        It works on both transports provisioned so far, because neither has a
+        venv at its remote_path and both have aiosqlite under system python --
+        but `transcripts` imports `db`, which imports `aiosqlite`, so a host
+        that carries its dependencies in a venv instead would fail with
+        ModuleNotFoundError inside an SSH one-liner, on a machine nobody is
+        watching. That is the shape of the 2026-09-12 outage.
+
+        Resolved on the far side rather than here, because only that host knows
+        whether it has a venv. Same preference order and fallback as
+        bin/wc-proxy-start.sh, which is the house pattern for this since
+        92af2e1.
+        """
+        cmd = transcripts.build_remote_reply_command("~/p", "target", "text")
+        self.assertIn(".venv/bin/python", cmd)
+        self.assertIn("python3", cmd, "must still fall back on a host with no venv")
+        # The selection happens before the interpreter runs, so the command
+        # cannot have committed to a literal `python3 -c` invocation.
+        self.assertNotIn('&& python3 -c', cmd)
+
+    def test_the_interpreter_choice_adds_no_injection_surface(self):
+        """The added shell logic must carry no caller-supplied data -- the
+        payload stays the only variable part, and it stays base64."""
+        cmd = transcripts.build_remote_reply_command(
+            "~/p", "'; rm -rf ~ #", "also '; rm -rf ~ #")
+        self.assertNotIn("rm -rf", cmd)
+        head = cmd.split("-c ", 1)[0]
+        self.assertNotIn("$(", head)
+        self.assertNotIn("`", head)
 
     def test_base64_alphabet_has_no_shell_metacharacters(self):
         # Defence in depth: even if the surrounding quoting were ever changed,

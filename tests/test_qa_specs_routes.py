@@ -18,8 +18,11 @@ import routes.specs as specs_routes
 import specs_gallery
 
 
-def _request(role="user"):
-    return SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": role}))
+def _request(role="user", query=None):
+    return SimpleNamespace(
+        state=SimpleNamespace(session={"user": "admin", "role": role}),
+        query_params=query or {},
+    )
 
 
 class _RealSpecsRootMixin:
@@ -107,6 +110,25 @@ class ContentRouteTests(_RealSpecsRootMixin, unittest.IsolatedAsyncioTestCase):
         spec_id = specs_gallery.encode_id("docs/superpowers/specs/2026-01-01-a-design.md")
         resp = await specs_routes.handle_spec_content(_request(), spec_id)
         self.assertIn(b"A Design", resp.body)
+
+    async def test_format_raw_returns_the_unrendered_markdown(self):
+        """The copy-to-clipboard button needs real markdown, not the HTML
+        the gallery renders it into -- the literal '# ' heading marker must
+        survive, which it would not if this were rendered."""
+        spec_id = specs_gallery.encode_id("docs/superpowers/specs/2026-01-01-a-design.md")
+        resp = await specs_routes.handle_spec_content(
+            _request(query={"format": "raw"}), spec_id)
+        self.assertEqual(resp.body, b"# A Design\n\nbody text\n")
+
+    async def test_format_raw_still_enforces_the_membership_check(self):
+        """The raw path reuses the same decode/membership guard as the
+        rendered path -- it must not become a second way to read any file
+        in the repo."""
+        spec_id = specs_gallery.encode_id("config.py")
+        with self.assertRaises(HTTPException) as ctx:
+            await specs_routes.handle_spec_content(
+                _request(query={"format": "raw"}), spec_id)
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 class DeleteRouteTests(_RealSpecsRootMixin, unittest.IsolatedAsyncioTestCase):

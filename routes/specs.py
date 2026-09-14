@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 import db
 import specs_gallery
@@ -90,7 +90,12 @@ async def handle_specs_list(request: Request):
 
 
 async def handle_spec_content(request: Request, spec_id: str):
-    """GET /api/specs/{id}/content -- one spec's content, rendered."""
+    """GET /api/specs/{id}/content -- one spec's content, rendered.
+
+    ``?format=raw`` returns the unrendered markdown source as plain text
+    instead -- for the viewer's copy-to-clipboard button, which needs the
+    real markdown (headings, fenced code, links) rather than the HTML the
+    gallery renders it into."""
     session = request.state.session
     path = specs_gallery.decode_id(spec_id, _REPO_ROOT)
     # _is_known_spec re-scans the whole tree (discover_specs), same blocking
@@ -105,6 +110,8 @@ async def handle_spec_content(request: Request, spec_id: str):
             )
         raise HTTPException(status_code=404, detail="Spec not found")
     text = path.read_text(encoding="utf-8", errors="replace")
+    if request.query_params.get("format") == "raw":
+        return PlainTextResponse(text)
     return HTMLResponse(specs_gallery.render_markdown(text))
 
 

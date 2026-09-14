@@ -2129,4 +2129,22 @@ def build_remote_reply_command(remote_path: str, target: str, text: str) -> str:
         f"d=json.loads(base64.b64decode('{payload}'));"
         "print(json.dumps(transcripts.agent_reply_to(d['to'], d['text'])))"
     )
-    return f"cd {resolved_path} && python3 -c \"{script}\""
+    # The interpreter is chosen on the far side, because only that host knows
+    # whether it has a venv. The design's §1 specifies
+    # `{remote_venv}/bin/python`; this shipped as a hardcoded `python3`, which
+    # works on both transports provisioned so far only because neither has a
+    # venv at its remote_path and both carry aiosqlite under system python.
+    # `transcripts` imports `db`, which imports `aiosqlite`, so a host that
+    # keeps its dependencies in a venv instead would fail with
+    # ModuleNotFoundError inside an SSH one-liner -- the 2026-09-12 outage's
+    # shape, on a machine nobody is watching.
+    #
+    # Prefer-then-fall-back rather than require, matching bin/wc-proxy-start.sh
+    # (92af2e1): a transport with no venv is the normal case today and must
+    # keep working. POSIX sh, no arrays -- a transport is someone else's
+    # machine and bash is not guaranteed.
+    #
+    # No caller data reaches this fragment; the payload above stays the only
+    # variable part of the command, and it stays base64.
+    select_py = 'P=python3; [ -x .venv/bin/python ] && P=.venv/bin/python;'
+    return f"cd {resolved_path} && {select_py} \"$P\" -c \"{script}\""

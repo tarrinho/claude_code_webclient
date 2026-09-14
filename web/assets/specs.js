@@ -165,10 +165,30 @@ async function _openSpec(spec) {
     byId('specViewerContent').innerHTML = clean;
     var statusSelect = byId('specViewerStatus');
     if (statusSelect) _wireStatusSelect(statusSelect, spec);
+    var copyBtn = byId('specViewerCopy');
+    if (copyBtn) copyBtn.onclick = () => _copySpecMarkdown(spec, copyBtn);
     byId('specViewerDialog').classList.add('open');
   } catch {
     // Silent: same fallback stance as images.js -- a failed open leaves
     // the list intact rather than surfacing a broken viewer.
+  }
+}
+
+/** Copy a spec's raw markdown source (not the rendered HTML) to the
+ *  clipboard -- ?format=raw on the same content endpoint the viewer
+ *  already fetched, so headings/code fences/links paste as real markdown
+ *  rather than as whatever the rendered HTML's plain text would read as. */
+async function _copySpecMarkdown(spec, button) {
+  try {
+    const response = await apiFetch(`/api/specs/${encodeURIComponent(spec.id)}/content?format=raw`);
+    if (!response.ok) throw new Error('Could not load spec content');
+    const text = await response.text();
+    await navigator.clipboard.writeText(text);
+    const original = button.textContent;
+    button.textContent = 'Copied';
+    setTimeout(() => { button.textContent = original; }, 1500);
+  } catch (error) {
+    notifyResult(error.message || 'Could not copy to clipboard', 'error');
   }
 }
 

@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
-# Print the command to resume a session that wc-session-standby.sh suspended.
+# Launch a resumed Claude session inside a detached screen window.
 #
-# Deliberately prints rather than execs: a resumed `claude` needs an
-# interactive terminal someone is actually attached to, and this script has no
-# way to hand its own terminal to a different session or open a new window on
-# the user's behalf. `eval "$(...)"` in the terminal you want it in is the
-# user's call, not this script's.
+# Reads the standby record written by wc-session-standby.sh and starts
+# `claude --resume` inside `screen -d -m` so the session survives
+# independently of the webconsole or any terminal.
 #
-# JSON via python3, not jq: jq is not installed on this host and python3
-# already is (every other bin/ script that touches JSON uses it).
+# If a screen window for the same session name already exists, reuses it
+# instead of creating a second one.
+#
+# JSON via python3, not jq: jq is not installed on this host.
 set -uo pipefail
 
 STANDBY_DIR="${HOME}/.claude/standby"
 
 usage() {
     echo "Usage: $(basename "$0") <name>" >&2
-    echo "  Prints the command to resume a session wc-session-standby.sh suspended." >&2
-    echo "  Run it yourself in the terminal you want the session back in." >&2
     exit 2
 }
 
 [ $# -eq 1 ] || usage
 name="$1"
+
+if ! command -v screen >/dev/null 2>&1; then
+    echo "screen is not installed — cannot launch detached session" >&2
+    exit 1
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 is required (standby records are JSON)" >&2
@@ -31,41 +34,73 @@ fi
 record="${STANDBY_DIR}/${name}.json"
 if [ ! -f "$record" ]; then
     echo "no standby record for '${name}' at ${record}" >&2
-    echo "(only sessions suspended by wc-session-standby.sh are tracked here)" >&2
     exit 1
 fi
 
-eval "$(python3 -c "
-import json, shlex
-d = json.load(open('${record}'))
-print('session_id=' + shlex.quote(str(d.get('sessionId', ''))))
-print('cwd=' + shlex.quote(str(d.get('cwd', ''))))
-print('standby_at=' + shlex.quote(str(d.get('standbyAt', ''))))
-")"
+# Parse the record. python3 writes to a temp file so we can read it without
+# shell quoting issues (paths may contain spaces, newlines, etc.).
+tmpvals=$(mktemp)
+trap 'rm -f "$tmpvals"' EXIT
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+sid = d.get('sessionId') or ''
+c   = d.get('cwd') or ''
+t   = d.get('standbyAt') or ''
+with open(sys.argv[2], 'w') as f:
+    print(sid, file=f)
+    print(c, file=f)
+    print(t, file=f)
+" "$record" "$tmpvals"
+
+session_id=$(sed -n '1p' "$tmpvals")
+cwd=$(sed -n '2p' "$tmpvals")
 
 if [ -z "$session_id" ]; then
-    echo "standby record ${record} has no sessionId -- refusing to print" >&2
-    echo "'claude --resume' with an empty id, which cannot resume anything." >&2
+    echo "standby record ${record} has no sessionId" >&2
     exit 1
 fi
 
-echo "# '${name}' was put on standby at ${standby_at}" >&2
-echo "# session id: ${session_id}" >&2
-if [ -n "$cwd" ]; then
-    echo "cd $(printf '%q' "$cwd") && claude --resume ${session_id}"
-else
-    echo "claude --resume ${session_id}"
+# Reuse an existing screen session with the same name, or launch a new one.
+if screen -ls 2>/dev/null | grep -q "(${name}\s*(Detached))"; then
+    echo "screen window '${name}' already exists — the session is running." >&2
+    echo "Reattach with: screen -r ${name}" >&2
+    rm -f "$record"
+    exit 0
 fi
 
-# The record is deliberately kept. This script prints rather than execs --
-# see the header -- so it cannot know whether the command it printed was ever
-# run, and it used to `rm -f "$record"` here regardless. Close the terminal
-# without running the line, or lose it in scrollback, and the only pointer
-# back to a suspended session was gone with it.
+# Build and launch the command.
+if [ -n "$cwd" ]; then
+    launch="cd \"$cwd\" && claude --resume \"$session_id\""
+else
+    launch="claude --resume \"$session_id\""
+fi
+echo "# launching: $launch" >&2
+
+# Through a shell, and the exit status is checked. Both halves were missing.
 #
-# The deletion was there to stop a stale cwd/session pairing resurfacing if
-# the name were later reused. That is the milder failure of the two: a stale
-# record prints a resume command that simply does not resume, which is
-# visible and recoverable, and standing the same name by again overwrites it.
-# Losing the session id is neither.
-echo "# record kept at ${record} -- re-run this if the resume did not happen" >&2
+# `screen -d -m -S name "$launch"` hands screen the whole string as a *program
+# name* to exec. `cd "/x" && claude --resume "..."` is not an executable, so
+# screen exits immediately and nothing is started. The script then printed
+# "launched in screen (detached)", exited 0, and deleted the record.
+#
+# Measured 2026-09-14 waking cweb2: that message, exit 0, no screen session,
+# and the standby record gone -- the operator told it worked, the pointer to
+# the session destroyed. The session was only recoverable because the id was
+# still on screen from the standby a few minutes earlier.
+#
+# `bash -c` because the command is shell syntax by construction (a cd and a
+# conditional), and `exec` so the shell is replaced by claude rather than
+# lingering as its parent.
+if ! screen -d -m -S "$name" bash -c "exec $launch"; then
+    echo "screen failed to start a session for '${name}'." >&2
+    echo "The standby record is kept at ${record} -- nothing was launched," >&2
+    echo "so the session is still recoverable." >&2
+    exit 1
+fi
+
+echo "Session '${name}' launched in screen (detached)." >&2
+echo "View it with: screen -r ${name}" >&2
+
+# Only after a launch that actually succeeded.
+rm -f "$record"

@@ -3,19 +3,11 @@
 wc-session-standby.sh SIGTERMs a session after writing
 ~/.claude/standby/<name>.json. That file is then the only pointer back: the
 process is gone, and the session id lives nowhere else a person would look.
-So this script printing the wrong command, or losing the record, costs the
-conversation it was meant to preserve. It had no tests.
+This script reads that record and launches `claude --resume` inside a detached
+`screen` window so the session survives independently.
 
-The defect these pin: the script `rm -f`s the record immediately after
-*printing* the resume command. It prints rather than execs on purpose -- its
-own header says a resumed `claude` needs an interactive terminal someone is
-attached to, "the user's call, not this script's" -- and then deletes the
-record as though the call had already been made. Close the terminal without
-running the line, or lose it in scrollback, and the pointer is gone.
-
-Keeping the record is the safer failure. A stale record prints a resume
-command that does not resume -- visible, recoverable, and overwritten the next
-time that name is stood by. A deleted record cannot be recovered at all.
+It also cleans up the record after launching (or reusing an existing screen
+window), so the same name cannot be stood by twice without a fresh standby.
 """
 from __future__ import annotations
 
@@ -56,68 +48,142 @@ class SessionWakeTests(unittest.TestCase):
             env=dict(os.environ, HOME=str(self.home)),
         )
 
-    def test_it_prints_a_resume_command_for_the_recorded_session(self):
+    def test_it_launches_a_screen_session_for_the_recorded_session(self):
         self._record()
         result = self._run()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"claude --resume {SESSION_ID}", result.stdout)
-        self.assertIn("cd /home/kali/projects", result.stdout)
-
-    def test_the_record_survives_being_printed(self):
-        """The defect. Printing is not resuming, and this script cannot tell
-        whether the command it printed was ever run."""
-        record = self._record()
-        self._run()
-        self.assertTrue(
-            record.is_file(),
-            "the standby record was deleted after merely printing the command; "
-            "if the user never ran it, the session has no pointer left",
+        # stdout is empty (screen does the work, not this script).
+        self.assertEqual(result.stdout, "")
+        # stderr confirms launch.
+        self.assertIn("launched in screen", result.stderr)
+        self.assertIn("screen -r", result.stderr)
+        # Record is deleted after launch.
+        self.assertFalse(
+            (self.standby / "cwebtest.json").is_file(),
+            "the standby record was not cleaned up after launching",
         )
 
-    def test_running_it_twice_gives_the_same_answer(self):
-        """Follows from the record surviving, and is the property a person
-        actually relies on -- scrollback is lost, terminals get closed."""
+    def test_the_record_is_deleted_after_launch(self):
+        """The record is transient — once launched, it cannot be used again."""
+        record = self._record()
+        self._run()
+        self.assertFalse(
+            record.is_file(),
+            "the standby record was not deleted after launching",
+        )
+
+    def test_running_it_twice_fails_second_time_no_record(self):
+        """The first call launches and deletes the record. The second call
+        finds no record and exits with an error (the session was already launched)."""
         self._record()
         first = self._run()
-        second = self._run()
         self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual(first.stdout, second.stdout)
+
+        # Second call: no record exists, script refuses to run.
+        second = self._run()
+        self.assertNotEqual(second.returncode, 0, second.stderr)
+        self.assertIn("no standby record", second.stderr)
 
     def test_a_missing_record_fails_clearly(self):
         result = self._run("nosuchsession")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no standby record", result.stderr)
 
-    def test_a_cwd_with_spaces_is_quoted(self):
+    def test_a_cwd_with_spaces_is_quoted_in_screen_command(self):
         """Unquoted, `cd /home/x/my project && claude ...` cds to the wrong
         directory and resumes the session against the wrong files."""
         self._record(cwd="/home/kali/my projects/thing")
         result = self._run()
         self.assertEqual(result.returncode, 0, result.stderr)
-        # printf %q escapes the space rather than wrapping the path in quotes,
-        # so the shape to assert is `my\ projects`, not a leading quote. The
-        # first version of this test looked for a quote character and failed
-        # against a correctly-quoted path.
-        self.assertNotIn("cd /home/kali/my projects/thing &&", result.stdout)
-        self.assertIn(r"my\ projects", result.stdout)
+        # The script echoes the launch command to stderr; paths with spaces
+        # are double-quoted so the cd lands in the right directory.
+        self.assertIn(r'"/home/kali/my projects/thing"', result.stderr)
 
     def test_a_record_with_no_cwd_still_resumes(self):
         self._record(cwd="")
         result = self._run()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"claude --resume {SESSION_ID}", result.stdout)
-        self.assertNotIn("cd ", result.stdout)
+        self.assertIn("launched in screen", result.stderr)
 
     def test_a_record_with_no_session_id_is_refused(self):
         """`claude --resume` with an empty id is not a resume command, and
-        printing one invites the user to run something that cannot work."""
+        launching one invites the user to run something that cannot work."""
         self._record(sid="")
         result = self._run()
         self.assertNotEqual(
             result.returncode, 0,
-            "printed a resume command with no session id: " + result.stdout,
+            "launched screen with no session id",
         )
+        self.assertIn("no sessionId", result.stderr)
+
+    def _fake_screen(self) -> Path:
+        """A `screen` on PATH that records its argv instead of running.
+
+        The suite asserted the message "launched in screen" and nothing else,
+        so a launch that never happened passed. Measured 2026-09-14: waking
+        cweb2 printed that line, exited 0, deleted the record -- and no screen
+        session existed, because `screen -d -m -S name "cd X && claude ..."`
+        hands screen the whole string as a *program name* to exec. There is no
+        such executable, screen exits, and the script never looked.
+        """
+        bindir = self.home / "fakebin"
+        bindir.mkdir(exist_ok=True)
+        script = bindir / "screen"
+        script.write_text(
+            "#!/bin/sh\n"
+            f'printf "%s\\n" "$@" > {self.home}/screen-argv\n'
+            "exit 0\n"
+        )
+        script.chmod(0o755)
+        return bindir
+
+    def test_the_command_reaches_screen_through_a_shell(self):
+        """`cd X && claude ...` is shell syntax, so something must interpret
+        it. Passed as screen's program argument it is just a filename that
+        does not exist."""
+        self._record()
+        import os
+        bindir = self._fake_screen()
+        subprocess.run(
+            ["bash", str(SCRIPT), "cwebtest"],
+            capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, HOME=str(self.home),
+                     PATH=f"{bindir}:{os.environ['PATH']}"),
+        )
+        argv = (self.home / "screen-argv").read_text().splitlines()
+        self.assertIn("-d", argv)
+        self.assertIn("-m", argv)
+        # The launched program must be a shell, with the command as its -c
+        # argument -- not the command itself standing in for a program.
+        self.assertTrue(
+            any(a.endswith(("sh", "bash")) for a in argv),
+            f"no shell in screen argv: {argv}",
+        )
+        self.assertIn("-c", argv)
+        self.assertTrue(
+            any("claude --resume" in a for a in argv),
+            f"resume command not passed to the shell: {argv}",
+        )
+
+    def test_a_failed_launch_is_not_reported_as_success(self):
+        """screen failing must not print 'launched' and must not delete the
+        record -- that combination is how a session is lost: the pointer is
+        gone and the operator has been told it worked."""
+        record = self._record()
+        import os
+        bindir = self.home / "failbin"
+        bindir.mkdir(exist_ok=True)
+        (bindir / "screen").write_text("#!/bin/sh\nexit 1\n")
+        (bindir / "screen").chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "cwebtest"],
+            capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, HOME=str(self.home),
+                     PATH=f"{bindir}:{os.environ['PATH']}"),
+        )
+        self.assertNotEqual(result.returncode, 0, "a failed launch exited 0")
+        self.assertTrue(record.is_file(),
+                        "the record was deleted after a failed launch")
 
 
 if __name__ == "__main__":

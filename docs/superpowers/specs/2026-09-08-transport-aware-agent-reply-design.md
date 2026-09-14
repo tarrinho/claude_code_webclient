@@ -29,9 +29,28 @@ provisioned transport has a venv (06b11e8). In both cases the spec was right
 and the implementation had drifted, which is the argument for auditing against
 the document rather than against the code's own comments.
 
-**Not built:** `remote_path` has no UI control -- it appears zero times in
-`web/assets/transports.js` and `web/index.html`, so the one setting an operator
-needs in order to point a transport at a real checkout is API-only.
+**Built 2026-09-14 (0a80437):** `remote_path` is now editable in the transport
+form. It had appeared zero times in `web/assets/transports.js` and
+`web/index.html`, so the one setting an operator needs in order to point a
+transport at a real checkout was API-only -- which is why provisioning the two
+working hosts required SSH rather than the console.
+
+Verified in a real browser:
+`TransportUIBrowserTests::test_editing_a_transport_prefills_the_form_with_its_current_values`
+fills the field, saves, reopens the form and asserts the value round-trips.
+Running it needed cweb2 stood down first -- this host sat at
+`resource_guard` capacity 0 with ~500MB free, and standby returned it to
+1016MB.
+
+Blank submits `~/wc-proxy` rather than an empty string, because POST
+substitutes that default itself while PATCH rejects an empty value
+(`routes/transports.py:158-160`), so one payload has to satisfy both verbs.
+
+Note `TransportUIBrowserTests` is flaky under load independently of this: two
+consecutive class runs failed 6 then 3 tests, with different members failing
+each time, while every one of them passes when run alone. The file's own
+comments already record measuring a save take over 10s "under that contention".
+Treat a class-level failure there as needing a second run before it is believed.
 
 ## Context
 

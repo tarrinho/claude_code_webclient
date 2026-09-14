@@ -39,6 +39,26 @@ import auth
 import config
 import db
 
+
+async def _owner_id(name: str) -> str:
+    """*name*'s real user id, for owner arguments on seeded rows.
+
+    A login name used to work on both sides of these tests. It still works for
+    a direct db.chat_get(chat_id, name), which is why those kept passing --
+    but not through an HTTP route: routes/chats.py resolves identity with
+    shared.owner_of(), which translates the name into this id. The route then
+    reads by uuid while the seeded row is owned by the string, finds nothing,
+    and answers 404.
+
+    See tests/conftest.py's shim comment for where that symmetry stops, and
+    4740d12 for the same fix applied to the voice suites.
+    """
+    import db as _db
+    row = await _db.user_get_by_name(name)
+    assert row, f"no user {name!r} -- create it before seeding rows"
+    return row["id"]
+
+
 HTTPS = "https://testserver"
 
 
@@ -87,10 +107,10 @@ class QuestionAccessTests(unittest.IsolatedAsyncioTestCase):
         work = f"{self.tmp.name}/p"
         # Alice has one conversation linked to a terminal session and one that
         # is not; Bob has one, which Alice must not be able to touch.
-        await db.chat_create("a-linked", "Alice linked", None, work, "alice")
+        await db.chat_create("a-linked", "Alice linked", None, work, await _owner_id("alice"))
         await db.chat_set_session("a-linked", "sess-alice")
-        await db.chat_create("a-loose", "Alice unlinked", None, work, "alice")
-        await db.chat_create("b-linked", "Bob's", None, work, "bob")
+        await db.chat_create("a-loose", "Alice unlinked", None, work, await _owner_id("alice"))
+        await db.chat_create("b-linked", "Bob's", None, work, await _owner_id("bob"))
         await db.chat_set_session("b-linked", "sess-bob")
 
     def _login(self, who: str):

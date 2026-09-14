@@ -48,6 +48,26 @@ import config
 import db
 import middleware
 
+
+async def _owner_id(name: str) -> str:
+    """*name*'s real user id, for owner arguments on seeded rows.
+
+    A login name used to work on both sides of these tests. It still works for
+    a direct db.chat_get(chat_id, name), which is why those kept passing --
+    but not through an HTTP route: routes/chats.py resolves identity with
+    shared.owner_of(), which translates the name into this id. The route then
+    reads by uuid while the seeded row is owned by the string, finds nothing,
+    and answers 404.
+
+    See tests/conftest.py's shim comment for where that symmetry stops, and
+    4740d12 for the same fix applied to the voice suites.
+    """
+    import db as _db
+    row = await _db.user_get_by_name(name)
+    assert row, f"no user {name!r} -- create it before seeding rows"
+    return row["id"]
+
+
 HTTPS = "https://testserver"
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -88,7 +108,7 @@ class ApiTokenBase(unittest.IsolatedAsyncioTestCase):
         await db.user_create(
             "bob", None, auth.hash_password(self.passwords["bob"]), role="user"
         )
-        await db.chat_create("c-alice", "Alice's", None, f"{self.tmp.name}/p", "alice")
+        await db.chat_create("c-alice", "Alice's", None, f"{self.tmp.name}/p", await _owner_id("alice"))
         # Cleared between tests: the touch throttle is process-global, so a
         # token id reused across tests would silently skip its own write.
         middleware._token_touched.clear()

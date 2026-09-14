@@ -16,6 +16,26 @@ import auth
 import config
 import db
 
+
+async def _owner_id(name: str) -> str:
+    """*name*'s real user id, for owner arguments on seeded rows.
+
+    A login name used to work on both sides of these tests. It still works for
+    a direct db.chat_get(chat_id, name), which is why those kept passing --
+    but not through an HTTP route: routes/chats.py resolves identity with
+    shared.owner_of(), which translates the name into this id. The route then
+    reads by uuid while the seeded row is owned by the string, finds nothing,
+    and answers 404.
+
+    See tests/conftest.py's shim comment for where that symmetry stops, and
+    4740d12 for the same fix applied to the voice suites.
+    """
+    import db as _db
+    row = await _db.user_get_by_name(name)
+    assert row, f"no user {name!r} -- create it before seeding rows"
+    return row["id"]
+
+
 HTTPS = "https://testserver"
 
 
@@ -52,7 +72,7 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.chat_id = "q-chat-1"
         await db.chat_create(self.chat_id, "Queue test", None,
-                            f"{self.tmp.name}/p", "alice")
+                            f"{self.tmp.name}/p", await _owner_id("alice"))
 
         # No test in this file is about what a turn does -- they are about
         # status codes, owner scoping and what the queue looks like
@@ -111,14 +131,14 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
         """Each user can only see queue items in chats they own."""
         # Create a chat owned by bob (signature: chat_create(chat_id, title, desc, work_dir, owner_id))
         bob_chat_id = "q-chat-bob"
-        await db.chat_create(bob_chat_id, "Bob's chat", None, f"{self.tmp.name}/p", "bob")
+        await db.chat_create(bob_chat_id, "Bob's chat", None, f"{self.tmp.name}/p", await _owner_id("bob"))
 
         alice_client, alice_headers = self._login("alice")
         bob, bob_headers = self._login("bob")
 
         # Insert items in each user's own chat
-        await db.queue_add(self.chat_id, "alice", "alice-prompt", None)
-        await db.queue_add(bob_chat_id, "bob", "bob-prompt", None)
+        await db.queue_add(self.chat_id, await _owner_id("alice"), "alice-prompt", None)
+        await db.queue_add(bob_chat_id, await _owner_id("bob"), "bob-prompt", None)
 
         # alice sees her own chat's queue
         r1 = alice_client.get(f"/api/chats/{self.chat_id}/queue",
@@ -139,7 +159,7 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_removes_prompt(self):
         client, headers = self._login("alice")
-        row_id = await self._insert_queue_item("delete-me", "alice")
+        row_id = await self._insert_queue_item("delete-me", await _owner_id("alice"))
         self.assertNotEqual(row_id, 0)
 
         r = client.delete(f"/api/chats/{self.chat_id}/queue/{row_id}", headers=headers)
@@ -161,7 +181,7 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_is_owner_scoped(self):
         """Bob can only delete his own items; alice's item stays."""
         alice_client, alice_headers = self._login("alice")
-        row_id = await self._insert_queue_item("protected", "alice")
+        row_id = await self._insert_queue_item("protected", await _owner_id("alice"))
 
         bob, bob_headers = self._login("bob")
         r = bob.delete(f"/api/chats/{self.chat_id}/queue/{row_id}", headers=bob_headers)
@@ -186,7 +206,7 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
         "released and quietly left in the queue".
         """
         client, headers = self._login("alice")
-        row_id = await self._insert_queue_item("release-me", "alice")
+        row_id = await self._insert_queue_item("release-me", await _owner_id("alice"))
 
         r = client.post(f"/api/chats/{self.chat_id}/queue/{row_id}/release",
                        headers=headers)
@@ -210,7 +230,7 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_release_is_owner_scoped(self):
         """Bob can only release items in his own chat."""
         alice_client, alice_headers = self._login("alice")
-        row_id = await self._insert_queue_item("protected-release", "alice")
+        row_id = await self._insert_queue_item("protected-release", await _owner_id("alice"))
 
         bob, bob_headers = self._login("bob")
         r = bob.post(f"/api/chats/{self.chat_id}/queue/{row_id}/release",

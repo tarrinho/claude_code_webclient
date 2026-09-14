@@ -172,6 +172,30 @@ class SendTextTests(unittest.TestCase):
         self.assertGreater(progress["chunks_total"], 2)
         self.assertIn("chunk 3", progress["refused"])
 
+    def test_24000_leading_spaces_are_stripped_and_the_question_still_arrives(self):
+        """Padding first, then the question -- the literal case asked for.
+
+        Measured rather than assumed: send_text strips leading whitespace, so
+        24,041 characters in becomes 41 characters out and the request is one
+        call, not twenty-seven. It is delivered correctly and the question is
+        intact, which is the guarantee worth pinning -- but this payload does
+        NOT exercise chunking, and a reader could easily believe it does.
+        test_a_real_question_survives_24000_characters_of_padding is the one
+        that covers the long path, with the padding between the words where it
+        survives sanitising.
+        """
+        question = "what is 2 * 3? reply with just the number"
+        ok, calls = self._calls(SCREEN, " " * 24000 + question)
+        self.assertTrue(ok)
+
+        typed = [c for c in calls if c[-1] != "\r"]
+        self.assertEqual(len(typed), 1, "leading padding should have been stripped")
+        self.assertEqual(typed[0][-1], question)
+
+        enters = [c for c in calls if c[-1] == "\r"]
+        self.assertEqual(len(enters), 1)
+        self.assertEqual(calls[-1][-1], "\r", "Enter was not last")
+
     def test_a_real_question_survives_24000_characters_of_padding(self):
         """The shape Pedro hit: a real request buried in a very large body.
 

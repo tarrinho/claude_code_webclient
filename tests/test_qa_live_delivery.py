@@ -172,6 +172,45 @@ class SendTextTests(unittest.TestCase):
         self.assertGreater(progress["chunks_total"], 2)
         self.assertIn("chunk 3", progress["refused"])
 
+    def test_a_real_question_survives_24000_characters_of_padding(self):
+        """The shape Pedro hit: a real request buried in a very large body.
+
+        24,000 spaces between the question and its instruction puts the
+        payload just under _TEXT_MAX and spreads it over ~27 calls, so the
+        two halves of the actual question land in different chunks. Under the
+        old truncating behaviour the request was cut at 4,000 -- the trailing
+        "reply with just the number" never reached the window at all, and the
+        terminal was handed a question with its instruction missing while the
+        caller was told the delivery succeeded.
+
+        Padding sits *between* the words deliberately: send_text strips
+        leading and trailing whitespace, so padding on either end would be
+        removed and the test would prove nothing about long payloads.
+        """
+        head = "what is 2 * 3?"
+        tail = "reply with just the number"
+        text = f"{head}{' ' * 24000}{tail}"
+        self.assertLess(len(text), prompts._TEXT_MAX, "padding must stay under the cap")
+
+        ok, calls = self._calls(SCREEN, text)
+        self.assertTrue(ok, "a request under the cap was refused")
+
+        typed = [c for c in calls if c[-1] != "\r"]
+        self.assertGreater(len(typed), 20, "24k chars should span many calls")
+
+        arrived = "".join(c[-1] for c in typed)
+        self.assertEqual(arrived, text, "the padded request did not arrive whole")
+        # The parts that carry meaning, checked by name rather than only via
+        # the equality above: this is what the terminal has to be able to act
+        # on, and it is what truncation destroyed.
+        self.assertTrue(arrived.startswith(head))
+        self.assertTrue(arrived.endswith(tail))
+        self.assertEqual(arrived.count("2 * 3"), 1)
+
+        enters = [i for i, c in enumerate(calls) if c[-1] == "\r"]
+        self.assertEqual(len(enters), 1, "submitted more than once")
+        self.assertEqual(enters[0], len(calls) - 1, "Enter was not last")
+
     def test_text_over_the_absolute_limit_is_refused_and_nothing_is_typed(self):
         """Refused outright rather than truncated -- the old behaviour typed a
         prefix and reported success, which is indistinguishable from delivery."""

@@ -102,10 +102,97 @@ class SendTextTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertEqual(calls, [])
 
-    def test_overlong_text_is_truncated_not_refused(self):
-        ok, calls = self._calls(SCREEN, "x" * 9000)
+    # --- long requests -----------------------------------------------------
+    #
+    # These replace test_overlong_text_is_truncated_not_refused, which asserted
+    # the defect rather than the contract: it required ok=True for a 9000-char
+    # request that send_text had silently cut to 4000, so the behaviour Pedro
+    # hit on 2026-09-14 -- long messages typed into the terminal as a fragment,
+    # Enter pressed on it, "prompt delivered to live terminal" logged, no reply
+    # ever arriving -- was pinned as correct and could not regress into being
+    # noticed. A test that agrees with the bug is why it lasted.
+
+    def test_a_long_request_is_chunked_and_arrives_whole(self):
+        """Every character reaches the window, across as many calls as it takes."""
+        text = "".join(str(i % 10) for i in range(9000))
+        ok, calls = self._calls(SCREEN, text)
         self.assertTrue(ok)
-        self.assertLessEqual(len(calls[0][-1]), prompts._TEXT_MAX)
+        typed = [c for c in calls if c[-1] != "\r"]
+        self.assertGreater(len(typed), 1, "9000 chars should not be one call")
+        self.assertEqual("".join(c[-1] for c in typed), text,
+                         "the text that reached the window is not what was sent")
+
+    def test_no_chunk_exceeds_the_per_call_limit(self):
+        ok, calls = self._calls(SCREEN, "y" * 5000)
+        self.assertTrue(ok)
+        for call in (c for c in calls if c[-1] != "\r"):
+            self.assertLessEqual(len(call[-1]), prompts._STUFF_CHUNK)
+
+    def test_enter_is_pressed_once_and_only_after_every_chunk(self):
+        ok, calls = self._calls(SCREEN, "z" * 5000)
+        self.assertTrue(ok)
+        enters = [i for i, c in enumerate(calls) if c[-1] == "\r"]
+        self.assertEqual(len(enters), 1, "a chunked request submitted more than once")
+        self.assertEqual(enters[0], len(calls) - 1, "Enter was not the last call")
+
+    def test_a_chunk_failing_part_way_never_submits_the_fragment(self):
+        """The failure this whole change exists to prevent: half a request
+        typed in and Enter pressed on it anyway."""
+        seen = []
+
+        def _fake(argv):
+            seen.append(argv)
+            # Let the first two chunks land, then refuse.
+            code = 0 if len(seen) <= 2 else 1
+            return SimpleNamespace(returncode=code, stdout="", stderr="")
+
+        with patch.object(prompts, "_run", _fake):
+            ok = prompts.send_text(SCREEN, "q" * 5000)
+
+        self.assertFalse(ok)
+        self.assertNotIn("\r", [c[-1] for c in seen],
+                         "Enter was pressed on a partially typed request")
+
+    def test_a_partial_failure_reports_how_much_landed(self):
+        """A caller logging this needs to distinguish nothing-was-typed from
+        most-of-it-was: the two leave the terminal in different states."""
+        seen = []
+
+        def _fake(argv):
+            seen.append(argv)
+            return SimpleNamespace(returncode=0 if len(seen) <= 2 else 1,
+                                   stdout="", stderr="")
+
+        progress = {}
+        with patch.object(prompts, "_run", _fake):
+            ok = prompts.send_text(SCREEN, "q" * 5000, progress)
+
+        self.assertFalse(ok)
+        self.assertEqual(progress["chunks_sent"], 2)
+        self.assertGreater(progress["chunks_total"], 2)
+        self.assertIn("chunk 3", progress["refused"])
+
+    def test_text_over_the_absolute_limit_is_refused_and_nothing_is_typed(self):
+        """Refused outright rather than truncated -- the old behaviour typed a
+        prefix and reported success, which is indistinguishable from delivery."""
+        ok, calls = self._calls(SCREEN, "x" * (prompts._TEXT_MAX + 1))
+        self.assertFalse(ok)
+        self.assertEqual(calls, [], "a refused request still typed something")
+
+    def test_the_refusal_names_the_limit(self):
+        progress = {}
+        with patch.object(prompts, "_run", lambda argv: None):
+            ok = prompts.send_text(SCREEN, "x" * (prompts._TEXT_MAX + 1), progress)
+        self.assertFalse(ok)
+        self.assertIn(str(prompts._TEXT_MAX), progress["refused"])
+
+    def test_tmux_chunks_too(self):
+        text = "".join(str(i % 10) for i in range(4000))
+        ok, calls = self._calls(TMUX, text)
+        self.assertTrue(ok)
+        typed = [c for c in calls if c[-1] != "\r"]
+        self.assertGreater(len(typed), 1)
+        self.assertEqual("".join(c[-1] for c in typed), text)
 
     def test_unknown_target_kind_refused(self):
         ok, calls = self._calls({"kind": "carrier-pigeon"}, "hello")
@@ -266,6 +353,39 @@ class DeliverRequestTests(unittest.TestCase):
         self.assertFalse(outcome["delivered"])
         self.assertTrue(outcome["reason"])
         self.assertEqual(outcome["target"], SCREEN)
+
+    def test_a_partial_send_reports_the_chunk_counts_it_reached(self):
+        """The caller logs these; without them a failure cannot say whether
+        the window is now holding a fragment."""
+        def _fake_send(target, text, progress=None):
+            if progress is not None:
+                progress.update(chunks_total=6, chunks_sent=2,
+                                refused="chunk 3 of 6 was refused")
+            return False
+
+        with patch.object(prompts, "_is_claude_process", return_value=True), \
+                patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "locate", return_value=SCREEN), \
+                patch.object(prompts, "send_text", _fake_send):
+            outcome = prompts.deliver_request(SESSION_ID, "x" * 5000)
+
+        self.assertFalse(outcome["delivered"])
+        self.assertEqual(outcome["chunks_sent"], 2)
+        self.assertEqual(outcome["chunks_total"], 6)
+        self.assertIn("chunk 3", outcome["reason"])
+
+    def test_an_oversized_request_is_refused_with_the_reason_from_send_text(self):
+        """End to end through the real send_text: the refusal names the limit
+        rather than reporting a generic terminal error."""
+        with patch.object(prompts, "_is_claude_process", return_value=True), \
+                patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "locate", return_value=SCREEN), \
+                patch.object(prompts, "_run", lambda argv: None):
+            outcome = prompts.deliver_request(
+                SESSION_ID, "x" * (prompts._TEXT_MAX + 1))
+
+        self.assertFalse(outcome["delivered"])
+        self.assertIn(str(prompts._TEXT_MAX), outcome["reason"])
 
     def test_success_carries_the_target(self):
         with patch.object(prompts, "_is_claude_process", return_value=True), \

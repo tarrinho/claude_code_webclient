@@ -33,8 +33,20 @@ _CMD_TIMEOUT_S: Final[float] = 5.0
 # Enough to cover a prompt plus the surrounding turn; hardcopy is a whole screen.
 _SNAPSHOT_MAX: Final[int] = 20000
 
-# Upper bound on a request typed into a terminal from the web.
-_TEXT_MAX: Final[int] = 4000
+# Upper bound on a request typed into a terminal from the web. Reached only by
+# refusing the send outright -- never by truncating, which is what this used to
+# do: a prompt over the limit was silently cut and typed anyway, Enter was
+# pressed on the fragment, and the caller was told the delivery succeeded. From
+# the web UI that looked like a message that vanished (2026-09-14, reported as
+# "I've sent several messages and I don't receive any reply"), and the server
+# log said "prompt delivered to live terminal" for every one of them.
+_TEXT_MAX: Final[int] = 25000
+
+# One `screen -X stuff` / `tmux send-keys` call carries at most this much.
+# Longer text is sent as several calls in order, then one Enter -- the limit
+# here is the multiplexer's own argument handling, not anything about a prompt,
+# so it stays well under any plausible ARG_MAX rather than close to it.
+_STUFF_CHUNK: Final[int] = 900
 
 # The frame Claude draws around the command a prompt is asking about. Used as a
 # stop when reading the question text upwards, so the framed command does not
@@ -394,7 +406,9 @@ def deliver(target: dict[str, Any], key: str) -> bool:
     return False
 
 
-def send_text(target: dict[str, Any], text: str) -> bool:
+def send_text(
+    target: dict[str, Any], text: str, progress: dict[str, Any] | None = None,
+) -> bool:
     """Type *text* into *target*'s input queue and press Enter.
 
     Deliberately separate from deliver(), which stays restricted to a fixed key
@@ -410,37 +424,75 @@ def send_text(target: dict[str, Any], text: str) -> bool:
 
     Control characters are stripped: a payload carrying its own newlines or
     escapes could submit more than the one request the caller intended.
+
+    Text longer than one multiplexer call can carry is typed as several calls
+    in order (_STUFF_CHUNK each) followed by a single Enter. Enter is sent only
+    once every chunk has been accepted: a half-typed request must never be
+    submitted, so a chunk failing part-way leaves the fragment sitting unsent
+    in the window -- visible to whoever is watching it -- and returns False so
+    the caller falls back to a headless turn rather than believing this worked.
+
+    Over _TEXT_MAX the send is refused outright and nothing is typed at all.
+    Truncating instead (what this did until 2026-09-14) is the one behaviour
+    that must not come back: it submitted a fragment while reporting success.
+
+    *progress*, when given, is filled in with ``chunks_total``/``chunks_sent``
+    and a ``refused`` reason, so a caller reporting a failure can say how much
+    reached the window. A bare "the terminal refused the input" does not
+    distinguish nothing-was-typed from most-of-it-was, and those want different
+    responses from whoever is watching the window.
     """
+    def _note(**fields: Any) -> None:
+        if progress is not None:
+            progress.update(fields)
+
     if not isinstance(target, dict) or not isinstance(text, str):
+        _note(refused="bad target or text")
         return False
     cleaned = "".join(ch for ch in text if ch == " " or (ch.isprintable() and ch != "\x7f"))
     cleaned = cleaned.strip()
     if not cleaned:
+        _note(refused="empty after sanitising")
         return False
     if len(cleaned) > _TEXT_MAX:
-        cleaned = cleaned[:_TEXT_MAX]
+        _note(refused=f"{len(cleaned)} chars exceeds the {_TEXT_MAX} limit")
+        return False
 
-    if target.get("kind") == "screen":
+    chunks = [
+        cleaned[i:i + _STUFF_CHUNK] for i in range(0, len(cleaned), _STUFF_CHUNK)
+    ]
+    _note(chunks_total=len(chunks), chunks_sent=0)
+
+    kind = target.get("kind")
+    if kind == "screen":
         session, window = target.get("session"), target.get("window")
         if not session or window is None:
+            _note(refused="incomplete screen target")
             return False
-        # Two calls: screen's `stuff` takes the text literally, and the
-        # newline is sent separately so a failure to type cannot still submit.
-        typed = _run(
-            ["screen", "-S", str(session), "-p", str(window), "-X", "stuff", cleaned]
-        )
-        if not (typed and typed.returncode == 0):
-            return False
-        return deliver(target, "enter")
-    if target.get("kind") == "tmux":
+        argv_for = lambda chunk: [  # noqa: E731 - one shape per kind, read together
+            "screen", "-S", str(session), "-p", str(window), "-X", "stuff", chunk]
+    elif kind == "tmux":
         pane = target.get("window")
         if not pane:
+            _note(refused="incomplete tmux target")
             return False
-        typed = _run(["tmux", "send-keys", "-t", str(pane), "-l", cleaned])
+        argv_for = lambda chunk: ["tmux", "send-keys", "-t", str(pane), "-l", chunk]  # noqa: E731
+    else:
+        _note(refused=f"unsupported target kind {kind!r}")
+        return False
+
+    # The newline is sent separately, after every chunk has landed, so a
+    # failure to type cannot still submit what did land.
+    for index, chunk in enumerate(chunks):
+        typed = _run(argv_for(chunk))
         if not (typed and typed.returncode == 0):
+            _note(
+                chunks_sent=index,
+                refused=f"chunk {index + 1} of {len(chunks)} was refused",
+            )
             return False
-        return deliver(target, "enter")
-    return False
+    _note(chunks_sent=len(chunks))
+    return deliver(target, "enter")
 
 
 def _server_window() -> tuple[str, str]:
@@ -520,10 +572,18 @@ def deliver_request(session_id: str, text: str) -> dict[str, Any]:
     # means only that it shares a window with us. Logged, not refused, so a
     # delivery stays attributable afterwards.
     shared = bool(target.get("shares_server_window"))
-    ok = send_text(target, text)
+    progress: dict[str, Any] = {}
+    ok = send_text(target, text, progress)
     return {
         "delivered": ok,
-        "reason": "" if ok else "the terminal refused the input",
+        # Naming what was refused, and how much of the text had already
+        # reached the window, so a partial send is distinguishable from one
+        # that never started -- the two leave the terminal in different
+        # states and the caller's log is the only place that shows it.
+        "reason": "" if ok else (
+            progress.get("refused") or "the terminal refused the input"),
+        "chunks_total": progress.get("chunks_total", 0),
+        "chunks_sent": progress.get("chunks_sent", 0),
         "target": target,
         "pid": pid,
         "shares_server_window": shared,

@@ -1218,15 +1218,21 @@ async def _route_to_live_terminal(chat: dict, prompt: str) -> dict | None:
     if not outcome.get("delivered"):
         if outcome.get("target"):
             # A window was found but refused the input: worth a log, since
-            # falling back silently would hide a broken multiplexer.
+            # falling back silently would hide a broken multiplexer. The
+            # chunk counts separate "nothing was typed" from "most of it was
+            # and the rest was refused" -- the second leaves a fragment
+            # sitting unsent in the window, which the next person looking at
+            # that terminal needs to know to expect.
             _log.warning(
-                "live delivery failed chat=%s session=%s reason=%s",
+                "live delivery failed chat=%s session=%s reason=%s sent=%s/%s",
                 chat.get("id"), session_id, outcome.get("reason"),
+                outcome.get("chunks_sent"), outcome.get("chunks_total"),
             )
         return None
     _log.info(
-        "prompt delivered to live terminal chat=%s session=%s target=%s",
+        "prompt delivered to live terminal chat=%s session=%s target=%s chars=%s chunks=%s",
         chat.get("id"), session_id, (outcome.get("target") or {}).get("kind"),
+        len(prompt), outcome.get("chunks_total"),
     )
     return outcome
 

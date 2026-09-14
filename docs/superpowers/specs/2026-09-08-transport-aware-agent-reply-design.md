@@ -1,5 +1,38 @@
 # Transport-aware agent-reply — design
 
+**Status:** implementing — code complete and verified, deployment partial.
+Audited against the codebase on 2026-09-14, item by item.
+
+Built and checked: the §1 resolution flow (local first, then `tunnel_up=1`
+transports only, sequential, first success wins), `agent_reply_log_add` /
+`agent_reply_cooldown_check` in `routes/db_agent_reply.py` (the spec says
+`db.py`, written before that module was split), the `agent_reply_log` table,
+`build_remote_reply_command`, and `remote_path` accepted on create, edit and
+update in `routes/transports.py:102-160` (the spec says `routes/machines.py`,
+again pre-split). All three §6 test requirements have tests; 14 pass.
+
+**Why this is not done.** Every transport's `remote_path` is `~/wc-proxy`,
+which is a four-file proxy deployment -- `claude_proxy.py`, `backend_env.py`
+and two credential files -- with no `transcripts.py` and no `db.py`. The relay
+`cd`s there and imports `transcripts`, so it could not run anywhere. Two of the
+four are now provisioned from committed content and verified end to end
+(pentester 2026-09-13, Kali3 2026-09-14); `AppSec Tools` and `Node1-Appsec` are
+not, and both are other people's environments. `agent_reply_log` holding zero
+rows is consistent with that history rather than with disuse.
+
+**Two deviations from this document, both since fixed, both worth keeping
+visible.** §1's pseudo-code contains `import base64,json,transcripts`; the
+shipped command omitted `transcripts` and died with `NameError` on every
+attempt on every host (031e337). §1 also specifies `{remote_venv}/bin/python`;
+the shipped command hardcoded `python3`, which happened to work because no
+provisioned transport has a venv (06b11e8). In both cases the spec was right
+and the implementation had drifted, which is the argument for auditing against
+the document rather than against the code's own comments.
+
+**Not built:** `remote_path` has no UI control -- it appears zero times in
+`web/assets/transports.js` and `web/index.html`, so the one setting an operator
+needs in order to point a transport at a real checkout is API-only.
+
 ## Context
 
 `transcripts.agent_reply_to()` (added earlier this session) lets the

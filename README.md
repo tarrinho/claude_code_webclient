@@ -116,7 +116,7 @@ Copy `.env.example` for the complete set of settings. Important variables are:
 | `WC_CLAUDE_PATH` | `claude` | Claude Code executable used by the proxy |
 | `WC_CLAUDE_MODEL` | unset | Optional Claude model override in proxy mode |
 | `WC_MAX_CONCURRENT` | `3` | Maximum concurrent turns |
-| `WC_PROMPT_MAX_CHARS` | `8000` | Maximum prompt length |
+| `WC_PROMPT_MAX_CHARS` | `25000` | Maximum prompt length |
 
 Do not put GitHub tokens or other deployment credentials in an environment file
 that is copied into an image or committed. The repository ignores `.env` files.

@@ -634,7 +634,7 @@ Key settings:
 | `PROXY_HOST` / `PROXY_PORT` | `127.0.0.1:9000` | Proxy target |
 | `MAX_CONCURRENT` | `3` | Claude processes |
 | `TURN_TIMEOUT_S` | `300` | Per-turn wall-clock |
-| `PROMPT_MAX_CHARS` | `8000` | Prompt length cap |
+| `PROMPT_MAX_CHARS` | `25000` | Prompt length cap |
 | `SESSION_TTL_S` | `7200` | Absolute session TTL |
 | `SESSION_IDLE_S` | `1800` | Idle timeout |
 | `SESSION_MAX` | `50` | Hard cap |
@@ -1173,7 +1173,7 @@ All configuration comes from environment variables with `WC_` prefix. The `.env`
 | `WC_PROXY_TURN_TIMEOUT_S` | `300` | Proxy turn timeout |
 | `WC_MAX_CONCURRENT` | `3` | Max concurrent Claude processes |
 | `WC_TURN_TIMEOUT_S` | `300` | Direct mode turn timeout |
-| `WC_PROMPT_MAX_CHARS` | `8000` | Prompt length limit |
+| `WC_PROMPT_MAX_CHARS` | `25000` | Prompt length limit |
 | `WC_SESSION_TTL_S` | `7200` | Absolute session TTL |
 | `WC_SESSION_IDLE_S` | `1800` | Idle session TTL |
 | `WC_SESSION_MAX` | `50` | Hard session cap |

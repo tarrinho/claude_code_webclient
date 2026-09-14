@@ -262,7 +262,7 @@ def valid_model_id(value: str | None) -> bool:
 
 MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn
-PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 8000)  # cap on user prompt length
+PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 25000)  # cap on user prompt length
 
 # A turn that ends cleanly (no CLI/network error) but produces near-empty
 # output -- observed on small gateway models asked to self-identify, see

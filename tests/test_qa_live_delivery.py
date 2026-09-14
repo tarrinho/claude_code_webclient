@@ -518,6 +518,51 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             routed = await chat_routes._route_to_live_terminal(chat, "hello")
         self.assertTrue(routed["delivered"])
 
+    async def test_a_24k_request_travels_the_whole_route_intact(self):
+        """The live run of 2026-09-15, made repeatable.
+
+        Everything below _run is real -- _route_to_live_terminal calls the
+        real deliver_request, which calls the real send_text -- so this covers
+        the whole path a browser request takes to a linked terminal, not just
+        the stuffing function in isolation. Only the subprocess call is faked.
+
+        The live run it reproduces logged `chars=24080 chunks=27` and stored
+        the message byte-complete. Before the fix the same request reached the
+        terminal as 4,000 characters with its instruction missing, and was
+        reported as delivered.
+        """
+        head = "LIVE DELIVERY TEST: what is 2 * 3?"
+        tail = "reply with just the number"
+        payload = f"{head}{' ' * 24000}{tail}"
+        chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
+
+        seen = []
+
+        def _fake(argv):
+            seen.append(argv)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(prompts, "_is_claude_process", return_value=True), \
+                patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "locate", return_value=SCREEN), \
+                patch.object(prompts, "_run", _fake):
+            routed = await chat_routes._route_to_live_terminal(chat, payload)
+
+        self.assertIsNotNone(routed, "a deliverable request fell back to headless")
+        self.assertTrue(routed["delivered"])
+        self.assertEqual(routed["chunks_sent"], routed["chunks_total"])
+        self.assertGreater(routed["chunks_total"], 20)
+
+        typed = [c for c in seen if c[-1] != "\r"]
+        self.assertEqual("".join(c[-1] for c in typed), payload,
+                         "the request did not reach the window intact")
+        self.assertTrue("".join(c[-1] for c in typed).startswith(head))
+        self.assertTrue("".join(c[-1] for c in typed).endswith(tail))
+
+        enters = [i for i, c in enumerate(seen) if c[-1] == "\r"]
+        self.assertEqual(len(enters), 1)
+        self.assertEqual(enters[0], len(seen) - 1, "Enter was not the last call")
+
 
 class StreamRoutingTests(unittest.IsolatedAsyncioTestCase):
     """The SSE path, which is what the browser actually uses."""

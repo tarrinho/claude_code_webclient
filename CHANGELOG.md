@@ -22,6 +22,8 @@ churn.
 
 ## [Unreleased]
 
+## [0.17.4] — 2026-09-14
+
 ### Fixed
 
 - **`transports.js` was served stale to browsers holding a cached copy.**
@@ -235,6 +237,15 @@ precedent as 0.4.0 and 0.7.1 above.
 - **Model/agent statistics charts were still owner-scoped** after usage
   reporting moved to cross-account — a gap in that change, closed here.
 
+## [0.17.1] — 2026-09-11
+
+Superseded the same day by 0.17.2. Set deliberately in `ebc2132` alongside a
+cache-busting resync, then replaced by `2cac710` a few hours later; `9ac6e07`
+reverted `config.VERSION` back to it by accident on 2026-09-12 and `41b1e1b`
+restored 0.17.2. No work is missing — everything under this number is described
+in 0.17.2. Recorded rather than left as a gap, for the same reason 0.4.0 and
+0.7.1 are: the sequence must read as deliberate.
+
 ## [0.17.0] — 2026-09-11
 
 ### Added
@@ -344,6 +355,12 @@ either time. Both halves are completed here.
 
 ---
 
+## [0.16.0] — 2026-09-10
+
+Superseded by 0.16.2 the next day. Set in `07d5b41` (settings cache,
+voice-conversation JS split, tunnel status poll fix) and replaced by `315a5f1`
+before it was released under its own number. The work is described in 0.16.2.
+
 ## [0.15.4] — 2026-09-09
 
 `config.VERSION` was moved to 0.15.4 on 2026-09-08 and nothing else was: no
@@ -407,6 +424,13 @@ title it is left as the title rather than guessed at.
 ### Changed
 
 - **Version consistency** — advanced the release identifier to `WebConsole_0.15.0` and aligned the dashboard, orchestrator page, architecture metadata, and version test with the new release.
+
+## [0.14.0] — 2026-09-06
+
+Never released under its own number. `2e671ff` bumped to it for the voice
+conversation feature, and `602e760` reverted it the same day as an unrelated
+bump that had been picked up by another session working in the same tree. The
+voice conversation work is described in 0.15.0.
 
 ## [0.13.0] — 2026-09-06
 
@@ -606,6 +630,12 @@ title it is left as the title rather than guessed at.
   `bin/wc-resolve-claude-path.sh`, sourced by both launchers now instead of
   risking a second copy drifting out of sync — this exact bug class has
   already recurred twice before under the proxy alone.
+
+## [0.10.6] — 2026-09-04
+
+Superseded by 0.12.0 the next day. Set in `3dec915` with the last of the LOW
+vulnerability fixes, and replaced by `c5d131d` (SSH proxy support) before it was
+cut. Those fixes are described in 0.12.0.
 
 ## [0.10.5] — 2026-09-04
 

@@ -70,10 +70,16 @@ if screen -ls 2>/dev/null | grep -q "(${name}\s*(Detached))"; then
 fi
 
 # Build and launch the command.
+# `exec` goes immediately before claude, never in front of the whole command.
+# `exec cd "$cwd" && claude ...` asks the shell to exec `cd`, which is a
+# builtin and not a program: bash answers "exec: cd: not found" and the shell
+# dies instantly, so screen's window closes and nothing runs. Measured
+# 2026-09-14 waking cweb4 -- the session vanished exactly as it had before the
+# fix, for a new reason introduced by the fix.
 if [ -n "$cwd" ]; then
-    launch="cd \"$cwd\" && claude --resume \"$session_id\""
+    launch="cd \"$cwd\" && exec claude --resume \"$session_id\""
 else
-    launch="claude --resume \"$session_id\""
+    launch="exec claude --resume \"$session_id\""
 fi
 echo "# launching: $launch" >&2
 
@@ -92,7 +98,7 @@ echo "# launching: $launch" >&2
 # `bash -c` because the command is shell syntax by construction (a cd and a
 # conditional), and `exec` so the shell is replaced by claude rather than
 # lingering as its parent.
-if ! screen -d -m -S "$name" bash -c "exec $launch"; then
+if ! screen -d -m -S "$name" bash -c "$launch"; then
     echo "screen failed to start a session for '${name}'." >&2
     echo "The standby record is kept at ${record} -- nothing was launched," >&2
     echo "so the session is still recoverable." >&2

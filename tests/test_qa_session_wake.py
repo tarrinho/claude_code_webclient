@@ -185,6 +185,53 @@ class SessionWakeTests(unittest.TestCase):
         self.assertTrue(record.is_file(),
                         "the record was deleted after a failed launch")
 
+    def test_the_launched_command_actually_executes(self):
+        """Runs what screen was given, instead of inspecting its argv.
+
+        test_the_command_reaches_screen_through_a_shell checks the *shape* of
+        the invocation, and that is not enough: the first fix passed it while
+        launching nothing, because it built `bash -c "exec cd /x && claude"`.
+        `exec` in front of a compound command asks the shell to exec `cd`, a
+        builtin -- bash answers "exec: cd: not found" and dies before reaching
+        claude. Measured 2026-09-14 waking cweb4: the session vanished exactly
+        as before the fix, for a new reason the fix introduced.
+
+        So this fake `screen` *executes* its trailing arguments, and a fake
+        `claude` on PATH records that it ran. If the command cannot run, no
+        marker appears -- which is the property the argv test cannot see.
+        """
+        import os
+        self._record(cwd=str(self.home))
+        bindir = self.home / "runbin"
+        bindir.mkdir(exist_ok=True)
+        marker = self.home / "claude-ran"
+        (bindir / "claude").write_text(
+            f'#!/bin/sh\nprintf "%s" "$*" > {marker}\n')
+        (bindir / "claude").chmod(0o755)
+        # screen -d -m -S <name> <prog> <args...> : run prog with its args.
+        (bindir / "screen").write_text(
+            '#!/bin/sh\n'
+            'while [ $# -gt 0 ]; do\n'
+            '  case "$1" in -d|-m) shift ;; -S) shift 2 ;; *) break ;; esac\n'
+            'done\n'
+            'exec "$@"\n'
+        )
+        (bindir / "screen").chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "cwebtest"],
+            capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, HOME=str(self.home),
+                     PATH=f"{bindir}:{os.environ['PATH']}"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(
+            marker.is_file(),
+            "claude never ran -- screen was handed a command it could not "
+            f"execute. stderr: {result.stderr}",
+        )
+        self.assertIn(SESSION_ID, marker.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

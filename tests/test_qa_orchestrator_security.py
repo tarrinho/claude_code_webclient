@@ -78,7 +78,23 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         for user, password in self.passwords.items():
             await db.user_create(user, None, auth.hash_password(password))
 
-        await db.orchestrator_create("sup-bob", "Bob's secret plan", "private", "bob")
+        # Owners are seeded with the users' real ids, not their login names.
+        #
+        # This suite checks that one account cannot read another's orchestrator,
+        # and a route resolves the caller through shared.owner_of(), which
+        # turns a login name into an id. Seeding the name meant no row matched
+        # *any* caller: test_your_own_supervisor_is_still_readable failed 0 != 3,
+        # and -- the part that matters here -- both cross-tenant tests kept
+        # passing, because nothing was readable by anyone.
+        #
+        # A tenancy test that passes because the fixture is unreadable proves
+        # nothing about tenancy. That is this file's own warning in the
+        # docstring above, "the argument's presence is what hid it", arriving
+        # a second time through the fixture instead of the SQL.
+        self.uid = {u: (await db.user_get_by_name(u))["id"] for u in self.passwords}
+
+        await db.orchestrator_create(
+            "sup-bob", "Bob's secret plan", "private", self.uid["bob"])
         await db.orchestrator_task_create(
             orchestrator_id="sup-bob", task_id="t001", title="Bob's task title",
             description="BOB-PRIVATE-DESCRIPTION", model=None,
@@ -87,7 +103,7 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         await db.orchestrator_messages_append(
             "sup-bob", "orchestrator", "BOB-PRIVATE-MESSAGE", {"kind": "plan"}
         )
-        await db.orchestrator_create("sup-alice", "Alice's", "", "alice")
+        await db.orchestrator_create("sup-alice", "Alice's", "", self.uid["alice"])
         for n in range(3):
             await db.orchestrator_messages_append(
                 "sup-alice", "orchestrator", f"ALICE-{n}", {}
@@ -127,15 +143,15 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         None` branch holding two byte-identical bodies -- which is what made it
         look deliberate. The SSE poller therefore re-sent the same first
         hundred messages for ever."""
-        rows = await db.orchestrator_messages_get("sup-alice", "alice")
+        rows = await db.orchestrator_messages_get("sup-alice", self.uid["alice"])
         ids = [r["id"] for r in rows]
         self.assertEqual(len(ids), 3)
         after_first = await db.orchestrator_messages_get(
-            "sup-alice", "alice", after_id=ids[0]
+            "sup-alice", self.uid["alice"], after_id=ids[0]
         )
         self.assertEqual([r["id"] for r in after_first], ids[1:])
         past_end = await db.orchestrator_messages_get(
-            "sup-alice", "alice", after_id=ids[-1]
+            "sup-alice", self.uid["alice"], after_id=ids[-1]
         )
         self.assertEqual(past_end, [])
 
@@ -143,9 +159,9 @@ class SupervisorTenancyTests(unittest.IsolatedAsyncioTestCase):
         """Asserted at the layer that holds the scoping, not only through HTTP.
         A handler-level check protects the handlers that have one; this one is
         the floor under all of them."""
-        self.assertEqual(await db.orchestrator_tasks_get("sup-bob", "alice"), [])
-        self.assertEqual(await db.orchestrator_messages_get("sup-bob", "alice"), [])
-        self.assertNotEqual(await db.orchestrator_tasks_get("sup-bob", "bob"), [])
+        self.assertEqual(await db.orchestrator_tasks_get("sup-bob", self.uid["alice"]), [])
+        self.assertEqual(await db.orchestrator_messages_get("sup-bob", self.uid["alice"]), [])
+        self.assertNotEqual(await db.orchestrator_tasks_get("sup-bob", self.uid["bob"]), [])
 
 
 class OwnerScopingIsRealTests(unittest.TestCase):
@@ -273,7 +289,13 @@ class ModelArgumentInjectionTests(unittest.TestCase):
         async def seed():
             await db.init()
             await db.user_create("alice", None, auth.hash_password(password))
-            await db.chat_create("c1", "argv test", None, f"{tmp.name}/p", "alice")
+            # The row's owner is alice's id, not her login name: PATCH
+            # /api/chats/{id} resolves the caller through shared.owner_of(),
+            # so a row owned by the string is invisible to the route and the
+            # request 404s before the model validator is ever reached -- which
+            # would make this test pass for the wrong reason.
+            alice_id = (await db.user_get_by_name("alice"))["id"]
+            await db.chat_create("c1", "argv test", None, f"{tmp.name}/p", alice_id)
         asyncio.run(seed())
         self.addCleanup(lambda: asyncio.run(db.close()))
 

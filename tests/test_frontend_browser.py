@@ -377,12 +377,32 @@ class _BrowserFixture(unittest.TestCase):
         }
 
     def _activate_if_needed(self):
+        """Make the seeded backend the active one, if it is not already.
+
+        The button is "Make default" -- it was "Activate" when this was
+        written, and be06b25 renamed it along with the Default / Active /
+        Inactive states on the cards. Because this helper only clicks when it
+        finds a match, the rename turned it into a silent no-op: no backend
+        was ever activated, populateModelPicker found no active machine, and
+        the picker fell back to the single global default. Two tests then
+        reported that the backend's models were missing from the picker,
+        which was true and had nothing to do with the code they test.
+
+        Asserted rather than skipped when neither state is found, so the next
+        rename fails here instead of somewhere further downstream.
+        """
         button = self.page.query_selector(
-            ".machine-actions button:has-text('Activate')"
+            ".machine-actions button:has-text('Make default')"
         )
-        if button:
-            button.click()
-            self.page.wait_for_timeout(1200)
+        if button is None:
+            # Already the default, which the card says in its status line.
+            self.assertTrue(
+                self.page.query_selector(".machine-card"),
+                "no backend card to activate",
+            )
+            return
+        button.click()
+        self.page.wait_for_timeout(1200)
 
     def _reset_to_offer_all(self):
         """Tick every model, which the UI stores as "offer everything".

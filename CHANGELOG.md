@@ -22,6 +22,23 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tool calls in the terminal-transcript viewer start expanded again.**
+  Reported as actions from terminal-linked chats not appearing in the console;
+  they were present, folded one click away each. `buildTool` gave its
+  `<details>` the class `tx-tool-open` but never set the `open` property, and
+  the CSS for that class only adjusts opacity — so the class name promised the
+  opposite of the behaviour. Collapsing one now persists the choice, so the
+  preference is expressed through the disclosure triangle rather than a new
+  control.
+- **`transcript.js` had no cache-busting reference at all.** It was the one
+  script in `index.html` loaded without a `?v=` query, and it is served
+  `public, max-age=3600`, so any change to it took up to an hour to reach a
+  browser that already had it. It now carries a content hash like every other
+  asset, which also brings it under `bin/wc-asset-versions.py` — the check that
+  guards the other 71 references was silently not covering this one.
+
 ## [0.17.4] — 2026-09-14
 
 ### Fixed

@@ -297,6 +297,25 @@ export function mountTranscriptViewer() {
     return row;
   }
 
+  // Whether tool detail starts expanded. Defaults to open.
+  //
+  // It used to be closed, and not on purpose: buildTool set the class
+  // 'tx-tool-open' and never set the `open` property, while the CSS for that
+  // class only adjusts opacity. Nothing opened it, so every tool call shipped
+  // folded behind a disclosure triangle under a class name promising the
+  // opposite. Reported 2026-09-15 as actions from terminal-linked chats not
+  // appearing in the console at all -- they were there, one click away each.
+  //
+  // Read from localStorage directly rather than importing storageGet from
+  // app.js: transcript.js has no imports and is loaded as its own module from
+  // index.html, so importing would pull the whole of app.js into this module
+  // graph to reuse four lines. The try/catch is the same guard as app.js:50 --
+  // localStorage throws outright when storage is disabled.
+  const TOOLS_OPEN_KEY = 'wc:tx:tools-open';
+  const _pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  const _setPref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage disabled */ } };
+  const toolsOpenByDefault = () => _pref(TOOLS_OPEN_KEY) !== 'false';
+
   // A tool call renders as its one-line headline, with the input it actually
   // ran folded underneath. The headline alone was often uninformative --
   // "Bash(Stage 15 docs + version sweep)" is a label written for a human and
@@ -307,6 +326,13 @@ export function mountTranscriptViewer() {
     if (!block.detail) return el('div', 'tx-tool', head);
     const box = document.createElement('details');
     box.className = 'tx-tool tx-tool-open';
+    box.open = toolsOpenByDefault();
+    // Collapsing one collapses them all next time, and vice versa. There is no
+    // separate control for this: a preference nothing writes is dead code, and
+    // the disclosure triangle is already the obvious place to express it.
+    box.addEventListener('toggle', () => {
+      _setPref(TOOLS_OPEN_KEY, box.open ? 'true' : 'false');
+    });
     const summary = document.createElement('summary');
     summary.className = 'tx-tool-head';
     summary.textContent = head;

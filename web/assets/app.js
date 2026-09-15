@@ -503,11 +503,26 @@ async function loadStats(force = false) {
   const count = byId('statsCount');
   if (count) count.textContent = 'Loading…';
   try {
+    // A range ending in "h" is shorter than a day and travels as `hours`,
+    // which the server turns back into a fractional window. Anything else is
+    // the day-count the picker has always sent.
+    const window = range.endsWith('h')
+      ? `hours=${encodeURIComponent(range.slice(0, -1))}`
+      : `days=${encodeURIComponent(range)}`;
     const resp = await apiFetch(
-      `/api/usage/series?days=${encodeURIComponent(range)}` +
+      `/api/usage/series?${window}` +
       `&bucket=${encodeURIComponent(bucket)}`);
     if (!resp.ok) throw new Error('Could not load statistics');
     const payload = await resp.json();
+    // The server coarsens a bucket the window cannot draw (thirty days by the
+    // minute is 43,200 slots). Put the width it actually used back into the
+    // picker, so the control agrees with the chart underneath it rather than
+    // naming a grouping nobody is looking at.
+    const used = payload.bucket;
+    const bucketSelect = byId('statsBucket');
+    if (used && bucketSelect && bucketSelect.value !== used) {
+      bucketSelect.value = used;
+    }
     // Imported lazily: the charts are a rarely-opened tab, and the module is
     // dead weight in the initial parse for every other page load.
     const {renderStats} = await import('./stats.js');
@@ -2553,7 +2568,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // a busy afternoon; 48 half-hours show it. Only ever adjusted on a range
     // change, so an explicit choice of grouping is never overridden.
     const bucketSelect = byId('statsBucket');
-    const suggested = {'1': 'halfhour', '7': 'hour', '30': 'day', 'all': 'month'};
+    const suggested = {'1h': 'fivemin', '1': 'halfhour', '7': 'hour',
+                       '30': 'day', 'all': 'month'};
     const next = suggested[event.target.value];
     if (bucketSelect && next) bucketSelect.value = next;
     loadStats(true);

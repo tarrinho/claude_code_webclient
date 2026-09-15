@@ -415,6 +415,7 @@
         <div class="skills-toolbar usage-toolbar">
           <label for="statsRange" hidden>Time range</label>
           <select id="statsRange" aria-label="Time range">
+            <option value="1h">Last hour</option>
             <option value="1" selected>Last 24 hours</option>
             <option value="7">Last 7 days</option>
             <option value="30">Last 30 days</option>
@@ -422,6 +423,8 @@
           </select>
           <label for="statsBucket" hidden>Group by</label>
           <select id="statsBucket" aria-label="Group by">
+            <option value="minute">By minute</option>
+            <option value="fivemin">By 5 minutes</option>
             <option value="halfhour">By 30 minutes</option>
             <option value="hour" selected>By hour</option>
             <option value="day">By day</option>
@@ -585,7 +588,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=7137309"></script>
+<script type="module" src="/assets/app.js?v=6335758"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

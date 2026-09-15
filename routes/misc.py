@@ -711,9 +711,20 @@ async def handle_usage_series_get(request: Request):
     session = request.state.session
     owner = await owner_of(session)
 
+    # A window shorter than a day arrives as `hours`, and everything
+    # downstream keeps working in days -- _cutoff and bucket_spine both do
+    # float arithmetic on that number, so a fraction needs no new plumbing and
+    # there is still one window parameter rather than two that can disagree.
+    raw_hours = request.query_params.get("hours")
     raw_days = request.query_params.get("days", "30")
-    days: int | None
-    if raw_days in ("all", "0", ""):
+    days: float | None
+    if raw_hours:
+        try:
+            hours = max(1 / 60, min(float(raw_hours), 24 * 3650))
+        except (TypeError, ValueError):
+            hours = 1.0
+        days = hours / 24
+    elif raw_days in ("all", "0", ""):
         days = None
     else:
         try:
@@ -724,6 +735,11 @@ async def handle_usage_series_get(request: Request):
     bucket = request.query_params.get("bucket", "day")
     if bucket not in db.USAGE_BUCKETS:
         bucket = "day"
+    # The two controls are independent, so a fine bucket can be asked of a
+    # long window. Coarsened to what the window can actually draw, and the
+    # response reports the bucket it used rather than the one it was asked
+    # for -- see clamp_bucket.
+    bucket = db.clamp_bucket(bucket, days)
 
     cache_key = _series_cache_key(owner, days, bucket)
     cached = _series_cache_get(cache_key)
@@ -763,7 +779,10 @@ async def handle_usage_series_get(request: Request):
         )
 
     payload = {
-            "days": days if days is not None else 0,
+            # Kept as the whole number of days for every existing caller; a
+            # sub-day window reports 0 here and states itself in `hours`.
+            "days": int(days) if days is not None and days >= 1 else 0,
+            "hours": round(days * 24, 4) if days is not None and days < 1 else None,
             "bucket": bucket,
             "buckets": list(db.USAGE_BUCKETS),
             "retention_days": config.USAGE_RETENTION_DAYS,

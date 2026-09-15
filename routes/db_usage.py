@@ -686,7 +686,14 @@ async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     return [dict(row) for row in await cur.fetchall()]
 
 
+# Finest first. The value is how many characters of the local ISO timestamp
+# make the key, so "minute" is 16 ("2026-09-15T14:37") and "month" is 7.
+# "fivemin" and "halfhour" are not prefixes of anything -- they round the
+# minute -- so they carry the same width as the minute key and get their own
+# expression in _bucket_expr.
 _USAGE_BUCKETS: dict[str, int] = {
+    "minute": 16,
+    "fivemin": 16,
     "halfhour": 16,
     "hour": 13,
     "day": 10,
@@ -700,10 +707,37 @@ _LOCAL_TS: str = "replace(datetime(created_at, 'localtime'), ' ', 'T')"
 _SPINE_MAX: int = 5000
 
 _BUCKET_STEP_S: dict[str, int] = {
+    "minute": 60,
+    "fivemin": 300,
     "halfhour": 1800,
     "hour": 3600,
     "day": 86400,
 }
+
+
+def clamp_bucket(bucket: str, days: float | None) -> str:
+    """The requested bucket, or the finest coarser one the window can draw.
+
+    A minute bucket over thirty days is 43,200 slots: the axis blows past
+    _SPINE_MAX and comes back empty, the GROUP BY produces tens of thousands
+    of rows, and the payload is megabytes of points no screen can show. The
+    range picker suggests a sensible width on every range change, but the two
+    controls are independent and nothing stopped the combination.
+
+    Coarsening rather than refusing, because the honest answer to "show me
+    thirty days by the minute" is the same data at a width that can be drawn,
+    and the response already reports which bucket it used.
+    """
+    if bucket not in _USAGE_BUCKETS or days is None:
+        return bucket
+    order = [name for name in _USAGE_BUCKETS if name in _BUCKET_STEP_S]
+    if bucket not in order:
+        return bucket
+    window_s = max(0.0, float(days)) * 86400
+    for name in order[order.index(bucket):]:
+        if window_s / _BUCKET_STEP_S[name] <= _SPINE_MAX:
+            return name
+    return order[-1]
 
 
 def bucket_spine(
@@ -754,8 +788,11 @@ def _floor_local(epoch: float, bucket: str) -> float:
         floored = (*parts[:3], 0, 0, 0, *parts[6:])
     elif bucket == "hour":
         floored = (*parts[:4], 0, 0, *parts[6:])
-    else:  # halfhour
-        floored = (*parts[:4], 30 if parts.tm_min >= 30 else 0, 0, *parts[6:])
+    elif bucket == "minute":
+        floored = (*parts[:5], 0, *parts[6:])
+    else:  # halfhour, fivemin -- floored to the slot the minute falls in
+        width = 30 if bucket == "halfhour" else 5
+        floored = (*parts[:4], (parts.tm_min // width) * width, 0, *parts[6:])
     return time.mktime(time.struct_time(floored))
 
 
@@ -766,19 +803,28 @@ def _bucket_key(epoch: float, bucket: str) -> str:
         return time.strftime("%Y-%m-%d", parts)
     if bucket == "hour":
         return time.strftime("%Y-%m-%dT%H", parts)
+    if bucket == "minute":
+        return time.strftime("%Y-%m-%dT%H:%M", parts)
+    width = 30 if bucket == "halfhour" else 5
     return time.strftime("%Y-%m-%dT%H:", parts) + (
-        "30" if parts.tm_min >= 30 else "00")
+        f"{(parts.tm_min // width) * width:02d}")
 
 
 def _bucket_expr(bucket: str) -> tuple[str, list[Any]]:
     """SQL mapping ``created_at`` to a local-time bucket key, and its params."""
-    if bucket == "halfhour":
-        halfhour = (
+    if bucket in ("halfhour", "fivemin"):
+        # Rounded down to the slot, not truncated to a prefix: the minute has
+        # to survive in the key so the slots of one hour sort and compare as
+        # distinct values. printf keeps the two digits, because "2026-09-15T14:5"
+        # and "2026-09-15T14:50" are different strings and the chart compares
+        # keys as strings.
+        width = 30 if bucket == "halfhour" else 5
+        rounded = (
             f"substr({_LOCAL_TS}, 1, 14) || "
-            f"CASE WHEN CAST(substr({_LOCAL_TS}, 15, 2) AS INTEGER) < 30 "
-            "THEN '00' ELSE '30' END"
+            f"printf('%02d', (CAST(substr({_LOCAL_TS}, 15, 2) AS INTEGER) "
+            f"/ {width}) * {width})"
         )
-        return (halfhour, [])
+        return (rounded, [])
     return (
         f"substr({_LOCAL_TS}, 1, ?)",
         [_USAGE_BUCKETS.get(bucket, _USAGE_BUCKETS["day"])],

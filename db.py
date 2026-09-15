@@ -192,6 +192,7 @@ def __getattr__(name: str):
         "_bucket_expr": "routes.db_usage",
         "usage_series": "routes.db_usage",
         "usage_series_bundle": "routes.db_usage",
+        "clamp_bucket": "routes.db_usage",
         "usage_model_series": "routes.db_usage",
         "usage_agent_series": "routes.db_usage",
         "usage_agent_totals": "routes.db_usage",

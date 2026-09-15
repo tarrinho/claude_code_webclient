@@ -19,7 +19,7 @@ At config load the system checks six invariants and fails loudly if any are brok
 
 | invariant | condition |
 |---|---|
-| no blank fields | every row in the benchmark table from §2.6 has a value in every column; TBD is not permitted for an **operational** task type |
+| no blank fields | for every **operational** task type: at least one **ladder-eligible** row exists, and every ladder-eligible row has a value in every column. A row that is not ladder-eligible (§2.6 — no measured accuracy, or excluded by the cost ceiling) is exempt from this check **and** excluded from ladder generation. It is never one without the other: exemption and ineligibility are the same fact stated twice |
 | model resolution | every model name named in any ladder (§3) resolves to a valid backend-and-model pair available in the model combo box (§9.3) |
 | no empty ladder | after applying the cost-ceiling filter (§2.7), every **operational** task type must have at least one rung; no operational task type is left with an empty ladder |
 | every rung is backed by a row | every `(model, task_type)` pair appearing in the §3 ladder snapshot has a row in the §2.6 table. A rung named in the snapshot with no backing row means the snapshot and the generator disagree, and the generator silently wins |
@@ -30,7 +30,14 @@ At config load the system checks six invariants and fails loudly if any are brok
 
 A non-operational task type is **not routed**. Work classified into it falls back to today's routing (`config.ANTHROPIC_MODEL`), exactly as if the kill switch (§9.1) were off for that type alone, and each such fallback is logged so the gap is visible rather than silent.
 
-Flipping a task type to operational is the act that submits it to validation: at that moment every one of its rows must be complete and every rung must resolve, or the system refuses to start. This is the only way a task type becomes routable, so no type can go live on unmeasured data.
+Flipping a task type to operational is the act that submits it to validation: at that moment every **ladder-eligible** row must be complete and every rung must resolve, or the system refuses to start. This is the only way a task type becomes routable, so no type can go live on unmeasured data.
+
+**Why the check is scoped to ladder-eligible rows** (decided 2026-09-15). The invariant originally demanded that *every* row of an operational task type be complete. That is stricter without being safer, because §2.6 already refuses a row with no measured accuracy as a ladder candidate — so the stricter form demanded measurements of models that can never be rungs. Two consequences made it untenable rather than merely wasteful:
+
+- It was **unsatisfiable in practice.** `azure_ai/gpt-5.4-mini` has a `coding` row, is not ladder-eligible, and cannot be measured from this deployment because the backend refuses to serve it (§2.7). Under the broad rule, `coding` could never go operational — blocked forever by a model that is not a rung and cannot become one.
+- A validation gate that demands pointless work **gets satisfied with junk.** The cheapest way past an unsatisfiable check is to type a plausible number into the cell, which converts a hard failure into a wrong ladder. This codebase already holds that lesson for the model check: a check that cries wolf gets switched off.
+
+Nothing is given up. Every guarantee the broad form made about rungs still holds, because a rung is by definition ladder-eligible: no rung can lack a latency (so the multiplier always computes), a context window, or a rate.
 
 If any check fails the system refuses to start. The error lists every broken invariant, naming the task type and the column, so the operator can fix the data before deployment.
 
@@ -48,7 +55,7 @@ A write is rejected only against the invariants of task types that are *already*
 
 ### 1.2 Readiness, measured 2026-09-15
 
-**No task type can currently go operational, so with the kill switch on, nothing routes.** That is the designed bootstrap state (§1.1), not a fault, but it means the first deliverable is measurement rather than code. Audited against §2.6:
+**As of 2026-09-15, `coding` is the first task type that clears every invariant — with one unresolved dependency, below.** Every other task type remains non-operational, so with the kill switch on, almost nothing routes. That is the designed bootstrap state (§1.1), not a fault. Audited against §2.6:
 
 | task_type | rows | accuracy | n | cost | latency | max_context |
 |---|---|---|---|---|---|---|
@@ -66,7 +73,26 @@ Cost and `max_context` are complete (23/23). Accuracy is 8/23 and latency 4/23 a
 
 **`max_context` was the cheapest column and is now filled** (§2.6) — it needed no benchmark run, only the gateway's `/model/info` and a documented model table. It is recorded here because the readiness table above was the thing that surfaced it: a column no measurement pass would ever produce had been sitting at 0/23 while every task type waited on it.
 
-**`coding` is one row from complete, and that row cannot be filled from this deployment.** It now holds 4/4 cost, 4/4 `max_context`, and 3/4 on accuracy, `n` and latency — every gap is the same row, `azure_ai/gpt-5.4-mini`, which the active backend refuses to serve (§3.1). So the shortest path to a first operational task type is no longer a measurement; it is the §1.1 scoping decision below. Scoped to ladder rows, `coding` is **complete today**.
+**`coding` is one row from complete, and that row cannot be filled from this deployment.** It now holds 4/4 cost, 4/4 `max_context`, and 3/4 on accuracy, `n` and latency — every gap is the same row, `azure_ai/gpt-5.4-mini`, which the active backend refuses to serve (§3.1). The §1.1 scoping decision resolved this on 2026-09-15: scoped to ladder-eligible rows, **`coding` is complete today.**
+
+#### `coding` clears all six invariants — and then hits a dependency they do not express
+
+Checked individually against §1.1, with the decisions of 2026-09-15 applied:
+
+| invariant | `coding` | why |
+|---|---|---|
+| no blank fields | **pass** | its three ladder-eligible rows (vllm, luna, sonnet) are complete in all five columns; mini's row is exempt because it is not ladder-eligible |
+| model resolution | **pass** | all three resolve to real backend-and-model pairs |
+| no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
+| every rung backed by a row | **pass** | all three rungs have §2.6 rows |
+| ceiling fits the budget | **pass** | worst case 1,399s against the 1,500s ceiling (§5.1) |
+| ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
+
+**But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
+
+So flipping `coding` to operational today would route generation through a validated ladder into gates whose own task type has not passed validation. **§1.1's invariants are all per task type and none of them express this dependency** — nothing in the current check would catch it.
+
+That is an open question, not a thing to decide in passing, and it is recorded in §12. The two shapes it could take: require that a task type's gate types be operational before it can be (strict, and it blocks `coding` until reviewer-gate accuracy is measured), or scope `reviewer-gate` affordability to the rungs actually reachable, since §4.3 only climbs to sonnet when the generator's top rung keeps being rejected — a tail case the flat reach-probability model in §2.7 prices as routine.
 
 #### `leaves_per_tree` cannot be measured from history, and the reason matters
 
@@ -82,7 +108,7 @@ The recording landed on **2026-09-06**. The last orchestrator task ran on **2026
 
 So the ordering is not "fix recording first". It is: **run the orchestrator at all.** `leaves_per_tree` becomes measurable the first time a tree is built, and §10's entire measurement story starts producing rows in the same act, with no code change. Until then §2.7's ladder admissibility rests on `leaves_per_tree = MAX_NODES = 40`, which is an upper bound and therefore the conservative choice — the true figure is almost certainly smaller, and a smaller figure admits *more* models, so nothing currently excluded is excluded in error.
 
-**One scoping decision is unresolved and it changes how much of this is required.** §1.1 demands every *row* of a task type be complete, but §2.6 makes a row with TBD accuracy ineligible — not a ladder candidate at all. Requiring completeness of rows that can never be rungs is work with no consequence. Scoping the invariant to **ladder rows, plus a requirement that at least one exists**, would preserve every guarantee it currently makes while removing that. It is left as written here because narrowing a validity check is a deliberate decision, not a cleanup.
+**That scoping question is now decided (2026-09-15): the completeness invariant is scoped to ladder-eligible rows** (§1.1). It was the shortest path to a first operational task type and it was blocking `coding` outright, because mini's unmeasurable `coding` row would have held that type non-operational forever. The counts above are therefore read against ladder-eligible rows only; a TBD in a row that can never be a rung no longer blocks anything.
 
 ---
 
@@ -456,7 +482,7 @@ Three results the numbers force, none of which the design anticipated:
 
 **Mini could not be measured, and it is not 0%.** All four runs returned an error, not a wrong answer: the active backend does not serve that model and answers `429`, the routing failure §0.1 of `CLAUDE.md` describes — a capacity error's clothes on a routing problem. The harness reported it as an error rather than scoring it, which is the same discipline that keeps a truncated run from being recorded as wrong. Its row stays TBD, because recording 0% would assert a measurement nobody took.
 
-**That last point makes §1.1's scoping question urgent rather than theoretical.** Mini has a `coding` row, is not ladder-eligible (no measured accuracy), and *cannot be measured from this deployment* while the backend refuses to serve it. Under §1.1 as written — every row of a task type complete — `coding` can never go operational, blocked by a model that is not a rung and cannot become one. Scoping the invariant to ladder rows resolves it; leaving it as written does not, and the shortest path to a first operational task type runs straight through this decision.
+**That last point is what settled §1.1's scoping question, on 2026-09-15.** Mini has a `coding` row, is not ladder-eligible (no measured accuracy), and *cannot be measured from this deployment* while the backend refuses to serve it. Under the original §1.1 — every row of a task type complete — `coding` could never go operational, blocked by a model that is not a rung and cannot become one. The invariant is now scoped to ladder-eligible rows, which resolves it; mini's unmeasurable row is exempt from completeness for exactly the same reason it is excluded from the ladder.
 
 **Hover tooltip on chosen model:** each rung in the settings page displays the model name with a hover tooltip showing all five measured fields for the current task type — accuracy, sample size (`n`), cost per request, median latency, and **context window** (`max_context`). This lets a reviewer see why a model was chosen without leaving the page. Context window is in the tooltip because it is the field that decides whether a rung can take the task at all: a model that is cheaper and more accurate is still the wrong rung if the input does not fit.
 
@@ -608,7 +634,7 @@ A gate judging code without intent context reproduces the oracle's blind spot.
 | `MAX_NODES` | 40 | tree |
 | `BUDGET_USD` | 1.00 | **tree** (all leaves share one pool) |
 | `MAX_SUBAGENTS_PER_LEAF` | 12 | whole pipeline |
-| combined latency ceiling | 600 — **placeholder, see §5.1** | per leaf, all five stages |
+| combined latency ceiling | 1,500 — **derived, see §5.1** | per leaf, all five stages |
 
 Attempt counts are **per gate, not shared pipeline-wide**. A review gate rejecting repeatedly points at bad generation, so its own cap is 1 — the retry happens at the generator, not at the reviewer.
 
@@ -679,28 +705,51 @@ The consequence is not a slow leaf; it is a leaf killed after spending on five s
 2. **Shrink the attempt budget** — reduce `MAX_ATTEMPTS` for the affected task type until the worst case fits a fixed ceiling. Costs a rung of escalation.
 3. **Accept truncation deliberately**, with the ceiling documented as a hard spend cap that will cut long leaves short, and the rate of such cuts monitored (§10).
 
-`600` in the table above is a **placeholder that satisfies none of the three**, and it is marked as such until latencies are measured and the arithmetic can be run for real.
+`600` satisfied none of the three. It has been replaced — see the derivation below.
 
 #### Run for real, 2026-09-15 — and the ceiling is too low
 
 Coding latencies are now measured (§2.6), so the worst case above is no longer hypothetical. **The free model is the slowest thing in the ladder**, which is the fact that decides this:
 
-| model | measured `median_latency_s` | multiplier |
+| model | measured `median_latency_s` (coding) | multiplier |
 |---|---|---|
-| `claude-sonnet-5` | 10.7 | **1.00** (reference — fastest ladder-eligible) |
-| `azure_ai/gpt-5.6-luna` | 12.8 | 1.20 |
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | 22.4 | **2.09** |
-| luna as a gate | 11.1 | 1.04 |
+| `claude-sonnet-5` | 12.7 | **1.00** (reference — fastest ladder-eligible on `coding`) |
+| `azure_ai/gpt-5.6-luna` | 14.7 | 1.16 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 33.2 | **2.61** |
+| `azure_ai/gpt-5.6-luna` on `reviewer-gate` | 11.1 | **1.00** (reference — only measured model on that type) |
+
+The gate multiplier is computed against the **`reviewer-gate`** reference, not the `coding` one, because §5.1's rule is per task type and the gates are a different task type (§3). An earlier revision of this table measured the gate against `coding`'s reference and got 1.04; that reading is the one the rule does not support, and it matters here because it moves the total.
 
 ```
-multiplier sum = generation (2.09 + 1.20 + 1.00) + 3 gates (3 x 1.04)
-               = 4.29 + 3.11 = 7.40
+multiplier sum = generation (2.61 + 1.16 + 1.00) + 3 gates (3 x 1.00)
+               = 4.77 + 3.00 = 7.77
 
-score 3 (size 1.0):  90 x 1.0 x 7.40 =   666s   vs 600s ceiling — over by 66s
-score 4 (size 1.5):  90 x 1.5 x 7.40 =   999s   vs 600s ceiling — over by 399s
+score 3 (size 1.0):  90 x 1.0 x 7.77 =   699s   vs 600s ceiling — over by  99s
+score 4 (size 1.5):  90 x 1.5 x 7.77 =   999s   vs 600s ceiling — over by 399s
+score 5 (size 2.0):  90 x 2.0 x 7.77 = 1,399s   vs 600s ceiling — over by 799s
 ```
 
-**Both fail.** A `coding` leaf at score 3 — the ordinary case, `write.*test.*suite` — cannot complete its worst-case path inside the ceiling, and score 4 misses by two thirds. Option 1 of the three above therefore sets the ceiling at **≥1,000s** to cover score 4, or option 2 cuts `MAX_ATTEMPTS` to 2 for coding, which brings score 3 to 478s and score 4 to 717s.
+**All three fail.** A `coding` leaf at score 3 — the ordinary case, `write.*test.*suite` — cannot complete its worst-case path inside the 600s ceiling, and the binding score-5 case misses by more than double.
+
+**These numbers supersede an earlier set** (sonnet 10.7, luna 12.8, vllm 22.4, sum 7.40) taken before the 2026-09-15 coding accuracy run re-measured latency on the same pass. The free model got **slower on re-measurement, 22.4s to 33.2s**, which is the single largest input to the total — a reminder that a multiplier derived from `n=4` is an estimate, and that the ceiling moves when it is re-measured. That is the intended behaviour (§5.1: the ceiling is derived, not configured), not drift to be corrected.
+
+#### Decided 2026-09-15: option 1, and the ceiling is 1,500s
+
+**Option 2 was rejected, and its own arithmetic is the reason.** The figures it quotes — score 3 at 478s, score 4 at 717s — both imply a multiplier sum of 5.31, which is `1.20 + 1.00 + 3.11`: luna, sonnet, and the three gates. It reaches those numbers by **dropping the free rung**, not the top one. So option 2 is not a smaller attempt budget; it is the removal of the free tier from `coding` — one of only two task types that start free (§4.1) — measured against a §10.1 target of ≥70% of leaves completing on the free rung. It fixes a latency number by abandoning the cost thesis, which is not a trade this design can make silently.
+
+**Option 1 it is: the ceiling is derived from the worst-case path, not chosen.** The binding case is the highest score `coding` can reach, and that is **5, not 4** — §2.1 takes the highest score among all matched patterns, so a task matching a coding pattern *and* the score-5 `implement.*multiple|coordinate.*agent|orchestrate` pattern is classified `coding` at score 5. Budgeting to score 4 would leave the ceiling below the worst case for a task the classifier produces by ordinary means.
+
+```
+binding case: coding, score 5, size factor 2.0
+
+90 x 2.0 x 7.77 = 1,399s
+```
+
+**Ceiling = 1,500s.** Not 1,400: the binding case lands at 1,399s, and a ceiling one second above the worst case is a coincidence rather than a margin — the next re-measurement of any of the four latencies breaks it, and the failure mode is a leaf killed after paying for five stages. 1,500s is the next round value that survives normal measurement noise on an `n=4` sample.
+
+The derivation is the durable part, not the number. `1,500` is what today's §2.6 produces; it is recomputed whenever a ladder or a measured latency changes, and it is **not** an independent constant to be tuned on its own. §1.1 enforces that by refusing to start when the two disagree — so a future re-measurement that pushes the worst case past 1,500s stops the system at load rather than truncating leaves in production.
+
+**What this ceiling costs, stated plainly:** 1,500s is 25 minutes for a single coding leaf's worst case. That is tolerable only because these are background orchestrator leaves with no one waiting on them, and because the worst case requires every rung and every gate to run to its full deadline. It is not a latency budget for anything interactive. If §10 shows leaves routinely approaching it rather than finishing early, the right response is to look at why the free rung fails 75% of the time on coding (§3.1), not to raise the ceiling again.
 
 Note what drives it: the free rung is **2.09x slower than the model it exists to avoid**. Its multiplier alone spends 188s of a score-3 leaf's budget. The free tier buys cost, and it is charged for in latency — §10.1's free-rung target measures the cost side of that trade while the ceiling enforces the other, and the two have never been reconciled against one set of numbers until now.
 
@@ -810,7 +859,7 @@ The router does not replace or bypass this. At every stage and every escalation 
 
 A model is never selected as a bare string. Every routing decision returns **`(model, machine)`** together — a model chosen without its machine reaches a gateway that does not serve it and returns `429 "No deployments available"`, a routing failure wearing a capacity error's clothes.
 
-**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, no task type is left with an empty ladder after cost-ceiling exclusion, no operational task type has a worst-case path exceeding the combined latency ceiling (§5.1), and no operational ladder has an expected tree cost above `BUDGET_USD` (§2.7). All six checks fail loudly if broken.
+**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields **in any ladder-eligible row**, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, no task type is left with an empty ladder after cost-ceiling exclusion, no operational task type has a worst-case path exceeding the combined latency ceiling (§5.1), and no operational ladder has an expected tree cost above `BUDGET_USD` (§2.7). All six checks fail loudly if broken.
 
 ---
 
@@ -885,7 +934,10 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | gates carry deadlines | asserting only the generation deadline — assert each model gate gets `baseline x size_factor x` **its own model's** multiplier |
 | ceiling is checked before a stage | asserting a leaf stops at the ceiling — assert it stops **between** stages with the next stage never started, not mid-call |
 | ceiling exhaustion does not escalate | folding it into deadline expiry — assert `latency_ceiling_exhausted` **terminates** the leaf and that no higher rung is attempted |
-| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling; a score-4 coding type at 810s against a 600s ceiling must not load |
+| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling. Both sides: an operational `coding` type at score 5 (1,399s) **must load** against the 1,500s ceiling, and raising any ladder-eligible `median_latency_s` enough to push the sum past 1,500 **must stop it loading** |
+| the ceiling is derived, not configured | asserting the stored `1,500` — change a `median_latency_s` in §2.6 and assert the required ceiling moves with it; a ceiling that survives a latency change unchanged is a constant wearing a derivation's clothes |
+| the gate multiplier uses its own task type | computing gate multipliers against the `coding` reference — assert a `reviewer-gate` multiplier is derived from the `reviewer-gate` rows, and that moving a `coding` latency does **not** change it |
+| binding score is 5, not 4 | computing the worst case from the highest *coding pattern* score — §2.1 takes the highest score among **all** matched patterns, so assert a task matching both a coding pattern and the score-5 planning pattern is classified `coding` at **score 5** and budgeted at 2.0x |
 | `side_effecting_read` takes all five | folding it into the read-only rule because it also writes nothing — assert it runs stages 4 and 5 while `mutates=False` does not |
 | `side_effecting_read` | folding it into `False` — assert it is refused a transport and tagged separately |
 | `mutates` default | testing only the nine explicit patterns — assert unmatched text returns `True` |
@@ -896,6 +948,8 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | startup validation | asserting valid config loads — assert an invalid model name **fails at load**, not at first use |
 | validation on every write | asserting load-time validation only — assert a write that blanks a `median_latency_s` on an **operational** type is **rejected and the stored value unchanged**, and that the same write against a non-operational type succeeds |
 | bootstrap exemption | asserting TBD always fails — assert a **non-operational** task type with TBD rows starts fine, and the same type flagged operational **refuses to start** |
+| completeness is scoped to ladder-eligible rows | asserting every row must be complete — assert an operational task type loads with a TBD-accuracy row present (mini's `coding` row is the real case), and **fails** only when a *ladder-eligible* row has a blank column |
+| exemption and ineligibility are one fact | testing them separately — assert no row is ever exempt from completeness while still being offered as a rung |
 | §3 is generated, not written | asserting the §3 table's contents as constants, or regenerating from the *shipped* table — build a **fully-measured fixture**, regenerate, and assert it equals §3. The shipped table is mostly TBD, so §3 is unreachable from it by design (§2.6); a test that regenerated from live data would assert the snapshot is wrong |
 | TBD is not a candidate | asserting only that a worse model is skipped — assert a row with **TBD accuracy is excluded outright**, and that it is excluded *before* any accuracy comparison runs, not by losing one |
 | unpriced model is ineligible | asserting mini is excluded — assert a model with **no rate from any of the three sources** is refused a ladder place outright, and is neither estimated into eligibility nor treated as free |
@@ -931,3 +985,4 @@ Every test is mutation-checked: break the ladder order, the guard, the terminati
 ## 12. Open items
 
 - `claude_proxy.py` drift on the pentester transport (`bb117e85…` vs HEAD `691fe393…`) — a deployment decision to settle before any wholesale transport sync. **Do not sync transports until it is decided.**
+- **A task type's gate types are not covered by its own validation** (§1.2). `coding` clears all six §1.1 invariants while `reviewer-gate`, which its stages 3–5 run on, does not — reviewer-gate has no measured accuracy on either row, and §2.7 prices `claude-sonnet-5` at its rung 1 at $1.868 against a $1.00 tree budget. Every §1.1 invariant is per task type, so nothing currently refuses this combination. Resolve either by requiring gate types to be operational first, or by scoping reviewer-gate affordability to reachable rungs — §4.3 reaches sonnet only when the generator's top rung keeps being rejected, which the flat reach-probability model prices as routine when it is a tail case. **Until it is decided, do not flip `coding` to operational.**

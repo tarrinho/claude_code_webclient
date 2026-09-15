@@ -188,7 +188,10 @@ export function createChatListController(dependencies) {
     if (overflowsBelow && roomAbove > roomBelow) menu.classList.add('flip-up');
   }
 
+  let renderDeferred = false;
+
   function closeMenus(restoreFocus = false) {
+    const had = document.querySelectorAll('.chat-menu.open').length > 0;
     for (const menu of document.querySelectorAll('.chat-menu.open')) {
       menu.classList.remove('open');
       menu.classList.remove('flip-up');
@@ -197,6 +200,9 @@ export function createChatListController(dependencies) {
     }
     if (restoreFocus && openTrigger) openTrigger.focus();
     openTrigger = null;
+    // Draw whatever arrived while the menu was open. After the loop above, so
+    // the guard in render() sees no open menu and does not defer again.
+    if (had && renderDeferred) render();
   }
 
   function renderSearchResults(list, results, currentId) {
@@ -802,6 +808,21 @@ export function createChatListController(dependencies) {
   function render(chats = lastChats, currentId = lastCurrentId) {
     lastChats = chats;
     lastCurrentId = currentId;
+    // Not while a menu is open. This rebuilds every row, so an open ⋯ menu is
+    // destroyed along with the row it hangs off -- and refreshChats polls
+    // every 6 seconds, so a menu survived somewhere between 0 and 6 seconds
+    // and a poll landing just after the click made it look as though clicking
+    // did nothing at all. Measured on the live page: open, then gone inside
+    // 2 seconds with the trigger detached from the document.
+    //
+    // Deferred rather than dropped: the list keeps its newest data in
+    // lastChats and draws it the moment the menu closes, so nothing is lost
+    // and the sidebar is at most one menu-interaction stale.
+    if (document.querySelector('.chat-menu.open')) {
+      renderDeferred = true;
+      return;
+    }
+    renderDeferred = false;
     // Hide voice temp child chats — ephemeral, rendered inside the overlay,
     // and clicking them would replace the parent, which is wrong.
     const visible = chats.filter(c => !c.is_temporary);

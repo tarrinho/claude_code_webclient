@@ -85,7 +85,7 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | model resolution | **pass** | all three resolve to real backend-and-model pairs |
 | no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all three rungs have §2.6 rows |
-| ceiling fits the budget | **pass** | worst case 1,289s against the 1,500s ceiling (§5.1) |
+| ceiling fits the budget | **pass** | worst case 1,242s against the 1,500s ceiling (§5.1) |
 | ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
@@ -245,9 +245,9 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 | model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 70% | 40 | 0.0000 | 36.5 | 229,376 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 66% | 44 | 0.0000 | 26.8 | 229,376 |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | 229,376 |
-| `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0285 | 15.2 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0285 | 12.8 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | 922,000 |
@@ -257,7 +257,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | 922,000 |
-| `claude-sonnet-5` | coding | 100% | 4 | 1.5709 | 13.8 | 1,000,000 |
+| `claude-sonnet-5` | coding | 100% | 24 | 1.5709 | 15.5 | 1,000,000 |
 | `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | 1,000,000 |
@@ -311,15 +311,16 @@ The consequence is deliberate and worth stating plainly: **a task type whose row
 
 #### Measurement provenance, 2026-09-15
 
-`vllm` on `coding` is measured at **70% (n=40), 95% interval 55%–82%**, across six tasks. Getting there took three passes and the sequence is the lesson:
+`vllm` on `coding` is measured at **66% (n=44), 95% interval 51%–78%**, across six tasks. Getting there took four passes and the sequence is the lesson:
 
 | pass | tasks | n | result |
 |---|---|---|---|
 | first | 2 | 4 | 25% |
 | more repeats | 2 | 20 | 55% |
-| more **tasks** | 6 | 40 | **70%** |
+| more **tasks** | 6 | 40 | 70% |
+| all runs pooled | 6 | 44 | **66%** |
 
-The first two are statistically consistent — a true 55% yields ≤1 success in 4 runs about 24% of the time — so 25% was ordinary small-sample noise. The jump from 55% to 70% is different in kind: it came from **adding tasks, not repeats**. Repeats narrow the interval around whatever the existing tasks happen to measure; only new tasks change what is being measured. The suite had two `coding` tasks and one of them turned out to be an outlier.
+The first two are statistically consistent — a true 55% yields ≤1 success in 4 runs about 24% of the time — so 25% was ordinary small-sample noise. The move from 55% to 70% is different in kind: it came from **adding tasks, not repeats**. Repeats narrow the interval around whatever the existing tasks happen to measure; only new tasks change what is being measured. The suite had two `coding` tasks and one of them turned out to be an outlier. The last row is the same six tasks with the four earliest runs folded back in, which is the figure of record.
 
 | task | result | median s |
 |---|---|---|
@@ -337,11 +338,23 @@ Two corrections to the earlier reading, both of which cut against the alarming i
 - **The "writes code well, repairs it badly" conclusion does not survive more tasks.** `vllm` scores 15/15 on three of the four repair tasks. `coding-bug-fix` (3/10) is an outlier, not a representative of its class — its failures are genuine logic failures on the specific order-and-slice bug, not a general inability to edit.
 - **Two of the twelve failures were compliance, not capability.** On `coding-edit-mutable-default`, two runs fixed the actual bug correctly (`tags=None`) and failed only the assertion that the prompt's requested docstring be present. Counting them alongside a wrong answer conflates "cannot do it" with "did not do all of it" — worth knowing, because the pipeline's gates treat those identically while a human would not.
 
-**Consequence for the ladder: the free rung on `coding` stands.** A rung-0 model at 70% behind an oracle that catches its failures (§4.2) is doing its job — it completes the majority free and escalates the rest. The earlier figures suggested removing it; the better-measured figure does not. Note the point estimate sits exactly on §10.1's ≥70% free-completion target, so that target is achievable but has no slack.
+**Consequence for the ladder: the free rung on `coding` stands.** A rung-0 model at 66% behind an oracle that catches its failures (§4.2) is doing its job — it completes two thirds free and escalates the rest. The earliest figures suggested removing it; the better-measured one does not.
+
+**But it does not meet §10.1's target, and the two must be reconciled.** That section sets **≥70% of leaves completing on the free rung**, and `coding`'s rung 0 measures 66% with an interval of 51%–78%. The target sits inside the interval, so this is not yet evidence the target is unreachable — but the point estimate is below it, and the honest reading is that the target was written before anything was measured and has never been checked against a number.
+
+Three ways out, and the choice is not obvious enough to make in passing:
+
+1. **The target is per-tree, not per-task-type.** `long-context` measures 100% on the free rung and is the other free-starting type; a weighted average across both could clear 70% while `coding` alone does not. This is the most likely resolution and needs `long-context`'s leaf share to settle.
+2. **The target is aspirational** and should be restated as a floor that triggers review rather than a threshold the design claims to meet.
+3. **`coding`'s rung 0 is genuinely wrong** and the ladder should start at Luna — but at 66% with an oracle catching the failures, the evidence does not support that today.
+
+Recorded in §12 rather than decided here.
 
 The `floor-add` control passed 10/10, so the invocation was sound throughout.
 
-**On the latency column.** The multiplier in §5.1 uses `vllm`'s **36.5s** median from the two original tasks, not the 24.6s pooled across all six, because a multiplier is a *ratio between models* and only the two original tasks were run on all three. Pooling in four tasks that the other models never saw would flatter `vllm` by the easier mix rather than measure it. Accuracy and latency therefore rest on different subsets on purpose: accuracy wants the broadest task coverage available, a latency ratio wants an identical task mix across models. Closing that gap means running `claude-sonnet-5` on the four edit tasks.
+**On the latency column — the task mix is now equal, and equalising it changed the answer.** For part of 2026-09-15 accuracy and latency rested on different subsets, because only the two original tasks had been run on all three models; the multiplier therefore used `vllm`'s 36.5s from that harder pair rather than a figure polluted by four tasks the other models had never seen. Running `claude-sonnet-5` on the four edit tasks closed it, and all three models now have all six.
+
+The correction was not cosmetic. **The reference model changed**: over the two hard tasks Sonnet was fastest (13.8s to Luna's 15.2s), over all six Luna is (12.8s to Sonnet's 15.5s). A multiplier is a ratio, so the model at the bottom of it sets every deadline in the system — and which model that is turned out to be a property of the task sample rather than of the models. See §5.1.
 
 **Storage.** This table is a **database table**, not a constant in source. One row per `(model, task_type)` pair, with the five measured columns plus `updated_at`. It is what §9.2's editable matrix reads and writes, it is what the benchmark job (§10.2) writes its results into, and it is what the ladder generator (§3) reads at runtime. There is no second copy: the markdown above is a snapshot of the table's contents at the time of writing, not the source of truth. A benchmark run that writes results anywhere else has not landed them.
 
@@ -505,12 +518,12 @@ Exec-verified coding tasks. The table reflects every run as of 2026-09-15 — `b
 
 | model | accuracy | n | tasks | median latency | $/1M |
 |---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | **70%** | 40 | 6 | 36.5s † | 0.0000 |
-| `azure_ai/gpt-5.6-luna` | **100%** | 24 | 6 | 15.2s † | 0.0285 |
-| `claude-sonnet-5` | **100%** | 4 | 2 | 13.8s | 1.5709 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | **66%** | 44 | 6 | 26.8s | 0.0000 |
+| `azure_ai/gpt-5.6-luna` | **100%** | 24 | 6 | 12.8s | 0.0285 |
+| `claude-sonnet-5` | **100%** | 24 | 6 | 15.5s | 1.5709 |
 | `azure_ai/gpt-5.4-mini` | **not measured** | — | — | — | 0.5261 |
 
-† Latency is the median over the **two original tasks only**, the sole task mix all three models have run. Accuracy uses every task available to each model. See §2.6's note on why a multiplier needs an identical task mix while accuracy does not.
+All three models have run the same six tasks, so accuracy and latency rest on one mix. `vllm` carries more runs than the other two because it was measured twice more while the figure was still moving.
 
 **The ladder is confirmed unchanged.** Walking the generator's rule over these rows — cheapest-first, skipping any model measured worse than the current rung — gives `vllm → luna → sonnet` exactly as the snapshot above shows. Equal accuracy is not "worse", so Sonnet survives as rung 2.
 
@@ -751,20 +764,24 @@ The consequence is not a slow leaf; it is a leaf killed after spending on five s
 
 Coding latencies are now measured (§2.6), so the worst case above is no longer hypothetical. **The free model is the slowest thing in the ladder**, which is the fact that decides this:
 
-| model | `median_latency_s` (coding) | n | multiplier |
+All three models have now run the **same six `coding` tasks**, so these are medians over an identical task mix rather than over whatever each model happened to be given:
+
+| model | `median_latency_s` (coding, 6 tasks) | n | multiplier |
 |---|---|---|---|
-| `claude-sonnet-5` | 13.8 | 4 | **1.00** (reference — fastest ladder-eligible on `coding`) |
-| `azure_ai/gpt-5.6-luna` | 15.2 | 4 | 1.10 |
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | 36.5 | 20 | **2.64** |
-| `azure_ai/gpt-5.6-luna` on `reviewer-gate` | 11.1 | 9 | 0.80 |
+| `azure_ai/gpt-5.6-luna` | 12.8 | 24 | **1.00** (reference — fastest ladder-eligible on `coding`) |
+| `claude-sonnet-5` | 15.5 | 24 | 1.21 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 26.8 | 44 | **2.09** |
+| `azure_ai/gpt-5.6-luna` on `reviewer-gate` | 11.1 | 9 | 0.87 |
+
+**The reference moved from Sonnet to Luna when the task mix was equalised**, and that is the whole argument for insisting on one: measured over the two hard tasks alone Sonnet was faster (13.8 against 15.2), measured over all six Luna is faster (12.8 against 15.5). Neither model changed. The earlier ordering was an artefact of Sonnet having run only the harder half, and a multiplier built on it would have been scaling every deadline against a reference that does not hold.
 
 ```
-multiplier sum = generation (2.64 + 1.10 + 1.00) + 3 gates (3 x 0.80)
-               = 4.746 + 2.413 = 7.16
+multiplier sum = generation (2.09 + 1.00 + 1.21) + 3 gates (3 x 0.87)
+               = 4.30 + 2.60 = 6.90
 
-score 3 (size 1.0):  90 x 1.0 x 7.16 =   644s   vs 600s ceiling — over by  44s
-score 4 (size 1.5):  90 x 1.5 x 7.16 =   967s   vs 600s ceiling — over by 367s
-score 5 (size 2.0):  90 x 2.0 x 7.16 = 1,289s   vs 600s ceiling — over by 689s
+score 3 (size 1.0):  90 x 1.0 x 6.90 =   621s   vs 600s ceiling — over by  21s
+score 4 (size 1.5):  90 x 1.5 x 6.90 =   932s   vs 600s ceiling — over by 332s
+score 5 (size 2.0):  90 x 2.0 x 6.90 = 1,242s   vs 600s ceiling — over by 642s
 ```
 
 **All three fail.** A `coding` leaf at score 3 — the ordinary case, `write.*test.*suite` — cannot complete its worst-case path inside the 600s ceiling, and the binding score-5 case misses by more than double.
@@ -775,7 +792,7 @@ First, an earlier set (sonnet 10.7, luna 12.8, vllm 22.4) predated the 2026-09-1
 
 Second — and this is why the column now carries an `n` — **the values that replaced them were not medians.** Each was one run's `total_s` lifted from a four-run sample: vllm was recorded at 33.2 when the median of its four runs was 45.8, luna at 14.7 against 15.2, sonnet at 12.7 against 13.8. The column asserted "median" and held a sample. Because §5.1 derives every per-attempt deadline *and* the combined ceiling from this one column, a sample wearing a median's name propagates into two derived quantities with nothing in between to catch it. The figures above are computed medians, and `vllm` is now an `n=20` median rather than an `n=4` one.
 
-Note what the correction did **not** do: it did not move the decision. The sum went 7.39 → 7.16 and the binding case 1,331s → 1,289s, both comfortably under the ceiling. The derivation was wrong and the conclusion survived it — which is the argument for deriving rather than choosing, not against it.
+Note what the correction did **not** do: it did not move the decision. The sum went 7.39 → 7.16 and the binding case 1,331s → 1,289s, both comfortably under the ceiling (both have since moved again — see the six-task figures below). The derivation was wrong and the conclusion survived it — which is the argument for deriving rather than choosing, not against it.
 
 #### Decided 2026-09-15: option 1, and the ceiling is 1,500s
 
@@ -783,22 +800,24 @@ Note what the correction did **not** do: it did not move the decision. The sum w
 
 **Option 1 it is: the ceiling is derived from the worst-case path, not chosen.** The binding case is the highest score `coding` can reach, and that is **5, not 4** — §2.1 takes the highest score among all matched patterns, so a task matching a coding pattern *and* the score-5 `implement.*multiple|coordinate.*agent|orchestrate` pattern is classified `coding` at score 5. Budgeting to score 4 would leave the ceiling below the worst case for a task the classifier produces by ordinary means.
 
-**Which latency a gate uses had to be pinned before this could be computed at all.** §5.1 says a gate takes "the gate model's multiplier and the leaf's own task type", and for a gate running on luna against a `coding` leaf those two point at different rows: luna's `coding` row (15.2s) and luna's `reviewer-gate` row (11.1s). The choice moves the worst case by well over a hundred seconds, so it is not a detail.
+**Which latency a gate uses had to be pinned before this could be computed at all.** §5.1 says a gate takes "the gate model's multiplier and the leaf's own task type", and for a gate running on luna against a `coding` leaf those two point at different rows: luna's `coding` row (12.8s) and luna's `reviewer-gate` row (11.1s). The choice moves the worst case by well over a hundred seconds, so it is not a detail.
 
 **A gate uses the `reviewer-gate` row when one exists for that model**, falling back to the leaf's task-type row when it does not. The gate row is the direct measurement of the call being timed — a gate prompt carries the code plus the task description and returns one line, which is a different shape from a generation call, and §2.6 holds a row for it precisely so that shape is measured rather than inferred.
 
 ```
-reference = 13.8s   (sonnet, fastest ladder-eligible on coding, median of n=4)
+reference = 12.8s   (luna, fastest ladder-eligible on coding over all 6 tasks)
 
-generation   (36.5 + 15.2 + 13.8) / 13.8 = 4.7464
-gates        3 x (11.1 / 13.8)            = 2.4130
-                                     sum  = 7.1594
+generation   (26.8 + 12.8 + 15.5) / 12.8 = 4.3047
+gates        3 x (11.1 / 12.8)            = 2.6016
+                                     sum  = 6.9063
 
 binding case: coding, score 5, size factor 2.0
-90 x 2.0 x 7.1594 = 1,289s
+90 x 2.0 x 6.9063 = 1,242s
 ```
 
-**Ceiling = 1,500s**, and the margin is the point. The binding case lands at **1,289s**, leaving 211s — about 16% — against latency samples of which only `vllm`'s is larger than `n=4`. A ceiling set flush to the worst case would be a coincidence rather than a margin: the next re-measurement of any of these four latencies breaks it, and the failure mode is a leaf killed after paying for all five stages. The re-measurement already performed makes the point — `vllm` moved 22.4 → 33.2 → 36.5 across three passes at the same task on the same day.
+**Ceiling = 1,500s**, and the margin is the point. The binding case lands at **1,242s**, leaving 258s — about 17%. A ceiling set flush to the worst case would be a coincidence rather than a margin: the next re-measurement of any of these latencies breaks it, and the failure mode is a leaf killed after paying for all five stages.
+
+The re-measurement history makes the case better than any argument could. `vllm`'s coding latency has read 22.4, then 33.2, then 36.5, and now 26.8 across four passes at the same task type on the same day; the multiplier sum has read 7.40, 7.77, 7.39, 7.16 and now 6.90; and the reference model itself changed identity once the task mix was equalised. Every one of those readings was taken honestly and every one would have been used. **The ceiling has held at 1,500s throughout, which is the only reason none of it mattered** — and that is an argument for the margin, not for the arithmetic.
 
 **An earlier revision of this section stated a multiplier sum of 7.77 and a worst case of 1,399s, and those reproduce from no reading of §2.6** — against the values available at the time, the two defensible gate choices gave 7.3937 and 8.2441, and 7.77 was neither. It came from assuming a gate multiplier of 1.00 instead of deriving one. This matters more than a typo would, because §1.1 recomputes this arithmetic at startup and refuses to load when it disagrees with the stored ceiling: a number nobody can reproduce would have been compared against on every boot.
 
@@ -991,7 +1010,7 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | gates carry deadlines | asserting only the generation deadline — assert each model gate gets `baseline x size_factor x` **its own model's** multiplier |
 | ceiling is checked before a stage | asserting a leaf stops at the ceiling — assert it stops **between** stages with the next stage never started, not mid-call |
 | ceiling exhaustion does not escalate | folding it into deadline expiry — assert `latency_ceiling_exhausted` **terminates** the leaf and that no higher rung is attempted |
-| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling. Both sides: an operational `coding` type at score 5 (1,289s) **must load** against the 1,500s ceiling, and raising any ladder-eligible `median_latency_s` enough to push the sum past 1,500 **must stop it loading** |
+| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling. Both sides: an operational `coding` type at score 5 (1,242s) **must load** against the 1,500s ceiling, and raising any ladder-eligible `median_latency_s` enough to push the sum past 1,500 **must stop it loading** |
 | the derivation reproduces | asserting the stored ceiling is under some number — recompute the sum from §2.6's rows inside the test and assert it equals what §5.1 states. Three successive revisions of this arithmetic were wrong (7.40, 7.77, 7.39) while the conclusion happened to survive each time; only a test that reproduces the sum from the table would have caught any of them |
 | `median_latency_s` is a median | asserting the cell has a value — assert it equals the median of that model's recorded runs. The 2026-09-15 values were single samples (vllm 33.2 where the median was 45.8), and the column feeds both the deadline and the ceiling, so a sample here corrupts two derived quantities silently |
 | an alias is one model, not two | keying on the served model string — assert that a request for `vllm/Qwen3.6-35B-A3B-NVFP4` answered as `nvidia/Qwen3.6-35B-A3B-NVFP4` records **one** row under the canonical name. Two rows for one deployment halve its accuracy sample and split its cost attribution (§2.5) |
@@ -1053,4 +1072,5 @@ Every test is mutation-checked: break the ladder order, the guard, the terminati
 ## 12. Open items
 
 - `claude_proxy.py` drift on the pentester transport (`bb117e85…` vs HEAD `691fe393…`) — a deployment decision to settle before any wholesale transport sync. **Do not sync transports until it is decided.**
+- **§10.1's ≥70% free-rung target is not met by `coding`'s measured 66%** (§2.6). The target sits inside the 51%–78% interval, so it is not yet disproved, but it was written before any measurement and has never been checked against one. Resolve by deciding whether it is a per-tree average (`long-context` measures 100% on the free rung and would pull the weighted figure up), an aspirational floor that triggers review, or a genuine constraint that `coding`'s rung 0 fails. **Do not treat the target as met.**
 - **A task type's gate types are not covered by its own validation** (§1.2). `coding` clears all six §1.1 invariants while `reviewer-gate`, which its stages 3–5 run on, does not — reviewer-gate has no measured accuracy on either row, and §2.7 prices `claude-sonnet-5` at its rung 1 at $1.868 against a $1.00 tree budget. Every §1.1 invariant is per task type, so nothing currently refuses this combination. Resolve either by requiring gate types to be operational first, or by scoping reviewer-gate affordability to reachable rungs — §4.3 reaches sonnet only when the generator's top rung keeps being rejected, which the flat reach-probability model prices as routine when it is a tail case. **Until it is decided, do not flip `coding` to operational.**

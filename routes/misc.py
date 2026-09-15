@@ -628,6 +628,56 @@ async def handle_usage_get(request: Request):
     )
 
 
+# Assembled /api/usage/series payloads, keyed by
+# (database, owner, days, bucket).
+#
+# The charts read stored aggregates over a window measured in days, so a
+# response is already minutes stale by any measure that matters, and the page
+# re-requests on every range and bucket change -- four ranges times four
+# buckets, clicked through in seconds. Serving the same payload for a few
+# seconds costs nothing a reader can perceive and removes whole table scans.
+#
+# Deliberately not invalidated on write: a TTL this short converges on its own,
+# and hooking usage inserts would put cache bookkeeping on the turn hot path to
+# save a wait nobody is having.
+# The database path is part of the key because a payload describes the rows in
+# one database, and pointing the process at another makes it meaningless. In
+# production that path never changes and the component is inert; under test
+# every case gets its own file, and without this a cached answer crossed from
+# one case's seeded rows into the next one's assertions -- which is how this
+# was found, as four unrelated endpoint tests that passed alone and failed
+# together.
+_SERIES_CACHE: dict[tuple[str, str, object, str], tuple[float, dict]] = {}
+_SERIES_CACHE_TTL_S: float = 30.0
+# Bounded so a long-lived process cannot accumulate entries: the real key space
+# is one owner times four ranges times four buckets, and anything beyond that
+# is a caller varying the query string, not a user reading charts.
+_SERIES_CACHE_MAX = 64
+
+
+def _series_cache_key(owner: str, days: object, bucket: str) -> tuple:
+    return (config.DB_PATH, owner, days, bucket)
+
+
+def _series_cache_get(key: tuple) -> dict | None:
+    hit = _SERIES_CACHE.get(key)
+    if hit is None:
+        return None
+    stored_at, payload = hit
+    if time.monotonic() - stored_at > _SERIES_CACHE_TTL_S:
+        _SERIES_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _series_cache_put(key: tuple, payload: dict) -> None:
+    if len(_SERIES_CACHE) >= _SERIES_CACHE_MAX:
+        # Oldest first, so a burst of odd keys cannot evict a live one.
+        for stale, _ in sorted(_SERIES_CACHE.items(), key=lambda kv: kv[1][0])[:8]:
+            _SERIES_CACHE.pop(stale, None)
+    _SERIES_CACHE[key] = (time.monotonic(), payload)
+
+
 async def handle_usage_series_get(request: Request):
     """GET /api/usage/series -- usage bucketed over time, for the charts.
 
@@ -661,7 +711,16 @@ async def handle_usage_series_get(request: Request):
     if bucket not in db.USAGE_BUCKETS:
         bucket = "day"
 
-    series = await db.usage_series(owner, days, bucket)
+    cache_key = _series_cache_key(owner, days, bucket)
+    cached = _series_cache_get(cache_key)
+    if cached is not None:
+        return JSONResponse(cached)
+
+    # One pass over usage_events for all three series. These were three calls
+    # running five full scans between them -- see usage_series_bundle for the
+    # measurements and for why no index can help.
+    parts = await db.usage_series_bundle(owner, days, bucket)
+    series = parts["series"]
     # Cost is only meaningful on the subscription: Claude Code prices every
     # turn with Anthropic's rates, so a gateway's figure is arithmetic on the
     # wrong number. Blanked here for the same reason /api/usage blanks it.
@@ -679,7 +738,7 @@ async def handle_usage_series_get(request: Request):
     # rather than a join, because the names come from `chats` and the figures
     # from `usage_events`: joining them would make one query answer to two
     # tables' schemas for no saving a page load can measure.
-    agents = await db.usage_agent_series(owner, days, bucket)
+    agents = parts["agents"]
     names = await db.usage_agent_names(
         owner, sorted({row["agent_id"] for row in agents}),
     )
@@ -689,14 +748,13 @@ async def handle_usage_series_get(request: Request):
             else row["agent_id"][:8]
         )
 
-    return JSONResponse(
-        {
+    payload = {
             "days": days if days is not None else 0,
             "bucket": bucket,
             "buckets": list(db.USAGE_BUCKETS),
             "retention_days": config.USAGE_RETENTION_DAYS,
             "series": series,
-            "models": await db.usage_model_series(owner, days, bucket),
+            "models": parts["models"],
             "agents": agents,
             # Re-counted context: the input of turns whose model reported no
             # cache breakdown, so each one counts the whole conversation again.
@@ -724,8 +782,9 @@ async def handle_usage_series_get(request: Request):
                 bucket, days,
                 await db.usage_earliest(owner) if days is None else None,
             ),
-        }
-    )
+    }
+    _series_cache_put(cache_key, payload)
+    return JSONResponse(payload)
 
 
 def _system_range(request: Request) -> tuple[int | None, str]:

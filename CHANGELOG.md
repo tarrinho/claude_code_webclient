@@ -22,8 +22,67 @@ churn.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-15
+
+A minor rather than a patch release because of the model-routing work: for
+conversations linked to a live CLI session, the model chosen in the console was
+not merely overridden — it was never consulted. Three of the entries below are
+different faces of one problem, which is *the model a conversation says it uses
+versus the model that actually answers*. The prompt cap was raised in the same
+window, and immediately exposed a truncation bug on the same path.
+
+### Added
+
+- **The prompt cap is raised from 8,000 to 25,000 characters.**
+  `config.PROMPT_MAX_CHARS` is the server-side limit, enforced on both the
+  blocking and streaming paths and again in the runner. The composer and voice
+  textareas carried `maxlength="8000"` independently, so the browser had been
+  stopping input at the old limit while the server would have accepted more;
+  both now match.
+- **Changing a conversation's model asks what actually answers, rather than
+  assuming configuration settles it.** It demonstrably did not: a conversation
+  set to `vllm/Qwen3.6-35B-A3B-NVFP4` recorded exactly that in its usage row
+  while the reply in the chat said "Claude Opus 5" — both true at once. The
+  conversation was linked to a live CLI session, so the headless turn and that
+  terminal shared one transcript: the turn ran on Qwen, the terminal answered
+  from its own context on Opus, and transcript sync imported the terminal's
+  reply into the web chat.
+- **A model change now reports the new context size and repairs the
+  transcript.** Two things bite at exactly that moment and neither was visible.
+  A context that fitted one window need not fit the next — one failure was over
+  by a single token, with the output budget half the reason — and a transcript
+  carrying empty records is accepted by the backend that wrote it and refused
+  by the one it moves to.
+
 ### Fixed
 
+- **Long prompts reached a live terminal truncated, and the console reported
+  success.** The worst of these, because it was silent in both directions. A
+  conversation linked to a live CLI session has its prompt typed into that
+  terminal rather than spawning its own turn; `send_text` cut anything over
+  4,000 characters, typed the fragment anyway, and returned success, so the log
+  recorded "prompt delivered to live terminal" for a half-delivered request.
+  From the browser the message simply vanished — reported as "I've sent several
+  messages and I don't receive any reply". Raising the composer cap to 25,000
+  the same day had widened the gap between what the UI accepted and what this
+  path could carry.
+- **A conversation's selected model is honoured instead of being ignored in
+  favour of the terminal's.** A running process cannot be re-pointed at another
+  model — its argv and environment are fixed at launch — and the routing helper
+  never took a model argument at all. Measured on this deployment: 11,022 usage
+  rows with `origin='web-routed'` ran on a model the conversations asking for
+  them had not selected.
+- **A long prompt is delivered as one paste rather than thousands of
+  keystrokes.**
+- **A failed orchestrator task records why it failed, and every task records
+  the model it ran on.**
+- **A transport that has never reported says so, instead of reading as idle at
+  0%** — a silence and a genuine zero are different facts and had looked
+  identical.
+- **A manually collapsed panel stays collapsed through a fit, and the queue
+  overlay opens.**
+- **Deploy verifies the spec file count against the repository**, so an
+  untracked spec cannot ship as a missing one.
 - **Tool calls in the terminal-transcript viewer start expanded again.**
   Reported as actions from terminal-linked chats not appearing in the console;
   they were present, folded one click away each. `buildTool` gave its

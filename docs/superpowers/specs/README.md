@@ -2,6 +2,7 @@
 
 All design specs for the WebConsole, in reverse-chronological order.
 
+- [2026-09-15: Worktree-per-session isolation](2026-09-15-worktree-per-session-isolation-design.md) — one worktree and one `session/` branch per session, enforced at `PreToolUse`; the shared checkout becomes integration-only
 - [2026-09-14: Tiered agent delegation (v3)](2026-09-14-tiered-agent-delegation-spec-v3.md) — model selection by task type, five-stage coding pipeline, runtime ladder generation, benchmark table, blast-radius check, startup validation
 - [2026-09-14: Tiered agent delegation (v2)](2026-09-14-tiered-agent-delegation-spec-v2.md) — superseded by v3
 - [2026-09-12: Tiered agent delegation (base)](2026-09-12-tiered-agent-delegation-design.md) — base design, superseded by v3

@@ -1143,6 +1143,12 @@ class OrchestratorEngine:
                     owner_id=self.owner_id,
                     status="done",
                     result=result,
+                    # Which rung actually ran the work. The column has always
+                    # existed and was never written, so every task row in this
+                    # deployment carries an empty model -- including the one
+                    # task that succeeded. `usage_events` records it per turn,
+                    # but the task row is where a person looks first.
+                    model=model,
                     progress_pct=100.0,
                 )
                 await db.orchestrator_clear_degraded(self.orchestrator_id, "task_status_done")
@@ -1178,6 +1184,16 @@ class OrchestratorEngine:
                     task_id=task_id,
                     owner_id=self.owner_id,
                     status="failed",
+                    # Why it failed, and what was running when it did. Neither
+                    # was written before, so a failed task recorded nothing at
+                    # all: the reason existed only in the log file and in an
+                    # in-memory ProgressEvent that is never persisted. The two
+                    # real failures in this deployment are undiagnosable for
+                    # exactly that reason -- status "failed", empty result,
+                    # empty model. A failure that says nothing about itself is
+                    # barely better than a silent one.
+                    result=f"{type(exc).__name__}: {exc}",
+                    model=model,
                     progress_pct=0.0,
                 )
                 await db.orchestrator_clear_degraded(self.orchestrator_id, "task_status_failed")

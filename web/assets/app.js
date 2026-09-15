@@ -506,11 +506,11 @@ async function loadStats(force = false) {
     // A range ending in "h" is shorter than a day and travels as `hours`,
     // which the server turns back into a fractional window. Anything else is
     // the day-count the picker has always sent.
-    const window = range.endsWith('h')
+    const windowParam = range.endsWith('h')
       ? `hours=${encodeURIComponent(range.slice(0, -1))}`
       : `days=${encodeURIComponent(range)}`;
     const resp = await apiFetch(
-      `/api/usage/series?${window}` +
+      `/api/usage/series?${windowParam}` +
       `&bucket=${encodeURIComponent(bucket)}`);
     if (!resp.ok) throw new Error('Could not load statistics');
     const payload = await resp.json();

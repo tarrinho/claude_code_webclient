@@ -85,7 +85,7 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | model resolution | **pass** | all three resolve to real backend-and-model pairs |
 | no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all three rungs have §2.6 rows |
-| ceiling fits the budget | **pass** | worst case 1,399s against the 1,500s ceiling (§5.1) |
+| ceiling fits the budget | **pass** | worst case 1,331s against the 1,500s ceiling (§5.1) |
 | ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
@@ -721,12 +721,15 @@ Coding latencies are now measured (§2.6), so the worst case above is no longer 
 The gate multiplier is computed against the **`reviewer-gate`** reference, not the `coding` one, because §5.1's rule is per task type and the gates are a different task type (§3). An earlier revision of this table measured the gate against `coding`'s reference and got 1.04; that reading is the one the rule does not support, and it matters here because it moves the total.
 
 ```
-multiplier sum = generation (2.61 + 1.16 + 1.00) + 3 gates (3 x 1.00)
-               = 4.77 + 3.00 = 7.77
+gate multiplier = 11.1 / 12.7 = 0.87   (luna's measured reviewer-gate row, not an
+                                        assumed 1.00 — see the derivation below)
 
-score 3 (size 1.0):  90 x 1.0 x 7.77 =   699s   vs 600s ceiling — over by  99s
-score 4 (size 1.5):  90 x 1.5 x 7.77 =   999s   vs 600s ceiling — over by 399s
-score 5 (size 2.0):  90 x 2.0 x 7.77 = 1,399s   vs 600s ceiling — over by 799s
+multiplier sum = generation (2.61 + 1.16 + 1.00) + 3 gates (3 x 0.87)
+               = 4.77 + 2.62 = 7.39
+
+score 3 (size 1.0):  90 x 1.0 x 7.39 =   665s   vs 600s ceiling — over by  65s
+score 4 (size 1.5):  90 x 1.5 x 7.39 =   998s   vs 600s ceiling — over by 398s
+score 5 (size 2.0):  90 x 2.0 x 7.39 = 1,331s   vs 600s ceiling — over by 731s
 ```
 
 **All three fail.** A `coding` leaf at score 3 — the ordinary case, `write.*test.*suite` — cannot complete its worst-case path inside the 600s ceiling, and the binding score-5 case misses by more than double.
@@ -739,13 +742,24 @@ score 5 (size 2.0):  90 x 2.0 x 7.77 = 1,399s   vs 600s ceiling — over by 799s
 
 **Option 1 it is: the ceiling is derived from the worst-case path, not chosen.** The binding case is the highest score `coding` can reach, and that is **5, not 4** — §2.1 takes the highest score among all matched patterns, so a task matching a coding pattern *and* the score-5 `implement.*multiple|coordinate.*agent|orchestrate` pattern is classified `coding` at score 5. Budgeting to score 4 would leave the ceiling below the worst case for a task the classifier produces by ordinary means.
 
+**Which latency a gate uses had to be pinned before this could be computed at all.** §5.1 says a gate takes "the gate model's multiplier and the leaf's own task type", and for a gate running on luna against a `coding` leaf those two point at different rows: luna's `coding` row (14.7s) and luna's `reviewer-gate` row (11.1s). The choice moves the worst case by 153s, so it is not a detail.
+
+**A gate uses the `reviewer-gate` row when one exists for that model**, falling back to the leaf's task-type row when it does not. The gate row is the direct measurement of the call being timed — a gate prompt carries the code plus the task description and returns one line, which is a different shape from a generation call, and §2.6 holds a row for it precisely so that shape is measured rather than inferred.
+
 ```
+reference = 12.7s   (sonnet, fastest ladder-eligible on coding)
+
+generation   (33.2 + 14.7 + 12.7) / 12.7 = 4.7717
+gates        3 x (11.1 / 12.7)            = 2.6220
+                                     sum  = 7.3937
+
 binding case: coding, score 5, size factor 2.0
-
-90 x 2.0 x 7.77 = 1,399s
+90 x 2.0 x 7.3937 = 1,331s
 ```
 
-**Ceiling = 1,500s.** Not 1,400: the binding case lands at 1,399s, and a ceiling one second above the worst case is a coincidence rather than a margin — the next re-measurement of any of the four latencies breaks it, and the failure mode is a leaf killed after paying for five stages. 1,500s is the next round value that survives normal measurement noise on an `n=4` sample.
+**Ceiling = 1,500s**, and the margin is the point. The binding case lands at **1,331s**, leaving 169s — about 13% — against an `n=4` latency sample. A ceiling set flush to the worst case would be a coincidence rather than a margin: the next re-measurement of any of these four latencies breaks it, and the failure mode is a leaf killed after paying for all five stages.
+
+**An earlier revision of this section stated a multiplier sum of 7.77 and a worst case of 1,399s. Those reproduce from no reading of §2.6** — the two defensible gate choices give 7.3937 (1,331s) and 8.2441 (1,484s), and 7.77 is neither. The corrected figures are above. This matters more than a typo would, because the paragraph below makes the derivation load-bearing: §1.1 recomputes it at startup and refuses to load when it disagrees with the stored ceiling, so a number nobody can reproduce would have been compared against on every boot. Both readings stay under 1,500s, so the ceiling itself was never wrong — only the arithmetic offered for it.
 
 The derivation is the durable part, not the number. `1,500` is what today's §2.6 produces; it is recomputed whenever a ladder or a measured latency changes, and it is **not** an independent constant to be tuned on its own. §1.1 enforces that by refusing to start when the two disagree — so a future re-measurement that pushes the worst case past 1,500s stops the system at load rather than truncating leaves in production.
 
@@ -934,7 +948,7 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | gates carry deadlines | asserting only the generation deadline — assert each model gate gets `baseline x size_factor x` **its own model's** multiplier |
 | ceiling is checked before a stage | asserting a leaf stops at the ceiling — assert it stops **between** stages with the next stage never started, not mid-call |
 | ceiling exhaustion does not escalate | folding it into deadline expiry — assert `latency_ceiling_exhausted` **terminates** the leaf and that no higher rung is attempted |
-| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling. Both sides: an operational `coding` type at score 5 (1,399s) **must load** against the 1,500s ceiling, and raising any ladder-eligible `median_latency_s` enough to push the sum past 1,500 **must stop it loading** |
+| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling. Both sides: an operational `coding` type at score 5 (1,331s) **must load** against the 1,500s ceiling, and raising any ladder-eligible `median_latency_s` enough to push the sum past 1,500 **must stop it loading** |
 | the ceiling is derived, not configured | asserting the stored `1,500` — change a `median_latency_s` in §2.6 and assert the required ceiling moves with it; a ceiling that survives a latency change unchanged is a constant wearing a derivation's clothes |
 | the gate multiplier uses its own task type | computing gate multipliers against the `coding` reference — assert a `reviewer-gate` multiplier is derived from the `reviewer-gate` rows, and that moving a `coding` latency does **not** change it |
 | binding score is 5, not 4 | computing the worst case from the highest *coding pattern* score — §2.1 takes the highest score among **all** matched patterns, so assert a task matching both a coding pattern and the score-5 planning pattern is classified `coding` at **score 5** and budgeted at 2.0x |

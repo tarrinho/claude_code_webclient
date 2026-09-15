@@ -52,21 +52,33 @@ A write is rejected only against the invariants of task types that are *already*
 
 | task_type | rows | accuracy | n | cost | latency | max_context |
 |---|---|---|---|---|---|---|
-| coding | 4 | 0 | 0 | **4** | 3 | 0 |
-| comprehension | 3 | 2 | 2 | **3** | 0 | 0 |
-| long-context | 3 | 1 | 1 | **3** | 0 | 0 |
-| multi-turn | 2 | 0 | 0 | **2** | 0 | 0 |
-| planning | 2 | 0 | 0 | **2** | 0 | 0 |
-| reasoning | 4 | 2 | 1 | **4** | 0 | 0 |
-| reviewer-gate | 2 | 0 | 0 | **2** | 1 | 0 |
-| split-decision | 1 | 0 | 0 | **1** | 0 | 0 |
-| voice | 2 | 0 | 0 | **2** | 0 | 0 |
+| coding | 4 | 0 | 0 | **4** | 3 | **4** |
+| comprehension | 3 | 2 | 2 | **3** | 0 | **3** |
+| long-context | 3 | 1 | 1 | **3** | 0 | **3** |
+| multi-turn | 2 | 0 | 0 | **2** | 0 | **2** |
+| planning | 2 | 0 | 0 | **2** | 0 | **2** |
+| reasoning | 4 | 2 | 1 | **4** | 0 | **4** |
+| reviewer-gate | 2 | 0 | 0 | **2** | 1 | **2** |
+| split-decision | 1 | 0 | 0 | **1** | 0 | **1** |
+| voice | 2 | 0 | 0 | **2** | 0 | **2** |
 
-Cost is complete (23/23) as of today. Latency is 4/23, accuracy 5/23, and **`max_context` is 0/23**.
+Cost and `max_context` are both complete (23/23) as of today. Latency is 4/23 and accuracy is 5/23.
 
-**`max_context` is the cheapest column in the table and nobody has filled any of it.** It needs no benchmark run — it is a published property of each model — and §3 singles it out as the field that decides whether a rung can take a task at all, since a cheaper and more accurate model is still wrong if the input does not fit. This project has already lost time to exactly that failure: a gateway model with a 32,000-token window raised `ContextWindowExceededError` on an obviously small prompt because the *output* budget consumed the whole window. Filling this column is an afternoon of lookups and it unblocks one sixth of every readiness check.
+**`max_context` was the cheapest column and is now filled** (§2.6) — it needed no benchmark run, only the gateway's `/model/info` and a documented model table. It is recorded here because the readiness table above was the thing that surfaced it: a column no measurement pass would ever produce had been sitting at 0/23 while every task type waited on it.
 
-**Shortest path to one operational task type is `coding`**, which already holds 4/4 cost and 3/4 latency: it needs accuracy plus accuracy-`n` for its rows, one more latency figure, and its context windows.
+**Shortest path to one operational task type is `coding`**, which already holds 4/4 cost, 4/4 `max_context` and 3/4 latency: it needs accuracy and an accuracy `n` for its rows, plus one more latency figure.
+
+#### `leaves_per_tree` cannot be measured from history, and the reason matters
+
+§2.7 names `leaves_per_tree` as its one pure assumption and the highest-leverage number missing. It is not obtainable from this deployment's history, because **the orchestrator has barely run**:
+
+- **3 tasks have ever existed**, across 2 orchestrators, both on 2026-08-31. Two of the three failed.
+- **Every one of them is a root.** `parent_task_id` is empty on all three, so no task ever decomposed — no tree has ever been formed, and the observed children-per-node is zero. There is no shape to measure.
+- **`usage_events` contains no orchestrator rows at all.** Origins present are `terminal` (145,410), `web-routed` (21,891), `web` (309) and `voice` (33). `orchestrator` and `supervisor` appear zero times.
+
+That third point is the serious one, and it is a known failure mode in this codebase rather than a new one: a supervisor fanning out subtasks has previously spent real tokens and appeared in the usage tables as nothing, because recording usage is the caller's job and that caller did not do it. **§10 and §10.1 both specify measurement from `usage_events` with `origin="orchestrator"`, and that row has never been written.** The free-tier target, the escalation trigger, the cost-per-leaf figure and the circuit breaker all read from a source that is currently empty for this subsystem.
+
+So the ordering is forced: **usage recording on the orchestrator path has to work before any of §10 can report anything**, and `leaves_per_tree` only becomes measurable once trees are actually built and recorded. Until then §2.7's ladder admissibility rests on `leaves_per_tree = MAX_NODES = 40`, which is an upper bound and therefore the conservative choice — the true figure is almost certainly smaller, and a smaller figure admits *more* models, so nothing currently excluded is excluded in error.
 
 **One scoping decision is unresolved and it changes how much of this is required.** §1.1 demands every *row* of a task type be complete, but §2.6 makes a row with TBD accuracy ineligible — not a ladder candidate at all. Requiring completeness of rows that can never be rungs is work with no consequence. Scoping the invariant to **ladder rows, plus a requirement that at least one exists**, would preserve every guarantee it currently makes while removing that. It is left as written here because narrowing a validity check is a deliberate decision, not a cleanup.
 
@@ -205,29 +217,41 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 | model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | 6* | 0.0000 | 22.4 | TBD |
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | coding | TBD | 3* | 0.0285 | 12.8 | TBD |
-| `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | voice | TBD | — | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | TBD |
-| `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | TBD |
-| `claude-sonnet-5` | coding | TBD | 7* | 1.5709 | 10.7 | TBD |
-| `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | voice | TBD | — | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | multi-turn | TBD | — | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | planning | TBD | — | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | TBD |
-| `claude-sonnet-5` | reviewer-gate | TBD | — | 1.5709 | TBD | TBD |
-| `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | TBD |
-| `claude-opus-5` | reasoning | TBD | TBD | 3.6082 | TBD | TBD |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | 6* | 0.0000 | 22.4 | 229,376 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | 229,376 |
+| `azure_ai/gpt-5.6-luna` | coding | TBD | 3* | 0.0285 | 12.8 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | voice | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | 1,050,000 |
+| `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
+| `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | 922,000 |
+| `claude-sonnet-5` | coding | TBD | 7* | 1.5709 | 10.7 | 1,000,000 |
+| `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | voice | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | multi-turn | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | planning | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | reviewer-gate | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | 1,000,000 |
+| `claude-opus-5` | reasoning | TBD | TBD | 3.6082 | TBD | 1,000,000 |
+
+**`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The three gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available.
+
+| model | max input | max output |
+|---|---|---|
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 229,376 | **32,768** |
+| `azure_ai/gpt-5.6-luna` | 922,000 | 128,000 |
+| `azure_ai/gpt-5.4-mini` | 1,050,000 | 128,000 |
+| `claude-sonnet-5` | 1,000,000 | 128,000 |
+| `claude-opus-5` | 1,000,000 | 128,000 |
+
+**The free model's output cap is 32,768 — a quarter of every other model's.** Its input window is ample, so a naive read of `max_context` alone says it fits anything; the constraint is on what it can *write*. That is the same shape as the failure already recorded for this deployment, where a 32k-window gateway model raised `ContextWindowExceededError` on an obviously small prompt because the requested output budget consumed the whole window. A coding task whose patch exceeds ~32k tokens cannot complete at rung 0 no matter how accurate the model is, and it will fail in a way that reads like a context error rather than a capacity one. The column stores the input window because that is what §3's tooltip is for; the output cap is recorded here because it is the figure that will actually stop a leaf.
 
 **An `n` marked with `*` is a latency sample, not an accuracy sample.** Four rows carry measured `median_latency_s` from `bench/pipeline_ab.py` (2026-09-15) while their `accuracy` is still TBD. The `n` column means *accuracy* sample size everywhere else, and §2.6's blocking constraint on Opus depends on that reading, so the two must not be confused: **no row in this table yet carries a measured accuracy sample size for coding.** A row needs both before its task type can go operational.
 

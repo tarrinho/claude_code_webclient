@@ -323,6 +323,49 @@ def _reset_settings_cache():
 # `asyncio.run(db.close())` on a fresh loop succeeds and joins the thread.
 # One file (`self.addCleanup(lambda: asyncio.run(db.close()))`) had already
 # found that independently.
+# The CLI session registry (~/.claude/sessions) is production state that every
+# console session and the standby lookup read. It is NOT the same thing as
+# WC_SESSION_DB_PATH above -- that redirects the auth-session *database*; this
+# is the directory of `<session id>.json` records the Claude CLI and the console
+# both write.
+#
+# The suite was writing into the real one. Measured 2026-09-15: records named
+# `dead1`, `dead2`, `live1`, `mock-ses`, `e2e-sess`, `flow-ses` and `sid` were
+# sitting in ~/.claude/sessions alongside genuine sessions, written that day by
+# test_qa_transcripts.py, test_qa_orchestrator_changes.py and test_qa_layers.py.
+# They do not merely take up space: `_session_is_live` and the standby endpoint
+# walk this directory, and standby was answering HTTP 500 -- "no running session
+# found matching ..." -- against a registry 84% composed of records naming
+# processes that no longer exist.
+#
+# The per-file remedy already existed and already failed, which is why this is a
+# fixture rather than a note. `db._CLAUDE_SESSIONS_DIR` is documented at
+# routes/db_sessions.py as the override seam, and two test files use it while
+# eight do not. That is the same shape as registry #65 -- a habit recorded in
+# prose, bypassed by everything that did not happen to remember it -- so the
+# redirect is applied to every test here instead of asked for at each site.
+#
+# tmp_path, not a shared directory: unlike the log above (which tolerates
+# interleaving on purpose), tests read these records back and assert on them, so
+# two concurrent suites sharing one directory would see each other's sessions.
+@_pytest.fixture(autouse=True)
+def _redirect_cli_session_registry(tmp_path, monkeypatch):
+    """Point the CLI session registry at a per-test directory.
+
+    A test that patches `db._CLAUDE_SESSIONS_DIR` itself still works: that patch
+    simply nests inside this one and wins for its own duration.
+    """
+    try:
+        import db as _db
+    except Exception:  # pragma: no cover - a run that cannot import the app
+        yield
+        return
+    registry = tmp_path / "claude-sessions"
+    registry.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_db, "_CLAUDE_SESSIONS_DIR", registry, raising=False)
+    yield
+
+
 @_pytest.fixture(autouse=True)
 def _close_leaked_db_connection():
     """Close a connection a failed setUp left behind, so the run can exit."""

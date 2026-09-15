@@ -149,17 +149,22 @@ per the file-inventory notes elsewhere in this repo's docs).
   chat still exists, the title links back to it. If not, it reads
   "`<title>` (chat deleted)" and is plain text.
 
-  **Descoped from v1, found at final review (2026-09-12):** the shipped
-  implementation renders `chat_title` as plain text unconditionally, with
-  no link and no "(chat deleted)" distinction — the API's list response
-  carries `chat_id` but no `chat_exists` signal, and the SPA has no
-  URL-per-chat route to link to; wiring "jump to this chat" through the
-  existing client-side chat-switching machinery is real, undesigned scope,
-  not a one-line fix. Left as an acknowledged gap rather than implemented
-  under final-review time pressure. Revisit by adding a `chat_exists`
-  boolean to `GET /api/images`'s response (cheap: one extra query per page,
-  or a join) and a click handler that calls into the same chat-selection
-  path `chat-list.js` already uses.
+  **Descoped at final review (2026-09-12), closed the next day in
+  `bd9ef98`.** As first shipped this rendered `chat_title` as plain text
+  unconditionally: the list response carried `chat_id` but no `chat_exists`
+  signal, the SPA has no URL-per-chat route to link to, and wiring "jump to
+  this chat" through the existing client-side chat-switching machinery was
+  undesigned scope rather than a one-line fix. It was left as an
+  acknowledged gap instead of being rushed.
+
+  It is now implemented as described above, by the route the descope note
+  itself proposed: `GET /api/images` returns a `chat_exists` boolean per row
+  (batched through `chat_ids_that_exist`, one query per page rather than one
+  per row), and `images.js` renders a button that calls the same
+  chat-selection path `chat-list.js` uses when the chat is still there, or
+  the plain text "`<title>` (chat deleted)" when it is not. Verified live on
+  2026-09-15: the field is present in the response and both branches exist
+  in `web/assets/images.js`.
 - A delete button per tile reuses the Yes/No confirmation popup pattern
   already shipped for backend deletion (`3601e65`), rather than a new
   confirmation component.

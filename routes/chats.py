@@ -799,11 +799,22 @@ async def handle_chat_standby(request: Request, chat_id: str):
             cwd=str(Path(__file__).resolve().parent.parent),
         )
         stdout, stderr = await result.communicate()
-        if result.returncode != 0:
+        # Exit 2 means the signal was delivered and the standby record written,
+        # and only the process's own shutdown is outstanding. Treating that as a
+        # failure produced the worst available outcome on 2026-09-15: the session
+        # was killed, the script recorded it, this function raised before
+        # reaching the update below, and the user was told the standby failed --
+        # leaving a dead session attached to a chat that did not know it was on
+        # standby. Exit 1 still means nothing happened (no such session, or
+        # refused because it was busy) and stays a 500.
+        lingering = result.returncode == 2
+        if result.returncode not in (0, 2):
             raise HTTPException(
                 status_code=500,
                 detail=f"Standby script failed: {stderr.decode()[:200]}",
             )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -811,11 +822,17 @@ async def handle_chat_standby(request: Request, chat_id: str):
     reason = "Standby requested via webchat at " + datetime.datetime.now(datetime.UTC).isoformat()
     await db.chat_update(chat_id, owner, standby_reason=reason)
 
-    return JSONResponse({
+    body: dict[str, Any] = {
         "ok": True,
         "standby": True,
         "resume_command": f"eval \"$(bash {Path(__file__).resolve().parent.parent / 'bin' / 'wc-session-wake.sh'} {name})\"",
-    })
+    }
+    if lingering:
+        body["warning"] = (
+            f"Session '{name}' was signalled and recorded, but had not exited yet. "
+            "It is shutting down; no action is needed."
+        )
+    return JSONResponse(body)
 
 
 async def handle_chat_wake(request: Request, chat_id: str):

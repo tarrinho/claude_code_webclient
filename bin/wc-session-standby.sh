@@ -149,12 +149,35 @@ echo "  name=${name:-$target} sessionId=${session_id} cwd=${cwd}"
 echo "sending SIGTERM to pid ${pid}..."
 kill "$pid" 2>/dev/null || true
 
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+# How long to wait for the process to go. 5s was the original figure and it is
+# too short for this workload: on 2026-09-15 a standby of pid 2585 reported "did
+# not exit within 5s", and the process was gone when checked afterwards -- it
+# was shutting down the whole time. The CLI flushes its transcript and session
+# record on the way out, so the tail of that work is normal, not a hang.
+#
+# Configurable for the same reason WC_STANDBY_MIN_IDLE_S is: the right number is
+# a property of the host, and a hardcoded one gets worked around rather than
+# tuned.
+term_wait="${WC_STANDBY_TERM_WAIT_S:-30}"
+deadline=$(( $(date +%s) + term_wait ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
     kill -0 "$pid" 2>/dev/null || { echo "pid ${pid} exited -- standby complete."; exit 0; }
     sleep 0.5
 done
 
-echo "pid ${pid} did not exit within 5s after SIGTERM." >&2
-echo "The standby record was still written -- resume with wc-session-wake.sh once" >&2
-echo "the process actually exits (check with: kill -0 ${pid})." >&2
-exit 1
+# One last look before calling it a failure: the loop above can lose the race
+# by half a second, and reporting a failure for a process that has already gone
+# is what sent a user an error for a standby that had worked.
+kill -0 "$pid" 2>/dev/null || { echo "pid ${pid} exited -- standby complete."; exit 0; }
+
+# Exit 2, not 1, and the distinction is the point. The signal was delivered and
+# the standby record is on disk; the only thing outstanding is the process
+# finishing its own shutdown. That is not the same failure as "no such session"
+# or "refused because busy", which are exit 1 and mean nothing happened at all.
+# The caller marks the chat as standby on 2 and reports a warning, rather than
+# discarding a standby that did in fact take place -- the state that left a dead
+# session, an unmarked chat, and an error message all at once.
+echo "pid ${pid} has not exited ${term_wait}s after SIGTERM." >&2
+echo "The standby record was written and the signal was delivered -- resume with" >&2
+echo "wc-session-wake.sh once the process actually exits (check: kill -0 ${pid})." >&2
+exit 2

@@ -138,10 +138,19 @@ A self-hosted model with no marginal per-token charge is booked at $0.47/request
 
 **So the Anthropic models are the cheapest per request that anyone here has actually measured** — Sonnet at roughly one tenth of the $0.015/request that §2.7 uses to exclude mini. Any argument that they are the expensive option needs a source that is not this table.
 
-**Two figures in this document now have no traceable source**, and both are load-bearing:
+#### The Azure source, named (2026-09-15)
 
-- **`~0.003`/request for luna and `~0.015`/request for mini** (§2.6, §2.7). `bench_rates.json` records **no rate for any Azure model**, deliberately — nobody recorded what this deployment pays, and the names look like internal deployment aliases rather than public SKUs. The MTD euro figures in the table above cannot be their source either, since those rows carry no authoritative basis.
-- **The request and token counts in this section's own table**, which do not reconcile with `usage_events` on any window tried. If they came from an Azure billing export rather than from this database, **that export is the source of truth for Azure cost and this document must name it.** Until it does, the cost ceiling rests on numbers no reader can check.
+The Azure figures come from **gateway billing, not from `usage_events`** — which is why they do not reconcile with this database and why `bench_rates.json`, which only knows public rate cards, records no rate for them. That is the source this section previously failed to name. For luna, MTD: **209,613,193 tokens for €5.52.**
+
+```
+luna = €5.52 / 209.613193M tokens = €0.026334 /1M = $0.028472 /1M
+     = €0.002766 /request over 1,996 requests = $0.00299 /request
+     at 105,017 tokens per request
+```
+
+**The currency conversion is now stated rather than implied.** §2.5.1's `$2.99 per 1,000 requests` against €5.52 over 1,996 requests implies **EUR→USD = 1.0812**, and every USD figure derived from a euro one in this document uses that rate. It is an assumption with a date on it, not a constant; a materially different rate changes the ceiling comparisons below.
+
+`bench_rates.json` still holds no Azure rate and should keep refusing to invent one — its scope is public rate cards. The gateway billing figures belong in the §2.6 table, which is where the ladder generator reads from.
 
 The list rates remain correct as list rates: opus 5.00/25.00, sonnet 2.00/10.00, haiku 1.00/5.00, fable 10.00/50.00 USD per 1M in/out. **Comparing a blended Azure rate to an Anthropic list output rate is not like-for-like** and must not be done without saying so — but note that the reverse comparison, the one this section previously made, was worse: it compared a fictional Azure figure against a real Anthropic one.
 
@@ -169,33 +178,35 @@ The base design's `$0.23 per 1,000 tasks` for luna assumed 495 output tokens per
 
 Holding each model against each task type, with columns: measured accuracy, sample size, cost per request, latency, and context window. A row per model per task type.
 
-| model | task_type | accuracy | n | cost_per_request | median_latency_s | max_context |
+| model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | — | ~0.00 | TBD | TBD |
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | ~0.00 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | coding | TBD | — | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | long-context | TBD | — | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | voice | TBD | — | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.4-mini` | coding | TBD | — | ~0.015 | TBD | TBD |
-| `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | ~0.015 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | planning | TBD | — | ~0.003 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | — | ~0.003 | TBD | TBD |
-| `claude-sonnet-5` | coding | TBD | — | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | long-context | TBD | — | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | comprehension | 100% | 2 | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | reasoning | 75% | 2 | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | voice | TBD | — | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | multi-turn | TBD | — | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | planning | TBD | — | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | split-decision | TBD | — | 0.00146 | TBD | TBD |
-| `claude-sonnet-5` | reviewer-gate | TBD | — | 0.00146 | TBD | TBD |
-| `claude-opus-5` | comprehension | 50% | 2 | 0.00406 | TBD | TBD |
-| `claude-opus-5` | reasoning | TBD | TBD | 0.00406 | TBD | TBD |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | — | 0.0000 | TBD | TBD |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | coding | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | voice | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | TBD |
+| `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | — | 0.0285 | TBD | TBD |
+| `claude-sonnet-5` | coding | TBD | — | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | voice | TBD | — | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | multi-turn | TBD | — | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | planning | TBD | — | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | TBD |
+| `claude-sonnet-5` | reviewer-gate | TBD | — | 1.5709 | TBD | TBD |
+| `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | TBD |
+| `claude-opus-5` | reasoning | TBD | TBD | 3.6082 | TBD | TBD |
 
-**Provenance of the `cost_per_request` column, which is not uniform.** The Anthropic figures (0.00146, 0.00406) are blended from rows carrying `cost_basis='list'`, the only authoritative billing in `usage_events` (§2.5). `~0.00` for the self-hosted model is a property of the deployment, not a measurement. **`~0.003` for luna and `~0.015` for mini have no source this document can name** — `bench_rates.json` deliberately records no rate for any Azure model, and those models' `usage_events` cost carries no authoritative basis. Until a source is named they are **unpriced**, which under §2.7 makes them ineligible, and luna is currently the entry rung for five task types and the model behind all three review gates.
+**Provenance of the `cost_per_1M_tokens` column, which comes from three different places.** Anthropic figures (sonnet 1.5709, opus 3.6082) are blended from `usage_events` rows carrying `cost_basis='list'`. Azure figures (luna 0.0285, mini 0.5261) come from **gateway billing**, which is a separate source from this database and the reason they never reconciled with it (§2.5). `0.0000` for the self-hosted model is a property of the deployment, not a measurement. Every one of them is a **rate**, independent of request size — which is the whole point of the unit change, since the previous per-request column silently encoded how large each model's historical jobs happened to be (§2.7).
+
+Azure values carry one dependency the others do not: the **EUR→USD rate of 1.0812** stated in §2.5. A materially different rate moves luna and mini against the Anthropic figures and can reorder a ladder, so the rate is versioned with the table (§9).
 
 #### Ladder eligibility — one definition, used everywhere
 
@@ -217,36 +228,54 @@ The consequence is deliberate and worth stating plainly: **a task type whose row
 
 **Storage.** This table is a **database table**, not a constant in source. One row per `(model, task_type)` pair, with the five measured columns plus `updated_at`. It is what §9.2's editable matrix reads and writes, it is what the benchmark job (§10.2) writes its results into, and it is what the ladder generator (§3) reads at runtime. There is no second copy: the markdown above is a snapshot of the table's contents at the time of writing, not the source of truth. A benchmark run that writes results anywhere else has not landed them.
 
-Every row is a first-class datum. Ladders are generated at runtime by walking this table — sort cheapest-first per task_type, skip any model measured worse than the current rung on that task_type. The table is the source of truth; §3 is just the output. Cost per request is precomputed from blended MTD spend ÷ MTD requests so the ladder algorithm is a two-field sort-and-filter.
+Every row is a first-class datum. Ladders are generated at runtime by walking this table — sort cheapest-first per task_type, skip any model measured worse than the current rung on that task_type. The table is the source of truth; §3 is just the output. Cost per 1M tokens is precomputed from each model's own billing source (§2.5) so the ladder algorithm is a two-field sort-and-filter. It is per token, not per request: a per-request figure sorts the historical workload mix rather than the models (§2.7).
 
 ### 2.7 Per-model cost ceiling
 
 A configurable threshold automatically excludes any model whose cost per request crosses it.
 
-**As previously applied:** mini at ~$0.015/request exceeded the ceiling implied by the $1.00 tree budget and expected leaves per tree (§5), so mini was excluded from all ladders, leaving coding and long-context three-rung (`vllm → luna → sonnet`) and removing mini from multi-turn, planning, voice and reasoning. **That exclusion is now provisional**: the $0.015 figure is one of the two this document can no longer source (§2.5), so it cannot currently justify an exclusion. The ladder shapes in §3 still assume it. Settling the provenance question below is what makes them real or changes them.
+**As previously applied:** mini at ~$0.015/request exceeded the ceiling implied by the $1.00 tree budget and expected leaves per tree (§5), so mini was excluded from all ladders, leaving coding and long-context three-rung (`vllm → luna → sonnet`) and removing mini from multi-turn, planning, voice and reasoning. **That exclusion does not survive the correction below** — measured per token, mini is cheaper than Sonnet, which the same ladders keep. The shapes in §3 still assume the exclusion and must be re-derived once the threshold is restated.
 
-#### A missing cost figure is not an exemption — and the models missing one are the Azure models
+#### Cost per request measures the workload, not the model
 
-The principle holds: a model nobody priced must never come out cheapest, because a ceiling phrased over a value that is absent excludes nothing. **What §2.5's correction changes is which models it applies to.** The unpriced models are `azure_ai/gpt-5.6-luna` and `azure_ai/gpt-5.4-mini` — `bench_rates.json` records no rate for either, and their `usage_events` cost carries no authoritative basis. Sonnet and Opus are the two models here that *are* priced.
+Every model here is now priced (§2.5). With the figures on one basis, the ceiling's defect is visible, and it is not a missing number — it is the **unit**.
 
-So the ceiling is evaluated against `effective_cost_per_request`:
+| model | $/1M tokens | $/request | tokens/request | one 12,000-token call |
+|---|---|---|---|---|
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 0.0000 | 0.00000 | 91,696 | $0.00000 |
+| `azure_ai/gpt-5.6-luna` | **0.0285** | 0.00299 | 105,017 | **$0.00034** |
+| `azure_ai/gpt-5.4-mini` | **0.5261** | 0.01501 | 28,538 | **$0.00631** |
+| `claude-sonnet-5` | **1.5709** | 0.00146 | 928 | **$0.01885** |
+| `claude-opus-5` | **3.6082** | 0.00406 | 1,124 | **$0.04330** |
+
+The two orderings disagree, and they disagree about the decision this section exists to make:
+
+- **By cost per request:** sonnet (0.00146) < luna (0.00299) < mini (0.01501). Mini is the most expensive, so mini is excluded.
+- **By cost per token:** luna (0.0285) < mini (0.5261) < sonnet (1.5709) < opus (3.6082). **Mini is 2.99x cheaper than Sonnet**, which the ladders keep as a rung on six task types.
+
+**The per-request ordering is an artifact of who sent what.** Mini's historical requests average 28,538 tokens; Sonnet's average 928 — 31x smaller. Mini looks expensive per request because it was handed large jobs, not because it charges more. Sonnet looks cheap per request because it was handed small ones. Neither fact says anything about what either model will cost on an orchestrator leaf, because a leaf's size is set by the task, not by the model that happens to take it.
+
+**So the ceiling is evaluated per token, normalised to the task type's own expected size:**
 
 ```
-effective_cost_per_request =
-    blended cost per request over rows with cost_basis='list'   if any exist
-    documented external rate x measured tokens_per_request      otherwise
-    otherwise: the model is UNPRICED and cannot enter a ladder
+effective_cost_per_task(model, task_type)
+    = cost_per_1M_tokens(model)
+    x expected_tokens(task_type)                 # per-call floor (§2.7) + task size
+
+cost_per_1M_tokens =
+    blended over rows with cost_basis='list'     Anthropic models
+    gateway billing MTD spend / MTD tokens       Azure models (§2.5)
+    0.00                                         self-hosted
+    otherwise: UNPRICED -> ineligible (§2.6)
 ```
 
-An unpriced model is **not** given an estimate that flatters it and is **not** treated as free. It is ineligible (§2.6) until a rate is recorded, exactly as `bench/cost.py` already refuses to price one. A figure computed by applying one vendor's rate card to another vendor's backend is not a fallback; it is the defect §2.5 documents.
+A model with no rate from any of those sources is still ineligible, still not estimated into eligibility, and still not treated as free. That principle was right; only its unit was wrong.
 
-**The consequence, stated plainly, is the opposite of what this section previously concluded.** Against measured billing, Sonnet costs $0.00146/request and Opus $0.00406 — **both below the $0.015 threshold that excludes mini.** Neither is a candidate for exclusion on cost. The models at risk are luna and mini, whose per-request figures have no traceable source (§2.5), and luna is currently the entry rung for five task types and the model behind all three review gates (§4.3–4.5).
+**Consequences, and two of them change the ladders:**
 
-**This is now the first thing to settle before implementation**, and it is a data question, not a design one:
-
-1. **Name the source for the Azure figures**, or record real rates for luna and mini. Until one of those happens every ladder rung that is not Anthropic or self-hosted rests on an unsourced number, and the ceiling cannot be applied to them at all.
-2. **Re-derive the threshold** from the measured figures rather than from the unsourced ones. `$0.015` was chosen to exclude mini; on measured data it excludes nothing that is priced.
-3. **Re-examine whether mini should be excluded at all.** Its exclusion drove the ladder shapes in §3, and the figure behind it is one of the two this document can no longer source.
+1. **`vllm → luna → sonnet` is correct** and survives unchanged. Per token the order is 0 → 0.0285 → 1.5709, monotonically increasing, which is what cheapest-first requires.
+2. **The mini exclusion is backwards.** Mini is cheaper per token than a model the design keeps. Whether mini belongs in a ladder is now an *accuracy* question (its only measured row is reasoning, 86%, n unrecorded) — not a cost one. The exclusion must be re-derived or withdrawn, and §3's ladder shapes depend on which.
+3. **The threshold itself must be restated in per-token terms.** `$0.015/request` is not a threshold that can be applied to the table above; it is a number that only sorts one historical workload mix.
 
 #### The per-call floor: a gate is not cheap because its rung is
 
@@ -254,7 +283,7 @@ Measured 2026-09-15 (`bench/pipeline_ab.py`): **every CLI call carries ~12,000 i
 
 In the A/B run, the pipeline arm moved **348,278 input tokens across 27 calls** against the single-call arm's **75,882 across 6** — 4.6x the volume for work that was measured *less* correct (5/6 against 6/6).
 
-So `cost_per_request` in §2.6 is **not** the cost of a stage. The cost of a leaf is:
+So `cost_per_1M_tokens` in §2.6 is a rate, **not** the cost of a stage. The cost of a leaf is:
 
 ```
 leaf_cost ≈ sum over every stage of (per_call_floor + task_tokens) x rate(stage model)
@@ -269,7 +298,7 @@ A design that routes generation to a free model and then runs three gates on a p
 Ladders are generated at runtime by walking the benchmark table from §2.6. The generator:
 
 1. takes the **ladder-eligible** models for the task type (§2.6) — a row exists, its accuracy is measured, and it survives the cost ceiling;
-2. sorts them cheapest-first on `effective_cost_per_request` (§2.7);
+2. sorts them cheapest-first on `effective_cost_per_task` — the model's rate times the task type's expected size (§2.7), never a per-request figure;
 3. walks that order, skipping any model **measured worse** than the current rung on that task type.
 
 Step 1 is what makes step 3 well defined: by the time the generator compares accuracies, every candidate has one. An unmeasured row never reaches the comparison, so "measured worse" is never asked of a TBD.
@@ -597,6 +626,7 @@ All of the following are **one versioned unit**, so any production run ties to t
 - circuit-breaker thresholds (§10)
 - the cost ceiling (§2.7)
 - the benchmark table (§2.6)
+- the **EUR→USD rate** used to convert gateway billing into the table's units (§2.5). It is an input, not a constant: it sets luna's and mini's position relative to every Anthropic model, so a run cannot be tied to its ladder without it
 
 Model-speed multipliers are **not** in this list: they are derived from the benchmark table (§5.1), so versioning the table versions them. Recording a derived value alongside its input is how the two drift apart.
 
@@ -610,7 +640,7 @@ Per-gate toggles are rejected deliberately: each one multiplies the number of re
 
 ### 9.2 Multi-agent settings page
 
-A dedicated settings page in the web console surfaces the kill switch, the tunables from §5 and §10, the cost ceiling (§2.7), the per-task-type `operational` flag (§1.1), and the full benchmark table from §2.6 as an editable matrix. Each cell (`accuracy`, `n`, `cost_per_request`, `median_latency_s`, `max_context`) is inline-editable so the operator can update measurements without code changes. The ladders in §3 are regenerated at runtime from whatever data is in the table — editing it is live. Changes take effect without a deploy.
+A dedicated settings page in the web console surfaces the kill switch, the tunables from §5 and §10, the cost ceiling (§2.7), the per-task-type `operational` flag (§1.1), and the full benchmark table from §2.6 as an editable matrix. Each cell (`accuracy`, `n`, `cost_per_1M_tokens`, `median_latency_s`, `max_context`) is inline-editable so the operator can update measurements without code changes. The ladders in §3 are regenerated at runtime from whatever data is in the table — editing it is live. Changes take effect without a deploy.
 
 Because the matrix writes to the same database table the ladder generator reads (§2.6), an edit changes routing for the next leaf with no deploy and no restart. That is exactly why **every write is validated before it is stored** (§1.1), not only the `operational` flip: a live-editable table checked once at startup can be broken at any time and will not say so until the next restart. A write that would break an invariant of an operational task type is rejected with the offending column named, and the stored value is left as it was.
 
@@ -702,7 +732,10 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | bootstrap exemption | asserting TBD always fails — assert a **non-operational** task type with TBD rows starts fine, and the same type flagged operational **refuses to start** |
 | §3 is generated, not written | asserting the §3 table's contents as constants, or regenerating from the *shipped* table — build a **fully-measured fixture**, regenerate, and assert it equals §3. The shipped table is mostly TBD, so §3 is unreachable from it by design (§2.6); a test that regenerated from live data would assert the snapshot is wrong |
 | TBD is not a candidate | asserting only that a worse model is skipped — assert a row with **TBD accuracy is excluded outright**, and that it is excluded *before* any accuracy comparison runs, not by losing one |
-| unpriced model is ineligible | asserting mini is excluded — assert a model with **no recorded rate and no `list`-basis rows** is refused a ladder place outright, and is neither estimated into eligibility nor treated as free |
+| unpriced model is ineligible | asserting mini is excluded — assert a model with **no rate from any of the three sources** is refused a ladder place outright, and is neither estimated into eligibility nor treated as free |
+| ceiling is per token, not per request | asserting the ceiling excludes something — build a fixture where model X is cheaper per *request* than model Y only because X's historical requests are smaller, and assert the ceiling **ranks them by rate**, not by that artifact. This is the mini/Sonnet inversion: mini is 2.99x cheaper per token and was excluded while Sonnet was kept |
+| cost is normalised by task size | asserting a model's rate alone — assert `effective_cost_per_task` multiplies the rate by the task type's expected tokens, so the same model costs more on a larger task type |
+| EUR→USD is an input | hardcoding converted figures — assert changing the stored rate moves luna and mini against the Anthropic rows, and that a ladder reorder follows from it with no other edit |
 | cost basis is authoritative or absent | costing from `usage_events.cost_usd` — assert only rows with `cost_basis='list'` contribute to a blended figure; a model whose rows are all `unknown` must read as unpriced, not as its recorded number |
 | per-call floor is counted | costing a leaf as one call per stage times a rate — assert a five-stage leaf's projected cost includes the **per-call token floor for every stage**, and that a free-generation leaf with three paid gates is not costed at zero |
 | security gate climbs | asserting the generator escalates on a security reject — assert that after the generator's **top** rung is rejected, the **gate** moves up a rung and re-reviews the same code |

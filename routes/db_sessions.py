@@ -241,6 +241,74 @@ def delete_claude_session_file(session_id: str) -> bool:
     return True
 
 
+def reap_stale_session_files() -> int:
+    """Delete shadow records left behind by WebConsole processes that are gone.
+
+    Returns the number removed.
+
+    Why these accumulate: `_write_agent_name` writes one record per session id
+    a turn runs under, and `chat_set_session` repoints the chat whenever the CLI
+    hands back a new id -- at which moment the previous record is orphaned, with
+    no chat referring to it and no process behind it. Nothing removed them.
+    `delete_claude_session_file` existed but had exactly one caller, a
+    user-initiated route, so in practice the registry was write-only. Measured
+    2026-09-15: 42 of the 50 records on disk named a webconsole process that no
+    longer existed, and the count had grown from the 34 recorded in
+    `_session_is_live`'s own comment the day before.
+
+    That is not only untidiness. `_session_is_live` and the standby endpoint
+    both walk this directory, and standby was answering HTTP 500 -- "no running
+    session found matching ..." -- while searching a registry mostly composed of
+    the dead.
+
+    **The staleness test lives here; the ownership test does not.** That split
+    is not tidiness, it is a correction: the first version of this function
+    delegated both to `delete_claude_session_file` on the assumption that its
+    live-process guard would protect the running server's own records. It does
+    not, and cannot. `_session_is_live` skips `entrypoint == "webconsole"`
+    records outright -- deliberately, so that shadow records could be deleted at
+    all -- so that guard never fires for exactly the records this function
+    walks. Relying on it deleted the live server's own records, which the
+    refusal tests in `tests/test_qa_session_reaper.py` caught.
+
+    So the two questions are genuinely different and are answered in different
+    places. *Is the writing process gone?* is asked here, against the record's
+    own pid, because nothing else asks it. *Is this ours to delete, and is the
+    path safe?* stays in `delete_claude_session_file`, which already refuses a
+    record WebConsole did not write -- its `ValueError` on a real CLI session is
+    an expected outcome on a mixed directory, not a fault, so it is skipped
+    rather than logged.
+
+    **Scope, a deliberate limit rather than an oversight.** A record written by
+    the *currently running* server carries that server's live pid and is kept.
+    Only a previous server's records are collectable, so a startup sweep
+    collects everything the restart made stale and leaves the current process's
+    own work alone -- self-limiting, and it cannot race a record being written
+    beside it.
+    """
+    try:
+        paths = sorted(_resolve_sessions_dir().glob("*.json"))
+    except (PermissionError, OSError):
+        return 0
+
+    removed = 0
+    for path in paths:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue  # unreadable: leave it rather than guess what it was
+        if data.get("entrypoint") != "webconsole":
+            continue  # a real CLI session's record is not ours to collect
+        if _pid_is_running(data.get("pid")):
+            continue  # the process that wrote it is still running
+        try:
+            if delete_claude_session_file(path.stem):
+                removed += 1
+        except ValueError:
+            continue
+    return removed
+
+
 def write_claude_session_file(
     session_id: str, name: str, cwd: str, model: str = ""
 ) -> None:

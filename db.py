@@ -61,6 +61,7 @@ def __getattr__(name: str):
         # sessions
         "read_claude_sessions": "routes.db_sessions",
         "delete_claude_session_file": "routes.db_sessions",
+        "reap_stale_session_files": "routes.db_sessions",
         "write_claude_session_file": "routes.db_sessions",
         "_TRANSCRIPT_TAIL_BYTES": "routes.db_sessions",
         "_format_timestamp": "routes.db_sessions",

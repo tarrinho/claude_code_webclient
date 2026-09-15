@@ -457,6 +457,21 @@ async def lifespan(app: FastAPI):
             "held %d queued prompt(s) orphaned by the last shutdown; they are "
             "waiting for Send or Discard", orphaned,
         )
+    # Shadow session records from the server that just died are collectable now
+    # and never will be by anything else: the registry had no reaper, so it grew
+    # write-only until 42 of its 50 records named processes that were gone, and
+    # the standby lookup was answering 500 against it. Startup is the moment the
+    # previous process's records become unambiguously stale, and the current
+    # process's own records are refused as live, so this cannot eat its own
+    # work. See reap_stale_session_files for the full scope note.
+    reaped = await _startup_step(
+        "reap_sessions", asyncio.to_thread(db.reap_stale_session_files)
+    )
+    if reaped:
+        _log.info(
+            "reaped %d stale CLI session record(s) left by a previous process",
+            reaped,
+        )
     admin = await auth.bootstrap_admin()
     if admin:
         _log.info("bootstrapped admin: %s", admin)

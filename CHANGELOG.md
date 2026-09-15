@@ -22,6 +22,23 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **Capability table and escalation-ladder generator** (`tiered_delegation.py`)
+  — stage 1 of the tiered-agent-delegation design. Decides which model would be
+  tried, in what order, for a task type: ladder eligibility, the per-token cost
+  ceiling, and the cheapest-first walk that skips any model measured worse than
+  the current rung.
+
+  **Nothing routes.** No task type is operational, `ModelRouter.assign_model` is
+  untouched, and nothing imports this module yet. The spec's own §12 carries
+  three unresolved items, each with an explicit "do not" — including one that
+  forbids making `coding` operational until gate-type validation is decided —
+  so this is the machinery those decisions will be applied to, not the
+  decisions. It is deliberately pure: no database, no config read, no import
+  from `app`, so it is tested against a constructed table rather than against
+  today's mostly-unmeasured production data.
+
 ## [0.18.0] — 2026-09-15
 
 A minor rather than a patch release because of the model-routing work: for

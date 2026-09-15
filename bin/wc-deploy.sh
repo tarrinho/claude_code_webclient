@@ -118,6 +118,17 @@ verify() {
     fi
     rm -rf -- "$probe"
     echo "verified: modules import from the release directory"
+
+    # Check that every tracked file in the specs directory is present in the
+    # release archive. git archive only emits committed files, so an untracked
+    # spec silently vanishes from the live copy -- this catches that before
+    # the operator is told the deploy succeeded.
+    local specs_in_repo specs_in_release
+    specs_in_repo="$(git -C "$REPO" ls-files "docs/superpowers/specs/*.md" | wc -l)"
+    specs_in_release="$(find "$dest/docs/superpowers/specs" -name '*.md' -type f 2>/dev/null | wc -l)"
+    [ "$specs_in_repo" = "$specs_in_release" ] || die \
+        "spec file count mismatch: repo has $specs_in_repo, release has $specs_in_release -- untracked spec files will not be live; commit them or exclude from the check"
+    echo "verified: $specs_in_release spec files present in release (matches repo)"
 }
 
 activate() {

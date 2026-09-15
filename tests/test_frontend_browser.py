@@ -348,10 +348,19 @@ class _BrowserFixture(unittest.TestCase):
         # fix every one of these tests died on a 10s
         # `wait_for_selector(".machine-card")` timeout and the pair took ~359s,
         # and afterwards that timeout is gone and they take ~60s.
-        toggle = self.page.query_selector(
-            '.transport-collapse-toggle[aria-expanded="false"]')
-        if toggle is not None:
-            toggle.click()
+        # A locator with a dispatched event, not a query_selector handle with a
+        # real click. The handle is resolved once and the backend list
+        # re-renders on its own poll, so by the time the click lands the node
+        # it points at may be detached -- the failure this helper's comment
+        # above already describes -- and when it is not detached the re-render
+        # keeps it from ever being judged "stable". A locator re-resolves on
+        # use, and dispatching goes straight to the app's own handler. What
+        # this helper is doing is opening a panel so a test can start; whether
+        # the toggle is clickable is not the subject of any test using it.
+        toggle = self.page.locator(
+            '.transport-collapse-toggle[aria-expanded="false"]').first
+        if toggle.count():
+            toggle.dispatch_event("click")
         self.page.wait_for_selector(".machine-card", timeout=10_000)
         self.page.wait_for_timeout(800)
 
@@ -820,9 +829,21 @@ class TransportUIBrowserTests(_BrowserFixture):
     # entry point exists and the round trip lands.
 
     def _transport_header(self, name: str) -> dict | None:
+        """The group header for a transport, or None.
+
+        Matched on "transport-group-header" as a substring of the class list,
+        which is what test_saving_a_transport_shows_an_empty_group_header
+        already documents: the header's class moved off a bare
+        "chat-section-label" onto the outer div, and the real attribute also
+        carries a status suffix such as "transport-status-uninitialized". This
+        helper was still asking for an exact "chat-section-label", so it
+        answered None for every transport that exists, and three tests read
+        that as "the transport was never created".
+        """
         return next(
             (item for item in self._machine_list_dump()
-             if item["cls"] == "chat-section-label" and name in item["text"]),
+             if "transport-group-header" in item["cls"].split()
+             and name in item["text"]),
             None,
         )
 

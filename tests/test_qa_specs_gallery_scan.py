@@ -105,17 +105,69 @@ class DiscoverSpecsTests(unittest.TestCase):
         found = {s["path"] for s in specs_gallery.discover_specs(self.root)}
         self.assertFalse(any(".claude" in p for p in found))
 
-    def test_sorted_by_mtime_descending(self):
+    def test_the_filename_date_outranks_mtime(self):
+        """The ordering question is "which spec is newest", not "which file was
+        touched last". Sorting on mtime answered the second: measured on the
+        real checkout 2026-09-15, editing the 09-14 delegation spec that
+        afternoon lifted it above the 09-15 worktree spec, and a typo fix on a
+        09-08 transport spec put it above three 09-12 ones.
+
+        So an *older* spec with a *newer* mtime must still sort below.
+        """
+        import os
+        import time
+        specs = self.root / "docs" / "superpowers" / "specs"
+        older = specs / "2026-01-01-a-design.md"
+        newer = specs / "2026-06-01-b-design.md"
+        newer.write_text("# B\n")
+        now = time.time()
+        # The older spec is the one edited most recently -- the exact shape
+        # that used to reorder the page.
+        os.utime(older, (now, now))
+        os.utime(newer, (now - 10_000, now - 10_000))
+        found = [s["path"] for s in specs_gallery.discover_specs(self.root)]
+        self.assertLess(
+            found.index("docs/superpowers/specs/2026-06-01-b-design.md"),
+            found.index("docs/superpowers/specs/2026-01-01-a-design.md"),
+        )
+
+    def test_mtime_breaks_ties_within_one_date(self):
+        """Two specs sharing a date is normal -- v2 and v3 of the delegation
+        spec were both dated 2026-09-14. Within one date, last edited wins,
+        which is the one place mtime is the right question."""
+        import os
+        import time
+        specs = self.root / "docs" / "superpowers" / "specs"
+        v2 = specs / "2026-03-03-thing-v2-design.md"
+        v3 = specs / "2026-03-03-thing-v3-design.md"
+        v2.write_text("# v2\n")
+        v3.write_text("# v3\n")
+        now = time.time()
+        os.utime(v2, (now - 500, now - 500))
+        os.utime(v3, (now, now))
+        found = [s["path"] for s in specs_gallery.discover_specs(self.root)]
+        self.assertLess(
+            found.index("docs/superpowers/specs/2026-03-03-thing-v3-design.md"),
+            found.index("docs/superpowers/specs/2026-03-03-thing-v2-design.md"),
+        )
+
+    def test_an_undated_spec_sorts_below_every_dated_one(self):
+        """A self-declared spec outside the specs directory (§2) carries no
+        date, and README.md carries none either. Their mtime means something
+        different from a filename date, so they go after rather than being
+        interleaved on a value that is not comparable."""
         import os
         import time
         old = self.root / "docs" / "superpowers" / "specs" / "2026-01-01-a-design.md"
-        new = self.root / "AGENT-MODELS-DECISION.md"
+        undated = self.root / "AGENT-MODELS-DECISION.md"
         now = time.time()
-        os.utime(old, (now - 100, now - 100))
-        os.utime(new, (now, now))
+        os.utime(old, (now - 100_000, now - 100_000))
+        os.utime(undated, (now, now))  # newest file in the tree
         found = [s["path"] for s in specs_gallery.discover_specs(self.root)]
-        self.assertLess(found.index("AGENT-MODELS-DECISION.md"),
-                         found.index("docs/superpowers/specs/2026-01-01-a-design.md"))
+        self.assertLess(
+            found.index("docs/superpowers/specs/2026-01-01-a-design.md"),
+            found.index("AGENT-MODELS-DECISION.md"),
+        )
 
     def test_an_excluded_directory_is_pruned_not_merely_filtered(self):
         """Regression test for the performance fix: the walk used to be

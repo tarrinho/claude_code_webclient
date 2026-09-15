@@ -30,6 +30,37 @@ _MARKER_RE: Final[re.Pattern[str]] = re.compile(
 
 _TITLE_RE: Final[re.Pattern[str]] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 
+# The date a spec carries in its own filename, which is the date it is about.
+_DATE_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
+
+
+def _sort_key(spec: dict[str, Any]) -> tuple[int, str, float]:
+    """Newest spec first, by the date in the filename rather than by mtime.
+
+    Sorting on mtime answers "what was edited last", which is not what a list
+    of design specs is for. Measured on 2026-09-15 it put the 09-14 delegation
+    spec above the 09-15 worktree spec because the former was being edited that
+    afternoon, and lifted a 09-08 transport spec above three 09-12 ones for the
+    same reason. Any edit to an old spec -- fixing a typo, correcting a figure
+    -- silently reordered the page.
+
+    Returned as a tuple sorted with ``reverse=True``, so read every element as
+    descending:
+
+    * ``1`` for a dated filename and ``0`` for an undated one, which keeps
+      undated files (``README.md``, and the self-declared specs §2 admits from
+      outside the specs directory) below the dated ones rather than interleaved
+      by an mtime that means something different.
+    * the ``YYYY-MM-DD`` prefix, lexicographic because ISO dates sort correctly
+      as strings.
+    * ``mtime`` last, which only breaks ties *within* one date -- v3 above v2
+      on 2026-09-14, and the most recently touched of the three 09-12 specs
+      first. This is the one place mtime is the right question.
+    """
+    name = Path(spec["path"]).name
+    match = _DATE_PREFIX_RE.match(name)
+    return (1, match.group(1), spec["mtime"]) if match else (0, "", spec["mtime"])
+
 # Shared by discover_specs()'s tree walk and find_references()'s grep: both
 # would otherwise wander into .git/.venv/__pycache__/node_modules, and into
 # .claude, which on this checkout holds *other sessions'* worktrees. Walking
@@ -139,7 +170,7 @@ def discover_specs(root: Path) -> list[dict[str, Any]]:
                 "mtime": path.stat().st_mtime,
             })
 
-    found.sort(key=lambda s: s["mtime"], reverse=True)
+    found.sort(key=_sort_key, reverse=True)
     return found
 
 

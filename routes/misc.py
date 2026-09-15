@@ -519,6 +519,18 @@ async def _import_cli_usage(owner: str = CLI_USAGE_OWNER) -> int:
     so the history is recoverable after the fact. A byte cursor per transcript
     keeps a re-run from counting the same turns twice; the first import pays
     for the whole archive, later ones read only what was appended.
+
+    **Called from app.py's lifespan on a timer, not from a request handler.**
+    It sat at the top of both usage handlers until 2026-09-15, which made every
+    visit to Settings pay for a transcript scan twice before either query ran
+    -- 1.05s just to list 60 transcripts on this deployment, against handlers
+    already answering in 6.4 to 19.1 seconds. Nothing in either response is
+    derived from the return value: a response built without a fresh import is
+    correct, only as current as the last pass.
+
+    Do not call this from a request handler again. Besides the latency, it is
+    what put two BEGINs on the shared connection and answered 500 (see
+    ``db.usage_import``'s lock and tests/test_qa_usage_import_concurrency.py).
     """
     imported = 0
     try:
@@ -551,8 +563,11 @@ async def handle_usage_get(request: Request):
     prices every turn with Anthropic's rates, so the figure is meaningless for a
     self-hosted or third-party gateway; ``cost_note`` tells the client why the
     value is absent so the UI can explain the blank rather than just show one.
+
+    Does not import CLI usage -- see ``handle_usage_series_get`` and
+    ``_import_cli_usage``. Opening Settings requests this endpoint and the
+    series together, so the import used to run twice per visit.
     """
-    await _import_cli_usage()
     session = request.state.session
     owner = await owner_of(session)
 
@@ -673,8 +688,12 @@ async def handle_usage_series_get(request: Request):
 
     Same ownership rule as /api/usage -- the caller's own rows, readable by any
     authenticated user because it is their own data and carries no secret.
+
+    Does not import CLI usage. That runs on a timer in app.py's lifespan
+    (``config.USAGE_IMPORT_INTERVAL_S``) rather than here, so the charts are at
+    most one interval stale rather than paying for a transcript scan on every
+    open. See ``_import_cli_usage``.
     """
-    await _import_cli_usage()
     session = request.state.session
     owner = await owner_of(session)
 

@@ -1198,12 +1198,39 @@ class SubmitMessageValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
     async def test_submit_too_long_prompt_400(self):
+        """Measured against the configured cap, not a number copied beside it.
+
+        This asserted a hardcoded 10,000 characters, which was over the cap
+        when it was written and under it from the moment the cap moved to
+        25,000 on 2026-09-15 -- so the test started passing a legal prompt and
+        failing with "HTTPException not raised", reporting the limit as broken
+        when only the test was. Reading config is what keeps the next change
+        to WC_PROMPT_MAX_CHARS from doing the same thing again.
+        """
         chat_id = "submit-long"
         await db.chat_create(chat_id, "Submit", None, f"{self.tmpdir.name}/p", self._owner)
-        long_prompt = "x" * 10000
+        long_prompt = "x" * (config.PROMPT_MAX_CHARS + 1)
         with self.assertRaises(HTTPException) as ctx:
             await chat_routes.handle_submit_message(self._req(chat_id, content=long_prompt), chat_id)
         self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_submit_prompt_at_the_cap_is_accepted(self):
+        """The other side of the boundary, which nothing pinned before.
+
+        Without it, a cap that is off by one -- or a check that quietly turns
+        into >= -- refuses a prompt the UI says is allowed, and the suite
+        stays green. The call runs past the length check and fails later on
+        the work_dir, which is deliberate: what is asserted here is only that
+        the length check let it through.
+        """
+        chat_id = "submit-at-cap"
+        await db.chat_create(chat_id, "Submit", None, f"{self.tmpdir.name}/p", self._owner)
+        at_cap = "x" * config.PROMPT_MAX_CHARS
+        try:
+            await chat_routes.handle_submit_message(self._req(chat_id, content=at_cap), chat_id)
+        except HTTPException as exc:  # pragma: no cover - only on a regression
+            self.fail(f"a prompt of exactly {config.PROMPT_MAX_CHARS} characters "
+                      f"was refused with {exc.status_code}: {exc.detail}")
 
     async def test_submit_to_chat_not_found_404(self):
         with self.assertRaises(HTTPException) as ctx:

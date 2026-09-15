@@ -8,6 +8,7 @@ import datetime
 import logging
 import re
 import time
+import weakref
 from typing import Any
 
 import db
@@ -98,6 +99,47 @@ async def usage_record(
 
 USAGE_IMPORT_BATCH: int = 500
 
+# Only one usage import may hold a transaction at a time.
+#
+# `db.db_conn` is the single connection every request in this process shares,
+# and the import below opens an explicit BEGIN and then keeps awaiting inside
+# it -- a to_thread call, then a row-by-row insert loop. Every one of those
+# awaits hands the event loop to another request, and `_import_cli_usage` runs
+# at the top of BOTH usage handlers (routes/misc.py: the report at /api/usage
+# and the charts at /api/usage/series). So two overlapping requests issued two
+# BEGINs on one connection, SQLite refused the second with "cannot start a
+# transaction within a transaction", and the handler answered 500 -- which the
+# page renders as "Could not load statistics". Measured live on 2026-09-15.
+#
+# A lock rather than a second connection: the transaction here is short and
+# the contention is two callers, so serialising costs a wait and keeps one
+# writer, whereas a second connection would put two writers on a database the
+# rest of the process treats as single-writer.
+#
+# What this does NOT protect against, and is worth knowing before trusting it
+# further: any other coroutine calling db.db_conn.commit() while this holds an
+# open transaction would commit it early, because the connection is shared and
+# commit() is not scoped to a caller. Nothing does that on this path today.
+# Resolved per running loop rather than created once at import. A module-level
+# Lock binds itself to whichever loop first acquires it, which is invisible in
+# production -- one process, one loop -- and breaks the moment anything else
+# runs a second loop: the test suite gives each async test its own, and the
+# second test in a file failed with "is bound to a different event loop",
+# turning a fix for a crash into a different crash.
+_IMPORT_TX_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _import_tx_lock() -> asyncio.Lock:
+    """The import lock belonging to the loop this call is running on."""
+    loop = asyncio.get_running_loop()
+    lock = _IMPORT_TX_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _IMPORT_TX_LOCKS[loop] = lock
+    return lock
+
 
 async def usage_cursor_get(session_id: str) -> int:
     """How far a transcript has been consumed for usage accounting."""
@@ -144,55 +186,60 @@ async def usage_import(
     except Exception:  # pragma: no cover - accounting must not break an import
         launched_model = None
     written = 0
-    for start in range(0, len(rows), USAGE_IMPORT_BATCH):
-        batch = rows[start:start + USAGE_IMPORT_BATCH]
-        last = start + USAGE_IMPORT_BATCH >= len(rows)
-        checkpoint = int(offset) if last else int(batch[-1].get("offset") or offset)
-        try:
-            await db.db_conn.execute("BEGIN")
-            for row in batch:
-                routed = db.routed_owner_of(
-                    markers,
-                    int(row.get("offset") or 0),
-                    str(row.get("timestamp") or ""),
-                    str(row.get("after_prompt") or ""),
-                )
+    # The whole loop, not each batch: holding across batches also stops a
+    # second caller slipping a BEGIN in between two of this import's own
+    # transactions. Imports are short, and a caller that waits is strictly
+    # better off than one that used to get an exception.
+    async with _import_tx_lock():
+        for start in range(0, len(rows), USAGE_IMPORT_BATCH):
+            batch = rows[start:start + USAGE_IMPORT_BATCH]
+            last = start + USAGE_IMPORT_BATCH >= len(rows)
+            checkpoint = int(offset) if last else int(batch[-1].get("offset") or offset)
+            try:
+                await db.db_conn.execute("BEGIN")
+                for row in batch:
+                    routed = db.routed_owner_of(
+                        markers,
+                        int(row.get("offset") or 0),
+                        str(row.get("timestamp") or ""),
+                        str(row.get("after_prompt") or ""),
+                    )
+                    await db.db_conn.execute(
+                        "INSERT INTO usage_events "
+                        "(chat_id, session_id, owner_id, model, requested_model, "
+                        " provider, input_tokens, "
+                        " output_tokens, cache_read_tokens, cache_creation_tokens, "
+                        " cost_usd, cost_basis, duration_ms, is_error, created_at, "
+                        " origin, context_unsplit) "
+                        "VALUES (?, ?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
+                        " ?, ?)",
+                        (
+                            routed["chat_id"] if routed else "",
+                            session_id,
+                            owner_id,
+                            row["model"],
+                            launched_model,
+                            int(row["input_tokens"]),
+                            int(row["output_tokens"]),
+                            int(row["cache_read_tokens"]),
+                            int(row["cache_creation_tokens"]),
+                            row.get("cost_usd"),
+                            "transcript" if row.get("cost_usd") is not None else "unknown",
+                            row.get("timestamp") or db._now(),
+                            "web-routed" if routed else "terminal",
+                            1 if row.get("context_unsplit") else 0,
+                        ),
+                    )
                 await db.db_conn.execute(
-                    "INSERT INTO usage_events "
-                    "(chat_id, session_id, owner_id, model, requested_model, "
-                    " provider, input_tokens, "
-                    " output_tokens, cache_read_tokens, cache_creation_tokens, "
-                    " cost_usd, cost_basis, duration_ms, is_error, created_at, "
-                    " origin, context_unsplit) "
-                    "VALUES (?, ?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
-                    " ?, ?)",
-                    (
-                        routed["chat_id"] if routed else "",
-                        session_id,
-                        owner_id,
-                        row["model"],
-                        launched_model,
-                        int(row["input_tokens"]),
-                        int(row["output_tokens"]),
-                        int(row["cache_read_tokens"]),
-                        int(row["cache_creation_tokens"]),
-                        row.get("cost_usd"),
-                        "transcript" if row.get("cost_usd") is not None else "unknown",
-                        row.get("timestamp") or db._now(),
-                        "web-routed" if routed else "terminal",
-                        1 if row.get("context_unsplit") else 0,
-                    ),
+                    "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
+                    (session_id, checkpoint),
                 )
-            await db.db_conn.execute(
-                "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
-                (session_id, checkpoint),
-            )
-            await db.db_conn.commit()
-            written += len(batch)
-        except Exception:
-            await db.db_conn.rollback()
-            raise
+                await db.db_conn.commit()
+                written += len(batch)
+            except Exception:
+                await db.db_conn.rollback()
+                raise
     return written
 
 

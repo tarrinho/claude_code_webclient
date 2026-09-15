@@ -54,7 +54,7 @@ from routes.machines_tunnel import router as machines_tunnel_router
 # _resolve_member (an orchestrators helper) adopts a session by calling the
 # sessions route's handler, so this crosses prefixes. It travels to
 # routes/orchestrators.py with that helper when the prefix is extracted.
-from routes.misc import _import_cli_usage, router as misc_router
+from routes.misc import router as misc_router
 from routes.orchestrators import router as orchestrators_router
 from routes.images import router as images_router
 from routes.qa import router as qa_router
@@ -571,37 +571,6 @@ async def lifespan(app: FastAPI):
             "remote session discovery disabled (config.REMOTE_SESSIONS); "
             "the sessions cache will not be refreshed"
         )
-
-    # Fold terminal-session spend into usage_events on a timer.
-    #
-    # This ran at the top of both usage handlers until 2026-09-15, so opening
-    # Settings paid for a transcript scan twice -- once for the report and
-    # once for the charts -- before either query started. Measured on this
-    # deployment, listing 60 transcripts alone cost 1.05s, and the handlers
-    # were already answering in 6.4 to 19.1 seconds.
-    #
-    # It is a write that keeps the table current, not a read the response
-    # depends on: a response built without it is correct, only as fresh as the
-    # last pass. So it belongs on a clock rather than on whoever happened to
-    # open the page.
-    #
-    # Same shape as the loop above, deliberately: one failed pass must not end
-    # the loop, or imports stop silently and the statistics quietly freeze
-    # while still rendering. db.usage_import holds its own lock, so a pass
-    # overlapping a request serialises rather than colliding.
-    async def _usage_import_loop() -> None:
-        while True:
-            try:
-                await _import_cli_usage()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                _log.exception("cli usage import failed; retrying next tick")
-            await asyncio.sleep(config.USAGE_IMPORT_INTERVAL_S)
-
-    _startup_tasks.append(asyncio.create_task(
-        _usage_import_loop(), name="usage_import"))
-    _startup_tasks[-1].add_done_callback(_log_startup_task)
 
     yield
     # Stopped before db.close(): the sampler writes through the connection.

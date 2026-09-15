@@ -221,20 +221,6 @@ QA_CHUNK_TIMEOUT = _int("WC_CHUNK_TIMEOUT", 600)
 # pruning and keeps everything.
 USAGE_RETENTION_DAYS = _int("WC_USAGE_RETENTION_DAYS", 90)
 
-# Seconds between terminal-transcript usage imports.
-#
-# The import used to run at the top of both usage handlers, so every visit to
-# the Usage tab or the statistics page paid for it before a single row was
-# read -- measured at 1.05s just to list 60 transcripts, before any of them
-# were opened. It is a write that keeps usage_events current, not a read the
-# response depends on, so it belongs on a timer.
-#
-# The cost of moving it: a terminal turn now appears in the statistics up to
-# this many seconds late. 60 keeps that shorter than the interval between a
-# person finishing a turn and going to look at the chart, while running the
-# import once a minute instead of once per page view.
-USAGE_IMPORT_INTERVAL_S = _int("WC_USAGE_IMPORT_INTERVAL_S", 60)
-
 # --- host statistics -------------------------------------------------------
 # Seconds between host samples. 60 gives 30 readings inside the narrowest
 # bucket the statistics pages offer (half an hour), which is enough for an

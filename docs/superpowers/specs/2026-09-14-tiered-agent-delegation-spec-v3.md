@@ -11,19 +11,26 @@ This document is standalone. The base design's measurement tables from the origi
 
 Today `ModelRouter.assign_model` returns `config.ANTHROPIC_MODEL` on both branches — complexity is computed and discarded. This design fills that seam.
 
-What must be **built**: the task classifier (§2), the coding oracle (§4.2), the three review gates (§4.3–4.5), the blast-radius check (§4.6), the settings page (§9.2). Everything else is configuration over existing mechanisms.
+What must be **built**: the duplicate-branch fix in `ModelRouter.assign_model` so the computed complexity reaches the routing decision instead of being discarded (§3), the task classifier (§2), the coding oracle (§4.2), the three review gates (§4.3–4.5), the blast-radius check (§4.6), the settings page (§9.2). Everything else is configuration over existing mechanisms.
 
 ### 1.1 Startup validation
 
-At config load the system checks three invariants and fails loudly if any are broken:
+At config load the system checks four invariants and fails loudly if any are broken:
 
 | invariant | condition |
 |---|---|
-| no blank fields | every row in the benchmark table from §2.6 has a value in every column; TBD is not permitted at load time |
+| no blank fields | every row in the benchmark table from §2.6 has a value in every column; TBD is not permitted for an **operational** task type |
 | model resolution | every model name named in any ladder (§3) resolves to a valid backend-and-model pair available in the model combo box (§9.3) |
-| no empty ladder | after applying the cost-ceiling filter (§2.7), every task type must have at least one rung; no task type is left with an empty ladder |
+| no empty ladder | after applying the cost-ceiling filter (§2.7), every **operational** task type must have at least one rung; no operational task type is left with an empty ladder |
+| every rung is backed by a row | every `(model, task_type)` pair appearing in the §3 ladder snapshot has a row in the §2.6 table. A rung named in the snapshot with no backing row means the snapshot and the generator disagree, and the generator silently wins |
 
-If any check fails the system refuses to start. The error lists every broken invariant so the operator can fix the data before deployment.
+**Bootstrap exemption.** §2.6 ships mostly unmeasured, so a check that refused every TBD would mean the system could never start for the first time. Each task type therefore carries an `operational` flag, default **false**. The three checks above apply only to task types flagged operational; a non-operational task type may hold TBD in any column.
+
+A non-operational task type is **not routed**. Work classified into it falls back to today's routing (`config.ANTHROPIC_MODEL`), exactly as if the kill switch (§9.1) were off for that type alone, and each such fallback is logged so the gap is visible rather than silent.
+
+Flipping a task type to operational is the act that submits it to validation: at that moment every one of its rows must be complete and every rung must resolve, or the system refuses to start. This is the only way a task type becomes routable, so no type can go live on unmeasured data.
+
+If any check fails the system refuses to start. The error lists every broken invariant, naming the task type and the column, so the operator can fix the data before deployment.
 
 ---
 
@@ -99,7 +106,7 @@ Anthropic models carry **no production rows**, so they cannot be blended. Their 
 
 The base design's `$0.23 per 1,000 tasks` for luna assumed 495 output tokens per response. Production luna requests average **104,895 tokens**. The per-task cost figures in the original design are therefore not wrong arithmetic — they price a task shape that does not occur here, and orchestrator leaves will resemble production, not the benchmark.
 
-**Consequence for the ladder:** the ordering survives — free is free, luna is ~5× cheaper per request than mini — but the *magnitudes* do not. `BUDGET_USD = 1.00` per goal buys roughly **335 luna requests or 67 mini requests**, not the thousands the original figures implied. Re-check that cap before implementation.
+**Consequence for the ladder:** the ordering survives — free is free, luna is ~5× cheaper per request than mini — but the *magnitudes* do not. `BUDGET_USD = 1.00` per **tree** (§5 — one pool shared by every leaf, not one budget per goal) buys roughly **335 luna requests or 67 mini requests** across the whole tree, not the thousands the original figures implied. Re-check that cap before implementation.
 
 #### 2.5.2 Attribution gaps to close first
 
@@ -120,20 +127,35 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | long-context | TBD | — | ~0.003 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | ~0.003 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | ~0.003 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | voice | TBD | — | ~0.003 | TBD | TBD |
 | `azure_ai/gpt-5.4-mini` | coding | TBD | — | ~0.015 | TBD | TBD |
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | ~0.015 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | ~0.003 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | planning | TBD | — | ~0.003 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | — | ~0.003 | TBD | TBD |
+| `claude-sonnet-5` | coding | TBD | — | TBD | TBD | TBD |
+| `claude-sonnet-5` | long-context | TBD | — | TBD | TBD | TBD |
 | `claude-sonnet-5` | comprehension | 100% | 2 | TBD | TBD | TBD |
 | `claude-sonnet-5` | reasoning | 75% | 2 | TBD | TBD | TBD |
+| `claude-sonnet-5` | voice | TBD | — | TBD | TBD | TBD |
+| `claude-sonnet-5` | multi-turn | TBD | — | TBD | TBD | TBD |
+| `claude-sonnet-5` | planning | TBD | — | TBD | TBD | TBD |
+| `claude-sonnet-5` | split-decision | TBD | — | TBD | TBD | TBD |
+| `claude-sonnet-5` | reviewer-gate | TBD | — | TBD | TBD | TBD |
 | `claude-opus-5` | comprehension | 50% | 2 | TBD | TBD | TBD |
 | `claude-opus-5` | reasoning | TBD | TBD | TBD | TBD | TBD |
 
-**Blocking constraint:** do not accept Opus as the reasoning entry rung until the number of runs used for every other model on that task type is recorded in the capability table. Record accuracy and sample size in the capability table. Do not accept Opus as the reasoning entry rung until that number exists.
+**Blocking constraint:** do not accept Opus as the reasoning entry rung until `n` is recorded for every other model on the reasoning task type. Opus's own reasoning row is unmeasured, so promoting it would rank an unknown against two small samples (mini n=TBD, sonnet n=2) that may not survive re-measurement.
+
+**A model with no row for a task type is not a candidate for that type's ladder.** This is the mechanism — not a separate rule — behind "only `coding` and `long-context` start free" (§3, §4.1): the free model holds rows for exactly those two types, so it is not a candidate anywhere else. Adding a `vllm/*` row for `planning` would make the free model planning's rung 0 on the next read, with no other edit. That is intended, and it is the only way it can happen.
+
+**Storage.** This table is a **database table**, not a constant in source. One row per `(model, task_type)` pair, with the five measured columns plus `updated_at`. It is what §9.2's editable matrix reads and writes, it is what the benchmark job (§10.2) writes its results into, and it is what the ladder generator (§3) reads at runtime. There is no second copy: the markdown above is a snapshot of the table's contents at the time of writing, not the source of truth. A benchmark run that writes results anywhere else has not landed them.
 
 Every row is a first-class datum. Ladders are generated at runtime by walking this table — sort cheapest-first per task_type, skip any model measured worse than the current rung on that task_type. The table is the source of truth; §3 is just the output. Cost per request is precomputed from blended MTD spend ÷ MTD requests so the ladder algorithm is a two-field sort-and-filter.
 
 ### 2.7 Per-model cost ceiling
 
-A configurable threshold automatically excludes any model whose blended cost per request crosses it. Applied now: mini at ~$0.015/request exceeds the ceiling implied by the $1.00 tree budget and expected leaves per tree (§5), so **mini is excluded from all ladders.** This makes the coding/long-context ladders two-rung (`vllm → luna → sonnet`) and removes mini from multi-turn, planning, voice, and reasoning.
+A configurable threshold automatically excludes any model whose blended cost per request crosses it. Applied now: mini at ~$0.015/request exceeds the ceiling implied by the $1.00 tree budget and expected leaves per tree (§5), so **mini is excluded from all ladders.** Coding and long-context are left three-rung (`vllm → luna → sonnet`), and mini is removed from multi-turn, planning, voice, and reasoning.
 
 ---
 
@@ -150,15 +172,18 @@ The table below shows the expected output of this computation against current pr
 | multi-turn | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | planning | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | comprehension | `claude-sonnet-5` | `claude-opus-5` | — |
+| voice | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set | — | — |
-| split decision | `claude-sonnet-5` | — | — |
-| **reviewer gate** | `azure_ai/gpt-5.6-luna` | (see §4.3) | — |
+| split-decision | `claude-sonnet-5` | — | — |
+| **reviewer-gate** | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` (see §4.3) | — |
 
 Reasoning has no rung until Luna is benchmarked on that type. The existing 86%/75% accuracy figures are from a small sample (n=—) and must be re-verified against production request shapes before any rung is set. The comprehension ladder is correct as-is: sonnet → opus → —, because no measured model beats sonnet on comprehension.
 
+**Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. Voice stays non-operational (§1.1) until both its rows carry a measured `median_latency_s`, because a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
+
 Only `coding` and `long-context` start free (§4.1).
 
-**Hover tooltip on chosen model:** each rung in the settings page displays the model name with a hover tooltip showing its accuracy for the current task type, sample size, cost per request, and latency. This lets a reviewer see why a model was chosen without leaving the page.
+**Hover tooltip on chosen model:** each rung in the settings page displays the model name with a hover tooltip showing all five measured fields for the current task type — accuracy, sample size (`n`), cost per request, median latency, and **context window** (`max_context`). This lets a reviewer see why a model was chosen without leaving the page. Context window is in the tooltip because it is the field that decides whether a rung can take the task at all: a model that is cheaper and more accurate is still the wrong rung if the input does not fit.
 
 **Excluded outright:** `vllm/Qwen3.5-0.8B` (23% correct), `claude-haiku-4-5` (dearer and slower than Sonnet), `claude-fable-5` ($23.15/1k). **Excluded by cost ceiling (§2.7):** `azure_ai/gpt-5.4-mini` (and by extension all variants).
 
@@ -217,15 +242,35 @@ A write task that modifies more than the trivial count always passes through the
 
 ### 4.7 Stages 3–5 on read-only tasks
 
-`mutates=False` means the task touches no local files — it reads code, spends money, or queries an API without writing back. The question is whether stages 3–5 still apply to tasks where `mutates` is `False`.
+**A task with `mutates=False` runs stages 1–3 and skips stages 4 and 5.**
 
-The classifier routes a read-only task to the same ladders as any other task for model selection, but the review gates are the decision point. Stages 3–5 check **intent match, functional regression, and security**. A read-only task that calls an external API or computes something expensive still carries risk: wrong intent wastes money, and a security lapse in a network call or file read can leak data. But these tasks have lower blast radius than writes — they cannot break imports or silently corrupt the codebase.
+| stage | runs on `mutates=False`? | why |
+|---|---|---|
+| 1 — generation | yes | the work itself |
+| 2 — oracle check | yes | execution verification is as meaningful for a read as for a write |
+| 3 — reviewer gate | **yes** | intent match is where a read-only task fails: a wrong answer, confidently delivered, is the whole risk |
+| 4 — QA / regression | **no** | nothing was changed, so there is no regression surface to test |
+| 5 — security review | **no** | the defects this gate looks for — command injection, unsafe file writes, secrets written out — all require a write |
 
-Whether the cost of three additional gates outweighs the risk is unresolved. A read-only task that spends significant money on an API call might benefit from review even if it never touches a file. The blast-radius check in §4.6 handles writes; a separate threshold for read-only spend (e.g. API cost above $X triggers stage 3) is one option, but not yet specified.
+The reasoning is that stages 4 and 5 both check for consequences of *changing* something. A task that changes nothing cannot produce them, so running those gates spends two model calls per leaf to confirm an invariant that already holds structurally.
+
+Stage 3 stays because the failure mode of a read-only task is entirely a stage-3 failure mode: it returns something plausible and wrong, and nothing downstream catches it. The oracle checks that an answer was produced, not that it answers the question asked.
+
+This rule applies to `mutates=False` only. **`side_effecting_read` is not covered by it** — it takes the full five stages, the same as `True`. It spends money or consumes an external rate limit, so it has real consequences to review even though it writes no local file, and §2.3 already refuses it a transport for that reason.
 
 ### 4.8 Trivial-task bypass
 
 A task matching the score-1 `simple|small|quick|minor|fix.*typo` pattern runs **stages 1 and 2 only**. Stages 3–5 are skipped. The full five-stage pipeline applies to anything scoring above that floor.
+
+**Precedence between §4.6, §4.7 and §4.8.** Three rules can each subtract stages, so the order they resolve in is fixed:
+
+1. **Blast radius (§4.6) first.** It is the only rule based on what the task *did* rather than what its text predicted, so it overrides the trivial bypass: a score-1 task that modified more than `MAX_FILES_TRIVIAL` files runs stages 3–5.
+2. **Trivial bypass (§4.8) next**, if blast radius did not override it — stages 3–5 skipped.
+3. **Read-only (§4.7) last**, applied to whatever survives — stages 4 and 5 removed for `mutates=False`.
+
+The net effect: a non-trivial read-only task runs stages 1–3, and a trivial read-only task runs stages 1–2, because the bypass had already removed stage 3 before §4.7 was reached. No rule ever *adds* a stage an earlier rule removed.
+
+Rule 1 never fires on a read-only task — its blast radius is zero by definition — so the override exists only for writes that were misclassified as trivial.
 
 ### 4.9 Context passed to every gate
 
@@ -257,7 +302,15 @@ Attempt counts are **per gate, not shared pipeline-wide**. A review gate rejecti
 
 ### 5.1 Timeouts
 
-Per-task-type deadlines are the baseline (they encode task size). A **model-speed multiplier** is applied on top, so the same task type gets more time on the slow self-hosted model than on Sonnet. This avoids a full deadline × model table.
+The deadline for one attempt is three factors multiplied together:
+
+```
+effective_deadline = per_type_baseline × size_factor × model_speed_multiplier
+```
+
+None of the three is a hardcoded table of every combination — each is derived from something already recorded, which is what keeps this from becoming a deadline × model × size matrix nobody maintains.
+
+**Per-type baseline.** What the task type costs on a mid-sized instance of that task, on the fastest model measured for it.
 
 ```
 TIER0_DEADLINE = {
@@ -267,6 +320,29 @@ TIER0_DEADLINE = {
 ```
 
 A type absent from this map never uses the free rung. An unknown type must receive the **longest** deadline, never the shortest.
+
+**Size factor** — from the classifier's complexity score (§2), which is the only size signal available before generation starts. Score 3 is the reference point, so a mid-sized task gets exactly the baseline:
+
+| complexity score | size factor |
+|---|---|
+| 1 | 0.5 |
+| 2 | 0.75 |
+| 3 | 1.0 |
+| 4 | 1.5 |
+| 5 | 2.0 |
+
+**Model-speed multiplier** — **derived from the measured latency in the §2.6 benchmark table, never set by hand.** For a given task type, take the lowest `median_latency_s` recorded across all models on that task type; that model is the reference and its multiplier is **1.0**. Every other model's multiplier is its own `median_latency_s` divided by that reference:
+
+```
+multiplier(model, task_type) = median_latency_s(model, task_type)
+                             ÷ min(median_latency_s(*, task_type))
+```
+
+So the fastest model on a task type always gets exactly the baseline, and a model measured three times slower gets three times the time. Because the input is the same table the ladders are generated from, a re-benchmark (§10.2) updates the deadlines in the same act that updates the rung order, and the two can never drift apart.
+
+A task type with any unmeasured `median_latency_s` cannot compute this, which is one of the reasons such a type stays non-operational (§1.1).
+
+**The combined ceiling still binds.** `effective_deadline` governs a single attempt; the 600-second combined latency ceiling from the table above governs all five stages of a leaf together. A leaf whose stages would individually fit but collectively exceed 600s is stopped by the ceiling, not by any per-attempt deadline.
 
 Every sub-agent call additionally carries a **strict hard timeout independent of the gate cap**, so a hung sub-agent cannot silently stall a leaf.
 
@@ -285,7 +361,7 @@ Any one of these escalates one rung:
 | `{"type": "error", ...}` frame | `runner.py:171-177` | **does not raise** — code that only catches exceptions reads it as a successful empty turn |
 | model id is `<synthetic>` | `classification.py:611` | no real completion |
 | empty text | `runner.py:277` | observed specifically on small gateway models |
-| deadline expiry | `TIER0_DEADLINE` × multiplier | slowness only |
+| deadline expiry | `effective_deadline` (§5.1: baseline × size factor × model-speed multiplier) | slowness only |
 | oracle rejection | §4.2 | must be built |
 | oracle infrastructure error | §4.2 | tagged separately |
 | reviewer / QA / security rejection | §4.3–4.5 | each tagged with its own gate |
@@ -321,26 +397,31 @@ CPU is not gated anywhere. The gateway is an external HTTPS endpoint absent from
 All of the following are **one versioned unit**, so any production run ties to the exact configuration that produced it:
 
 - the ladders (§3)
-- deadlines and model-speed multipliers (§5.1)
+- per-type baselines and the size-factor table (§5.1)
 - attempt and spawn caps (§5)
 - the global kill switch (§9.1)
+- the per-task-type `operational` flags (§1.1)
 - circuit-breaker thresholds (§10)
 - the cost ceiling (§2.7)
 - the benchmark table (§2.6)
+
+Model-speed multipliers are **not** in this list: they are derived from the benchmark table (§5.1), so versioning the table versions them. Recording a derived value alongside its input is how the two drift apart.
 
 ### 9.1 One global kill switch
 
 The entire design — classifier, all five stages, voice ladder, placement rules — ships behind **a single global kill switch**. Old routing or new routing, nothing in between. No per-gate switches, no phased ramp, no percentage-of-traffic rollout.
 
-> This reverses the addendum's per-gate kill switches. Per-gate toggles created partial states that are individually untested combinations.
+Per-gate toggles are rejected deliberately: each one multiplies the number of reachable states, and every combination is a configuration nobody has tested. One switch has two states, both of which can be verified.
 
 **Rollback must be clean.** Flipping back to off is one action leaving no side effects: no leaf stuck mid-pipeline, no orphaned sub-agent, no dangling config. **The off path is tested and confirmed clean before the switch is ever turned on in production.**
 
 ### 9.2 Multi-agent settings page
 
-A dedicated settings page in the web console surfaces the kill switch, the tunables from §5 and §10, the cost ceiling (§2.7), and the full benchmark table from §2.6 as an editable matrix. Each cell (`accuracy`, `n`, `cost_per_request`, `median_latency_s`, `max_context`) is inline-editable so the operator can update measurements without code changes. The ladders in §3 are regenerated at runtime from whatever data is in the table — editing it is live. Changes take effect without a deploy.
+A dedicated settings page in the web console surfaces the kill switch, the tunables from §5 and §10, the cost ceiling (§2.7), the per-task-type `operational` flag (§1.1), and the full benchmark table from §2.6 as an editable matrix. Each cell (`accuracy`, `n`, `cost_per_request`, `median_latency_s`, `max_context`) is inline-editable so the operator can update measurements without code changes. The ladders in §3 are regenerated at runtime from whatever data is in the table — editing it is live. Changes take effect without a deploy.
 
-Hover tooltips on rung values in the settings page show the model's accuracy for the current task type, sample size, cost per request, and latency.
+Because the matrix writes to the same database table the ladder generator reads (§2.6), an edit changes routing for the next leaf with no deploy and no restart. Flipping a task type to `operational` re-runs the §1.1 validation for that type immediately and refuses the flip — with the offending column named — rather than accepting it and failing at the next restart.
+
+Hover tooltips on rung values in the settings page show all five measured fields for the current task type: accuracy, sample size (`n`), cost per request, median latency, and **context window** (`max_context`) — the same five the §3 tooltip shows, from the same row.
 
 ### 9.3 Compatibility with existing backend/model selection
 
@@ -350,7 +431,7 @@ The router does not replace or bypass this. At every stage and every escalation 
 
 A model is never selected as a bare string. Every routing decision returns **`(model, machine)`** together — a model chosen without its machine reaches a gateway that does not serve it and returns `429 "No deployments available"`, a routing failure wearing a capacity error's clothes.
 
-**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, and no task type is left with an empty ladder after cost-ceiling exclusion. All three checks fail loudly if broken.
+**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, and no task type is left with an empty ladder after cost-ceiling exclusion. All four checks fail loudly if broken.
 
 ---
 
@@ -359,7 +440,7 @@ A model is never selected as a bare string. Every routing decision returns **`(m
 - Every attempt writes a usage row with `origin="orchestrator"`, **including failures**. A failed rung-0 attempt that writes no row makes the free tier look better the more it fails.
 - Each gate writes **its own row with its own signal tag**.
 - Every escalation records **which gate** rejected it, so repeated attempts are traceable to generation quality versus review calibration.
-- **Elapsed time versus deadline** is logged on every attempt, success included, to calibrate the model-speed multiplier.
+- **Elapsed time versus deadline** is logged on every attempt, success included. These measurements are what the §2.6 `median_latency_s` column is refreshed from, and the model-speed multipliers (§5.1) follow automatically — the multiplier is never tuned by hand against this log.
 - **Cost per leaf end to end**, across every sub-agent call in every stage. The base design's per-1000-task table is generation-only and now understates a five-stage leaf.
 - **Circuit breaker per gate:** a gate whose rejection rate crosses its threshold raises an alert rather than burning retries. A gate rejecting nearly everything is miscalibrated, not surrounded by bad code.
 - **Human spot-check sampling:** a small percentage of leaves that passed every gate are sampled for manual review. All gates agreeing is itself an unverified assumption.
@@ -372,7 +453,9 @@ A model is never selected as a bare string. Every routing decision returns **`(m
 
 ### 10.2 Scheduled re-benchmark
 
-The ladders are re-benchmarked **quarterly, as a scheduled job**, not as a prose reminder. The run compares fresh numbers against the values encoded in §3 and **flags any task type where the ranking between two rungs has flipped** — that is the signal an escalation order needs rewriting, not merely a number updating.
+The ladders are re-benchmarked **quarterly, as a scheduled job**, not as a prose reminder. The run writes its results into the §2.6 database table — that is the only place results land — and the ladders and the model-speed multipliers both regenerate from the new rows on the next read.
+
+The run compares fresh numbers against the previous ones and **flags any task type where the ranking between two rungs has flipped** — that is the signal an escalation order needs rewriting, not merely a number updating. A flip changes routing the moment it is written, so the flag exists to make a silent reordering visible, not to gate it.
 
 ---
 
@@ -384,11 +467,15 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 |---|---|
 | tier selection | asserting the model string alone — assert `(model, machine)` together |
 | escalation ladder | asserting the final outcome — assert the *sequence* and the cap |
-| all ladders in §3 | testing only the types named in prose — assert all nine rows, including the three that break positional order |
+| all ladders in §3 | testing only the types named in prose — assert all nine rows (coding, long-context, multi-turn, planning, comprehension, **voice**, reasoning, split decision, reviewer gate), including the three that break positional order |
+| voice ladder exists and stops at Sonnet | omitting voice because §3's prose says less about it — assert voice has a rung 0 and rung 1 and that **Opus is not a voice rung at any accuracy** |
 | rung 0 is scoped | asserting the free model appears somewhere — assert it is attempt 1 for `coding` and `long-context` and **attempt 1 for nothing else** |
 | `TIER0_DEADLINE` contents | asserting the two present keys — also assert the other types are **absent** |
 | unknown task type | letting `KeyError` escape, or defaulting to the shortest deadline — assert it gets the **longest** |
 | deadline is configuration | hardcoding the number in router and test so both agree and neither tracks the map — change a value in the test and assert the router follows |
+| size factor applied | asserting the baseline only — assert a score-1 and a score-5 task of the same type get **0.5× and 2.0×** the baseline |
+| multiplier is derived, not stored | asserting a multiplier constant — assert the fastest model on a task type computes to exactly **1.0**, and that changing a `median_latency_s` in the table changes the deadline without any other edit |
+| three factors compose | asserting each factor alone — assert one case where all three are non-default and the product is the deadline used |
 | each failure signal | testing only the deadline — assert all signals in §6 independently. An error frame **does not raise** |
 | oracle rejects bad output | asserting only that good code passes — assert non-parsing output escalates, **attributed to the oracle**, not to a timeout |
 | oracle infra error is distinct | letting a sandbox crash count as a code failure — assert the separate tag |
@@ -400,6 +487,9 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | security re-run cap | asserting infinite recursion is impossible — assert a leaf that cycles through generation→security exactly 2 times **fails with human-flag on the 3rd** |
 | `mutates` gates placement | asserting a read-only and a writing coding task take the same path — assert the writing one is refused a transport **while a transport has headroom** |
 | all comprehension rungs | asserting comprehension only uses sonnet — assert rung 0 is sonnet, rung 1 is opus, rung 2 is absent; **rung 2 is empty by design** |
+| read-only runs 1–3 | asserting a read-only task "skips the gates" — assert stage 3 **ran** and stages 4 and 5 **did not** |
+| stage-subtraction precedence | testing §4.6, §4.7 and §4.8 in isolation — assert a **trivial read-only** task runs stages 1–2, not 1–3 |
+| `side_effecting_read` takes all five | folding it into the read-only rule because it also writes nothing — assert it runs stages 4 and 5 while `mutates=False` does not |
 | `side_effecting_read` | folding it into `False` — assert it is refused a transport and tagged separately |
 | `mutates` default | testing only the nine explicit patterns — assert unmatched text returns `True` |
 | multi-pattern conflict | testing single matches only — assert a conflicting pair returns `mutates=True` and logs |
@@ -407,6 +497,10 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | kill switch off | asserting new behaviour only — assert routing is **byte-identical to today** with the switch off |
 | rollback leaves no state | asserting the switch flips — assert no leaf, sub-agent or config survives the flip |
 | startup validation | asserting valid config loads — assert an invalid model name **fails at load**, not at first use |
+| bootstrap exemption | asserting TBD always fails — assert a **non-operational** task type with TBD rows starts fine, and the same type flagged operational **refuses to start** |
+| §3 is generated, not written | asserting the §3 table's contents as constants — **regenerate the ladders from the §2.6 rows and assert they equal §3**; a rung in the snapshot with no backing row must fail |
+| no row means not a candidate | asserting the free model is absent from planning — **add a `vllm/*` planning row in the fixture and assert it becomes planning's rung 0**, proving absence is what excluded it |
+| non-operational type is not routed | asserting it merely fails validation — assert work classified into it falls back to today's routing **and logs the fallback** |
 | free tier has no capacity gate | asserting behaviour when samples exist — assert routing is unchanged when `system_latest_by_host()` returns nothing |
 | usage recording | asserting successes — a failed and a timed-out attempt must each produce a row |
 | budget ceiling | asserting per node — spend accumulates across the tree; assert the tree total |
@@ -421,4 +515,3 @@ Every test is mutation-checked: break the ladder order, the guard, the terminati
 
 - `claude_proxy.py` drift on the pentester transport (`bb117e85…` vs HEAD `691fe393…`) — a deployment decision to settle before any wholesale transport sync. **Do not sync transports until it is decided.**
 - Circuit-breaker rejection-rate threshold: **60%** of the last 20 leaves passing through a gate triggers the breaker. Spot-check sampling rate: **2%** of leaves that cleared all gates. Values are provisional; re-benchmark quarterly.
-- Model-speed multiplier values: direction agreed (slow models get longer deadlines); values TBD from a benchmark run against production request shapes.

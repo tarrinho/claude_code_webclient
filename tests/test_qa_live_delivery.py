@@ -636,6 +636,106 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enters[0], len(seen) - 1, "Enter was not the last call")
 
 
+class SessionModelTests(unittest.TestCase):
+    """Reading the model a live session was launched with."""
+
+    def test_the_model_is_read_from_argv(self):
+        argv = ["/home/kali/.local/share/claude/versions/2.1.269",
+                "--model", "vllm/Qwen3.6-35B-A3B-NVFP4", "--resume", SESSION_ID]
+        with patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "_cmdline_argv", return_value=argv):
+            self.assertEqual(prompts.session_model(SESSION_ID),
+                             "vllm/Qwen3.6-35B-A3B-NVFP4")
+
+    def test_the_equals_form_is_read_too(self):
+        argv = ["claude", "--model=claude-opus-5", "--resume", SESSION_ID]
+        with patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "_cmdline_argv", return_value=argv):
+            self.assertEqual(prompts.session_model(SESSION_ID), "claude-opus-5")
+
+    def test_no_model_flag_reads_as_none(self):
+        """A session that named no model follows the host default. That is
+        nobody's explicit choice, so it must not read as a disagreement."""
+        with patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "_cmdline_argv",
+                             return_value=["claude", "--resume", SESSION_ID]):
+            self.assertIsNone(prompts.session_model(SESSION_ID))
+
+    def test_a_dangling_model_flag_reads_as_none(self):
+        with patch.object(prompts, "session_pid", return_value=4242), \
+                patch.object(prompts, "_cmdline_argv",
+                             return_value=["claude", "--model"]):
+            self.assertIsNone(prompts.session_model(SESSION_ID))
+
+    def test_an_untrusted_pid_reads_as_none(self):
+        with patch.object(prompts, "session_pid", return_value=None):
+            self.assertIsNone(prompts.session_model(SESSION_ID))
+
+
+class ModelHonouredTests(unittest.IsolatedAsyncioTestCase):
+    """The conversation's model decides whether routing happens at all.
+
+    Measured 2026-09-15: 11,022 usage rows with origin='web-routed' ran on
+    vllm/Qwen3.6-35B-A3B-NVFP4 because three sessions were launched that way,
+    while the conversations asking for them were set to Claude models. The
+    selection was not overridden -- _route_to_live_terminal did not take a
+    model argument at all, so it was never consulted.
+    """
+
+    async def asyncSetUp(self):
+        await _setup(self)
+
+    async def asyncTearDown(self):
+        await _teardown(self)
+
+    async def test_a_disagreeing_model_is_not_routed(self):
+        chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
+        delivered = []
+        with patch.object(prompts, "session_model",
+                          return_value="vllm/Qwen3.6-35B-A3B-NVFP4"), \
+                patch.object(prompts, "deliver_request",
+                             side_effect=lambda *a, **k: delivered.append(a)):
+            routed = await chat_routes._route_to_live_terminal(
+                chat, "hello", "claude-opus-5")
+        self.assertIsNone(routed, "the turn was routed onto the wrong model")
+        self.assertEqual(delivered, [], "the prompt was delivered anyway")
+
+    async def test_a_matching_model_still_routes(self):
+        chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
+        with patch.object(prompts, "session_model", return_value="claude-opus-5"), \
+                patch.object(prompts, "deliver_request",
+                             return_value={"delivered": True, "reason": "",
+                                           "target": SCREEN}):
+            routed = await chat_routes._route_to_live_terminal(
+                chat, "hello", "claude-opus-5")
+        self.assertIsNotNone(routed)
+        self.assertTrue(routed["delivered"])
+
+    async def test_no_selected_model_still_routes(self):
+        """Nothing was chosen, so there is nothing to honour -- the terminal
+        keeps its long-standing behaviour."""
+        chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
+        with patch.object(prompts, "session_model",
+                          return_value="vllm/Qwen3.6-35B-A3B-NVFP4"), \
+                patch.object(prompts, "deliver_request",
+                             return_value={"delivered": True, "reason": "",
+                                           "target": SCREEN}):
+            routed = await chat_routes._route_to_live_terminal(chat, "hello", None)
+        self.assertIsNotNone(routed)
+
+    async def test_a_session_on_the_default_model_is_not_a_disagreement(self):
+        """session_model is None when the session named no model. Treating
+        that as a mismatch would stop routing for every such session."""
+        chat = {"id": "c1", "session_id": SESSION_ID, "work_dir": "/tmp"}
+        with patch.object(prompts, "session_model", return_value=None), \
+                patch.object(prompts, "deliver_request",
+                             return_value={"delivered": True, "reason": "",
+                                           "target": SCREEN}):
+            routed = await chat_routes._route_to_live_terminal(
+                chat, "hello", "claude-opus-5")
+        self.assertIsNotNone(routed)
+
+
 class StreamRoutingTests(unittest.IsolatedAsyncioTestCase):
     """The SSE path, which is what the browser actually uses."""
 

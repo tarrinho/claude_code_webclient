@@ -106,13 +106,51 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
         return None
 
 
-def _cmdline_argv0(pid: int) -> str:
-    """The first argument of *pid*'s command line, or "" if unreadable."""
+def _cmdline_argv(pid: int) -> list[str]:
+    """*pid*'s full argv, or [] if unreadable. NUL-separated in /proc, with a
+    trailing NUL that would otherwise yield a final empty element."""
     try:
         cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8")
     except OSError:
-        return ""
-    return cmdline.split("\0", 1)[0]
+        return []
+    return [arg for arg in cmdline.split("\0") if arg]
+
+
+def _cmdline_argv0(pid: int) -> str:
+    """The first argument of *pid*'s command line, or "" if unreadable."""
+    argv = _cmdline_argv(pid)
+    return argv[0] if argv else ""
+
+
+def session_model(session_id: str) -> str | None:
+    """The model the live process running *session_id* was launched with.
+
+    A running CLI process cannot be re-pointed at another model -- its
+    environment and argv were fixed at launch (CLAUDE.md §0.1 states this
+    outright). So a web request routed into that terminal runs on *its*
+    model, whatever the conversation is set to, and the only way to honour a
+    selection is to know this value before deciding to route.
+
+    Read from argv rather than the session file, which carries no model at
+    all, or the transcript, which only reports what already ran and so cannot
+    answer before a delivery. Measured 2026-09-15: all seven live sessions
+    carried `--model`, three of them `vllm/Qwen3.6-35B-A3B-NVFP4`.
+
+    Returns None when the pid cannot be trusted or no `--model` is present --
+    a session launched without one follows the host default, which is not a
+    disagreement anybody chose, so the caller treats None as "no objection"
+    rather than as a mismatch.
+    """
+    pid = session_pid(session_id)
+    if pid is None:
+        return None
+    argv = _cmdline_argv(pid)
+    for index, arg in enumerate(argv):
+        if arg == "--model" and index + 1 < len(argv):
+            return argv[index + 1].strip() or None
+        if arg.startswith("--model="):
+            return arg.split("=", 1)[1].strip() or None
+    return None
 
 
 def _is_claude(pid: int) -> bool:

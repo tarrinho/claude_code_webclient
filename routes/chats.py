@@ -1197,7 +1197,9 @@ _SSE_TIMEOUT = turns.TIMEOUT_MESSAGE
 _SSE_UNKNOWN = "Connection lost during streaming."
 
 
-async def _route_to_live_terminal(chat: dict, prompt: str) -> dict | None:
+async def _route_to_live_terminal(
+    chat: dict, prompt: str, model: str | None = None,
+) -> dict | None:
     """Type *prompt* into the terminal running this chat's session, if any.
 
     A conversation linked to a live interactive session has two possible
@@ -1208,12 +1210,42 @@ async def _route_to_live_terminal(chat: dict, prompt: str) -> dict | None:
     every step of the answer appear where the user is watching, and the web
     conversation picks them up through the existing transcript sync.
 
-    Returns None when there is no live window, so the caller falls back to the
+    *model* is the model this turn is meant to run on. A running CLI process
+    cannot be re-pointed at another one, so routing into it silently spends
+    the turn on whatever that terminal launched with: measured 2026-09-15,
+    11,022 usage rows with origin='web-routed' ran on
+    vllm/Qwen3.6-35B-A3B-NVFP4 because three sessions were started that way,
+    while the conversations asking for them were set to Claude models. The
+    selection was not overridden by anything -- it was never consulted, since
+    this function did not take a model at all.
+
+    So when a model is named and the live terminal is running a different
+    one, this declines to route and the headless turn runs instead, on the
+    model that was asked for. Terminal visibility is the thing given up, and
+    only in that case: a matching model, or no explicit selection, routes
+    exactly as before.
+
+    Returns None when there is no live window, when the models disagree, or
+    when the terminal refuses -- in every case the caller falls back to the
     headless turn that has always run.
     """
     session_id = (chat.get("session_id") or "").strip()
     if not session_id:
         return None
+
+    wanted = (model or "").strip()
+    if wanted:
+        running = await asyncio.to_thread(prompts.session_model, session_id)
+        # None means the session named no model and follows the host default,
+        # which is nobody's explicit choice and so is not a disagreement.
+        if running and running != wanted:
+            _log.info(
+                "live routing declined chat=%s session=%s wanted=%s terminal=%s "
+                "-- running headless so the selected model is the one used",
+                chat.get("id"), session_id, wanted, running,
+            )
+            return None
+
     outcome = await asyncio.to_thread(prompts.deliver_request, session_id, prompt)
     if not outcome.get("delivered"):
         if outcome.get("target"):
@@ -1285,8 +1317,12 @@ async def handle_submit_message(request: Request, chat_id: str):
 
     # A conversation with a live terminal behind it gets the request typed
     # into that terminal, so the user sees it and its steps where they are
-    # looking. The reply arrives in the web chat through transcript sync.
-    routed = await _route_to_live_terminal(chat, prompt)
+    # looking. The reply arrives in the web chat through transcript sync --
+    # unless the terminal runs a different model than this turn asked for,
+    # in which case routing is declined so the selection is honoured.
+    # `model or chat["model"]` because an omitted per-request model still
+    # leaves the conversation's own stored choice in force.
+    routed = await _route_to_live_terminal(chat, prompt, model or chat.get("model"))
     if routed:
         session_id = chat.get("session_id")
         await _mark_routed(chat, owner, prompt)
@@ -1803,7 +1839,14 @@ async def stream_handler(request: Request, chat_id: str):
             # they already have open, instead of a second headless process doing the
             # work invisibly against the same transcript. The reply reaches this
             # page through the existing transcript sync.
-            routed = await _route_to_live_terminal(chat, prompt)
+            #
+            # Declined when that terminal runs a different model than this turn
+            # asked for, since its model cannot be changed and routing would
+            # spend the turn on the wrong one. `model or chat["model"]` because
+            # an omitted per-request model leaves the conversation's own stored
+            # choice in force.
+            routed = await _route_to_live_terminal(
+                chat, prompt, model or chat.get("model"))
             if routed:
                 session_id = chat.get("session_id")
                 await _mark_routed(chat, session["user"], prompt)

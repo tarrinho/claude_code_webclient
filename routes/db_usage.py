@@ -3,6 +3,7 @@
 # Extracted from db.py so the stats / admin routes do not need the full
 # database module.
 
+import asyncio
 import datetime
 import logging
 import re
@@ -130,6 +131,18 @@ async def usage_import(
             await db.db_conn.commit()
         return 0
     markers = await db.routed_markers(session_id)
+    # What this session was launched to run, resolved once: a process cannot be
+    # re-pointed at another model, so the value is fixed for every row in the
+    # import. Recorded alongside the model the transcript reports because the
+    # two disagreeing is the whole shape of the 2026-09-15 finding -- 11,022
+    # web-routed rows ran on the terminal's model while the conversation asked
+    # for another, and nothing in the table showed it. None when the session
+    # has since exited, which is no worse than the NULL written before.
+    try:
+        import prompts as _prompts
+        launched_model = await asyncio.to_thread(_prompts.session_model, session_id)
+    except Exception:  # pragma: no cover - accounting must not break an import
+        launched_model = None
     written = 0
     for start in range(0, len(rows), USAGE_IMPORT_BATCH):
         batch = rows[start:start + USAGE_IMPORT_BATCH]
@@ -146,17 +159,19 @@ async def usage_import(
                 )
                 await db.db_conn.execute(
                     "INSERT INTO usage_events "
-                    "(chat_id, session_id, owner_id, model, provider, input_tokens, "
+                    "(chat_id, session_id, owner_id, model, requested_model, "
+                    " provider, input_tokens, "
                     " output_tokens, cache_read_tokens, cache_creation_tokens, "
                     " cost_usd, cost_basis, duration_ms, is_error, created_at, "
                     " origin, context_unsplit) "
-                    "VALUES (?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
+                    "VALUES (?, ?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
                     " ?, ?)",
                     (
                         routed["chat_id"] if routed else "",
                         session_id,
                         owner_id,
                         row["model"],
+                        launched_model,
                         int(row["input_tokens"]),
                         int(row["output_tokens"]),
                         int(row["cache_read_tokens"]),
@@ -226,6 +241,22 @@ async def _ensure_usage_columns() -> None:
         "billing_route":
             "ALTER TABLE usage_events ADD COLUMN billing_route "
             "TEXT NOT NULL DEFAULT ''",
+        # The model the work was *asked* to run on, beside `model`, which is
+        # what answered. They diverge whenever a turn reaches a live terminal:
+        # a running CLI process cannot be re-pointed, so a request routed into
+        # one spends the turn on whatever that process launched with. Measured
+        # 2026-09-15, 11,022 rows with origin='web-routed' ran on
+        # vllm/Qwen3.6-35B-A3B-NVFP4 while the conversations asking for them
+        # were set to Claude models, and nothing in this table could show it.
+        #
+        # Nullable and not backfilled, for the same reason billing_route is
+        # not: NULL means "the write site did not know", which is the honest
+        # value for all 166,920 rows that predate this. The column already
+        # existed on this deployment's database without ever being written --
+        # it is absent from db.py's CREATE TABLE, so a fresh database never
+        # had it at all, which is why adding the write surfaced it here.
+        "requested_model":
+            "ALTER TABLE usage_events ADD COLUMN requested_model TEXT",
     }
     added = False
     for column, statement in migrations.items():

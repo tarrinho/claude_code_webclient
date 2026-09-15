@@ -31,6 +31,7 @@ from unittest.mock import patch
 
 import config
 import db
+import prompts
 import transcripts
 from routes import misc as misc_routes
 from tests.testing_model import TESTING_MODEL
@@ -386,6 +387,34 @@ class RoutedAttributionQA(unittest.IsolatedAsyncioTestCase):
             self._row(10, marks[0]["created_at"], "do the thing")], 10)
         rows = await db.usage_by_origin("admin", None)
         self.assertEqual([r["origin"] for r in rows], ["web-routed"])
+
+    async def test_an_imported_row_records_what_the_session_was_asked_to_run(self):
+        """`model` is what answered; `requested_model` is what the session was
+        launched to run. They diverge whenever a web request reaches a live
+        terminal, because that process cannot be re-pointed -- 11,022 rows on
+        2026-09-15 ran on the terminal's model while the conversation asked for
+        another, and nothing in this table could show it."""
+        with patch.object(prompts, "session_model", return_value="claude-opus-5"):
+            await db.usage_import("admin", "sess-live", [self._row(10, "2026-09-15T10:00:00Z")], 10)
+        cur = await db.db_conn.execute(
+            "SELECT model, requested_model FROM usage_events WHERE session_id = ?",
+            ("sess-live",))
+        row = await cur.fetchone()
+        self.assertEqual(row["requested_model"], "claude-opus-5")
+        self.assertEqual(row["model"], TESTING_MODEL)
+        self.assertNotEqual(row["model"], row["requested_model"],
+                            "this fixture is meant to show the two diverging")
+
+    async def test_an_exited_session_records_no_requested_model(self):
+        """session_model is None once the process is gone. NULL is the honest
+        value -- inventing one would make a guess indistinguishable from a
+        recorded fact, which is the distinction the column exists for."""
+        with patch.object(prompts, "session_model", return_value=None):
+            await db.usage_import("admin", "sess-live", [self._row(10, "2026-09-15T10:00:00Z")], 10)
+        cur = await db.db_conn.execute(
+            "SELECT requested_model FROM usage_events WHERE session_id = ?",
+            ("sess-live",))
+        self.assertIsNone((await cur.fetchone())["requested_model"])
 
     async def test_a_routed_row_carries_the_conversation_it_came_from(self):
         await db.routed_request_add("sess-live", "c1", "admin", 0, "trace me")

@@ -5,7 +5,7 @@
 // empty until the server has been up for a sampling interval.
 
 import {apiFetch} from './api.js?v=2741508';
-import {showToast, settingsVisible} from './app.js?v=10528660';
+import {showToast, settingsVisible} from './app.js?v=8681051';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
@@ -89,13 +89,26 @@ export async function loadServer(quiet = false) {
   try {
     const [liveResp, histResp] = await Promise.all([
       apiFetch('/api/system'),
-      apiFetch(`/api/system/series?days=${encodeURIComponent(range)}` +
+      // A range ending in "h" is shorter than a day and travels as `hours`;
+      // sending it as `days=1h` would parse to one day on the server, which
+      // is a working request for the wrong window.
+      apiFetch(`/api/system/series?${range.endsWith('h')
+                 ? `hours=${encodeURIComponent(range.slice(0, -1))}`
+                 : `days=${encodeURIComponent(range)}`}` +
                `&bucket=${encodeURIComponent(bucket)}`),
     ]);
     if (!liveResp.ok) throw new Error('Could not read host statistics');
     if (!histResp.ok) throw new Error('Could not load host history');
     const live = await liveResp.json();
     const history = await histResp.json();
+    // The server coarsens a width the window cannot draw. Put back what it
+    // actually used, so the control does not name a grouping nobody is
+    // looking at -- same reasoning as the Statistics tab.
+    const usedBucket = history.bucket;
+    const bucketSelect = byId('serverBucket');
+    if (usedBucket && bucketSelect && bucketSelect.value !== usedBucket) {
+      bucketSelect.value = usedBucket;
+    }
     // Lazily imported for the same reason as the statistics module: it is a
     // rarely-opened tab and pure weight in every other page load.
     const {renderServer, renderAllHosts, renderHostHistory} =

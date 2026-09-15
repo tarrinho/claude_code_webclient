@@ -820,11 +820,26 @@ async def handle_usage_series_get(request: Request):
     return JSONResponse(payload)
 
 
-def _system_range(request: Request) -> tuple[int | None, str]:
-    """Parse and clamp the days/bucket query pair shared by the system routes."""
+def _system_range(request: Request) -> tuple[float | None, str]:
+    """Parse and clamp the window/bucket query pair shared by the system routes.
+
+    A window shorter than a day arrives as `hours` and becomes a fractional
+    day count, the same contract /api/usage/series uses: everything
+    downstream -- the cutoff, the spine, the bucket keys -- already does float
+    arithmetic on days, so one window parameter still covers both. Host
+    samples are taken every SYSTEM_SAMPLE_S seconds (60 by default), so an
+    hour holds about 60 of them and a minute bucket is one sample wide.
+    """
+    raw_hours = request.query_params.get("hours")
     raw_days = request.query_params.get("days", "1")
-    days: int | None
-    if raw_days in ("all", "0", ""):
+    days: float | None
+    if raw_hours:
+        try:
+            hours = max(1 / 60, min(float(raw_hours), 24 * 3650))
+        except (TypeError, ValueError):
+            hours = 1.0
+        days = hours / 24
+    elif raw_days in ("all", "0", ""):
         days = None
     else:
         try:
@@ -834,7 +849,10 @@ def _system_range(request: Request) -> tuple[int | None, str]:
     bucket = request.query_params.get("bucket", "halfhour")
     if bucket not in db.USAGE_BUCKETS:
         bucket = "halfhour"
-    return days, bucket
+    # Same guard the usage charts use: the range and bucket pickers are
+    # independent, so a width the window cannot draw is reachable in two
+    # clicks. Coarsened to what fits, and the response reports what it used.
+    return days, db.clamp_bucket(bucket, days)
 
 
 async def handle_system_get(request: Request):
@@ -928,7 +946,8 @@ async def handle_system_series_get(request: Request):
     )
     return JSONResponse(
         {
-            "days": days if days is not None else 0,
+            "days": int(days) if days is not None and days >= 1 else 0,
+            "hours": round(days * 24, 4) if days is not None and days < 1 else None,
             "bucket": bucket,
             "buckets": list(db.USAGE_BUCKETS),
             "sample_interval_s": config.SYSTEM_SAMPLE_S,

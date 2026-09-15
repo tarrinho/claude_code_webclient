@@ -551,7 +551,7 @@ async function loadStats(force = false) {
 
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
-import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=11877294';
+import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=1383946';
 export { notifyResult, setStatus };
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=15159128';
@@ -2605,7 +2605,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Same reasoning as the statistics range above: match the slot width to
     // the span, or a day of samples collapses into one point.
     const bucketSelect = byId('serverBucket');
-    const suggested = {'1': 'halfhour', '7': 'hour', '30': 'day'};
+    const suggested = {'1h': 'fivemin', '1': 'halfhour', '7': 'hour',
+                       '30': 'day'};
     const next = suggested[event.target.value];
     if (bucketSelect && next) bucketSelect.value = next;
     loadServer();

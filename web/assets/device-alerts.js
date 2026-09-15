@@ -1,8 +1,8 @@
 // ── Device alerts ─────────────────────────────────────────────────────────────
 
 import {apiFetch} from './api.js?v=2741508';
-import {notifyResult} from './server-stats.js?v=11877294';
-import {listController} from './app.js?v=10528660';
+import {notifyResult} from './server-stats.js?v=1383946';
+import {listController} from './app.js?v=8681051';
 // Three levels, because on a phone the page is usually not the thing in front
 // of you:
 //   1. the tab title, which always works and needs no permission;

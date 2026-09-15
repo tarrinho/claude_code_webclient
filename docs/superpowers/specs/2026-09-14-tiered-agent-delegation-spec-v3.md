@@ -15,7 +15,7 @@ What must be **built**: the duplicate-branch fix in `ModelRouter.assign_model` s
 
 ### 1.1 Startup validation
 
-At config load the system checks five invariants and fails loudly if any are broken:
+At config load the system checks six invariants and fails loudly if any are broken:
 
 | invariant | condition |
 |---|---|
@@ -24,6 +24,7 @@ At config load the system checks five invariants and fails loudly if any are bro
 | no empty ladder | after applying the cost-ceiling filter (§2.7), every **operational** task type must have at least one rung; no operational task type is left with an empty ladder |
 | every rung is backed by a row | every `(model, task_type)` pair appearing in the §3 ladder snapshot has a row in the §2.6 table. A rung named in the snapshot with no backing row means the snapshot and the generator disagree, and the generator silently wins |
 | the ceiling fits the budget | for every **operational** task type, the computed worst-case path (§5.1) is at or below the combined latency ceiling. A ceiling below it kills leaves that passed every per-attempt deadline, after paying for them |
+| the ladder fits the budget | for every **operational** task type, the expected tree cost of its ladder (§2.7 — leaves × tokens × Σ reach-probability × rate) is at or below `BUDGET_USD`. A ladder that cannot afford its own rungs will exhaust the tree budget mid-run, which is a worse failure than refusing to start |
 
 **Bootstrap exemption.** §2.6 ships mostly unmeasured, so a check that refused every TBD would mean the system could never start for the first time. Each task type therefore carries an `operational` flag, default **false**. The checks above apply only to task types flagged operational; a non-operational task type may hold TBD in any column.
 
@@ -35,7 +36,7 @@ If any check fails the system refuses to start. The error lists every broken inv
 
 **Validation runs on every write, not only at load.** The benchmark table is live-editable (§9.2) and the ladders regenerate at runtime from it, so a check that only ran at startup would let an operator clear a `median_latency_s` on an operational row at 15:00, see routing carry on unchanged, and discover at the next restart — possibly weeks later, possibly mid-incident — that the system will not boot. A validation gap whose blast radius is delayed by an arbitrary interval is worse than one that fails immediately.
 
-So the same five checks run at three moments, with the same code path and the same error text:
+So the same six checks run at three moments, with the same code path and the same error text:
 
 | moment | on failure |
 |---|---|
@@ -44,6 +45,30 @@ So the same five checks run at three moments, with the same code path and the sa
 | flipping a task type to `operational` (§9.2) | reject the flip |
 
 A write is rejected only against the invariants of task types that are *already* operational, plus the type being written. Editing a non-operational type's rows stays free — that is the bootstrap path, and gating it would make the table impossible to fill in.
+
+### 1.2 Readiness, measured 2026-09-15
+
+**No task type can currently go operational, so with the kill switch on, nothing routes.** That is the designed bootstrap state (§1.1), not a fault, but it means the first deliverable is measurement rather than code. Audited against §2.6:
+
+| task_type | rows | accuracy | n | cost | latency | max_context |
+|---|---|---|---|---|---|---|
+| coding | 4 | 0 | 0 | **4** | 3 | 0 |
+| comprehension | 3 | 2 | 2 | **3** | 0 | 0 |
+| long-context | 3 | 1 | 1 | **3** | 0 | 0 |
+| multi-turn | 2 | 0 | 0 | **2** | 0 | 0 |
+| planning | 2 | 0 | 0 | **2** | 0 | 0 |
+| reasoning | 4 | 2 | 1 | **4** | 0 | 0 |
+| reviewer-gate | 2 | 0 | 0 | **2** | 1 | 0 |
+| split-decision | 1 | 0 | 0 | **1** | 0 | 0 |
+| voice | 2 | 0 | 0 | **2** | 0 | 0 |
+
+Cost is complete (23/23) as of today. Latency is 4/23, accuracy 5/23, and **`max_context` is 0/23**.
+
+**`max_context` is the cheapest column in the table and nobody has filled any of it.** It needs no benchmark run — it is a published property of each model — and §3 singles it out as the field that decides whether a rung can take a task at all, since a cheaper and more accurate model is still wrong if the input does not fit. This project has already lost time to exactly that failure: a gateway model with a 32,000-token window raised `ContextWindowExceededError` on an obviously small prompt because the *output* budget consumed the whole window. Filling this column is an afternoon of lookups and it unblocks one sixth of every readiness check.
+
+**Shortest path to one operational task type is `coding`**, which already holds 4/4 cost and 3/4 latency: it needs accuracy plus accuracy-`n` for its rows, one more latency figure, and its context windows.
+
+**One scoping decision is unresolved and it changes how much of this is required.** §1.1 demands every *row* of a task type be complete, but §2.6 makes a row with TBD accuracy ineligible — not a ladder candidate at all. Requiring completeness of rows that can never be rungs is work with no consequence. Scoping the invariant to **ladder rows, plus a requirement that at least one exists**, would preserve every guarantee it currently makes while removing that. It is left as written here because narrowing a validity check is a deliberate decision, not a cleanup.
 
 ---
 
@@ -180,9 +205,9 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 | model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | — | 0.0000 | TBD | TBD |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | 6* | 0.0000 | 22.4 | TBD |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | coding | TBD | — | 0.0285 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | coding | TBD | 3* | 0.0285 | 12.8 | TBD |
 | `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | TBD |
@@ -191,8 +216,8 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | TBD |
-| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | — | 0.0285 | TBD | TBD |
-| `claude-sonnet-5` | coding | TBD | — | 1.5709 | TBD | TBD |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | TBD |
+| `claude-sonnet-5` | coding | TBD | 7* | 1.5709 | 10.7 | TBD |
 | `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | TBD |
 | `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | TBD |
 | `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | TBD |
@@ -203,6 +228,8 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | reviewer-gate | TBD | — | 1.5709 | TBD | TBD |
 | `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | TBD |
 | `claude-opus-5` | reasoning | TBD | TBD | 3.6082 | TBD | TBD |
+
+**An `n` marked with `*` is a latency sample, not an accuracy sample.** Four rows carry measured `median_latency_s` from `bench/pipeline_ab.py` (2026-09-15) while their `accuracy` is still TBD. The `n` column means *accuracy* sample size everywhere else, and §2.6's blocking constraint on Opus depends on that reading, so the two must not be confused: **no row in this table yet carries a measured accuracy sample size for coding.** A row needs both before its task type can go operational.
 
 **Provenance of the `cost_per_1M_tokens` column, which comes from three different places.** Anthropic figures (sonnet 1.5709, opus 3.6082) are blended from `usage_events` rows carrying `cost_basis='list'`. Azure figures (luna 0.0285, mini 0.5261) come from **gateway billing**, which is a separate source from this database and the reason they never reconciled with it (§2.5). `0.0000` for the self-hosted model is a property of the deployment, not a measurement. Every one of them is a **rate**, independent of request size — which is the whole point of the unit change, since the previous per-request column silently encoded how large each model's historical jobs happened to be (§2.7).
 
@@ -276,6 +303,61 @@ A model with no rate from any of those sources is still ineligible, still not es
 1. **`vllm → luna → sonnet` is correct** and survives unchanged. Per token the order is 0 → 0.0285 → 1.5709, monotonically increasing, which is what cheapest-first requires.
 2. **The mini exclusion is backwards.** Mini is cheaper per token than a model the design keeps. Whether mini belongs in a ladder is now an *accuracy* question (its only measured row is reasoning, 86%, n unrecorded) — not a cost one. The exclusion must be re-derived or withdrawn, and §3's ladder shapes depend on which.
 3. **The threshold itself must be restated in per-token terms.** `$0.015/request` is not a threshold that can be applied to the table above; it is a number that only sorts one historical workload mix.
+
+#### The re-derived ceiling: a rate alone is not the question, the rung is
+
+A single per-model threshold cannot express the constraint this section exists to enforce, and that is why every version of it has felt arbitrary. **The budget is per tree (§5); a model's contribution to it depends on how often it is reached.** An expensive model at the top of a ladder is cheap because it rarely runs; a cheap model at rung 0 runs on every leaf. A scalar `$X per model` throws away the one variable that decides the answer.
+
+So the ceiling is a check on expected tree cost:
+
+```
+tree_cost = leaves_per_tree
+          x tokens_per_leaf
+          x SUM over rungs of [ P(reach rung) x rate(model at that rung) ]
+
+admissible <=> tree_cost <= BUDGET_USD
+```
+
+Measured inputs, 2026-09-15 (`bench/pipeline_ab.py`, 6 leaves):
+
+| input | value | confidence |
+|---|---|---|
+| `tokens_per_leaf` | 59,460 | measured, benchmark-shaped tasks |
+| `P(reach rung 1)` | 0.50 | measured, **n=6** |
+| `P(reach rung 2)` | 0.17 | measured, **n=6** |
+| `leaves_per_tree` | 40 | **assumed** — this is `MAX_NODES`, an upper bound nobody has measured |
+| `BUDGET_USD` | 1.00 | §5 |
+
+Cost of placing each model at each rung, for a whole tree:
+
+| model | $/1M | as rung 0 | as rung 1 | as rung 2 | affordable at |
+|---|---|---|---|---|---|
+| `vllm/Qwen3.6-35B` | 0.0000 | $0.000 | $0.000 | $0.000 | any |
+| `azure_ai/gpt-5.6-luna` | 0.0285 | $0.068 | $0.034 | $0.011 | any |
+| `azure_ai/gpt-5.4-mini` | 0.5261 | $1.251 | $0.626 | $0.209 | **rung 1 or 2** |
+| `claude-sonnet-5` | 1.5709 | $3.736 | $1.868 | $0.623 | **rung 2 only** |
+| `claude-opus-5` | 3.6082 | $8.582 | $4.291 | $1.430 | **none** |
+
+**This replaces the `$0.015/request` threshold.** Note what it does to the mini question: mini is not excluded and never should have been on cost alone — it is admissible at rung 1 or 2, and its place in a ladder is decided by accuracy, exactly as §2.7 concluded above.
+
+**Three ladder shapes in §3 do not survive this, and they are the ones that put an expensive model low:**
+
+| ladder | position that fails | tree cost at that position |
+|---|---|---|
+| multi-turn, planning, voice, reviewer-gate | `claude-sonnet-5` at **rung 1** | $1.868 |
+| comprehension | `claude-sonnet-5` at **rung 0** | $3.736 |
+| comprehension | `claude-opus-5` at **rung 1** | $4.291 |
+| split-decision | `claude-sonnet-5` at **rung 0** | $3.736 |
+
+`coding` and `long-context` — the two three-rung ladders, and the only two that start free — are the only ones that fit unchanged. **Comprehension and split-decision have no affordable ladder at all** on these inputs, and under §1.1 that makes them non-operational until one of the assumptions changes or a cheap rung is measured for them. Luna already holds a comprehension row awaiting accuracy, which is the cheapest way to fix it.
+
+**Opus is affordable at no rung of any ladder.** Given §2.6's blocking constraint already refuses it the reasoning entry rung on evidence grounds, and its only measured row is comprehension at 50% (n=2), the case for Opus appearing anywhere in this design is now weak on both counts.
+
+**What would change these conclusions, in order of leverage:**
+
+1. **`leaves_per_tree`.** It is the only pure assumption here and it scales everything linearly. At 10 leaves rather than 40, Sonnet becomes admissible at rung 1 and comprehension's ladder survives. **Measuring actual leaves per tree is the single highest-value number still missing**, and it is cheaper to obtain than any benchmark row.
+2. **`tokens_per_leaf`.** Measured on benchmark tasks; §2.5.1 warns production requests run far larger (luna's average 105,017 tokens against the ~17,000/call measured here). A production-shaped leaf makes every figure above worse, not better.
+3. **The reach probabilities**, at n=6, are the weakest evidence in the table and the easiest to improve.
 
 #### The per-call floor: a gate is not cheap because its rung is
 
@@ -548,6 +630,29 @@ The consequence is not a slow leaf; it is a leaf killed after spending on five s
 
 `600` in the table above is a **placeholder that satisfies none of the three**, and it is marked as such until latencies are measured and the arithmetic can be run for real.
 
+#### Run for real, 2026-09-15 — and the ceiling is too low
+
+Coding latencies are now measured (§2.6), so the worst case above is no longer hypothetical. **The free model is the slowest thing in the ladder**, which is the fact that decides this:
+
+| model | measured `median_latency_s` | multiplier |
+|---|---|---|
+| `claude-sonnet-5` | 10.7 | **1.00** (reference — fastest ladder-eligible) |
+| `azure_ai/gpt-5.6-luna` | 12.8 | 1.20 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 22.4 | **2.09** |
+| luna as a gate | 11.1 | 1.04 |
+
+```
+multiplier sum = generation (2.09 + 1.20 + 1.00) + 3 gates (3 x 1.04)
+               = 4.29 + 3.11 = 7.40
+
+score 3 (size 1.0):  90 x 1.0 x 7.40 =   666s   vs 600s ceiling — over by 66s
+score 4 (size 1.5):  90 x 1.5 x 7.40 =   999s   vs 600s ceiling — over by 399s
+```
+
+**Both fail.** A `coding` leaf at score 3 — the ordinary case, `write.*test.*suite` — cannot complete its worst-case path inside the ceiling, and score 4 misses by two thirds. Option 1 of the three above therefore sets the ceiling at **≥1,000s** to cover score 4, or option 2 cuts `MAX_ATTEMPTS` to 2 for coding, which brings score 3 to 478s and score 4 to 717s.
+
+Note what drives it: the free rung is **2.09x slower than the model it exists to avoid**. Its multiplier alone spends 188s of a score-3 leaf's budget. The free tier buys cost, and it is charged for in latency — §10.1's free-rung target measures the cost side of that trade while the ceiling enforces the other, and the two have never been reconciled against one set of numbers until now.
+
 **Startup validation (§1.1) checks this.** For every operational task type, the computed worst case is compared against the ceiling, and a ceiling below it fails the same way a blank field does — at load, naming the task type and both numbers. The check needs measured `median_latency_s` values, which an operational task type already guarantees.
 
 **How the ceiling is enforced.** It is evaluated **before each stage starts**, never mid-stage. If the elapsed time plus the next stage's deadline would exceed the ceiling, the leaf stops there. Interrupting a stage in flight would pay for a model call and discard its verdict, which is the most expensive possible way to save time.
@@ -654,7 +759,7 @@ The router does not replace or bypass this. At every stage and every escalation 
 
 A model is never selected as a bare string. Every routing decision returns **`(model, machine)`** together — a model chosen without its machine reaches a gateway that does not serve it and returns `429 "No deployments available"`, a routing failure wearing a capacity error's clothes.
 
-**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, no task type is left with an empty ladder after cost-ceiling exclusion, and no operational task type has a worst-case path exceeding the combined latency ceiling (§5.1). All five checks fail loudly if broken.
+**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, no task type is left with an empty ladder after cost-ceiling exclusion, no operational task type has a worst-case path exceeding the combined latency ceiling (§5.1), and no operational ladder has an expected tree cost above `BUDGET_USD` (§2.7). All six checks fail loudly if broken.
 
 ---
 
@@ -735,6 +840,10 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | unpriced model is ineligible | asserting mini is excluded — assert a model with **no rate from any of the three sources** is refused a ladder place outright, and is neither estimated into eligibility nor treated as free |
 | ceiling is per token, not per request | asserting the ceiling excludes something — build a fixture where model X is cheaper per *request* than model Y only because X's historical requests are smaller, and assert the ceiling **ranks them by rate**, not by that artifact. This is the mini/Sonnet inversion: mini is 2.99x cheaper per token and was excluded while Sonnet was kept |
 | cost is normalised by task size | asserting a model's rate alone — assert `effective_cost_per_task` multiplies the rate by the task type's expected tokens, so the same model costs more on a larger task type |
+| ceiling is position-dependent | asserting a per-model threshold — assert the **same model** is admissible at rung 2 and refused at rung 0, because reach probability differs; a scalar threshold cannot express this and must fail the test |
+| ladder fits the budget | asserting rungs resolve — assert a ladder whose expected tree cost exceeds `BUDGET_USD` **fails at load**, naming the task type and the offending rung. Comprehension with sonnet at rung 0 ($3.736) must not load |
+| opus is affordable nowhere | asserting opus is merely expensive — assert it is refused at **every** rung of every ladder on the measured inputs |
+| leaves_per_tree is an input | hardcoding 40 — assert lowering it to 10 makes sonnet admissible at rung 1 with no other edit, proving the assumption is what drives the exclusions |
 | EUR→USD is an input | hardcoding converted figures — assert changing the stored rate moves luna and mini against the Anthropic rows, and that a ladder reorder follows from it with no other edit |
 | cost basis is authoritative or absent | costing from `usage_events.cost_usd` — assert only rows with `cost_basis='list'` contribute to a blended figure; a model whose rows are all `unknown` must read as unpriced, not as its recorded number |
 | per-call floor is counted | costing a leaf as one call per stage times a rate — assert a five-stage leaf's projected cost includes the **per-call token floor for every stage**, and that a free-generation leaf with three paid gates is not costed at zero |

@@ -261,23 +261,36 @@ def reap_stale_session_files() -> int:
     session found matching ..." -- while searching a registry mostly composed of
     the dead.
 
-    **The staleness test lives here; the ownership test does not.** That split
-    is not tidiness, it is a correction: the first version of this function
-    delegated both to `delete_claude_session_file` on the assumption that its
-    live-process guard would protect the running server's own records. It does
-    not, and cannot. `_session_is_live` skips `entrypoint == "webconsole"`
-    records outright -- deliberately, so that shadow records could be deleted at
-    all -- so that guard never fires for exactly the records this function
-    walks. Relying on it deleted the live server's own records, which the
-    refusal tests in `tests/test_qa_session_reaper.py` caught.
+    **Two liveness questions, and both guards are needed.** This was got wrong
+    twice while writing it, so the reasoning is recorded rather than the
+    conclusion alone.
 
-    So the two questions are genuinely different and are answered in different
-    places. *Is the writing process gone?* is asked here, against the record's
-    own pid, because nothing else asks it. *Is this ours to delete, and is the
-    path safe?* stays in `delete_claude_session_file`, which already refuses a
-    record WebConsole did not write -- its `ValueError` on a real CLI session is
-    an expected outcome on a mixed directory, not a fault, so it is skipped
-    rather than logged.
+    A session id can carry *two* records: the CLI's own, named by pid and
+    holding that session's live pid, and WebConsole's shadow, named by the
+    session id and holding the pid of the server that wrote it. They answer
+    different questions, and neither guard subsumes the other:
+
+    * `delete_claude_session_file`'s `_session_is_live` check asks *is the
+      session running?* It skips `entrypoint == "webconsole"` records -- so the
+      shadow's own stale pid cannot vote -- and then finds the **sibling CLI
+      record**, whose pid is live. That is what stops this function deleting the
+      record of a session someone is sitting in right now. Verified against a
+      copy of the real registry on 2026-09-15: five shadow records were refused
+      on exactly this ground, and all five belonged to live terminal sessions,
+      one of them the session running the sweep.
+    * The pid check here asks *is the process that wrote this record gone?*
+      Nothing else asks it. A shadow the **current** server wrote for a turn
+      with no CLI session behind it has no live sibling, so `_session_is_live`
+      returns False and the first guard permits a delete that would destroy
+      live work. `test_a_live_webconsole_record_survives` pins that case.
+
+    An earlier version of this docstring claimed the first guard "never fires
+    for these records". That is false, and it mattered: it would have invited a
+    later reader to delete the check that is doing the most important work here.
+
+    Ownership and path safety stay entirely in `delete_claude_session_file`. Its
+    `ValueError` on a real CLI session is an expected outcome on a mixed
+    directory, not a fault, so it is skipped rather than logged.
 
     **Scope, a deliberate limit rather than an oversight.** A record written by
     the *currently running* server carries that server's live pid and is kept.

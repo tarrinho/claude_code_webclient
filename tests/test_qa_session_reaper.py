@@ -99,6 +99,42 @@ class SessionReaperTests(unittest.TestCase):
         survivors = sorted(p.stem for p in self.dir.glob("*.json"))
         self.assertEqual(survivors, ["cli", "live"])
 
+    def test_a_shadow_whose_session_is_still_running_survives(self):
+        """The case the unit tests missed and a dry-run against a copy of the
+        real registry found.
+
+        A session id can carry two records: the CLI's own, named by pid and
+        holding the session's live pid, and WebConsole's shadow, named by the
+        session id and holding the pid of the server that wrote it. When a
+        server restarts, every shadow it wrote has a dead pid while the sessions
+        themselves are still running -- which is the normal state of this
+        directory, not an edge case.
+
+        Reaping on the shadow's own pid alone would delete the console's record
+        of a session someone is sitting in. `_session_is_live` prevents it by
+        finding the live sibling. Measured 2026-09-15 against a copy of the real
+        registry: five shadows were refused on exactly this ground, all five
+        belonging to live terminal sessions.
+        """
+        sid = "shared-session-id"
+        # The shadow: named by session id, pid of a server that has since died.
+        _write_record(self.dir, sid, entrypoint="webconsole", pid=_dead_pid())
+        # The CLI's own record for the same session: named by pid, and alive.
+        (self.dir / "99999.json").write_text(json.dumps({
+            "sessionId": sid,
+            "pid": os.getpid(),
+            "name": "a terminal someone is using",
+            "cwd": "/tmp",
+            "entrypoint": "cli",
+        }), encoding="utf-8")
+
+        self.assertEqual(db_sessions.reap_stale_session_files(), 0)
+        self.assertTrue(
+            (self.dir / f"{sid}.json").exists(),
+            "the shadow of a running session must survive: its own pid is the "
+            "dead server's, but the session behind it is live",
+        )
+
     def test_a_malformed_record_does_not_stop_the_sweep(self):
         """One unreadable file must not strand every collectable record behind
         it -- the failure mode that turns a leak into an unbounded one."""

@@ -11,10 +11,29 @@ concurrently.
 
 The cost is not theoretical and it is not small:
 
-- **23 of the 116 entries in `rules.md`'s §16 registry — 20% — are shared-tree
-  collision damage.** Counted by matching the registry rows against
-  peer/shared-tree/`git add`/`reset --hard`/uncommitted/sweep. That is the
-  single largest defect category in the project's own record.
+- **Between 7 and 11 of the 116 entries in `rules.md`'s §16 registry — 6% to 9%
+  — are shared-tree collision damage.** Method, stated because the first
+  version of this document got it wrong: a keyword match over the registry rows
+  (peer / shared tree / `git add` / `reset --hard` / uncommitted / sweep)
+  returns 23 candidates, but reading all 23 shows roughly half are unrelated
+  defects that merely use one of those words — #41 is a database writer bug,
+  #47 and #48 are SQLite transaction bugs, #95 is a `d3` stub `TypeError`, #100
+  is a systemd unit that was never enabled. **7 are unambiguous** (#50, #52,
+  #64, #66, #69, #88, #99) and **4 more are shared-*resource* rather than
+  shared-*tree*** (#60, #65, #82, #103).
+
+  The commit that introduced this document (`f47218d`) quotes the uncorrected
+  "23 of 116 — 20%" figure in its message, and commit messages cannot be
+  edited after pushing. **That figure is wrong; this is the corrected one.**
+  The error was a count taken from a regex and never read — exactly what
+  registry #101 warns about ("the count is not a usable measure here") and what
+  #61 calls "an assertion that could not fail". Producing it inside a document
+  whose argument rests on that registry is worth recording rather than quietly
+  fixing.
+
+  The corrected figure is smaller and the design does not depend on it: the
+  load-bearing evidence is §2, not this count. What the count cannot claim any
+  more is "the largest defect category" — that would need all 116 classified.
 - **341 commits landed in the 7 days to 2026-09-15**, peaking at 78 in one day
   and 5 within a single 10-minute window. Throughput is high and rising, so the
   collision surface grows with it.
@@ -94,7 +113,7 @@ objection to giving each session its own.
 | Surface | Path | Writer | Purpose |
 | --- | --- | --- | --- |
 | Session worktree | `.claude/worktrees/<session>` | exactly one session | all editing |
-| Integration checkout | `/home/kali/projects/claude-code-webconsole` | nobody, interactively | merge, release, deploy |
+| Integration checkout | `/home/kali/projects/claude-code-webconsole` | integration operations only (§4.2's exempt list) | merge, release, deploy |
 | Release snapshot | `~/.local/share/webconsole/releases/<sha>` | `bin/wc-deploy.sh` | what runs |
 
 Each session works on `session/<name>` in its own worktree. The shared checkout
@@ -106,26 +125,75 @@ finally receives the inputs it was written for.
 Per §2, a convention will be bypassed. The rule must be enforced by a mechanism
 that denies the wrong action rather than describing it.
 
-**A `PreToolUse` hook denies `Edit`/`Write`/`NotebookEdit` to a governed path
-when the session's resolved worktree is the integration checkout.**
+**A `PreToolUse` hook denies `Edit`/`Write`/`NotebookEdit` whose resolved
+target path lies inside the integration checkout.**
+
+The gate is on the **target of the write**, not on where the session is. That
+distinction is the difference between this working and this bricking the fleet,
+so it is worth stating why.
+
+**The rejected design, and why it fails.** The obvious formulation — "deny when
+the session is in the integration checkout" — cannot be evaluated here. Our
+sessions launch from the *parent* of the repository:
+
+```
+SCREEN -d -m -S cweb2 bash -c cd "/home/kali/projects" && exec claude --resume ...
+```
+
+so the session's working directory is `/home/kali/projects`, which is neither
+the integration checkout nor a worktree. Combined with the fail-closed rule
+below, "which worktree am I in?" resolves to *undeterminable* for every session,
+and the gate denies **every write everywhere** on the day it is switched on.
+
+This is not a hypothesis. Spark hit the same wall and documented it in
+`core/internal/cli/sparkdir.go`: *"neither `$SPARK_PROJECT_DIR` nor process-cwd
+discovery finds the engagement, and the payload's own cwd is the only reliable
+workspace signal"* — and it then has to walk *up* from that cwd to find an
+initialised repo. Walking up from `/home/kali/projects` finds nothing.
+
+Spark's own write floor takes the target-path route instead —
+`relUnderRoot(in.WriteTarget, in.ProjectRoot)`, with the comment *"a target
+outside the project root is none of the framework's business."* Same shape as
+the rule above, arrived at independently.
+
+Target-path gating is also **simpler**, not a workaround: it needs no
+session-to-worktree attribution, no cwd, and no identity.
+
+| Resolved target | Decision |
+| --- | --- |
+| inside the integration checkout, not exempt | **deny** |
+| inside any `.claude/worktrees/*` | allow |
+| outside the repository entirely | allow — not our business |
+| unreadable / unresolvable | **deny**, and record it as a *declared unknown* |
 
 Design constraints, each earned from a registry entry:
 
-- **Fail-closed on its own failure.** If the hook cannot determine which
-  worktree it is in, it denies. An enforcement layer that fails open is #65
-  again in a new costume.
+- **Fail-closed, and say which kind of closed.** An unresolvable target denies,
+  but is logged distinctly from an ordinary deny. Borrowed from Spark's
+  `UnresolvedWrite` flag, which marks "a write happened and I could not see
+  where" as different from "no write happened" — the two are otherwise
+  indistinguishable, and only one of them is evidence the gate has a blind spot.
 - **Deny, do not warn.** A warning is prose with extra steps.
-- **Exempt the integration operations by path, not by identity.** Merges,
-  `rules.md` registry appends and release scripts legitimately write in the
-  integration checkout. Exempt those paths explicitly; never exempt a *caller*,
-  because identity can be asserted by the thing being governed.
-- **One escape hatch, loud and deliberate**: an environment variable
-  (`WC_ALLOW_SHARED_TREE_WRITE=1`) that is never set in any shell profile, so
-  using it is a conscious act that shows up in the transcript.
+- **Exempt by path, never by caller.** Merges, `rules.md` registry appends and
+  the release scripts legitimately write in the integration checkout. Exempt
+  those paths explicitly; never exempt an *identity*, because identity can be
+  asserted by the thing being governed.
+- **Extract the target once.** Where a call carries more than one candidate path,
+  resolve it a single time and share it between the exemption check and the
+  floor. Two independent parses of the same input is how you get a gate whose
+  two halves disagree — Spark names this as a latent inconsistency it had to fix
+  in `core/loop/verdict.go`.
+- **One escape hatch, evaluated first**: `WC_ALLOW_SHARED_TREE_WRITE=1`, checked
+  **before** the fail-closed branch. This ordering is load-bearing and must be a
+  test, not a convention: it is the only way to repair a hook that is denying
+  wrongly, including repairing the hook itself. A recovery path that the fault
+  can disable is not a recovery path. The variable is never set in any shell
+  profile, so using it is a deliberate act visible in the transcript.
 
-The `PreToolUse` slot is currently **free** — the only registered hook is a
-user-level `UserPromptSubmit` running `.claude/hooks/log_pt_request.py`. No
-conflict.
+The `PreToolUse` slot is currently **free** — verified, zero registered in
+either `~/.claude/settings.json` or `.claude/settings.local.json`. The only
+registered hook is a user-level `UserPromptSubmit` running
+`.claude/hooks/log_pt_request.py`. No conflict.
 
 ### 4.3 Bootstrap: what a fresh worktree does not have
 
@@ -159,8 +227,17 @@ forces the documented `WC_DB_PATH` throwaway-copy behaviour. Do not symlink it.
 
 `.venv` is symlinked rather than copied on the precedent of registry #103,
 which preserved it for the same reason: it is minutes of pip installs and,
-being untracked, cannot go stale by this route. The accepted risk is
-`requirements.txt` skew across worktrees; §9 covers the detection.
+being untracked, cannot go stale by this route.
+
+**One risk in sharing it was checked rather than assumed, because it would have
+been silent.** If the venv contained an editable install or a `.pth` pointing at
+the integration checkout, tests run inside a worktree would import *the other
+tree's* code and report confidently on the wrong source — the same shape of
+false green as #50 and #65, and far harder to notice. Verified on 2026-09-15:
+no editable install, no `.egg-link`, the only `.pth` present is a
+path-independent coverage hook, and `pyvenv.cfg` reads `home = /usr/bin`.
+Sharing it is safe. The remaining accepted risk is `requirements.txt` skew
+across worktrees; §9 covers the detection.
 
 ### 4.4 `bin/wc-session-worktree.sh` — the entry point
 
@@ -193,6 +270,32 @@ from "prevent collisions" (which it demonstrably could not) to "avoid two
 sessions designing the same thing", which is a coordination problem rather than
 a correctness one.
 
+### 5.1 Integration cadence — the largest operational risk here
+
+Isolation converts a *correctness* problem into a *divergence* problem, and
+divergence is only tolerable if something closes it regularly. At the current
+rate — 341 commits in a week, 78 in the peak day, across five to eight branches
+— a week of unmerged session branches would produce a merge nobody wants to
+own, and the predictable outcome is that the branches get abandoned and everyone
+quietly returns to committing on `main`. That is how `.worktrees/` died (§2).
+
+This document does not settle the cadence, but it names it as a decision that
+must be made before sessions start diverging (§7 step 4) and is a hard
+precondition for enforcement (§7 step 5), not something discovered afterwards.
+The three candidates:
+
+| Trigger | Cost | Failure mode |
+| --- | --- | --- |
+| On every session push | merge runs constantly, conflicts surface within minutes | noisy; a session pushing WIP triggers integration of unfinished work |
+| Scheduled (e.g. hourly) | predictable, batched | a conflict can sit unnoticed for the whole interval |
+| Before each deploy | integration is always tied to something a human wanted | branches diverge freely between deploys, so the conflict arrives at the worst moment |
+
+The recommendation is **on every push, with a session branch only pushed when
+its work is coherent** — because `wc-release.sh` already reports conflicts
+attributed to the owning session, which is only useful while that session is
+still alive and remembers the change. Batching defeats the one feature the
+existing script has that no alternative offers.
+
 ## 6. What this does not solve
 
 Stated plainly, because a design that oversells is worse than the gap:
@@ -214,9 +317,25 @@ Incremental, and reversible at every step. No flag day.
    in report-only mode** (logs what it would have denied, denies nothing).
 2. Run report-only for 48 hours. The log is the evidence base: it shows exactly
    how many writes would have been blocked and from which sessions.
-3. Move sessions one at a time. Each keeps working if it does not move.
-4. Flip the hook to deny once every live session has a worktree.
-5. Keep the escape hatch.
+3. **Drain the in-flight work already sitting in the shared tree.** This step is
+   easy to skip and cannot be: at any moment the integration checkout holds
+   uncommitted edits belonging to an unknown number of sessions. Measured twice
+   within two hours on 2026-09-15: **14 files / 314 insertions**, then **8 files
+   / 118 insertions**. It is not a backlog to clear once — it is a *churning
+   pool*, so the drain has to happen against a quiet tree or it will never
+   converge.
+
+   Nothing in this design attributes that work, and neither can git: registry
+   #50 records `git log -S` returning nothing for a line that "existed only in
+   the shared working tree", and declines to guess who wrote it. The options are
+   to commit it wholesale with an honest message saying authorship is unknown,
+   or to preserve it on a quarantine branch and let sessions reclaim what they
+   recognise. **Do not `git stash`** — memory (`project_claude_code_webconsole`)
+   records that as already having cost work here.
+4. Move sessions one at a time. Each keeps working if it does not move.
+5. Flip the hook to deny once every live session has a worktree **and** §5.1's
+   cadence is decided and running.
+6. Keep the escape hatch.
 
 Step 2 is not ceremony. Every previous attempt here was adopted on conviction
 and abandoned on friction; a measured blast radius before enforcement is what
@@ -226,18 +345,42 @@ distinguishes this from `.worktrees/` in §2.
 
 - **Hook decision tests**, table-driven, in the style of
   `tests/test_qa_confirm_dialog_stacking.py` (assert the decision, not the
-  prose): governed write in integration checkout → deny; same write in a
-  session worktree → allow; exempted path in integration checkout → allow;
-  undeterminable worktree → deny; escape hatch set → allow.
+  prose): target inside integration checkout → deny; same file path inside a
+  session worktree → allow; exempted path inside the integration checkout →
+  allow; target outside the repository → allow; **unresolvable target → deny,
+  and recorded as a declared unknown rather than an ordinary deny**; escape
+  hatch set → allow. One case exists specifically to pin the ordering from
+  §4.2: **escape hatch set *and* target unresolvable → allow**, which fails if
+  the fail-closed branch is ever moved above the hatch and takes the recovery
+  path down with it.
 - **Bootstrap test**: create a worktree in a temp repo, assert `CLAUDE.md` and
   `.venv` resolve, assert `data/` is absent, assert a failed symlink leaves no
   worktree behind.
 - **Mutation-verify the hook**, per the standing practice in this repo: revert
   the deny branch and confirm the tests fail. A gate that cannot be shown to
   fail is not evidence.
-- **The measurement that matters**, at 30 days: collision-class registry
-  entries added after the flip, against the 23-in-116 baseline in §1. If that
-  rate does not fall, this design failed and should be said to have failed.
+- **The measurement that matters**, at 30 days — and the instrument matters as
+  much as the number. The first version of this section proposed counting
+  collision-class registry entries added after the flip. That is **confounded**:
+  registry entries are written by agents at their own discretion, so the
+  instrument is made of the same behaviour being measured. If collisions stop,
+  entries stop; if agents merely stop *noticing* collisions, entries also stop.
+  The two are indistinguishable, and one of them is this design failing
+  silently.
+
+  Use mechanical counters instead, none of which depend on anyone choosing to
+  write something down:
+
+  | Instrument | Source | Reads as |
+  | --- | --- | --- |
+  | conflicted merges per release run | `bin/wc-release.sh` exit 1 + its conflict report | divergence cost — expected to *rise*, and that is fine |
+  | hard resets | `git reflog` entries matching `reset: moving to` | the #50/#65 destruction mode — must fall to ~0 |
+  | commits touching files changed by another branch within 24h | `git log --name-only` across `session/*` | true collision surface |
+  | gate denials, split by kind | the hook's own log, incl. declared unknowns | whether the rule is doing anything, and where it is blind |
+
+  The declared-unknown count is the one to watch for a false sense of safety: a
+  gate that denies nothing *and* sees nothing is indistinguishable from a gate
+  that works, which is §4.2's whole reason for separating those two outcomes.
 
 ## 9. Open items
 
@@ -277,14 +420,56 @@ the same conclusion §2 reaches independently — *"nothing is enforced by promp
 the gate is a fail-closed binary beside the harness, not instructions inside
 it."*
 
-**It does not solve the problem in §1.** Spark's model is one repo, one tree,
-one run, one writer: `core/internal/cli/start.go` tells the operator that
-starting a run "switches *this tree's* enforcement to it; to work both at once,
-use a separate worktree" — and that line is a `print` statement, not a
-mechanism. There is no locking anywhere in `core/`.
+**It does not solve the problem in §1** — though the first version of this
+section overstated that, and the accurate form is more interesting.
 
-So Spark's own answer to our primary failure mode is *this document*. That
-makes the sequencing unambiguous: **do this first.** Afterwards, a Spark pilot
-becomes a one-command experiment inside a single session's worktree, and its
-gate could replace the §4.2 hook rather than sit beside it. That evaluation is
-deliberately not specified here.
+Spark has **no locking** (no `flock`, `sync.Mutex` or `O_EXCL` anywhere in
+`core/`), and its guidance for parallel work is advice, not a mechanism:
+`core/internal/cli/start.go` tells the operator that starting a run "switches
+*this tree's* enforcement to it; to work both at once, use a separate worktree"
+— and that line is a `print` statement.
+
+But its **state layout already separates correctly per worktree**, which is not
+nothing. `.spark/active.json` and `.spark/trace.jsonl` are gitignored, so each
+worktree carries its own run state; `.spark/runs/*/` is tracked, so run history
+merges through git like any other file. Two worktrees running two Spark runs
+would not corrupt each other. What is absent is **enforcement and visibility** —
+nothing detects a sibling worktree with an active run, and nothing surfaces one
+— not structural support.
+
+That refinement does not change the sequencing, it sharpens it. Spark's own
+answer to our primary failure mode is *this document*, and its run state is
+already shaped to make the combination work. **Do this first.** Afterwards a
+Spark pilot is a one-command experiment inside a single session's worktree, and
+its gate — which reached §4.2's target-path rule independently — could replace
+the §4.2 hook rather than sit beside it.
+
+Worth noting for that later evaluation: this design borrows two ideas from
+Spark's gate on their merits alone (the declared-unknown distinction, and
+extracting a target once and sharing it), so a later swap would be a narrowing
+of divergence rather than a rewrite.
+
+## 12. Revision history
+
+Kept in the document rather than left to git, because one of the corrections
+contradicts a pushed commit message that cannot be edited.
+
+**2026-09-15, revision 2** — review of revision 1 (`f47218d`), before any code
+was written against it.
+
+| Changed | Why |
+| --- | --- |
+| §4.2 gates on the **target path**, not the session's worktree | As written, revision 1 would have denied every write from every session the moment enforcement was switched on: our sessions' cwd is the repo's *parent*, so "which worktree am I in" was undeterminable, and the fail-closed rule then denies everything. This is the only change that was a defect rather than a weakness. |
+| §1 metric corrected from "23 of 116 (20%)" to "7–11 of 116 (6–9%)", with method shown | The original was a regex count never read back. Reading all 23 showed roughly half are unrelated defects that merely use one of the keywords. `f47218d`'s commit message still quotes the wrong figure. |
+| §5.1 added: integration cadence | Unspecified in revision 1, and the largest operational risk in the design — unmerged branches are how the previous attempt at isolation died. |
+| §7 step 3 added: drain in-flight work | Revision 1 moved sessions to worktrees without saying what happens to the uncommitted, unattributable work already in the shared tree. Measured at 14 files then 8 within two hours — a churning pool, not a one-off cleanup. |
+| §8 measurement replaced | Revision 1 proposed counting registry entries, an instrument made of the behaviour being measured. Replaced with mechanical counters. |
+| §4.3 `.venv` sharing recorded as verified | Was an assumption. Checked: no editable install, no repo-bound `.pth`. It would have been a silent false-green if wrong. |
+| §11 Spark characterisation corrected | "Has nothing for concurrency" was too strong. No locking and advisory-only guidance, but the run-state layout does separate per worktree. |
+| §4.1 table wording | Contradicted §4.2's exempt list. |
+
+The pattern in three of these — a count not read back, an assumption not
+checked, an instrument made of its own subject — is the one registry #61 and
+#101 already name. Worth stating plainly: a design document arguing for
+enforcement over good intentions is not exempt from needing its own claims
+verified.

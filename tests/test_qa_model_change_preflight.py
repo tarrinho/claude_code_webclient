@@ -201,3 +201,100 @@ class PreflightNoteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreflightEndpointTests(_DbCase):
+    """The route, end to end: what it returns and what it leaves behind."""
+
+    # A uuid-shaped owner: shared.owner_of returns a 32-hex value unchanged,
+    # so no user row or admin bootstrap is needed to exercise the handler.
+    OWNER = "a" * 32
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.owner = self.OWNER
+        await db.chat_create("c1", "switching", None, "/tmp/w", self.owner)
+
+    def _request(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            state=SimpleNamespace(session={"user": self.owner, "role": "admin"}))
+
+    async def test_another_owners_chat_is_404(self):
+        from fastapi import HTTPException
+        from routes import chats as chat_routes
+        await db.chat_create("c2", "theirs", None, "/tmp/w", "b" * 32)
+        with self.assertRaises(HTTPException) as ctx:
+            await chat_routes.handle_chat_preflight(self._request(), "c2")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_the_note_is_persisted_into_the_conversation(self):
+        """The whole point: it has to be readable in the chat afterwards, not
+        only in the response to a request nobody kept."""
+        from routes import chats as chat_routes
+        await db.usage_record("c1", self.owner, "claude-opus-5", "anthropic",
+                              input_tokens=26, cache_read_tokens=410958)
+        resp = await chat_routes.handle_chat_preflight(self._request(), "c1")
+        self.assertEqual(resp.status_code, 200)
+
+        cur = await db.db_conn.execute(
+            "SELECT role, content FROM messages WHERE chat_id='c1' "
+            "ORDER BY id DESC LIMIT 1")
+        row = await cur.fetchone()
+        self.assertIn("410,984", row["content"])
+        self.assertIn("Transcript", row["content"])
+
+    async def test_it_reports_the_measured_context_in_its_payload(self):
+        import json
+        from routes import chats as chat_routes
+        await db.usage_record("c1", self.owner, "m", "p",
+                              input_tokens=100, cache_read_tokens=900)
+        resp = await chat_routes.handle_chat_preflight(self._request(), "c1")
+        body = json.loads(resp.body)
+        self.assertEqual(body["context"]["total_tokens"], 1000)
+        self.assertTrue(body["ok"])
+
+    async def test_a_chat_with_no_session_still_reports_rather_than_failing(self):
+        """No linked session means nothing to repair -- that is a clean
+        result, not an error, and the context still gets sized."""
+        import json
+        from routes import chats as chat_routes
+        await db.usage_record("c1", self.owner, "m", "p", input_tokens=5)
+        resp = await chat_routes.handle_chat_preflight(self._request(), "c1")
+        body = json.loads(resp.body)
+        self.assertFalse(body["repair"]["repaired"])
+        self.assertIn("clean", body["note"])
+
+    async def test_a_known_window_reaches_the_note(self):
+        from routes import chats as chat_routes
+        await db.chat_update("c1", self.owner, model="vllm/Qwen3.6-35B-A3B-NVFP4")
+        await db.model_window_learn("vllm/Qwen3.6-35B-A3B-NVFP4", 272144, "refusal")
+        await db.usage_record("c1", self.owner, "claude-opus-5", "anthropic",
+                              input_tokens=26, cache_read_tokens=410958)
+        resp = await chat_routes.handle_chat_preflight(self._request(), "c1")
+        import json
+        body = json.loads(resp.body)
+        self.assertEqual(body["window"]["window_tokens"], 272144)
+        self.assertIn("138,840 tokens over", body["note"])
+
+
+class WindowLearningHookTests(_DbCase):
+    """The hook that makes a window known in the first place."""
+
+    async def test_a_context_window_refusal_is_learned(self):
+        from routes.chats import _learn_context_window
+        self.assertTrue(await _learn_context_window(REAL_REFUSAL, "qwen-x"))
+        self.assertEqual((await db.model_window_get("qwen-x"))["window_tokens"],
+                         272144)
+
+    async def test_an_unrelated_failure_teaches_nothing(self):
+        """A context-window 400 is also a 400 about message content; learning
+        from the wrong one records a fiction that then gets reported as fact."""
+        from routes.chats import _learn_context_window
+        self.assertFalse(await _learn_context_window(
+            "400 messages: text content blocks must be non-empty", "qwen-x"))
+        self.assertIsNone(await db.model_window_get("qwen-x"))
+
+    async def test_no_model_means_nothing_to_attribute_it_to(self):
+        from routes.chats import _learn_context_window
+        self.assertFalse(await _learn_context_window(REAL_REFUSAL, None))

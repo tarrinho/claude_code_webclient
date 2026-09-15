@@ -226,6 +226,17 @@ function initMapSVG() {
   _zoom = d3.zoom()
     .scaleExtent([0.2, 5])
     .on("zoom", (event) => {
+      // A d3 transition outlives the DOM it was transforming. zoomToFit ends
+      // every render with a 300ms transition on the svg, and _loadMap calls
+      // closeSupervisorMap() before each render -- which nulls _viewport while
+      // leaving this zoom behaviour bound to the svg. Every remaining frame of
+      // that transition then arrived here with nothing to transform, throwing
+      // once per animation frame: the console filled with the same
+      // "Cannot read properties of null (reading 'attr')" from this line.
+      //
+      // Returning rather than rebuilding: the map has been torn down or is
+      // being rebuilt, so the right amount of work for a stale frame is none.
+      if (!_viewport) return;
       _viewport.attr("transform", event.transform);
       _lastTransform = event.transform;
       // Zoom-based LOD: collapse siblings when the zoom scale drops below
@@ -2209,6 +2220,17 @@ export function closeSupervisorMap() {
   // panel is the same class of leak the map's own poll guard exists to avoid.
   stopFreshnessTicker();
   stopCommsTicker();
+  // Stop anything still animating before the state it animates is cleared.
+  // zoomToFit ends every render with a 300ms transition on the svg, and d3
+  // emits a zoom event per frame of it; without this, those frames keep
+  // arriving after _viewport has been nulled below. The guard in the zoom
+  // handler catches what still slips through -- this removes the cause,
+  // that tolerates the symptom, and both are cheap.
+  //
+  // Feature-tested rather than called outright: this module holds selections
+  // from more than one source, and a teardown that throws would leave the map
+  // half dismantled.
+  if (_svg && typeof _svg.interrupt === "function") _svg.interrupt();
   // Clear node/spoke/comms data but keep the SVG structure alive so the next
   // open reuses the same DOM groups instead of rebuilding from scratch.
   if (_spokesGroup) _spokesGroup.selectAll("*").remove();

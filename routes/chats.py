@@ -869,18 +869,69 @@ async def handle_chat_wake(request: Request, chat_id: str):
 
 
 def _find_session_name(session_id: str) -> str | None:
-    """Find the friendly name for a claude session ID from ~/.claude/sessions/*.json."""
+    """The name of the **live process** serving *session_id*, or None.
+
+    Several files in ``~/.claude/sessions`` can claim one ``sessionId``, and
+    they are not interchangeable:
+
+    * ``<pid>.json`` describes a process, and its ``name`` is what
+      ``bin/wc-session-standby.sh`` matches on.
+    * ``<uuid>.json`` holds a display label such as
+      ``'api.anthropic.com : 39 : Status'``. The standby script skips these --
+      it refuses any non-numeric basename, because they name no signalable
+      process.
+
+    This returned the **first** glob hit with no preference between the two, so
+    whenever the filesystem happened to yield the uuid file first it handed the
+    standby route a label the script is structurally incapable of matching. The
+    request then failed with "no running session found matching ...", naming a
+    session that was in fact running the whole time, under a different name.
+
+    Measured on this host: `sessionId` ``599ee395-…`` was claimed by three
+    files at once -- two live processes (``multi-agent``, ``multiagent2``) and
+    one stale uuid record naming a pid that had long exited. Glob returned the
+    stale one. That is also why the bug looked intermittent: a chat whose label
+    happens to equal a real session name (``cweb4``) matched and worked.
+
+    So: consider only ``<pid>.json``, only where the process is still alive,
+    and prefer the most recently updated when more than one qualifies. When
+    nothing qualifies, return None rather than a name the script cannot use --
+    the caller turns that into a 400 that says the session could not be
+    resolved, which is the truth, instead of a 500 from a script that was sent
+    looking for something that never existed.
+    """
     import glob
+
     sessions_dir = Path.home() / ".claude" / "sessions"
+    candidates: list[tuple[int, str]] = []
     for f in glob.glob(str(sessions_dir / "*.json")):
+        base = os.path.basename(f)[: -len(".json")]
+        if not base.isdigit():
+            continue  # a uuid record, not a process the script can signal
         try:
             with open(f) as fh:
                 data = json.load(fh)
-            if data.get("sessionId") == session_id:
-                return data.get("name")
         except Exception:
-            pass
-    return None
+            continue
+        if data.get("sessionId") != session_id:
+            continue
+        name = data.get("name")
+        if not name:
+            continue
+        try:
+            # Signal 0 checks the process exists without touching it. A pid
+            # file outlives its process, and a dead one's name is exactly the
+            # unmatchable value this function exists to stop returning.
+            os.kill(int(base), 0)
+        except (OSError, ValueError):
+            continue
+        # updatedAt is epoch milliseconds; absent on an old record, which then
+        # sorts oldest and only wins if it is the sole live candidate.
+        candidates.append((int(data.get("updatedAt") or 0), name))
+
+    if not candidates:
+        return None
+    return max(candidates)[1]
 
 
 async def handle_chats_reorder(request: Request):

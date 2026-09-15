@@ -18,6 +18,7 @@ No real sleep processes: the standby script path is exercised via mocks.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import tempfile
 import unittest
@@ -69,18 +70,32 @@ class StandbyRouteTests(unittest.IsolatedAsyncioTestCase):
         self.alice_id = (await db.user_get_by_name("alice"))["id"]
 
         # Session files that _find_session_name() reads from ~/.claude/sessions/*.json
+        #
+        # Named <pid>.json for a *live* pid, which is the only shape that can
+        # actually be stood by. This fixture used to write
+        # `<session-uuid>.json` with `"pid": 1`, and every test here passed --
+        # but bin/wc-session-standby.sh skips any file whose basename is not
+        # numeric ("only <pid>.json files hold a live process"), so that shape
+        # could never be matched in production. The tests mock the script, so
+        # they never exercised the one step that rejects it, and the suite
+        # agreed with a fixture the real system cannot serve.
+        #
+        # What that hid, observed 2026-09-15: Standby returned "no running
+        # session found matching 'api.anthropic.com : 39 : Status'" for a
+        # session that was running the whole time as `multi-agent`.
         self.claude_sessions = Path.home() / ".claude" / "sessions"
         self.real_session_id = "cweb-real-0000-0000-0000-000000000001"
         (self.claude_sessions).mkdir(parents=True, exist_ok=True)
-        (self.claude_sessions / f"{self.real_session_id}.json").write_text(
+        (self.claude_sessions / f"{os.getpid()}.json").write_text(
             json.dumps({
-                "pid": 1,
+                "pid": os.getpid(),
                 "name": "cweb-real",
                 "kind": "interactive",
                 "entrypoint": "cli",
                 "status": "idle",
                 "sessionId": self.real_session_id,
                 "cwd": str(Path.home()),
+                "updatedAt": 1789495645000,
             })
         )
 

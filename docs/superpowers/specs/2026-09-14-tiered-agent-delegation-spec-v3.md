@@ -52,7 +52,7 @@ A write is rejected only against the invariants of task types that are *already*
 
 | task_type | rows | accuracy | n | cost | latency | max_context |
 |---|---|---|---|---|---|---|
-| coding | 4 | 0 | 0 | **4** | 3 | **4** |
+| coding | 4 | 3 | 3 | **4** | 3 | **4** |
 | comprehension | 3 | 2 | 2 | **3** | 0 | **3** |
 | long-context | 3 | 1 | 1 | **3** | 0 | **3** |
 | multi-turn | 2 | 0 | 0 | **2** | 0 | **2** |
@@ -62,11 +62,11 @@ A write is rejected only against the invariants of task types that are *already*
 | split-decision | 1 | 0 | 0 | **1** | 0 | **1** |
 | voice | 2 | 0 | 0 | **2** | 0 | **2** |
 
-Cost and `max_context` are both complete (23/23) as of today. Latency is 4/23 and accuracy is 5/23.
+Cost and `max_context` are complete (23/23). Accuracy is 8/23 and latency 4/23 after today's coding run (§3.1).
 
 **`max_context` was the cheapest column and is now filled** (§2.6) — it needed no benchmark run, only the gateway's `/model/info` and a documented model table. It is recorded here because the readiness table above was the thing that surfaced it: a column no measurement pass would ever produce had been sitting at 0/23 while every task type waited on it.
 
-**Shortest path to one operational task type is `coding`**, which already holds 4/4 cost, 4/4 `max_context` and 3/4 latency: it needs accuracy and an accuracy `n` for its rows, plus one more latency figure.
+**`coding` is one row from complete, and that row cannot be filled from this deployment.** It now holds 4/4 cost, 4/4 `max_context`, and 3/4 on accuracy, `n` and latency — every gap is the same row, `azure_ai/gpt-5.4-mini`, which the active backend refuses to serve (§3.1). So the shortest path to a first operational task type is no longer a measurement; it is the §1.1 scoping decision below. Scoped to ladder rows, `coding` is **complete today**.
 
 #### `leaves_per_tree` cannot be measured from history, and the reason matters
 
@@ -76,9 +76,11 @@ Cost and `max_context` are both complete (23/23) as of today. Latency is 4/23 an
 - **Every one of them is a root.** `parent_task_id` is empty on all three, so no task ever decomposed — no tree has ever been formed, and the observed children-per-node is zero. There is no shape to measure.
 - **`usage_events` contains no orchestrator rows at all.** Origins present are `terminal` (145,410), `web-routed` (21,891), `web` (309) and `voice` (33). `orchestrator` and `supervisor` appear zero times.
 
-That third point is the serious one, and it is a known failure mode in this codebase rather than a new one: a supervisor fanning out subtasks has previously spent real tokens and appeared in the usage tables as nothing, because recording usage is the caller's job and that caller did not do it. **§10 and §10.1 both specify measurement from `usage_events` with `origin="orchestrator"`, and that row has never been written.** The free-tier target, the escalation trigger, the cost-per-leaf figure and the circuit breaker all read from a source that is currently empty for this subsystem.
+**The empty usage table is not a broken mechanism, and the distinction was worth checking before acting on it.** The obvious reading — that the orchestrator spends tokens without recording them, the failure this codebase has hit before — is wrong here. `orchestrator.py` records usage with `origin="orchestrator"`, attaches cost once per turn rather than per model, and recovers the attempts a content-quality retry discarded via `take_retried_usage`; `tests/test_qa_orchestrator_usage.py` and `tests/test_qa_orchestrator_cost.py` cover it, and all 34 pass.
 
-So the ordering is forced: **usage recording on the orchestrator path has to work before any of §10 can report anything**, and `leaves_per_tree` only becomes measurable once trees are actually built and recorded. Until then §2.7's ladder admissibility rests on `leaves_per_tree = MAX_NODES = 40`, which is an upper bound and therefore the conservative choice — the true figure is almost certainly smaller, and a smaller figure admits *more* models, so nothing currently excluded is excluded in error.
+The recording landed on **2026-09-06**. The last orchestrator task ran on **2026-08-31**, six days earlier. **The code is correct and has simply never executed.** Absence of rows was evidence about how much the orchestrator has been used, not about whether it records — two claims that look identical from the table alone.
+
+So the ordering is not "fix recording first". It is: **run the orchestrator at all.** `leaves_per_tree` becomes measurable the first time a tree is built, and §10's entire measurement story starts producing rows in the same act, with no code change. Until then §2.7's ladder admissibility rests on `leaves_per_tree = MAX_NODES = 40`, which is an upper bound and therefore the conservative choice — the true figure is almost certainly smaller, and a smaller figure admits *more* models, so nothing currently excluded is excluded in error.
 
 **One scoping decision is unresolved and it changes how much of this is required.** §1.1 demands every *row* of a task type be complete, but §2.6 makes a row with TBD accuracy ineligible — not a ladder candidate at all. Requiring completeness of rows that can never be rungs is work with no consequence. Scoping the invariant to **ladder rows, plus a requirement that at least one exists**, would preserve every guarantee it currently makes while removing that. It is left as written here because narrowing a validity check is a deliberate decision, not a cleanup.
 
@@ -217,9 +219,9 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 | model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | TBD | 6* | 0.0000 | 22.4 | 229,376 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 25% | 4 | 0.0000 | 33.2 | 229,376 |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | 229,376 |
-| `azure_ai/gpt-5.6-luna` | coding | TBD | 3* | 0.0285 | 12.8 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | coding | 100% | 4 | 0.0285 | 14.7 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | 922,000 |
@@ -229,7 +231,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | 922,000 |
-| `claude-sonnet-5` | coding | TBD | 7* | 1.5709 | 10.7 | 1,000,000 |
+| `claude-sonnet-5` | coding | 100% | 4 | 1.5709 | 12.7 | 1,000,000 |
 | `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | 1,000,000 |
@@ -325,8 +327,10 @@ A model with no rate from any of those sources is still ineligible, still not es
 **Consequences, and two of them change the ladders:**
 
 1. **`vllm → luna → sonnet` is correct** and survives unchanged. Per token the order is 0 → 0.0285 → 1.5709, monotonically increasing, which is what cheapest-first requires.
-2. **The mini exclusion is backwards.** Mini is cheaper per token than a model the design keeps. Whether mini belongs in a ladder is now an *accuracy* question (its only measured row is reasoning, 86%, n unrecorded) — not a cost one. The exclusion must be re-derived or withdrawn, and §3's ladder shapes depend on which.
+2. **The mini exclusion was reached by the wrong route, and is nonetheless kept — by decision, not by arithmetic.** Mini is cheaper per token than a model the design keeps, so the cost argument for excluding it does not stand. **`azure_ai/gpt-5.4-mini` is excluded from every ladder as an operator decision, recorded here on 2026-09-15.** The distinction matters for maintenance: a cost-derived exclusion would reverse itself the moment rates moved, so the ceiling would have to be re-tuned to keep mini out. A decision does not move when the numbers do. Nothing recomputes it, and re-admitting mini requires editing this line.
 3. **The threshold itself must be restated in per-token terms.** `$0.015/request` is not a threshold that can be applied to the table above; it is a number that only sorts one historical workload mix.
+
+**What the decision costs, stated plainly:** mini is the only model priced between luna (0.0285) and sonnet (1.5709) — a 55x gap that no remaining model occupies. Excluding it means every coding and long-context escalation from rung 1 lands directly on a model 55x dearer per token. If a future measurement shows luna failing often enough on a task type that the jump to sonnet dominates the tree budget, this line is the first thing to revisit.
 
 #### The re-derived ceiling: a rate alone is not the question, the rung is
 
@@ -430,6 +434,29 @@ Reasoning has no rung until Luna is benchmarked on that type. The existing 86%/7
 **Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. Voice stays non-operational (§1.1) until both its rows carry a measured `median_latency_s`, because a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
 
 Only `coding` and `long-context` start free (§4.1).
+
+### 3.1 Coding, measured 2026-09-15
+
+Four models, two exec-verified coding tasks, two repeats each (`bench/coding_accuracy_20260915.json`):
+
+| model | accuracy | n | median score | median latency | $/1M |
+|---|---|---|---|---|---|
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | **25%** | 4 | 24.1 | 33.2s | 0.0000 |
+| `azure_ai/gpt-5.6-luna` | **100%** | 4 | 100.0 | 14.7s | 0.0285 |
+| `claude-sonnet-5` | **100%** | 4 | 98.2 | 12.7s | 1.5709 |
+| `azure_ai/gpt-5.4-mini` | **not measured** | — | — | — | 0.5261 |
+
+**The ladder is confirmed unchanged.** Walking the generator's rule over these rows — cheapest-first, skipping any model measured worse than the current rung — gives `vllm → luna → sonnet` exactly as the snapshot above shows. Equal accuracy is not "worse", so Sonnet survives as rung 2.
+
+Three results the numbers force, none of which the design anticipated:
+
+**The free rung measures 25% on coding.** It is rung 0 for the one task type that has an oracle, and it fails three attempts in four. Every failure costs a full escalation, so the free rung on coding is not mostly-free — it is mostly a first attempt that gets thrown away. §10.1's ≥70%-on-free-rung target is not reachable on coding at this accuracy, and that is a measurement about the model, not about the target.
+
+**Luna matches Sonnet at 1/55th the cost per token.** Both pass 4/4; Luna's median score is 100.0 against Sonnet's 98.2 — at n=4 that difference is noise, but it is certainly not evidence for Sonnet. Rung 2 currently exists to catch what rung 1 misses, and on this evidence rung 1 misses nothing. Dropping Sonnet from the coding ladder is not justified on n=4 either, so the honest position is that **rung 2 is unevidenced rather than wrong**, and the cheapest way to settle it is more repeats, not more models.
+
+**Mini could not be measured, and it is not 0%.** All four runs returned an error, not a wrong answer: the active backend does not serve that model and answers `429`, the routing failure §0.1 of `CLAUDE.md` describes — a capacity error's clothes on a routing problem. The harness reported it as an error rather than scoring it, which is the same discipline that keeps a truncated run from being recorded as wrong. Its row stays TBD, because recording 0% would assert a measurement nobody took.
+
+**That last point makes §1.1's scoping question urgent rather than theoretical.** Mini has a `coding` row, is not ladder-eligible (no measured accuracy), and *cannot be measured from this deployment* while the backend refuses to serve it. Under §1.1 as written — every row of a task type complete — `coding` can never go operational, blocked by a model that is not a rung and cannot become one. Scoping the invariant to ladder rows resolves it; leaving it as written does not, and the shortest path to a first operational task type runs straight through this decision.
 
 **Hover tooltip on chosen model:** each rung in the settings page displays the model name with a hover tooltip showing all five measured fields for the current task type — accuracy, sample size (`n`), cost per request, median latency, and **context window** (`max_context`). This lets a reviewer see why a model was chosen without leaving the page. Context window is in the tooltip because it is the field that decides whether a rung can take the task at all: a model that is cheaper and more accurate is still the wrong rung if the input does not fit.
 
@@ -802,6 +829,16 @@ Both values are provisional and are re-examined at each quarterly re-benchmark (
 ### 10.1 Free-tier target and its review trigger
 
 **Target: ≥70% of orchestrator leaves complete on the free rung**, measured from `usage_events`, not asserted in a unit test. Below 70%, read the timeout rate first: a deadline set too tight and a gateway genuinely too slow need opposite fixes.
+
+**Measured 2026-09-15, this target is unreachable on `coding` and the reason is not the deadline.** The free model scores **25%** on exec-verified coding tasks (§3.1), so roughly three leaves in four escalate on correctness alone. No deadline adjustment moves that number — it is the model's accuracy, not its speed, and the timeout rate will read clean while the target misses by a factor of nearly three.
+
+That leaves three options, and this target cannot be assessed until one is chosen:
+
+1. **Re-scope the target per task type.** 70% may be right for `long-context`, where the free model measures 100% (n=10), and wrong for `coding`. A single number across task types averages two very different models-on-tasks.
+2. **Lower it for `coding` to what the measurement supports**, and treat the free rung there as a cheap filter that catches a quarter of the work rather than most of it.
+3. **Stop starting `coding` free.** Luna measures 100% at $0.0285/1M — 55x cheaper than Sonnet per token and, on n=4, no less accurate. A ladder starting at Luna would complete most coding leaves on rung 0 at a cost that is still negligible against the tree budget (§2.7 admits Luna at any rung).
+
+Option 3 is the one the measurements point at, and it is a larger change than it looks: it would make `coding` the second task type not to start free, so §4.1 and the "only coding and long-context start free" rule in §3 both move with it.
 
 **Trigger for widening the free rung:** once `usage_events` shows **≥50 escalations** on `comprehension`, `multi-turn`, `planning` or `reasoning` where the paid rung's answer materially differed from the free model's, that threshold greenlights benchmarking a Sonnet-tier judge against the exec-verified labels. It replaces "someday" with a query.
 

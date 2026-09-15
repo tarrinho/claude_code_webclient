@@ -648,7 +648,13 @@ async def handle_usage_get(request: Request):
 # was found, as four unrelated endpoint tests that passed alone and failed
 # together.
 _SERIES_CACHE: dict[tuple[str, str, object, str], tuple[float, dict]] = {}
-_SERIES_CACHE_TTL_S: float = 30.0
+# Read from config rather than fixed here so a caller that must see its own
+# write can switch the cache off (config.USAGE_SERIES_CACHE_TTL_S = 0). The
+# database in the key separates one test file from another; it cannot separate
+# two cases inside one class, which share a server and a database and so share
+# the whole key. That is the browser suite, and it is the one caller entitled
+# to demand a write be visible at once.
+_SERIES_CACHE_TTL_S: float = config.USAGE_SERIES_CACHE_TTL_S
 # Bounded so a long-lived process cannot accumulate entries: the real key space
 # is one owner times four ranges times four buckets, and anything beyond that
 # is a caller varying the query string, not a user reading charts.
@@ -660,6 +666,8 @@ def _series_cache_key(owner: str, days: object, bucket: str) -> tuple:
 
 
 def _series_cache_get(key: tuple) -> dict | None:
+    if _SERIES_CACHE_TTL_S <= 0:
+        return None
     hit = _SERIES_CACHE.get(key)
     if hit is None:
         return None
@@ -671,6 +679,12 @@ def _series_cache_get(key: tuple) -> dict | None:
 
 
 def _series_cache_put(key: tuple, payload: dict) -> None:
+    # Store nothing when disabled. _series_cache_get already refuses every
+    # entry at TTL 0, so this only avoids filling a dict nobody reads -- but a
+    # cache that keeps writing while claiming to be off is the kind of thing
+    # that gets believed later.
+    if _SERIES_CACHE_TTL_S <= 0:
+        return
     if len(_SERIES_CACHE) >= _SERIES_CACHE_MAX:
         # Oldest first, so a burst of odd keys cannot evict a live one.
         for stale, _ in sorted(_SERIES_CACHE.items(), key=lambda kv: kv[1][0])[:8]:

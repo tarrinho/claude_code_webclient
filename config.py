@@ -221,6 +221,24 @@ QA_CHUNK_TIMEOUT = _int("WC_CHUNK_TIMEOUT", 600)
 # pruning and keeps everything.
 USAGE_RETENTION_DAYS = _int("WC_USAGE_RETENTION_DAYS", 90)
 
+# Seconds a /api/usage/series payload stays cached (routes/misc.py).
+#
+# The charts read stored aggregates over a window measured in days, so a
+# response is already minutes stale by any measure that matters, while the
+# page re-requests on every range and bucket change -- four ranges times four
+# buckets, clicked through in seconds. 30 covers that burst.
+#
+# **0 disables the cache**, and the browser tests set it to 0. They are the one
+# caller that legitimately asserts a write is visible immediately: a class
+# there runs several cases against one server and one database, so the cache
+# key (database, owner, range, bucket) is identical across them and the second
+# case reads the first one's payload. Keying by database already stopped the
+# cross-file case; it cannot separate two cases sharing one file.
+#
+# Production keeps 30. The alternative -- invalidating on write -- would put
+# cache bookkeeping on the turn hot path to save a wait nobody is having.
+USAGE_SERIES_CACHE_TTL_S = _float("WC_USAGE_SERIES_CACHE_TTL_S", 30.0)
+
 # Seconds between terminal-transcript usage imports.
 #
 # The import used to run at the top of both usage handlers, so every visit to

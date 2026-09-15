@@ -163,6 +163,15 @@ class _BrowserFixture(unittest.TestCase):
             "WC_ADMIN_PASSWORD": cls.password,
             # No proxy: this exercises the UI, never a real turn.
             "WC_PROXY_ENABLED": "0",
+            # No statistics cache. A class here runs several cases against one
+            # server and one database, so the cache key (database, owner,
+            # range, bucket) is identical across them and the second case reads
+            # the payload built for the first -- which made a test that seeds a
+            # row and asserts it renders fail on data it never wrote. Keying by
+            # database already separates one test file from another; nothing in
+            # the key separates two cases sharing one file. Production keeps
+            # the 30s TTL; see config.USAGE_SERIES_CACHE_TTL_S.
+            "WC_USAGE_SERIES_CACHE_TTL_S": "0",
             # The test server is plain HTTP on loopback.
             "WC_COOKIE_ALLOW_INSECURE": "1",
         }

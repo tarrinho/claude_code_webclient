@@ -174,10 +174,16 @@ Design constraints, each earned from a registry entry:
   where" as different from "no write happened" — the two are otherwise
   indistinguishable, and only one of them is evidence the gate has a blind spot.
 - **Deny, do not warn.** A warning is prose with extra steps.
-- **Exempt by path, never by caller.** Merges, `rules.md` registry appends and
-  the release scripts legitimately write in the integration checkout. Exempt
-  those paths explicitly; never exempt an *identity*, because identity can be
-  asserted by the thing being governed.
+- **The exempt list is empty, and that is a decision, not an omission.**
+  Revision 2 assumed one would be needed. Working through what actually writes
+  in the integration checkout, nothing qualifies: a `rules.md` registry append
+  belongs to the fix that prompted it, so it happens in that session's worktree
+  and arrives by merge; `PT_request.md` is written by a hook, and hooks are not
+  tool calls, so they never reach this gate; the release and deploy scripts act
+  through git rather than through a write tool. An empty exempt list is also the
+  stronger design — there is no exemption surface to widen quietly over time.
+  If a genuine case appears, exempt **by path, never by caller**: identity can
+  be asserted by the thing being governed.
 - **Extract the target once.** Where a call carries more than one candidate path,
   resolve it a single time and share it between the exemption check and the
   floor. Two independent parses of the same input is how you get a gate whose
@@ -194,6 +200,75 @@ The `PreToolUse` slot is currently **free** — verified, zero registered in
 either `~/.claude/settings.json` or `.claude/settings.local.json`. The only
 registered hook is a user-level `UserPromptSubmit` running
 `.claude/hooks/log_pt_request.py`. No conflict.
+
+**The payload fields, so nobody has to rediscover them.** Verified against a
+working `PreToolUse` implementation (Spark's `core/internal/hostio/payload.go`),
+Claude Code sends snake_case:
+
+| Field | Carries |
+| --- | --- |
+| `tool_name` (top level) | which tool is being called |
+| `tool_input.file_path` | the target of `Edit` and `Write` |
+| `tool_input.notebook_path` | the target of `NotebookEdit` |
+| `tool_input.command` | the command string, for `Bash` (see §4.2.1) |
+| `cwd` (top level) | the session's directory — **not** usable for the worktree question, per the rejected design above |
+
+### 4.2.1 Shell-mediated writes, and the commands a path gate cannot see
+
+Revision 2 gated `Edit`/`Write`/`NotebookEdit` and said nothing about `Bash`.
+That was the largest hole in it. `Bash` is the most-used tool in this project,
+and a gate that ignores it is bypassed by habit rather than by intent —
+`sed -i`, `> file`, `tee`, `python3 -c`. A gate that announces it prevents
+shared-tree writes while leaving the busiest route open is worse than no gate,
+because it manufactures confidence. That is the failure §2 is written against,
+so it must not be reintroduced by the fix.
+
+Shell writes split into two kinds with genuinely different risk profiles, and
+they get different rules.
+
+**(a) Path-bearing shell writes — extract the honest forms, declare the rest.**
+Redirects (`>`, `>>`), `tee`, and in-place edits (`sed -i`, `perl -i`) name
+their target, so the target goes through exactly the floor in §4.2. Anything
+else — `python3 -c`, `./script.sh`, `find -delete` — is **not** parsed. The
+precedent is measured rather than assumed: Spark's `core/loop/shellpaths.go` is
+571 lines of best-effort extraction and its own authors still call the result
+*"porous… the residue is named, not closed."* Chasing a shell grammar is a
+tarpit we would lose in.
+
+So the residue is **declared, not silently allowed**: a `Bash` call carrying a
+recognised interpreter head (`python`, `python3`, `node`, `ruby`, `perl -e`) is
+allowed but recorded as a *declared unknown*, the same marker §4.2 defines. That
+turns an accepted blind spot into a counted one — §8's instrument then answers
+"how often is this actually exercised", which nobody can currently answer.
+
+**(b) Repo-wide destructive git — deny by command shape, because no path
+exists to gate on.** This is the part a target-path gate is structurally blind
+to, and it is where this project's worst losses came from. `git reset --hard`
+names a *commit*; `git checkout -- .` names `.`; `git stash` names nothing at
+all. None of them present a target path, so no amount of extraction would ever
+see them — and registry #50 and #65 are both sessions destroying a peer's
+uncommitted work exactly this way, twice in one day. The reflog currently holds
+**52 `reset: moving to` entries**.
+
+Four commands are denied outright when the resolved repository is the
+integration checkout:
+
+| Denied | Why |
+| --- | --- |
+| `git reset --hard` | the #50/#65 destruction mode |
+| `git checkout -- <path>` / `git restore <path>` | same effect, discards uncommitted work |
+| `git clean -f[d]` | removes untracked peer work, unrecoverable |
+| `git stash` | already banned by project convention; it has cost work here before |
+
+**These may fail closed, where ordinary writes may not.** The asymmetry is
+deliberate: a destructive git command is rare and deliberate, so denying one
+wrongly costs a moment and an escape-hatch re-run. An ordinary write is
+constant, so denying those wrongly stops everything — which is precisely the
+trap revision 1 fell into. Frequency, not severity, decides which way a rule
+fails.
+
+`git merge` and `git commit` are **not** on the list: they are what integration
+is made of, and §4.1 expects them to run in the integration checkout.
 
 ### 4.3 Bootstrap: what a fresh worktree does not have
 
@@ -249,12 +324,20 @@ bin/wc-session-worktree.sh <session-name>
 ```
 
 1. Refuse if `<session-name>` is not a known session name.
-2. `git worktree add .claude/worktrees/<name> -b session/<name>` (from
-   `origin/main`, not local `HEAD` — see §9).
-3. Symlink `CLAUDE.md`, `.venv`, `.claude/settings.local.json`. **Abort and
-   remove the worktree if any symlink fails.**
-4. Print the `cd` command. Do not exec it — the same restraint
+2. `git fetch origin`, then **refuse if local `main` holds commits that
+   `origin/main` does not** (§9). Integration is already broken in that state
+   and branching around it hides the fact; the message should name the unpushed
+   commits so the fix is obvious.
+3. `git worktree add .claude/worktrees/<name> -b session/<name> origin/main` —
+   the base is the remote branch, never local `HEAD`.
+4. Symlink `CLAUDE.md`, `.venv`, `.claude/settings.local.json`. **Abort and
+   remove the worktree if any symlink fails**, rather than leave a tree that
+   looks fine and is ungoverned (§4.3).
+5. Print the `cd` command. Do not exec it — the same restraint
    `bin/wc-session-wake.sh` already uses.
+
+Steps 2 and 4 are both refusals, and both are the point: this script's job is to
+make the ungoverned states unreachable, not to be convenient.
 
 ## 5. What this does to the daily loop
 
@@ -279,10 +362,9 @@ rate — 341 commits in a week, 78 in the peak day, across five to eight branche
 own, and the predictable outcome is that the branches get abandoned and everyone
 quietly returns to committing on `main`. That is how `.worktrees/` died (§2).
 
-This document does not settle the cadence, but it names it as a decision that
-must be made before sessions start diverging (§7 step 4) and is a hard
-precondition for enforcement (§7 step 5), not something discovered afterwards.
-The three candidates:
+Revision 2 left this open. It is settled below, because an undecided cadence is
+the thing most likely to end this the way `.worktrees/` ended — not by being
+rejected, but by never being operated. The three candidates:
 
 | Trigger | Cost | Failure mode |
 | --- | --- | --- |
@@ -290,11 +372,14 @@ The three candidates:
 | Scheduled (e.g. hourly) | predictable, batched | a conflict can sit unnoticed for the whole interval |
 | Before each deploy | integration is always tied to something a human wanted | branches diverge freely between deploys, so the conflict arrives at the worst moment |
 
-The recommendation is **on every push, with a session branch only pushed when
-its work is coherent** — because `wc-release.sh` already reports conflicts
-attributed to the owning session, which is only useful while that session is
-still alive and remembers the change. Batching defeats the one feature the
-existing script has that no alternative offers.
+**`[Decided]` On every push, with a session branch pushed only when its work is
+coherent.** `wc-release.sh` already reports conflicts attributed to the owning
+session, and that attribution is worth something only while the session is
+still alive and still remembers the change. Batching throws away the one
+feature the existing script has that no alternative offers, in exchange for
+quieter logs. The "coherent work" half is what stops that becoming noise, and
+it is a judgement each session makes — the same judgement it already makes
+about when to commit.
 
 ## 6. What this does not solve
 
@@ -308,6 +393,13 @@ Stated plainly, because a design that oversells is worse than the gap:
   shared. §17-style deploy tests still interrupt everyone.
 - **Peer sessions reading a stale tree.** A session's worktree is a snapshot;
   it will not see a peer's merged work until it rebases.
+- **Shell writes the extractor cannot read** (§4.2.1a): `python3 -c`,
+  `./script.sh`, `find -delete` and anything else that hides its target inside a
+  program. These are allowed and *counted*, not blocked. A determined bypass
+  therefore exists and always will — the gate is built to stop habit, not
+  intent, and there is no version of this that stops someone who has decided to
+  route around it. The counter in §8 is what keeps that an informed position
+  rather than an assumed one.
 
 ## 7. Migration
 
@@ -345,14 +437,23 @@ distinguishes this from `.worktrees/` in §2.
 
 - **Hook decision tests**, table-driven, in the style of
   `tests/test_qa_confirm_dialog_stacking.py` (assert the decision, not the
-  prose): target inside integration checkout → deny; same file path inside a
-  session worktree → allow; exempted path inside the integration checkout →
-  allow; target outside the repository → allow; **unresolvable target → deny,
-  and recorded as a declared unknown rather than an ordinary deny**; escape
-  hatch set → allow. One case exists specifically to pin the ordering from
-  §4.2: **escape hatch set *and* target unresolvable → allow**, which fails if
-  the fail-closed branch is ever moved above the hatch and takes the recovery
-  path down with it.
+  prose). For write tools: target inside integration checkout → deny; same file
+  path inside a session worktree → allow; target outside the repository →
+  allow; **unresolvable target → deny, recorded as a declared unknown rather
+  than an ordinary deny**; escape hatch set → allow. One case pins the ordering
+  from §4.2 — **escape hatch set *and* target unresolvable → allow** — which
+  fails if the fail-closed branch is ever moved above the hatch and takes the
+  recovery path down with it. One case pins §4.2's empty exempt list by
+  asserting it *is* empty, so adding an entry later arrives with a failing test
+  attached.
+
+  For `Bash` (§4.2.1), the same table covers both halves: `echo x > <integration
+  path>` → deny; the same redirect into a worktree → allow; `sed -i` and `tee`
+  likewise; `python3 -c ...` → allow **and counted as a declared unknown**, which
+  is the case that fails if someone later "tidies" the residue into a silent
+  allow. Each of the four destructive git commands → deny against the
+  integration checkout, allow against a worktree, and `git merge` / `git commit`
+  → allow in both, since integration is made of them.
 - **Bootstrap test**: create a worktree in a temp repo, assert `CLAUDE.md` and
   `.venv` resolve, assert `data/` is absent, assert a failed symlink leaves no
   worktree behind.
@@ -384,17 +485,31 @@ distinguishes this from `.worktrees/` in §2.
 
 ## 9. Open items
 
-- **`[Open]` Branch base.** `-b session/<name>` from `origin/main` avoids
-  inheriting a local `main` that peers have already advanced past, which is how
-  the `config.py` `0.17.2 → 0.17.1` regression of 2026-09-12 reached `main`.
-  Needs confirming against how `wc-release.sh` expects to merge.
+- **`[Decided]` Branch base: `origin/main`, after an explicit fetch, and the
+  bootstrap **refuses** when local `main` holds unpushed commits.** The base
+  must be the one state that is shared, agreed and durable. Local `main` is
+  neither — it can sit ahead of the remote with commits nobody else has, which
+  is observable right now rather than theoretical: this checkout was measured at
+  *ahead 2* on 2026-09-15, carrying two commits from another session's work that
+  no peer could see. Branching from a local `main` in that condition hands the
+  new session a private base and is how the `config.py` `0.17.2 → 0.17.1`
+  regression of 2026-09-12 reached `main`.
+
+  The refusal matters more than the choice. Unpushed commits on `main` mean
+  integration is *already* broken; branching quietly from `origin/main` would
+  route around that and leave it broken for the next session too. Refusing
+  surfaces it at the one moment somebody is paying attention.
 - **`[Open]` `.venv` skew detection.** If one session changes
   `requirements.txt`, every worktree sharing the symlinked venv is affected at
   once, silently. Cheapest guard is a startup check comparing a hash of
   `requirements.txt` against one recorded in the venv.
-- **`[Open]` Which paths are exempt** in the integration checkout. `rules.md`,
-  `PT_request.md` and `bin/wc-*.sh` are the obvious candidates; the list must
-  be explicit and tested, not a prefix match that quietly widens.
+- **`[Decided]` Exempt paths: none.** Worked through in §4.2 — a `rules.md`
+  append belongs to the fix that prompted it and arrives by merge, `PT_request.md`
+  is written by a hook rather than a tool call, and the release scripts act
+  through git. The candidates revision 2 listed all dissolve on inspection. The
+  test asserting "exempted path → allow" is replaced by one asserting the list
+  is empty, so adding an entry later is a deliberate act with a failing test
+  attached.
 - **`[Open]` Worktree lifecycle.** Nothing here removes a worktree when a
   session ends. `bin/wc-session-standby.sh` suspends sessions today; the two
   should probably know about each other.
@@ -473,3 +588,21 @@ checked, an instrument made of its own subject — is the one registry #61 and
 #101 already name. Worth stating plainly: a design document arguing for
 enforcement over good intentions is not exempt from needing its own claims
 verified.
+
+**2026-09-15, revision 3** — the implementation-readiness pass. Revision 2 was
+design-complete but would have stalled an implementer on decisions it had left
+open, and it had one substantive hole.
+
+| Changed | Why |
+| --- | --- |
+| §4.2.1 added: shell-mediated writes and destructive git | The hole. Revision 2 gated `Edit`/`Write`/`NotebookEdit` and said nothing about `Bash` — the most-used tool here — so the gate was bypassable by habit. Split into path-bearing writes (extract the honest forms, declare the residue) and repo-wide destructive git (deny by command shape, since `git reset --hard` presents no path for any gate to see). 52 `reset: moving to` entries in the reflog say which half matters. |
+| §4.2 exempt list resolved to **empty** | Revision 2 assumed a list was needed. Every candidate dissolved on inspection. An empty list has no surface to widen. |
+| §9 branch base decided: `origin/main`, refusing on unpushed local commits | Blocking — it is a line in the bootstrap script. The refusal is the substantive half: unpushed commits mean integration is already broken, and branching around that hides it. |
+| §5.1 cadence decided: on every push | Left open in revision 2. An undecided cadence is how the previous attempt died. |
+| §4.2 payload field table added | An implementer would otherwise have rediscovered it. Verified against a working `PreToolUse` implementation. |
+| §8 test table extended | Covers the shell cases, the destructive-git cases, and asserts the exempt list is empty. |
+
+The through-line of this revision is that **frequency, not severity, decides
+which way a rule fails**: destructive git may fail closed because it is rare and
+deliberate, ordinary writes may not because they are constant. Revision 1's
+fleet-wide deny came from getting that backwards.

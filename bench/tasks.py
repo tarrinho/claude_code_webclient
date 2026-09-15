@@ -148,6 +148,130 @@ except (ValueError, TypeError):
     return verify.run_checks(verify.extract_code(response), core, edge)
 
 
+# --- edit-shaped coding tasks -------------------------------------------------
+#
+# Added 2026-09-15. The suite held two `coding` tasks and they split badly:
+# measured at n=20, the free model scored 8/10 on coding-algo (write an LRU
+# cache) and 3/10 on coding-bug-fix (repair an existing function). An
+# orchestrator's coding leaves are predominantly edits to code that already
+# exists, so the aggregate of those two tasks was not measuring the workload.
+# Two tasks also cannot separate "weak at repair" from "weak at that one bug".
+#
+# All four below hand the model working-but-wrong code and ask for a change.
+# See docs/superpowers/specs/2026-09-14-tiered-agent-delegation-spec-v3.md
+# section 2.6, Measurement provenance.
+
+
+def _verify_edit_mutable_default(response: str) -> verify.Verdict:
+    """Executed. The bug only shows across *calls*, so reading one call passes.
+
+    A model that keeps the mutable default and merely adds a docstring produces
+    code that looks right and fails the second call. That is the whole point of
+    executing rather than reviewing, and it is why the second assertion below
+    matters more than the first.
+    """
+    core = '''
+assert add_tag("a") == ["a"]
+assert add_tag("b") == ["b"], "the default list persisted between calls"
+assert add_tag("c") == ["c"], "the default list persisted between calls"
+assert add_tag("y", ["x"]) == ["x", "y"], "an explicit list must still be appended to"
+assert add_tag.__doc__, "the prompt asked for a docstring"
+'''
+    # Whether the caller's own list is mutated in place or copied is genuinely
+    # open -- the original mutates, and "fix the shared-default bug" does not
+    # say to stop mutating. Both are defensible, so this is reported, not failed.
+    edge = '''
+given = ["x"]
+result = add_tag("y", given)
+assert result == ["x", "y"]
+'''
+    return verify.run_checks(verify.extract_code(response), core, edge)
+
+
+def _verify_edit_chunks(response: str) -> verify.Verdict:
+    """Executed. An off-by-one that silently drops data rather than raising.
+
+    The natural misreading is that the loop bound is fine and the slice is
+    wrong. Both produce correct output on inputs whose length divides evenly by
+    `size`, which is why the first check uses a length that does not.
+    """
+    core = '''
+assert chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]], "the final partial chunk was dropped"
+assert chunks([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]
+assert chunks([1], 5) == [[1]], "a list shorter than one chunk returned nothing"
+assert chunks([], 3) == []
+assert chunks([1, 2, 3], 1) == [[1], [2], [3]]
+'''
+    # size <= 0 is unspecified by the prompt. Raising and returning [] are both
+    # reasonable; hanging forever is not, so the check accepts either answer and
+    # fails only a non-terminating or crashing implementation.
+    edge = '''
+try:
+    out = chunks([1, 2, 3], 0)
+    assert out == [], "size=0 returned chunks"
+except (ValueError, ZeroDivisionError):
+    pass
+'''
+    return verify.run_checks(verify.extract_code(response), core, edge)
+
+
+def _verify_edit_extend_cases(response: str) -> verify.Verdict:
+    """Executed. Measures regression preservation, not just the new feature.
+
+    The first two assertions are the *existing* behaviour the prompt does not
+    mention. A model that rewrites the parser around the new units and drops
+    seconds or minutes has done what was asked and broken what was working --
+    the exact failure stages 3 and 4 of the pipeline exist to catch, and the
+    reason this task is scored on the old cases before the new ones.
+    """
+    core = '''
+assert parse_duration("30s") == 30, "existing behaviour for seconds regressed"
+assert parse_duration("5m") == 300, "existing behaviour for minutes regressed"
+assert parse_duration("2h") == 7200
+assert parse_duration("1d") == 86400
+assert parse_duration("0s") == 0
+'''
+    # The original raises ValueError on unparseable input. Preserving the
+    # exception *type* is a reasonable reading and so is raising anything at
+    # all, so a different exception is reported rather than failed.
+    edge = '''
+try:
+    parse_duration("nonsense")
+    raise AssertionError("unparseable input did not raise")
+except ValueError:
+    pass
+'''
+    return verify.run_checks(verify.extract_code(response), core, edge)
+
+
+def _verify_edit_top_scores(response: str) -> verify.Verdict:
+    """Executed. The bug is a wrong sort direction, which returns the *worst*
+    n rather than the best -- output that is well-formed, plausible, and
+    exactly backwards.
+
+    No oracle short of running it catches this: the return type, the length and
+    the element shape are all correct. It is the closest task in the suite to
+    the failure mode section 6 of the spec calls out as uncaught, "a well-formed
+    wrong answer".
+    """
+    core = '''
+rows = [{"name": "a", "score": 1}, {"name": "b", "score": 9}, {"name": "c", "score": 5}]
+assert [r["name"] for r in top_scores(rows, 1)] == ["b"], "returned the lowest score, not the highest"
+assert [r["name"] for r in top_scores(rows, 2)] == ["b", "c"]
+assert len(top_scores(rows, 10)) == 3, "n larger than the input must return everything"
+assert top_scores([], 3) == []
+assert top_scores(rows, 0) == []
+'''
+    # Tie-break order is unspecified. Python's sort is stable, so input order is
+    # the natural outcome, but a model that sorts by (-score, name) is not
+    # wrong -- only different. Reported.
+    edge = '''
+tied = [{"name": "z", "score": 5}, {"name": "a", "score": 5}]
+assert [r["name"] for r in top_scores(tied, 2)] == ["z", "a"]
+'''
+    return verify.run_checks(verify.extract_code(response), core, edge)
+
+
 def _verify_math(response: str) -> verify.Verdict:
     """A claim check, but a numeric one: the answer is a single value.
 
@@ -751,6 +875,71 @@ Also add a docstring and type hints. Keep the function name. Return valid Python
         task_type="coding",
         verifier=_verify_lru,
         prompt="""Implement an LRU cache in Python with O(1) get and put. Class name LRUCache, constructor takes capacity, methods get(key) returning -1 on a miss and put(key, value). Add a __repr__. Return valid Python code only.""",
+    ),
+    Task(
+        id="coding-edit-mutable-default",
+        description="Fix: shared mutable default argument",
+        task_type="coding",
+        verifier=_verify_edit_mutable_default,
+        prompt="""Fix this Python function. Callers report that tags from earlier calls keep showing up in later ones:
+
+```python
+def add_tag(tag, tags=[]):
+    tags.append(tag)
+    return tags
+```
+
+Keep the function name and signature order. Add a docstring. Return valid Python code only.""",
+    ),
+    Task(
+        id="coding-edit-chunks",
+        description="Fix: final partial chunk is dropped",
+        task_type="coding",
+        verifier=_verify_edit_chunks,
+        prompt="""Fix this Python function. It should split a list into consecutive chunks of at most `size`, but it silently drops the last one when the list does not divide evenly:
+
+```python
+def chunks(items, size):
+    out = []
+    for i in range(0, len(items) - size, size):
+        out.append(items[i:i + size])
+    return out
+```
+
+Keep the function name. Return valid Python code only.""",
+    ),
+    Task(
+        id="coding-edit-extend-cases",
+        description="Add hours and days without breaking seconds and minutes",
+        task_type="coding",
+        verifier=_verify_edit_extend_cases,
+        prompt="""Extend this Python function to also accept hours ('2h') and days ('1d'), returning the duration in seconds:
+
+```python
+def parse_duration(s):
+    \"\"\"'30s' -> 30, '5m' -> 300\"\"\"
+    if s.endswith("s"):
+        return int(s[:-1])
+    if s.endswith("m"):
+        return int(s[:-1]) * 60
+    raise ValueError(f"bad duration: {s}")
+```
+
+Keep the function name. Return valid Python code only.""",
+    ),
+    Task(
+        id="coding-edit-top-scores",
+        description="Fix: returns the lowest scores instead of the highest",
+        task_type="coding",
+        verifier=_verify_edit_top_scores,
+        prompt="""Fix this Python function. It is supposed to return the `n` highest-scoring rows, best first, but it is returning the lowest ones:
+
+```python
+def top_scores(rows, n):
+    return sorted(rows, key=lambda r: r["score"])[:n]
+```
+
+Each row is a dict with a "name" and a numeric "score". Keep the function name. Return valid Python code only.""",
     ),
     Task(
         id="reasoning-puzzle",

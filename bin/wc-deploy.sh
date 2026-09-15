@@ -129,6 +129,19 @@ verify() {
     [ "$specs_in_repo" = "$specs_in_release" ] || die \
         "spec file count mismatch: repo has $specs_in_repo, release has $specs_in_release -- untracked spec files will not be live; commit them or exclude from the check"
     echo "verified: $specs_in_release spec files present in release (matches repo)"
+
+    # Check for uncommitted files anywhere in the repo that match the specs
+    # directory pattern. An untracked spec is a file that should be tracked
+    # (it is in docs/superpowers/specs/) but was not committed at deploy time,
+    # so the live copy is one commit behind. This catches the case where a
+    # deploy runs on an intermediate commit while a session saves a new spec.
+    local untracked_specs
+    untracked_specs="$(git -C "$REPO" status --porcelain -- 'docs/superpowers/specs/*' 2>/dev/null)"
+    if [ -n "$untracked_specs" ]; then
+        echo "WARNING: untracked spec files exist and will not be live:" >&2
+        echo "$untracked_specs" >&2
+        echo "WARNING: consider committing them before the next deploy" >&2
+    fi
 }
 
 activate() {

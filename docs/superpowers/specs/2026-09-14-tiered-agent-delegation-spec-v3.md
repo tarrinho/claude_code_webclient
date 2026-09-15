@@ -15,7 +15,7 @@ What must be **built**: the duplicate-branch fix in `ModelRouter.assign_model` s
 
 ### 1.1 Startup validation
 
-At config load the system checks four invariants and fails loudly if any are broken:
+At config load the system checks five invariants and fails loudly if any are broken:
 
 | invariant | condition |
 |---|---|
@@ -23,8 +23,9 @@ At config load the system checks four invariants and fails loudly if any are bro
 | model resolution | every model name named in any ladder (§3) resolves to a valid backend-and-model pair available in the model combo box (§9.3) |
 | no empty ladder | after applying the cost-ceiling filter (§2.7), every **operational** task type must have at least one rung; no operational task type is left with an empty ladder |
 | every rung is backed by a row | every `(model, task_type)` pair appearing in the §3 ladder snapshot has a row in the §2.6 table. A rung named in the snapshot with no backing row means the snapshot and the generator disagree, and the generator silently wins |
+| the ceiling fits the budget | for every **operational** task type, the computed worst-case path (§5.1) is at or below the combined latency ceiling. A ceiling below it kills leaves that passed every per-attempt deadline, after paying for them |
 
-**Bootstrap exemption.** §2.6 ships mostly unmeasured, so a check that refused every TBD would mean the system could never start for the first time. Each task type therefore carries an `operational` flag, default **false**. The three checks above apply only to task types flagged operational; a non-operational task type may hold TBD in any column.
+**Bootstrap exemption.** §2.6 ships mostly unmeasured, so a check that refused every TBD would mean the system could never start for the first time. Each task type therefore carries an `operational` flag, default **false**. The checks above apply only to task types flagged operational; a non-operational task type may hold TBD in any column.
 
 A non-operational task type is **not routed**. Work classified into it falls back to today's routing (`config.ANTHROPIC_MODEL`), exactly as if the kill switch (§9.1) were off for that type alone, and each such fallback is logged so the gap is visible rather than silent.
 
@@ -34,7 +35,7 @@ If any check fails the system refuses to start. The error lists every broken inv
 
 **Validation runs on every write, not only at load.** The benchmark table is live-editable (§9.2) and the ladders regenerate at runtime from it, so a check that only ran at startup would let an operator clear a `median_latency_s` on an operational row at 15:00, see routing carry on unchanged, and discover at the next restart — possibly weeks later, possibly mid-incident — that the system will not boot. A validation gap whose blast radius is delayed by an arbitrary interval is worse than one that fails immediately.
 
-So the same four checks run at three moments, with the same code path and the same error text:
+So the same five checks run at three moments, with the same code path and the same error text:
 
 | moment | on failure |
 |---|---|
@@ -260,7 +261,9 @@ Produced at whatever rung the ladder currently points to. Attempt 1 for `coding`
 
 ### 4.2 Stage 2 — Oracle check
 
-Execution verification only: does the produced code parse, import, compile, or pass the test it was asked to satisfy. **QA and regression testing are not part of this stage** — they are stage 3.
+Execution verification only: does the produced code parse, import, compile, or pass the test it was asked to satisfy. **QA and regression testing are not part of this stage** — they are stage 4 (§4.4).
+
+**The stage requires executable output, and is skipped when there is none.** A task whose product is prose — a log summary, a directory listing, a research answer — has nothing to parse or compile, so there is no verification to perform. It is skipped rather than run, because an oracle that cannot fail is worse than an absent one: it reports a pass that the pipeline then treats as evidence. See §4.7 for what this means on read-only tasks, where it is why stage 3 becomes the only real gate.
 
 Failure of the check escalates the generator one rung.
 
@@ -308,28 +311,48 @@ A write task that modifies more than the trivial count always passes through the
 | stage | runs on `mutates=False`? | why |
 |---|---|---|
 | 1 — generation | yes | the work itself |
-| 2 — oracle check | yes | execution verification is as meaningful for a read as for a write |
-| 3 — reviewer gate | **yes** | intent match is where a read-only task fails: a wrong answer, confidently delivered, is the whole risk |
+| 2 — oracle check | **only if the output is executable** | §4.2 defines the oracle as parse / import / compile / pass-the-test. A task whose output is prose — a log summary, a directory listing, a research answer — has nothing to execute, so the stage is skipped rather than run as a no-op that always passes |
+| 3 — reviewer gate | **yes, always** | intent match is where a read-only task fails: a wrong answer, confidently delivered, is the whole risk |
 | 4 — QA / regression | **no** | nothing was changed, so there is no regression surface to test |
 | 5 — security review | **no** | the defects this gate looks for — command injection, unsafe file writes, secrets written out — all require a write |
 
 The reasoning is that stages 4 and 5 both check for consequences of *changing* something. A task that changes nothing cannot produce them, so running those gates spends two model calls per leaf to confirm an invariant that already holds structurally.
 
-Stage 3 stays because the failure mode of a read-only task is entirely a stage-3 failure mode: it returns something plausible and wrong, and nothing downstream catches it. The oracle checks that an answer was produced, not that it answers the question asked.
+**Stage 3 is the floor for a read-only task, and no other rule may remove it.** The failure mode of a read-only task is entirely a stage-3 failure mode: it returns something plausible and wrong, and nothing downstream catches it. Stage 2 cannot catch it — where it runs at all, it checks that an answer executes, not that it answers the question asked, and on prose output it does not run. Stages 4 and 5 are structurally inapplicable. So stage 3 is not one gate among several here; it is the **only** gate. A read-only leaf that reaches the end with stage 3 skipped has been through no verification whatsoever, and the cheapest way to produce that outcome is to let another stage-subtraction rule reach it first — see the precedence rule in §4.8.
 
 This rule applies to `mutates=False` only. **`side_effecting_read` is not covered by it** — it takes the full five stages, the same as `True`. It spends money or consumes an external rate limit, so it has real consequences to review even though it writes no local file, and §2.3 already refuses it a transport for that reason.
 
 ### 4.8 Trivial-task bypass
 
-A task matching the score-1 `simple|small|quick|minor|fix.*typo` pattern runs **stages 1 and 2 only**. Stages 3–5 are skipped. The full five-stage pipeline applies to anything scoring above that floor.
+A score-1 task runs a reduced pipeline; the full five stages apply to anything scoring above that floor. Note that **two patterns score 1, and they differ in `mutates`** — `simple|small|quick|minor|fix.*typo` is a write, `read.*file|list.*directory|grep.*pattern|summarize.*log` is a read — so the bypass must say which it means:
+
+| score-1 task | stages skipped | stages run |
+|---|---|---|
+| `mutates=True` (a small write) | 3, 4, 5 | 1, 2 |
+| `mutates=False` (a read) | 4, 5 | 1, 3 (and 2 if output is executable) |
+
+**The bypass is scoped to writes.** It removes stages 3–5 from a task with `mutates=True`. On a task with `mutates=False` it removes stages 4 and 5 only, and **never stage 3** (§4.7).
+
+This scoping is the whole rule, and without it the design has a hole big enough to swallow its most common read task. The classifier's only `long-context` pattern — `read.*file|list.*directory|grep.*pattern|summarize.*log` — is **score 1 and `mutates=False` simultaneously**, so it matches the trivial bypass and the read-only rule at once. Under an unscoped bypass it would run stage 1, then a stage 2 that does not execute on prose output (§4.7), then nothing: a leaf with no verification at all, reached by the most frequent read pattern in the table. The bypass exists because a typo fix is cheap to verify by oracle — that argument is about writes, and it does not transfer to a read whose oracle is vacuous.
 
 **Precedence between §4.6, §4.7 and §4.8.** Three rules can each subtract stages, so the order they resolve in is fixed:
 
 1. **Blast radius (§4.6) first.** It is the only rule based on what the task *did* rather than what its text predicted, so it overrides the trivial bypass: a score-1 task that modified more than `MAX_FILES_TRIVIAL` files runs stages 3–5.
-2. **Trivial bypass (§4.8) next**, if blast radius did not override it — stages 3–5 skipped.
-3. **Read-only (§4.7) last**, applied to whatever survives — stages 4 and 5 removed for `mutates=False`.
+2. **Trivial bypass (§4.8) next**, if blast radius did not override it — stages 3–5 skipped on a write, stages 4 and 5 only on a read.
+3. **Read-only (§4.7) last**, applied to whatever survives — stages 4 and 5 removed for `mutates=False`, and stage 3 restored if any earlier rule took it.
 
-The net effect: a non-trivial read-only task runs stages 1–3, and a trivial read-only task runs stages 1–2, because the bypass had already removed stage 3 before §4.7 was reached. No rule ever *adds* a stage an earlier rule removed.
+The net effect:
+
+| task | stages run |
+|---|---|
+| non-trivial write | 1, 2, 3, 4, 5 |
+| trivial write | 1, 2 |
+| trivial write, blast radius over threshold | 1, 2, 3, 4, 5 |
+| non-trivial read, executable output | 1, 2, 3 |
+| non-trivial read, prose output | 1, 3 |
+| trivial read, prose output | 1, 3 |
+
+Stage 3 appears in every read row. That is the invariant: **no combination of rules produces a read-only leaf without a reviewer gate.** Step 3 is phrased as "restored" rather than "not removed" so the invariant holds no matter what order a future rule is added in.
 
 Rule 1 never fires on a read-only task — its blast radius is zero by definition — so the override exists only for writes that were misclassified as trivial.
 
@@ -357,7 +380,7 @@ A gate judging code without intent context reproduces the oracle's blind spot.
 | `MAX_NODES` | 40 | tree |
 | `BUDGET_USD` | 1.00 | **tree** (all leaves share one pool) |
 | `MAX_SUBAGENTS_PER_LEAF` | 12 | whole pipeline |
-| combined latency ceiling | 600 | per leaf, all five stages |
+| combined latency ceiling | 600 — **placeholder, see §5.1** | per leaf, all five stages |
 
 Attempt counts are **per gate, not shared pipeline-wide**. A review gate rejecting repeatedly points at bad generation, so its own cap is 1 — the retry happens at the generator, not at the reviewer.
 
@@ -405,7 +428,36 @@ So the fastest model on a task type always gets exactly the baseline, and a mode
 
 A task type with any unmeasured `median_latency_s` cannot compute this, which is one of the reasons such a type stays non-operational (§1.1).
 
-**The combined ceiling still binds.** `effective_deadline` governs a single attempt; the 600-second combined latency ceiling from the table above governs all five stages of a leaf together. A leaf whose stages would individually fit but collectively exceed 600s is stopped by the ceiling, not by any per-attempt deadline.
+**Gates carry deadlines too, from the same formula.** The three model-backed gates (§4.3–4.5) are sub-agent calls like any other, so each gets `per_type_baseline × size_factor × model_speed_multiplier` computed with **the gate model's** multiplier and the leaf's own task type and score. Stage 2 is execution, not a model call, so it carries the sandbox's own timeout rather than this formula. Without gate deadlines the combined ceiling below has nothing to be reconciled against, which is how it came to be set independently of the work it bounds.
+
+#### The combined ceiling and the attempt budget must be reconciled
+
+`effective_deadline` governs a single attempt. The combined latency ceiling governs all five stages of a leaf together. **As currently specified the two contradict each other, and the ceiling loses.**
+
+The worst-case path for a leaf is every generation attempt running to its deadline, then every gate running to its own:
+
+```
+worst_case = baseline x size_factor x [ sum(m_rung) over MAX_ATTEMPTS
+                                      + sum(m_gate) over the 3 model gates ]
+```
+
+For a `coding` leaf at score 4 — `analyze.*code.*review`, `refactor.*large`, `migrate.*database`, none of them exotic — the base unit is `90 x 1.5 = 135s`, and there are six deadline-bearing steps: three generation attempts plus three model gates. **Even under the most generous possible assumption, that every model is exactly as fast as the fastest and every multiplier is 1.0, the worst case is `135 x 6 = 810s`.** The ceiling is 600. Real multipliers are above 1.0 for every rung above the free one, so the true figure is higher.
+
+The consequence is not a slow leaf; it is a leaf killed after spending on five stages and producing no verdict, on a task type the classifier routes by default. A score-3 coding leaf fits at `90 x 6 = 540s`; score 4 and above does not. The ceiling therefore truncates exactly the large refactors and migrations that most need the full pipeline.
+
+**So the ceiling is not an independent constant.** One of three must hold, and the choice is recorded here rather than left to whoever notices first:
+
+1. **Derive the ceiling from the budget** — set it to the computed worst case for the most expensive operational task type, rounded up. This is the default and keeps every leaf that passes its per-attempt deadlines.
+2. **Shrink the attempt budget** — reduce `MAX_ATTEMPTS` for the affected task type until the worst case fits a fixed ceiling. Costs a rung of escalation.
+3. **Accept truncation deliberately**, with the ceiling documented as a hard spend cap that will cut long leaves short, and the rate of such cuts monitored (§10).
+
+`600` in the table above is a **placeholder that satisfies none of the three**, and it is marked as such until latencies are measured and the arithmetic can be run for real.
+
+**Startup validation (§1.1) checks this.** For every operational task type, the computed worst case is compared against the ceiling, and a ceiling below it fails the same way a blank field does — at load, naming the task type and both numbers. The check needs measured `median_latency_s` values, which an operational task type already guarantees.
+
+**How the ceiling is enforced.** It is evaluated **before each stage starts**, never mid-stage. If the elapsed time plus the next stage's deadline would exceed the ceiling, the leaf stops there. Interrupting a stage in flight would pay for a model call and discard its verdict, which is the most expensive possible way to save time.
+
+A leaf stopped this way emits a **distinct signal, `latency_ceiling_exhausted`** — not a timeout (§6). A timeout says a model was too slow and escalating to a different rung may help; a ceiling exhaustion says the leaf ran out of total budget and escalating cannot help, because a higher rung is slower. Conflating them would make the system respond to a budget problem by spending more.
 
 Every sub-agent call additionally carries a **strict hard timeout independent of the gate cap**, so a hung sub-agent cannot silently stall a leaf.
 
@@ -430,6 +482,17 @@ Any one of these escalates one rung:
 | reviewer / QA / security rejection | §4.3–4.5 | each tagged with its own gate |
 
 **None of these catch a well-formed wrong answer.** That is why the free rung is scoped to `coding` (which has an oracle) and `long-context` (measured 100%).
+
+### 6.1 Signals that terminate rather than escalate
+
+Two conditions end a leaf instead of moving it up a rung. They are listed apart from the table above because treating either as an escalation makes the situation worse, not better:
+
+| signal | source | why it does not escalate |
+|---|---|---|
+| `latency_ceiling_exhausted` | §5.1 | the leaf is out of total time budget. Every higher rung is **slower** than the one that just ran, so escalating spends more wall-clock against a ceiling that has already been reached |
+| `MAX_SUBAGENTS_PER_LEAF` reached | §7 | a hard failure surfaced to a human, a different class from an exhausted escalation |
+
+`latency_ceiling_exhausted` must stay distinct from `deadline expiry` in the table above. They look alike in a log — both are "it took too long" — and the correct response is opposite: deadline expiry means *this model* was too slow and another rung may be faster per token of quality; ceiling exhaustion means *the leaf* is finished regardless of which model runs next.
 
 ---
 
@@ -494,7 +557,7 @@ The router does not replace or bypass this. At every stage and every escalation 
 
 A model is never selected as a bare string. Every routing decision returns **`(model, machine)`** together — a model chosen without its machine reaches a gateway that does not serve it and returns `429 "No deployments available"`, a routing failure wearing a capacity error's clothes.
 
-**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, and no task type is left with an empty ladder after cost-ceiling exclusion. All four checks fail loudly if broken.
+**Startup validation (§1.1):** every model named in any ladder is checked against the valid options in the model combo box at config load. Combined with the benchmark-table completeness check, this ensures no blank fields, every model resolves to a valid backend-and-model pair, every rung is backed by a §2.6 row, no task type is left with an empty ladder after cost-ceiling exclusion, and no operational task type has a worst-case path exceeding the combined latency ceiling (§5.1). All five checks fail loudly if broken.
 
 ---
 
@@ -547,13 +610,19 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | each review gate escalates | testing the reviewer only — assert reviewer, QA and security each escalate independently |
 | reviewer stays at Luna | asserting a rejection escalates *something* — assert the **generator** moved and the reviewer did not |
 | security failure routes back | asserting it escalates like the others — assert it re-enters the pipeline with the vulnerability flagged |
-| trivial bypass | asserting a typo fix succeeds — assert stages 3–5 **did not run** |
+| trivial bypass is scoped to writes | asserting a typo fix succeeds — assert a score-1 **write** skips 3–5, and that a score-1 **read** skips only 4–5 |
 | blast-radius check | asserting a small-prompt task stays trivial — assert a task matching `simple|typo` that produces >3 file changes **still runs stages 3–5** |
 | security re-run cap | asserting infinite recursion is impossible — assert a leaf that cycles through generation→security exactly 2 times **fails with human-flag on the 3rd** |
 | `mutates` gates placement | asserting a read-only and a writing coding task take the same path — assert the writing one is refused a transport **while a transport has headroom** |
 | all comprehension rungs | asserting comprehension only uses sonnet — assert rung 0 is sonnet, rung 1 is opus, rung 2 is absent; **rung 2 is empty by design** |
 | read-only runs 1–3 | asserting a read-only task "skips the gates" — assert stage 3 **ran** and stages 4 and 5 **did not** |
-| stage-subtraction precedence | testing §4.6, §4.7 and §4.8 in isolation — assert a **trivial read-only** task runs stages 1–2, not 1–3 |
+| stage 3 is the read-only floor | testing §4.6, §4.7 and §4.8 in isolation — assert the **`read.*file` pattern**, which is score 1 and `mutates=False` at once, still runs stage 3. This is the case an unscoped bypass leaves with no verification at all |
+| no read-only leaf is ungated | asserting each rule separately — enumerate **every** combination of trivial / non-trivial, prose / executable output, and blast radius, and assert stage 3 appears in every `mutates=False` row of §4.8's table |
+| oracle skipped on prose | asserting stage 2 always runs — assert a `summarize.*log` task **does not run stage 2**, rather than running it as a no-op that always passes |
+| gates carry deadlines | asserting only the generation deadline — assert each model gate gets `baseline x size_factor x` **its own model's** multiplier |
+| ceiling is checked before a stage | asserting a leaf stops at the ceiling — assert it stops **between** stages with the next stage never started, not mid-call |
+| ceiling exhaustion does not escalate | folding it into deadline expiry — assert `latency_ceiling_exhausted` **terminates** the leaf and that no higher rung is attempted |
+| ceiling vs attempt budget | asserting the ceiling is enforced — assert startup **fails** for an operational task type whose computed worst case (`baseline x size x [sum(m_rung) + sum(m_gate)]`) exceeds the ceiling; a score-4 coding type at 810s against a 600s ceiling must not load |
 | `side_effecting_read` takes all five | folding it into the read-only rule because it also writes nothing — assert it runs stages 4 and 5 while `mutates=False` does not |
 | `side_effecting_read` | folding it into `False` — assert it is refused a transport and tagged separately |
 | `mutates` default | testing only the nine explicit patterns — assert unmatched text returns `True` |

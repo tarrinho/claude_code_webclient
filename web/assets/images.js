@@ -6,7 +6,7 @@
 // never re-derives that inline behaviour, it only lists what
 // routes/db_images.py already recorded and lets you delete or re-view one.
 import {apiFetch} from './api.js?v=2741508';
-import {openImageViewer} from './conversation.js?v=13571435';
+import {openImageViewer} from './conversation.js?v=8067332';
 import {_showConfirmDialog} from './machines.js?v=3055851';
 import {jumpToChatFromGallery} from './app.js?v=7137309';
 

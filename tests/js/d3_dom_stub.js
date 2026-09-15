@@ -25,6 +25,21 @@ var console = {
 var STUB = {
   svgBox: {width: 900, height: 600, left: 0, top: 0},
   selectAllCalls: [],
+  // Every .attr(name, fn) the render computed, with the values it produced,
+  // and every .data(array) it bound, both tagged with the selector they were
+  // called on. Pure observation -- nothing here changes what the stub does.
+  //
+  // They exist because the DOM this stub builds cannot be read directly for
+  // these properties. .attr(name, fn) on an enter selection stores the
+  // function itself on each element rather than its result, and a render
+  // appends a fresh set of elements rather than matching existing ones by
+  // key, so "the transforms of the nodes" and "how many nodes were drawn"
+  // are not answerable from the element tree: it holds callbacks, and it
+  // holds every render at once. What the code computed, in order, is exactly
+  // what the tests using these need, and it stays true however the element
+  // bookkeeping is rewritten later.
+  computedAttrs: [],
+  dataJoins: [],
   zoomHandlers: [],
   transforms: [],
   scaleToCalls: [],
@@ -208,6 +223,11 @@ function Sel(tag, opts) {
     if (typeof v === "function") {
       sel.__computed[k] = sel.__data.map(function (d, i) { return v.call(sel, d, i); });
       sel.__attrs[k] = sel.__computed[k].length ? sel.__computed[k][0] : undefined;
+      STUB.computedAttrs.push({
+        selector: sel.__selector || null,
+        name: k,
+        values: sel.__computed[k].slice(),
+      });
     } else {
       sel.__attrs[k] = v;
     }
@@ -295,6 +315,10 @@ function Sel(tag, opts) {
     return s;
   };
   sel.data = function (arr) {
+    STUB.dataJoins.push({
+      selector: sel.__selector || null,
+      length: (arr && arr.length) || 0,
+    });
     sel.__data = arr.slice();
     // Propagate to all existing node children so .each() and .filter() work.
     var kids = sel.__children || [];

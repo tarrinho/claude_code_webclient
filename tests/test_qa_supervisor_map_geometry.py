@@ -119,6 +119,45 @@ def _run(probe: str, *, source_edits: tuple[tuple[str, str], ...] = ()) -> dict:
     return json.loads(quickjs.Context().eval(script))
 
 
+# ── Reading a render's own arithmetic ────────────────────────────────────
+#
+# Three of the tests below need "the transform of every node" or "how many
+# nodes this render drew". Neither is readable from the stub's element tree,
+# and that is not a temporary defect to route around: .attr(name, fn) on an
+# enter selection stores the callback on each element rather than its result,
+# and a render appends a fresh set of elements instead of matching existing
+# ones by key, so the tree holds functions, and holds every render at once.
+# Reading the last render's transforms off it returned one render's values
+# mixed with the next one's -- which is exactly how these tests failed after
+# supervisor-map.js moved to an enter/update/exit lifecycle in dd75dac: the
+# code was right and the reading was wrong.
+#
+# STUB.computedAttrs and STUB.dataJoins record what the render computed, in
+# order, tagged with the selector it was computed on. That is the same
+# arithmetic the browser performs, it survives however the stub's element
+# bookkeeping is rewritten, and it cannot silently mix two renders together.
+
+_NODE_TRANSFORMS = """
+function nodeTransformsOfLastRender() {
+  var found = null;
+  for (var i = 0; i < STUB.computedAttrs.length; i++) {
+    var rec = STUB.computedAttrs[i];
+    if (rec.name === "transform" && rec.selector === ".node" && rec.values.length) {
+      found = rec.values;   // keep overwriting: the last one is this render's
+    }
+  }
+  return found;
+}
+function nodeJoinLengths() {
+  var out = [];
+  for (var i = 0; i < STUB.dataJoins.length; i++) {
+    if (STUB.dataJoins[i].selector === ".node") out.push(STUB.dataJoins[i].length);
+  }
+  return out;
+}
+"""
+
+
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
 class MapZoomWiringTests(unittest.TestCase):
 
@@ -202,10 +241,9 @@ class MapGeometryTests(unittest.TestCase):
         root lands on that formula's own output for d.x = d.y = 0 rather than
         on a constant somebody chose.
         """
-        out = _run("""
+        out = _run(_NODE_TRANSFORMS + """
           renderSupervisorMap(DATA);
-          var nodeSel = stubFindNodeSelection();
-          JSON.stringify({transforms: nodeSel.__computed.transform});
+          JSON.stringify({transforms: nodeTransformsOfLastRender()});
         """)
         transforms = out["transforms"]
         self.assertGreater(len(transforms), 1)
@@ -320,14 +358,13 @@ class MapGeometryTests(unittest.TestCase):
         and it is WIDTH x HEIGHT (800x400), not the 400x400 this test was
         written against.
         """
-        out = _run("""
+        out = _run(_NODE_TRANSFORMS + """
           STUB.svgBox = {width: 0, height: 0, left: 0, top: 0};
           renderSupervisorMap(DATA);
-          var nodeSel = stubFindNodeSelection();
           JSON.stringify({
             nodeSize: STUB.treeNodeSize,
             viewBox: stubSvg().__attrs.viewBox,
-            transforms: nodeSel.__computed.transform
+            transforms: nodeTransformsOfLastRender()
           });
         """)
         self.assertEqual(out["viewBox"], "0 0 800 400")
@@ -628,11 +665,22 @@ class MapCollapseTests(unittest.TestCase):
         """
 
     def test_a_collapsed_branch_stays_collapsed_through_the_re_render(self):
-        out = _run(self._collapse_first_branch() + """
-          JSON.stringify({before: before, after: after});
+        """Counted from the data each render bound, not from the elements.
+
+        The element tree accumulates one node set per render and the layer's
+        __data is cached on first read, so "how many nodes are there now"
+        answered with the count from before the collapse and the test reported
+        a working collapse as broken. What the click must change is the set of
+        descendants the next render lays out, and that is what the join
+        records.
+        """
+        out = _run(_NODE_TRANSFORMS + self._collapse_first_branch() + """
+          var joins = nodeJoinLengths();
+          JSON.stringify({first: joins[0], last: joins[joins.length - 1]});
         """)
+        self.assertGreater(out["first"], 0, "the first render bound no nodes")
         self.assertLess(
-            out["after"], out["before"],
+            out["last"], out["first"],
             "collapsing removed no nodes from the tree",
         )
 
@@ -791,9 +839,15 @@ class MapThemeTests(unittest.TestCase):
         table = json.dumps(values)
         return _run(f"""
           var THEME = {table};
+          // Every variable read, in order. One test needs to know whether a
+          // render consults the theme at all, which no amount of reading the
+          // rendered elements can answer.
+          var READS = [];
           getComputedStyle = function () {{
             return {{getPropertyValue: function (name) {{
-              return THEME[name] || "";
+              var value = THEME[name] || "";
+              READS.push({{name: name, value: value}});
+              return value;
             }}}};
           }};
           {probe}
@@ -841,18 +895,34 @@ class MapThemeTests(unittest.TestCase):
         colours of whichever theme happened to be active first."""
         out = self._with_theme({"--map-outline": "#111111"}, """
           renderSupervisorMap(DATA);
+          // Reading the strokes off the elements cannot answer this: a render
+          // appends a new node set beside the previous one, so both renders'
+          // colours are present afterwards and the assertion passed or failed
+          // on which set happened to be scanned. Whether the variable is read
+          // again is the property itself -- a module that cached it at load
+          // time cannot read it twice, and one that re-reads it must.
+          READS.length = 0;
           THEME["--map-outline"] = "#999999";
           renderSupervisorMap(DATA);
-          var strokes = [];
-          (stubFindNodeSelection().__children || []).forEach(function (per) {
-            (per.__children || []).forEach(function (c) {
-              if (c.__attrs.stroke) strokes.push(c.__attrs.stroke);
-            });
-          });
-          JSON.stringify({strokes: strokes});
+          var outlineReads = 0;
+          var lateValues = [];
+          for (var i = 0; i < READS.length; i++) {
+            if (READS[i].name === "--map-outline") {
+              outlineReads += 1;
+              lateValues.push(READS[i].value);
+            }
+          }
+          JSON.stringify({reads: outlineReads, values: lateValues});
         """)
-        self.assertIn("#999999", out["strokes"])
-        self.assertNotIn("#111111", out["strokes"])
+        self.assertGreater(
+            out["reads"], 0,
+            "the second render never read --map-outline, so a theme change "
+            "after load cannot reach the map",
+        )
+        # Every read in the second render must see the new value: a cached
+        # copy handed back from somewhere else would show up here as the old
+        # colour even though a read was counted.
+        self.assertEqual(set(out["values"]), {"#999999"})
 
 
 @unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")

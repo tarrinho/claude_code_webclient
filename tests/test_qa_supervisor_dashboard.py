@@ -1369,14 +1369,30 @@ class ZoomLODTests(unittest.TestCase):
 
     def test_zoom_out_triggers_auto_collapse(self):
         """The zoom handler must contain the scale < 0.5 collapse logic.
-        Checked on source because the stub does not fire real d3 zoom events."""
+        Checked on source because the stub does not fire real d3 zoom events.
+
+        The collapse is recorded twice, and both halves are required. It goes
+        into _collapsed, which is what the render reads, and into
+        _lodCollapsed, which is what zooming back in is allowed to reopen.
+        This used to be one assignment covering both, and that made a branch
+        the user closed by hand indistinguishable from one the zoom closed --
+        so the next zoom-in, including the zoomToFit every render ends with,
+        reopened it.
+        """
         src = MAP_JS.read_text(encoding="utf-8")
         self.assertRegex(
             src, r"scale\s*<\s*0\.5",
             "zoom LOD absent: no collapse threshold at 0.5")
         self.assertRegex(
-            src, r"_collapsed\s*=\s*new Set\(\s*_root\.descendants",
-            "zoom LOD absent: collapse does not populate _collapsed")
+            src, r"_root\.descendants\(\)[\s\S]{0,120}?d\.depth\s*>=\s*2",
+            "zoom LOD absent: the collapse set is not derived from the tree")
+        self.assertRegex(
+            src, r"_lodCollapsed\s*=\s*new Set\(",
+            "zoom LOD absent: nothing records which collapses the zoom caused")
+        self.assertRegex(
+            src, r"_collapsed\s*=\s*new Set\(\[\s*\.\.\._collapsed\s*,",
+            "zoom LOD absent: the zoom collapse does not reach _collapsed, "
+            "which is the set the render actually reads")
 
     def test_zoom_in_auto_expands(self):
         """The zoom handler must clear _collapsed when scale >= 0.5,

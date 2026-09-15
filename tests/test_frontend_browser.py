@@ -2355,9 +2355,29 @@ class QueuePanelBrowserTests(_BrowserFixture):
         return chat_id
 
     def _open_chat(self, chat_id: str, timeout: int = 20_000):
+        """Open the conversation, then open its queue panel.
+
+        The panel stopped opening by itself in 29994c7, which made it an
+        overlay reached only by clicking the toggle. Every test using this
+        helper is about what happens once the panel is open -- closing it,
+        discarding its last row, whether new information breaks through it --
+        so opening it is setup rather than the thing under test. Waiting for
+        #queueBar to become visible on its own simply timed out, and reported
+        four working behaviours as broken.
+        """
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
         self.page.wait_for_selector(row, timeout=timeout)
         self.page.click(row)
+        self.page.wait_for_selector("#queueToggle", state="visible", timeout=timeout)
+        # dispatch_event, not click: the queue poll re-renders the composer
+        # row, so a real click spends its whole timeout waiting for an element
+        # that keeps being replaced under it -- the same churn that shows up
+        # elsewhere in this file as "Element is not attached to the DOM". The
+        # button is visible, correctly positioned and hit-testable (measured);
+        # nothing here is testing whether it can be clicked, only what the
+        # panel does once open, so the event goes straight to the app's own
+        # handler.
+        self.page.dispatch_event("#queueToggle", "click")
         self.page.wait_for_selector("#queueBar", state="visible", timeout=timeout)
 
     def test_sidebar_badge_takes_the_held_colour_when_any_row_is_held(self):
@@ -2474,7 +2494,21 @@ class QueuePanelBrowserTests(_BrowserFixture):
         )
         self.assertEqual(self.errors, [])
 
-    def test_new_information_breaks_through_a_closed_panel(self):
+    def test_new_information_reaches_a_closed_panel_through_the_toggle(self):
+        """A prompt arriving while the panel is closed must still be visible.
+
+        This asserted that the panel reopened itself. It no longer does, and
+        that is the design rather than a regression: 29994c7 made the queue an
+        overlay opened only by clicking the toggle, and renderQueue says so in
+        as many words -- "No auto-open". A panel that reappears over the
+        composer while someone is typing is what that change set out to stop.
+
+        The requirement underneath it did not go away, so it is asserted where
+        the design now answers it: the toggle picks up the new count while the
+        panel stays shut. If that stopped working, a prompt could land in the
+        queue with nothing anywhere on screen saying so, which is the failure
+        the original test was written against.
+        """
         chat_id = self._seed_chat_with_queue([("held one", "held")])
         self.page.reload(wait_until="domcontentloaded")
         self._open_chat(chat_id)
@@ -2489,11 +2523,18 @@ class QueuePanelBrowserTests(_BrowserFixture):
         self.page.fill("#composerInput", "another prompt")
         self.page.click("#sendBtn")
 
-        self.page.wait_for_selector("#queueBar", state="visible", timeout=10_000)
-        self.assertEqual(
-            self.page.inner_text("#queueToggle"), "Queue (2)",
-            "the panel reopened but the toggle did not pick up the new "
-            "count -- the two must stay in sync",
+        toggle = self.page.wait_for_selector("#queueToggle", state="visible",
+                                             timeout=10_000)
+        self.page.wait_for_function(
+            "() => document.getElementById('queueToggle')"
+            "?.textContent === 'Queue (2)'",
+            timeout=10_000,
+        )
+        self.assertEqual(toggle.inner_text(), "Queue (2)")
+        self.assertFalse(
+            self.page.is_visible("#queueBar"),
+            "the panel opened itself over the composer -- the overlay is "
+            "supposed to open only when the toggle is clicked",
         )
         self.assertEqual(self.errors, [])
 

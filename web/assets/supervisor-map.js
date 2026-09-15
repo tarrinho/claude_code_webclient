@@ -75,6 +75,14 @@ const STATUS_LABEL = {
 // could call `_tree.bounds()`, which is not a d3 API and always threw. The
 // layout is now a local, and the bounds are computed from _root's own nodes.
 let _svg, _zoom, _data, _root, _viewport, _collapsed = new Set();
+// The subset of _collapsed that zooming out closed by itself. Zooming
+// back in may reopen these and nothing else: a branch the user closed by
+// hand is their decision, and the two were indistinguishable while there
+// was only one set. That cost every manual collapse immediately, because
+// zoomToFit runs at the end of every render and applying a transform
+// fires this same handler -- so a click closed a branch, re-rendered,
+// and the fit reopened it before the user saw it closed.
+let _lodCollapsed = new Set();
 // History buffer: one snapshot per poll, kept in a rolling window. Declared
 // here so `renderSupervisorMap` can push to it (let is TDZ; a later declaration
 // would throw "not defined" from inside the function body).
@@ -224,11 +232,18 @@ function initMapSVG() {
       // the threshold so only hubs are visible, expand when zooming in.
       const scale = event.transform.k;
       if (scale < 0.5) {
-        _collapsed = new Set(_root.descendants()
-          .filter(d => d.depth >= 2 && d.children).map(d => d.data.id));
+        const lod = _root.descendants()
+          .filter(d => d.depth >= 2 && d.children).map(d => d.data.id);
+        _lodCollapsed = new Set(lod);
+        _collapsed = new Set([..._collapsed, ...lod]);
         _redraw();
-      } else if (scale >= 0.5 && _collapsed.size > 0) {
-        _collapsed = new Set([..._collapsed].filter(id => _pinned.has(id)));
+      } else if (scale >= 0.5 && _lodCollapsed.size > 0) {
+        // Only what zooming out closed, and only when it is not pinned.
+        // Manual collapses are left alone, so they survive both the zoom and
+        // the fit that every render ends with.
+        _collapsed = new Set([..._collapsed].filter(
+          id => _pinned.has(id) || !_lodCollapsed.has(id)));
+        _lodCollapsed = new Set();
         _redraw();
       }
     });

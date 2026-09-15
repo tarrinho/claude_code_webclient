@@ -990,7 +990,17 @@ export function createConversationController(dependencies) {
     // Open the overlay panel.
     const overlay = elements.queueBar;
     const backdrop = elements.queueBackdrop;
-    if (overlay) overlay.hidden = false;
+    if (overlay) {
+      overlay.hidden = false;
+      // Both, and the second is the one that actually shows it. #queueBar is
+      // position:fixed with transform:translateY(100%), and the rule that
+      // brings it back on screen is #queueBar[aria-hidden="false"] -- so
+      // clearing `hidden` alone un-hides a panel that stays parked a full
+      // panel-height below the viewport. The backdrop dimmed, the panel did
+      // not arrive, and its close button sat off-screen with no way to reach
+      // it but the backdrop.
+      overlay.setAttribute('aria-hidden', 'false');
+    }
     if (backdrop) backdrop.setAttribute('aria-hidden', 'false');
   }
 
@@ -1010,6 +1020,7 @@ export function createConversationController(dependencies) {
   function hideQueue(resetToggle = false) {
     if (!elements.queueBar) return;
     elements.queueBar.hidden = true;
+    elements.queueBar.setAttribute('aria-hidden', 'true');
     if (elements.queueBackdrop) elements.queueBackdrop.setAttribute('aria-hidden', 'true');
     if (elements.queueList) elements.queueList.textContent = '';
     // A row's tooltip has no meaning once the row it points at is gone.

@@ -213,7 +213,7 @@ function _renderTransportPanel(row) {
   // CPU
   _card(grid, {
     label: 'CPU',
-    value: _pct(row.cpu_pct),
+    value: _pctOrDash(row.cpu_pct),
     ratio: row.cpu_pct,
     detail: _loadDetail(row),
   });
@@ -222,7 +222,7 @@ function _renderTransportPanel(row) {
   if (row.mem_total) {
     _card(grid, {
       label: 'Memory',
-      value: _pct(row.mem_pct),
+      value: _pctOrDash(row.mem_pct),
       ratio: row.mem_pct,
       detail: _bytesDetail(row.mem_used, row.mem_total),
     });
@@ -232,7 +232,7 @@ function _renderTransportPanel(row) {
   if (row.disk_total) {
     _card(grid, {
       label: 'Disk',
-      value: _pct(row.disk_pct),
+      value: _pctOrDash(row.disk_pct),
       ratio: row.disk_pct,
       detail: _bytesDetail(row.disk_used, row.disk_total),
     });
@@ -242,7 +242,7 @@ function _renderTransportPanel(row) {
   if (row.swap_pct !== null && row.swap_pct !== undefined && row.swap_pct > 0) {
     _card(grid, {
       label: 'Swap',
-      value: _pct(row.swap_pct),
+      value: _pctOrDash(row.swap_pct),
       ratio: row.swap_pct,
       detail: _swapBytesDetail(row),
     });
@@ -264,9 +264,13 @@ function _renderTransportPanel(row) {
   if (row.cores && row.cores > 0) {
     facts.push(`${Math.round(row.cores)}t`);
   }
-  if (facts.length) {
-    wrapper.appendChild(el('p', 'srv-host', facts.join(' · ')));
-  }
+  // When the newest sample was taken, and "never" when there is none. Without
+  // this a silent transport is only distinguishable from a working one by its
+  // dashes, and a card grid full of dashes does not say why.
+  facts.push(row.sampled_at
+    ? `last reading ${row.sampled_at}`
+    : 'last reading never');
+  wrapper.appendChild(el('p', 'srv-host', facts.join(' · ')));
 
   return wrapper;
 }
@@ -291,6 +295,21 @@ function _swapBytesDetail(row) {
 
 export function _pct(n) {
   return `${(Number(n) || 0).toFixed(0)}%`;
+}
+
+/** A percentage that may not have been measured at all.
+ *
+ *  `_pct` turns null into "0%", which reads as a host sitting idle -- and a
+ *  transport that has never reported is not idle, it is silent. /api/system
+ *  sends null rather than 0 for exactly this reason ("the panel prints '--'
+ *  for those"), and the panel stopped honouring it when the table became a
+ *  card grid, so every never-sampled transport rendered as a healthy machine
+ *  at 0%. That is the reading the broken collector produced for a day.
+ */
+export function _pctOrDash(n) {
+  return (n === null || n === undefined || !Number.isFinite(Number(n)))
+    ? '--'
+    : _pct(n);
 }
 
 export function _bytesUsed(n) {

@@ -408,9 +408,14 @@ class BackendsPanelBrowserTests(_BrowserFixture):
     def test_tabs_are_the_merged_set(self):
         self._open_backends()
         tabs = [t.inner_text() for t in self.page.query_selector_all(".settings-tab")]
+        # Specs joined the set in a9a6b79. Asserted as the whole list rather
+        # than as "contains" on purpose: a tab appearing that nobody meant to
+        # ship is as much a defect as one going missing, so the list is meant
+        # to need updating when it changes.
         self.assertEqual(
             tabs,
-            ["Backends", "Usage", "Statistics", "Server", "Skills", "App", "Images"],
+            ["Backends", "Usage", "Statistics", "Server", "Skills", "App",
+             "Images", "Specs"],
         )
         # The old standalone Models tab is what got merged into Backends; a
         # backend and the models it serves are one thing.
@@ -3416,9 +3421,14 @@ class TransportStatsPanelTests(_BrowserFixture):
 
         rendered = self.page.inner_text("#transportStats")
         self.assertTrue(rendered.strip(), "the transport table rendered empty")
-        # Either the header row (transports exist) or the explicit empty note.
+        # The transports this class seeds, or the explicit empty note. This
+        # looked for the word "Transport" -- a column header that stopped
+        # existing when the table became a panel per transport, so the check
+        # was passing on markup rather than on content. A seeded name is the
+        # content, and it cannot be satisfied by a heading that renders above
+        # an empty list.
         self.assertTrue(
-            "Transport" in rendered or "No SSH transports" in rendered,
+            "Charted Node" in rendered or "No SSH transports" in rendered,
             f"unexpected transport table content: {rendered[:200]!r}",
         )
         self.assertEqual(self.errors, [])
@@ -3607,7 +3617,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
         self.page.click("#settingsBtn")
         self.page.click('[data-tab="server"]')
-        self.page.wait_for_selector("#transportStats .transport-stat-row",
+        self.page.wait_for_selector("#transportStats .transport-panel",
                                     timeout=10_000)
         self.page.wait_for_timeout(1500)
 
@@ -3639,11 +3649,11 @@ class TransportStatsPanelTests(_BrowserFixture):
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
         self.page.click("#settingsBtn")
         self.page.click('[data-tab="server"]')
-        self.page.wait_for_selector("#transportStats .transport-stat-row",
+        self.page.wait_for_selector("#transportStats .transport-panel",
                                     timeout=10_000)
 
         row = self.page.locator(
-            "#transportStats .transport-stat-row", has_text="Quiet Node").first
+            "#transportStats .transport-panel", has_text="Quiet Node").first
         text = row.inner_text()
         self.assertIn("--", text, f"no-reading cells did not render a dash: {text!r}")
         self.assertIn("never", text)

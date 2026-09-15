@@ -1283,7 +1283,21 @@ class DeviceAlertBrowserTests(_BrowserFixture):
         )
 
     def test_the_alert_toggle_is_offered(self):
-        self.assertFalse(self.page.query_selector("#alertToggle").is_hidden())
+        """The toggle is offered -- waited for, not sampled.
+
+        This read `query_selector("#alertToggle").is_hidden()` and asserted on
+        the answer immediately, so it asked whether the toggle was visible at
+        one arbitrary instant rather than whether it is offered at all. Under a
+        loaded suite that instant can land before the alert script has run, and
+        the test then fails with `True is not false` -- a message that says
+        nothing about what was actually wrong. Observed failing in a full-file
+        run and passing in isolation minutes later, with no code between.
+
+        `wait_for_selector(state="visible")` asserts the same property without
+        the race: it still fails when the toggle is genuinely never offered,
+        which is the thing worth catching, and the failure names the selector.
+        """
+        self.page.wait_for_selector("#alertToggle", state="visible", timeout=15_000)
 
     def test_a_notification_fires_for_a_new_waiting_agent(self):
         """Granting permission and capturing the constructor, so this asserts a

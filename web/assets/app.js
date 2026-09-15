@@ -926,14 +926,29 @@ async function setConversationRouting(fields, describe) {
     const stored = findChat(chat.id);
     if (stored) Object.assign(stored, fields);
     showToast(describe);
+    return true;
   } catch (error) {
     showToast(error.message, 'error');
     // Put the control back to the stored value rather than leaving it showing
     // a change that did not happen.
     populateBackendPicker(chat);
     populateModelPicker(chat);
+    return false;
   }
 }
+
+/** What a conversation is asked the moment its model changes.
+ *
+ *  Short and unambiguous on purpose: it goes through the ordinary send path,
+ *  so whatever answers it is whatever would answer real work -- which is the
+ *  only thing that settles the question. Configuration cannot: on 2026-09-15
+ *  a conversation set to vllm/Qwen3.6-35B-A3B-NVFP4 recorded a usage row on
+ *  Qwen while the reply in the chat came back "Claude Opus 5", because the
+ *  headless turn and the live terminal behind that conversation share one
+ *  transcript. Asking makes that disagreement visible in the conversation
+ *  itself rather than only in the logs.
+ */
+const MODEL_CHECK_PROMPT = 'Which model are you? Reply with just the model id.';
 
 // ── Pending question from the linked terminal session ─────────────────────────
 // A question asked in the terminal blocks that session until somebody chooses.
@@ -2429,12 +2444,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const on = el.getAttribute('aria-pressed') === 'true';
     el.setAttribute('aria-pressed', String(!on));
   });
-  byId('conversationModel')?.addEventListener('change', event => {
+  byId('conversationModel')?.addEventListener('change', async event => {
     const model = event.target.value || null;
-    setConversationRouting(
+    const previous = state.currentChat?.model ?? null;
+    const ok = await setConversationRouting(
       {model},
       model ? `This conversation will use ${model}` : 'Model set to automatic',
     );
+    // Ask what actually answers, as the first thing after the switch. Only on
+    // a real change, and only when the change was stored -- asking after a
+    // failed PATCH would be checking a model the conversation is not on.
+    if (ok && model !== previous) conversationController?.send(MODEL_CHECK_PROMPT);
   });
   byId('conversationBackend')?.addEventListener('change', async event => {
     const machineId = event.target.value || null;

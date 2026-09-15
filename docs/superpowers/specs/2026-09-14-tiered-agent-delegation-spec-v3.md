@@ -113,7 +113,37 @@ The base design priced models from a benchmark's mean **output** tokens against 
 | `azure_ai/gpt-5.6-sol` | 76 | 0.66M | 0.10 | 0.152 | 0.03% |
 | (unattributed) | 3,778 | 0.0005M | — | — | ~0% |
 
-Anthropic models carry **no production rows**, so they cannot be blended. Their list rates stand: opus 5.00/25.00, sonnet 2.00/10.00, haiku 1.00/5.00, fable 10.00/50.00 USD per 1M in/out. **Comparing a blended Azure rate to an Anthropic list output rate is not like-for-like** and must not be done without saying so.
+#### Correction, measured 2026-09-15: the Anthropic rows exist, and they are the only authoritative ones
+
+An earlier revision of this section stated that Anthropic models carry no production rows and cannot be blended. **That is false, and it inverted this section's conclusion.** Queried against `usage_events` for September:
+
+| model | requests | rows with `cost_basis='list'` | MTD USD | USD/request |
+|---|---|---|---|---|
+| `claude-sonnet-5` | 25,168 | 77 | 36.68 | **0.00146** |
+| `claude-opus-5` | 24,249 | 74 | 98.36 | **0.00406** |
+
+They are the two highest-volume models in the table, and `cost_basis='list'` is the CLI's own reported list price — the only figure in this database that is real billing.
+
+**Every other cost figure in `usage_events` is fictional, and the direction of the error is not conservative.** Of 167,412 rows, **156** carry `cost_basis='list'` — 0.09%. The rest are Anthropic list pricing applied to whichever backend actually served the turn. Sorted by recorded cost per request, the result is absurd on its face:
+
+| model | requests | `list` rows | recorded USD/request | real? |
+|---|---|---|---|---|
+| `azure_ai/gpt-5.6-luna` | 3 | 0 | 0.554 | no |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | 112 | 0 | 0.471 | **no — this model is free** |
+| `azure_ai/gpt-5.4-mini` | 9 | 0 | 0.275 | no |
+| `claude-opus-5` | 24,249 | 74 | 0.00406 | yes |
+| `claude-sonnet-5` | 25,168 | 77 | 0.00146 | yes |
+
+A self-hosted model with no marginal per-token charge is booked at $0.47/request. `bench/bench_rates.json` documents this same failure independently and refuses to price an unrated model rather than call it free.
+
+**So the Anthropic models are the cheapest per request that anyone here has actually measured** — Sonnet at roughly one tenth of the $0.015/request that §2.7 uses to exclude mini. Any argument that they are the expensive option needs a source that is not this table.
+
+**Two figures in this document now have no traceable source**, and both are load-bearing:
+
+- **`~0.003`/request for luna and `~0.015`/request for mini** (§2.6, §2.7). `bench_rates.json` records **no rate for any Azure model**, deliberately — nobody recorded what this deployment pays, and the names look like internal deployment aliases rather than public SKUs. The MTD euro figures in the table above cannot be their source either, since those rows carry no authoritative basis.
+- **The request and token counts in this section's own table**, which do not reconcile with `usage_events` on any window tried. If they came from an Azure billing export rather than from this database, **that export is the source of truth for Azure cost and this document must name it.** Until it does, the cost ceiling rests on numbers no reader can check.
+
+The list rates remain correct as list rates: opus 5.00/25.00, sonnet 2.00/10.00, haiku 1.00/5.00, fable 10.00/50.00 USD per 1M in/out. **Comparing a blended Azure rate to an Anthropic list output rate is not like-for-like** and must not be done without saying so — but note that the reverse comparison, the one this section previously made, was worse: it compared a fictional Azure figure against a real Anthropic one.
 
 #### 2.5.1 Real requests are ~200× larger than benchmark tasks
 
@@ -153,17 +183,19 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | ~0.003 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | planning | TBD | — | ~0.003 | TBD | TBD |
 | `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | — | ~0.003 | TBD | TBD |
-| `claude-sonnet-5` | coding | TBD | — | TBD | TBD | TBD |
-| `claude-sonnet-5` | long-context | TBD | — | TBD | TBD | TBD |
-| `claude-sonnet-5` | comprehension | 100% | 2 | TBD | TBD | TBD |
-| `claude-sonnet-5` | reasoning | 75% | 2 | TBD | TBD | TBD |
-| `claude-sonnet-5` | voice | TBD | — | TBD | TBD | TBD |
-| `claude-sonnet-5` | multi-turn | TBD | — | TBD | TBD | TBD |
-| `claude-sonnet-5` | planning | TBD | — | TBD | TBD | TBD |
-| `claude-sonnet-5` | split-decision | TBD | — | TBD | TBD | TBD |
-| `claude-sonnet-5` | reviewer-gate | TBD | — | TBD | TBD | TBD |
-| `claude-opus-5` | comprehension | 50% | 2 | TBD | TBD | TBD |
-| `claude-opus-5` | reasoning | TBD | TBD | TBD | TBD | TBD |
+| `claude-sonnet-5` | coding | TBD | — | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | long-context | TBD | — | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | comprehension | 100% | 2 | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | reasoning | 75% | 2 | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | voice | TBD | — | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | multi-turn | TBD | — | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | planning | TBD | — | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | split-decision | TBD | — | 0.00146 | TBD | TBD |
+| `claude-sonnet-5` | reviewer-gate | TBD | — | 0.00146 | TBD | TBD |
+| `claude-opus-5` | comprehension | 50% | 2 | 0.00406 | TBD | TBD |
+| `claude-opus-5` | reasoning | TBD | TBD | 0.00406 | TBD | TBD |
+
+**Provenance of the `cost_per_request` column, which is not uniform.** The Anthropic figures (0.00146, 0.00406) are blended from rows carrying `cost_basis='list'`, the only authoritative billing in `usage_events` (§2.5). `~0.00` for the self-hosted model is a property of the deployment, not a measurement. **`~0.003` for luna and `~0.015` for mini have no source this document can name** — `bench_rates.json` deliberately records no rate for any Azure model, and those models' `usage_events` cost carries no authoritative basis. Until a source is named they are **unpriced**, which under §2.7 makes them ineligible, and luna is currently the entry rung for five task types and the model behind all three review gates.
 
 #### Ladder eligibility — one definition, used everywhere
 
@@ -189,29 +221,46 @@ Every row is a first-class datum. Ladders are generated at runtime by walking th
 
 ### 2.7 Per-model cost ceiling
 
-A configurable threshold automatically excludes any model whose cost per request crosses it. Applied now: mini at ~$0.015/request exceeds the ceiling implied by the $1.00 tree budget and expected leaves per tree (§5), so **mini is excluded from all ladders.** Coding and long-context are left three-rung (`vllm → luna → sonnet`), and mini is removed from multi-turn, planning, voice, and reasoning.
+A configurable threshold automatically excludes any model whose cost per request crosses it.
 
-#### A missing cost figure is not an exemption
+**As previously applied:** mini at ~$0.015/request exceeded the ceiling implied by the $1.00 tree budget and expected leaves per tree (§5), so mini was excluded from all ladders, leaving coding and long-context three-rung (`vllm → luna → sonnet`) and removing mini from multi-turn, planning, voice and reasoning. **That exclusion is now provisional**: the $0.015 figure is one of the two this document can no longer source (§2.5), so it cannot currently justify an exclusion. The ladder shapes in §3 still assume it. Settling the provenance question below is what makes them real or changes them.
 
-§2.5 records that Anthropic models carry no production rows and cannot be blended, so `cost_per_request` is TBD for sonnet and opus in §2.6. A ceiling phrased purely over *blended* cost cannot evaluate a TBD and therefore excludes nothing — which would ban mini at $0.015/request while opus, the single most expensive model in the system, rode free on a missing number. That inverts the argument the ceiling exists to make.
+#### A missing cost figure is not an exemption — and the models missing one are the Azure models
 
-So the ceiling is evaluated against `effective_cost_per_request`, which is the blended figure when one exists and a **documented estimate** when it does not:
+The principle holds: a model nobody priced must never come out cheapest, because a ceiling phrased over a value that is absent excludes nothing. **What §2.5's correction changes is which models it applies to.** The unpriced models are `azure_ai/gpt-5.6-luna` and `azure_ai/gpt-5.4-mini` — `bench_rates.json` records no rate for either, and their `usage_events` cost carries no authoritative basis. Sonnet and Opus are the two models here that *are* priced.
+
+So the ceiling is evaluated against `effective_cost_per_request`:
 
 ```
 effective_cost_per_request =
-    blended MTD cost per request            if production rows exist
-    list rate x tokens_per_request          otherwise
+    blended cost per request over rows with cost_basis='list'   if any exist
+    documented external rate x measured tokens_per_request      otherwise
+    otherwise: the model is UNPRICED and cannot enter a ladder
 ```
 
-where `tokens_per_request` is that model's own measured figure (§2.5.1) when available, and otherwise the **highest** tokens-per-request observed across all models — the conservative direction, because an estimate that flatters an unmeasured model is how the exemption reappears. The list rates in §2.5 are the input for the estimate, and the resulting value is stored in the row **tagged as an estimate**, so a reviewer can tell a measured ceiling decision from an inferred one at a glance. An estimate is replaced by the blended figure the moment production rows exist.
+An unpriced model is **not** given an estimate that flatters it and is **not** treated as free. It is ineligible (§2.6) until a rate is recorded, exactly as `bench/cost.py` already refuses to price one. A figure computed by applying one vendor's rate card to another vendor's backend is not a fallback; it is the defect §2.5 documents.
 
-**The consequence must not be papered over.** Against §2.5.1's production request shapes (~100k tokens) and §2.5's list rates, an estimated opus request lands far above the $0.015 threshold that excluded mini, and sonnet likely does too. Under this rule both become ineligible, and **every ladder whose only rungs are Anthropic models — comprehension and split-decision — goes empty, and therefore non-operational** (§1.1). That is the honest output of the design's own cost argument, not a bug in it.
+**The consequence, stated plainly, is the opposite of what this section previously concluded.** Against measured billing, Sonnet costs $0.00146/request and Opus $0.00406 — **both below the $0.015 threshold that excludes mini.** Neither is a candidate for exclusion on cost. The models at risk are luna and mini, whose per-request figures have no traceable source (§2.5), and luna is currently the entry rung for five task types and the model behind all three review gates (§4.3–4.5).
 
-Resolving it is a deliberate decision, not an automatic one, and it is the first thing to settle before implementation. Three options, and exactly one must be chosen and recorded here:
+**This is now the first thing to settle before implementation**, and it is a data question, not a design one:
 
-1. **Raise the ceiling** to a value that admits sonnet for gate and comprehension work, accepting the per-tree budget consequence and re-deriving `BUDGET_USD` (§5) from it.
-2. **Measure a cheaper rung** for comprehension and split-decision — luna already holds a comprehension row awaiting accuracy — so those ladders have a rung under the ceiling.
-3. **Exempt named gate models explicitly**, in the config and by name, with the cost consequence stated. An exemption that is written down and argued is defensible; one that arises from a missing number is not.
+1. **Name the source for the Azure figures**, or record real rates for luna and mini. Until one of those happens every ladder rung that is not Anthropic or self-hosted rests on an unsourced number, and the ceiling cannot be applied to them at all.
+2. **Re-derive the threshold** from the measured figures rather than from the unsourced ones. `$0.015` was chosen to exclude mini; on measured data it excludes nothing that is priced.
+3. **Re-examine whether mini should be excluded at all.** Its exclusion drove the ladder shapes in §3, and the figure behind it is one of the two this document can no longer source.
+
+#### The per-call floor: a gate is not cheap because its rung is
+
+Measured 2026-09-15 (`bench/pipeline_ab.py`): **every CLI call carries ~12,000 input tokens of system prompt and tool definitions before the task is appended**, and gateway models return `cache_read = 0` where Anthropic models return 22k–54k cached. A five-stage leaf therefore pays that floor five to nine times.
+
+In the A/B run, the pipeline arm moved **348,278 input tokens across 27 calls** against the single-call arm's **75,882 across 6** — 4.6x the volume for work that was measured *less* correct (5/6 against 6/6).
+
+So `cost_per_request` in §2.6 is **not** the cost of a stage. The cost of a leaf is:
+
+```
+leaf_cost ≈ sum over every stage of (per_call_floor + task_tokens) x rate(stage model)
+```
+
+A design that routes generation to a free model and then runs three gates on a paid one has moved the spend, not removed it. Any budget arithmetic (§5) that counts only generation understates a five-stage leaf by roughly the number of gates, and the free-rung target (§10.1) measures the stage whose cost was already zero.
 
 ---
 
@@ -238,6 +287,8 @@ The table below is a **snapshot of what this computation is expected to produce 
 | reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set | — | — |
 | split-decision | `claude-sonnet-5` | — | — |
 | **reviewer-gate** | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` (see §4.3) | — |
+
+**All three review gates share the `reviewer-gate` ladder** — stages 3, 4 and 5 climb the same rungs, so there is no separate `security-gate` task type and the table keeps nine rows. What differs is what happens at the top: a security rejection surviving the gate's top rung goes to a human rather than failing the leaf (§4.5).
 
 Reasoning has no rung until Luna is benchmarked on that type. The existing 86%/75% accuracy figures are from a small sample (n=—) and must be re-verified against production request shapes before any rung is set. The comprehension ladder is correct as-is: sonnet → opus → —, because no measured model beats sonnet on comprehension.
 
@@ -290,6 +341,21 @@ Checks for command injection, unsafe file operations, secrets exposure, and simi
 **Failure does not simply escalate to a smarter model.** It routes back through the pipeline with the specific vulnerability flagged, because a security defect needs a targeted fix, not a blind rewrite from a larger model.
 
 **Security re-runs are capped at 2 cycles** (generation → security review → fix → security review). After that the leaf fails with a human-flag. A security vulnerability fix can introduce a new vulnerability (replacing an unsanitized `os.system()` with an unsanitized `subprocess.run()` is common); infinite recursion through the pipeline is prevented by the cap, not by the tree depth or node limits which do not track cycles.
+
+#### The gate climbs too, and this one is measured
+
+**A miscalibrated security gate cannot be escaped by escalating the generator, because escalating changes who wrote the code and not who is judging it.** §4.3 already gives the reviewer a climb path for exactly this reason. Stage 5 previously had none, and that gap loses correct work.
+
+Measured 2026-09-15 (`bench/pipeline_ab.py`, task `coding-algo`): the security gate rejected the output of **all three rungs in succession** — the free model, luna, and Sonnet — with the same objection each time, that an LRU cache's `__repr__` "exposes cached keys and values, potentially leaking secrets." That is not a vulnerability. The single-call arm produced materially the same code and it passed execution verification at 100%. The leaf burned its entire ladder and failed **holding correct code**.
+
+So stage 5 takes the same rule as stage 3, with one addition that stage 3 does not need:
+
+- The gate's entry rung is the floor, not a fixed assignment.
+- On rejection, the **generator** escalates one rung and the gate re-reviews, as before.
+- **If the gate rejects output from the generator's top rung, the gate itself climbs one rung and re-reviews that same output.** Rejecting the best generator available is evidence about the gate, not about the code.
+- **A security rejection that survives the gate's own top rung is escalated to a human, not recorded as a failed leaf.** This is the addition: a false reject here is indistinguishable from a true one without judgement, and discarding correct work silently is the worse of the two errors. §10's circuit breaker is the aggregate form of the same signal; this is the per-leaf form.
+
+A gate that rejects at every rung is reported with the rejection text at each rung attached, so the miscalibration is legible from the record rather than requiring a re-run to reproduce.
 
 ### 4.6 Blast-radius check
 
@@ -491,6 +557,7 @@ Two conditions end a leaf instead of moving it up a rung. They are listed apart 
 |---|---|---|
 | `latency_ceiling_exhausted` | §5.1 | the leaf is out of total time budget. Every higher rung is **slower** than the one that just ran, so escalating spends more wall-clock against a ceiling that has already been reached |
 | `MAX_SUBAGENTS_PER_LEAF` reached | §7 | a hard failure surfaced to a human, a different class from an exhausted escalation |
+| `security_reject_at_gate_top` | §4.5 | the security gate rejected the generator's top rung *and* survived its own climb. Escalating further cannot help: both ladders are exhausted. Goes to a human **holding the code**, because a false reject and a true one are indistinguishable here without judgement, and this signal was measured rejecting correct code at all three rungs |
 
 `latency_ceiling_exhausted` must stay distinct from `deadline expiry` in the table above. They look alike in a log — both are "it took too long" — and the correct response is opposite: deadline expiry means *this model* was too slow and another rung may be faster per token of quality; ceiling exhaustion means *the leaf* is finished regardless of which model runs next.
 
@@ -635,7 +702,12 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | bootstrap exemption | asserting TBD always fails — assert a **non-operational** task type with TBD rows starts fine, and the same type flagged operational **refuses to start** |
 | §3 is generated, not written | asserting the §3 table's contents as constants, or regenerating from the *shipped* table — build a **fully-measured fixture**, regenerate, and assert it equals §3. The shipped table is mostly TBD, so §3 is unreachable from it by design (§2.6); a test that regenerated from live data would assert the snapshot is wrong |
 | TBD is not a candidate | asserting only that a worse model is skipped — assert a row with **TBD accuracy is excluded outright**, and that it is excluded *before* any accuracy comparison runs, not by losing one |
-| cost ceiling has no exemption | asserting mini is excluded — assert a model with **no blended cost** is ceiling-checked against its `effective_cost_per_request` estimate and excluded on the same threshold; assert the estimate is **tagged as an estimate** in the row |
+| unpriced model is ineligible | asserting mini is excluded — assert a model with **no recorded rate and no `list`-basis rows** is refused a ladder place outright, and is neither estimated into eligibility nor treated as free |
+| cost basis is authoritative or absent | costing from `usage_events.cost_usd` — assert only rows with `cost_basis='list'` contribute to a blended figure; a model whose rows are all `unknown` must read as unpriced, not as its recorded number |
+| per-call floor is counted | costing a leaf as one call per stage times a rate — assert a five-stage leaf's projected cost includes the **per-call token floor for every stage**, and that a free-generation leaf with three paid gates is not costed at zero |
+| security gate climbs | asserting the generator escalates on a security reject — assert that after the generator's **top** rung is rejected, the **gate** moves up a rung and re-reviews the same code |
+| security reject at both tops goes to a human | asserting the leaf fails — assert a rejection surviving the gate's own top rung raises `security_reject_at_gate_top` **with the code retained**, and is not recorded as a failed leaf |
+| gate rejection text is retained per rung | asserting only the final verdict — assert each rung's rejection reason is stored, so a gate rejecting everything is legible without a re-run |
 | empty ladder from ceiling | asserting exclusions happen — assert a task type whose every rung is excluded goes **non-operational and falls back**, rather than routing to an excluded model |
 | no row means not a candidate | asserting the free model is absent from planning — **add a measured `vllm/*` planning row in the fixture and assert it becomes planning's rung 0**, proving absence is what excluded it |
 | specificity is computed | asserting a hand-picked winner — assert `refactor.*large` beats `quick` on `"quick refactor large module"` **by literal-character count**, and that a tie falls to longer match span then table order |

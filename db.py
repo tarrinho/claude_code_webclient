@@ -157,6 +157,10 @@ def __getattr__(name: str):
         "setting_get": "routes.db_users",
         "setting_get_all": "routes.db_users",
         "setting_set": "routes.db_users",
+        "context_size_of": "routes.db_usage",
+        "model_window_get": "routes.db_usage",
+        "model_window_learn": "routes.db_usage",
+        "model_windows_all": "routes.db_usage",
         "spec_status_get_all": "routes.db_specs",
         "spec_status_set": "routes.db_specs",
         "api_token_create": "routes.db_users",
@@ -462,6 +466,21 @@ async def init() -> None:
         -- a row here on top of that computed value when one exists, so the
         -- gallery's "no database table, shared git-tracked files" design
         -- (specs_gallery.py's module docstring) stays true for the auto side.
+        -- What a model's backend said its context window was, learned from the
+        -- one message authoritative about it: the backend's own refusal. No
+        -- table of windows is maintained here on purpose -- ai_machines
+        -- .active_models already shows how a hand-kept model list goes stale
+        -- (CLAUDE.md §0.1), and a wrong window is worse than none, since it
+        -- would report "this fits" about a conversation that cannot run.
+        -- Absent until a model has refused once; callers say "not known yet"
+        -- rather than guessing.
+        CREATE TABLE IF NOT EXISTS model_context_windows (
+            model         TEXT PRIMARY KEY,
+            window_tokens INTEGER NOT NULL,
+            learned_at    TEXT NOT NULL,
+            source        TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS spec_status (
             path       TEXT PRIMARY KEY,
             status     TEXT NOT NULL,

@@ -950,6 +950,26 @@ async function setConversationRouting(fields, describe) {
  */
 const MODEL_CHECK_PROMPT = 'Which model are you? Reply with just the model id.';
 
+/** Size the context and repair the transcript, leaving the result in the
+ *  conversation. Failures are surfaced as a toast rather than swallowed: a
+ *  check that silently did not run reads exactly like a clean result, which
+ *  is the shape of problem this whole area keeps producing. */
+async function runModelChangePreflight() {
+  const chat = state.currentChat;
+  if (!chat) return;
+  try {
+    const response = await apiFetch(
+      `/api/chats/${encodeURIComponent(chat.id)}/preflight`, {method: 'POST'});
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || 'Could not check this conversation');
+    }
+    await conversationController?.refreshCurrent();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
 // ── Pending question from the linked terminal session ─────────────────────────
 // A question asked in the terminal blocks that session until somebody chooses.
 // Showing it here with every option, and delivering the choice, means the user
@@ -2451,10 +2471,18 @@ document.addEventListener('DOMContentLoaded', () => {
       {model},
       model ? `This conversation will use ${model}` : 'Model set to automatic',
     );
-    // Ask what actually answers, as the first thing after the switch. Only on
-    // a real change, and only when the change was stored -- asking after a
-    // failed PATCH would be checking a model the conversation is not on.
-    if (ok && model !== previous) conversationController?.send(MODEL_CHECK_PROMPT);
+    // Only on a real change, and only when the change was stored -- checking
+    // after a failed PATCH would report on a model the conversation is not on.
+    if (!ok || model === previous) return;
+    // Size the context and repair the transcript first, and leave that in the
+    // conversation: both bite at exactly this moment. A context that fitted
+    // the old model's window may not fit the new one's, and a transcript
+    // carrying empty records is refused by a strict backend while the one it
+    // came from accepted it. Awaited before the question below so the note
+    // lands above the answer rather than racing it.
+    await runModelChangePreflight();
+    // Then ask what actually answers, which is the only thing that settles it.
+    conversationController?.send(MODEL_CHECK_PROMPT);
   });
   byId('conversationBackend')?.addEventListener('change', async event => {
     const machineId = event.target.value || null;

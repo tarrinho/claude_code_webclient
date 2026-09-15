@@ -80,18 +80,45 @@ class ModelChangeAsksWhatAnsweredTests(unittest.TestCase):
             r"const ok = await setConversationRouting",
             "the handler no longer waits for the store to succeed",
         )
+        # Guarded by an early return rather than a compound condition: the
+        # preflight and the question both sit after it, so one guard covers
+        # both rather than each needing its own.
         self.assertRegex(
-            handler,
-            r"if \(ok &&[^)]*\)\s*conversationController\?\.send",
-            "the send is no longer guarded by the store succeeding",
+            handler, r"if \(!ok \|\| model === previous\) return;",
+            "the store-success guard is gone",
         )
+        guard_at = handler.index("if (!ok")
+        self.assertLess(guard_at, handler.index("conversationController?.send"),
+                        "the send is no longer behind the guard")
 
     def test_it_only_sends_on_a_real_change(self):
         """Re-selecting the same entry fires a change event in some browsers;
         a turn per non-change is spend for nothing."""
         handler = _model_change_handler()
         self.assertIn("previous", handler)
-        self.assertRegex(handler, r"model !== previous")
+        self.assertRegex(handler, r"model === previous\) return")
+
+    def test_the_preflight_runs_before_the_question(self):
+        """Both land in the conversation, and the note belongs above the
+        answer: awaited rather than fired alongside, so they cannot race."""
+        handler = _model_change_handler()
+        self.assertIn("await runModelChangePreflight()", handler)
+        self.assertLess(
+            handler.index("runModelChangePreflight"),
+            handler.index("conversationController?.send"),
+            "the context/transcript note would land after the model answer",
+        )
+
+    def test_the_preflight_surfaces_its_own_failure(self):
+        """A check that silently did not run reads exactly like a clean
+        result, which is the shape of problem this area keeps producing."""
+        body = _strip_comments(APP_JS.read_text(encoding="utf-8"))
+        match = re.search(
+            r"async function runModelChangePreflight\(.*?\n\}", body, re.DOTALL)
+        self.assertIsNotNone(match, "runModelChangePreflight is gone")
+        fn = match.group(0)
+        self.assertIn("/preflight", fn)
+        self.assertIn("showToast", fn)
 
     def test_the_previous_model_is_read_before_the_store_overwrites_it(self):
         """setConversationRouting assigns the new value onto state.currentChat,

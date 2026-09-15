@@ -240,3 +240,51 @@ def _turn_to_message(turn: dict) -> tuple[str, str] | None:
         return None
     role = "assistant" if turn.get("role") == "assistant" else "user"
     return role, "\n\n".join(parts)
+
+
+# A context-window refusal states the limit it enforced. Nothing in this
+# codebase knows any model's window, and a hardcoded table would go stale the
+# way ai_machines.active_models does (CLAUDE.md §0.1: an id the gateway
+# renames keeps being offered until someone removes it). So the window is
+# learned from the one message that is authoritative about it -- the backend's
+# own refusal -- and never guessed.
+#
+# Measured example, 2026-09-15:
+#   "This model's maximum context length is 272144 tokens. However, you
+#    requested 32000 output tokens and your prompt contains at least 240145
+#    input tokens"
+# 240,145 + 32,000 = 272,145 against a 272,144 window: over by one token, and
+# the output budget is half the reason. Both numbers are captured because a
+# window alone does not explain a refusal that the output budget caused.
+_CONTEXT_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
+    r"maximum context length is\s+(\d+)\s+tokens", re.IGNORECASE
+)
+_REQUESTED_OUTPUT_RE: Final[re.Pattern[str]] = re.compile(
+    r"requested\s+(\d+)\s+output tokens", re.IGNORECASE
+)
+_PROMPT_INPUT_RE: Final[re.Pattern[str]] = re.compile(
+    r"prompt contains at least\s+(\d+)\s+input tokens", re.IGNORECASE
+)
+
+
+def context_window_from_error(message: str) -> dict[str, int] | None:
+    """What a context-window refusal says about the model that raised it.
+
+    Returns ``{"window": int}`` plus ``"output"``/``"input"`` when the message
+    carries them, or None when this is not a context-window refusal at all.
+    Returning None for everything else matters: `routes/chats.py` warns that a
+    context-window 400 "is also a 400 about message content", and treating an
+    unrelated 400 as a window reading would record a fiction.
+    """
+    text = str(message or "")
+    window = _CONTEXT_WINDOW_RE.search(text)
+    if not window:
+        return None
+    found = {"window": int(window.group(1))}
+    output = _REQUESTED_OUTPUT_RE.search(text)
+    if output:
+        found["output"] = int(output.group(1))
+    prompt = _PROMPT_INPUT_RE.search(text)
+    if prompt:
+        found["input"] = int(prompt.group(1))
+    return found

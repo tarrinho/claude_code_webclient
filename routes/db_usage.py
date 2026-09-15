@@ -1337,3 +1337,104 @@ async def system_prune(days: int) -> int:
         return cur.rowcount or 0
     except Exception:
         return 0
+
+
+async def model_window_learn(model: str, window_tokens: int, source: str = "") -> bool:
+    """Record what a backend said *model*'s context window is.
+
+    Called when a turn is refused for exceeding it -- the refusal states the
+    number, so this never guesses. Later readings overwrite earlier ones: a
+    gateway that moves a model to different hardware changes the window, and
+    the newest refusal is the current truth.
+    """
+    if not model or not isinstance(window_tokens, int) or window_tokens <= 0:
+        return False
+    try:
+        await db.db_conn.execute(
+            "INSERT INTO model_context_windows "
+            "(model, window_tokens, learned_at, source) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(model) DO UPDATE SET "
+            "  window_tokens = excluded.window_tokens, "
+            "  learned_at = excluded.learned_at, source = excluded.source",
+            (model, int(window_tokens), db._now(), source or ""),
+        )
+        await db.db_conn.commit()
+        _log.info("model_window_learned model=%s window=%s", model, window_tokens)
+        return True
+    except Exception as exc:  # pragma: no cover - learning must not break a turn
+        _log.warning("model_window_learn_failed model=%s: %s", model, exc)
+        return False
+
+
+async def model_window_get(model: str) -> dict[str, Any] | None:
+    """What is known about *model*'s window, or None if it has never refused.
+
+    None is a real answer and callers must say so rather than substituting a
+    default -- "not known yet" and "fits comfortably" are opposite claims.
+    """
+    if not model:
+        return None
+    cur = await db.db_conn.execute(
+        "SELECT model, window_tokens, learned_at, source "
+        "FROM model_context_windows WHERE model = ?",
+        (model,),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def model_windows_all() -> list[dict[str, Any]]:
+    """Every window learned so far, newest first."""
+    cur = await db.db_conn.execute(
+        "SELECT model, window_tokens, learned_at, source "
+        "FROM model_context_windows ORDER BY learned_at DESC"
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def context_size_of(chat_id: str, session_id: str = "") -> dict[str, Any] | None:
+    """How large this conversation's context was on its most recent turn.
+
+    ``input_tokens`` alone is not the answer and reading it as one is the
+    trap here. A cache-reporting model sends most of the conversation from
+    cache, so the newest row for a real 411,000-token conversation reads
+    ``input_tokens=26, cache_read_tokens=410,958`` -- measured 2026-09-15 on
+    "local : 13 : models comparison". The comparable figure is the sum, which
+    is what a model with no cache would have to accept as plain input.
+
+    Returns None when the conversation has no usage rows yet: a conversation
+    nobody has run has no measured context, and reporting zero would read as
+    "empty" rather than "unknown".
+    """
+    if session_id:
+        where, params = "session_id = ?", (session_id,)
+    elif chat_id:
+        where, params = "chat_id = ?", (chat_id,)
+    else:
+        return None
+    cur = await db.db_conn.execute(
+        "SELECT model, input_tokens, cache_read_tokens, cache_creation_tokens, "
+        "       created_at "
+        # id breaks the tie, and it is load-bearing rather than tidy: created_at
+        # has one-second resolution, so two turns in the same second leave the
+        # winner to whatever order SQLite happens to return -- which made this
+        # report the *older* turn's size in test. id is autoincrement, so it
+        # orders strictly even when the timestamps are identical.
+        f"FROM usage_events WHERE {where} ORDER BY created_at DESC, id DESC LIMIT 1",
+        params,
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    sent = int(row["input_tokens"] or 0)
+    cached = int(row["cache_read_tokens"] or 0)
+    created = int(row["cache_creation_tokens"] or 0)
+    return {
+        "model": row["model"],
+        "measured_at": row["created_at"],
+        "input_tokens": sent,
+        "cache_read_tokens": cached,
+        "cache_creation_tokens": created,
+        # What a model without caching would have to take as plain input.
+        "total_tokens": sent + cached + created,
+    }

@@ -35,6 +35,7 @@ from routes.naming import generate_name as _generate_agent_name
 from routes.voice import stream_voice_turn, voice_handoff as voice_handoff_fn
 from shared import (
     _MODEL_RE,
+    context_window_from_error,
     _SSE_INTERNAL,
     _question_to_text,
     _turn_to_message,
@@ -1478,6 +1479,142 @@ _REFUSAL_NOTICE: Final[str] = (
 _DOCTOR_TIMEOUT_S: Final[int] = 120
 
 
+def _preflight_lines(size: dict | None, window: dict | None, repair: dict) -> list[str]:
+    """The note a model change leaves in the conversation.
+
+    Written as plain sentences with the numbers in them rather than a verdict,
+    because a verdict needs a window and a window is only known for models
+    that have already refused once. Saying "this fits" from a default would be
+    the one failure mode worth avoiding: it is a claim about whether the next
+    turn can run at all.
+    """
+    lines: list[str] = []
+
+    if size is None:
+        lines.append(
+            "**Context** — not measured yet: this conversation has no recorded "
+            "turns, so there is nothing to size."
+        )
+    else:
+        total = size["total_tokens"]
+        detail = f"{size['input_tokens']:,} sent"
+        if size["cache_read_tokens"]:
+            detail += f" + {size['cache_read_tokens']:,} from cache"
+        if size["cache_creation_tokens"]:
+            detail += f" + {size['cache_creation_tokens']:,} cache writes"
+        lines.append(
+            f"**Context** — about **{total:,} tokens** ({detail}, measured on "
+            f"the last turn). A model that does not cache has to accept the "
+            f"whole figure as plain input."
+        )
+        if window:
+            limit = window["window_tokens"]
+            headroom = limit - total
+            verdict = (
+                f"leaves {headroom:,} tokens of headroom" if headroom > 0
+                else f"is {abs(headroom):,} tokens over"
+            )
+            lines.append(
+                f"**Window** — this model refused at **{limit:,} tokens** on "
+                f"{window['learned_at'][:10]}, so the context above {verdict} "
+                f"before any output budget is reserved."
+            )
+        else:
+            lines.append(
+                "**Window** — not known for this model. It is learned from a "
+                "refusal rather than kept in a table, so it stays unknown until "
+                "this model rejects a conversation for being too long."
+            )
+
+    if repair.get("repaired"):
+        parts = []
+        if repair.get("removed"):
+            parts.append(f"{repair['removed']:,} empty records removed")
+        if repair.get("trimmed"):
+            parts.append(f"{repair['trimmed']:,} refused blocks trimmed")
+        if repair.get("relinked"):
+            parts.append(f"{repair['relinked']:,} replies relinked")
+        lines.append(
+            "**Transcript** — repaired: " + ", ".join(parts or ["changes made"])
+            + f". Backup at `{repair.get('backup') or 'n/a'}`."
+        )
+    else:
+        lines.append("**Transcript** — clean, nothing to repair.")
+
+    return lines
+
+
+async def handle_chat_preflight(request: Request, chat_id: str):
+    """POST /api/chats/{id}/preflight -- size the context and repair the
+    transcript, and leave the answer in the conversation.
+
+    Run when the model changes, because that is the moment both can bite: a
+    context that fits one model's window may not fit the next one's, and a
+    transcript carrying empty records is refused by a strict backend while the
+    one it came from accepted it happily.
+
+    The repair is not a dry run -- there is no count-only path, since
+    `_needs_repair_sync` short-circuits on the first marker and the counts
+    exist only as a side effect of doing the work. It backs up and swaps
+    atomically, and already runs before every turn anyway; what is new here is
+    that the result is reported rather than only logged.
+    """
+    session = request.state.session
+    owner = await owner_of(session)
+    chat = await db.chat_get(chat_id, owner)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    session_id = (chat.get("session_id") or "").strip()
+    model = (chat.get("model") or "").strip()
+
+    size = await db.context_size_of(chat_id, session_id)
+    window = await db.model_window_get(model) if model else None
+    repair = {"repaired": False}
+    if session_id:
+        try:
+            repair = await transcripts.repair_if_needed(session_id)
+        except Exception:  # pragma: no cover - a failed check must not 500
+            _log.warning("preflight repair failed chat=%s", chat_id, exc_info=True)
+
+    lines = _preflight_lines(size, window, repair)
+    note = "\n\n".join(lines)
+    await db.messages_batch(chat_id, [("assistant", note)])
+    _log.info(
+        "preflight chat=%s model=%s context=%s window=%s repaired=%s",
+        chat_id, model or "(automatic)",
+        (size or {}).get("total_tokens"), (window or {}).get("window_tokens"),
+        repair.get("repaired"),
+    )
+    return JSONResponse({
+        "ok": True,
+        "context": size,
+        "window": window,
+        "repair": repair,
+        "note": note,
+    })
+
+
+async def _learn_context_window(message: str, model: str | None) -> bool:
+    """Record the window a context-window refusal just stated, if it is one.
+
+    Returns whether anything was learned. Never raises: this runs inside a
+    turn's event handling, and accounting for a turn that already failed must
+    not add a second failure on top of it.
+    """
+    if not model:
+        return False
+    try:
+        found = context_window_from_error(message)
+        if not found:
+            return False
+        return bool(await db.model_window_learn(
+            model.strip(), found["window"], source="refusal"))
+    except Exception:  # pragma: no cover - never worsen a failing turn
+        _log.debug("context window learning failed", exc_info=True)
+        return False
+
+
 def _is_transcript_refusal(message: str) -> bool:
     """True when *message* is the API refusing the transcript, not the turn."""
     lowered = str(message or "").lower()
@@ -1624,14 +1761,25 @@ async def _start_turn(
             # Recorded as it arrives: the tokens were spent whether or not the
             # rest of the turn completes, and whether or not anyone is watching.
             await _record_turn_usage(chat_id, owner, event)
-        elif event.get("type") == "error" and _is_transcript_refusal(
-            str(event.get("error") or "")
-        ):
+        elif event.get("type") == "error":
             # CLAUDE.md rule 4: a failed turn arrives here as an event, it does
-            # not raise -- so this is the only place the refusal is visible.
-            # Left to itself the conversation is now permanently dead: every
-            # later turn replays the same history and is refused identically.
-            await _repair_after_refusal(chat_id, chat.get("session_id"))
+            # not raise -- so this is the only place a refusal is visible.
+            message = str(event.get("error") or "")
+
+            # A context-window refusal states the window it enforced, and that
+            # message is the only place this deployment can learn it: nothing
+            # here keeps a table of model windows, and a hand-kept one would go
+            # stale exactly as ai_machines.active_models does. Recorded, never
+            # acted on -- the turn is already lost, and repairing history
+            # because a conversation grew too long would destroy real turns to
+            # fix nothing (_prepare_transcript_for_backend names that trap).
+            await _learn_context_window(message, model)
+
+            if _is_transcript_refusal(message):
+                # Left to itself the conversation is now permanently dead:
+                # every later turn replays the same history and is refused
+                # identically.
+                await _repair_after_refusal(chat_id, chat.get("session_id"))
 
     async def finish(
         *,
@@ -2404,6 +2552,11 @@ async def _api_chat_search(request: Request):
 @router.post("/api/chats/{chat_id}/fork")
 async def _api_chat_fork(request: Request, chat_id: str):
     return await handle_chat_fork(request, chat_id)
+
+
+@router.post("/api/chats/{chat_id}/preflight")
+async def _api_chat_preflight(request: Request, chat_id: str):
+    return await handle_chat_preflight(request, chat_id)
 
 
 @router.post("/api/chats/{chat_id}/standby")

@@ -241,6 +241,20 @@ async function _deleteSpec(specId, row) {
 function _makeGroup(label, key) {
   var details = document.createElement('details');
   details.className = 'spec-group';
+  // Open, because <details> defaults to closed and the gallery's whole job is
+  // showing the specs. Reported as "the specs do not show in Settings >
+  // Specs": every spec was present in the DOM and every one was folded behind
+  // its group header, so the panel rendered as a row of headings and nothing
+  // else. Worse in practice than it sounds, because spec_status_v2 maps any
+  // keyword hit to "implementing" and currently returns it for all 26 -- so
+  // there was exactly one group, and the panel looked empty apart from a
+  // single line.
+  //
+  // The styling already expected this: .spec-group[open]>summary::before
+  // rotates the disclosure marker, a rule that could never fire while nothing
+  // set the attribute. Collapsing is still available, it is just not the
+  // state you arrive in.
+  details.open = true;
   details.dataset.groupKey = key;
   var summary = document.createElement('summary');
   summary.className = 'spec-section-label';

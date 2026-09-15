@@ -296,6 +296,31 @@ MAX_CONCURRENT = _int("WC_MAX_CONCURRENT", 3)  # concurrent claude processes
 TURN_TIMEOUT_S = _int("WC_TURN_TIMEOUT_S", 300)  # 5 min wall-clock per turn
 PROMPT_MAX_CHARS = _int("WC_PROMPT_MAX_CHARS", 25000)  # cap on user prompt length
 
+# --- How much of a transcript the console shows ------------------------------
+#
+# These three were fixed constants in transcripts.py until 2026-09-15, when
+# Pedro asked why terminal chats looked incomplete in the console. Two of the
+# three were the answer; the third was not, and the distinction is worth
+# keeping because it stops the next person re-investigating the same thing.
+#
+# What was actually missing: tool output, cut at 2000 characters, and older
+# turns, dropped by a 500-turn tail. One real transcript held 1,619 tool calls
+# against a 500-turn window, so most of its history was simply out of reach.
+#
+# What was NOT the console's doing: reasoning. Anthropic models never write
+# thinking text to the transcript at all -- measured across every transcript on
+# this host, claude-opus-5 had 0 thinking blocks carrying text against 9,292
+# empty, and claude-sonnet-5 0 against 7,794, while the gateway's
+# nvidia/Qwen3.6-35B-A3B-NVFP4 had 5,635 with text. A direct probe with
+# showThinkingSummaries and alwaysThinkingEnabled both true returned a block
+# with a 920-character signature and a zero-length thinking field. So the
+# plaintext is never persisted for those models and no setting here can surface
+# it; TRANSCRIPT_SHOW_REASONING only governs the blocks that do carry text,
+# which today means gateway-model chats.
+TRANSCRIPT_TOOL_OUTPUT_MAX = _int("WC_TRANSCRIPT_TOOL_OUTPUT_MAX", 2000)
+TRANSCRIPT_MAX_TURNS = _int("WC_TRANSCRIPT_MAX_TURNS", 500)
+TRANSCRIPT_SHOW_REASONING = _bool("WC_TRANSCRIPT_SHOW_REASONING", True)
+
 # A turn that ends cleanly (no CLI/network error) but produces near-empty
 # output -- observed on small gateway models asked to self-identify, see
 # CLAUDE.md's Qwen3.5 note -- is retried up to this many times before the

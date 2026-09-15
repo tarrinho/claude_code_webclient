@@ -314,6 +314,9 @@ async def _load_settings_from_db() -> None:
         ("prompt_max", "PROMPT_MAX_CHARS", "int"),
         ("cookie_allow_insecure", "COOKIE_ALLOW_INSECURE", "bool"),
         ("ai_machine_host", "PROXY_HOST", "str"),
+        ("transcript_tool_output_max", "TRANSCRIPT_TOOL_OUTPUT_MAX", "int"),
+        ("transcript_max_turns", "TRANSCRIPT_MAX_TURNS", "int"),
+        ("transcript_show_reasoning", "TRANSCRIPT_SHOW_REASONING", "bool"),
     ]
     for db_key, attr, typ in pairs:
         val: str | None = None

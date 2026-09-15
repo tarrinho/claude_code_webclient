@@ -577,6 +577,17 @@ async function saveSettings(event) {
     if (turnTimeout) body.turn_timeout = turnTimeout;
     const promptMax = parseInt(byId('promptMax')?.value);
     if (promptMax) body.prompt_max = promptMax;
+    const toolOutputMax = parseInt(byId('transcriptToolOutputMax')?.value);
+    if (toolOutputMax) body.transcript_tool_output_max = toolOutputMax;
+    const maxTurns = parseInt(byId('transcriptMaxTurns')?.value);
+    if (maxTurns) body.transcript_max_turns = maxTurns;
+    // Sent only when it differs from what was loaded: a boolean has no falsy
+    // "unset" value to test for, so an unconditional send would rewrite the
+    // setting on every save whether or not anyone touched the control.
+    const reasoningPressed = byId('transcriptShowReasoning')?.getAttribute('aria-pressed') === 'true';
+    if (reasoningPressed !== _loadedSettings?.transcript_show_reasoning) {
+      body.transcript_show_reasoning = reasoningPressed;
+    }
     const webconsoleUrl = (byId('webconsoleUrl')?.value || '').trim();
     if (webconsoleUrl !== _loadedSettings?.webconsole_url) {
       body.webconsole_url = webconsoleUrl || '';
@@ -1943,6 +1954,16 @@ async function loadSettings() {
       if (data.session_ttl_s) byId('sessionTtl').value = data.session_ttl_s;
       if (data.turn_timeout_s) byId('turnTimeout').value = data.turn_timeout_s;
       if (data.prompt_max) byId('promptMax').value = data.prompt_max;
+      if (data.transcript_tool_output_max) {
+        byId('transcriptToolOutputMax').value = data.transcript_tool_output_max;
+      }
+      if (data.transcript_max_turns) {
+        byId('transcriptMaxTurns').value = data.transcript_max_turns;
+      }
+      if (data.transcript_show_reasoning !== undefined) {
+        const el = byId('transcriptShowReasoning');
+        if (el) el.setAttribute('aria-pressed', String(data.transcript_show_reasoning));
+      }
       if (data.webconsole_url) byId('webconsoleUrl').value = data.webconsole_url;
       if (data.debug_console !== undefined) {
         const el = byId('debugConsole');
@@ -2471,6 +2492,11 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('specViewerDialog')?.addEventListener('click', event => { if (event.target === byId('specViewerDialog')) _closeSpecViewer(); });
   byId('debugConsole')?.addEventListener('click', () => {
     const el = byId('debugConsole');
+    const on = el.getAttribute('aria-pressed') === 'true';
+    el.setAttribute('aria-pressed', String(!on));
+  });
+  byId('transcriptShowReasoning')?.addEventListener('click', () => {
+    const el = byId('transcriptShowReasoning');
     const on = el.getAttribute('aria-pressed') === 'true';
     el.setAttribute('aria-pressed', String(!on));
   });

@@ -1045,6 +1045,8 @@ async def handle_settings_get(request: Request):
         "voice_speech_rate", "webconsole_url", "debug_console",
         "cross_session_inbound", "testing_default_model", "testing_model_enforce",
         "default_model",
+        "transcript_tool_output_max", "transcript_max_turns",
+        "transcript_show_reasoning",
     ))
     _settings_rows = await db.setting_get_all(_SETTINGS_KEYS)
 
@@ -1063,6 +1065,22 @@ async def handle_settings_get(request: Request):
         prompt_max = int(_get("prompt_max") or config.PROMPT_MAX_CHARS)
     except (TypeError, ValueError):
         prompt_max = config.PROMPT_MAX_CHARS
+
+    def _int_setting(key: str, fallback: int) -> int:
+        try:
+            return int(_get(key) or fallback)
+        except (TypeError, ValueError):
+            return fallback
+
+    transcript_tool_output_max = _int_setting(
+        "transcript_tool_output_max", config.TRANSCRIPT_TOOL_OUTPUT_MAX)
+    transcript_max_turns = _int_setting(
+        "transcript_max_turns", config.TRANSCRIPT_MAX_TURNS)
+    _raw_reasoning = _get("transcript_show_reasoning")
+    transcript_show_reasoning = (
+        config.TRANSCRIPT_SHOW_REASONING if _raw_reasoning is None
+        else str(_raw_reasoning).strip().lower() in ("1", "true", "yes", "on")
+    )
 
     voice_backend_id = _get("voice_backend_id")
     if not voice_backend_id:
@@ -1160,6 +1178,9 @@ async def handle_settings_get(request: Request):
         "session_ttl_s": session_ttl,
         "turn_timeout_s": turn_timeout,
         "prompt_max": prompt_max,
+        "transcript_tool_output_max": transcript_tool_output_max,
+        "transcript_max_turns": transcript_max_turns,
+        "transcript_show_reasoning": transcript_show_reasoning,
         "debug_console": debug_console,
         "voice_backend_id": voice_backend_id,
         # Compatibility key for older clients; both values are the same
@@ -1364,6 +1385,29 @@ async def handle_settings_patch(request: Request):
             if not isinstance(val, int) or val < 30 or val > 86400:
                 raise HTTPException(status_code=400, detail=f"{key} must be 30-86400")
             await db.setting_set(key, str(val))
+    # Transcript detail. Separate from the block above because the ranges are
+    # nothing like 30-86400, and a shared validator would have to be so wide it
+    # stopped rejecting anything.
+    for key, attr, low, high in (
+        ("transcript_tool_output_max", "TRANSCRIPT_TOOL_OUTPUT_MAX", 200, 200000),
+        ("transcript_max_turns", "TRANSCRIPT_MAX_TURNS", 1, 5000),
+    ):
+        if key in data:
+            val = data[key]
+            if not isinstance(val, int) or isinstance(val, bool) or not low <= val <= high:
+                raise HTTPException(
+                    status_code=400, detail=f"{key} must be {low}-{high}")
+            await db.setting_set(key, str(val))
+            # Applied live as well as stored: these are read per request, so
+            # waiting for a restart would make the control look broken.
+            setattr(config, attr, val)
+    if "transcript_show_reasoning" in data:
+        val = data["transcript_show_reasoning"]
+        if not isinstance(val, bool):
+            raise HTTPException(
+                status_code=400, detail="transcript_show_reasoning must be true or false")
+        await db.setting_set("transcript_show_reasoning", "true" if val else "false")
+        config.TRANSCRIPT_SHOW_REASONING = val
     # WebConsole URL — the public-facing site address used to build
     # shareable links for comparison reports and exported files.
     if "webconsole_url" in data:

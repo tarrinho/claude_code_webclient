@@ -28,6 +28,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Final
 
+import config
 import db
 
 _log = logging.getLogger("wc.transcripts")
@@ -37,8 +38,16 @@ _log = logging.getLogger("wc.transcripts")
 # truncated rather than loading everything.
 HISTORY_TAIL_BYTES: Final[int] = 512 * 1024
 
-# Upper bound on turns returned in one response.
+# Upper bound on turns returned in one response. The default; the effective
+# value is config.TRANSCRIPT_MAX_TURNS, read per call so a settings change
+# takes effect without a restart. Kept as a name because tests and callers
+# reference it as the documented default.
 MAX_TURNS: Final[int] = 500
+
+
+def _max_turns() -> int:
+    """Turns kept per response, from settings, never below 1."""
+    return max(1, int(getattr(config, "TRANSCRIPT_MAX_TURNS", MAX_TURNS) or MAX_TURNS))
 
 # How often the live tail re-checks the file for new bytes.
 TAIL_POLL_S: Final[float] = 1.0
@@ -66,6 +75,17 @@ _TOOL_SUMMARY_MAX: Final[int] = 120
 # of a call, not to replay the session's entire I/O into the browser.
 _TOOL_DETAIL_MAX: Final[int] = 2000
 _TOOL_RESULT_MAX: Final[int] = 2000
+
+
+def _tool_output_max() -> int:
+    """Cap on tool detail and tool result text, from settings.
+
+    One knob drives both: a reader raising the limit wants to see what a call
+    did *and* what it returned, and two numbers that are always changed
+    together are a way to end up with one of them stale.
+    """
+    value = getattr(config, "TRANSCRIPT_TOOL_OUTPUT_MAX", _TOOL_RESULT_MAX)
+    return max(200, int(value or _TOOL_RESULT_MAX))
 
 # Rendered in the detail line, in this order. "description" is deliberately
 # absent: it is the headline already, and repeating it below said nothing.
@@ -99,7 +119,7 @@ def _tool_detail(block: dict[str, Any]) -> tuple[str, bool]:
     """
     payload = block.get("input")
     if not isinstance(payload, dict):
-        return ("", False) if payload is None else _clip(str(payload), _TOOL_DETAIL_MAX)
+        return ("", False) if payload is None else _clip(str(payload), _tool_output_max())
     found: list[tuple[str, str]] = []
     for key in _TOOL_DETAIL_KEYS:
         value = payload.get(key)
@@ -111,8 +131,8 @@ def _tool_detail(block: dict[str, Any]) -> tuple[str, bool]:
     # or an Edit's two strings would run together with nothing saying which is
     # the old text and which is the new.
     if len(found) == 1:
-        return _clip(found[0][1], _TOOL_DETAIL_MAX)
-    return _clip("\n".join(f"{key}: {value}" for key, value in found), _TOOL_DETAIL_MAX)
+        return _clip(found[0][1], _tool_output_max())
+    return _clip("\n".join(f"{key}: {value}" for key, value in found), _tool_output_max())
 
 
 def _result_text(content: Any) -> str:
@@ -172,6 +192,15 @@ def _blocks_from_content(
             if text:
                 blocks.append({"kind": "text", "text": text})
         elif kind == "thinking":
+            # Two reasons a thinking block produces nothing, and only one of
+            # them is a setting. Anthropic models write the block with a
+            # signature and an empty `thinking` field -- the plaintext is never
+            # persisted -- so the emptiness check below is what silences those,
+            # and no setting can bring them back. TRANSCRIPT_SHOW_REASONING
+            # governs the blocks that *do* carry text, which in practice means
+            # gateway models. See config.py for the measurements.
+            if not getattr(config, "TRANSCRIPT_SHOW_REASONING", True):
+                continue
             text = str(item.get("thinking") or "").strip()
             if text:
                 blocks.append({"kind": "thinking", "text": text})
@@ -218,7 +247,7 @@ def _blocks_from_content(
             # a reader can open the output of a specific call without the page
             # carrying every byte the session ever read.
             text, clipped = _clip(_result_text(item.get("content")).strip(),
-                                  _TOOL_RESULT_MAX)
+                                  _tool_output_max())
             if text:
                 blocks.append({
                     "kind": "result",
@@ -564,9 +593,10 @@ def _cap(
     400-byte records a single window holds ~1300 turns, and walking a
     2000-turn transcript recovered only half of it.
     """
-    if len(pairs) <= MAX_TURNS:
+    cap = _max_turns()
+    if len(pairs) <= cap:
         return [turn for _offset, turn in pairs], start, truncated
-    kept = pairs[-MAX_TURNS:]
+    kept = pairs[-cap:]
     return [turn for _offset, turn in kept], kept[0][0], True
 
 

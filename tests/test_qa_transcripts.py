@@ -454,7 +454,12 @@ class PageBackwardsTests(TranscriptRootMixin, unittest.IsolatedAsyncioTestCase):
         write_transcript(self.root, "cap",
                          [user(f"turn {i}") for i in range(total)])
         # A window that holds well over the cap, without needing a large file.
-        with patch.object(transcripts, "MAX_TURNS", 50), \
+        # Patches config, not transcripts.MAX_TURNS. Since 2026-09-15 the cap
+        # is a setting (config.TRANSCRIPT_MAX_TURNS) and MAX_TURNS is only its
+        # default, so patching the module constant while config still carries a
+        # value silently changes nothing and this test passes against the bug
+        # it exists to catch.
+        with patch.object(config, "TRANSCRIPT_MAX_TURNS", 50), \
              patch.object(transcripts, "HISTORY_TAIL_BYTES", 8000):
             page = await transcripts.read_turns("cap")
             self.assertLessEqual(len(page["turns"]), 50, "the cap must apply")

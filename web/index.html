@@ -515,6 +515,26 @@
           <span class="setting-hint">Maximum prompt length in characters.</span>
         </div>
         <div class="app-setting-row">
+          <label for="transcriptToolOutputMax">Transcript tool output (chars)</label>
+          <input id="transcriptToolOutputMax" type="number" min="200" max="200000">
+          <span class="setting-hint">How much of each tool call and its result the transcript shows before cutting. Raising this shows more of what a command actually did, at the cost of a heavier page.</span>
+        </div>
+        <div class="app-setting-row">
+          <label for="transcriptMaxTurns">Transcript history depth (turns)</label>
+          <input id="transcriptMaxTurns" type="number" min="1" max="5000">
+          <span class="setting-hint">Turns kept per page of transcript. A long session holds far more than this, and the rest is reachable by paging back.</span>
+        </div>
+        <div class="app-setting-row">
+          <label>Show reasoning</label>
+          <button type="button" id="transcriptShowReasoning" class="toggle-knob" aria-pressed="false" aria-label="Toggle reasoning blocks in transcripts">
+            <span class="knob-track">
+              <span class="knob-thumb"></span>
+            </span>
+            <span class="knob-label"></span>
+          </button>
+          <span class="setting-hint">Show the model's reasoning where the transcript contains it. Claude models do not record reasoning text — they write the block with a signature and no content — so this only affects chats run on gateway models.</span>
+        </div>
+        <div class="app-setting-row">
           <label for="webconsoleUrl">WebConsole URL</label>
           <input id="webconsoleUrl" type="url" placeholder="https://example.com">
           <span class="setting-hint" id="webconsoleHint">The public-facing URL of this WebConsole instance. Used to build shareable report links.</span>
@@ -588,7 +608,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=10528660"></script>
+<script type="module" src="/assets/app.js?v=13826667"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

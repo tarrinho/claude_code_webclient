@@ -245,9 +245,9 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 | model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 55% | 20 | 0.0000 | 36.5 | 229,376 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 70% | 40 | 0.0000 | 36.5 | 229,376 |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | 229,376 |
-| `azure_ai/gpt-5.6-luna` | coding | 100% | 4 | 0.0285 | 15.2 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0285 | 15.2 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | 922,000 |
@@ -311,18 +311,37 @@ The consequence is deliberate and worth stating plainly: **a task type whose row
 
 #### Measurement provenance, 2026-09-15
 
-`vllm` on `coding` is measured at **55% (n=20)**, replacing an earlier 25% (n=4). The two are consistent: a true rate of 55% produces 1-or-fewer successes in 4 runs about 24% of the time, so the earlier figure was ordinary small-sample noise, not a contradiction. The 95% interval on the new measurement is **34%–74%**, which is still wide — n=20 over two tasks tightens the estimate without broadening coverage.
+`vllm` on `coding` is measured at **70% (n=40), 95% interval 55%–82%**, across six tasks. Getting there took three passes and the sequence is the lesson:
 
-**The aggregate hides the finding that matters:**
+| pass | tasks | n | result |
+|---|---|---|---|
+| first | 2 | 4 | 25% |
+| more repeats | 2 | 20 | 55% |
+| more **tasks** | 6 | 40 | **70%** |
 
-| task | result |
-|---|---|
-| `coding-algo` — implement an LRU cache | **8/10** |
-| `coding-bug-fix` — fix a bug in an existing function | **3/10** |
+The first two are statistically consistent — a true 55% yields ≤1 success in 4 runs about 24% of the time — so 25% was ordinary small-sample noise. The jump from 55% to 70% is different in kind: it came from **adding tasks, not repeats**. Repeats narrow the interval around whatever the existing tasks happen to measure; only new tasks change what is being measured. The suite had two `coding` tasks and one of them turned out to be an outlier.
 
-The free model writes new code far better than it repairs existing code. For an orchestrator whose coding leaves are predominantly edits to code that already exists, **30% is the operative number, not 55%** — and the two tasks cannot yet separate "weak at bug-fixing" from "weak at this particular bug". Authoring more coding tasks, not more repeats, is what would settle it. Until then, no ladder change rests on this.
+| task | result | median s |
+|---|---|---|
+| `coding-edit-chunks` | 5/5 | 15.9 |
+| `coding-edit-top-scores` | 5/5 | 15.9 |
+| `coding-edit-extend-cases` | 5/5 | 18.4 |
+| `coding-algo` | 8/10 | 44.1 |
+| `coding-edit-mutable-default` | 2/5 | 25.3 |
+| `coding-bug-fix` | **3/10** | 29.6 |
 
-The run also passed the `floor-add` control 10/10, so the invocation was sound and the coding figures measure the model rather than the harness.
+**`azure_ai/gpt-5.6-luna` scored 24/24 on the same six tasks.** That control is what makes the numbers above readable: the tasks discriminate between models rather than being uniformly hard, so `vllm`'s failures are the model's and not the suite's.
+
+Two corrections to the earlier reading, both of which cut against the alarming interpretation:
+
+- **The "writes code well, repairs it badly" conclusion does not survive more tasks.** `vllm` scores 15/15 on three of the four repair tasks. `coding-bug-fix` (3/10) is an outlier, not a representative of its class — its failures are genuine logic failures on the specific order-and-slice bug, not a general inability to edit.
+- **Two of the twelve failures were compliance, not capability.** On `coding-edit-mutable-default`, two runs fixed the actual bug correctly (`tags=None`) and failed only the assertion that the prompt's requested docstring be present. Counting them alongside a wrong answer conflates "cannot do it" with "did not do all of it" — worth knowing, because the pipeline's gates treat those identically while a human would not.
+
+**Consequence for the ladder: the free rung on `coding` stands.** A rung-0 model at 70% behind an oracle that catches its failures (§4.2) is doing its job — it completes the majority free and escalates the rest. The earlier figures suggested removing it; the better-measured figure does not. Note the point estimate sits exactly on §10.1's ≥70% free-completion target, so that target is achievable but has no slack.
+
+The `floor-add` control passed 10/10, so the invocation was sound throughout.
+
+**On the latency column.** The multiplier in §5.1 uses `vllm`'s **36.5s** median from the two original tasks, not the 24.6s pooled across all six, because a multiplier is a *ratio between models* and only the two original tasks were run on all three. Pooling in four tasks that the other models never saw would flatter `vllm` by the easier mix rather than measure it. Accuracy and latency therefore rest on different subsets on purpose: accuracy wants the broadest task coverage available, a latency ratio wants an identical task mix across models. Closing that gap means running `claude-sonnet-5` on the four edit tasks.
 
 **Storage.** This table is a **database table**, not a constant in source. One row per `(model, task_type)` pair, with the five measured columns plus `updated_at`. It is what §9.2's editable matrix reads and writes, it is what the benchmark job (§10.2) writes its results into, and it is what the ladder generator (§3) reads at runtime. There is no second copy: the markdown above is a snapshot of the table's contents at the time of writing, not the source of truth. A benchmark run that writes results anywhere else has not landed them.
 
@@ -482,14 +501,16 @@ Only `coding` and `long-context` start free (§4.1).
 
 ### 3.1 Coding, measured 2026-09-15
 
-Four models, two exec-verified coding tasks, two repeats each (`bench/coding_accuracy_20260915.json`):
+Exec-verified coding tasks. The table reflects every run as of 2026-09-15 — `bench/coding_accuracy_20260915.json` (4 models, 2 tasks), `bench/coding_vllm_n20_20260915.json` (`vllm`, 2 tasks, n=20 plus a floor control) and `bench/coding_edits_20260915.json` (`vllm` and `luna`, 4 edit tasks, n=20 each):
 
-| model | accuracy | n | median score | median latency | $/1M |
+| model | accuracy | n | tasks | median latency | $/1M |
 |---|---|---|---|---|---|
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | **25%** | 4 | 24.1 | 33.2s | 0.0000 |
-| `azure_ai/gpt-5.6-luna` | **100%** | 4 | 100.0 | 14.7s | 0.0285 |
-| `claude-sonnet-5` | **100%** | 4 | 98.2 | 12.7s | 1.5709 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | **70%** | 40 | 6 | 36.5s † | 0.0000 |
+| `azure_ai/gpt-5.6-luna` | **100%** | 24 | 6 | 15.2s † | 0.0285 |
+| `claude-sonnet-5` | **100%** | 4 | 2 | 13.8s | 1.5709 |
 | `azure_ai/gpt-5.4-mini` | **not measured** | — | — | — | 0.5261 |
+
+† Latency is the median over the **two original tasks only**, the sole task mix all three models have run. Accuracy uses every task available to each model. See §2.6's note on why a multiplier needs an identical task mix while accuracy does not.
 
 **The ladder is confirmed unchanged.** Walking the generator's rule over these rows — cheapest-first, skipping any model measured worse than the current rung — gives `vllm → luna → sonnet` exactly as the snapshot above shows. Equal accuracy is not "worse", so Sonnet survives as rung 2.
 
@@ -762,7 +783,7 @@ Note what the correction did **not** do: it did not move the decision. The sum w
 
 **Option 1 it is: the ceiling is derived from the worst-case path, not chosen.** The binding case is the highest score `coding` can reach, and that is **5, not 4** — §2.1 takes the highest score among all matched patterns, so a task matching a coding pattern *and* the score-5 `implement.*multiple|coordinate.*agent|orchestrate` pattern is classified `coding` at score 5. Budgeting to score 4 would leave the ceiling below the worst case for a task the classifier produces by ordinary means.
 
-**Which latency a gate uses had to be pinned before this could be computed at all.** §5.1 says a gate takes "the gate model's multiplier and the leaf's own task type", and for a gate running on luna against a `coding` leaf those two point at different rows: luna's `coding` row (14.7s) and luna's `reviewer-gate` row (11.1s). The choice moves the worst case by 153s, so it is not a detail.
+**Which latency a gate uses had to be pinned before this could be computed at all.** §5.1 says a gate takes "the gate model's multiplier and the leaf's own task type", and for a gate running on luna against a `coding` leaf those two point at different rows: luna's `coding` row (15.2s) and luna's `reviewer-gate` row (11.1s). The choice moves the worst case by well over a hundred seconds, so it is not a detail.
 
 **A gate uses the `reviewer-gate` row when one exists for that model**, falling back to the leaf's task-type row when it does not. The gate row is the direct measurement of the call being timed — a gate prompt carries the code plus the task description and returns one line, which is a different shape from a generation call, and §2.6 holds a row for it precisely so that shape is measured rather than inferred.
 

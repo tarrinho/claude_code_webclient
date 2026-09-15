@@ -1,5 +1,7 @@
 # Terminal backend hot-swap — switch the active AI machine under a running session
 
+**Status:** done — verified against the codebase on 2026-09-15: bin/wc-claude.sh carries the hot-swap loop, and backend_env.py documents the mid-session swap reaching a child.
+
 Date: 2026-09-02 · Target: `bin/wc-claude.sh`
 
 ## The problem

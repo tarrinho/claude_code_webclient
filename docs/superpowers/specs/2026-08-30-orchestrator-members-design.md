@@ -1,7 +1,7 @@
 # Orchestrator members — supervising existing chats and agents
 
 **Date:** 2026-08-30
-**Status:** approved in outline, pending spec review
+**Status:** done — verified against the codebase on 2026-09-15: /api/orchestrators/{id}/members and .../members/{chat_id} are served (the routes were renamed from 'supervisors' to 'orchestrators' after this was written), and supervisor_members holds 6 rows.
 **Author:** cweb4 (Claude Opus 5), with Pedro Tarrinho
 
 ## Problem

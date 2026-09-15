@@ -1,5 +1,7 @@
 # Orchestrator Orchestration Design
 
+**Status:** done — verified against the codebase on 2026-09-15: the tasks, stream, messages, pause, resume and send routes are all served under /api/orchestrators/{id}/, and orchestrator.py plus web/assets/orchestrator.js exist.
+
 ## Purpose
 
 Extend WebConsole with a orchestrator agent that orchestrates multiple Claude Code turns as a structured plan with subtasks, dependencies, model assignment, and real-time progress tracking. The orchestrator is itself a Claude Code session that reasons about the user's request, breaks it into subtasks, assigns the best model for each, and manages execution — all streamed to the user through an integrated three-panel UI.

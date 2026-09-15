@@ -1,5 +1,7 @@
 # Transport project sync — design
 
+**Status:** done — verified against the codebase on 2026-09-15: routes/db_transport_sync.py exists, the approve/reject/sync routes are served, and transport_sync_requests holds a row.
+
 ## Context
 
 The spike behind this (2026-09-09, chat) confirmed SFTP works over

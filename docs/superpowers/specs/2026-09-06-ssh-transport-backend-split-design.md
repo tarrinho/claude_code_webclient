@@ -1,6 +1,6 @@
 # SSH Transport / Backend Split — Design
 
-**Status:** Draft, pending user review.
+**Status:** done — verified against the codebase on 2026-09-15: ssh_transports holds 4 rows, routes/machines_tunnel.py and web/assets/transports.js exist.
 **Origin:** `ssh_proxy` machines were added as a third `ai_machines` provider type
 alongside `anthropic`/`claude_code` and `proxy`/`direct`, conflating two different
 things in one row: *which backend to talk to* and *where the `claude` process that

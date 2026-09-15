@@ -1,7 +1,6 @@
 # One default backend, many enabled ones — design
 
-**Status:** approved in chat 2026-09-08 (option 1, refuse-while-depended-on,
-with the dependents named). Not yet implemented.
+**Status:** done — verified against the codebase on 2026-09-15: ai_machines carries the enabled column and tests/test_qa_backend_set_enabled.py covers the activate guard this spec's load-bearing decision is about.
 
 **Goal:** separate "which backend is used when nothing else says otherwise"
 from "which backends may be used at all", and make the difference visible in

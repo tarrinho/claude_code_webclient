@@ -1,5 +1,7 @@
 # Supervisor Map — Radial Mind Map
 
+**Status:** done — verified against the codebase on 2026-09-15: web/assets/supervisor-map.js and /api/supervisor-map are live; two defects in it were found and fixed on 2026-09-15 (a manual collapse being undone by zoomToFit, and a stale zoom frame after teardown).
+
 ## Motivation
 
 The orchestrator panel shows individual agent activity, but there is no

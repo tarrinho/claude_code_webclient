@@ -1,6 +1,6 @@
 # Resource Guard — design
 
-**Status:** approved in chat 2026-09-08, not yet implemented.
+**Status:** done — verified against the codebase on 2026-09-15: resource_guard.py exists and is wired into runner.py, routes/chats.py and bin/wc-claude.sh, with tests/test_qa_resource_guard.py; observed refusing live turns as turn_refused_low_memory on 2026-09-15.
 
 **Goal:** stop this host from being driven into swap and the OOM killer by more
 concurrent agents than it has memory for, by refusing to *start* new work when

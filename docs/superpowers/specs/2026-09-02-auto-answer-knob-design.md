@@ -1,5 +1,7 @@
 # Auto-answer knob — approving prompts without a person, per chat
 
+**Status:** done — verified against the codebase on 2026-09-15: chats carries the auto_answer column and /api/chats/{id}/auto-answer is served.
+
 Date: 2026-09-02 · Target: after the 0.10.0 file-structure reorganisation
 
 A per-chat toggle. Off, prompts wait for the user, exactly as today. On, the

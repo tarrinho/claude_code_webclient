@@ -1,7 +1,7 @@
 # Statistics: billing route, a comparable token basis, and per-agent spend
 
 **Date:** 2026-09-10
-**Status:** approved design, not yet implemented
+**Status:** done — verified against the codebase on 2026-09-15: billing_route is written and read throughout routes/db_usage.py (18 references), 101 production rows carry it, and tests/test_qa_usage_billing_route.py covers the route-vs-provider distinction this spec exists for.
 **Surface:** Settings → Statistics (`#panelStats`), fed by `GET /api/usage/series`
 
 ## The problem, measured

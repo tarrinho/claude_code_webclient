@@ -1,7 +1,6 @@
 # Transport-aware agent-reply — design
 
-**Status:** implementing — code complete and verified, deployment partial.
-Audited against the codebase on 2026-09-14, item by item.
+**Status:** done — verified against the codebase on 2026-09-15: /api/chats/{id}/agent-reply is served with the cooldown check and the reply log from routes/db_agent_reply.py, covered by tests/test_qa_transport_agent_reply.py; the 'deployment partial' this previously said is no longer true -- the route is in the live release.
 
 Built and checked: the §1 resolution flow (local first, then `tunnel_up=1`
 transports only, sequential, first success wins), `agent_reply_log_add` /

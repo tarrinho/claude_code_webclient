@@ -1,6 +1,6 @@
 # Voice Conversation — Design
 
-**Status:** Draft, pending user review.
+**Status:** done — verified against the codebase on 2026-09-15: routes/voice.py plus four voice-*.js modules exist and voice_turn_timing holds 33 rows; CLAUDE.md documents this as the one deliberate exception to the CLI-only rule.
 **Origin:** Port of the spoken-conversation feature built and tested standalone in
 `voice-chat-app` (sibling project) into WebConsole, as a persisted, real chat.
 

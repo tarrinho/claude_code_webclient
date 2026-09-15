@@ -1,5 +1,7 @@
 # File structure reorganisation — design
 
+**Status:** done — verified against the codebase on 2026-09-15: routes/ is split into 28 modules, 15 of them db_*, which is the structure this proposed.
+
 Date: 2026-09-01 · Target release: 0.10.0 · Author: cweb1 (with Pedro Tarrinho)
 
 ## Why

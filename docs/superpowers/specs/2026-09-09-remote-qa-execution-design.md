@@ -1,5 +1,7 @@
 # Remote QA execution — design
 
+**Status:** done — verified against the codebase on 2026-09-15: routes/qa.py serves /api/qa/run and bin/run-suite-chunked.sh exists.
+
 ## Context
 
 `bin/run-suite-chunked.sh` exists because the whole suite in one process gets

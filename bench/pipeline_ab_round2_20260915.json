@@ -1,0 +1,386 @@
+{
+  "runs": [
+    {
+      "arm": "A-baseline",
+      "task": "simple-fizzbuzz",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 9.4,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 9.2,
+          "input_tokens": 12639,
+          "output_tokens": 129,
+          "cache_read_tokens": 22086,
+          "cache_write_tokens": 9919,
+          "reported_cost_usd": 0.07066120000000001,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.070661,
+      "unpriced_calls": 0,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "simple-fizzbuzz",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 49.74,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 25.14,
+          "input_tokens": 28475,
+          "output_tokens": 355,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.15125,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 12.48,
+          "input_tokens": 11809,
+          "output_tokens": 30,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.059795,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "security",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 11.88,
+          "input_tokens": 11718,
+          "output_tokens": 55,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.059965,
+          "cost_basis": "unknown",
+          "error": null
+        }
+      ],
+      "final_rung": "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.0,
+      "unpriced_calls": 2,
+      "note": ""
+    },
+    {
+      "arm": "A-baseline",
+      "task": "simple-count-vowels",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 10.33,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 10.15,
+          "input_tokens": 12638,
+          "output_tokens": 41,
+          "cache_read_tokens": 22086,
+          "cache_write_tokens": 9866,
+          "reported_cost_usd": 0.0695672,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.069567,
+      "unpriced_calls": 0,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "simple-count-vowels",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 36.36,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 12.66,
+          "input_tokens": 14110,
+          "output_tokens": 48,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.07175000000000001,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 10.03,
+          "input_tokens": 11702,
+          "output_tokens": 35,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.05938500000000001,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "security",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 13.59,
+          "input_tokens": 11644,
+          "output_tokens": 22,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.05877,
+          "cost_basis": "unknown",
+          "error": null
+        }
+      ],
+      "final_rung": "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.0,
+      "unpriced_calls": 2,
+      "note": ""
+    },
+    {
+      "arm": "A-baseline",
+      "task": "simple-sum-evens",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 10.77,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 10.69,
+          "input_tokens": 12641,
+          "output_tokens": 41,
+          "cache_read_tokens": 22086,
+          "cache_write_tokens": 9862,
+          "reported_cost_usd": 0.0695572,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.069557,
+      "unpriced_calls": 0,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "simple-sum-evens",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 32.58,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 9.95,
+          "input_tokens": 14102,
+          "output_tokens": 46,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.07166,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 11.05,
+          "input_tokens": 11696,
+          "output_tokens": 23,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.059054999999999996,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "security",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 11.49,
+          "input_tokens": 11643,
+          "output_tokens": 23,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.05879,
+          "cost_basis": "unknown",
+          "error": null
+        }
+      ],
+      "final_rung": "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.0,
+      "unpriced_calls": 2,
+      "note": ""
+    },
+    {
+      "arm": "A-baseline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 8.35,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 8.28,
+          "input_tokens": 12640,
+          "output_tokens": 172,
+          "cache_read_tokens": 22086,
+          "cache_write_tokens": 9952,
+          "reported_cost_usd": 0.0712252,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.071225,
+      "unpriced_calls": 0,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 76.74,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 19.72,
+          "input_tokens": 14169,
+          "output_tokens": 326,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.078995,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 11.83,
+          "input_tokens": 11650,
+          "output_tokens": 411,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.068525,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 34.17,
+          "input_tokens": 11827,
+          "output_tokens": 2077,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.11106,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "security",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 10.88,
+          "input_tokens": 11716,
+          "output_tokens": 55,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.05995500000000001,
+          "cost_basis": "unknown",
+          "error": null
+        }
+      ],
+      "final_rung": "azure_ai/gpt-5.6-luna",
+      "rung_index": 1,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) oracle: core 6/8 score=77.8"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.0,
+      "unpriced_calls": 3,
+      "note": ""
+    }
+  ],
+  "aggregate": {
+    "A-baseline": {
+      "runs": 4,
+      "correct": 4,
+      "pass_rate": 1.0,
+      "wall_s_median": 9.87,
+      "calls_median": 1.0,
+      "escalation_rate": 0.0,
+      "priced_cost_usd_total": 0.28101,
+      "unpriced_calls_total": 0
+    },
+    "B-pipeline": {
+      "runs": 4,
+      "correct": 4,
+      "pass_rate": 1.0,
+      "wall_s_median": 43.05,
+      "calls_median": 3.0,
+      "escalation_rate": 0.25,
+      "priced_cost_usd_total": 0.0,
+      "unpriced_calls_total": 9
+    }
+  },
+  "config": {
+    "ladder": [
+      "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "azure_ai/gpt-5.6-luna",
+      "claude-sonnet-5"
+    ],
+    "baseline": "claude-sonnet-5",
+    "gate_model": "azure_ai/gpt-5.6-luna",
+    "costing_note": "priced_cost_usd is a LOWER BOUND wherever unpriced_calls > 0. bench_rates.json records no rate for any Azure model."
+  }
+}

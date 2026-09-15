@@ -3000,7 +3000,15 @@ class SupervisorMapBrowserTests(_BrowserFixture):
         self._load()
         self.page.wait_for_selector("#orchestratorBtn")
 
-        self.page.route("**/api/supervisor-map", lambda route: route.abort())
+        # The trailing * matters. The map request carries a window now
+        # (/api/supervisor-map?hours=N), and "**/api/supervisor-map" does not
+        # match a URL with a query string -- so the abort never happened, the
+        # real request succeeded against an empty fleet, and the assertion
+        # compared "No agents running." with "Connection error." and called
+        # the failure path broken. A single * does not cross "/", so this
+        # still leaves /api/supervisor-map/comms and the per-agent series
+        # endpoints alone.
+        self.page.route("**/api/supervisor-map*", lambda route: route.abort())
         self.page.click("#supervisorMapBtn")
         self.page.wait_for_timeout(2000)
         self.assertEqual(
@@ -3010,7 +3018,7 @@ class SupervisorMapBrowserTests(_BrowserFixture):
 
         self.page.click("#supervisorMapClose")
         self.page.wait_for_timeout(300)
-        self.page.unroute("**/api/supervisor-map")
+        self.page.unroute("**/api/supervisor-map*")
         self.page.click("#supervisorMapBtn")
         self.page.wait_for_timeout(3000)
 
@@ -3122,7 +3130,11 @@ class SupervisorMapBrowserTests(_BrowserFixture):
             }],
         })
         self.page.route(
-            "**/api/supervisor-map",
+            # Trailing *, or the stub is never served: the request carries a
+            # window (?hours=N) and a glob without it does not match a URL with
+            # a query string, so the real (empty) map loaded and no node from
+            # this tree ever existed to click.
+            "**/api/supervisor-map*",
             lambda route: route.fulfill(
                 status=200, content_type="application/json", body=tree,
             ),
@@ -3171,7 +3183,11 @@ class SupervisorMapBrowserTests(_BrowserFixture):
             }],
         })
         self.page.route(
-            "**/api/supervisor-map",
+            # Trailing *, or the stub is never served: the request carries a
+            # window (?hours=N) and a glob without it does not match a URL with
+            # a query string, so the real (empty) map loaded and no node from
+            # this tree ever existed to click.
+            "**/api/supervisor-map*",
             lambda route: route.fulfill(
                 status=200, content_type="application/json", body=tree,
             ),

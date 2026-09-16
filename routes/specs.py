@@ -49,7 +49,14 @@ def _discover_and_enrich(root: Path) -> list[dict[str, Any]]:
     specs = specs_gallery.discover_specs(root)
     references = specs_gallery.find_all_references(
         root, [Path(s["path"]).name for s in specs])
-    return [specs_gallery.enrich(root, s, references=references[Path(s["path"]).name])
+    # Same one-pass treatment as references, and for a larger saving: per spec
+    # this was 33 grep processes, about 858 for a page of 26, measured at 13.4s
+    # of a 16.1s call on 2026-09-15. See find_all_implementations.
+    implementations = specs_gallery.find_all_implementations(
+        root, [s["path"] for s in specs])
+    return [specs_gallery.enrich(root, s,
+                                 references=references[Path(s["path"]).name],
+                                 impl_count=implementations.get(s["path"], 0))
             for s in specs]
 
 

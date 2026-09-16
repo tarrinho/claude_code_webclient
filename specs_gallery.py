@@ -335,22 +335,106 @@ def git_provenance(repo_root: Path, spec_path: str) -> dict[str, str] | None:
     return {"author": author, "date": date}
 
 
-def spec_implementation(repo_root: Path, spec_path: str) -> int:
-    """Count of implementation artifacts for *spec_path*.
+#: Where implementation evidence is looked for. One tuple so the per-spec and
+#: whole-set paths below cannot search different places.
+_IMPL_SUBDIRS: Final[tuple[str, ...]] = ("routes", "tests", "web/assets")
 
-    Extracts topic keywords from the spec filename (strips date prefix,
-    ``-design.md`` suffix, splits kebab-case, filters stop words) and then
-    runs ``grep -rl`` across ``routes/``, ``tests/``, and ``web/assets/``.
 
-    Strategy: use compound kebab-case queries first (two words joined with
-    ``-``) because they are highly specific. Fall back to individual ≥ 4
-    char keywords only when no compound hit is found. Cap individual hits
-    at 1 per subdir to avoid noise inflation.
+def find_all_implementations(
+    repo_root: Path, spec_paths: list[str],
+) -> dict[str, int]:
+    """``spec_path -> implementation count`` for every spec, in three greps.
 
-    Returns 0 when no codebase evidence is found.
+    Same answer as calling :func:`spec_implementation` per spec, at a fraction
+    of the cost. That function fires one ``grep`` per (subdirectory, keyword)
+    pair: measured on this checkout 2026-09-15, **33 grep processes for a
+    single spec and roughly 858 for a page of 26**, which was 13.4s of a 16.1s
+    ``/api/specs`` call. Each one spawns a process and walks the same three
+    directory trees the previous one just walked.
+
+    The cost also grew on two axes at once -- more specs to ask about, and
+    more files to search -- so it degraded faster than the project did.
+
+    ``grep`` accepts many patterns in one invocation (``-e`` repeated), so one
+    pass per subdirectory finds every file containing any keyword at all. The
+    keyword-level question -- *which* of them appear -- is then answered by
+    reading those files once, which is a handful of files rather than a tree.
+
+    **Not ``grep -o``**, which was tried first and undercounted 11 of 26 specs.
+    It reports non-overlapping, leftmost-longest matches, so a keyword that
+    only ever occurs *inside* a longer matched keyword is never printed:
+    searching for both ``transport-project-sync`` and ``transport-project``
+    reports only the first, and the second reads as absent. The counts came
+    out lower than the per-spec version for exactly the specs whose keywords
+    nest, which is most of them.
+
+    This mirrors :func:`find_all_references`, which already replaced a
+    per-spec grep with a single pass for the same reason.
+    """
+    per_spec = {p: _implementation_candidates(p) for p in spec_paths}
+    every_keyword = sorted({kw for kws in per_spec.values() for kw in kws})
+    if not every_keyword:
+        return {p: 0 for p in spec_paths}
+
+    matched: dict[str, set[str]] = {}
+    for subdir in _IMPL_SUBDIRS:
+        target = repo_root / subdir
+        if not target.is_dir():
+            matched[subdir] = set()
+            continue
+        cmd = ["grep", "-rlF"]
+        for keyword in every_keyword:
+            cmd += ["-e", keyword]
+        cmd.append(str(target))
+        try:
+            # Timeout scales with the work: one pass over a whole tree for
+            # every keyword at once is not the 5s job a single keyword was.
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60,
+            )
+            hits = [line for line in result.stdout.splitlines() if line.strip()]
+        except (OSError, subprocess.TimeoutExpired):
+            # An empty set reads as "no evidence", which is what the per-spec
+            # version also returned when its grep failed. Silence here costs a
+            # status badge, never a wrong one.
+            matched[subdir] = set()
+            continue
+
+        # Which keywords are in those files. Substring membership in Python is
+        # the same test `grep -F` performs, so the answer matches the per-spec
+        # version exactly -- and only the files grep already selected are read,
+        # which is a handful rather than the tree.
+        present: set[str] = set()
+        for hit in hits:
+            try:
+                text = Path(hit).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for keyword in every_keyword:
+                if keyword not in present and keyword in text:
+                    present.add(keyword)
+        matched[subdir] = present
+
+    return {
+        path: sum(
+            1
+            for subdir in _IMPL_SUBDIRS
+            for keyword in keywords
+            if keyword in matched.get(subdir, ())
+        )
+        for path, keywords in per_spec.items()
+    }
+
+
+def _implementation_candidates(spec_path: str) -> list[str]:
+    """The keywords :func:`spec_implementation` searches for, deduplicated.
+
+    Split out so the per-spec path and :func:`find_all_implementations` build
+    the same list from the same rules -- two copies of this would drift, and
+    the drift would show up as a status badge that changes depending on which
+    code path asked.
     """
     import re as _re
-    import subprocess as _sub
 
     name = Path(spec_path).name
     # Strip date prefix (YYYY-MM-DD-) and -design.md / .md suffix.
@@ -392,31 +476,28 @@ def spec_implementation(repo_root: Path, spec_path: str) -> int:
         if not candidates or (len(candidates) >= 3 and len(keywords) >= 2):
             candidates.extend(long_kws)
     else:
-        return 0
+        return []
 
-    seen_targets: set[tuple[str, str]] = set()
-    count = 0
-    for subdir in ("routes", "tests", "web/assets"):
-        target = repo_root / subdir
-        if not target.is_dir():
-            continue
-        for kw in candidates:
-            if (subdir, kw) in seen_targets:
-                continue
-            seen_targets.add((subdir, kw))
-            try:
-                r = _sub.run(
-                    ["grep", "-rl", "--fixed-strings", kw, str(target)],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if r.stdout.strip():
-                    count += 1
-            except Exception:
-                pass
-    return count
+    # dict.fromkeys rather than set(): the original walked `candidates` in
+    # order and skipped repeats with a seen-set, so order was never part of
+    # the answer -- but keeping it makes the two paths diffable by eye.
+    return list(dict.fromkeys(candidates))
 
 
-def spec_status_v2(repo_root: Path, spec_path: str) -> str:
+def spec_implementation(repo_root: Path, spec_path: str) -> int:
+    """Count of implementation artifacts for one spec.
+
+    Kept for callers asking about a single spec. Anything enriching a whole
+    page should call :func:`find_all_implementations` instead and read the
+    answer out of the returned mapping -- this one pays three greps for one
+    spec, where that pays three for all of them.
+    """
+    return find_all_implementations(repo_root, [spec_path])[spec_path]
+
+
+def spec_status_v2(
+    repo_root: Path, spec_path: str, *, impl_count: int | None = None,
+) -> str:
     """Auto-detected status, from `routes.db_specs.ALLOWED_STATUSES` only.
 
     "implementing" when implementation artifacts exist, "planning" when a
@@ -444,7 +525,13 @@ def spec_status_v2(repo_root: Path, spec_path: str) -> str:
     one field had two vocabularies and an auto status could not be compared
     with a manual one.
     """
-    if spec_implementation(repo_root, spec_path) > 0:
+    # *impl_count*, when given, is the figure find_all_implementations already
+    # computed for the whole page. Without it this greps again for a number
+    # enrich() has usually just worked out -- the same three subdirectories
+    # walked twice per spec for one answer.
+    if impl_count is None:
+        impl_count = spec_implementation(repo_root, spec_path)
+    if impl_count > 0:
         return "implementing"
     # Check for a plan file (same prefix).
     plans_dir = repo_root / "docs" / "superpowers" / "plans"
@@ -471,6 +558,7 @@ def spec_status_v2(repo_root: Path, spec_path: str) -> str:
 
 def enrich(
     repo_root: Path, spec: dict[str, Any], *, references: list[str] | None = None,
+    impl_count: int | None = None,
 ) -> dict[str, Any]:
     """Adds referenced_by/status/author/date/impl_count/mtime_iso to one
     discover_specs() entry.  Each enrichment is isolated: one failing must
@@ -500,15 +588,21 @@ def enrich(
         except Exception:
             out["referenced_by"] = []
 
+    # One number, used twice. impl_count decides the status *and* is reported
+    # as its own field, so computing it once and passing it into both is what
+    # stops a page paying for the same three greps per spec twice over.
     try:
-        out["status"] = spec_status_v2(repo_root, spec["path"])
+        if impl_count is None:
+            impl_count = spec_implementation(repo_root, spec["path"])
+        out["impl_count"] = impl_count
     except Exception:
-        out["status"] = "spec_only"
+        impl_count = 0
+        out["impl_count"] = 0
 
     try:
-        out["impl_count"] = spec_implementation(repo_root, spec["path"])
+        out["status"] = spec_status_v2(repo_root, spec["path"], impl_count=impl_count)
     except Exception:
-        out["impl_count"] = 0
+        out["status"] = "spec_only"
 
     try:
         mtime = spec["mtime"]  # epoch float from discover_specs

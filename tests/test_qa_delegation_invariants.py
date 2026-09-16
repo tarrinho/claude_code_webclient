@@ -50,12 +50,36 @@ CODING_MEASURED = [
     _row("azure_ai/gpt-5.4-mini", "coding", None, None, 0.5261, None, 1_050_000),
 ]
 
-# Spec 2.6: the reviewer-gate rows. Luna's 11.1s is the only measured gate
-# latency in the table and is what 5.1's derivation divides by 12.8.
+# Spec 2.6: the real reviewer-gate rows. Luna's 11.1s is the only measured
+# gate latency in the table and is what 5.1's derivation divides by 12.8.
+# Sonnet is the climb rung (spec 4.3/4.5) and its reviewer-gate latency is
+# TBD -- so any worst-case path computed against this fixture is
+# incomputable (spec 5.1, "Decided 2026-09-16"), on purpose. Used only where
+# that incomputability is the point; tests about something else use
+# GATE_SINGLE (no climb rung to be unmeasured) or GATE_CLIMB_MEASURED (a
+# climb rung that is measured).
 GATE_ROWS = [
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
+         1_000_000),
+]
+
+# One usable reviewer-gate model: there is no second rung to climb to, so
+# the gate-climb term is correctly zero rather than missing. Every test that
+# is not about gate-climbing itself uses this, so its numbers stay the ones
+# the pre-climb formula already published.
+GATE_SINGLE = [
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+         922_000),
+]
+
+# Both reviewer-gate rungs measured, so a gate that climbs has a priced
+# second call. Used only by tests about the climb term itself.
+GATE_CLIMB_MEASURED = [
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+         922_000),
+    _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, 14.0,
          1_000_000),
 ]
 
@@ -86,7 +110,7 @@ class ModelResolutionTests(unittest.TestCase):
     """Spec 1.1 invariant 2: every rung resolves in the model combo box (9.3)."""
 
     def test_a_complete_table_reports_no_resolution_problem(self):
-        problems = _table(_widget_rows() + GATE_ROWS,
+        problems = _table(_widget_rows() + GATE_SINGLE,
                           operational={"widget"}).validate()
         self.assertEqual(problems, [])
 
@@ -118,7 +142,7 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertTrue(any("claude-sonnet-5" in p for p in problems), problems)
 
     def test_a_supplied_combo_box_that_covers_every_rung_passes(self):
-        problems = _table(_widget_rows() + GATE_ROWS,
+        problems = _table(_widget_rows() + GATE_SINGLE,
                           operational={"widget"}).validate(
             known_models=["vllm/free", "azure_ai/gpt-5.6-luna",
                           "claude-sonnet-5"])
@@ -135,38 +159,68 @@ class ModelResolutionTests(unittest.TestCase):
 class WorstCasePathTests(unittest.TestCase):
     """Spec 1.1 invariant 5 / 5.1: the ceiling fits the budget."""
 
-    def test_reproduces_the_spec_worked_figure(self):
-        """5.1's own derivation, on 2.6's measured rows:
+    def test_the_spec_worked_figure_is_now_a_lower_bound_not_the_worst_case(self):
+        """Spec 5.1, "Decided 2026-09-16: the formula above is incomplete, and
+        1,243.125s is a lower bound". The 2026-09-15 derivation --
 
             generation (26.8 + 12.8 + 15.5) / 12.8 = 4.3047
             gates      3 x (11.1 / 12.8)           = 2.6016
                                              sum   = 6.90625
             90 x 2.0 x 6.90625                     = 1,243.125s
 
-        5.1 states the exact sum and the exact product, and says this check is
-        "the one it must reproduce". An earlier revision printed 1,242s, which
-        is `180 x 6.90` -- the sum rounded to two places before multiplying; it
-        was corrected once this check recomputed it. Both are under the 1,500s
-        ceiling, so no decision moved, and no constant here was bent to land on
-        either number.
+        -- summed three gate calls, each run once, at the gate's entry rung.
+        4.3/4.5 let a gate climb (`luna -> sonnet`) for a second call, and
+        section 2.6 records sonnet's `reviewer-gate` `median_latency_s` as
+        TBD -- "Luna's gate row is measured at 11.1s; sonnet's is not
+        measured at all." So `coding`'s full worst-case path is not merely
+        unequal to 1,243.125s, it cannot be computed at all: this is what
+        it now means for a task type to fail 1.1's "ceiling fits the budget"
+        invariant when reviewer-gate is this incomplete, and it is why
+        section 1.2's row for `coding` changed from "pass" to "not yet
+        answerable".
 
-        The 1.0 reference is asserted too, because it is the input the whole
-        derivation hangs on and the one 5.1 records changing identity: measured
-        over the two hard tasks alone sonnet was faster, over all six luna is,
-        and `vllm` at 26.8s is in the ladder without ever being the reference.
+        The 1.0 reference is asserted too, because it is unaffected by any
+        of this -- it comes from `coding`'s own ladder-eligible rows, not
+        from `reviewer-gate` -- and staying at 12.8 is how this test shows
+        the climb term, not the reference, is what broke.
         """
         table = _table(CODING_MEASURED + GATE_ROWS)  # nothing operational
         self.assertAlmostEqual(table.latency_reference_s("coding"), 12.8,
                                places=3)
-        self.assertAlmostEqual(table.worst_case_path_s("coding"), 1243.125,
-                               places=3)
+        self.assertIsNone(table.worst_case_path_s("coding"))
+
+    def test_an_unresolved_climb_rung_is_a_startup_problem_not_a_pass(self):
+        """The consequence of the above for 1.1: an operational task type
+        whose gate can climb but whose climb rung is unmeasured must be
+        refused at startup, not silently compared against the ceiling with
+        an understated number. `coding` itself is never flipped operational
+        here (spec 12 forbids it) -- a differently-named type carrying the
+        same measured rows and the same real, TBD-climb reviewer-gate table
+        stands in for it."""
+        table = _table(
+            [td.CapabilityRow(model=r.model, task_type="coding-shaped-2",
+                              accuracy=r.accuracy, n=r.n,
+                              cost_per_1m_tokens=r.cost_per_1m_tokens,
+                              median_latency_s=r.median_latency_s,
+                              max_context=r.max_context)
+             for r in CODING_MEASURED]
+            + GATE_ROWS,
+            operational={"coding-shaped-2"})
+        problems = table.validate()
+        self.assertTrue(
+            any("coding-shaped-2" in p and "claude-sonnet-5" in p
+                and "climb" in p for p in problems),
+            problems)
 
     def test_an_unknown_task_type_takes_the_longest_baseline(self):
         """5.1: "An unknown type must receive the longest deadline, never the
         shortest." Same rows under a known short-baseline type and under an
-        unlisted one; the unlisted one must get 90, not 45."""
-        known = _table(_widget_rows("long-context") + GATE_ROWS)
-        unknown = _table(_widget_rows("widget") + GATE_ROWS)
+        unlisted one; the unlisted one must get 90, not 45. `GATE_SINGLE` is
+        used because this test is about the baseline, not about gate
+        climbing -- a second, unmeasured gate rung would make the path
+        incomputable and mask the property under test."""
+        known = _table(_widget_rows("long-context") + GATE_SINGLE)
+        unknown = _table(_widget_rows("widget") + GATE_SINGLE)
         self.assertAlmostEqual(known.worst_case_path_s("long-context"),
                                677.7, places=3)
         self.assertAlmostEqual(unknown.worst_case_path_s("widget"),
@@ -175,12 +229,13 @@ class WorstCasePathTests(unittest.TestCase):
     def test_a_path_over_the_ceiling_is_reported(self):
         """Free rungs on both ends, so cost cannot be what fails: a rung ten
         times slower than the reference blows the ceiling on latency alone.
-        180 x (1.0 + 10.0 + 3 x 1.11) = 2,579.4s."""
+        180 x (1.0 + 10.0 + 3 x 1.11) = 2,579.4s. `GATE_SINGLE`: no climb
+        rung to be unmeasured, so the only thing that can fail is latency."""
         rows = [
             _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
             _row("vllm/slow", "widget", 0.90, 20, 0.0, 100.0),
         ]
-        table = _table(rows + GATE_ROWS, operational={"widget"})
+        table = _table(rows + GATE_SINGLE, operational={"widget"})
         self.assertAlmostEqual(table.worst_case_path_s("widget"), 2579.4,
                                places=3)
         self.assertTrue(any("ceiling" in p and "widget" in p
@@ -193,7 +248,7 @@ class WorstCasePathTests(unittest.TestCase):
             _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
             _row("vllm/slow", "widget", 0.90, 20, 0.0, 20.0),
         ]
-        table = _table(rows + GATE_ROWS, operational={"widget"})
+        table = _table(rows + GATE_SINGLE, operational={"widget"})
         self.assertAlmostEqual(table.worst_case_path_s("widget"), 1139.4,
                                places=3)
         self.assertEqual(table.validate(), [])
@@ -203,15 +258,57 @@ class WorstCasePathTests(unittest.TestCase):
         has one. Doubling only that row must move the worst case by
         3 x (11.1/10.0) x 180 = 599.4s. An implementation using a gate
         multiplier of 1.00 -- the mistake 5.1 records an earlier revision
-        making -- would not move at all."""
+        making -- would not move at all. `GATE_SINGLE` on both sides: this
+        test is about the entry rung's own latency, not the climb term."""
         slow_gate = [
             _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285,
                  22.2, 922_000),
         ]
-        base = _table(_widget_rows() + GATE_ROWS).worst_case_path_s("widget")
+        base = _table(_widget_rows() + GATE_SINGLE).worst_case_path_s("widget")
         slowed = _table(_widget_rows() + slow_gate).worst_case_path_s("widget")
         self.assertAlmostEqual(base, WIDGET_WORST_CASE_S, places=3)
         self.assertAlmostEqual(slowed, 1954.8, places=3)
+
+    def test_the_gate_climb_term_is_added_when_the_climb_rung_is_measured(self):
+        """Spec 4.3/4.5, 2026-09-16 amendment: each of the three gates can
+        make a second call, at the rung above its entry, if it climbs -- and
+        the worst case must assume it does. `GATE_CLIMB_MEASURED` adds a
+        measured sonnet reviewer-gate row (14.0s) above `GATE_SINGLE`'s luna
+        (11.1s) with nothing else changed, so the whole difference is the
+        climb term:
+
+            entry+climb per gate  (11.1 + 14.0) / 10.0 = 2.51
+            3 gates                                    = 7.53
+            generation             (20 + 10 + 12) / 10.0 = 4.2
+            sum                                         = 11.73
+            180 x 11.73                                 = 2,111.4s
+
+        against `GATE_SINGLE`'s 1,355.4s (`WIDGET_WORST_CASE_S`) -- a rise of
+        exactly 180 x 3 x (14.0/10.0) = 756.0s, the climb rung's own
+        contribution and nothing else."""
+        single = _table(_widget_rows() + GATE_SINGLE).worst_case_path_s("widget")
+        climbable = _table(
+            _widget_rows() + GATE_CLIMB_MEASURED).worst_case_path_s("widget")
+        self.assertAlmostEqual(single, WIDGET_WORST_CASE_S, places=3)
+        self.assertAlmostEqual(climbable, 2111.4, places=3)
+        self.assertAlmostEqual(climbable - single, 756.0, places=3)
+
+    def test_a_measured_but_unresolved_climb_rung_is_a_problem_not_zero(self):
+        """The negative of the test above, on the exact real-spec fixture:
+        a second reviewer-gate model exists (sonnet), so the gate can climb
+        and the worst case must assume it does -- but sonnet's own
+        `reviewer-gate` `median_latency_s` is TBD, so the climb term cannot
+        be priced. The path must come back `None` with a problem naming the
+        climb model, not a number that silently omits the climb (which
+        `test_the_gate_multiplier_comes_from_the_reviewer_gate_row`'s
+        `GATE_SINGLE` case already shows is a real, different, zero-cost
+        outcome that only applies when there is no second model at all)."""
+        table = _table(_widget_rows() + GATE_ROWS, operational={"widget"})
+        self.assertIsNone(table.worst_case_path_s("widget"))
+        problems = table.validate()
+        self.assertTrue(
+            any("claude-sonnet-5" in p and "climb" in p and "widget" in p
+                for p in problems), problems)
 
     def test_the_gate_falls_back_to_the_leaf_task_type_row(self):
         """5.1: "falling back to the leaf's task-type row when it does not"
@@ -250,7 +347,7 @@ class WorstCasePathTests(unittest.TestCase):
             _row("azure_ai/gpt-5.4-mini", "widget", 0.99, 20, 0.5261, 2.0),
             _row("vllm/unmeasured", "widget", None, None, 0.0, 1.0),
         ]
-        table = _table(_widget_rows() + never_a_rung + GATE_ROWS,
+        table = _table(_widget_rows() + never_a_rung + GATE_SINGLE,
                        operational={"widget"})
         self.assertEqual(table.ladder("widget"),
                          ["vllm/free", "azure_ai/gpt-5.6-luna",
@@ -301,7 +398,7 @@ class WorstCasePathTests(unittest.TestCase):
             _row("vllm/c", "widget", 0.70, 20, 0.0, 10.0),
             _row("vllm/d", "widget", 0.80, 20, 0.0, 10.0),
         ]
-        table = _table(rows + GATE_ROWS)
+        table = _table(rows + GATE_SINGLE)
         self.assertEqual(len(table.ladder("widget")), 4)
         self.assertAlmostEqual(table.worst_case_path_s("widget"), 1139.4,
                                places=3)
@@ -386,7 +483,7 @@ class TreeCostTests(unittest.TestCase):
             _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
             _row("azure_ai/mid", "widget", 0.95, 20, 0.5000, 10.5),
         ]
-        table = _table(rows + GATE_ROWS, operational={"widget"})
+        table = _table(rows + GATE_SINGLE, operational={"widget"})
         self.assertAlmostEqual(table.tree_cost_usd("widget"), 0.6624, places=3)
         self.assertEqual(table.validate(), [])
 
@@ -422,7 +519,7 @@ class AllSixTogetherTests(unittest.TestCase):
             _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
             _row("claude-sonet-5", "widget", 0.90, 20, 1.5709, 100.0),
         ]
-        problems = _table(rows + GATE_ROWS, operational={"widget"}).validate()
+        problems = _table(rows + GATE_SINGLE, operational={"widget"}).validate()
         self.assertTrue(any("claude-sonet-5" in p for p in problems), problems)
         self.assertTrue(any("ceiling" in p for p in problems), problems)
         self.assertTrue(any("BUDGET_USD" in p for p in problems), problems)

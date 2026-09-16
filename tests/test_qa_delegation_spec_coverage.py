@@ -70,13 +70,18 @@ def _row(model, task_type, accuracy=None, n=None, rate=0.0, latency=None,
     )
 
 
-# Spec 2.6's two `reviewer-gate` rows, as every table that computes a
-# worst-case path needs them (stages 3-5 run on this task type, spec 3 / 4.3).
+# One usable `reviewer-gate` row, as every table that computes a worst-case
+# path needs at least one (stages 3-5 run on this task type, spec 3 / 4.3).
+# A single row means there is no second, climbable rung (spec 4.3/4.5,
+# 2026-09-16 amendment) -- deliberate here: none of this file's tests are
+# about the gate-climb term, all of them are about the cost-ceiling
+# invariant (2.7), and a second, unmeasured `reviewer-gate` row (the real
+# state of section 2.6's own table) would make every worst-case path in this
+# file incomputable and mask what these tests actually check. The climb term
+# itself is covered in tests/test_qa_delegation_invariants.py.
 GATE_ROWS = [
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
          922_000),
-    _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
-         1_000_000),
 ]
 
 VLLM = "vllm/Qwen3.6-35B-A3B-NVFP4"

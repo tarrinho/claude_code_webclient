@@ -59,6 +59,25 @@ GATE_MEASURED = [
          1_000_000),
 ]
 
+# One usable reviewer-gate model, used wherever a test needs an operational
+# type's worst-case path to actually resolve: with only one candidate there
+# is no climb rung to be unmeasured (spec 4.3/4.5, 2026-09-16 amendment), so
+# this fixture's arithmetic matches the pre-amendment formula exactly.
+GATE_SINGLE = [
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+         922_000),
+]
+
+# `CODING_MEASURED`'s rows under a task type that is never `coding` --
+# spec 12 forbids flipping `coding` operational, and these tests are about
+# the operational-flag machinery, not about `coding` specifically, so a
+# renamed clone tests the same property without touching the forbidden type.
+CODING_SHAPED_MEASURED = [
+    _row(r.model, "coding-shaped-1", r.accuracy, r.n, r.cost_per_1m_tokens,
+         r.median_latency_s, r.max_context)
+    for r in CODING_MEASURED
+]
+
 
 class LadderEligibilityTests(unittest.TestCase):
     """Spec 2.6: one predicate, three conditions, used everywhere."""
@@ -224,25 +243,30 @@ class OperationalFlagTests(unittest.TestCase):
         self.assertEqual(table.validate(), [])
 
     def test_completeness_is_scoped_to_ladder_eligible_rows(self):
-        """Decided 2026-09-15. mini's coding row is incomplete and cannot be
-        measured from this deployment; under the broad rule coding could never
-        go operational, blocked by a model that is not a rung and cannot
-        become one."""
-        table = td.CapabilityTable(CODING_MEASURED + GATE_MEASURED,
-                                   operational={"coding"})
+        """Decided 2026-09-15. mini's coding-shaped row is incomplete and
+        cannot be measured from this deployment; under the broad rule the
+        type could never go operational, blocked by a model that is not a
+        rung and cannot become one. `coding` itself stays non-operational
+        (spec 12); `CODING_SHAPED_MEASURED` carries the same rows under a
+        different task type. `GATE_SINGLE` rather than `GATE_MEASURED`: this
+        test is about the completeness scoping, not about the reviewer-gate
+        climb term, so the gate needs exactly one usable model."""
+        table = td.CapabilityTable(CODING_SHAPED_MEASURED + GATE_SINGLE,
+                                   operational={"coding-shaped-1"})
         self.assertEqual(table.validate(), [])
 
     def test_an_incomplete_eligible_row_fails_validation(self):
         """The guard that must survive the scoping: a row that *is* a rung has
-        to be complete, or a deadline is derived from a missing latency."""
-        rows = list(CODING_MEASURED)
-        rows[1] = _row("azure_ai/gpt-5.6-luna", "coding", 1.00, 24, 0.0285,
-                       None, 922_000)          # measured, eligible, no latency
-        table = td.CapabilityTable(rows, operational={"coding"})
+        to be complete, or a deadline is derived from a missing latency.
+        `coding` itself stays non-operational (spec 12)."""
+        rows = list(CODING_SHAPED_MEASURED)
+        rows[1] = _row("azure_ai/gpt-5.6-luna", "coding-shaped-1", 1.00, 24,
+                       0.0285, None, 922_000)  # measured, eligible, no latency
+        table = td.CapabilityTable(rows, operational={"coding-shaped-1"})
         problems = table.validate()
         self.assertTrue(problems)
         joined = " ".join(problems)
-        self.assertIn("coding", joined)
+        self.assertIn("coding-shaped-1", joined)
         self.assertIn("median_latency_s", joined,
                       "the error must name the column, per spec 1.1")
 
@@ -254,10 +278,10 @@ class OperationalFlagTests(unittest.TestCase):
     def test_validation_only_considers_operational_types(self):
         """Editing a non-operational type's rows stays free -- that is the
         bootstrap path, and gating it would make the table impossible to fill
-        in."""
-        rows = (CODING_MEASURED + GATE_MEASURED
+        in. `coding` itself stays non-operational (spec 12)."""
+        rows = (CODING_SHAPED_MEASURED + GATE_SINGLE
                 + [_row("b", "voice", None, None, 0.1)])
-        table = td.CapabilityTable(rows, operational={"coding"})
+        table = td.CapabilityTable(rows, operational={"coding-shaped-1"})
         self.assertEqual(table.validate(), [])
 
 

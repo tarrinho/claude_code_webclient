@@ -350,15 +350,47 @@ class CapabilityTable:
 
         Returns `(latency, None)` or `(None, reason)`.
         """
+        candidates, why = self._gate_candidates(task_type)
+        if not candidates:
+            return None, (
+                f"{why}, so the model its three gates run on (spec 4.3) "
+                f"cannot be named"
+            )
+        gate = candidates[0]
+        if gate.median_latency_s is not None:
+            return gate.median_latency_s, None
+        for row in self.rows_for(task_type):          # 5.1's fallback
+            if row.model == gate.model and row.median_latency_s is not None:
+                return row.median_latency_s, None
+        return None, (
+            f"gate model {gate.model} has no measured median_latency_s under "
+            f"{GATE_TASK_TYPE} or {task_type}"
+        )
+
+    def _gate_candidates(self, task_type: str) -> tuple[list[CapabilityRow], str | None]:
+        """Usable `reviewer-gate` rows, cheapest first (spec 4.3's floor
+        pick and 4.3/4.5's climb target).
+
+        Shared by `_gate_latency_s` (entry rung, `candidates[0]`) and
+        `_gate_climb_latency_s` (the climb rung, `candidates[1]`) so the two
+        can never pick "the gate model" two different ways. `task_type` is
+        accepted for symmetry with the two callers and 5.1's fallback (which
+        needs the leaf's own task type), but the candidate set itself is
+        always drawn from `GATE_TASK_TYPE` -- the gate model is the same one
+        for every leaf task type by construction (spec 3, 4.3).
+
+        Returns `([], reason)` when no row is usable as a gate model at all;
+        `(candidates, None)` otherwise. Two different repairs, so two
+        different sentences in the reason -- telling an operator who is
+        looking at two gate rows that the table holds none sends them to add
+        rows they can already see; what they actually have to fix is the
+        blank rate or the exclusion.
+        """
         gate_rows = self.rows_for(GATE_TASK_TYPE)
         candidates = [r for r in gate_rows
                       if r.model not in EXCLUDED_MODELS
                       and r.cost_per_1m_tokens is not None]
         if not candidates:
-            # Two different repairs, so two different sentences. Telling an
-            # operator who is looking at two gate rows that the table holds
-            # none sends them to add rows they can already see; what they
-            # actually have to fix is the blank rate or the exclusion.
             if not gate_rows:
                 why = (f"the table holds no {GATE_TASK_TYPE} row at all")
             else:
@@ -372,20 +404,49 @@ class CapabilityTable:
                 )
                 why = (f"every {GATE_TASK_TYPE} row is unusable as a gate "
                        f"model: {unusable}")
-            return None, (
-                f"{why}, so the model its three gates run on (spec 4.3) "
-                f"cannot be named"
-            )
+            return [], why
         candidates.sort(key=lambda r: (r.cost_per_1m_tokens, r.model))
-        gate = candidates[0]
-        if gate.median_latency_s is not None:
-            return gate.median_latency_s, None
-        for row in self.rows_for(task_type):          # 5.1's fallback
-            if row.model == gate.model and row.median_latency_s is not None:
-                return row.median_latency_s, None
+        return candidates, None
+
+    def _gate_climb_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
+        """The gate's second call, at the rung above its entry (spec 4.3:
+        "The reviewer itself only climbs (`luna -> sonnet`) if it keeps
+        rejecting output from the generator's top rung"; 4.5 gives the
+        security gate the same climb). The worst-case path assumes the
+        climb happens, because it is a worst case.
+
+        The climb rung is `_gate_candidates`'s second entry -- the same
+        cheapest-first order `_gate_latency_s` picks its floor from, so the
+        two can never disagree about which model is one rung above the
+        floor.
+
+        Unlike the entry rung, there is **no** fallback to the leaf task
+        type's own row here. 5.1's fallback quote ("falling back to the
+        leaf's task-type row when it [the reviewer-gate row] does not"
+        exist) is stated for "a gate", i.e. for picking the entry rung's
+        latency; nothing in 4.3/4.5 extends it to the climbed call, and
+        assuming it would let an unmeasured `reviewer-gate` climb hide
+        behind a measured leaf-type row for the same model -- exactly the
+        kind of invented rule 5.1's "derived, not chosen" principle rules
+        out. The climb rung's latency must be measured directly on
+        `reviewer-gate`.
+
+        Returns `(latency, None)` when a climb rung exists and is measured;
+        `(None, None)` when the gate table has only one usable model, so
+        there is nothing to climb to and the term is correctly zero rather
+        than missing; `(None, reason)` when a climb rung exists but its
+        `median_latency_s` is not measured -- the climb is possible, the
+        worst case must assume it happens, and it cannot be priced.
+        """
+        candidates, _ = self._gate_candidates(task_type)
+        if len(candidates) < 2:
+            return None, None
+        climb = candidates[1]
+        if climb.median_latency_s is not None:
+            return climb.median_latency_s, None
         return None, (
-            f"gate model {gate.model} has no measured median_latency_s under "
-            f"{GATE_TASK_TYPE} or {task_type}"
+            f"gate climb model {climb.model} has no measured median_latency_s "
+            f"under {GATE_TASK_TYPE}"
         )
 
     def gate_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
@@ -402,12 +463,59 @@ class CapabilityTable:
     def _worst_case(self, task_type: str) -> tuple[float | None, list[str]]:
         """5.1's worst-case path, and why it could not be computed.
 
-            worst_case = baseline x size_factor x [ sum(m_rung) over MAX_ATTEMPTS
-                                                  + sum(m_gate) over the 3 gates ]
+        Amended 2026-09-16 (spec 5.1, "the formula above is incomplete, and
+        1,243.125s is a lower bound"): the original formula summed three
+        gate calls, each run once, at the gate's entry rung. Release 0.19.0
+        implemented both that arithmetic and 4.3/4.5's gate machinery for
+        the first time, and they disagreed -- 4.3/4.5 let a gate climb one
+        rung (`_gate_climb_latency_s`) if it keeps rejecting the generator's
+        top rung, and the original sum had no term for the second call that
+        climb makes. 4.3/4.5 win, because 5.1's own decision is that the
+        ceiling is *derived* from the worst-case path, not chosen, and a
+        formula modelling less than the pipeline does is not a derivation
+        of it:
 
-        Every generation attempt runs to its deadline, then every gate runs to
-        its own. Rungs past `MAX_ATTEMPTS` are not summed because no leaf can
-        reach them.
+            worst_case = baseline x size_factor x [ sum(m_rung) over MAX_ATTEMPTS
+                                                  + MODEL_GATE_COUNT
+                                                    x (m_gate_entry + m_gate_climb) ]
+
+        Every generation attempt runs to its deadline, then every one of the
+        three gates runs its entry call and, if the reviewer-gate table
+        holds a second usable model to climb to, its climb call too. Rungs
+        past `MAX_ATTEMPTS` are not summed because no leaf can reach them.
+
+        `m_gate_climb` is 0, not missing, when there is only one usable
+        `reviewer-gate` model: a gate cannot climb to a rung that does not
+        exist, so the term is correctly absent rather than unknown. It is a
+        **problem**, not 0 and not silently dropped, when a second model
+        exists but its own `reviewer-gate` `median_latency_s` is unmeasured
+        -- the climb is possible, the worst case has to assume it happens
+        (this is a worst case), and a figure that skipped an assumed-to-
+        happen call would be exactly the "models less than the pipeline"
+        failure 5.1 now names. See `_gate_climb_latency_s` for why there is
+        no fallback to the leaf task type's row here the way there is for
+        the entry rung.
+
+        **What this still does not cover: spec 4.5's security re-run
+        cycles.** `delegation_pipeline.SECURITY_RERUN_CAP` (2) permits two
+        additional generation ("fix") -> security-review cycles after the
+        base security gate rejects, and each cycle's security-review call
+        would reuse this same gate machinery -- but its *generation* call
+        has no rung this module, or any other in this codebase, currently
+        names. 4.5 rules out escalating that call ("a targeted fix, not a
+        blind rewrite from a larger model"), which rules out the obvious
+        guess, and assigns no model in its place; `delegation_pipeline`'s
+        own docstring for `next_gate_rung` says as much -- "which concrete
+        model sits at the gate's own top rung -- and how many rungs a gate
+        ladder even has -- is exactly the `reviewer-gate` ladder-eligibility
+        question section 12 defers as an open item; this function decides
+        none of that, the same way `SECURITY_RERUN_CAP = 2` decides none of
+        it either." Inventing a rung for it here would resolve that open
+        item in passing, which section 12 explicitly forbids. So the term
+        is left out rather than guessed at, and this paragraph is the
+        comment naming what is missing: a spec rule for which model backs a
+        security-rerun cycle's fix-generation call, and a table that can
+        answer it once that rule exists.
 
         An empty ladder yields `(None, [])`: "no empty ladder" already reports
         that, and repeating it as a second problem would make one broken
@@ -437,11 +545,19 @@ class CapabilityTable:
             else:
                 multiplier_sum += latency / reference
 
-        gate_latency, reason = self._gate_latency_s(task_type)
-        if gate_latency is None:
-            problems.append(f"{prefix} -- {reason}")
-        else:
-            multiplier_sum += MODEL_GATE_COUNT * gate_latency / reference
+        entry_latency, entry_reason = self._gate_latency_s(task_type)
+        if entry_reason is not None:
+            problems.append(f"{prefix} -- {entry_reason}")
+
+        climb_latency, climb_reason = self._gate_climb_latency_s(task_type)
+        if climb_reason is not None:
+            problems.append(f"{prefix} -- {climb_reason}")
+
+        if entry_latency is not None:
+            gate_multiplier = entry_latency / reference
+            if climb_latency is not None:
+                gate_multiplier += climb_latency / reference
+            multiplier_sum += MODEL_GATE_COUNT * gate_multiplier
 
         if problems:
             return None, problems

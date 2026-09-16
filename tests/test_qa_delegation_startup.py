@@ -77,21 +77,37 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
             await ds.validate_or_die()
 
     async def _gate_rows(self):
-        """Section 2.6's two `reviewer-gate` rows.
+        """Section 2.6's real two `reviewer-gate` rows.
 
-        Any table that flips a type operational needs them: stages 3-5 run on
-        this task type (spec 3, 4.3), so 1.1's "the ceiling fits the budget"
-        invariant has no gate multiplier to compute without one. Luna's 11.1s
-        is the measured gate latency 5.1's own derivation divides by. Neither
-        row carries an accuracy -- that is why `reviewer-gate` itself is not
-        operational (1.2), and the latency invariant deliberately does not
-        require one.
+        Any table that flips a type operational needs at least one: stages
+        3-5 run on this task type (spec 3, 4.3), so 1.1's "the ceiling fits
+        the budget" invariant has no gate multiplier to compute without one.
+        Luna's 11.1s is the measured gate latency 5.1's own derivation
+        divides by. Neither row carries an accuracy -- that is why
+        `reviewer-gate` itself is not operational (1.2), and the latency
+        invariant deliberately does not require one.
+
+        Sonnet is the climb rung (spec 4.3/4.5), and its `reviewer-gate`
+        latency is unmeasured here, matching section 2.6's real, current
+        state -- so a type validated against this fixture cannot compute a
+        worst-case path (2026-09-16 amendment) and cannot start. Use
+        `_gate_rows_single` for a test that needs the worst case to actually
+        resolve.
         """
         await self._row("azure_ai/gpt-5.6-luna", "reviewer-gate",
                         cost_per_1m_tokens=0.0285, median_latency_s=11.1,
                         max_context=922_000)
         await self._row("claude-sonnet-5", "reviewer-gate",
                         cost_per_1m_tokens=1.5709, max_context=1_000_000)
+
+    async def _gate_rows_single(self):
+        """One usable `reviewer-gate` row: no second, climbable rung, so a
+        type validated against this fixture computes its worst-case path
+        exactly as the pre-2026-09-16 formula did.
+        """
+        await self._row("azure_ai/gpt-5.6-luna", "reviewer-gate",
+                        cost_per_1m_tokens=0.0285, median_latency_s=11.1,
+                        max_context=922_000)
 
     async def test_a_complete_operational_type_starts(self):
         """The one end-to-end check that a complete operational type boots
@@ -111,7 +127,7 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
                         accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                         median_latency_s=12.0, max_context=229376)
         await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
-        await self._gate_rows()
+        await self._gate_rows_single()
         await db.delegation_operational_set("long-context", True)
         table = await ds.validate_or_die()
         self.assertEqual(table.ladder("long-context"),
@@ -153,12 +169,31 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         await self._row("vllm/SomeGatewayModel", "reasoning", accuracy=0.9,
                         n=4, cost_per_1m_tokens=0.0, median_latency_s=12.0,
                         max_context=229376)
-        await self._gate_rows()
+        await self._gate_rows_single()
         await db.delegation_operational_set("reasoning", True)
         with patch("routes.machines.known_backend_models",
                    side_effect=RuntimeError("db unavailable")):
             table = await ds.validate_or_die()  # must not raise
         self.assertEqual(table.ladder("reasoning"), ["vllm/SomeGatewayModel"])
+
+    async def test_an_operational_types_unmeasured_climb_rung_refuses_to_start(self):
+        """Spec 5.1's 2026-09-16 amendment, through the real startup path:
+        `reviewer-gate` holding its real two rows (luna measured, sonnet's
+        climb latency TBD) makes every operational type's worst-case path
+        incomputable, not merely a smaller number -- so `validate_or_die`
+        must refuse to start rather than let an understated figure pass the
+        ceiling check."""
+        await self._row("vllm/SomeGatewayModel", "reasoning", accuracy=0.9,
+                        n=4, cost_per_1m_tokens=0.0, median_latency_s=12.0,
+                        max_context=229376)
+        await self._gate_rows()
+        await db.delegation_operational_set("reasoning", True)
+        with self.assertRaises(ds.DelegationConfigError) as ctx:
+            await ds.validate_or_die()
+        message = str(ctx.exception)
+        self.assertIn("reasoning", message)
+        self.assertIn("claude-sonnet-5", message)
+        self.assertIn("climb", message)
 
     async def test_the_error_names_every_broken_invariant_not_just_the_first(self):
         """'The error lists every broken invariant so the operator can fix the

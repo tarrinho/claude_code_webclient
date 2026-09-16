@@ -81,12 +81,24 @@ class DelegationTableTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await db.delegation_operational_all(), set())
 
     async def test_rows_convert_to_capability_rows(self):
+        # Every numeric column gets a distinct value, on purpose: if any two
+        # were equal, a swap between those two columns in rows_to_capability
+        # would be invisible to the assertions below.
         await db.delegation_row_set("m", "coding", accuracy=0.66, n=44,
-                                    cost_per_1m_tokens=0.0,
+                                    cost_per_1m_tokens=0.13,
                                     median_latency_s=26.8, max_context=229376)
         rows = rows_to_capability(await db.delegation_rows_all())
         self.assertEqual(rows[0].model, "m")
+        self.assertEqual(rows[0].task_type, "coding")
         self.assertEqual(rows[0].accuracy, 0.66)
+        self.assertEqual(rows[0].n, 44)
+        self.assertEqual(rows[0].cost_per_1m_tokens, 0.13)
+        self.assertEqual(rows[0].median_latency_s, 26.8)
+        self.assertEqual(rows[0].max_context, 229376)
+
+    async def test_row_set_rejects_unknown_column(self):
+        with self.assertRaises(ValueError):
+            await db.delegation_row_set("m", "coding", bogus_column=1)
 
 
 if __name__ == "__main__":

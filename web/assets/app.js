@@ -18,7 +18,6 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 import {updateVoiceButtonVisibility} from './voice-engine.js?v=4274770';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
-import {loadDelegation} from './delegation.js?v=3100015';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -446,7 +445,7 @@ document.addEventListener('wc:map-open-chat', (event) => {
   selectChat(chatId);
 });
 
-function _switchTab(tab) {
+async function _switchTab(tab) {
   _currentTab = tab;
   document.querySelectorAll('.settings-tab').forEach(t => {
     const active = t.dataset.tab === tab;
@@ -492,7 +491,13 @@ function _switchTab(tab) {
   if (tab === 'skills') loadSkills();
   if (tab === 'images') loadImages(true);
   if (tab === 'specs') { _wireSpecsRefresh(); loadSpecs(true); }
-  if (tab === 'delegation') loadDelegation(true);
+  // Imported lazily, like supervisor-map.js and stats.js: Settings > Delegation
+  // is a rarely-opened tab, and the module is dead weight in the initial parse
+  // for every other page load.
+  if (tab === 'delegation') {
+    const {loadDelegation} = await import('./delegation.js?v=3100015');
+    loadDelegation(true);
+  }
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────

@@ -85,7 +85,7 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | model resolution | **pass** | all three resolve to real backend-and-model pairs |
 | no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all three rungs have §2.6 rows |
-| ceiling fits the budget | **pass** | worst case 1,242s against the 1,500s ceiling (§5.1) |
+| ceiling fits the budget | **pass** | worst case 1,243s against the 1,500s ceiling (§5.1) |
 | ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
@@ -429,7 +429,7 @@ Measured inputs, 2026-09-15 (`bench/pipeline_ab.py`, 6 leaves):
 |---|---|---|
 | `tokens_per_leaf` | 59,460 | measured, benchmark-shaped tasks |
 | `P(reach rung 1)` | 0.50 | measured, **n=6** |
-| `P(reach rung 2)` | 0.17 | measured, **n=6** |
+| `P(reach rung 2)` | 0.167 (`1/6`) | measured, **n=6** — one leaf of six. The cost table below is computed from the exact `1/6`, not from a rounded 0.17; at 0.17 every cell of it disagrees |
 | `leaves_per_tree` | 40 | **assumed** — this is `MAX_NODES`, an upper bound nobody has measured |
 | `BUDGET_USD` | 1.00 | §5 |
 
@@ -812,12 +812,17 @@ gates        3 x (11.1 / 12.8)            = 2.6016
                                      sum  = 6.9063
 
 binding case: coding, score 5, size factor 2.0
-90 x 2.0 x 6.9063 = 1,242s
+90 x 2.0 x 6.9063 = 1,243s
 ```
 
-**Ceiling = 1,500s**, and the margin is the point. The binding case lands at **1,242s**, leaving 258s — about 17%. A ceiling set flush to the worst case would be a coincidence rather than a margin: the next re-measurement of any of these latencies breaks it, and the failure mode is a leaf killed after paying for all five stages.
+The exact sum is `6.90625`, giving `1,243.125s`. An earlier revision of this line
+multiplied the sum already rounded to 6.90 and so printed 1,242s. The startup check
+of §1.1 recomputes this from the table at full precision, so the figure written here
+is the one it must reproduce.
 
-The re-measurement history makes the case better than any argument could. `vllm`'s coding latency has read 22.4, then 33.2, then 36.5, and now 26.8 across four passes at the same task type on the same day; the multiplier sum has read 7.40, 7.77, 7.39, 7.16 and now 6.90; and the reference model itself changed identity once the task mix was equalised. Every one of those readings was taken honestly and every one would have been used. **The ceiling has held at 1,500s throughout, which is the only reason none of it mattered** — and that is an argument for the margin, not for the arithmetic.
+**Ceiling = 1,500s**, and the margin is the point. The binding case lands at **1,243s**, leaving 257s — about 17%. A ceiling set flush to the worst case would be a coincidence rather than a margin: the next re-measurement of any of these latencies breaks it, and the failure mode is a leaf killed after paying for all five stages.
+
+The re-measurement history makes the case better than any argument could. `vllm`'s coding latency has read 22.4, then 33.2, then 36.5, and now 26.8 across four passes at the same task type on the same day; the multiplier sum has read 7.40, 7.77, 7.39, 7.16 and now 6.91; and the reference model itself changed identity once the task mix was equalised. Every one of those readings was taken honestly and every one would have been used. **The ceiling has held at 1,500s throughout, which is the only reason none of it mattered** — and that is an argument for the margin, not for the arithmetic.
 
 **An earlier revision of this section stated a multiplier sum of 7.77 and a worst case of 1,399s, and those reproduce from no reading of §2.6** — against the values available at the time, the two defensible gate choices gave 7.3937 and 8.2441, and 7.77 was neither. It came from assuming a gate multiplier of 1.00 instead of deriving one. This matters more than a typo would, because §1.1 recomputes this arithmetic at startup and refuses to load when it disagrees with the stored ceiling: a number nobody can reproduce would have been compared against on every boot.
 

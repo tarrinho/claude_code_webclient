@@ -48,15 +48,20 @@ class SshTransportsSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["remote_path"], "~/wc-proxy")
         self.assertEqual(row["last_synced_sha"], "")
 
-    async def test_get_is_owner_scoped(self):
+    async def test_get_is_not_owner_scoped(self):
+        """Transports are a shared pool: any owner can read any transport."""
         await db.ssh_transport_create("t2", "Kali3", "admin", "h", "kali", "k")
-        self.assertIsNone(await db.ssh_transport_get("t2", "someone-else"))
+        row = await db.ssh_transport_get("t2", "someone-else")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], "t2")
 
-    async def test_list_returns_only_this_owners_transports(self):
+    async def test_list_returns_all_transports(self):
+        """Transports are a shared pool: the list is unscoped."""
         await db.ssh_transport_create("t3", "Kali3", "admin", "h1", "kali", "k")
         await db.ssh_transport_create("t4", "Other", "someone-else", "h2", "kali", "k")
         rows = await db.ssh_transports_list("admin")
-        self.assertEqual([r["id"] for r in rows], ["t3"])
+        ids = sorted([r["id"] for r in rows])
+        self.assertEqual(ids, ["t3", "t4"])
 
     async def test_update_changes_only_given_fields(self):
         await db.ssh_transport_create("t5", "Kali3", "admin", "h", "kali", "k")
@@ -66,10 +71,13 @@ class SshTransportsSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["name"], "Kali3 renamed")
         self.assertEqual(row["ssh_host"], "h")  # untouched
 
-    async def test_update_is_owner_scoped(self):
+    async def test_update_is_not_owner_scoped(self):
+        """Transports are a shared pool: any account can edit any transport."""
         await db.ssh_transport_create("t6", "Kali3", "admin", "h", "kali", "k")
         updated = await db.ssh_transport_update("t6", "someone-else", name="x")
-        self.assertFalse(updated)
+        self.assertTrue(updated)
+        row = await db.ssh_transport_get("t6", "someone-else")
+        self.assertEqual(row["name"], "x")
 
     async def test_delete_removes_the_row(self):
         await db.ssh_transport_create("t7", "Kali3", "admin", "h", "kali", "k")

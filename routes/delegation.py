@@ -38,6 +38,7 @@ operational.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -59,6 +60,38 @@ def _require_admin(request: Request) -> dict:
     if session.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return session
+
+
+def _require_json_object(data: Any) -> dict:
+    """A PUT body that isn't a JSON object (a bare list, string, number...)
+    must get a 400, not an `AttributeError` from the first `.get()` call
+    escaping as an unhandled 500."""
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=400, detail="request body must be a JSON object")
+    return data
+
+
+def _coerce_measured_value(column: str, value: Any) -> float | int | None:
+    """Coerce one of the five measured columns to number-or-`None`, refusing
+    anything else with a 400.
+
+    `db.delegation_row_set` stores whatever it is given -- SQLite's REAL
+    affinity does not coerce text, so a string (or a dict) written into one
+    of these columns is accepted silently and only breaks on the *next*
+    read: `CapabilityTable.ladder`'s sort key divides by
+    `cost_per_1m_tokens`, so a non-numeric value there turns every
+    subsequent `GET /api/delegation` into a 500 -- and the settings page is
+    the only normal way an operator would reach the cell to fix it, so a bad
+    write would brick the one tool that could repair it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{column} must be a number or null, got {value!r}")
+    return value
 
 
 async def handle_delegation_get(request: Request):
@@ -92,7 +125,7 @@ async def handle_row_put(request: Request):
     cell edit silently null the other four columns on that row.
     """
     _require_admin(request)
-    data = await request.json()
+    data = _require_json_object(await request.json())
     model = (data.get("model") or "").strip()
     task_type = (data.get("task_type") or "").strip()
     if not model or not task_type:
@@ -112,7 +145,8 @@ async def handle_row_put(request: Request):
         (r for r in rows if r["model"] == model and r["task_type"] == task_type),
         None)
     merged_columns = {
-        c: (data[c] if c in data else (existing.get(c) if existing else None))
+        c: (_coerce_measured_value(c, data[c]) if c in data
+            else (existing.get(c) if existing else None))
         for c in _EDITABLE
     }
 
@@ -143,7 +177,7 @@ async def handle_operational_put(request: Request):
     flip leaves the stored state exactly as it was.
     """
     _require_admin(request)
-    data = await request.json()
+    data = _require_json_object(await request.json())
     task_type = (data.get("task_type") or "").strip()
     operational = bool(data.get("operational"))
     if not task_type:

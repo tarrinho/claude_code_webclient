@@ -73,6 +73,54 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                 "model": "m", "task_type": "coding"}))
         self.assertEqual(ctx.exception.status_code, 403)
 
+    async def test_a_non_admin_cannot_flip_operational(self):
+        """The flip endpoint is the highest-privilege action in this change --
+        it submits a task type to production routing -- and had no test of
+        its own admin gate; only handle_row_put's was covered."""
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(role="user", body={
+                "task_type": "coding", "operational": True}))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    async def test_a_non_dict_row_body_is_refused_with_400(self):
+        """A bare list or string body must not reach the first `.get()` call
+        and surface as an unhandled 500."""
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_row_put(_request(body=["not", "an", "object"]))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_a_non_dict_operational_body_is_refused_with_400(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(body="x"))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_a_non_numeric_value_is_refused_and_the_page_stays_readable(self):
+        """Reproduced defect: a PUT with accuracy="abc" used to return 200 and
+        store TEXT (SQLite REAL affinity does not coerce it), and every later
+        GET raised TypeError from CapabilityTable.ladder's sort key -- a
+        permanent 500 on the only page that could fix the cell. The write must
+        be refused, and a normal GET afterwards must still succeed."""
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_row_put(_request(body={
+                "model": "m", "task_type": "coding", "accuracy": "abc"}))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("accuracy", str(ctx.exception.detail))
+        response = await delegation_routes.handle_delegation_get(_request())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertEqual(body["rows"], [])
+
+    async def test_a_dict_value_is_also_refused(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_row_put(_request(body={
+                "model": "m", "task_type": "coding", "cost_per_1m_tokens": {"a": 1}}))
+        self.assertEqual(ctx.exception.status_code, 400)
+
     async def test_an_unknown_column_is_refused_not_passed_through(self):
         """'Validate and constrain what the write endpoint accepts. Unknown
         column names must be refused, not passed through.' A typo in a column

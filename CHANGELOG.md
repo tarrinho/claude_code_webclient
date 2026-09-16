@@ -39,6 +39,62 @@ churn.
   from `app`, so it is tested against a constructed table rather than against
   today's mostly-unmeasured production data.
 
+## [0.18.1] — 2026-09-16
+
+### Fixed
+
+- **Voice mode: the buttons did not appear until you reloaded the page.**
+  Turning a chat into a voice chat updated the state but never re-ran the check
+  that shows the mic and live-conversation buttons — a reload was what
+  re-evaluated visibility from scratch, which is why refreshing "fixed" it. The
+  toggle's own tooltip had the same shape of bug and described the state the
+  chat had just left.
+
+- **Voice mode: "Conversation complete" appeared after every reply.** The
+  handoff panel was shown when each answer finished streaming, so it announced
+  the end of a conversation that was still running — and in hands-free mode the
+  microphone reopened underneath it. It now waits for the conversation to
+  actually stop.
+
+- **Voice mode: nothing indicated that a reply was being prepared.** Between
+  the silence timeout and the first spoken word there was no feedback at all,
+  with the microphone closed, which reads as the conversation having died.
+  There is now a "Thinking…" line with a pulsing dot. No sound was added.
+
+- **Voice mode: the handoff buttons were destroyed by using them.** Writing the
+  summary cleared the panel that contained Agree, Summarize and Reject, so
+  after one Summarize there was nothing left to click. Output now has its own
+  element. A handoff also disables the three buttons, because the conversation
+  is deleted by the first one whatever the outcome — leaving them live meant a
+  second click acted on a chat that no longer existed.
+
+- **`/api/hard-refresh` could redirect anywhere (security).** The endpoint is
+  exempt from authentication and passed its `to` parameter straight into a
+  redirect, so anyone on the network could make the console send visitors
+  off-site from its own trusted hostname, with no account. It now accepts
+  same-origin paths only.
+
+- **Standby told you to reattach to a screen window that was never created.**
+  Putting a conversation on standby stops its process and starts nothing, so
+  the suggested `screen -r` could not work and wake — the thing that actually
+  brings it back — went unmentioned.
+
+- **The Specs tab listed specs by file modification time.** Editing an old spec
+  moved it to the top, so the order drifted with maintenance rather than
+  reflecting the dates the specs carry.
+
+### Changed
+
+- **The Specs tab loads in well under a second, from about 16.** Deciding
+  whether a spec had been implemented ran roughly 858 `grep` processes per page
+  view; it now runs three. The built list is also cached, with a Refresh button
+  that rebuilds it so a spec written moments ago is one click away rather than
+  a wait.
+
+- **Statistics: the payload cache can be switched off.** Its time-to-live is
+  now configurable, which the tests set to zero — a fixed lifetime made a test
+  that writes data and checks it appears fail on data it had just written.
+
 ## [0.18.0] — 2026-09-15
 
 A minor rather than a patch release because of the model-routing work: for

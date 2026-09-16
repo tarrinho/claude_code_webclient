@@ -188,7 +188,7 @@ async def _api_hard_refresh(request: Request):
     # where the only in-repo caller (a hard refresh of the current page) would
     # land anyway -- it passes location.pathname, so no real use is lost.
     ref = request.query_params.get("to", "/")
-    if (not ref.startswith("/")) or ref.startswith("//") or ref.startswith("/\\"):
+    if (not ref.startswith("/")) or ref.startswith(("//", "/\\")):
         _log.warning("hard_refresh_rejected_target ip=%s", request.client.host
                      if request.client else "?")
         ref = "/"

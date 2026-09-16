@@ -17,7 +17,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-import routes.misc as misc
+from routes import misc
 
 
 def _request(to=None):

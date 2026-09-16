@@ -174,7 +174,24 @@ async def _api_hard_refresh(request: Request):
     Clear-Site-Data is unreliable.
     """
     from fastapi.responses import RedirectResponse
+    # Same-origin only. This endpoint is exempt from auth (middleware.py), so
+    # an unvalidated `to` let anyone send
+    # https://<console>/api/hard-refresh?to=https://evil.example and have the
+    # trusted console host issue the redirect itself -- a phishing primitive
+    # that needs no account.
+    #
+    # The rule is "one leading slash and nothing clever":
+    #   //evil.example   is protocol-relative and resolves off-origin
+    #   /\evil.example   is treated as protocol-relative by some browsers
+    #   https://…        is absolute
+    # Anything that is not a plain rooted path falls back to "/", which is
+    # where the only in-repo caller (a hard refresh of the current page) would
+    # land anyway -- it passes location.pathname, so no real use is lost.
     ref = request.query_params.get("to", "/")
+    if (not ref.startswith("/")) or ref.startswith("//") or ref.startswith("/\\"):
+        _log.warning("hard_refresh_rejected_target ip=%s", request.client.host
+                     if request.client else "?")
+        ref = "/"
     return RedirectResponse(
         url=ref,
         status_code=302,

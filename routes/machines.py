@@ -755,6 +755,53 @@ def _parse_model_list(body: bytes) -> list[dict[str, str]]:
     return models
 
 
+async def known_backend_models() -> frozenset[str]:
+    """Every backend-and-model id the combo box (spec 9.3) could show right
+    now, read from local DB state only -- no network call.
+
+    Used by `delegation_startup.validate_or_die` for 1.1's model-resolution
+    invariant. That function runs in the app lifespan and must not turn a
+    slow or unreachable backend into a boot failure, so this reads what is
+    already on disk rather than re-probing every machine's `/v1/models`:
+    `config.KNOWN_MODELS` (the box's own floor -- what it shows when nothing
+    else is known), plus, for every configured machine, its default `model`,
+    its curated `active_models`, and its last-probed `models_list` cache
+    (populated by a force-refresh through `handle_models_list`, not by this
+    function). A machine that has never been force-refreshed contributes
+    only its default model and active list, same as the live UI would show
+    it before that machine's models tab is opened with `?force=1`.
+
+    Callers that need a fresh answer -- the Backends/Models UI itself --
+    still go through `handle_models_list`, which probes, times out, and
+    reports failure to a human. This function never probes.
+    """
+    ids: set[str] = set(config.KNOWN_MODELS)
+    cur = await db.db_conn.execute(
+        "SELECT model, active_models, models_list FROM ai_machines"
+    )
+    rows = await cur.fetchall()
+    for row in rows:
+        model = (row["model"] or "").strip()
+        if model:
+            ids.add(model)
+        ids.update(db.parse_active_models(row["active_models"]))
+        stored = row["models_list"]
+        if not stored:
+            continue
+        try:
+            parsed = json.loads(stored)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, list):
+            continue
+        for entry in parsed:
+            if isinstance(entry, dict):
+                model_id = entry.get("id")
+                if isinstance(model_id, str) and model_id.strip():
+                    ids.add(model_id.strip())
+    return frozenset(ids)
+
+
 def _machine_model_selection(machine: dict | None) -> dict:
     """The active/default selection to report alongside a model list."""
     if not machine:

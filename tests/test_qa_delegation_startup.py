@@ -33,6 +33,23 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         defaults.update(kw)
         await db.delegation_row_set(model, task_type, **defaults)
 
+    async def _seed_machine_serving(self, *model_ids: str) -> str:
+        """Register a machine whose active list names *model_ids*, so
+        `routes.machines.known_backend_models` reports them as live -- the
+        DB-only stand-in for "the combo box actually offers this".
+
+        `db.ai_machine_create` returns its write timestamp, not the id --
+        the id passed in is the one to reuse for the follow-up update.
+        """
+        machine_id = f"m-{model_ids[0]}"
+        await db.ai_machine_create(
+            machine_id, "Test Machine", "localhost", 0, None,
+            model_ids[0], None, None, "tester", provider="claude_code",
+        )
+        await db.ai_machine_set_models(machine_id, "tester", list(model_ids),
+                                       model_ids[0])
+        return machine_id
+
     async def test_an_empty_table_starts_fine(self):
         """The bootstrap case: nothing measured, nothing operational."""
         table = await ds.validate_or_die()
@@ -83,10 +100,17 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         The model is a real section 2.6 id rather than `m`: 1.1's model
         resolution invariant asks the combo box (9.3) whether a rung resolves,
         and a placeholder name resolves to nothing.
+
+        A machine actually serving it is seeded too: `validate_or_die` now
+        wires the live model list (`routes.machines.known_backend_models`)
+        into this check rather than the `config.KNOWN_MODELS` fallback, and
+        that fallback holds bare Anthropic ids only -- it would never contain
+        a `vllm/...` id, live or not.
         """
         await self._row("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context",
                         accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                         median_latency_s=12.0, max_context=229376)
+        await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
         await self._gate_rows()
         await db.delegation_operational_set("long-context", True)
         table = await ds.validate_or_die()
@@ -100,6 +124,41 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
                                339.75, places=3)
         self.assertAlmostEqual(table.tree_cost_usd("long-context"), 0.0,
                                places=6)
+
+    async def test_a_backend_qualified_rung_no_machine_serves_now_fails(self):
+        """Closes the gap two reviews flagged: with the live model list
+        wired in, a backend-qualified rung (`vllm/...`) is checked against
+        real machines, not just its own shape. Before this change,
+        `validate()` ran with `known_models=None` and any non-empty
+        `backend/model` string passed unconditionally.
+        """
+        await self._row("vllm/NotAModel", "reasoning", accuracy=0.9, n=4,
+                        cost_per_1m_tokens=0.0, median_latency_s=12.0,
+                        max_context=229376)
+        await self._gate_rows()
+        await db.delegation_operational_set("reasoning", True)
+        with self.assertRaises(ds.DelegationConfigError) as ctx:
+            await ds.validate_or_die()
+        self.assertIn("vllm/NotAModel", str(ctx.exception))
+
+    async def test_an_unreadable_live_model_list_degrades_instead_of_refusing_to_boot(self):
+        """"This model does not resolve" and "I could not find out which
+        models exist" must not share a code path. A DB failure fetching the
+        live list is the second one: `validate_or_die` must still start,
+        falling back to the shape-only check rather than raising -- and
+        rather than treating the failure as "the combo box has nothing in
+        it", which would refuse to start for a reason that has nothing to do
+        with the configured data.
+        """
+        await self._row("vllm/SomeGatewayModel", "reasoning", accuracy=0.9,
+                        n=4, cost_per_1m_tokens=0.0, median_latency_s=12.0,
+                        max_context=229376)
+        await self._gate_rows()
+        await db.delegation_operational_set("reasoning", True)
+        with patch("routes.machines.known_backend_models",
+                   side_effect=RuntimeError("db unavailable")):
+            table = await ds.validate_or_die()  # must not raise
+        self.assertEqual(table.ladder("reasoning"), ["vllm/SomeGatewayModel"])
 
     async def test_the_error_names_every_broken_invariant_not_just_the_first(self):
         """'The error lists every broken invariant so the operator can fix the

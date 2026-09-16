@@ -675,6 +675,21 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
             cost_per_1m_tokens=RATE[LUNA], median_latency_s=11.1,
             max_context=922_000)
         await db.delegation_operational_set(self.TASK_TYPE, True)
+        # `validate_or_die` (delegation_startup.py) now wires the live model
+        # list into 1.1's resolution check instead of the config.KNOWN_MODELS
+        # fallback (bare Anthropic ids only), so the backend-qualified rungs
+        # here -- VLLM and LUNA -- need a machine that actually serves them or
+        # this class's own "must not raise" assertion fails for a reason that
+        # has nothing to do with what it tests. SONNET is a bare id and
+        # already resolves through config.KNOWN_MODELS.
+        # `db.ai_machine_create` returns its write timestamp, not the id --
+        # reuse the id passed in for the follow-up update.
+        machine_id = "m-coding-shaped"
+        await db.ai_machine_create(
+            machine_id, "Test Machine", "localhost", 0, None, VLLM,
+            None, None, "tester", provider="claude_code",
+        )
+        await db.ai_machine_set_models(machine_id, "tester", [VLLM, LUNA], VLLM)
 
     async def test_a_coding_shaped_type_at_its_binding_score_loads(self):
         await self._seed(26.8)

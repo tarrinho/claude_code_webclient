@@ -17,6 +17,35 @@ import {
 const voiceAgreeBtn = document.getElementById('voiceAgreeBtn');
 const voiceSummarizeBtn = document.getElementById('voiceSummarizeBtn');
 const voiceRejectBtn = document.getElementById('voiceRejectBtn');
+const voiceConclusionOutput = document.getElementById('voiceConclusionOutput');
+
+/** Write progress, the summary, or an error into the conclusion panel's own
+ * output area.
+ *
+ * Never touches the panel's innerHTML. The three handoff buttons are children
+ * of that panel, and clearing it to show text destroyed them along with the
+ * label: after one "Summarize Only" the panel was empty and could not be used
+ * again without reloading. The references held above would have gone stale
+ * too -- they point at the original elements, and their click listeners stay
+ * bound to the detached nodes, so even re-creating the markup would produce
+ * buttons that do nothing. */
+function showConclusionOutput(text, isError) {
+  if (!voiceConclusionOutput) return;
+  voiceConclusionOutput.textContent = text;
+  voiceConclusionOutput.classList.toggle('is-error', Boolean(isError));
+  voiceConclusionOutput.hidden = false;
+  voiceTooltipConclusion.hidden = false;
+}
+
+/** Clear it for a new voice session. Called from resetVoiceHandoffState
+ * below, which voice-tooltip.js's openVoiceTooltip already calls -- so the
+ * reset stays one call from the tooltip's point of view. */
+function clearConclusionOutput() {
+  if (!voiceConclusionOutput) return;
+  voiceConclusionOutput.textContent = '';
+  voiceConclusionOutput.classList.remove('is-error');
+  voiceConclusionOutput.hidden = true;
+}
 
 let voiceStreamDone = false;          // written, never read elsewhere -- see resetVoiceHandoffState
 export let voiceConversationComplete = false;
@@ -27,6 +56,10 @@ let _voiceAssistantDiv = null;   // single div that accumulates assistant text d
 export function resetVoiceHandoffState() {
   voiceStreamDone = false;
   voiceConversationComplete = false;
+  // A previous session's summary or error must not greet the next one. The
+  // panel itself is hidden by openVoiceTooltip; this empties what is inside
+  // it, which used to happen for free when the panel was wiped wholesale.
+  clearConclusionOutput();
 }
 
 // ── Handoff: Agree & Apply ──
@@ -67,12 +100,7 @@ async function voiceHandoffAgree() {
 async function voiceHandoffSummarize() {
   if (!voiceTempChatId) return;
   voiceSummarizeBtn.disabled = true;
-  voiceTooltipConclusion.innerHTML = '';
-  const loading = document.createElement('div');
-  loading.className = 'voice-status';
-  loading.textContent = 'Generating summary…';
-  voiceTooltipConclusion.appendChild(loading);
-  voiceTooltipConclusion.hidden = false;
+  showConclusionOutput('Generating summary…', false);
   try {
     const response = await apiFetch(`/api/chats/${voiceTempChatId}/voice/handoff`, {
       method: 'POST',
@@ -81,21 +109,12 @@ async function voiceHandoffSummarize() {
     if (!response.ok) throw new Error('Handoff failed');
     // Backend returns the summary as a plain string, not JSON
     const summary = await response.text().catch(() => '');
-    voiceTooltipConclusion.innerHTML = '';
-    const summaryDiv = document.createElement('div');
-    summaryDiv.className = 'voice-assistant';
-    summaryDiv.textContent = summary || 'Summary generated from voice conversation.';
-    voiceTooltipConclusion.appendChild(summaryDiv);
-    voiceTooltipConclusion.hidden = false;
+    showConclusionOutput(summary || 'Summary generated from voice conversation.', false);
     showToast('Summary generated and appended to parent chat');
   } catch (err) {
-    voiceTooltipConclusion.innerHTML = '';
-    const errDiv = document.createElement('div');
-    errDiv.className = 'voice-status';
-    errDiv.style.color = '#f87171';
-    errDiv.textContent = `Summarize failed: ${err.message}`;
-    voiceTooltipConclusion.appendChild(errDiv);
-    voiceTooltipConclusion.hidden = false;
+    // The buttons survive this, so a failed summarize can simply be retried
+    // -- which is the whole point of not clearing the panel.
+    showConclusionOutput(`Summarize failed: ${err.message}`, true);
     showToast('Summarize failed', 'error');
   } finally {
     voiceSummarizeBtn.disabled = false;

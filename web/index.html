@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=13596048">
+<link rel="stylesheet" href="/assets/styles.css?v=1975869">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -189,6 +189,12 @@
       <button type="button" class="btn-primary" id="voiceAgreeBtn">Agree & Apply</button>
       <button type="button" class="btn-secondary" id="voiceSummarizeBtn">Summarize Only</button>
       <button type="button" class="btn-secondary" id="voiceRejectBtn">Reject & Discard</button>
+      <!-- Summary/progress/error text goes HERE, not into the parent. The
+           three buttons above are children of that parent, so writing output
+           by clearing its innerHTML destroyed them along with the label --
+           after one "Summarize Only" the panel had no buttons left and could
+           not be used again without reloading the page. -->
+      <div class="voice-conclusion-output" id="voiceConclusionOutput" role="status" aria-live="polite" hidden></div>
     </div>
   </div>
 </div>
@@ -620,7 +626,7 @@
 <script type="module" src="/assets/app.js?v=2099422"></script>
 <script type="module" src="/assets/voice-engine.js?v=4274770"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
-<script type="module" src="/assets/voice-handoff.js?v=14659772"></script>
+<script type="module" src="/assets/voice-handoff.js?v=5328627"></script>
 <script type="module" src="/assets/transcript.js?v=6322179"></script>
 
 <!-- D3 for supervisor map radial tree -->

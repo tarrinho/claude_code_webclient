@@ -1354,3 +1354,15 @@ button{touch-action:manipulation}
 @media (prefers-reduced-motion: reduce) {
   .voice-thinking-dot { animation:none; }
 }
+
+/* Output area inside the voice conclusion panel -- the summary, "Generating
+   summary…", or an error. Its own element so the three handoff buttons above
+   it survive: they are children of the panel, and writing output by clearing
+   the panel's innerHTML destroyed them, leaving nothing to click after one
+   Summarize. flex-basis:100% puts it on its own row under the buttons, which
+   the panel's flex-wrap already allows. */
+.voice-conclusion-output {
+  flex-basis:100%; margin-top:8px; font-size:13px;
+  color:var(--fg); white-space:pre-wrap; text-align:left;
+}
+.voice-conclusion-output.is-error { color:var(--err,#f87171); }

@@ -291,12 +291,23 @@ export function createChatListController(dependencies) {
       // because the Map holds references that persist when the DOM rows are wiped
       // and rebuilt.  Each render either reuses an existing dot (updating class,
       // aria-label, title, and animation-delay in-place) or creates a new one and
-      // stores it.  Stale entries for chats that no longer need a dot are removed
-      // so the Map does not grow unbounded.
+      // stores it.  Stale entries are removed by pruneDots once the list has
+      // finished rendering, so the Map does not grow unbounded.
+      //
+      // Keyed by list *and* chat, never by chat alone. There are two lists --
+      // #chatList for mobile and #chatListDesktop -- and render() loops over
+      // both, but a DOM node exists in exactly one place: `title.prepend(dot)`
+      // moves the element rather than copying it. With one element per chat the
+      // second list to render stole the dot from the first, so whichever list
+      // came last in the array was the only one that ever showed an indicator.
+      // Measured on a live page before this fix: 0 dots in #chatList against 2
+      // in #chatListDesktop, which meant the running indicator was simply
+      // absent on the phone layout.
+      const dotKey = `${list.id}:${chat.id}`;
       let dot = null;
 
       if (activeTurnIds.has(chat.id)) {
-        dot = _chatDots.get(chat.id);
+        dot = _chatDots.get(dotKey);
         if (dot) {
           dot.className = 'chat-running';
           dot.setAttribute('aria-label', 'Response in progress');
@@ -308,11 +319,11 @@ export function createChatListController(dependencies) {
           dot.setAttribute('aria-label', 'Response in progress');
           dot.title = 'Response in progress';
           dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
-          _chatDots.set(chat.id, dot);
+          _chatDots.set(dotKey, dot);
         }
         title.prepend(dot);
       } else if (chat.terminal_busy) {
-        dot = _chatDots.get(chat.id);
+        dot = _chatDots.get(dotKey);
         if (dot) {
           dot.className = 'chat-terminal-busy';
           dot.setAttribute('aria-label', 'Working in its terminal');
@@ -323,11 +334,11 @@ export function createChatListController(dependencies) {
           dot.className = 'chat-terminal-busy';
           dot.setAttribute('aria-label', 'Working in its terminal');
           dot.title = 'Working in the terminal session running this conversation';
-          _chatDots.set(chat.id, dot);
+          _chatDots.set(dotKey, dot);
         }
         title.prepend(dot);
       } else if (unreadIds.has(chat.id)) {
-        dot = _chatDots.get(chat.id);
+        dot = _chatDots.get(dotKey);
         if (dot) {
           dot.className = 'chat-unread';
           dot.setAttribute('aria-label', 'New reply');
@@ -338,11 +349,11 @@ export function createChatListController(dependencies) {
           dot.className = 'chat-unread';
           dot.setAttribute('aria-label', 'New reply');
           dot.title = 'Replied while you were elsewhere';
-          _chatDots.set(chat.id, dot);
+          _chatDots.set(dotKey, dot);
         }
         title.prepend(dot);
       } else if (endedIds.has(chat.id)) {
-        dot = _chatDots.get(chat.id);
+        dot = _chatDots.get(dotKey);
         if (dot) {
           dot.className = 'chat-ended';
           dot.setAttribute('aria-label', 'Finished responding');
@@ -353,11 +364,11 @@ export function createChatListController(dependencies) {
           dot.className = 'chat-ended';
           dot.setAttribute('aria-label', 'Finished responding');
           dot.title = 'Finished responding';
-          _chatDots.set(chat.id, dot);
+          _chatDots.set(dotKey, dot);
         }
         title.prepend(dot);
       } else if (!chat.queued) {
-        dot = _chatDots.get(chat.id);
+        dot = _chatDots.get(dotKey);
         if (dot) {
           dot.className = 'chat-free';
           dot.setAttribute('aria-label', 'Nothing outstanding');
@@ -368,7 +379,7 @@ export function createChatListController(dependencies) {
           dot.className = 'chat-free';
           dot.setAttribute('aria-label', 'Nothing outstanding');
           dot.title = 'Nothing running or queued for this conversation';
-          _chatDots.set(chat.id, dot);
+          _chatDots.set(dotKey, dot);
         }
         title.prepend(dot);
       }
@@ -537,24 +548,27 @@ export function createChatListController(dependencies) {
       item.append(open, actions);
       target.appendChild(item);
     });
-    // Stale-map cleanup runs once per section, after all rows are rendered.
-    // Chats that lost their dot in this pass (removed from list, or transitioned
-    // from an active state to a no-dot state like "free while queued") keep
-    // their Map entry only while they still have a DOM row that references the
-    // element — title still holds the dot, so the element is alive until the
-    // next replaceChildren().  Once the row is gone the stale entry drops
-    // here.  This keeps _chatDots bounded and prevents a stale-class dot from
-    // persisting when the chat was deleted or moved off-screen.
-    //
-    // To know which chats are on screen we read the DOM the rows just built.
-    // (Collecting ids ahead of time would require threading a list through the
-    // block above; reading the DOM after is a single query over already-built
-    // rows, which is what replaceChildren was destroying anyway.)
-    const _screenIds = new Set([
-      ...target.querySelectorAll(':scope > .chat-item[data-chat-id]')
-    ].map(el => el.dataset.chatId));
-    _chatDots.forEach((_, id) => {
-      if (!_screenIds.has(id)) { _chatDots.delete(id); }
+  }
+
+  // Drop dot elements for rows this list no longer shows, so _chatDots stays
+  // bounded and a stale-class dot cannot come back when a chat is deleted or
+  // filtered away.
+  //
+  // Runs once per list, after every section of that list has rendered. It used
+  // to run at the end of renderSection, which meant each section pruned away
+  // the entries belonging to the sections that had not rendered yet -- with
+  // Favourites, Recent and Archived, rendering Favourites deleted Recent's
+  // dots, which were then rebuilt from scratch moments later. Elements that
+  // are rebuilt lose the animation-delay continuity the map exists to
+  // preserve, so the cleanup was quietly defeating its own purpose.
+  function pruneDots(list) {
+    const onScreen = new Set(
+      [...list.querySelectorAll('.chat-item[data-chat-id]')]
+        .map(el => `${list.id}:${el.dataset.chatId}`)
+    );
+    const prefix = `${list.id}:`;
+    _chatDots.forEach((_, key) => {
+      if (key.startsWith(prefix) && !onScreen.has(key)) _chatDots.delete(key);
     });
   }
 
@@ -854,6 +868,7 @@ export function createChatListController(dependencies) {
         ...chats.map(c => c.session_id).filter(Boolean),
       ]);
       renderHistory(list, historyEntries, alreadyShown);
+      pruneDots(list);
 
       if (!cli.length && !filtered.length && !extraHits.length && !historyEntries.length) {
         const empty = document.createElement('div');

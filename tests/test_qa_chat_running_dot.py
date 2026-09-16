@@ -243,6 +243,38 @@ class ChatRunningDotBrowserTests(_BrowserFixture):
         dots = self.page.query_selector_all(f'{self.DESKTOP} .chat-running')
         self.assertEqual(len(dots), 2)
 
+    def test_both_sidebars_show_the_dot_not_just_the_last_one_rendered(self):
+        """The mobile sidebar gets its own dots, not the desktop one's.
+
+        There are two lists -- #chatList for the mobile sidebar and
+        #chatListDesktop -- and render() loops over both. `_chatDots` held one
+        element per chat and rows attach it with `title.prepend(dot)`, which
+        *moves* a node rather than copying it. So the second list to render
+        took the dot away from the first, and only the last list in the array
+        ever showed an indicator. Measured on a live page before the fix: 0
+        dots in #chatList against 2 in #chatListDesktop, which meant the
+        running indicator was absent on the phone layout entirely.
+
+        Every existing test in this file asserts against #chatListDesktop,
+        which is the list that happened to win, so the whole suite passed
+        while half the product had no indicator at all. Asserting on both is
+        the gap that let it ship.
+        """
+        self._wait_for_dots()
+        counts = self.page.evaluate(
+            """() => ({
+                 mobile: document.querySelectorAll('#chatList .chat-running').length,
+                 desktop: document.querySelectorAll('#chatListDesktop .chat-running').length,
+               })"""
+        )
+        self.assertEqual(
+            counts["desktop"], 2,
+            f"desktop sidebar must show both running chats, got {counts}")
+        self.assertEqual(
+            counts["mobile"], 2,
+            "the mobile sidebar must show its own dots -- a shared element "
+            f"cannot be in two lists at once, got {counts}")
+
     def test_the_dot_disappears_once_that_chats_turn_ends(self):
         """The other half of the claim: not just "appears while running", but
         "goes away on its own once the turn is over" -- with c2 left running,

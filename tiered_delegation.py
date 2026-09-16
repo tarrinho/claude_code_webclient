@@ -456,7 +456,9 @@ class CapabilityTable:
 
     # ── Tree cost (spec 2.7) ────────────────────────────────────────────────
 
-    def _tree_cost(self, task_type: str) -> tuple[float | None, list[str]]:
+    def _tree_cost(
+        self, task_type: str
+    ) -> tuple[float | None, list[str], str | None]:
         """2.7's expected tree cost for a task type's ladder, and why not.
 
             tree_cost = leaves_per_tree x tokens_per_leaf
@@ -471,15 +473,23 @@ class CapabilityTable:
         `MAX_ATTEMPTS` are unreachable and so genuinely cost nothing, is
         defensible but silent; if a ladder ever does exceed three rungs, an
         operator should be told rather than have the extra rung disappear.
+
+        The third element is the rung whose own cost contributes the most to
+        the total, or None when the total could not be computed. Spec 11
+        requires the budget-overrun problem string to name this rung -- a
+        total on its own tells an operator the ladder is too expensive, but
+        not which cell in 2.7's table to fix, and this is that cell.
         """
         problems: list[str] = []
         prefix = f"{task_type}: expected tree cost (spec 2.7) cannot be computed"
         rungs = self.ladder(task_type)
         if not rungs:
-            return None, []
+            return None, [], None
 
         rate_of = {r.model: r.cost_per_1m_tokens for r in self.rows_for(task_type)}
         total = 0.0
+        costliest_rung: str | None = None
+        costliest_cost = -1.0
         for rung, model in enumerate(rungs):
             rate = rate_of.get(model)
             if rate is None:                    # unpriced, not free (2.7)
@@ -488,15 +498,19 @@ class CapabilityTable:
                 )
                 continue
             try:
-                total += rung_cost_usd(rung, rate)
+                rung_cost = rung_cost_usd(rung, rate)
             except ValueError as exc:
                 problems.append(
                     f"{prefix} -- its ladder has {len(rungs)} rungs and {exc}"
                 )
                 break
+            total += rung_cost
+            if rung_cost > costliest_cost:
+                costliest_cost = rung_cost
+                costliest_rung = model
         if problems:
-            return None, problems
-        return total, []
+            return None, problems, None
+        return total, [], costliest_rung
 
     def tree_cost_usd(self, task_type: str) -> float | None:
         """2.7's expected tree cost in dollars, or None when it cannot be
@@ -623,12 +637,12 @@ class CapabilityTable:
                 )
 
             # "the ladder fits the budget" (1.1, 2.7)
-            tree_cost, why_not = self._tree_cost(task_type)
+            tree_cost, why_not, costliest_rung = self._tree_cost(task_type)
             problems.extend(why_not)
             if tree_cost is not None and tree_cost > BUDGET_USD:
                 problems.append(
                     f"{task_type}: its ladder's expected tree cost is "
                     f"${tree_cost:.3f}, above BUDGET_USD (${BUDGET_USD:.2f}) "
-                    f"(spec 2.7)"
+                    f"-- rung {costliest_rung} is the costliest (spec 2.7)"
                 )
         return problems

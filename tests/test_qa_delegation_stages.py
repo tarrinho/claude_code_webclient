@@ -74,10 +74,32 @@ class StageSelectionTests(unittest.TestCase):
         says explicitly that no rule may remove it ("stage 3 restored if any
         earlier rule took it"). So a score-1 read runs [1, 2, 3], the same
         as a non-trivial read -- the trivial bypass has no visible effect on
-        a read at all. An implementation that applies the trivial bypass by
-        `mutates` alone (collapsing to [1, 2] whenever score <= 1, the same
-        as the write case) passes every single-rule test in this file and
-        fails only here.
+        a read at all.
+
+        This does NOT mean the test is sensitive to every way that guarantee
+        could break. In `delegation_pipeline.stages_for`, the trivial-bypass
+        read branch (`if is_read_only: stages -= {4, 5}`, scoped inside
+        `trivial_bypass_applies`) and the later read-only `stages.add(3)`
+        restore are mutually redundant against today's rule set: the trivial
+        bypass never removes stage 3 from a read in the first place (only
+        the write branch does), so the restore has nothing to restore on
+        this path, and the read-only rule's own `stages -= {4, 5}` already
+        does what the bypass's read branch does. Breaking either one alone
+        -- collapsing the bypass to always take the write branch (dropping
+        3, 4 and 5 regardless of `mutates`), or deleting the `stages.add(3)`
+        restore -- leaves this test, and every other test in the repo,
+        green; measured by brute-forcing all 126 `(mutates, score,
+        files_changed-bucket)` combinations, neither mutation has a
+        distinguishing input. This is deliberate defence in depth (spec
+        4.8: the restore is phrased to hold "no matter what order a future
+        rule is added in"), not a defect, so `delegation_pipeline.py` is not
+        to be changed on this account.
+
+        Breaking BOTH at once -- collapsing the bypass branch AND deleting
+        the restore -- is caught, here and by
+        `tests/test_qa_delegation_spec_coverage.py::ReadOnlyFloorTests::test_stage_three_appears_in_every_read_only_combination`,
+        which enumerates every `(mutates, score, files_changed)` combination
+        and is where the real coverage for this pair lives.
         """
         self.assertEqual(
             pipeline.stages_for(

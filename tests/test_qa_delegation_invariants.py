@@ -358,6 +358,25 @@ class TreeCostTests(unittest.TestCase):
                             for p in problems), problems)
         self.assertFalse([p for p in problems if "ceiling" in p], problems)
 
+    def test_the_unaffordable_ladder_names_the_costliest_rung(self):
+        """Spec 11: the budget-overrun problem string must name the offending
+        rung, not just the task type and the total -- an operator should not
+        have to recompute what `_tree_cost` already knew. Luna at rung 0
+        contributes $0.068 and sonnet at rung 1 contributes $1.868 of the
+        $1.9359 total, so sonnet is the rung to name."""
+        rows = [
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
+            _row("claude-sonnet-5", "widget", 0.95, 20, 1.5709, 10.5),
+        ]
+        table = _table(rows + GATE_ROWS, operational={"widget"})
+        problems = table.validate()
+        budget_problems = [p for p in problems if "BUDGET_USD" in p]
+        self.assertTrue(budget_problems, problems)
+        self.assertTrue(
+            all("claude-sonnet-5" in p for p in budget_problems),
+            budget_problems,
+        )
+
     def test_an_affordable_ladder_is_not_reported(self):
         """The same shape with a cheaper top rung: $0.068 at rung 0 plus
         $0.595 at rung 1 is $0.662, and no problem. Only the rate changed, so

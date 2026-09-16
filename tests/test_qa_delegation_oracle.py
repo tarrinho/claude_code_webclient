@@ -9,6 +9,11 @@ nothing here makes `coding` operational (spec 12 keeps that closed).
 """
 from __future__ import annotations
 
+import os
+import shutil
+import signal
+import tempfile
+import time
 import unittest
 
 import delegation_oracle as oracle
@@ -82,6 +87,62 @@ class OracleTests(unittest.TestCase):
         self.assertTrue(verdict.infrastructure_failure)
         # Generous upper bound -- the point is "didn't hang", not exact timing.
         self.assertLess(elapsed, 5.0)
+
+    def test_timeout_kills_grandchildren_too(self):
+        """A candidate that spawns a child of its own and then hangs must
+        not leave that grandchild running after the oracle times out.
+
+        `while True: pass` (the other timeout test) has no descendants, so
+        it cannot see this bug: a timeout that kills only the immediate
+        child still "returns promptly", but a grandchild reparented to init
+        keeps running forever. This test spawns a real grandchild, records
+        its pid before the hang, and asserts -- polling, not sleeping the
+        full duration -- that the pid is actually gone afterwards. It cleans
+        the grandchild up itself in `finally` even if the assertion fails,
+        so a regression here does not leave a stray process on the machine.
+        """
+        marker_dir = tempfile.mkdtemp()
+        pid_file = os.path.join(marker_dir, "grandchild.pid")
+        grandchild_pid = None
+        try:
+            snippet = (
+                "import subprocess, sys, time\n"
+                f"child = subprocess.Popen([sys.executable, '-c', "
+                f"'import time; time.sleep(5)'])\n"
+                f"with open({pid_file!r}, 'w') as fh:\n"
+                "    fh.write(str(child.pid))\n"
+                "time.sleep(5)\n"
+            )
+
+            verdict = oracle.check_python(snippet, timeout_s=0.5)
+            self.assertFalse(verdict.passed)
+            self.assertTrue(verdict.infrastructure_failure)
+
+            with open(pid_file) as fh:
+                grandchild_pid = int(fh.read().strip())
+
+            deadline = time.monotonic() + 2.0
+            alive = True
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild_pid, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                time.sleep(0.05)
+
+            self.assertFalse(
+                alive,
+                "grandchild process outlived the oracle timeout -- the "
+                "kill did not reach the whole process group",
+            )
+        finally:
+            if grandchild_pid is not None:
+                try:
+                    os.kill(grandchild_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            shutil.rmtree(marker_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

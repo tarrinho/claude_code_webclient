@@ -11,6 +11,8 @@
 # are resolved. This is the oracle stage in isolation, callable but unused.
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,9 +45,15 @@ def check_python(code: str, timeout_s: float = 10.0) -> OracleVerdict:
     The snippet is written to a file inside a temporary directory and the
     child is invoked with an argument vector (`shell=False`, the
     `subprocess` default) naming that file -- never by concatenating the
-    snippet into a command string. `timeout_s` is enforced by the
-    `subprocess.run` call itself; on expiry, `subprocess.run` kills the
-    child before raising `TimeoutExpired`, so nothing is left running.
+    snippet into a command string. `timeout_s` bounds the whole call, not
+    just the immediate child: the child is started as its own session
+    leader (`start_new_session=True`), so it and anything it spawns share
+    one process group, and on timeout the whole group is killed rather than
+    just the process we launched directly. Without that, a candidate that
+    spawns a grandchild and then hangs would time out at the top level while
+    the grandchild kept running, reparented to init -- the timeout would
+    have bounded the check's wall-clock time without bounding what it
+    started.
     """
     if not code.strip():
         # A real benchmark outcome ("no extractable code in the response").
@@ -56,17 +64,12 @@ def check_python(code: str, timeout_s: float = 10.0) -> OracleVerdict:
         path = Path(tmp) / "candidate.py"
         path.write_text(code, encoding="utf-8")
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, str(path)],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_s,
-            )
-        except subprocess.TimeoutExpired:
-            return OracleVerdict(
-                False,
-                f"timed out after {timeout_s}s",
-                infrastructure_failure=True,
+                start_new_session=True,
             )
         except OSError as exc:
             return OracleVerdict(
@@ -75,9 +78,37 @@ def check_python(code: str, timeout_s: float = 10.0) -> OracleVerdict:
                 infrastructure_failure=True,
             )
 
-    if result.returncode == 0:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            # Kill the whole process group the child leads, not just the
+            # child, so anything it spawned dies with it. The child may
+            # already have exited by the time we get here (it raced its own
+            # death against the timeout) -- that races os.getpgid/os.killpg
+            # into ProcessLookupError, which must not be read as "the kill
+            # failed" or "this wasn't really a timeout": the verdict for a
+            # timeout is unconditional, only the cleanup is best-effort.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()  # reap our own child by exit status, not by pipe EOF --
+            # a grandchild that inherited the stdout/stderr pipes can hold
+            # them open past our own child's death, so communicate() here
+            # would block on *that*, not on anything we still need.
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+            return OracleVerdict(
+                False,
+                f"timed out after {timeout_s}s",
+                infrastructure_failure=True,
+            )
+
+    if proc.returncode == 0:
         return OracleVerdict(True, "compiles")
-    detail = (result.stderr or result.stdout or "").strip()
+    detail = (stderr or stdout or "").strip()
     return OracleVerdict(
         False, detail.splitlines()[-1] if detail else "did not compile"
     )

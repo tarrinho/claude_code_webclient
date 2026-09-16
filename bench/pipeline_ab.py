@@ -207,7 +207,7 @@ def run_baseline(task, rates: dict) -> ArmResult:
     )
 
 
-def run_pipeline(task, rates: dict, max_attempts: int = 3) -> ArmResult:
+def run_pipeline(task, rates: dict, max_attempts: int = 3, gate_model: str = GATE_MODEL) -> ArmResult:
     t0 = time.time()
     calls: list[Call] = []
     rejections: list[str] = []
@@ -238,7 +238,7 @@ def run_pipeline(task, rates: dict, max_attempts: int = 3) -> ArmResult:
         code = text
 
         # Stage 3 -- reviewer gate (intent match)
-        rtext, rcall = _call("reviewer", GATE_MODEL, REVIEWER_PROMPT.format(task=task.prompt, code=code))
+        rtext, rcall = _call("reviewer", gate_model, REVIEWER_PROMPT.format(task=task.prompt, code=code))
         calls.append(rcall)
         ok, reason = _gate_passed(rtext)
         if not ok:
@@ -246,7 +246,7 @@ def run_pipeline(task, rates: dict, max_attempts: int = 3) -> ArmResult:
             continue
 
         # Stage 5 -- security gate
-        stext, scall = _call("security", GATE_MODEL, SECURITY_PROMPT.format(code=code))
+        stext, scall = _call("security", gate_model, SECURITY_PROMPT.format(code=code))
         calls.append(scall)
         ok, reason = _gate_passed(stext)
         if not ok:
@@ -282,6 +282,14 @@ def main() -> int:
     ap.add_argument("--repeats", type=int, default=1)
     ap.add_argument("--arms", default="A,B")
     ap.add_argument("--out", default=None)
+    ap.add_argument(
+        "--gate-model",
+        default=GATE_MODEL,
+        help=(
+            "Model used for both the reviewer and security gates in arm B. "
+            f"Defaults to {GATE_MODEL!r} so existing invocations are unchanged."
+        ),
+    )
     args = ap.parse_args()
 
     rates = cost_mod.load_rates()
@@ -307,7 +315,11 @@ def main() -> int:
                 n += 1
                 print(f"[{n}/{total}] {arm} {task.id} #{rep + 1}", flush=True)
                 try:
-                    r = run_baseline(task, rates) if arm == "A" else run_pipeline(task, rates)
+                    r = (
+                        run_baseline(task, rates)
+                        if arm == "A"
+                        else run_pipeline(task, rates, gate_model=args.gate_model)
+                    )
                 except Exception as exc:  # noqa: BLE001
                     print(f"      ERROR {type(exc).__name__}: {exc}", flush=True)
                     continue
@@ -322,21 +334,23 @@ def main() -> int:
                     print(f"        - {rej}", flush=True)
                 # Written after every run, same discipline as wc-bench.py: a
                 # kill partway through must not lose what already ran.
-                out_path.write_text(json.dumps(_summarise(results), indent=2), encoding="utf-8")
+                out_path.write_text(
+                    json.dumps(_summarise(results, args.gate_model), indent=2), encoding="utf-8"
+                )
 
     print(f"\nresults: {out_path}")
     _report(results)
     return 0
 
 
-def _summarise(results: list[ArmResult]) -> dict:
+def _summarise(results: list[ArmResult], gate_model: str = GATE_MODEL) -> dict:
     return {
         "runs": [asdict(r) for r in results],
         "aggregate": _aggregate(results),
         "config": {
             "ladder": LADDER,
             "baseline": BASELINE_MODEL,
-            "gate_model": GATE_MODEL,
+            "gate_model": gate_model,
             "costing_note": (
                 "priced_cost_usd is a LOWER BOUND wherever unpriced_calls > 0. "
                 "bench_rates.json records no rate for any Azure model."

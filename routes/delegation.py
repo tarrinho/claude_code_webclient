@@ -44,7 +44,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import db
-from delegation_startup import live_known_models, load_capability_table
+from delegation_startup import live_known_models
 from routes.db_delegation import rows_to_capability
 from tiered_delegation import (
     BUDGET_USD,
@@ -52,6 +52,7 @@ from tiered_delegation import (
     LATENCY_CEILING_S,
     LEAVES_PER_TREE,
     MAX_ATTEMPTS,
+    CapabilityRow,
     CapabilityTable,
 )
 
@@ -247,12 +248,62 @@ def _config_overview() -> dict[str, Any]:
     }
 
 
+def _blockers_by_task_type(
+    capability_rows: list[CapabilityRow], operational_set: set[str],
+    known_models: frozenset[str] | None,
+) -> dict[str, dict[str, Any]]:
+    """Why each task type cannot go operational, for the settings page.
+
+    Two independent kinds of blocker, and both are surfaced:
+
+    * policy -- `_OPERATIONAL_FLIP_BLOCKED`, a decision recorded in code
+      (spec 12 holds `coding`, amendment b782e4d holds `reasoning`).
+    * data -- 1.1's six invariants. `handle_operational_put` already computes
+      exactly this when it validates a real flip: build a `CapabilityTable`
+      with the candidate type added to the operational set and collect
+      `validate()`'s problems. Doing the same here, once per non-operational
+      task type, is nine in-memory calls on a GET -- no new storage, no new
+      endpoint.
+
+    An already-operational task type, or one blocked neither way, reports
+    `{"policy": None, "data": []}` -- never an invented problem.
+    """
+    blockers: dict[str, dict[str, Any]] = {}
+    task_types = sorted({row.task_type for row in capability_rows})
+    for task_type in task_types:
+        if task_type in operational_set:
+            blockers[task_type] = {"policy": None, "data": []}
+            continue
+        candidate = CapabilityTable(
+            capability_rows, operational=operational_set | {task_type})
+        problems = candidate.validate(known_models=known_models)
+        # `validate()` is scoped to every type in the candidate's operational
+        # set, not only the one being asked about here -- filter down to the
+        # problems that actually name this task type.
+        data_problems = [p for p in problems if p.startswith(f"{task_type}:")]
+        blockers[task_type] = {
+            "policy": _OPERATIONAL_FLIP_BLOCKED.get(task_type),
+            "data": data_problems,
+        }
+    return blockers
+
+
 async def handle_delegation_get(request: Request):
-    """GET /api/delegation -- the matrix, the flags, and the derived ladders."""
+    """GET /api/delegation -- the matrix, the flags, the derived ladders, and
+    why each non-operational type cannot flip yet (see
+    `_blockers_by_task_type`)."""
     rows = await db.delegation_rows_all()
     operational = sorted(await db.delegation_operational_all())
-    table = await load_capability_table()
+    operational_set = set(operational)
+    capability_rows = rows_to_capability(rows)
+    table = CapabilityTable(capability_rows, operational=operational_set)
     task_types = sorted({row["task_type"] for row in rows})
+    # Same live list, same fallback, as every other call site that validates
+    # this table (see live_known_models's docstring) -- the blocker computed
+    # here must agree with what a real flip attempt would say.
+    known_models = await live_known_models()
+    blockers = _blockers_by_task_type(
+        capability_rows, operational_set, known_models)
     return JSONResponse({
         "rows": rows,
         "operational": operational,
@@ -262,6 +313,7 @@ async def handle_delegation_get(request: Request):
         "ladders": {t: table.ladder(t) for t in task_types},
         "editable_columns": list(_EDITABLE),
         "config": _config_overview(),
+        "blockers": blockers,
     })
 
 

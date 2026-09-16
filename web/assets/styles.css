@@ -1366,3 +1366,95 @@ button{touch-action:manipulation}
   color:var(--fg); white-space:pre-wrap; text-align:left;
 }
 .voice-conclusion-output.is-error { color:var(--err,#f87171); }
+
+/* Settings > Delegation. Previously unstyled entirely -- three bare
+   containers with no rules anywhere in this file -- which is why the page
+   read as raw. Reuses the existing vocabulary throughout: .btn-secondary and
+   .backend-refresh-row for the refresh action (same pattern as Backends),
+   .toggle-knob for the per-type operational flag (App tab), and the
+   .machine-card / .skill-card bordered-card treatment for each task type. */
+
+/* Status band: plain-English headline, then the compact facts row. */
+.delegation-status { margin-bottom:10px; }
+.delegation-status-line { margin:0 0 6px; font-size:13px; font-weight:600; }
+.delegation-facts { display:flex; flex-wrap:wrap; gap:8px 16px; }
+.delegation-fact {
+  font:11px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--muted);
+}
+
+/* Refresh row: identical structure to Backends' .backend-refresh-row, reused
+   rather than duplicated -- see web/index.html's backendMap refresh row. */
+#panelDelegation .backend-refresh-row { margin-bottom:14px; }
+
+/* One card per task type, replacing the old flat .delegation-matrix. */
+.delegation-cards { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+.delegation-card {
+  border:1px solid var(--line); border-radius:8px; padding:12px 14px;
+  background:var(--input-bg);
+}
+.delegation-card-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+.delegation-card-title {
+  flex:1 1 auto; min-width:0; margin:0; font-size:14px; font-weight:650;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.delegation-ladder-line {
+  margin:0 0 8px; font-size:12px; color:var(--muted); overflow-wrap:anywhere;
+}
+.delegation-ladder-label { color:var(--muted); }
+.delegation-rung {
+  color:var(--fg); font:12px ui-monospace,SFMono-Regular,Consolas,monospace;
+  border-bottom:1px dotted var(--muted); cursor:default;
+}
+
+/* Blocker box: policy reason, then data-invariant problems, one per line.
+   Empty (a clean or already-operational type) collapses to nothing rather
+   than showing an empty warning -- see delegation.js's _blockerElement. */
+.delegation-blocker {
+  margin:0 0 10px; padding:8px 10px; border:1px solid var(--warn);
+  border-radius:6px; background:rgba(210,153,34,.1);
+}
+.delegation-blocker:empty { display:none; padding:0; border:0; margin:0; }
+.delegation-blocker-line {
+  margin:0; font-size:11.5px; color:var(--fg); line-height:1.5;
+}
+.delegation-blocker-line + .delegation-blocker-line { margin-top:4px; }
+
+/* Model rows, as a small table rather than a column of bare input rows. */
+.delegation-model-table {
+  width:100%; border-collapse:collapse; font-size:11.5px;
+}
+.delegation-model-table th {
+  text-align:left; font-weight:600; color:var(--muted); font-size:10.5px;
+  padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap;
+}
+.delegation-model-table td {
+  padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:middle;
+}
+.delegation-model-table tr:last-child td { border-bottom:0; }
+.delegation-model-name {
+  font:12px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--fg);
+  white-space:nowrap;
+}
+.delegation-cell {
+  width:100%; min-width:64px; border:1px solid var(--line); border-radius:5px;
+  padding:4px 6px; background:var(--panel); color:var(--fg); font-size:11.5px;
+}
+.delegation-cell:focus { border-color:var(--accent); outline:none; }
+
+/* The read-only config overview (kill switch, attempts/caps, cost ceiling,
+   observability) -- unstyled before this change, same as everything else on
+   this panel. */
+.delegation-config { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; margin-top:16px; }
+.delegation-config-section {
+  border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+  background:var(--panel2);
+}
+.delegation-config-section h4 { margin:0 0 6px; font-size:12px; font-weight:650; }
+.delegation-config-section p { margin:0; font-size:12px; color:var(--muted); }
+.delegation-config-section dl {
+  margin:0; display:grid; grid-template-columns:minmax(0,1fr) auto;
+  gap:3px 10px; font-size:11.5px;
+}
+.delegation-config-section dt { color:var(--muted); text-transform:capitalize; }
+.delegation-config-section dd { margin:0; color:var(--fg); text-align:right; }
+@media(min-width:700px){ .delegation-config { grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); } }

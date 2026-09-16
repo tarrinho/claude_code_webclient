@@ -195,5 +195,98 @@ class DelegationColumnsResolutionTests(unittest.TestCase):
              "max_context"])
 
 
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class DelegationStatusAndBlockerTests(unittest.TestCase):
+    """The Settings > Delegation redesign's status band and per-card blocker
+    box are each driven by a pure function extracted from the shipped source
+    and actually executed here, the same way
+    `DelegationColumnsResolutionTests` above exercises `_resolveColumns` --
+    a text-content assertion on the source would keep passing if the
+    function's logic changed while its name stayed put.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ASSETS / "delegation.js").read_text()
+
+    def _extract(self, name: str) -> str:
+        match = re.search(
+            rf"function {name}\(.*?\n\}}", self.source, re.DOTALL)
+        self.assertIsNotNone(
+            match, f"{name} not found in delegation.js -- it was renamed "
+            "or removed")
+        return match.group(0)
+
+    def _run(self, name: str, call: str):
+        script = f"{self._extract(name)}\nJSON.stringify({call});"
+        return json.loads(quickjs.Context().eval(script))
+
+    # ── _statusHeadline ──────────────────────────────────────────────────
+
+    def test_status_headline_nothing_operational(self):
+        self.assertEqual(
+            self._run("_statusHeadline", "_statusHeadline(0, 9)"),
+            "Nothing is routing. 0 of 9 task types operational.")
+
+    def test_status_headline_everything_operational(self):
+        self.assertEqual(
+            self._run("_statusHeadline", "_statusHeadline(9, 9)"),
+            "Everything is routing. 9 of 9 task types operational.")
+
+    def test_status_headline_partial(self):
+        self.assertEqual(
+            self._run("_statusHeadline", "_statusHeadline(3, 9)"),
+            "3 of 9 task types operational.")
+
+    def test_status_headline_singular_task_type(self):
+        self.assertEqual(
+            self._run("_statusHeadline", "_statusHeadline(0, 1)"),
+            "Nothing is routing. 0 of 1 task type operational.")
+
+    def test_status_headline_no_task_types(self):
+        self.assertEqual(
+            self._run("_statusHeadline", "_statusHeadline(0, 0)"),
+            "No task types are in the table yet.")
+
+    # ── _measuredCellsSummary ────────────────────────────────────────────
+
+    def test_measured_cells_counts_non_null_values_only(self):
+        rows = (
+            '[{"accuracy": 0.9, "n": null}, '
+            '{"accuracy": null, "n": 4}]'
+        )
+        result = self._run(
+            "_measuredCellsSummary",
+            f'_measuredCellsSummary({rows}, ["accuracy", "n"])')
+        self.assertEqual(result, {"measured": 2, "total": 4})
+
+    def test_measured_cells_empty_rows(self):
+        result = self._run(
+            "_measuredCellsSummary",
+            '_measuredCellsSummary([], ["accuracy", "n"])')
+        self.assertEqual(result, {"measured": 0, "total": 0})
+
+    # ── _blockerLines ────────────────────────────────────────────────────
+
+    def test_blocker_lines_combines_policy_then_data(self):
+        entry = '{"policy": "held by spec 12", "data": ["a problem"]}'
+        result = self._run("_blockerLines", f"_blockerLines({entry})")
+        self.assertEqual(result, ["held by spec 12", "a problem"])
+
+    def test_blocker_lines_empty_for_a_clean_type(self):
+        entry = '{"policy": null, "data": []}'
+        result = self._run("_blockerLines", f"_blockerLines({entry})")
+        self.assertEqual(result, [])
+
+    def test_blocker_lines_handles_a_missing_entry(self):
+        result = self._run("_blockerLines", "_blockerLines(undefined)")
+        self.assertEqual(result, [])
+
+    def test_blocker_lines_data_only(self):
+        entry = '{"policy": null, "data": ["problem one", "problem two"]}'
+        result = self._run("_blockerLines", f"_blockerLines({entry})")
+        self.assertEqual(result, ["problem one", "problem two"])
+
+
 if __name__ == "__main__":
     unittest.main()

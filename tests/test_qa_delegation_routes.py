@@ -509,6 +509,80 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await delegation_routes.handle_delegation_get(_request())
         self.assertEqual(await db.delegation_operational_all(), set())
 
+    async def test_get_reports_policy_blockers_for_coding_and_reasoning(self):
+        """The redesigned settings page shows *why* a type cannot go
+        operational rather than only refusing the click after the fact.
+        A blocker entry only exists for a task type the table actually has a
+        row for (the same scoping `ladders` already uses), so each gets one
+        bare row here -- just enough to appear, with the policy reason
+        expected regardless of how incomplete the row is."""
+        await db.delegation_row_set("claude-sonnet-5", "coding", accuracy=1.0)
+        await db.delegation_row_set("claude-sonnet-5", "reasoning", accuracy=1.0)
+        response = await delegation_routes.handle_delegation_get(_request())
+        body = json.loads(response.body)
+        coding = body["blockers"]["coding"]
+        reasoning = body["blockers"]["reasoning"]
+        self.assertEqual(coding["policy"],
+                          delegation_routes._OPERATIONAL_FLIP_BLOCKED["coding"])
+        self.assertEqual(reasoning["policy"],
+                          delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"])
+        self.assertNotEqual(coding["policy"], reasoning["policy"])
+
+    async def test_get_computes_a_data_blocker_for_an_incomplete_non_operational_type(self):
+        """`long-context` has no policy hold, but a row missing
+        `median_latency_s` fails 1.1's "no blank fields" invariant the same
+        way `test_flipping_a_type_operational_on_incomplete_data_is_refused`
+        proves at the flip endpoint -- the GET response must surface the
+        identical problem without the operator having to attempt the flip
+        first."""
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=0.9, n=4, cost_per_1m_tokens=1.0,
+                                    median_latency_s=None, max_context=1000)
+        response = await delegation_routes.handle_delegation_get(_request())
+        body = json.loads(response.body)
+        entry = body["blockers"]["long-context"]
+        self.assertIsNone(entry["policy"])
+        self.assertTrue(entry["data"], "expected at least one data blocker")
+        self.assertTrue(
+            any("median_latency_s" in p for p in entry["data"]),
+            entry["data"])
+        self.assertTrue(all(p.startswith("long-context:") for p in entry["data"]))
+
+    async def test_get_reports_no_blockers_for_an_operational_type(self):
+        """A type that already cleared the flip must not show a stale or
+        invented blocker -- `{"policy": None, "data": []}`, not an empty
+        warning box rendered from leftover state."""
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "long-context", "operational": True}))
+        response = await delegation_routes.handle_delegation_get(_request())
+        body = json.loads(response.body)
+        self.assertEqual(body["blockers"]["long-context"],
+                          {"policy": None, "data": []})
+
+    async def test_get_reports_no_blockers_for_a_clean_non_operational_type(self):
+        """A non-operational type with complete, valid data and no policy
+        hold -- the same shape used for the "flip succeeds" fixture -- must
+        also report cleanly even though it has not been flipped yet: a data
+        blocker only exists when validate() would actually refuse the flip."""
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        response = await delegation_routes.handle_delegation_get(_request())
+        body = json.loads(response.body)
+        self.assertEqual(body["blockers"]["long-context"],
+                          {"policy": None, "data": []})
+
     async def test_coding_and_reasoning_are_blocked_for_different_reasons(self):
         """The two holds exist for different reasons -- coding waits on
         spec 12's gate-type question, reasoning waits on a 75% n=2 accuracy

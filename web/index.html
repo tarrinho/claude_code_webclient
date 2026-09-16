@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=1975869">
+<link rel="stylesheet" href="/assets/styles.css?v=13355723">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -423,14 +423,26 @@
            column; flipping a task type operational is what submits it to the
            startup validation, and this release ships with none flipped. -->
       <div class="settings-panel" id="panelDelegation" role="tabpanel" aria-labelledby="tabDelegation" tabindex="0" hidden>
-        <!-- Spec 9.2's first sentence: the kill switch (9.1), the 5/10
-             tunables, and the cost ceiling (2.7) -- read only. The matrix
-             below is the only editable part of this page. -->
-        <div class="delegation-config" id="delegationConfig"></div>
-        <div class="skills-header">
-          <span class="skills-count" id="delegationCount" role="status" aria-live="polite"></span>
+        <p>Each task type below gets a ladder of models to try, cheapest first, generated from the measured rows underneath it. Editing a cell changes routing for the next task of that type immediately &mdash; no deploy needed.</p>
+        <!-- Status band: a plain-English read of where routing stands, plus
+             the facts an operator checks most (measured coverage, the
+             latency ceiling, the tree budget). Same refresh-row pattern as
+             Backends' (#refreshBackendsBtn / .backend-refresh-row) rather
+             than a new one. -->
+        <div class="delegation-status">
+          <p class="delegation-status-line" id="delegationStatusLine"></p>
+          <div class="delegation-facts" id="delegationFacts"></div>
         </div>
-        <div class="delegation-matrix" id="delegationMatrix"></div>
+        <div class="backend-refresh-row">
+          <button type="button" class="btn-secondary" id="delegationRefreshBtn"
+                  title="Reload the delegation table">⟳ Refresh</button>
+          <span class="backend-refresh-status" id="delegationRefreshStatus" role="status" aria-live="polite"></span>
+        </div>
+        <!-- One card per task type, replacing the old flat matrix. -->
+        <div class="delegation-cards" id="delegationMatrix"></div>
+        <!-- Spec 9.2's first sentence: the kill switch (9.1), the 5/10
+             tunables, and the cost ceiling (2.7) -- read only. -->
+        <div class="delegation-config" id="delegationConfig"></div>
       </div>
       <!-- Statistics tab: the same rows as Usage, over time rather than summed.
            Terminal and website are separate series on purpose -- they differ by

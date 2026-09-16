@@ -38,6 +38,26 @@ function _resolveColumns(payload) {
   return cols && cols.length ? cols : _DEFAULT_COLUMNS;
 }
 
+/** The server's reason for refusing a write, or `fallback` if it gave none.
+ *
+ *  This app's error contract is `{"error": "..."}` -- `app.py`'s
+ *  `handle_http_exception` serialises every `HTTPException` that way, so
+ *  `detail` is the FastAPI-side name and never reaches the browser. This
+ *  file read `data.detail` in both of its write paths, so every refusal the
+ *  server took care to explain arrived as `undefined` and was replaced by a
+ *  generic fallback: a rejected cell edit said "Could not save" instead of
+ *  naming the broken invariant and the column, which spec 1.1 requires it to
+ *  name. `app.js` already reads `data.error`; this matches it.
+ *
+ *  `detail` is still read as a second choice rather than dropped: a response
+ *  from a plain FastAPI error path that never reached the custom handler
+ *  carries that shape, and a real reason under either key beats a fallback. */
+function _errorMessage(data, fallback) {
+  const body = data && typeof data === 'object' ? data : {};
+  const reason = body.error || body.detail;
+  return typeof reason === 'string' && reason.trim() ? reason : fallback;
+}
+
 /** Pure: the status band's plain-English first line. No DOM, so it can be
  *  read straight out of a `GET /api/delegation` response's `operational`
  *  and `ladders` fields (the latter's key count is the task-type total --
@@ -157,7 +177,7 @@ async function _saveRow(row, column, input) {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not save');
+      throw new Error(_errorMessage(data, 'Could not save'));
     }
     row[column] = value;
     loadDelegation(true);
@@ -182,7 +202,7 @@ async function _setOperational(taskType, operational, knob) {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not change the operational flag');
+      throw new Error(_errorMessage(data, 'Could not change the operational flag'));
     }
     loadDelegation(true);
   } catch (error) {

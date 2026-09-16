@@ -495,7 +495,7 @@ async function _switchTab(tab) {
   // is a rarely-opened tab, and the module is dead weight in the initial parse
   // for every other page load.
   if (tab === 'delegation') {
-    const {loadDelegation} = await import('./delegation.js?v=2644919');
+    const {loadDelegation} = await import('./delegation.js?v=16014386');
     loadDelegation(true);
   }
 }

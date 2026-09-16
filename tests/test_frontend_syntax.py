@@ -290,3 +290,77 @@ class DelegationStatusAndBlockerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DelegationErrorMessageTests(unittest.TestCase):
+    """The settings page must show the server's reason for refusing a write.
+
+    This app's error contract is `{"error": "..."}` -- `app.py`'s
+    `handle_http_exception` serialises every `HTTPException` that way, so
+    FastAPI's `detail` name never reaches the browser. `delegation.js` read
+    `data.detail` in both of its write paths, so every refusal arrived as
+    `undefined` and was replaced by a generic fallback: a knob that would not
+    move said only "Could not change the operational flag", and a rejected
+    cell edit said "Could not save" instead of naming the broken invariant
+    and the column -- which spec 1.1 requires the refusal to name.
+
+    Nothing caught it because the route tests assert the API's response,
+    which was correct all along; the loss happened in the browser. So this
+    executes the shipped `_errorMessage` rather than asserting on source
+    text, the same way `DelegationColumnsResolutionTests` does.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ASSETS / "delegation.js").read_text()
+
+    def _message(self, data_json: str, fallback: str = "fallback") -> str:
+        fn = re.search(
+            r"function _errorMessage\(data, fallback\) \{.*?\n\}",
+            self.source, re.DOTALL)
+        self.assertIsNotNone(
+            fn, "_errorMessage not found in delegation.js -- the refusal-"
+            "reason resolver was renamed or removed")
+        script = (
+            f"{fn.group(0)}\n"
+            f"JSON.stringify(_errorMessage({data_json}, {json.dumps(fallback)}));"
+        )
+        return json.loads(quickjs.Context().eval(script))
+
+    def test_the_apps_error_key_is_read(self):
+        """The shape `app.py`'s exception handler actually returns. This is
+        the case that was broken: the reason was present and discarded."""
+        self.assertEqual(
+            self._message('{"error": "coding: spec 12 holds this flip"}'),
+            "coding: spec 12 holds this flip")
+
+    def test_detail_is_read_when_error_is_absent(self):
+        """A plain FastAPI error path that never reached the custom handler
+        carries `detail`. A real reason under either key beats a fallback."""
+        self.assertEqual(
+            self._message('{"detail": "median_latency_s must be a number"}'),
+            "median_latency_s must be a number")
+
+    def test_error_wins_over_detail_when_both_are_present(self):
+        """`error` is this app's contract; `detail` is the compatibility
+        second choice, so it must not shadow the real one."""
+        self.assertEqual(
+            self._message('{"error": "the real reason", "detail": "the other one"}'),
+            "the real reason")
+
+    def test_a_body_with_no_reason_falls_back(self):
+        """`response.json()` failing yields `{}` at the call site, and a 500
+        may carry no reason at all -- the caller still needs a message."""
+        self.assertEqual(self._message("{}"), "fallback")
+
+    def test_a_blank_reason_falls_back(self):
+        """An empty or whitespace-only reason is not a reason. Without this
+        the user gets a toast with no text, which reads as a silent failure
+        -- the exact symptom this class exists to prevent."""
+        self.assertEqual(self._message('{"error": "   "}'), "fallback")
+
+    def test_a_non_object_body_falls_back(self):
+        """`response.json()` can legitimately yield a string or null; reading
+        a property off either must not throw inside the error handler."""
+        self.assertEqual(self._message("null"), "fallback")
+        self.assertEqual(self._message('"not an object"'), "fallback")

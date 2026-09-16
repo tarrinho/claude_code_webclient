@@ -10,15 +10,28 @@ Usage
 -----
     .venv/bin/python bin/wc-seed-delegation.py --db-path /path/to/some.db
 
-`--db-path` is required and has no default, on purpose: the default database
-this repository ships (`config.DB_PATH`, `data/webconsole.db` next to
-`config.py`) is the one a running deployment actually uses, and a seed script
-that fell back to it silently would eventually be run once with no arguments
-by someone who meant to point it at a scratch database and forgot to. This
-script refuses that path outright -- pass a throwaway or a staging database,
-not the production one. There is no override flag; if the production table
-genuinely needs seeding, run this against a copy and swap it in by hand, so
-the write happens by a deliberate deploy step rather than a CLI default.
+`--db-path` is required and has no default, on purpose: `config.DB_PATH` is
+the database a running deployment actually uses (it honours `WC_DB_PATH`,
+which is how `systemd/webconsole.service` points it at the real production
+file), and a seed script that fell back to it silently would eventually be
+run once with no arguments by someone who meant to point it at a scratch
+database and forgot to. This script refuses `config.DB_PATH` outright --
+pass a throwaway or a staging database, not the production one. There is no
+override flag; if the production table genuinely needs seeding, run this
+against a copy and swap it in by hand, so the write happens by a deliberate
+deploy step rather than a CLI default.
+
+The refusal compares against `config.DB_PATH` itself, after environment
+resolution -- never against a second computation of what that default
+"should" be. An earlier version of this script guessed the default from its
+own directory (`Path(__file__).resolve().parent.parent / "data" /
+"webconsole.db"`), which matches `config.DB_PATH` only when `WC_DB_PATH` is
+unset. `systemd/webconsole.service` sets `WC_DB_PATH` explicitly and runs
+from a release-snapshot `WorkingDirectory`, so the script's self-relative
+guess pointed somewhere other than the real production file, and passing
+that real path via `--db-path` sailed straight through the guard. Both sides
+of the comparison are canonicalised with `os.path.realpath` so a relative
+path, a `..` segment or a symlink cannot slip past either.
 
 Idempotent. The table is keyed on `(model, task_type)` and `delegation_row_set`
 upserts (`ON CONFLICT(model, task_type) DO UPDATE`), so running this twice
@@ -30,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -40,6 +54,7 @@ import db  # noqa: E402
 
 #: (model, task_type, accuracy, n, cost_per_1m_tokens, median_latency_s, max_context)
 #: None means TBD, which is not zero -- see CapabilityRow's docstring.
+#: All 23 (model, task_type) pairs of spec 2.6's table, in its row order.
 ROWS = [
     ("vllm/Qwen3.6-35B-A3B-NVFP4", "coding", 0.66, 44, 0.0, 26.8, 229376),
     ("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context", 1.0, 10, 0.0, None, 229376),
@@ -48,23 +63,34 @@ ROWS = [
     ("azure_ai/gpt-5.6-luna", "comprehension", None, None, 0.0285, None, 922000),
     ("azure_ai/gpt-5.6-luna", "reasoning", None, None, 0.0285, None, 922000),
     ("azure_ai/gpt-5.6-luna", "voice", None, None, 0.0285, None, 922000),
-    ("azure_ai/gpt-5.6-luna", "reviewer-gate", None, 9, 0.0285, 11.1, 922000),
     ("azure_ai/gpt-5.4-mini", "coding", None, None, 0.5261, None, 1050000),
     ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.5261, None, 1050000),
+    ("azure_ai/gpt-5.6-luna", "multi-turn", None, None, 0.0285, None, 922000),
+    ("azure_ai/gpt-5.6-luna", "planning", None, None, 0.0285, None, 922000),
+    ("azure_ai/gpt-5.6-luna", "reviewer-gate", None, 9, 0.0285, 11.1, 922000),
     ("claude-sonnet-5", "coding", 1.0, 24, 1.5709, 15.5, 1000000),
+    ("claude-sonnet-5", "long-context", None, None, 1.5709, None, 1000000),
     ("claude-sonnet-5", "comprehension", 1.0, 2, 1.5709, None, 1000000),
     ("claude-sonnet-5", "reasoning", 0.75, 2, 1.5709, None, 1000000),
     ("claude-sonnet-5", "voice", None, None, 1.5709, None, 1000000),
+    ("claude-sonnet-5", "multi-turn", None, None, 1.5709, None, 1000000),
+    ("claude-sonnet-5", "planning", None, None, 1.5709, None, 1000000),
+    ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),
     ("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None, 1000000),
     ("claude-opus-5", "comprehension", 0.5, 2, 3.6082, None, 1000000),
     ("claude-opus-5", "reasoning", None, None, 3.6082, None, 1000000),
 ]
 
 
-def _default_db_path() -> str:
-    """The path config.py falls back to with no WC_DB_PATH set -- the one a
-    real deployment is using unless told otherwise."""
-    return str(Path(__file__).resolve().parent.parent / "data" / "webconsole.db")
+def _canonical(path: str | os.PathLike[str]) -> Path:
+    """Resolve *path* to a canonical, comparable form.
+
+    ``os.path.realpath`` (not just ``Path.resolve()``) so a relative path, a
+    ``..`` segment, or a symlink all normalise to the same string as the
+    real target they point at -- the guard below compares strings, and any
+    of those left unresolved would let a disguised production path through.
+    """
+    return Path(os.path.realpath(str(path)))
 
 
 async def main(argv: list[str] | None = None) -> int:
@@ -78,12 +104,16 @@ async def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    target = Path(args.db_path).resolve()
-    default = Path(_default_db_path()).resolve()
-    if target == default:
+    target = _canonical(args.db_path)
+    # config.DB_PATH is the database a real deployment is actually using --
+    # it already honours WC_DB_PATH (systemd/webconsole.service sets it),
+    # so this is not a second guess at what "the default" is; it is the
+    # live value, read fresh at call time.
+    production = _canonical(config.DB_PATH)
+    if target == production:
         parser.error(
-            f"refusing to seed {target} -- that is the default production "
-            "database path (config.DB_PATH with WC_DB_PATH unset). Point "
+            f"refusing to seed {target} -- that is config.DB_PATH, the "
+            "database a real deployment uses (WC_DB_PATH honoured). Point "
             "--db-path at a throwaway or staging database instead."
         )
 

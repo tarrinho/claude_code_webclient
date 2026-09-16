@@ -1026,6 +1026,30 @@ CREATE TABLE ai_machines (
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
+
+-- Tiered agent delegation (0.19.0, spec 2.6). A real table, not a constant
+-- in source -- the settings page and the future re-benchmark job both write
+-- it, and the ladder generator reads it. NULL means TBD, not zero/false.
+CREATE TABLE delegation_capability (
+    model              TEXT NOT NULL,
+    task_type          TEXT NOT NULL,
+    accuracy           REAL,               -- measured success rate, or NULL
+    n                   INTEGER,            -- accuracy sample size, or NULL
+    cost_per_1m_tokens REAL,
+    median_latency_s   REAL,
+    max_context        INTEGER,
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (model, task_type)
+);
+
+-- Which task types are routable (0.19.0, spec 1.1). Absent = non-operational,
+-- the bootstrap default. In 0.19.0 this table is seeded empty and no source
+-- file is allowed to flip `coding` -- see routes/delegation.py's
+-- `_OPERATIONAL_FLIP_BLOCKED` guard and spec section 12.
+CREATE TABLE delegation_operational (
+    task_type  TEXT PRIMARY KEY,
+    updated_at TEXT NOT NULL
+);
 ```
 
 **Pragmas:** `journal_mode=WAL`, `foreign_keys=ON`.
@@ -1075,6 +1099,23 @@ CREATE TABLE ai_machines (
 |--------|------|------|------|----------|
 | GET | `/api/settings` | Yes | — | `{ai_machine_host, ai_machine_port, proxy_enabled, default_model, fallback_model, version, session_ttl_s, turn_timeout_s, prompt_max}` |
 | PATCH | `/api/settings` | Yes | `{ai_machine_host?, session_secret?, projects_root?, proxy_token?, model_base_url?, model_api_key?, model_name?, default_model?, fallback_model?, session_ttl?, turn_timeout?, prompt_max?}` | `{ok: true, ai_machine_host}` |
+
+### Delegation (0.19.0, spec 9.2)
+
+Settings > Delegation's backing API: the spec 2.6 benchmark matrix, the
+per-task-type `operational` flags, and the ladders derived from them. Every
+write validates the resulting table against spec 1.1's six invariants before
+storing it (see §3.10) and leaves stored state untouched on refusal.
+`operational: true` for `coding` is refused unconditionally regardless of
+data completeness -- spec section 12 is not decided, and
+`routes/delegation.py`'s `_OPERATIONAL_FLIP_BLOCKED` enforces that ahead of
+the general check.
+
+| Method | Path | Auth | Body | Response |
+|--------|------|------|------|----------|
+| GET | `/api/delegation` | Yes | — | `{rows: [...], operational: [task_type...], ladders: {task_type: [model...]}, editable_columns: [...], config: {...}}` |
+| PUT | `/api/delegation/row` | Admin | `{model, task_type, accuracy?, n?, cost_per_1m_tokens?, median_latency_s?, max_context?}` | `{ok: true}` or 400 naming the violated invariant |
+| PUT | `/api/delegation/operational` | Admin | `{task_type, operational}` | `{ok: true, operational}` or 400 (`coding` -> True is always 400) |
 
 ### Machines
 
@@ -1242,6 +1283,16 @@ claude-code-webconsole/
 ├── auth.py                  477  Auth: passwords, sessions, CSRF, rate-limit, tokens
 ├── sysstats.py              458  Host sampling from /proc + write-health probe
 ├── turns.py                 380  Turn lifecycle: a turn outlives its request
+├── tiered_delegation.py     648  Delegation 0.19.0: CapabilityTable, ladder generator,
+│                                 6-invariant validation (spec 1.1, 2.6, 2.7). Pure --
+│                                 no database, no config, no import from app.
+├── delegation_pipeline.py   360  Delegation 0.19.0: which review-gate stages run and
+│                                 in what order (spec 4.8's precedence rules as code)
+├── delegation_classifier.py 153  Delegation 0.19.0: task -> (task_type, score, mutates)
+├── delegation_oracle.py     114  Delegation 0.19.0: coding oracle -- does the produced
+│                                 code parse/import/compile (spec 4.2). Not wired in yet.
+├── delegation_startup.py     60  Delegation 0.19.0: loads the capability table from the
+│                                 database and runs CapabilityTable.validate() at boot
 ├── routes/misc.py          1278  Settings, sessions, skills, health, orchestrator feed
 ├── net_validation.py        232  Outbound address validation (SSRF guard)
 ├── middleware.py            207  The three middleware classes and the API-token session
@@ -1263,9 +1314,11 @@ claude-code-webconsole/
 ├── .gitignore  .bandit  .gitleaks.toml
 ├── .githooks/pre-push             gitleaks scan, runs on push
 ├── .github/workflows/             CI + dependabot
-├── bin/                    3280  18 scripts: release, health, proxy run, API tokens,
+├── bin/                    3417  19 scripts: release, health, proxy run, API tokens,
 │                                 chunked suite runner, transcript doctor, model benchmarks,
-│                                 livecheck, wc-claude, and others
+│                                 livecheck, wc-claude, wc-seed-delegation (0.19.0,
+│                                 seeds spec 2.6; requires --db-path, refuses
+│                                 config.DB_PATH), and others
 ├── systemd/                       --user units: app, proxy, health service + timer
 ├── docker/Dockerfile              Container image (non-root user)
 ├── docs/superpowers/              Design specs and implementation plans
@@ -1297,11 +1350,16 @@ claude-code-webconsole/
 │           ├── api.js         94
 │           ├── state.js       70
 │           └── dom.js         41
-├── routes/                4513  Four route modules extracted from app.py in 0.10.3
+├── routes/                4915  Six route modules: four extracted from app.py in
+│                                 0.10.3, two added for tiered delegation in 0.19.0
 │   ├── chats.py            1704  Chat CRUD, turns, questions, transcript, streaming
 │   ├── misc.py             1278  Settings, sessions, skills, health, orchestrator feed
 │   ├── supervisors.py       860  Orchestrator orchestration routes
-│   └── machines.py           665  AI machine CRUD and connectivity tests
+│   ├── machines.py           665  AI machine CRUD and connectivity tests
+│   ├── delegation.py         323  Delegation matrix API (spec 9.2): GET/PUT rows,
+│   │                              PUT operational -- validates every write (1.1)
+│   └── db_delegation.py       85  Delegation 2.6 table CRUD: rows_all, row_set,
+│                                  operational_all/_set
 ├── tests/                 39825  109 files, 2481 collected cases
 │   ├── conftest.py                Capability guard: aborts a partial or blind run
 │   ├── capabilities.py            quickjs + playwright driver detection

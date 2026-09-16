@@ -16,6 +16,7 @@ still gets through. See tests/test_frontend_browser.py for that.
 """
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -112,6 +113,86 @@ class JavaScriptParsesTests(unittest.TestCase):
         """
         _parse("function a() {}\nfunction b() {}\nexport default { a, b };")
         _parse("const value = state?.chat?.model ?? 'none';")
+
+
+@unittest.skipIf(quickjs is None, "quickjs not installed (pip install -r requirements-dev.txt)")
+class DelegationColumnsResolutionTests(unittest.TestCase):
+    """F8: the settings page must derive its editable columns from
+    `GET /api/delegation`'s `editable_columns` field (routes/delegation.py's
+    `_EDITABLE`) instead of carrying a fourth hardcoded copy of the five
+    measured column names -- `tiered_delegation._REQUIRED_COLUMNS`,
+    `routes/db_delegation._COLUMNS` and `routes/delegation._EDITABLE` are
+    the other three, and only the first three were ever pinned together by
+    a test.
+
+    This actually *executes* `delegation.js`'s `_resolveColumns`, extracted
+    from the shipped source rather than retyped here, so a change to the
+    real function is what this test exercises -- a text-content assertion
+    on the source would keep passing if the function's logic changed while
+    its name stayed put.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ASSETS / "delegation.js").read_text()
+
+    def _resolve(self, payload_json: str) -> list:
+        """Run the shipped `_resolveColumns` (plus the `_DEFAULT_COLUMNS`
+        constant it falls back to) against *payload_json*, taken verbatim
+        from the source so this cannot drift from what ships."""
+        default_cols = re.search(
+            r"const _DEFAULT_COLUMNS = (\[[^\]]*\]);", self.source)
+        self.assertIsNotNone(
+            default_cols, "_DEFAULT_COLUMNS not found in delegation.js -- "
+            "the fallback constant was renamed or removed")
+        resolver = re.search(
+            r"function _resolveColumns\(payload\) \{.*?\n\}",
+            self.source, re.DOTALL)
+        self.assertIsNotNone(
+            resolver, "_resolveColumns not found in delegation.js -- F8's "
+            "column-derivation function was renamed or removed")
+        script = (
+            f"const _DEFAULT_COLUMNS = {default_cols.group(1)};\n"
+            f"{resolver.group(0)}\n"
+            f"JSON.stringify(_resolveColumns({payload_json}));"
+        )
+        return json.loads(quickjs.Context().eval(script))
+
+    def test_uses_editable_columns_from_the_response(self):
+        """The normal case: the server's list wins, in the server's order,
+        even when it differs from the five-column default -- proving this
+        is read from the payload and not just falling through to the
+        fallback by coincidence."""
+        result = self._resolve(
+            '{"editable_columns": ["accuracy", "cost_basis"]}')
+        self.assertEqual(result, ["accuracy", "cost_basis"])
+
+    def test_falls_back_when_editable_columns_is_missing(self):
+        """An older cached `GET /api/delegation` response, from before this
+        field existed, must still render the ordinary table -- not a broken
+        or empty one."""
+        result = self._resolve('{"rows": []}')
+        self.assertEqual(
+            result,
+            ["accuracy", "n", "cost_per_1m_tokens", "median_latency_s",
+             "max_context"])
+
+    def test_falls_back_when_editable_columns_is_empty(self):
+        result = self._resolve('{"editable_columns": []}')
+        self.assertEqual(
+            result,
+            ["accuracy", "n", "cost_per_1m_tokens", "median_latency_s",
+             "max_context"])
+
+    def test_falls_back_when_editable_columns_is_not_an_array(self):
+        """A malformed or truncated cached response naming the field as the
+        wrong type must not raise -- it degrades the same as a missing
+        field."""
+        result = self._resolve('{"editable_columns": "accuracy"}')
+        self.assertEqual(
+            result,
+            ["accuracy", "n", "cost_per_1m_tokens", "median_latency_s",
+             "max_context"])
 
 
 if __name__ == "__main__":

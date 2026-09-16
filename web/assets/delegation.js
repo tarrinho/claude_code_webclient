@@ -14,7 +14,29 @@ import {notifyResult} from './server-stats.js?v=1383946';
 
 const byId = id => document.getElementById(id);
 
-const COLUMNS = ['accuracy', 'n', 'cost_per_1m_tokens', 'median_latency_s', 'max_context'];
+// Fallback only. `GET /api/delegation` names the true list in
+// `editable_columns` (routes/delegation.py's `_EDITABLE`, which is one of
+// three coordinated Python copies -- see that module's docstring); this
+// array exists solely for an older cached response that predates that field,
+// so the table still renders instead of coming up broken or empty. Every
+// live render derives its columns from the response via `_resolveColumns`.
+const _DEFAULT_COLUMNS = ['accuracy', 'n', 'cost_per_1m_tokens', 'median_latency_s', 'max_context'];
+
+/** The columns to render for one `GET /api/delegation` response.
+ *
+ *  Reads `payload.editable_columns` rather than hardcoding a fourth copy of
+ *  the five measured column names (spec 11 already flags three Python
+ *  copies of this list, kept in sync by a test; this used to be an
+ *  uncovered fourth). Falls back to `_DEFAULT_COLUMNS` when the field is
+ *  missing, not an array, or empty -- an older cached response, from before
+ *  this field existed, must still render the ordinary table rather than a
+ *  broken or empty one. */
+function _resolveColumns(payload) {
+  const cols = payload && Array.isArray(payload.editable_columns)
+    ? payload.editable_columns
+    : null;
+  return cols && cols.length ? cols : _DEFAULT_COLUMNS;
+}
 
 /** All five measured fields for one row, formatted for a hover tooltip.
  *  Spec 9.2: "Hover tooltips on rung values in the settings page show all
@@ -194,6 +216,8 @@ export async function loadDelegation(force = false) {
 
   _renderConfig(payload.config, byId('delegationConfig'));
 
+  const columns = _resolveColumns(payload);
+
   host.replaceChildren();
   const byType = {};
   (payload.rows || []).forEach(row => {
@@ -229,7 +253,7 @@ export async function loadDelegation(force = false) {
       name.className = 'delegation-model';
       name.textContent = row.model;
       line.appendChild(name);
-      COLUMNS.forEach(column => line.appendChild(_cell(row, column)));
+      columns.forEach(column => line.appendChild(_cell(row, column)));
       group.appendChild(line);
     });
     host.appendChild(group);

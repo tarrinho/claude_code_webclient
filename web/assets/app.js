@@ -18,7 +18,7 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 import {updateVoiceButtonVisibility} from './voice-engine.js?v=4274770';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
-import {loadDelegation} from './delegation.js?v=6818938';
+import {loadDelegation} from './delegation.js?v=3100015';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot

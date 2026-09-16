@@ -139,6 +139,59 @@ class CaddyfileSyntaxTests(unittest.TestCase):
                          f"caddy validate failed: {result.stderr[:200]}")
 
 
+class OneCaddyOwnsTheSiteTests(unittest.TestCase):
+    """Exactly one Caddy may be enabled, and it is the user one.
+
+    Debian's caddy package ships a *system* unit, and this host also runs a
+    user unit -- the one that is maintained, that the tests above assert
+    against, and that carries the Requires=webconsole.service ordering. Both
+    were enabled, and both read /etc/caddy/Caddyfile, so on every boot they
+    raced for :443 and the admin port :2019. Measured on 2026-09-16: the user
+    instance won at boot and the system unit sat failed for fourteen hours
+    with "listen tcp 127.0.0.1:2019: bind: address already in use".
+
+    The race is the defect, not the failed unit. Whichever wins serves the
+    site, and the system unit has none of the ordering added to the user one
+    -- so a boot where it won would silently reintroduce the Caddy-before-
+    WebConsole race that ordering exists to prevent, and nothing would report
+    it, because a site that answers looks the same either way.
+
+    Asserted on `is-enabled` rather than on `is-active`: enabled is what
+    decides the next boot, and a unit can be inactive now and start first
+    tomorrow.
+    """
+
+    def _systemctl(self, *args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["systemctl", *args], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover
+            self.skipTest(f"systemctl unavailable: {exc}")
+        return (result.stdout or result.stderr).strip()
+
+    def test_the_system_caddy_unit_is_not_enabled(self):
+        state = self._systemctl("is-enabled", "caddy.service")
+        if "No such file" in state or state == "":
+            self.skipTest("no system caddy unit on this host")
+        self.assertNotEqual(
+            state, "enabled",
+            "the system caddy.service is enabled alongside the user one; "
+            "both bind :443 and :2019 at boot, and the winner is a race. "
+            "Disable it with: sudo systemctl disable --now caddy",
+        )
+
+    def test_the_user_caddy_unit_is_enabled(self):
+        """The other half: disabling the system unit must not leave the site
+        with no Caddy at all. The user manager runs at boot through lingering,
+        which webconsole.service already depends on."""
+        state = self._systemctl("--user", "is-enabled", "caddy.service")
+        self.assertEqual(
+            state, "enabled",
+            "the user caddy.service is not enabled, so nothing starts Caddy "
+            "at boot now that the system unit is disabled",
+        )
+
+
 class SystemdServicePersistenceTests(unittest.TestCase):
     """Both Caddy and WebConsole must be persistent systemd user services."""
 

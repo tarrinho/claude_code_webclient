@@ -18,6 +18,7 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 import {updateVoiceButtonVisibility} from './voice-engine.js?v=4274770';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
+import {loadDelegation} from './delegation.js?v=11870681';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -456,11 +457,11 @@ function _switchTab(tab) {
   const map = {
     backends: 'panelBackends', usage: 'panelUsage', stats: 'panelStats',
     server: 'panelServer', skills: 'panelSkills', app: 'panelApp',
-    images: 'panelImages', specs: 'panelSpecs',
+    images: 'panelImages', specs: 'panelSpecs', delegation: 'panelDelegation',
   };
   const activeId = map[tab] || 'panelBackends';
   ['panelBackends', 'panelUsage', 'panelStats', 'panelServer', 'panelSkills',
-   'panelApp', 'panelImages', 'panelSpecs'].forEach(id => {
+   'panelApp', 'panelImages', 'panelSpecs', 'panelDelegation'].forEach(id => {
     const el = byId(id);
     if (el) el.hidden = id !== activeId;
   });
@@ -491,6 +492,7 @@ function _switchTab(tab) {
   if (tab === 'skills') loadSkills();
   if (tab === 'images') loadImages(true);
   if (tab === 'specs') { _wireSpecsRefresh(); loadSpecs(true); }
+  if (tab === 'delegation') loadDelegation(true);
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────

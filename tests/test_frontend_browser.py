@@ -457,7 +457,7 @@ class BackendsPanelBrowserTests(_BrowserFixture):
         self.assertEqual(
             tabs,
             ["Backends", "Usage", "Statistics", "Server", "Skills", "App",
-             "Images", "Specs"],
+             "Images", "Specs", "Delegation"],
         )
         # The old standalone Models tab is what got merged into Backends; a
         # backend and the models it serves are one thing.

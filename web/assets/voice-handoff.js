@@ -4,7 +4,7 @@
 // voice-conversation.js (2026-09-10); see voice-engine.js's header for why.
 
 import {apiFetch} from './api.js?v=2741508';
-import {showToast} from './app.js?v=2099422';
+import {showToast} from './app.js?v=4186518';
 import {
   flushSpeechBuffer, appendSpeechBuffer, clearSpeechBuffer, setVoiceStatus,
   updateVoiceButtonVisibility, pendingSpeechCount,

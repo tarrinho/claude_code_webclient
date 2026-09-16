@@ -54,6 +54,7 @@ from routes.machines_tunnel import router as machines_tunnel_router
 # _resolve_member (an orchestrators helper) adopts a session by calling the
 # sessions route's handler, so this crosses prefixes. It travels to
 # routes/orchestrators.py with that helper when the prefix is extracted.
+from routes.delegation import router as delegation_router
 from routes.misc import _import_cli_usage, router as misc_router
 from routes.orchestrators import router as orchestrators_router
 from routes.images import router as images_router
@@ -656,6 +657,7 @@ app.include_router(misc_router)
 app.include_router(transports_router)
 app.include_router(qa_router)
 app.include_router(specs_router)
+app.include_router(delegation_router)
 
 app.add_middleware(
     CORSMiddleware, allow_origins=[], allow_methods=["*"], allow_headers=["*"]

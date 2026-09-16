@@ -204,8 +204,11 @@ class DevExemptionIsGoneTests(ApiTokenBase):
         # could make the console redirect off-origin, and the guard had already
         # been satisfied. See tests/test_qa_hard_refresh_open_redirect.py.
         #
-        # So: adding a route here means auditing what that route does with
-        # user-controlled input, not just incrementing a number.
+        # So, plainly: **adding a path to the auth-exempt set is a security
+        # review of that handler, not a list edit.** Whoever is here next will
+        # be looking at the list, which is the wrong object -- the question is
+        # what the handler behind it does with user-controlled input once
+        # anyone on the network can reach it.
         self.assertEqual(block.count("startswith"), 1, block)
         # And no other `==` path check either -- same reasoning, for the
         # exact-match exemptions rather than the one prefix-match one.

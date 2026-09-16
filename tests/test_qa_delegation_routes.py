@@ -56,10 +56,16 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
 
     async def _seed_machine_serving(self, *model_ids: str) -> str:
-        """Register a machine whose active list names *model_ids*, so
-        `routes.machines.known_backend_models` -- and therefore
-        `delegation_startup.live_known_models`, which both route handlers now
-        call -- reports them as live.
+        """Register a machine whose active list AND force-refreshed
+        `models_list` name *model_ids*, so `routes.machines.known_backend_models`
+        -- and therefore `delegation_startup.live_known_models`, which both
+        route handlers now call -- reports them as live, complete included:
+        completeness requires a populated `models_list`, which only a real
+        force-refresh (`ai_machine_set_models_list`, normally reached through
+        the Backends UI's `?force=1`) ever writes. Without it the machine
+        counts as incomplete and the resolution check falls back to a
+        shape-only pass for backend-qualified ids -- which would let these
+        tests stay green even if strict membership broke.
 
         `db.ai_machine_create` returns its write timestamp, not the id --
         reuse the id passed in for the follow-up update.
@@ -71,6 +77,10 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         )
         await db.ai_machine_set_models(machine_id, "tester", list(model_ids),
                                        model_ids[0])
+        await db.ai_machine_set_models_list(
+            machine_id, "tester",
+            json.dumps([{"id": m} for m in model_ids]), db._now(),
+        )
         return machine_id
 
     def test_the_three_column_lists_agree(self):

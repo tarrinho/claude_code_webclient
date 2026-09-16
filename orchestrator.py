@@ -275,9 +275,25 @@ class ModelRouter:
         )
 
     def assign_model(
-        self, task_title: str, task_desc: str, complexity: int = 1
+        self, task_title: str, task_desc: str, complexity: int = 1,
+        table: Any | None = None,
     ) -> str:
-        """Pick the best model for a task using rule matching."""
+        """Pick the model for a task.
+
+        Order: an operator's explicit rule, then the measured ladder for an
+        *operational* task type, then today's fallback.
+
+        `table` is optional and defaults to None, which is what every existing
+        call site passes -- with no table, or with one whose task types are
+        all non-operational, this returns exactly what it returned before.
+        That is release 0.19.0's claim and tests/test_qa_delegation_routing.py
+        asserts it.
+
+        The previous fallback was `if complexity >= 4: return X` followed by
+        `return X` -- the same value on both branches, so complexity was
+        computed and discarded (spec section 1). The parameter is now used, or
+        it is honestly unused; it is no longer pretend.
+        """
         combined = (task_title + " " + task_desc).lower()
 
         for rule in self.rules:
@@ -292,9 +308,21 @@ class ModelRouter:
                         "Invalid regex in model routing rule: %s", pattern
                     )
 
-        # Fallback: complexity-based
-        if complexity >= 4:
-            return config.ANTHROPIC_MODEL
+        if table is not None:
+            from delegation_classifier import classify
+            decision = classify(combined)
+            if table.is_operational(decision.task_type):
+                rungs = table.ladder(decision.task_type)
+                if rungs:
+                    return rungs[0]
+                # An operational type with an empty ladder is refused at
+                # startup (1.1). Reaching here means a table built some other
+                # way, and falling back beats raising inside a router.
+                _log.warning(
+                    "delegation: %s is operational but its ladder is empty; "
+                    "falling back", decision.task_type,
+                )
+
         return config.ANTHROPIC_MODEL
 
     @staticmethod

@@ -10,6 +10,22 @@ These are the items found during implementation and review that were **not**
 fixed, with the reason. They are ordered by when they must be dealt with, not
 by size.
 
+## Closed since this list was written (2026-09-16, later the same day)
+
+| item | resolution | commit |
+|---|---|---|
+| F6 — `GateResult.gate` unconstrained | `GATE_REVIEWER`/`GATE_QA`/`GATE_SECURITY` constants; an unrecognised name now **raises** instead of silently taking the reviewer path | `5bc9546` |
+| F7 — `reasoning` hold had no guard | added to `_OPERATIONAL_FLIP_BLOCKED`, which became a `dict` so each held type states its own blocker | `9426854` |
+| F8 — five columns declared four times | `delegation.js` now derives its list from the `editable_columns` the API already returned and it ignored | `c2763dc` |
+| ARCHITECTURE §9 stale | ~40 counts corrected, `routes/supervisors.py` (nonexistent) removed, `delegation.js` added, subtotals recomputed | `4219490` |
+| F1 — partial cache became a boot refusal | completeness is now positive evidence: strict membership only when every `ai_machines` row has a populated `models_list`; otherwise fall back and log which machine to refresh | `39b747f` |
+| F5 — two notions of "the gate model" | `ladder("reviewer-gate")[0]` when the ladder yields a rung, cheapest-priced otherwise, recording which path fired | `39b747f` |
+| coverage lost to F1's own fix | `_seed_machine_serving` now populates `models_list`, so the two tests exercise strict membership again rather than the fallback | `38936a7` |
+
+That last row is worth keeping visible. F1's ruling silently downgraded two passing tests to a weaker code path while their docstrings still claimed the stronger one — the tenth instance in this release of a test that asserts a correct value while not exercising what it names, and the first caused by a fix rather than found in existing code. It was proven by reverting only the test file with the mutation still applied and watching both tests pass.
+
+**The §5.1 ceiling contradiction (F4 below) has since been ruled on and measured** — see §5.1's "Decided 2026-09-16" subsection and §2.6's `claude-sonnet-5` × `reviewer-gate` row at 3.675s over n=20. The worst case is now 1,398.2s against the 1,500s ceiling. It remains a lower bound because §4.5's security re-run term is still unpriced, which is the §12 dependency below.
+
 ## Must close before the first `operational` flip
 
 ### F1 — a partially populated model cache becomes a boot refusal
@@ -148,14 +164,39 @@ coordinated edits with nothing red if one is missed. The mechanism that would
 make the JS copy derived already exists and is ignored: `GET /api/delegation`
 returns `editable_columns` and `delegation.js` never reads it.
 
-### ARCHITECTURE.md's file inventory is stale beyond the lines corrected
+### ARCHITECTURE.md's file inventory needs a structural pass, not more spot fixes
 
-`routes/chats.py`, `routes/misc.py` and `routes/machines.py` are all understated,
-and `routes/supervisors.py` is listed but does not exist as a file. `bin/`'s
-total does not reconstruct from any obvious methodology (raw `wc -l` gives
-12,717 against a stated 3,280), which is why it was incremented rather than
-recomputed. The table deserves one dedicated pass rather than opportunistic
-edits.
+The named errors are fixed in `4219490` — counts corrected, the nonexistent
+`routes/supervisors.py` removed, a duplicate `routes/misc.py` entry that
+shadowed the real nested one removed, `web/assets/delegation.js` added,
+subtotals recomputed so they sum to their entries.
+
+That pass surfaced drift far larger than the review knew about, and it was
+deliberately **not** attempted — it is a restructuring of the table rather than
+a correction of it, and two agents were editing the tree at the time, so any
+count taken would have gone stale before it committed:
+
+| entry | stated | actual |
+|---|---|---|
+| `routes/` | 5 files itemised | **29 files** |
+| `web/assets/` | 10 itemised | **29 files** |
+| `db.py` | 3,600 lines | **1,631** — a chunk moved into `routes/db_*.py` |
+| `tests/` | 109 files, 2,481 cases, 39,825 lines | **297 files, 86,633 lines** |
+
+The `tests/` line additionally needs a pytest collection run to refresh its case
+count, skipped to avoid load on a host already below the memory preflight.
+
+`bin/`'s total stays untouched by decision, not oversight: it reconstructs from
+no obvious methodology (raw `wc -l` over `bin/*.py` and `bin/*.sh` gives 12,717
+against a stated 3,280, later 3,417), so it has been incremented by new files'
+own counts rather than recomputed on a guess. **Two separate passes have now
+failed to derive it.** Either find the original rule and write it down beside
+the number, or replace the figure with one whose methodology is stated.
+
+**Why this is worth scheduling rather than leaving:** an inventory's whole value
+is that a reader can trust it is complete. One listing 5 of 29 files in a
+directory is not a partial inventory, it is a misleading one — the same
+reasoning that made a false docstring worth fixing earlier in this release.
 
 ### A pre-existing test failure, unrelated to this release
 

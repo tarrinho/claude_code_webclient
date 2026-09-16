@@ -27,10 +27,20 @@ class ClassifyTests(unittest.TestCase):
 
     def test_score_is_the_maximum_of_every_match_not_the_winner_s(self):
         """Section 2.1. Score feeds the size factor and therefore the deadline;
-        under-budgeting manufactures a false timeout, which costs a rung."""
-        # "simple" scores 1; "orchestrate" scores 5. Both match.
-        result = dc.classify("a simple change to orchestrate the agents")
+        under-budgeting manufactures a false timeout, which costs a rung.
+
+        The input is chosen so the two computations DIFFER: the most specific
+        match here is the long-context pattern, which scores 1, while the
+        planning pattern it also matches scores 5. With an input where the
+        most specific match is also the highest scoring, this test passes
+        under either implementation and proves nothing.
+        """
+        result = dc.classify("read file and orchestrate the agents")
         self.assertEqual(result.score, 5)
+        # The same input proves the two rules of 2.1 are independent: the type
+        # comes from specificity, the score from the maximum, and here they
+        # come from different patterns.
+        self.assertEqual(result.task_type, "long-context")
 
     def test_a_mutates_conflict_resolves_to_true(self):
         """Section 2.1: if any two matched patterns disagree, the answer is True."""

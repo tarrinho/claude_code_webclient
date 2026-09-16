@@ -164,6 +164,11 @@ def __getattr__(name: str):
         "model_windows_all": "routes.db_usage",
         "spec_status_get_all": "routes.db_specs",
         "spec_status_set": "routes.db_specs",
+        # tiered delegation
+        "delegation_rows_all": "routes.db_delegation",
+        "delegation_row_set": "routes.db_delegation",
+        "delegation_operational_all": "routes.db_delegation",
+        "delegation_operational_set": "routes.db_delegation",
         "api_token_create": "routes.db_users",
         "api_token_by_hash": "routes.db_users",
         "api_token_touch": "routes.db_users",
@@ -487,6 +492,32 @@ async def init() -> None:
         CREATE TABLE IF NOT EXISTS spec_status (
             path       TEXT PRIMARY KEY,
             status     TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        -- The spec 2.6 benchmark table. A real table, not a constant in
+        -- source: section 2.6 says so outright, because the settings page
+        -- (9.2) writes it, the re-benchmark job (10.2) writes it, and the
+        -- ladder generator (3) reads it. Two copies would drift, and the
+        -- drift would show up as a ladder that disagrees with the page that
+        -- claims to configure it.
+        CREATE TABLE IF NOT EXISTS delegation_capability (
+            model             TEXT NOT NULL,
+            task_type         TEXT NOT NULL,
+            accuracy          REAL,
+            n                 INTEGER,
+            cost_per_1m_tokens REAL,
+            median_latency_s  REAL,
+            max_context       INTEGER,
+            updated_at        TEXT NOT NULL,
+            PRIMARY KEY (model, task_type)
+        );
+
+        -- Which task types are routable. Absent means non-operational, which
+        -- is 1.1's bootstrap default: a type is submitted to validation by
+        -- being flipped here, and that is the only way it becomes routable.
+        CREATE TABLE IF NOT EXISTS delegation_operational (
+            task_type  TEXT PRIMARY KEY,
             updated_at TEXT NOT NULL
         );
 

@@ -502,10 +502,44 @@ async def handle_db_restore(request: Request):
 # Terminal sessions have no signed-in user, so their spend is attributed here.
 # A fixed owner rather than whoever happens to open the tab: the byte cursor is
 # per transcript, not per user, so attributing to the viewer would let the first
-# person to look claim every row and leave the second an empty report. Correct
-# only while this is a single-operator console -- the day a second account
-# exists, this line is the bug.
+# person to look claim every row and leave the second an empty report.
+#
+# This is the account NAME. It is resolved to that account's id before any row
+# is written -- see _resolve_cli_usage_owner -- because writing the name itself
+# is what the previous version did, and the comment that stood here predicted
+# the consequence exactly: "correct only while this is a single-operator
+# console; the day a second account exists, this line is the bug."
+#
+# That day arrived. Measured 2026-09-16, this deployment held four owner values
+# for one person: two user ids (pedro's and admin's) and the two login names
+# beside them, left over from before sessions carried an id. 172,513 usage
+# events, 70 chats and every transport sat under an identity the signed-in
+# session could not see, because every owner-scoped query filters on the
+# session's id and this line wrote a name. The visible symptoms were a Usage
+# tab missing most of its history and, through the owner-scoped guard in
+# handle_sessions_resume, three separate chats opened against one live CLI
+# session because the guard could not see the other identity's chat.
 CLI_USAGE_OWNER: Final[str] = "admin"
+
+
+async def _resolve_cli_usage_owner(owner: str) -> str:
+    """Return the user id for *owner*, which may be a name or already an id.
+
+    Kept separate from the constant so the translation happens once, at the
+    point of use, rather than being re-derived by each caller -- the shape of
+    duplication `shared.owner_of` exists to prevent elsewhere. An unknown name
+    is returned unchanged rather than raising: attributing spend to a literal
+    string is wrong, but losing the import entirely because an account was
+    renamed is worse, and the unchanged value is what every previous release
+    wrote anyway.
+    """
+    if not owner:
+        return owner
+    try:
+        user = await db.user_get_by_name(owner)
+    except Exception:  # a usage import must never take the timer down
+        return owner
+    return (user or {}).get("id") or owner
 
 
 async def _import_cli_usage(owner: str = CLI_USAGE_OWNER) -> int:
@@ -533,6 +567,10 @@ async def _import_cli_usage(owner: str = CLI_USAGE_OWNER) -> int:
     ``db.usage_import``'s lock and tests/test_qa_usage_import_concurrency.py).
     """
     imported = 0
+    # Resolve the account NAME to its id before a single row is written. Every
+    # owner-scoped query filters on the signed-in session's id, so a row stored
+    # against the name is invisible to the person who produced it.
+    owner = await _resolve_cli_usage_owner(owner)
     try:
         entries = await transcripts.list_recent(limit=60)
     except OSError:

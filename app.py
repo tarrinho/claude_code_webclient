@@ -621,6 +621,12 @@ async def lifespan(app: FastAPI):
         _usage_import_loop(), name="usage_import"))
     _startup_tasks[-1].add_done_callback(_log_startup_task)
 
+    # Spec 1.1. Fails loudly rather than routing on bad data -- and on this
+    # release no task type is operational, so this validates an empty set and
+    # logs that nothing routes.
+    from delegation_startup import validate_or_die
+    app.state.capability_table = await validate_or_die()
+
     yield
     # Stopped before db.close(): the sampler writes through the connection.
     await rate_limit.stop_cleanup()

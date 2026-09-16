@@ -152,7 +152,7 @@ def effective_deadline(table: CapabilityTable, model: str, task_type: str,
 
 
 def gate_effective_deadline(table: CapabilityTable, task_type: str,
-                             score: int) -> float:
+                             score: int) -> tuple[float | None, str | None]:
     """5.1: a model-backed gate's deadline (stages 3-5, spec 4.3-4.5).
 
     Baseline and size factor come from the LEAF's own task type and score,
@@ -169,17 +169,20 @@ def gate_effective_deadline(table: CapabilityTable, task_type: str,
     that logic already lives in `tiered_delegation.CapabilityTable` and
     duplicating it is how the two would drift apart.
 
-    Raises `ValueError` (with the table's own reason) when the gate latency
-    or the leaf task type's reference cannot be computed. A gate deadline
-    that silently defaulted here would hide exactly the missing-data case
-    spec 1.1's startup check exists to catch.
+    Returns `(value, None)` or `(None, reason)` -- the same `(value,
+    reason)` shape as `CapabilityTable._worst_case`, `_gate_latency_s` and
+    `gate_latency_s`, which this function is built directly on top of. A
+    caller aggregating problems (spec 1.1's validator shape) can append the
+    reason string it is handed rather than catching an exception and
+    stringifying it. A gate deadline that silently defaulted instead would
+    hide exactly the missing-data case that reason string exists to report.
     """
     gate_latency, reason = table.gate_latency_s(task_type)
     if gate_latency is None:
-        raise ValueError(reason)
+        return None, reason
     reference = table.latency_reference_s(task_type)
     if reference is None or reference <= 0:
-        raise ValueError(
+        return None, (
             f"{task_type}: no ladder-eligible row has a usable "
             f"median_latency_s to be the 1.0 reference (spec 5.1)"
         )
@@ -187,4 +190,4 @@ def gate_effective_deadline(table: CapabilityTable, task_type: str,
     if baseline is None:
         baseline = unknown_type_baseline_s()
     size = SIZE_FACTOR.get(score, 1.0)
-    return float(baseline) * size * (gate_latency / reference)
+    return float(baseline) * size * (gate_latency / reference), None

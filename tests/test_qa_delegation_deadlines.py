@@ -123,8 +123,9 @@ class GateDeadlineTests(unittest.TestCase):
                           1.0, 9, 1.0, 11.1, 1_000_000),
         ])
         expected = 90 * 1.0 * (11.1 / 12.8)
-        self.assertAlmostEqual(
-            pipeline.gate_effective_deadline(table, "coding", score=3), expected)
+        value, reason = pipeline.gate_effective_deadline(table, "coding", score=3)
+        self.assertIsNone(reason)
+        self.assertAlmostEqual(value, expected)
 
     def test_gate_deadline_falls_back_to_the_leaf_task_type_row(self):
         """A reviewer-gate row exists for the gate model but has no measured
@@ -135,18 +136,24 @@ class GateDeadlineTests(unittest.TestCase):
             CapabilityRow("solo", "coding", 1.0, 6, 1.0, 20.0, 1_000_000),
         ])
         expected = 90 * 1.0 * (20.0 / 20.0)
-        self.assertAlmostEqual(
-            pipeline.gate_effective_deadline(table, "coding", score=3), expected)
+        value, reason = pipeline.gate_effective_deadline(table, "coding", score=3)
+        self.assertIsNone(reason)
+        self.assertAlmostEqual(value, expected)
 
-    def test_gate_deadline_raises_when_no_gate_model_can_be_named(self):
+    def test_gate_deadline_reports_when_no_gate_model_can_be_named(self):
         """No reviewer-gate row anywhere in the table -- there is no model
-        to time the gate against, and this must surface as an error, not a
-        silently defaulted deadline."""
+        to time the gate against. `coding` itself has a valid, ladder-
+        eligible row, so `latency_reference_s("coding")` succeeds and
+        cannot be the guard that fires; only the missing-gate-row guard
+        can produce this failure, and the reason string must say so by
+        naming "reviewer-gate" -- a bare "it failed" would not tell one
+        guard apart from the other."""
         table = CapabilityTable([
-            CapabilityRow("solo", "long-context", 1.0, 6, 1.0, 5.0, 1_000_000),
+            CapabilityRow("solo", "coding", 1.0, 6, 1.0, 20.0, 1_000_000),
         ])
-        with self.assertRaises(ValueError):
-            pipeline.gate_effective_deadline(table, "coding", score=3)
+        value, reason = pipeline.gate_effective_deadline(table, "coding", score=3)
+        self.assertIsNone(value)
+        self.assertIn("reviewer-gate", reason)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ paramiko==5.0.0
 openai==3.8.0
 # Required by specs_gallery.render_markdown for the Settings > Specs
 # gallery -- was dev-only until this feature needed it at runtime.
-Markdown==3.7
+Markdown==3.8.1
 # Required by specs_gallery.render_markdown to sanitize its server-rendered
 # HTML before it ever leaves the server -- the client-side DOMPurify pass in
 # specs.js is defense-in-depth, not the only boundary.

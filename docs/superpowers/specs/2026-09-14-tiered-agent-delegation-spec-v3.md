@@ -596,6 +596,8 @@ So stage 5 takes the same rule as stage 3, with one addition that stage 3 does n
 - **If the gate rejects output from the generator's top rung, the gate itself climbs one rung and re-reviews that same output.** Rejecting the best generator available is evidence about the gate, not about the code.
 - **A security rejection that survives the gate's own top rung is escalated to a human, not recorded as a failed leaf.** This is the addition: a false reject here is indistinguishable from a true one without judgement, and discarding correct work silently is the worse of the two errors. §10's circuit breaker is the aggregate form of the same signal; this is the per-leaf form.
 
+**When both exhaustion conditions are reached in the same step** — the 2-cycle cap *and* the gate's own top rung — the rung rule wins: the leaf is escalated to a human, not failed with a flag. The two rules have different outcomes and can fire together, so the order is stated here rather than left to whoever implements it. The reason is the one above: a false reject at the gate's ceiling cannot be told from a true one without judgement, and that risk does not disappear because the cycle count happened to run out in the same step. Escalating preserves work that may be correct; failing discards it.
+
 A gate that rejects at every rung is reported with the rejection text at each rung attached, so the miscalibration is legible from the record rather than requiring a re-run to reproduce.
 
 ### 4.6 Blast-radius check

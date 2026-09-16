@@ -31,10 +31,31 @@ const voiceConclusionOutput = document.getElementById('voiceConclusionOutput');
  * buttons that do nothing. */
 function showConclusionOutput(text, isError) {
   if (!voiceConclusionOutput) return;
-  voiceConclusionOutput.textContent = text;
-  voiceConclusionOutput.classList.toggle('is-error', Boolean(isError));
+  // Unhide *before* writing. `[hidden]{display:none!important}` means an
+  // element with the attribute is not rendered, and a live region that
+  // changes while unrendered announces nothing -- so with the old order the
+  // role="status" on this element was decorative.
   voiceConclusionOutput.hidden = false;
   voiceTooltipConclusion.hidden = false;
+  voiceConclusionOutput.classList.toggle('is-error', Boolean(isError));
+  voiceConclusionOutput.textContent = text;
+}
+
+/** The voice conversation no longer exists, so no handoff button can do
+ * anything but fail.
+ *
+ * routes/voice.py's voice_handoff deletes the chat and its messages on every
+ * path it has -- success, missing credentials, and the exception handler --
+ * so one POST consumes the conversation whatever the outcome. Leaving the
+ * buttons live afterwards was a regression introduced by making them survive:
+ * before that they were destroyed, so a second click was impossible. A second
+ * click now POSTs against a deleted chat and gets a 400.
+ *
+ * The tooltip's own close button still works and is the way out from here. */
+function markHandoffConsumed() {
+  voiceAgreeBtn.disabled = true;
+  voiceSummarizeBtn.disabled = true;
+  voiceRejectBtn.disabled = true;
 }
 
 /** Clear it for a new voice session. Called from resetVoiceHandoffState
@@ -60,6 +81,13 @@ export function resetVoiceHandoffState() {
   // panel itself is hidden by openVoiceTooltip; this empties what is inside
   // it, which used to happen for free when the panel was wiped wholesale.
   clearConclusionOutput();
+  // And re-arm the buttons markHandoffConsumed() disabled. A new voice
+  // conversation is a new chat, so they are live again -- without this, one
+  // handoff would leave every later session with three dead buttons, which is
+  // the bug this file just fixed wearing different clothes.
+  voiceAgreeBtn.disabled = false;
+  voiceSummarizeBtn.disabled = false;
+  voiceRejectBtn.disabled = false;
 }
 
 // ── Handoff: Agree & Apply ──
@@ -107,17 +135,26 @@ async function voiceHandoffSummarize() {
       headers: { 'Content-Type': 'application/json' },
     });
     if (!response.ok) throw new Error('Handoff failed');
-    // Backend returns the summary as a plain string, not JSON
-    const summary = await response.text().catch(() => '');
+    // routes/chats.py's handle_voice_handoff returns
+    // JSONResponse({"ok": True, "summary": result}). Reading it as text put
+    // the raw `{"ok":true,"summary":"…"}` on screen -- survivable while the
+    // next interaction wiped the panel, permanent now that it does not.
+    const data = await response.json().catch(() => ({}));
+    const summary = (data.summary || '').trim();
     showConclusionOutput(summary || 'Summary generated from voice conversation.', false);
     showToast('Summary generated and appended to parent chat');
   } catch (err) {
-    // The buttons survive this, so a failed summarize can simply be retried
-    // -- which is the whole point of not clearing the panel.
-    showConclusionOutput(`Summarize failed: ${err.message}`, true);
+    // Not retryable, and saying so matters: voice_handoff deletes the chat
+    // and its messages before returning None on the failure path too, so the
+    // conversation is already gone. A retry would 400 for ever, and a comment
+    // promising otherwise would send the next reader looking for a bug in the
+    // wrong place.
+    showConclusionOutput(
+      `Summarize failed: ${err.message}. The voice conversation has been discarded.`, true);
     showToast('Summarize failed', 'error');
   } finally {
-    voiceSummarizeBtn.disabled = false;
+    // Consumed either way -- see markHandoffConsumed.
+    markHandoffConsumed();
   }
 }
 

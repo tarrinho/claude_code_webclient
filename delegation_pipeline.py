@@ -24,6 +24,22 @@ bool. Only the literal MUTATES_FALSE value is "read-only" for this module:
 MUTATES_SIDE_EFFECTING_READ spends money or consumes an external rate
 limit, so 4.7 explicitly holds it to the same five stages as MUTATES_TRUE,
 including under the trivial bypass, which has no read-shaped row for it.
+
+Stage 2 (the oracle) is a special case worth stating plainly. 4.2 and 4.7
+both make it conditional on the output being executable -- parse, import,
+compile, or pass-the-test -- and 4.8's net-effect table gives a read two
+different rows for exactly this reason: "non-trivial read, executable
+output" keeps stage 2, "non-trivial read, prose output" does not. This
+function cannot make that call: `stages_for` runs before stage 1 has
+produced anything, so whether the output will turn out to be executable
+is not yet knowable here. Stage 2's presence or absence is therefore a
+*runtime* decision belonging to the caller, made after generation, not a
+*planning* decision this function can resolve in advance. Accordingly, 2
+appears in every list this function returns whenever no rule here has
+removed it -- it means "stage 2 is eligible," not "stage 2 will run." The
+caller is expected to skip it at execution time if the generated output
+turns out to be prose, per 4.2's "skipped rather than run" rule; a 2 in
+the returned list is not a promise that the oracle executes.
 """
 from __future__ import annotations
 

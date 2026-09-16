@@ -43,11 +43,13 @@ the returned list is not a promise that the oracle executes.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final
 
 from delegation_classifier import Classification, MUTATES_FALSE
 from tiered_delegation import (
     CapabilityTable,
+    MAX_ATTEMPTS,
     SIZE_FACTOR,
     TIER0_DEADLINE,
     unknown_type_baseline_s,
@@ -191,3 +193,104 @@ def gate_effective_deadline(table: CapabilityTable, task_type: str,
         baseline = unknown_type_baseline_s()
     size = SIZE_FACTOR.get(score, 1.0)
     return float(baseline) * size * (gate_latency / reference), None
+
+
+# --- review gates (spec 4.3-4.5) ---------------------------------------------
+#
+# Nothing in this module calls any of the below yet -- it is the result type
+# and the escalation rules stages 3-5 will run on, added ahead of the code
+# that runs the stages. `MAX_ATTEMPTS` is imported from tiered_delegation
+# above rather than redefined here: that module already carries it as the
+# generation-attempts control from spec 5, and a second copy under a second
+# name is exactly how a re-benchmark would update one and miss the other.
+#
+# None of the three functions below can fail for a data reason -- each is a
+# pure function of the ints/strings it is handed, with no missing-data case
+# to report -- so none of them takes the `(value, reason)` shape that
+# `gate_effective_deadline` and `CapabilityTable._worst_case` / `gate_latency_s`
+# use for the functions that *can* fail that way.
+
+
+@dataclass(frozen=True)
+class GateResult:
+    """One stage-3/4/5 gate's verdict on one generation attempt (4.3-4.5).
+
+    `gate` is "reviewer", "qa" or "security" -- each tagged with its own
+    name so an escalation is traceable to which gate rejected it (spec 10),
+    and so a security rejection can be told apart from a reviewer or QA one
+    downstream (see `gate_exhaustion_outcome`) without inspecting `reason`.
+    """
+    gate: str
+    passed: bool
+    reason: str
+
+
+#: 4.5: generation -> security review -> fix -> security review. After this
+#: many completed cycles, a security rejection is escalated to a human
+#: rather than recorded as a failed leaf -- see `gate_exhaustion_outcome`.
+#: Not the tree's MAX_DEPTH or MAX_NODES: those do not track cycles, and a
+#: security fix can introduce a new vulnerability, so something has to
+#: bound the round-trip itself.
+SECURITY_RERUN_CAP: Final[int] = 2
+
+
+def next_generator_rung(current: int, gate: GateResult,
+                        max_attempts: int = MAX_ATTEMPTS) -> int:
+    """A rejection escalates the GENERATOR, never the reviewer.
+
+    All three gates move the generator the same way: 4.3 sets the rule for
+    the reviewer gate, 4.4 gives QA "the same path", and 4.5 explicitly
+    keeps it "as before" for security too -- one rung on rejection, capped
+    at `max_attempts - 1` so a leaf pinned at its top rung never invents a
+    fourth. The security gate's extra behaviour from 4.5 -- routing back
+    with the vulnerability flagged, and eventually escalating to a human
+    instead of failing the leaf -- is a separate axis, tracked by
+    `security_exhausted` / `gate_exhaustion_outcome` on a *cycle* count, not
+    a different number returned from here. This function does not take the
+    gate's name into account beyond `gate.passed`.
+    """
+    if gate.passed:
+        return current
+    return min(current + 1, max_attempts - 1)
+
+
+def security_exhausted(cycles: int) -> bool:
+    """True once the security gate has been round-tripped past its cap
+    (spec 4.5): generation -> security review -> fix -> security review,
+    twice, with the same objection still standing on the third.
+    """
+    return cycles > SECURITY_RERUN_CAP
+
+
+#: `gate_exhaustion_outcome`'s two possible answers, spec 4.5. Plain string
+#: constants rather than a bool: `delegation_classifier`'s three-valued
+#: `mutates` already sets the precedent in this codebase for naming a
+#: multi-way outcome this way instead of overloading True/False.
+LEAF_FAILED: Final[str] = "failed_leaf"
+ESCALATED_TO_HUMAN: Final[str] = "escalated_to_human"
+
+
+def gate_exhaustion_outcome(gate: str, cycles: int) -> str:
+    """What happens to the leaf once a gate is exhausted (spec 4.5).
+
+    A reviewer or QA gate that keeps rejecting the generator's top rung is
+    an ordinary failed leaf -- 4.3 and 4.4 give neither of them a cap-based
+    escape hatch. The security gate is the one exception 4.5 carves out:
+    "a security rejection that survives the gate's own top rung is
+    escalated to a human, not recorded as a failed leaf" -- because a
+    false reject is indistinguishable from a true one without judgement,
+    and discarding correct work silently is the worse of the two errors.
+
+    Takes `cycles`, not a rung count, because the security cap tracks
+    pipeline round-trips (generation -> security review -> fix -> security
+    review) -- a different counter from the generator's rung that
+    `next_generator_rung` advances. Conflating the two would let a
+    reviewer's rung-cap failure and a security cycle-cap failure collapse
+    onto the same code path, which is exactly the distinction this
+    function exists to keep apart: it checks `security_exhausted(cycles)`,
+    not `gate == "security"` alone, so a security gate still inside its cap
+    is an ordinary failed leaf too.
+    """
+    if gate == "security" and security_exhausted(cycles):
+        return ESCALATED_TO_HUMAN
+    return LEAF_FAILED

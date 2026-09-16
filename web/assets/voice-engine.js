@@ -53,10 +53,42 @@ export function updateVoiceButtonVisibility() {
   voiceSendBtn.hidden = inTurn;
 }
 
+/** Show or clear the "Thinking…" line in the voice tooltip.
+ *
+ * Between the silence timeout firing and the first spoken word of the reply
+ * there was nothing on screen at all -- several seconds of silence with the
+ * mic closed, which reads as the conversation having died. `thinking` was
+ * already a voiceStatus value (set in resetSilenceTimer) and nothing had ever
+ * rendered it.
+ *
+ * Its own element, removed by id rather than by clearing the container:
+ * voice-handoff.js writes the streamed reply into the same messages area, and
+ * wiping it here would delete text the assistant had already said. */
+function renderThinkingIndicator(show) {
+  const messages = document.getElementById('voiceTooltipMessages');
+  if (!messages) return;
+  const existing = document.getElementById('voiceThinking');
+  if (!show) { existing?.remove(); return; }
+  if (existing) return;
+  const row = document.createElement('div');
+  row.id = 'voiceThinking';
+  row.className = 'voice-status voice-thinking';
+  const dot = document.createElement('span');
+  dot.className = 'voice-thinking-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  row.appendChild(dot);
+  row.appendChild(document.createTextNode('Thinking…'));
+  messages.appendChild(row);
+  messages.scrollTop = messages.scrollHeight;
+}
+
 export function setVoiceStatus(next) {
   const previous = voiceStatus;
   voiceStatus = next;
   updateVoiceButtonVisibility();
+  // Only while actually thinking: the first spoken sentence moves the status
+  // to `speaking`, which is when the indicator has done its job.
+  renderThinkingIndicator(next === 'thinking');
   if (next === 'speaking' && previous !== 'speaking' && recognition && recognizing) {
     intentionalStop = true;
     recognition.stop();
@@ -77,6 +109,15 @@ export function performVoiceStop(endConversation) {
   accumulatedText = '';
   lastFinalChunk = '';
   setVoiceStatus('idle');
+  // Announce the stop so voice-handoff.js can offer the handoff choices. It
+  // listens rather than being called, because this module imports nothing and
+  // voice-handoff.js imports from it -- a direct call would be circular.
+  // `endConversation` is passed through so a barge-in stop, which only
+  // interrupts the speaking and leaves hands-free mode running, does not look
+  // like the end of the conversation.
+  document.dispatchEvent(new CustomEvent('voice:stopped', {
+    detail: {endConversation: Boolean(endConversation)},
+  }));
 }
 
 function mergeFinalChunk(chunk) {

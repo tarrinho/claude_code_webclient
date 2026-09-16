@@ -15,7 +15,7 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 // and live-conversation buttons, and toggling voice mode has to re-run it --
 // see toggleChatVoiceMode. voice-engine.js imports nothing, so this cannot
 // cycle back into app.js.
-import {updateVoiceButtonVisibility} from './voice-engine.js?v=7083095';
+import {updateVoiceButtonVisibility} from './voice-engine.js?v=4274770';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
 

@@ -8,7 +8,7 @@ import {showToast} from './app.js?v=2099422';
 import {
   flushSpeechBuffer, appendSpeechBuffer, clearSpeechBuffer, setVoiceStatus,
   updateVoiceButtonVisibility, pendingSpeechCount,
-} from './voice-engine.js?v=7083095';
+} from './voice-engine.js?v=4274770';
 import {
   voiceOverlay, voiceTooltipMessages, voiceTooltipConclusion,
   voiceParentState, voiceTempChatId, closeVoiceTooltip,
@@ -121,6 +121,21 @@ export async function voiceHandoffReject() {
   voiceRejectBtn.disabled = false;
 }
 
+// The conversation has actually ended -- the stop button, or "stop" spoken
+// with the intent to finish. Show the handoff choices only now, and only if a
+// reply happened, because with nothing said there is nothing to hand off.
+//
+// An event rather than a call from voice-engine.js: that module imports
+// nothing by design, and voice-handoff.js already imports *from* it, so a
+// direct call would make the two circular. This keeps the knowledge where it
+// belongs -- the engine knows the conversation stopped, this module knows
+// whether anything was said.
+document.addEventListener('voice:stopped', (event) => {
+  if (!event.detail?.endConversation) return;
+  if (!voiceTempChatId || !voiceConversationComplete) return;
+  voiceTooltipConclusion.hidden = false;
+});
+
 voiceAgreeBtn.addEventListener('click', voiceHandoffAgree);
 voiceSummarizeBtn.addEventListener('click', voiceHandoffSummarize);
 voiceRejectBtn.addEventListener('click', voiceHandoffReject);
@@ -170,9 +185,17 @@ window.voiceConversation = {
     // Close the stream div and show conclusion buttons
     _clearAssistantDiv();
     if (voiceTempChatId) {
+      // "There is now something worth handing off", which is what
+      // voice-tooltip.js's close handler reads it for -- not "the
+      // conversation is over".
       voiceConversationComplete = true;
-      voiceTooltipConclusion.hidden = false;
     }
+    // The conclusion panel is NOT shown here. It used to be, and it appeared
+    // after every single reply: the panel reads "Conversation complete.
+    // Handoff result to parent chat:" while the conversation was still
+    // running, and in hands-free mode the mic reopened underneath it. It now
+    // waits for the conversation to actually end -- see the voice:stopped
+    // listener below.
   },
   onReplyError() {
     if (!window.state?.currentChat?.voice_mode) return;

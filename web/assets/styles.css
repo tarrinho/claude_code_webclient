@@ -1337,3 +1337,20 @@ button{touch-action:manipulation}
 .image-tile-delete{position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:6px;border:1px solid rgba(255,255,255,.4);background:rgba(0,0,0,.55);color:#fff;cursor:pointer;font-size:14px;line-height:1;padding:0}
 .image-tile-delete:hover{background:var(--danger,#c0504d)}
 #imagesLoadMore{margin-top:12px}
+
+/* Voice "Thinking…" line, shown between the silence timeout and the reply's
+   first spoken sentence. Before this there was nothing on screen for those
+   seconds, with the mic closed, which read as the conversation having died.
+   Reuses the existing `pulse` keyframes rather than adding a third animation
+   that means the same thing as .chat-running and .run-state. */
+.voice-thinking { display:flex; align-items:center; gap:7px; }
+.voice-thinking-dot {
+  width:8px; height:8px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 6px 1px var(--accent);
+  animation:pulse 1.2s ease-in-out infinite;
+}
+/* Respect a reduced-motion preference: the dot still marks the state by
+   being present and coloured, it simply stops pulsing. */
+@media (prefers-reduced-motion: reduce) {
+  .voice-thinking-dot { animation:none; }
+}

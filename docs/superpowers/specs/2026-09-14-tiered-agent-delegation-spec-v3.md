@@ -498,15 +498,22 @@ The table below is a **snapshot of what this computation is expected to produce 
 | long-context | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` |
 | multi-turn | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | planning | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
-| comprehension | `claude-sonnet-5` | `claude-opus-5` | — |
+| comprehension | `claude-sonnet-5` | — (Opus is skipped — see below) | — |
 | voice | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
-| reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set | — | — |
+| reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set (an editorial hold; see below) | — | — |
 | split-decision | `claude-sonnet-5` | — | — |
 | **reviewer-gate** | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` (see §4.3) | — |
 
 **All three review gates share the `reviewer-gate` ladder** — stages 3, 4 and 5 climb the same rungs, so there is no separate `security-gate` task type and the table keeps nine rows. What differs is what happens at the top: a security rejection surviving the gate's top rung goes to a human rather than failing the leaf (§4.5).
 
-Reasoning has no rung until Luna is benchmarked on that type. The existing 86%/75% accuracy figures are from a small sample (n=—) and must be re-verified against production request shapes before any rung is set. The comprehension ladder is correct as-is: sonnet → opus → —, because no measured model beats sonnet on comprehension.
+Reasoning has no rung until Luna is benchmarked on that type. The existing 86%/75% accuracy figures are from a small sample (n=—) and must be re-verified against production request shapes before any rung is set.
+
+**Two rows of this snapshot are not what the generator would produce from today's table, and both were previously stated as though they were.** Recorded here rather than left for whoever next compares the two:
+
+- **`comprehension` generates as `claude-sonnet-5` alone, not `sonnet → opus`.** Both are ladder-eligible (sonnet 100%, opus 50%, n=2 each), and cheapest-first orders sonnet before opus — so step 3 skips Opus as *measured worse than the current rung*. An earlier version of this line justified the two-rung ladder "because no measured model beats sonnet on comprehension", which is the reason Opus is **dropped**, not the reason it is kept. Opus becomes rung 2 only if a re-measurement puts it at or above sonnet. Nothing is lost meanwhile: a single-rung ladder still satisfies §1.1's "no empty ladder", and `comprehension` is non-operational regardless.
+- **`reasoning`'s hold is editorial and the generator does not enforce it.** With today's data the only ladder-eligible reasoning model is `claude-sonnet-5` (mini is cost-excluded by §2.7, Luna and Opus are TBD), so the generator returns `[claude-sonnet-5]` — not the "TBD" this table shows. The hold is a judgement that a 75% n=2 figure should not set a rung, and it lives in prose. **Until it is either enforced in code or lifted by measurement, `reasoning` must stay non-operational (§1.1)** — that flag, not this table, is what actually prevents the rung being used.
+
+The general point applies beyond these two: this table is a statement of intent, the generator is the mechanism, and where they disagree the generator wins at runtime. §1.1's "every rung is backed by a row" checks the snapshot against the table, not against intent.
 
 **Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. Voice stays non-operational (§1.1) until both its rows carry a measured `median_latency_s`, because a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
 

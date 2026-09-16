@@ -31,6 +31,8 @@ from unittest.mock import AsyncMock, patch
 import config
 import db
 import routes.delegation as delegation_routes
+import tiered_delegation
+from routes import db_delegation
 
 
 def _request(role="admin", body=None, query=None):
@@ -53,10 +55,62 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         self.addAsyncCleanup(db.close)
 
+    def test_the_three_column_lists_agree(self):
+        """`routes.delegation._EDITABLE`, `routes.db_delegation._COLUMNS` and
+        `tiered_delegation._REQUIRED_COLUMNS` are three independent copies of
+        the same five names. Adding a sixth column to one and not the others
+        would silently reintroduce the partial-write nulling bug this file
+        already regression-tests: a column missing from `_EDITABLE` is never
+        offered to the merge in `handle_row_put`, so it would be nulled on
+        every write the same way `n`/`cost_per_1m_tokens`/etc. used to be."""
+        self.assertEqual(set(delegation_routes._EDITABLE), set(db_delegation._COLUMNS))
+        self.assertEqual(set(delegation_routes._EDITABLE),
+                          set(tiered_delegation._REQUIRED_COLUMNS))
+
     async def test_the_list_reports_nothing_operational(self):
         response = await delegation_routes.handle_delegation_get(_request())
         body = json.loads(response.body)
         self.assertEqual(body["operational"], [])
+
+    async def test_the_config_overview_surfaces_9_1_5_10_and_2_7(self):
+        """Spec 9.2's first sentence: the page also surfaces the kill switch
+        (9.1), the 5/10 tunables, and the cost ceiling (2.7), read only. The
+        values that do exist as code must match tiered_delegation exactly
+        (not a copied-by-hand number that can drift); values with no single
+        source in this release (the kill switch, per-gate MAX_ATTEMPTS,
+        MAX_DEPTH, MAX_CHILDREN, MAX_SUBAGENTS_PER_LEAF, the circuit-breaker
+        threshold, the spot-check rate, the free-tier target) must say so
+        rather than showing an invented number."""
+        response = await delegation_routes.handle_delegation_get(_request())
+        body = json.loads(response.body)
+        cfg = body["config"]
+
+        self.assertFalse(cfg["kill_switch"]["available"])
+        self.assertTrue(cfg["kill_switch"]["note"])
+
+        caps = cfg["attempts_and_caps"]
+        self.assertEqual(caps["max_attempts_generation"]["value"],
+                          tiered_delegation.MAX_ATTEMPTS)
+        self.assertEqual(caps["max_nodes_per_tree"]["value"],
+                          tiered_delegation.LEAVES_PER_TREE)
+        self.assertEqual(caps["combined_latency_ceiling_s"]["value"],
+                          tiered_delegation.LATENCY_CEILING_S)
+        for no_source in ("max_attempts_per_gate", "max_depth",
+                          "max_children_per_node", "max_subagents_per_leaf"):
+            self.assertIsNone(caps[no_source]["value"])
+            self.assertTrue(caps[no_source]["note"])
+
+        cost = cfg["cost_ceiling"]
+        self.assertEqual(cost["budget_usd_per_tree"]["value"],
+                          tiered_delegation.BUDGET_USD)
+        self.assertEqual(set(cost["excluded_models"]["value"]),
+                          set(tiered_delegation.EXCLUDED_MODELS))
+
+        obs = cfg["observability"]
+        for no_source in ("circuit_breaker_threshold", "human_spot_check_rate",
+                          "free_tier_target"):
+            self.assertIsNone(obs[no_source]["value"])
+            self.assertTrue(obs[no_source]["note"])
 
     async def test_a_row_can_be_written_and_read_back(self):
         await delegation_routes.handle_row_put(_request(body={
@@ -76,7 +130,24 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_non_admin_cannot_flip_operational(self):
         """The flip endpoint is the highest-privilege action in this change --
         it submits a task type to production routing -- and had no test of
-        its own admin gate; only handle_row_put's was covered."""
+        its own admin gate; only handle_row_put's was covered. Uses a task
+        type other than `coding` so this stays a pure statement of "the admin
+        check runs" -- see test_a_non_admin_flipping_coding_gets_403_not_400
+        for the case where the coding policy guard and the admin check both
+        apply."""
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(role="user", body={
+                "task_type": "long-context", "operational": True}))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    async def test_a_non_admin_flipping_coding_gets_403_not_400(self):
+        """Where the admin check and the coding policy guard both apply, the
+        admin check must win: a non-admin gets 403 (you may not do this),
+        never 400 (this is not allowed for this task type) -- the latter
+        would leak the guard's existence, and its reason, to someone not
+        entitled to it. This is only true if the coding guard sits strictly
+        after `_require_admin` in `handle_operational_put`."""
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as ctx:
             await delegation_routes.handle_operational_put(_request(role="user", body={
@@ -187,16 +258,18 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def test_flipping_a_type_operational_on_incomplete_data_is_refused(self):
         """9.2: the flip re-runs 1.1's validation immediately and refuses with
         the offending column named, rather than accepting it and failing at the
-        next restart."""
+        next restart. Uses `long-context`, not `coding` -- `coding` is now
+        blocked unconditionally (spec 12), and using it here would test that
+        guard instead of the invariant-validation path this test is about."""
         from fastapi import HTTPException
-        await db.delegation_row_set("m", "coding", accuracy=0.9, n=4,
-                                    cost_per_1m_tokens=1.0,
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=0.9, n=4, cost_per_1m_tokens=1.0,
                                     median_latency_s=None, max_context=1000)
         with self.assertRaises(HTTPException) as ctx:
             await delegation_routes.handle_operational_put(_request(body={
-                "task_type": "coding", "operational": True}))
+                "task_type": "long-context", "operational": True}))
         self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("coding", str(ctx.exception.detail))
+        self.assertIn("long-context", str(ctx.exception.detail))
 
     async def test_flipping_a_complete_type_operational_is_allowed(self):
         # A real, resolvable model id (spec 1.1's model-resolution invariant)
@@ -216,14 +289,47 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_refused_flip_leaves_the_stored_state_alone(self):
         """'the stored value is left as it was' -- a rejected write that half
-        applied would be worse than one that failed outright."""
+        applied would be worse than one that failed outright. Uses
+        `long-context` for the same reason as the test above."""
         from fastapi import HTTPException
-        await db.delegation_row_set("m", "coding", accuracy=0.9, n=4,
-                                    cost_per_1m_tokens=1.0,
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=0.9, n=4, cost_per_1m_tokens=1.0,
                                     median_latency_s=None, max_context=1000)
         with self.assertRaises(HTTPException):
             await delegation_routes.handle_operational_put(_request(body={
+                "task_type": "long-context", "operational": True}))
+        self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_coding_cannot_be_flipped_operational_even_with_complete_data(self):
+        """Spec 12: `coding` is blocked regardless of whether the data would
+        otherwise pass -- 1.2 measures it as already clearing every one of
+        1.1's six invariants, so validate() alone would let it through. This
+        row is deliberately the same shape used for the long-context
+        "allowed" case, so a pass here would mean the guard, not incomplete
+        data, is what is being tested."""
+        from fastapi import HTTPException
+        await db.delegation_row_set("claude-sonnet-5", "coding",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "coding", "operational": True}))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("coding", str(ctx.exception.detail))
+        self.assertIn("section 12", str(ctx.exception.detail))
+        self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_flipping_coding_off_is_not_blocked(self):
+        """The guard is specifically about *flipping to* operational -- it
+        must not reject `operational: false` for `coding`, which can never
+        have been operational in this release anyway but must not become a
+        special case that raises on the way out too."""
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "coding", "operational": False}))
         self.assertEqual(await db.delegation_operational_all(), set())
 
     async def test_coding_is_never_flipped_operational_by_this_module(self):

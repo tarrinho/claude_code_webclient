@@ -16,6 +16,47 @@ const byId = id => document.getElementById(id);
 
 const COLUMNS = ['accuracy', 'n', 'cost_per_1m_tokens', 'median_latency_s', 'max_context'];
 
+/** All five measured fields for one row, formatted for a hover tooltip.
+ *  Spec 9.2: "Hover tooltips on rung values in the settings page show all
+ *  five measured fields for the current task type ... the same five the
+ *  section 3 tooltip shows, from the same row." Assigned to `.title`, a DOM
+ *  property, not parsed as HTML -- the same escaping guarantee `.textContent`
+ *  has. */
+function _rungTooltipText(row) {
+  const shown = value => (value === null || value === undefined ? 'TBD' : value);
+  return [
+    `accuracy: ${shown(row.accuracy)}`,
+    `n: ${shown(row.n)}`,
+    `cost_per_1m_tokens: ${shown(row.cost_per_1m_tokens)}`,
+    `median_latency_s: ${shown(row.median_latency_s)}`,
+    `max_context: ${shown(row.max_context)}`,
+  ].join(' · ');
+}
+
+/** The ladder for one task type, each rung its own element carrying the
+ *  five-field tooltip from the row it came from -- not a plain text run, so
+ *  each rung can hold its own `title`. */
+function _ladderElement(ladder, rowsForType) {
+  const wrap = document.createElement('span');
+  wrap.className = 'delegation-ladder';
+  if (!ladder.length) {
+    wrap.appendChild(document.createTextNode('no ladder'));
+    return wrap;
+  }
+  wrap.appendChild(document.createTextNode('ladder: '));
+  ladder.forEach((model, i) => {
+    if (i > 0) wrap.appendChild(document.createTextNode(' → '));
+    const rung = document.createElement('span');
+    rung.className = 'delegation-rung';
+    rung.textContent = model;
+    const row = rowsForType.find(r => r.model === model);
+    rung.title = row ? _rungTooltipText(row)
+      : 'no row in the table for this rung';
+    wrap.appendChild(rung);
+  });
+  return wrap;
+}
+
 function _cell(row, column) {
   const input = document.createElement('input');
   input.type = 'text';
@@ -75,6 +116,67 @@ async function _setOperational(taskType, operational, checkbox) {
   }
 }
 
+// ── Read-only config overview (spec 9.2's first sentence) ──────────────────
+//
+// The kill switch (9.1), the tunables from 5 and 10, and the cost ceiling
+// (2.7). Read only, by operator ruling on this task: the matrix cells are
+// the only editable part of this page. Where the server has no single
+// source for a value it says so in `note` rather than a number being
+// invented here.
+const _CONFIG_SECTIONS = [
+  ['attempts_and_caps', 'Attempts and caps'],
+  ['cost_ceiling', 'Cost ceiling'],
+  ['observability', 'Observability'],
+];
+
+function _configItemText(item) {
+  if (item.value === null || item.value === undefined) {
+    return item.note || 'not available';
+  }
+  return Array.isArray(item.value) ? item.value.join(', ') : String(item.value);
+}
+
+function _renderConfig(config, host) {
+  if (!host) return;
+  host.replaceChildren();
+  if (!config) return;
+
+  const killSwitch = document.createElement('div');
+  killSwitch.className = 'delegation-config-section';
+  const ksTitle = document.createElement('h4');
+  ksTitle.textContent = `Kill switch (spec ${config.kill_switch.section})`;
+  killSwitch.appendChild(ksTitle);
+  const ksLine = document.createElement('p');
+  ksLine.textContent = config.kill_switch.available ? 'Available'
+    : (config.kill_switch.note || 'not available');
+  killSwitch.appendChild(ksLine);
+  host.appendChild(killSwitch);
+
+  _CONFIG_SECTIONS.forEach(([key, label]) => {
+    const section = config[key];
+    if (!section) return;
+    const box = document.createElement('div');
+    box.className = 'delegation-config-section';
+    const heading = document.createElement('h4');
+    heading.textContent = `${label} (spec ${section.section})`;
+    box.appendChild(heading);
+    const list = document.createElement('dl');
+    Object.keys(section).forEach(itemKey => {
+      if (itemKey === 'section') return;
+      const item = section[itemKey];
+      const dt = document.createElement('dt');
+      dt.textContent = itemKey.replace(/_/g, ' ');
+      const dd = document.createElement('dd');
+      dd.textContent = _configItemText(item);
+      if (item.source) dd.title = `source: ${item.source}`;
+      list.appendChild(dt);
+      list.appendChild(dd);
+    });
+    box.appendChild(list);
+    host.appendChild(box);
+  });
+}
+
 export async function loadDelegation(force = false) {
   const host = byId('delegationMatrix');
   if (!host) return null;
@@ -90,6 +192,8 @@ export async function loadDelegation(force = false) {
     return null;
   }
 
+  _renderConfig(payload.config, byId('delegationConfig'));
+
   host.replaceChildren();
   const byType = {};
   (payload.rows || []).forEach(row => {
@@ -102,8 +206,9 @@ export async function loadDelegation(force = false) {
     const summary = document.createElement('summary');
     const ladder = (payload.ladders || {})[taskType] || [];
     const live = (payload.operational || []).includes(taskType);
-    summary.textContent = `${taskType} · ${live ? 'operational' : 'not operational'}`
-      + (ladder.length ? ` · ladder: ${ladder.join(' → ')}` : ' · no ladder');
+    summary.appendChild(document.createTextNode(
+      `${taskType} · ${live ? 'operational' : 'not operational'} · `));
+    summary.appendChild(_ladderElement(ladder, byType[taskType]));
     group.appendChild(summary);
 
     const opRow = document.createElement('label');

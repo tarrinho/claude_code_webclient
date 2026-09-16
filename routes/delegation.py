@@ -38,7 +38,7 @@ operational.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -46,13 +46,29 @@ from fastapi.responses import JSONResponse
 import db
 from delegation_startup import load_capability_table
 from routes.db_delegation import rows_to_capability
-from tiered_delegation import CapabilityTable
+from tiered_delegation import (
+    BUDGET_USD,
+    EXCLUDED_MODELS,
+    LATENCY_CEILING_S,
+    LEAVES_PER_TREE,
+    MAX_ATTEMPTS,
+    CapabilityTable,
+)
 
 _log = logging.getLogger("wc.app")
 
 router = APIRouter()
 
 _EDITABLE = ("accuracy", "n", "cost_per_1m_tokens", "median_latency_s", "max_context")
+
+# Spec 12: "until [the gate-type validation question] is decided, do not flip
+# `coding` to operational" -- and 1.2 measures `coding` as already clearing
+# every one of 1.1's six invariants, so nothing else in this codebase stops
+# the flip. Same pattern 2.7 uses for excluding `azure_ai/gpt-5.4-mini`: a
+# decision, not a derived value, so nothing recomputes it and re-admitting
+# `coding` means deleting this line -- once section 12's reviewer-gate item
+# resolves, not before.
+_OPERATIONAL_FLIP_BLOCKED: Final[frozenset[str]] = frozenset({"coding"})
 
 
 def _require_admin(request: Request) -> dict:
@@ -94,6 +110,91 @@ def _coerce_measured_value(column: str, value: Any) -> float | int | None:
     return value
 
 
+def _config_overview() -> dict[str, Any]:
+    """Spec 9.2's first sentence: the page also surfaces the kill switch
+    (9.1), the tunables from 5 and 10, and the cost ceiling (2.7) -- read
+    only, per the operator ruling on this task (the matrix cells are the
+    only editable part; nothing here is versioned config storage).
+
+    Every entry names the section it comes from. Where this release holds no
+    single source for a value -- nothing has been built yet, or the spec
+    states a number in prose with no backing constant -- that is said
+    outright rather than inventing a number to show. See the task 9 fix-1
+    report for the full list of what has no source yet.
+    """
+    return {
+        "kill_switch": {
+            "section": "9.1",
+            "available": False,
+            "note": "not implemented in this release -- nothing routes "
+                     "through this design yet, so there is no switch to read",
+        },
+        "attempts_and_caps": {
+            "section": "5",
+            "max_attempts_generation": {
+                "value": MAX_ATTEMPTS,
+                "source": "tiered_delegation.MAX_ATTEMPTS",
+            },
+            "max_attempts_per_gate": {
+                "value": None,
+                "note": "not modeled as its own constant; each gate runs "
+                        "once by construction (spec 4.3)",
+            },
+            "max_nodes_per_tree": {
+                "value": LEAVES_PER_TREE,
+                "source": "tiered_delegation.LEAVES_PER_TREE",
+            },
+            "max_depth": {
+                "value": None,
+                "note": "not implemented in this release",
+            },
+            "max_children_per_node": {
+                "value": None,
+                "note": "not implemented in this release",
+            },
+            "max_subagents_per_leaf": {
+                "value": None,
+                "note": "not implemented in this release",
+            },
+            "combined_latency_ceiling_s": {
+                "value": LATENCY_CEILING_S,
+                "source": "tiered_delegation.LATENCY_CEILING_S",
+            },
+        },
+        "cost_ceiling": {
+            "section": "2.7",
+            "budget_usd_per_tree": {
+                "value": BUDGET_USD,
+                "source": "tiered_delegation.BUDGET_USD",
+            },
+            "excluded_models": {
+                "value": sorted(EXCLUDED_MODELS),
+                "source": "tiered_delegation.EXCLUDED_MODELS",
+            },
+        },
+        "observability": {
+            "section": "10",
+            "circuit_breaker_threshold": {
+                "value": None,
+                "note": "not implemented in this release -- spec text names "
+                        "60% of the last 20 leaves per gate, with no backing "
+                        "constant yet",
+            },
+            "human_spot_check_rate": {
+                "value": None,
+                "note": "not implemented in this release -- spec text names "
+                        "2% of leaves clearing every gate, with no backing "
+                        "constant yet",
+            },
+            "free_tier_target": {
+                "value": None,
+                "note": "open item (spec 12) -- the >=70% target's scope is "
+                        "not decided, so no value is shown",
+            },
+        },
+    }
+
+
 async def handle_delegation_get(request: Request):
     """GET /api/delegation -- the matrix, the flags, and the derived ladders."""
     rows = await db.delegation_rows_all()
@@ -108,6 +209,7 @@ async def handle_delegation_get(request: Request):
         # does not produce.
         "ladders": {t: table.ladder(t) for t in task_types},
         "editable_columns": list(_EDITABLE),
+        "config": _config_overview(),
     })
 
 
@@ -182,6 +284,15 @@ async def handle_operational_put(request: Request):
     operational = bool(data.get("operational"))
     if not task_type:
         raise HTTPException(status_code=400, detail="task_type is required")
+
+    if operational and task_type in _OPERATIONAL_FLIP_BLOCKED:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{task_type} cannot be flipped operational: spec section 12 "
+                "leaves the gate-type validation question open and forbids "
+                f"flipping {task_type} until it is decided"
+            ))
 
     if operational:
         rows = rows_to_capability(await db.delegation_rows_all())

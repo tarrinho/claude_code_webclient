@@ -825,7 +825,16 @@ async def handle_chat_standby(request: Request, chat_id: str):
     body: dict[str, Any] = {
         "ok": True,
         "standby": True,
-        "resume_command": f"eval \"$(bash {Path(__file__).resolve().parent.parent / 'bin' / 'wc-session-wake.sh'} {name})\"",
+        # Standby SIGTERMs the process (bin/wc-session-standby.sh) and launches
+        # nothing, so there is no screen window to reattach to -- telling the
+        # operator to run `screen -r` here sends them after something that does
+        # not exist. Wake is what brings it back, and it is both a menu action
+        # and the script below. The wake route's own message is correct,
+        # because wake really does `screen -d -m -S`.
+        "resume_command": (
+            f"Session '{name}' stopped. Use Wake to resume it, or run: "
+            f"eval \"$(bash {Path(__file__).resolve().parent.parent / 'bin' / 'wc-session-wake.sh'} {name})\""
+        ),
     }
     if lingering:
         body["warning"] = (
@@ -881,7 +890,7 @@ async def handle_chat_wake(request: Request, chat_id: str):
     return JSONResponse({
         "ok": True,
         "standby": False,
-        "resume_command": stdout.decode().strip() if stdout else "",
+        "resume_command": f"Session '{name}' woken in screen. Reattach with: screen -r {name}",
     })
 
 

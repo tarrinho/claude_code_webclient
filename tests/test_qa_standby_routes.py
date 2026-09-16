@@ -216,7 +216,80 @@ class StandbyRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(body["ok"])
             self.assertTrue(body["standby"])
             self.assertIn("resume_command", body)
-            self.assertIn("wc-session-wake.sh", body["resume_command"])
+            # Not "screen": standby SIGTERMs the process and launches nothing,
+            # so there is no screen window to reattach to and `screen -r` sends
+            # the operator after something that does not exist. What resumes a
+            # standby'd session is wake -- the menu action, or the script this
+            # names. Asserting the word "screen" passed happily while the text
+            # was wrong, which is how it shipped.
+            resume = body["resume_command"]
+            self.assertIn("Wake", resume)
+            self.assertIn("wc-session-wake.sh", resume)
+            self.assertNotIn("screen -r", resume)
+
+    # -- wake route: POST /api/chats/{id}/wake --
+
+    async def test_400_when_chat_is_not_on_standby(self):
+        """A normal chat (no standby_reason) cannot be woken."""
+        await self._create_chat(session_id=self.real_session_id)
+        client, headers = self._login("alice")
+        r = client.post(f"/api/chats/{self.chat_id}/wake", headers=headers)
+        self.assertEqual(r.status_code, 400, r.text)
+        body = r.json()
+        self.assertIn("error", body)
+        self.assertIn("not on standby", body["error"].lower())
+
+    async def test_wake_400_when_standby_flag_is_stale(self):
+        """A chat without session_id but with a stale standby flag returns 400.
+
+        Named apart from the standby test above deliberately. Both were called
+        test_400_when_chat_has_no_session_id, so this definition shadowed the
+        other and unittest only ever collected one of the two -- the standby
+        case at line 139 had not run since it was written. Found by flake8
+        F811 during a rules.md section 9 pass on 2026-09-14.
+        """
+        await self._create_chat(session_id=None)
+        # Inject a fake standby_reason to simulate a stale flag.
+        await db.db_conn.execute(
+            "UPDATE chats SET standby_reason = ? WHERE id = ? AND owner_id = ?",
+            ("test", self.chat_id, self.alice_id),
+        )
+        await db.db_conn.commit()
+        client, headers = self._login("alice")
+        r = client.post(f"/api/chats/{self.chat_id}/wake", headers=headers)
+        self.assertEqual(r.status_code, 400, r.text)
+        body = r.json()
+        self.assertIn("error", body)
+        self.assertIn("no linked session", body["error"].lower())
+
+    async def test_success_clears_standby_and_returns_message(self):
+        """Happy wake path: clears standby_reason, returns ok message."""
+        await self._create_chat(session_id=self.real_session_id)
+        # Set standby_reason so the chat looks like it was stood-by first.
+        await db.db_conn.execute(
+            "UPDATE chats SET standby_reason = ? WHERE id = ? AND owner_id = ?",
+            ("standby requested at 2026-09-01T00:00:00", self.chat_id, self.alice_id),
+        )
+        await db.db_conn.commit()
+        client, headers = self._login("alice")
+
+        async_mock = unittest.mock.AsyncMock(returncode=0)
+        async_mock.communicate = unittest.mock.AsyncMock(return_value=(b"", b""))
+
+        with patch(
+            "routes.chats.asyncio.create_subprocess_exec",
+            return_value=async_mock,
+        ):
+            r = client.post(f"/api/chats/{self.chat_id}/wake", headers=headers)
+            self.assertEqual(r.status_code, 200, r.text)
+            body = r.json()
+            self.assertTrue(body["ok"])
+            self.assertFalse(body["standby"])
+            self.assertIn("resume_command", body)
+
+        # Verify standby_reason is actually cleared in DB.
+        chat = await db.chat_get(self.chat_id, self.alice_id)
+        self.assertIsNone(chat.get("standby_reason"))
 
     # -- frontend assertion: error detail in body --
 

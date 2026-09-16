@@ -709,12 +709,13 @@ again.
 Machinery shipped in 0.19.0 for routing a task to a model tier by measured
 capability instead of a flat rule. `delegation_classifier.py` classifies a
 task into a task type; `tiered_delegation.py` holds the benchmark table
-dataclasses, the cheapest-first ladder generator, the coding oracle, the
-review-gate result type, and `CapabilityTable.validate()`, which enforces
-§1.1's six startup invariants (blank fields, model resolves to a real
-backend, every ladder rung is backed by a row, no operational task type left
-with an empty ladder, no operational path over the combined latency ceiling,
-no operational ladder over `BUDGET_USD`). The benchmark table itself lives in
+dataclasses, the cheapest-first ladder generator, and
+`CapabilityTable.validate()`, which enforces §1.1's six startup invariants
+(blank fields, model resolves to a real backend, every ladder rung is backed
+by a row, no operational task type left with an empty ladder, no operational
+path over the combined latency ceiling, no operational ladder over
+`BUDGET_USD`). The coding oracle is `delegation_oracle.py`; the review-gate
+result type (`GateResult`) is in `delegation_pipeline.py`. The benchmark table itself lives in
 SQLite (`delegation_capability`, `delegation_operational` — see §5), read and
 written through `routes/db_delegation.py`, and is editable live from
 Settings > Delegation (§6, Settings). `bin/wc-seed-delegation.py` seeds
@@ -1291,7 +1292,7 @@ claude-code-webconsole/
 ├── delegation_classifier.py 153  Delegation 0.19.0: task -> (task_type, score, mutates)
 ├── delegation_oracle.py     114  Delegation 0.19.0: coding oracle -- does the produced
 │                                 code parse/import/compile (spec 4.2). Not wired in yet.
-├── delegation_startup.py     60  Delegation 0.19.0: loads the capability table from the
+├── delegation_startup.py    112  Delegation 0.19.0: loads the capability table from the
 │                                 database and runs CapabilityTable.validate() at boot
 ├── routes/misc.py          1278  Settings, sessions, skills, health, orchestrator feed
 ├── net_validation.py        232  Outbound address validation (SSRF guard)
@@ -1350,13 +1351,13 @@ claude-code-webconsole/
 │           ├── api.js         94
 │           ├── state.js       70
 │           └── dom.js         41
-├── routes/                4915  Six route modules: four extracted from app.py in
+├── routes/                4923  Six route modules: four extracted from app.py in
 │                                 0.10.3, two added for tiered delegation in 0.19.0
 │   ├── chats.py            1704  Chat CRUD, turns, questions, transcript, streaming
 │   ├── misc.py             1278  Settings, sessions, skills, health, orchestrator feed
 │   ├── supervisors.py       860  Orchestrator orchestration routes
 │   ├── machines.py           665  AI machine CRUD and connectivity tests
-│   ├── delegation.py         323  Delegation matrix API (spec 9.2): GET/PUT rows,
+│   ├── delegation.py         331  Delegation matrix API (spec 9.2): GET/PUT rows,
 │   │                              PUT operational -- validates every write (1.1)
 │   └── db_delegation.py       85  Delegation 2.6 table CRUD: rows_all, row_set,
 │                                  operational_all/_set

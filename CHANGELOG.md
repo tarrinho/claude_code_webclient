@@ -43,9 +43,14 @@ churn.
 
 ### Fixed
 
-- **`assign_model` stopped discarding the complexity it computes.** Both
-  branches of its fallback returned the same value, so the score was calculated
-  and thrown away — routing that read as deliberate while doing none.
+- **`assign_model`'s fallback no longer has two branches that return the same
+  value.** Both branches of its old `if complexity >= 4` check returned the
+  same model, so the score was computed and thrown away — routing that read as
+  deliberate while doing none. The duplicate branch is gone, and the
+  classifier's output (the task's *type*) now reaches the routing decision.
+  The `complexity` score itself is still not an input to model choice — spec
+  §1 was amended to say the score sets deadlines, not the model, and that is
+  deliberate, not the bug that was fixed here.
 
 ## [0.18.1] — 2026-09-16
 

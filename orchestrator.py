@@ -291,8 +291,12 @@ class ModelRouter:
 
         The previous fallback was `if complexity >= 4: return X` followed by
         `return X` -- the same value on both branches, so complexity was
-        computed and discarded (spec section 1). The parameter is now used, or
-        it is honestly unused; it is no longer pretend.
+        computed and discarded (spec section 1). The duplicate branch is
+        gone. `complexity` is not referenced anywhere below -- it is now
+        entirely unused, not used: spec §1 was amended (commit 5ca7189) to
+        say the task *type* selects the ladder and the *score* sets
+        deadlines elsewhere, and that the score is deliberately not an input
+        to model choice here.
         """
         combined = (task_title + " " + task_desc).lower()
 

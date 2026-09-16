@@ -640,6 +640,8 @@ A score-1 task runs a reduced pipeline; the full five stages apply to anything s
 
 **The bypass is scoped to writes.** It removes stages 3–5 from a task with `mutates=True`. On a task with `mutates=False` it removes stages 4 and 5 only, and **never stage 3** (§4.7).
 
+**`side_effecting_read` follows the write row here**, as it does everywhere else: §2.3 refuses it a transport alongside `True`, and §4.7 holds it to the same stages as `True` rather than treating it as a read. So a score-1 `side_effecting_read` runs stages 1 and 2, exactly like a small write. The alternative — giving it a reviewer gate that an actual write at the same score does not get — would make it stricter than `True`, which no rule in this design supports. Stated explicitly because the table above has only two rows and the third value has to land somewhere.
+
 This scoping is the whole rule, and without it the design has a hole big enough to swallow its most common read task. The classifier's only `long-context` pattern — `read.*file|list.*directory|grep.*pattern|summarize.*log` — is **score 1 and `mutates=False` simultaneously**, so it matches the trivial bypass and the read-only rule at once. Under an unscoped bypass it would run stage 1, then a stage 2 that does not execute on prose output (§4.7), then nothing: a leaf with no verification at all, reached by the most frequent read pattern in the table. The bypass exists because a typo fix is cheap to verify by oracle — that argument is about writes, and it does not transfer to a read whose oracle is vacuous.
 
 **Precedence between §4.6, §4.7 and §4.8.** Three rules can each subtract stages, so the order they resolve in is fixed:

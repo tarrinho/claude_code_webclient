@@ -76,7 +76,7 @@ ROWS = [
     ("claude-sonnet-5", "multi-turn", None, None, 1.5709, None, 1000000),
     ("claude-sonnet-5", "planning", None, None, 1.5709, None, 1000000),
     ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),
-    ("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None, 1000000),
+    ("claude-sonnet-5", "reviewer-gate", None, 20, 1.5709, 3.675, 1000000),
     ("claude-opus-5", "comprehension", 0.5, 2, 3.6082, None, 1000000),
     ("claude-opus-5", "reasoning", None, None, 3.6082, None, 1000000),
 ]

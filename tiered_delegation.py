@@ -794,9 +794,8 @@ class CapabilityTable:
             # "no empty ladder"
             if not self.ladder(task_type):
                 problems.append(
-                    f"{task_type}: is operational but its ladder is empty -- "
-                    "no row has a measured accuracy that survives the cost "
-                    "ceiling"
+                    f"{task_type}: ladder is empty -- no row has a measured "
+                    "accuracy that survives the cost ceiling"
                 )
 
             # "every rung is backed by a row" -- trivially true when the ladder

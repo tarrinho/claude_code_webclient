@@ -168,5 +168,111 @@ class SeedRowCoverageTests(unittest.TestCase):
         self.assertEqual(extra, set(), f"seeded rows not in spec 2.6: {sorted(extra)}")
 
 
+def _spec_cell(cell: str) -> str | None:
+    """A cell's raw text, or None for spec 2.6's two spellings of "absent"
+    (`TBD` and `--`). Both mean the same thing here -- section 2.6 uses `TBD`
+    for "not measured yet" and an em dash for "not applicable" (an `n` next to
+    an unmeasured accuracy), and this table has no row where the distinction
+    between the two would change what a seeded value should be."""
+    cell = cell.strip()
+    return None if cell in ("TBD", "—") else cell
+
+
+def _spec_pct(cell: str) -> float | None:
+    """`"66%"` -> `0.66`, matching the fraction the seed script stores."""
+    v = _spec_cell(cell)
+    return None if v is None else round(float(v.rstrip("%")) / 100, 6)
+
+
+def _spec_n(cell: str) -> int | None:
+    """`n`, stripped of the trailing `*` that marks a latency-only sample
+    (spec 2.6: "An `n` marked with `*` is a latency sample, not an accuracy
+    sample") -- the seed script stores the count either way, so the marker
+    itself carries no value to compare here."""
+    v = _spec_cell(cell)
+    return None if v is None else int(v.rstrip("*"))
+
+
+def _spec_float(cell: str) -> float | None:
+    """A plain decimal cell (`cost_per_1M_tokens`, `median_latency_s`)."""
+    v = _spec_cell(cell)
+    return None if v is None else float(v.replace(",", ""))
+
+
+def _spec_int(cell: str) -> int | None:
+    """An integer cell (`max_context`) written with thousands separators."""
+    v = _spec_cell(cell)
+    return None if v is None else int(v.replace(",", ""))
+
+
+class SeedRowValuesTests(unittest.TestCase):
+    """The seed script must carry spec 2.6's *measured values*, not only the
+    right (model, task_type) pairs.
+
+    `SeedRowCoverageTests` above only ever compared
+    `{(model, task_type) for model, task_type, *_ in module.ROWS}` -- the
+    `*_` discards accuracy, n, cost, latency and max_context outright, so a
+    seed row could carry any numbers at all, including stale ones, and that
+    test would stay green. That is exactly how `claude-sonnet-5` /
+    `reviewer-gate` shipped with `median_latency_s=None` after spec 2.6 was
+    updated on 2026-09-16 to record 20* / 3.675s (pooled from three passes) --
+    the pair matched, so nothing here ever compared the value.
+
+    This parses spec 2.6's table properly, honouring its own conventions
+    (`_spec_cell`/`_spec_pct`/`_spec_n`/`_spec_float`/`_spec_int` above):
+    `TBD` and an em dash both mean absent, an `n` may carry a trailing `*`
+    meaning a latency sample rather than an accuracy sample, and numbers are
+    written with thousands separators. It then asserts every seeded tuple
+    equals the spec row for the same (model, task_type) pair, column by
+    column, so a value can no longer drift silently.
+    """
+
+    def _spec_rows(self) -> dict[tuple[str, str], tuple]:
+        text = SPEC_FILE.read_text(encoding="utf-8")
+        start = text.index("### 2.6 Model benchmark table")
+        end = text.index("**`max_context` is the input window", start)
+        table = text[start:end]
+        rows: dict[tuple[str, str], tuple] = {}
+        for line in table.splitlines():
+            if not line.startswith("| `"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            model = cells[0].strip("`")
+            task_type = cells[1]
+            rows[(model, task_type)] = (
+                _spec_pct(cells[2]),
+                _spec_n(cells[3]),
+                _spec_float(cells[4]),
+                _spec_float(cells[5]),
+                _spec_int(cells[6]),
+            )
+        return rows
+
+    def test_every_seeded_row_matches_its_spec_2_6_values(self):
+        module = _load_seed_module()
+        spec_rows = self._spec_rows()
+        columns = ("accuracy", "n", "cost_per_1m_tokens", "median_latency_s",
+                   "max_context")
+        for model, task_type, accuracy, n, cost, latency, context in module.ROWS:
+            seeded = (accuracy, n, cost, latency, context)
+            expected = spec_rows[(model, task_type)]
+            for column, got, want in zip(columns, seeded, expected):
+                with self.subTest(model=model, task_type=task_type, column=column):
+                    if isinstance(want, float):
+                        self.assertIsNotNone(
+                            got,
+                            f"{model} / {task_type}: {column} is None in ROWS "
+                            f"but spec 2.6 has {want!r}")
+                        self.assertAlmostEqual(
+                            got, want, places=6,
+                            msg=f"{model} / {task_type}: {column} is {got!r} "
+                                f"in ROWS but spec 2.6 has {want!r}")
+                    else:
+                        self.assertEqual(
+                            got, want,
+                            f"{model} / {task_type}: {column} is {got!r} in "
+                            f"ROWS but spec 2.6 has {want!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

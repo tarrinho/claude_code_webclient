@@ -11,7 +11,7 @@ This document is standalone. The base design's measurement tables from the origi
 
 Today `ModelRouter.assign_model` returns `config.ANTHROPIC_MODEL` on both branches — complexity is computed and discarded. This design fills that seam.
 
-What must be **built**: the duplicate-branch fix in `ModelRouter.assign_model` so the computed complexity reaches the routing decision instead of being discarded (§3), the task classifier (§2), the coding oracle (§4.2), the three review gates (§4.3–4.5), the blast-radius check (§4.6), the settings page (§9.2). Everything else is configuration over existing mechanisms.
+What must be **built**: the duplicate-branch fix in `ModelRouter.assign_model` so the classifier's output reaches the routing decision instead of being discarded — the **task type** selects the ladder (§3) and the **score** sets the deadlines (§5.1), per §2.1's division; the score is deliberately not an input to model choice, because §3 escalates on failed attempts rather than on an upfront size guess — the task classifier (§2), the coding oracle (§4.2), the three review gates (§4.3–4.5), the blast-radius check (§4.6), the settings page (§9.2). Everything else is configuration over existing mechanisms.
 
 ### 1.1 Startup validation
 

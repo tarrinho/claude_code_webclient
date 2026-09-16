@@ -2,7 +2,7 @@
 
 A self-hosted web interface for a local Claude Code CLI. It provides mobile-friendly conversations, SSE token streaming, SQLite persistence, resumable CLI sessions, multi-machine AI routing, and skills inventory.
 
-**Version:** 0.18.1
+**Version:** 0.19.0
 **License:** Proprietary
 
 ---
@@ -703,6 +703,44 @@ write, and `write_health()` returns one of `ok` / `warming` / `stale` /
 `unknown` rather than a boolean — `warming` exists because a just-restarted
 server inherits old rows, and a boolean check would restart it, then restart it
 again.
+
+### 3.10 Tiered Agent Delegation (`tiered_delegation.py`, `delegation_classifier.py`, `routes/delegation.py`, `routes/db_delegation.py`)
+
+Machinery shipped in 0.19.0 for routing a task to a model tier by measured
+capability instead of a flat rule. `delegation_classifier.py` classifies a
+task into a task type; `tiered_delegation.py` holds the benchmark table
+dataclasses, the cheapest-first ladder generator, the coding oracle, the
+review-gate result type, and `CapabilityTable.validate()`, which enforces
+§1.1's six startup invariants (blank fields, model resolves to a real
+backend, every ladder rung is backed by a row, no operational task type left
+with an empty ladder, no operational path over the combined latency ceiling,
+no operational ladder over `BUDGET_USD`). The benchmark table itself lives in
+SQLite (`delegation_capability`, `delegation_operational` — see §5), read and
+written through `routes/db_delegation.py`, and is editable live from
+Settings > Delegation (§6, Settings). `bin/wc-seed-delegation.py` seeds
+`delegation_capability` from the spec's measured snapshot.
+
+**As shipped, this routes nothing.** A task type only becomes routable when
+its `operational` flag is set, the flag defaults to false for every task
+type, and nothing in this release sets it — `ModelRouter.assign_model`
+(`orchestrator.py`) falls back to today's behavior whenever a task type is
+not operational, which is every task type right now. `coding` clears all six
+startup invariants on its own, but `routes/delegation.py` carries a named
+guard (`_OPERATIONAL_FLIP_BLOCKED`) that refuses to flip it operational
+regardless, because the design spec (`docs/superpowers/specs/2026-09-14-tiered-agent-delegation-spec-v3.md`,
+§12) leaves three items unresolved:
+
+- whether `coding`'s measured 66% free-rung accuracy satisfies the ≥70%
+  free-rung target, and if not, what the target is even measuring (a
+  per-tree average, an aspirational floor, or a hard constraint);
+- that `coding`'s own review gates (the `reviewer-gate` task type) are not
+  themselves validated as operational, so nothing currently stops `coding`
+  from routing onto gates whose cost and accuracy are unmeasured;
+- unrelated transport drift in `claude_proxy.py` against the pentester
+  fork, which blocks any wholesale transport sync but not this release.
+
+Until those are decided, the guard stays in place. Removing it is a decision
+about §12, not a routine code change.
 
 ---
 

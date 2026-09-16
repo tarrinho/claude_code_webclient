@@ -22,22 +22,30 @@ churn.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-09-16
+
 ### Added
 
-- **Capability table and escalation-ladder generator** (`tiered_delegation.py`)
-  — stage 1 of the tiered-agent-delegation design. Decides which model would be
-  tried, in what order, for a task type: ladder eligibility, the per-token cost
-  ceiling, and the cheapest-first walk that skips any model measured worse than
-  the current rung.
+- **Tiered agent delegation — the machinery, routing nothing.** The classifier,
+  the coding oracle, the three review gates, the blast-radius check, derived
+  per-attempt deadlines, the benchmark table as a real database table, startup
+  validation, and a Settings > Delegation page for editing the measurements.
 
-  **Nothing routes.** No task type is operational, `ModelRouter.assign_model` is
-  untouched, and nothing imports this module yet. The spec's own §12 carries
-  three unresolved items, each with an explicit "do not" — including one that
-  forbids making `coding` operational until gate-type validation is decided —
-  so this is the machinery those decisions will be applied to, not the
-  decisions. It is deliberately pure: no database, no config read, no import
-  from `app`, so it is tested against a constructed table rather than against
-  today's mostly-unmeasured production data.
+  **Nothing routes.** Every task type ships non-operational, which is the
+  spec's own bootstrap default: a type becomes routable only by being flipped,
+  and flipping it is what submits it to validation. With none flipped, model
+  selection behaves exactly as it did in 0.18.1, and a test asserts that rather
+  than a sentence claiming it.
+
+  The spec's three open items stay open. In particular `coding` is not
+  operational: it clears all six startup invariants, but the gates its later
+  stages run on do not, and nothing in the design refuses that combination yet.
+
+### Fixed
+
+- **`assign_model` stopped discarding the complexity it computes.** Both
+  branches of its fallback returned the same value, so the score was calculated
+  and thrown away — routing that read as deliberate while doing none.
 
 ## [0.18.1] — 2026-09-16
 

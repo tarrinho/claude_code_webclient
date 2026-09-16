@@ -44,7 +44,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import db
-from delegation_startup import load_capability_table
+from delegation_startup import live_known_models, load_capability_table
 from routes.db_delegation import rows_to_capability
 from tiered_delegation import (
     BUDGET_USD,
@@ -263,7 +263,12 @@ async def handle_row_put(request: Request):
                        if not (r["model"] == model and r["task_type"] == task_type)]
         merged_rows.append({"model": model, "task_type": task_type, **merged_columns})
         table = CapabilityTable(rows_to_capability(merged_rows), operational=operational)
-        problems = table.validate()
+        # Same live list, same fallback, as delegation_startup.validate_or_die
+        # -- spec 1.1 requires the same code path and the same error text at
+        # every moment a table is validated, and a write endpoint must not
+        # start refusing writes because a backend happens to be unreachable.
+        known_models = await live_known_models()
+        problems = table.validate(known_models=known_models)
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
@@ -298,7 +303,10 @@ async def handle_operational_put(request: Request):
         rows = rows_to_capability(await db.delegation_rows_all())
         current = await db.delegation_operational_all()
         table = CapabilityTable(rows, operational=current | {task_type})
-        problems = table.validate()
+        # Same live list, same fallback, as handle_row_put above and as
+        # delegation_startup.validate_or_die -- see the comment there.
+        known_models = await live_known_models()
+        problems = table.validate(known_models=known_models)
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 

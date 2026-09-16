@@ -55,6 +55,24 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         self.addAsyncCleanup(db.close)
 
+    async def _seed_machine_serving(self, *model_ids: str) -> str:
+        """Register a machine whose active list names *model_ids*, so
+        `routes.machines.known_backend_models` -- and therefore
+        `delegation_startup.live_known_models`, which both route handlers now
+        call -- reports them as live.
+
+        `db.ai_machine_create` returns its write timestamp, not the id --
+        reuse the id passed in for the follow-up update.
+        """
+        machine_id = f"m-{model_ids[0]}"
+        await db.ai_machine_create(
+            machine_id, "Test Machine", "localhost", 0, None,
+            model_ids[0], None, None, "tester", provider="claude_code",
+        )
+        await db.ai_machine_set_models(machine_id, "tester", list(model_ids),
+                                       model_ids[0])
+        return machine_id
+
     def test_the_three_column_lists_agree(self):
         """`routes.delegation._EDITABLE`, `routes.db_delegation._COLUMNS` and
         `tiered_delegation._REQUIRED_COLUMNS` are three independent copies of
@@ -299,6 +317,88 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
             await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "long-context", "operational": True}))
         self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_a_row_write_introducing_an_unserved_backend_qualified_rung_is_refused(self):
+        """`handle_row_put`'s validate() call uses the live model list
+        (`delegation_startup.live_known_models`), the same one startup uses --
+        not just config.KNOWN_MODELS' bare-Anthropic-id fallback. A
+        backend-qualified rung (`vllm/...`) that no machine serves is refused
+        here exactly as `validate_or_die` would refuse it at the next boot,
+        rather than passing on shape alone."""
+        from fastapi import HTTPException
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "long-context", "operational": True}))
+
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_row_put(_request(body={
+                "model": "vllm/NotAModel", "task_type": "long-context",
+                "accuracy": 1.0, "n": 10, "cost_per_1m_tokens": 0.0,
+                "median_latency_s": 12.0, "max_context": 229376}))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("vllm/NotAModel", str(ctx.exception.detail))
+        self.assertIn("is not in the model combo box", str(ctx.exception.detail))
+
+    async def test_a_row_write_introducing_a_machine_served_backend_qualified_rung_is_accepted(self):
+        """The other side of the same wiring: a backend-qualified rung a
+        seeded machine actually serves is accepted, so the check is really
+        consulting the live list rather than refusing every non-bare id."""
+        await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
+        await db.delegation_row_set("claude-sonnet-5", "long-context",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "long-context", "operational": True}))
+
+        response = await delegation_routes.handle_row_put(_request(body={
+            "model": "vllm/Qwen3.6-35B-A3B-NVFP4", "task_type": "long-context",
+            "accuracy": 1.0, "n": 10, "cost_per_1m_tokens": 0.0,
+            "median_latency_s": 12.0, "max_context": 229376}))
+        self.assertTrue(json.loads(response.body)["ok"])
+
+    async def test_flipping_operational_with_an_unserved_backend_qualified_rung_is_refused(self):
+        """Same wiring, the other call site: `handle_operational_put` must
+        refuse a flip whose only ladder rung is a backend-qualified id no
+        machine serves, for the same "does not resolve" reason
+        `validate_or_die` would give at the next boot."""
+        from fastapi import HTTPException
+        await db.delegation_row_set("vllm/NotAModel", "long-context",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(body={
+                "task_type": "long-context", "operational": True}))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("vllm/NotAModel", str(ctx.exception.detail))
+        self.assertIn("is not in the model combo box", str(ctx.exception.detail))
+        self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_flipping_operational_with_a_machine_served_backend_qualified_rung_is_accepted(self):
+        await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
+        await db.delegation_row_set("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "long-context", "operational": True}))
+        self.assertEqual(await db.delegation_operational_all(), {"long-context"})
 
     async def test_coding_cannot_be_flipped_operational_even_with_complete_data(self):
         """Spec 12: `coding` is blocked regardless of whether the data would

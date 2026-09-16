@@ -1,0 +1,148 @@
+{
+  "runs": [
+    {
+      "arm": "B-pipeline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": true,
+      "score": 100.0,
+      "wall_s": 283.99,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 264.6,
+          "input_tokens": 106768,
+          "output_tokens": 5776,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.67824,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 12.34,
+          "input_tokens": 11734,
+          "output_tokens": 604,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.07377,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "claude-sonnet-5",
+          "total_s": 3.48,
+          "input_tokens": 14094,
+          "output_tokens": 5,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 10198,
+          "reported_cost_usd": 0.07347820000000001,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "security",
+          "model": "claude-sonnet-5",
+          "total_s": 3.52,
+          "input_tokens": 14094,
+          "output_tokens": 5,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 10040,
+          "reported_cost_usd": 0.0728462,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "azure_ai/gpt-5.6-luna",
+      "rung_index": 1,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) oracle: no extractable code score=0.0"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.146324,
+      "unpriced_calls": 1,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-algo",
+      "task_type": "coding",
+      "correct": true,
+      "score": 96.3,
+      "wall_s": 60.51,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 53.34,
+          "input_tokens": 14203,
+          "output_tokens": 989,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.09573999999999999,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "claude-sonnet-5",
+          "total_s": 3.4,
+          "input_tokens": 14094,
+          "output_tokens": 5,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 11038,
+          "reported_cost_usd": 0.0768382,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "security",
+          "model": "claude-sonnet-5",
+          "total_s": 3.73,
+          "input_tokens": 14094,
+          "output_tokens": 5,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 10943,
+          "reported_cost_usd": 0.0764582,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.153296,
+      "unpriced_calls": 0,
+      "note": ""
+    }
+  ],
+  "aggregate": {
+    "B-pipeline": {
+      "runs": 2,
+      "correct": 2,
+      "pass_rate": 1.0,
+      "wall_s_median": 172.25,
+      "calls_median": 3.5,
+      "escalation_rate": 0.5,
+      "priced_cost_usd_total": 0.29962,
+      "unpriced_calls_total": 1
+    }
+  },
+  "config": {
+    "ladder": [
+      "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "azure_ai/gpt-5.6-luna",
+      "claude-sonnet-5"
+    ],
+    "baseline": "claude-sonnet-5",
+    "gate_model": "claude-sonnet-5",
+    "costing_note": "priced_cost_usd is a LOWER BOUND wherever unpriced_calls > 0. bench_rates.json records no rate for any Azure model."
+  }
+}

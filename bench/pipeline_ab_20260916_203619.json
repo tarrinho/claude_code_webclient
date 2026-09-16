@@ -1,0 +1,542 @@
+{
+  "runs": [
+    {
+      "arm": "B-pipeline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": false,
+      "score": 100.0,
+      "wall_s": 678.98,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 654.83,
+          "input_tokens": 538472,
+          "output_tokens": 14941,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 3.0865500000000003,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 10.2,
+          "input_tokens": 15514,
+          "output_tokens": 388,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.091985,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.77,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 12.26,
+          "input_tokens": 14136,
+          "output_tokens": 596,
+          "cache_read_tokens": 54434,
+          "cache_write_tokens": 24487,
+          "reported_cost_usd": 0.1430668,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.77,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 2,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) oracle: core 6/8 score=77.8",
+        "rung 1 (azure_ai/gpt-5.6-luna) reviewer: empty gate response",
+        "rung 2 (claude-sonnet-5) reviewer: empty gate response"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.143067,
+      "unpriced_calls": 3,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-algo",
+      "task_type": "coding",
+      "correct": false,
+      "score": 100.0,
+      "wall_s": 48.41,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 32.37,
+          "input_tokens": 18793,
+          "output_tokens": 604,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.12417,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.76,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 8.75,
+          "input_tokens": 15474,
+          "output_tokens": 437,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.09276999999999999,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.77,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 4.83,
+          "input_tokens": 14095,
+          "output_tokens": 275,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 9890,
+          "reported_cost_usd": 0.07494819999999999,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.77,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 2,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) reviewer: empty gate response",
+        "rung 1 (azure_ai/gpt-5.6-luna) reviewer: empty gate response",
+        "rung 2 (claude-sonnet-5) reviewer: empty gate response"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.074948,
+      "unpriced_calls": 4,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": false,
+      "score": 88.9,
+      "wall_s": 39.48,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 18.39,
+          "input_tokens": 18843,
+          "output_tokens": 313,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.10203999999999999,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 9.94,
+          "input_tokens": 15514,
+          "output_tokens": 417,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.09271,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.74,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 9.47,
+          "input_tokens": 14093,
+          "output_tokens": 513,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 9951,
+          "reported_cost_usd": 0.0775682,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.78,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 2,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) oracle: core 6/8 score=77.8",
+        "rung 1 (azure_ai/gpt-5.6-luna) reviewer: empty gate response",
+        "rung 2 (claude-sonnet-5) reviewer: empty gate response"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.077568,
+      "unpriced_calls": 3,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-algo",
+      "task_type": "coding",
+      "correct": false,
+      "score": 100.0,
+      "wall_s": 99.53,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 80.46,
+          "input_tokens": 38502,
+          "output_tokens": 1598,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.23246,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 10.16,
+          "input_tokens": 15473,
+          "output_tokens": 343,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.090415,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 1.0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 6.95,
+          "input_tokens": 14094,
+          "output_tokens": 301,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 9889,
+          "reported_cost_usd": 0.0752022,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.81,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 2,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) oracle: core 0/26 score=0.0",
+        "rung 1 (azure_ai/gpt-5.6-luna) reviewer: empty gate response",
+        "rung 2 (claude-sonnet-5) reviewer: empty gate response"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.075202,
+      "unpriced_calls": 3,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": false,
+      "score": 100.0,
+      "wall_s": 47.25,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 29.26,
+          "input_tokens": 37895,
+          "output_tokens": 570,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.20372500000000002,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 9.39,
+          "input_tokens": 15514,
+          "output_tokens": 409,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.09251,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.78,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 6.89,
+          "input_tokens": 14094,
+          "output_tokens": 463,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 9952,
+          "reported_cost_usd": 0.07707420000000001,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.8,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 2,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) oracle: core 6/8 score=77.8",
+        "rung 1 (azure_ai/gpt-5.6-luna) reviewer: empty gate response",
+        "rung 2 (claude-sonnet-5) reviewer: empty gate response"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.077074,
+      "unpriced_calls": 3,
+      "note": ""
+    },
+    {
+      "arm": "B-pipeline",
+      "task": "coding-algo",
+      "task_type": "coding",
+      "correct": false,
+      "score": 100.0,
+      "wall_s": 48.95,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "vllm/Qwen3.6-35B-A3B-NVFP4",
+          "total_s": 32.99,
+          "input_tokens": 18795,
+          "output_tokens": 701,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.131355,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.76,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "azure_ai/gpt-5.6-luna",
+          "total_s": 7.56,
+          "input_tokens": 15471,
+          "output_tokens": 297,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": 0.089255,
+          "cost_basis": "unknown",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.78,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        },
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 5.91,
+          "input_tokens": 14095,
+          "output_tokens": 324,
+          "cache_read_tokens": 22241,
+          "cache_write_tokens": 9890,
+          "reported_cost_usd": 0.0754382,
+          "cost_basis": "list",
+          "error": null
+        },
+        {
+          "stage": "reviewer",
+          "model": "gpt-5.6-terra",
+          "total_s": 0.77,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reported_cost_usd": null,
+          "cost_basis": null,
+          "error": "cli exited 1: mething against its own backend -- sending this one gets a 429 that reads like a capacity problem.\n  Switch backend in the console, pick a served model, or set WC_SKIP_MODEL_CHECK=1 to proceed anyway."
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 2,
+      "escalated": true,
+      "gate_rejections": [
+        "rung 0 (vllm/Qwen3.6-35B-A3B-NVFP4) reviewer: empty gate response",
+        "rung 1 (azure_ai/gpt-5.6-luna) reviewer: empty gate response",
+        "rung 2 (claude-sonnet-5) reviewer: empty gate response"
+      ],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.075438,
+      "unpriced_calls": 4,
+      "note": ""
+    }
+  ],
+  "aggregate": {
+    "B-pipeline": {
+      "runs": 6,
+      "correct": 0,
+      "pass_rate": 0.0,
+      "wall_s_median": 48.68,
+      "calls_median": 5.0,
+      "escalation_rate": 1.0,
+      "priced_cost_usd_total": 0.523297,
+      "unpriced_calls_total": 20
+    }
+  },
+  "config": {
+    "ladder": [
+      "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "azure_ai/gpt-5.6-luna",
+      "claude-sonnet-5"
+    ],
+    "baseline": "claude-sonnet-5",
+    "gate_model": "gpt-5.6-terra",
+    "costing_note": "priced_cost_usd is a LOWER BOUND wherever unpriced_calls > 0. bench_rates.json records no rate for any Azure model."
+  }
+}

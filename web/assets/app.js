@@ -12,7 +12,7 @@ import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeS
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
-import {loadSpecs, _closeSpecViewer} from './specs.js?v=14201892';
+import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -477,7 +477,7 @@ function _switchTab(tab) {
   }
   if (tab === 'skills') loadSkills();
   if (tab === 'images') loadImages(true);
-  if (tab === 'specs') loadSpecs(true);
+  if (tab === 'specs') { _wireSpecsRefresh(); loadSpecs(true); }
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────

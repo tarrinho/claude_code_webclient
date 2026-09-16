@@ -315,14 +315,44 @@ function _updateCount(specs) {
 
  *  Groups results into collapsible sections by status
  *  (Implemented, Planned, Spec only), with a count badge. */
-export async function loadSpecs(force = false) {
+/** Rebuild the list server-side, ignoring the cached payload.
+ *
+ *  Wired to the Refresh button. The server caches the built list because
+ *  assembling it greps three directories and runs `git log` once per spec;
+ *  a spec created after that build is invisible until the TTL expires, and
+ *  this is the way out that does not involve waiting. */
+async function _refreshSpecs(button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Refreshing…';
+  try {
+    const found = await loadSpecs(true, {refresh: true});
+    // Say what happened. A list that looks identical after a rebuild is the
+    // common case -- without a count the button reads as having done nothing.
+    if (found !== null) notifyResult(`${found} spec${found === 1 ? '' : 's'} found`, 'ok');
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+export function _wireSpecsRefresh() {
+  const button = byId('specsRefresh');
+  if (button && !button.dataset.wired) {
+    button.dataset.wired = '1';
+    button.addEventListener('click', () => _refreshSpecs(button));
+  }
+}
+
+/** Returns the number of specs rendered, or null if nothing was loaded. */
+export async function loadSpecs(force = false, {refresh = false} = {}) {
   var list = byId('specsList');
-  if (!list) return;
-  if (!force && list.children.length) return;
+  if (!list) return null;
+  if (!force && list.children.length) return null;
 
   var payload;
   try {
-    const response = await apiFetch('/api/specs');
+    const response = await apiFetch('/api/specs' + (refresh ? '?refresh=1' : ''));
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || data.error || 'Could not load specs');
@@ -330,7 +360,7 @@ export async function loadSpecs(force = false) {
     payload = await response.json();
   } catch (error) {
     notifyResult(error.message, 'error');
-    return;
+    return null;
   }
 
   var allSpecs = payload.specs || [];
@@ -364,4 +394,5 @@ export async function loadSpecs(force = false) {
   }
 
   _updateCount(allSpecs);
+  return allSpecs.length;
 }

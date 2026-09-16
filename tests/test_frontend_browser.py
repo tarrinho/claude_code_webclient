@@ -172,6 +172,10 @@ class _BrowserFixture(unittest.TestCase):
             # the key separates two cases sharing one file. Production keeps
             # the 30s TTL; see config.USAGE_SERIES_CACHE_TTL_S.
             "WC_USAGE_SERIES_CACHE_TTL_S": "0",
+            # Same reason: a case that writes a spec file and asserts it renders
+            # is exactly what a TTL makes wrong, and every case in a class shares
+            # one server and one database so nothing in the key separates them.
+            "WC_SPECS_CACHE_TTL_S": "0",
             # The test server is plain HTTP on loopback.
             "WC_COOKIE_ALLOW_INSECURE": "1",
         }

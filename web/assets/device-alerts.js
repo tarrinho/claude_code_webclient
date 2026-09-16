@@ -2,7 +2,7 @@
 
 import {apiFetch} from './api.js?v=2741508';
 import {notifyResult} from './server-stats.js?v=1383946';
-import {listController} from './app.js?v=8681051';
+import {listController} from './app.js?v=2881380';
 // Three levels, because on a phone the page is usually not the thing in front
 // of you:
 //   1. the tab title, which always works and needs no permission;

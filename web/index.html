@@ -403,6 +403,12 @@
       <div class="settings-panel" id="panelSpecs" role="tabpanel" aria-labelledby="tabSpecs" tabindex="0" hidden>
         <div class="skills-header">
           <span class="skills-count" id="specsCount" role="status" aria-live="polite"></span>
+          <!-- The list is cached (config.SPECS_CACHE_TTL_S) because building it
+               greps three directories and runs git log per spec. This rebuilds
+               it, so a spec written moments ago shows up without waiting out
+               the TTL. -->
+          <button type="button" class="btn-secondary" id="specsRefresh"
+                  title="Rebuild the list now, picking up specs created since it was last built">Refresh</button>
         </div>
         <div class="specs-list" id="specsList"></div>
       </div>
@@ -611,7 +617,7 @@
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>
 <script type="module" src="/assets/device-alerts.js?v=12607362"></script>
 <script type="module" src="/assets/voice-settings.js?v=5515949"></script>
-<script type="module" src="/assets/app.js?v=8681051"></script>
+<script type="module" src="/assets/app.js?v=2881380"></script>
 <script type="module" src="/assets/voice-engine.js?v=7083095"></script>
 <script type="module" src="/assets/voice-tooltip.js?v=10927021"></script>
 <script type="module" src="/assets/voice-handoff.js?v=15895927"></script>

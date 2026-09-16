@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+import config
 import db
 import specs_gallery
 from routes.db_specs import ALLOWED_STATUSES
@@ -76,8 +78,39 @@ def _is_known_spec(root: Path, candidate: Path) -> bool:
     return any(s["path"] == rel for s in specs_gallery.discover_specs(root))
 
 
+# The built spec list, and when it was built. One entry: unlike the usage
+# series there is no owner or range to key on -- specs are shared files and
+# every caller gets the same answer. config.DB_PATH is in the key for the
+# reason the series cache records: a payload describes one database's
+# overrides, and under test every case gets its own file, so without it a
+# cached answer crosses between cases.
+_SPECS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _specs_cache_get() -> list[dict[str, Any]] | None:
+    if config.SPECS_CACHE_TTL_S <= 0:
+        return None
+    hit = _SPECS_CACHE.get(config.DB_PATH)
+    if hit is None:
+        return None
+    built_at, specs = hit
+    if time.monotonic() - built_at > config.SPECS_CACHE_TTL_S:
+        _SPECS_CACHE.pop(config.DB_PATH, None)
+        return None
+    # A copy, because the caller overlays manual statuses onto these dicts and
+    # would otherwise write them into the cached payload -- so a status cleared
+    # in the database would keep being served until the TTL expired.
+    return [dict(spec) for spec in specs]
+
+
+def _specs_cache_put(specs: list[dict[str, Any]]) -> None:
+    if config.SPECS_CACHE_TTL_S <= 0:
+        return
+    _SPECS_CACHE[config.DB_PATH] = (time.monotonic(), [dict(s) for s in specs])
+
+
 async def handle_specs_list(request: Request):
-    """GET /api/specs -- every spec, enriched, newest (by mtime) first.
+    """GET /api/specs -- every spec, enriched, newest first by filename date.
 
     A manual status (routes/db_specs.spec_status) overrides the
     auto-computed one wherever an admin has set it; specs with no override
@@ -85,15 +118,37 @@ async def handle_specs_list(request: Request):
     computed. ``status_manual`` tells the client which case it is looking
     at, so the viewer's combo box can distinguish "nobody has said
     otherwise" from "someone explicitly marked this done".
+
+    **``?refresh=1`` rebuilds rather than reading the cache.** Building is the
+    expensive half (see ``_discover_and_enrich``) and nothing in it changes
+    between two views seconds apart, so the payload is cached for
+    ``config.SPECS_CACHE_TTL_S``. A spec written after that build would
+    otherwise be invisible until the TTL expired, which is what the Specs
+    tab's Refresh button exists to defeat.
+
+    The manual statuses are **not** cached with it. They are one cheap
+    indexed read and they are what an admin changes from this very page, so
+    serving a stale one would make the page look broken in response to using
+    it -- the file list can wait a minute, a status the operator just set
+    cannot.
     """
-    specs = await asyncio.to_thread(_discover_and_enrich, _REPO_ROOT)
+    refresh = request.query_params.get("refresh") in ("1", "true", "yes")
+    specs = None if refresh else _specs_cache_get()
+    cached = specs is not None
+    if specs is None:
+        specs = await asyncio.to_thread(_discover_and_enrich, _REPO_ROOT)
+        _specs_cache_put(specs)
+
     overrides = await db.spec_status_get_all({s["path"] for s in specs})
     for spec in specs:
         override = overrides.get(spec["path"])
         spec["status_manual"] = override is not None
         if override is not None:
             spec["status"] = override
-    return JSONResponse({"specs": specs})
+    # `cached` tells the page whether it is looking at a rebuild, so Refresh
+    # can report that it did something rather than blinking and leaving the
+    # operator to guess.
+    return JSONResponse({"specs": specs, "cached": cached})
 
 
 async def handle_spec_content(request: Request, spec_id: str):
@@ -142,6 +197,12 @@ async def handle_spec_delete(request: Request, spec_id: str):
             )
         raise HTTPException(status_code=404, detail="Spec not found")
     path.unlink(missing_ok=True)
+    # Drop the cached list: the deleted spec is in it, and a page that removes
+    # a row and then reloads would watch it come back for up to one TTL. This
+    # is the one write that changes the *set* of specs, so it is the one that
+    # has to invalidate -- a status change does not, because statuses are read
+    # fresh on every request and never cached.
+    _SPECS_CACHE.pop(config.DB_PATH, None)
     _log.info("spec_deleted user=%s path=%s", session["user"], path)
     return JSONResponse({"ok": True})
 

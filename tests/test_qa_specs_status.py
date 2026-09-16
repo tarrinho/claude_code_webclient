@@ -22,8 +22,14 @@ import specs_gallery
 from routes.db_specs import ALLOWED_STATUSES
 
 
-def _request(role="user", body=None):
-    session = SimpleNamespace(state=SimpleNamespace(session={"user": "admin", "role": role}))
+def _request(role="user", body=None, query=None):
+    # query_params is always present on a real Request, and handle_specs_list
+    # reads it for ?refresh=1. A stand-in without it passes here and fails the
+    # moment a handler consults the query string.
+    session = SimpleNamespace(
+        state=SimpleNamespace(session={"user": "admin", "role": role}),
+        query_params=query or {},
+    )
     if body is not None:
         session.json = AsyncMock(return_value=body)
     return session

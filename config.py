@@ -221,6 +221,23 @@ QA_CHUNK_TIMEOUT = _int("WC_CHUNK_TIMEOUT", 600)
 # pruning and keeps everything.
 USAGE_RETENTION_DAYS = _int("WC_USAGE_RETENTION_DAYS", 90)
 
+# Seconds a /api/specs payload stays cached (routes/specs.py).
+#
+# Building it walks the tree, greps three subdirectories for implementation
+# evidence and runs `git log` once per spec -- 16.1s before the single-pass
+# rewrite, 2.3-5.1s after, and none of it changes between two page views
+# seconds apart. Specs are edited a few times a day at most.
+#
+# Staleness is bounded two ways rather than one: the TTL expires on its own,
+# and the Specs tab has a Refresh button that bypasses the cache outright, so
+# a spec created moments ago is one click away rather than a wait.
+#
+# **0 disables the cache**, and the tests set it to 0 -- a test that writes a
+# spec file and asserts it appears is exactly the caller a TTL makes wrong.
+# That is not hypothetical: the statistics cache shipped without it on
+# 2026-09-15 and broke two browser tests the same day.
+SPECS_CACHE_TTL_S = _float("WC_SPECS_CACHE_TTL_S", 60.0)
+
 # Seconds a /api/usage/series payload stays cached (routes/misc.py).
 #
 # The charts read stored aggregates over a window measured in days, so a

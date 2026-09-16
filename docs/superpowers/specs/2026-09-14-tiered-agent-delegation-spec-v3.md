@@ -85,7 +85,7 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | model resolution | **pass** | all three resolve to real backend-and-model pairs |
 | no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all three rungs have §2.6 rows |
-| ceiling fits the budget | **pass** | worst case 1,243s against the 1,500s ceiling (§5.1) |
+| ceiling fits the budget | **not yet answerable** | 1,243s against the 1,500s ceiling is a **lower bound** — the gate-climb term needs sonnet's `reviewer-gate` latency, which is TBD (§5.1, decided 2026-09-16) |
 | ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
@@ -838,6 +838,23 @@ The re-measurement history makes the case better than any argument could. `vllm`
 **An earlier revision of this section stated a multiplier sum of 7.77 and a worst case of 1,399s, and those reproduce from no reading of §2.6** — against the values available at the time, the two defensible gate choices gave 7.3937 and 8.2441, and 7.77 was neither. It came from assuming a gate multiplier of 1.00 instead of deriving one. This matters more than a typo would, because §1.1 recomputes this arithmetic at startup and refuses to load when it disagrees with the stored ceiling: a number nobody can reproduce would have been compared against on every boot.
 
 Every version of this derivation so far has landed under 1,500s, so **the ceiling has never been wrong — only successive attempts at the arithmetic behind it.** That is an uncomfortable record for a quantity the design calls derived, and it is the reason §11 now asserts the derivation itself rather than the stored value.
+
+#### Decided 2026-09-16: the formula above is incomplete, and 1,243.125s is a lower bound
+
+The derivation sums three gate calls, each run once, each at the gate's entry rung. **The pipeline this design specifies does not behave that way**, and 0.19.0 is the first release to implement both halves, which is how the disagreement surfaced. Two terms are missing:
+
+- **The gate climbs (§4.3, §4.5).** "The reviewer itself only climbs (`luna → sonnet`) if it keeps rejecting output from the generator's top rung." Each of the three model gates can therefore make a second call, at `claude-sonnet-5` rather than at Luna.
+- **Security re-runs (§4.5).** `SECURITY_RERUN_CAP` permits two generation → security review → fix → security review cycles, and a cycle contains generation work as well as a gate call.
+
+Where §5.1 and §4.3/§4.5 disagree, **§4.3/§4.5 win and this formula is corrected**, because §5.1's own decision above is that the ceiling is *derived from the worst-case path, not chosen*. A formula that models less than the pipeline does is not a derivation of the ceiling; it is a derivation of something cheaper than the ceiling has to cover.
+
+**The corrected worst case cannot be computed today.** The gate-climb term needs `claude-sonnet-5`'s `median_latency_s` on `reviewer-gate`, and §2.6 records it as TBD. Luna's gate row is measured at 11.1s; sonnet's is not measured at all. So the honest statement of the position is:
+
+- **1,243.125s is a lower bound on the worst-case path, not the worst-case path.** Every figure previously published against the 1,500s ceiling — including §1.2's `ceiling fits the budget | pass` for `coding` — was computed from this incomplete model and inherits that status.
+- **The 1,500s ceiling is provisional** until sonnet's `reviewer-gate` latency is measured and the full path is recomputed. For scale: one extra gate call at the floor costs `90 × 2.0 × (11.1 ÷ 12.8)` = **156.1s** against the 257s of margin, so two extra calls at the floor already exceed the ceiling — and a climb runs on sonnet, not at the floor.
+- **A task type whose full worst-case path cannot be computed does not become operational.** This follows the rule §1.1 already applies to every other unmeasured quantity: an unmeasured value is not a pass, and the §1.1 check must refuse rather than compare against a number it knows to be understated. Silently comparing a lower bound to a ceiling is the failure mode this section exists to prevent — a leaf killed after paying for all five stages.
+
+Nothing routes in 0.19.0 and `reviewer-gate` is non-operational, so this changes no behaviour today. It is written down because the arithmetic is now recomputed on every boot, and a figure that looks complete and is not would be compared against on each one.
 
 The derivation is the durable part, not the number. `1,500` is what today's §2.6 produces; it is recomputed whenever a ladder or a measured latency changes, and it is **not** an independent constant to be tuned on its own. §1.1 enforces that by refusing to start when the two disagree — so a future re-measurement that pushes the worst case past 1,500s stops the system at load rather than truncating leaves in production.
 

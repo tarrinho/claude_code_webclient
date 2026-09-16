@@ -134,9 +134,11 @@ LEAVES_PER_TREE: Final[int] = 40
 #: 2.7's reach probabilities, indexed by rung. Rung 0 runs on every leaf;
 #: rungs 1 and 2 are measured at n=6.
 #:
-#: Rung 2 is 1/6, not the 0.17 printed in 2.7's input table: 2.7's own cost
-#: table is computed from one leaf in six, and reproducing it requires the
-#: unrounded value. At 0.17, `claude-sonnet-5` at rung 2 comes out at $0.635
+#: Rung 2 is carried as the exact 1/6, which 2.7 now states outright ("one leaf
+#: of six. The cost table below is computed from the exact `1/6`, not from a
+#: rounded 0.17; at 0.17 every cell of it disagrees"). An earlier revision of
+#: that input table printed 0.17, and it was corrected on the evidence this
+#: check produced: at 0.17, `claude-sonnet-5` at rung 2 comes out at $0.635
 #: against the published $0.623, and `azure_ai/gpt-5.4-mini` at $0.213 against
 #: the published $0.209. The published costs are the arithmetic this invariant
 #: has to agree with, so the probability is carried unrounded.
@@ -348,13 +350,31 @@ class CapabilityTable:
 
         Returns `(latency, None)` or `(None, reason)`.
         """
-        candidates = [r for r in self.rows_for(GATE_TASK_TYPE)
+        gate_rows = self.rows_for(GATE_TASK_TYPE)
+        candidates = [r for r in gate_rows
                       if r.model not in EXCLUDED_MODELS
                       and r.cost_per_1m_tokens is not None]
         if not candidates:
+            # Two different repairs, so two different sentences. Telling an
+            # operator who is looking at two gate rows that the table holds
+            # none sends them to add rows they can already see; what they
+            # actually have to fix is the blank rate or the exclusion.
+            if not gate_rows:
+                why = (f"the table holds no {GATE_TASK_TYPE} row at all")
+            else:
+                unusable = ", ".join(
+                    f"{r.model} ("
+                    + ("cost-excluded from every ladder"
+                       if r.model in EXCLUDED_MODELS
+                       else "no cost_per_1m_tokens")
+                    + ")"
+                    for r in sorted(gate_rows, key=lambda r: r.model)
+                )
+                why = (f"every {GATE_TASK_TYPE} row is unusable as a gate "
+                       f"model: {unusable}")
             return None, (
-                f"the table holds no {GATE_TASK_TYPE} row, so the model its "
-                f"three gates run on (spec 4.3) cannot be named"
+                f"{why}, so the model its three gates run on (spec 4.3) "
+                f"cannot be named"
             )
         candidates.sort(key=lambda r: (r.cost_per_1m_tokens, r.model))
         gate = candidates[0]

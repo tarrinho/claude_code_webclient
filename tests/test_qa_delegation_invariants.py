@@ -17,8 +17,8 @@ direction would also pass for an implementation that reports a problem always.
 Nothing here is operational except the synthetic task types the fixtures flip
 on purpose. `coding` is never flipped -- section 12 forbids it until the
 gate-type dependency is decided -- so the one place the real `coding` rows
-appear (reproducing 5.1's published 1,242s figure) computes the worst-case path
-on a table where no type is operational at all.
+appear (reproducing 5.1's published 1,243.125s figure) computes the worst-case
+path on a table where no type is operational at all.
 
 Every figure asserted below is arithmetic over the spec's own constants, done
 by hand in the test and independently in the module; the two agreeing is the
@@ -140,19 +140,26 @@ class WorstCasePathTests(unittest.TestCase):
 
             generation (26.8 + 12.8 + 15.5) / 12.8 = 4.3047
             gates      3 x (11.1 / 12.8)           = 2.6016
-                                             sum   = 6.9063
-            90 x 2.0 x 6.9063
+                                             sum   = 6.90625
+            90 x 2.0 x 6.90625                     = 1,243.125s
 
-        The spec prints 1,242s, which is `180 x 6.90` -- the multiplier sum
-        rounded to two places before multiplying. Carried at full precision the
-        product is 1,243.125s. Both are far under the 1,500s ceiling, so the
-        decision the figure supports is unaffected; the constant is not bent to
-        land on the printed number.
+        5.1 states the exact sum and the exact product, and says this check is
+        "the one it must reproduce". An earlier revision printed 1,242s, which
+        is `180 x 6.90` -- the sum rounded to two places before multiplying; it
+        was corrected once this check recomputed it. Both are under the 1,500s
+        ceiling, so no decision moved, and no constant here was bent to land on
+        either number.
+
+        The 1.0 reference is asserted too, because it is the input the whole
+        derivation hangs on and the one 5.1 records changing identity: measured
+        over the two hard tasks alone sonnet was faster, over all six luna is,
+        and `vllm` at 26.8s is in the ladder without ever being the reference.
         """
         table = _table(CODING_MEASURED + GATE_ROWS)  # nothing operational
+        self.assertAlmostEqual(table.latency_reference_s("coding"), 12.8,
+                               places=3)
         self.assertAlmostEqual(table.worst_case_path_s("coding"), 1243.125,
                                places=3)
-        self.assertAlmostEqual(180 * 6.90, 1242.0, places=3)
 
     def test_an_unknown_task_type_takes_the_longest_baseline(self):
         """5.1: "An unknown type must receive the longest deadline, never the
@@ -226,7 +233,62 @@ class WorstCasePathTests(unittest.TestCase):
         table = _table(_widget_rows(), operational={"widget"})
         self.assertIsNone(table.worst_case_path_s("widget"))
         problems = table.validate()
-        self.assertTrue(any("reviewer-gate" in p and "widget" in p
+        self.assertTrue(any("no reviewer-gate row at all" in p and "widget" in p
+                            for p in problems), problems)
+
+    def test_the_reference_is_the_fastest_ladder_eligible_row_only(self):
+        """5.1: "A model that is cost-excluded or unmeasured can never be a
+        rung, so letting it set the 1.0 reference would shrink the deadline of
+        every model that *can* be a rung."
+
+        Two rows faster than every rung, neither of them able to be one: mini
+        is excluded from every ladder by operator decision (2.7), and a row
+        with no measured accuracy is not ladder-eligible (2.6). The reference
+        must stay at luna's 10.0s, and the worst case must not move.
+        """
+        never_a_rung = [
+            _row("azure_ai/gpt-5.4-mini", "widget", 0.99, 20, 0.5261, 2.0),
+            _row("vllm/unmeasured", "widget", None, None, 0.0, 1.0),
+        ]
+        table = _table(_widget_rows() + never_a_rung + GATE_ROWS,
+                       operational={"widget"})
+        self.assertEqual(table.ladder("widget"),
+                         ["vllm/free", "azure_ai/gpt-5.6-luna",
+                          "claude-sonnet-5"])
+        self.assertAlmostEqual(table.latency_reference_s("widget"), 10.0,
+                               places=3)
+        self.assertAlmostEqual(table.worst_case_path_s("widget"),
+                               WIDGET_WORST_CASE_S, places=3)
+        self.assertEqual(table.validate(), [])
+
+    def test_unusable_gate_rows_are_not_reported_as_missing_ones(self):
+        """The repair differs, so the sentence has to. An operator looking at
+        two reviewer-gate rows must not be told the table holds none: what
+        needs fixing is the blank rate on the rows in front of them."""
+        unpriced = [
+            _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, None,
+                 11.1, 922_000),
+        ]
+        table = _table(_widget_rows() + unpriced, operational={"widget"})
+        self.assertIsNone(table.worst_case_path_s("widget"))
+        problems = table.validate()
+        self.assertTrue(any("azure_ai/gpt-5.6-luna" in p
+                            and "no cost_per_1m_tokens" in p
+                            for p in problems), problems)
+        self.assertFalse([p for p in problems if "no reviewer-gate row at all" in p],
+                         problems)
+
+    def test_a_cost_excluded_gate_row_says_so(self):
+        """`azure_ai/gpt-5.4-mini` is excluded from every ladder by operator
+        decision (2.7), so a table whose only gate row is mini has no gate
+        model -- and the message must name the exclusion, not a missing row."""
+        excluded_only = [
+            _row("azure_ai/gpt-5.4-mini", "reviewer-gate", None, None, 0.5261,
+                 11.1, 1_050_000),
+        ]
+        table = _table(_widget_rows() + excluded_only, operational={"widget"})
+        problems = table.validate()
+        self.assertTrue(any("azure_ai/gpt-5.4-mini" in p and "excluded" in p
                             for p in problems), problems)
 
     def test_generation_is_truncated_to_max_attempts(self):
@@ -264,9 +326,11 @@ class TreeCostTests(unittest.TestCase):
 
     def test_reproduces_the_spec_rung_cost_table(self):
         """2.7's published table, every row of it. The rung-2 column is what
-        pins P(reach rung 2): the table is computed from 1/6 (one leaf in six,
-        n=6), which the input table above it prints rounded to 0.17. At 0.17
-        sonnet's rung 2 would be $0.635, not the published $0.623."""
+        pins P(reach rung 2): the table is computed from the exact 1/6 (one
+        leaf of six, n=6), which 2.7's input table now states outright. An
+        earlier revision of it printed 0.17, and at 0.17 sonnet's rung 2 would
+        be $0.635 against the published $0.623 -- so this loop is what caught
+        the rounding and is what keeps it caught."""
         for rate, rung0, rung1, rung2 in [
             (0.0000, 0.000, 0.000, 0.000),
             (0.0285, 0.068, 0.034, 0.011),

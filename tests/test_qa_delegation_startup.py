@@ -59,13 +59,47 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ds.DelegationConfigError):
             await ds.validate_or_die()
 
+    async def _gate_rows(self):
+        """Section 2.6's two `reviewer-gate` rows.
+
+        Any table that flips a type operational needs them: stages 3-5 run on
+        this task type (spec 3, 4.3), so 1.1's "the ceiling fits the budget"
+        invariant has no gate multiplier to compute without one. Luna's 11.1s
+        is the measured gate latency 5.1's own derivation divides by. Neither
+        row carries an accuracy -- that is why `reviewer-gate` itself is not
+        operational (1.2), and the latency invariant deliberately does not
+        require one.
+        """
+        await self._row("azure_ai/gpt-5.6-luna", "reviewer-gate",
+                        cost_per_1m_tokens=0.0285, median_latency_s=11.1,
+                        max_context=922_000)
+        await self._row("claude-sonnet-5", "reviewer-gate",
+                        cost_per_1m_tokens=1.5709, max_context=1_000_000)
+
     async def test_a_complete_operational_type_starts(self):
-        await self._row("m", "long-context", accuracy=1.0, n=10,
-                        cost_per_1m_tokens=0.0, median_latency_s=12.0,
-                        max_context=229376)
+        """The one end-to-end check that a complete operational type boots
+        through the database path, so all six invariants pass together.
+
+        The model is a real section 2.6 id rather than `m`: 1.1's model
+        resolution invariant asks the combo box (9.3) whether a rung resolves,
+        and a placeholder name resolves to nothing.
+        """
+        await self._row("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context",
+                        accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                        median_latency_s=12.0, max_context=229376)
+        await self._gate_rows()
         await db.delegation_operational_set("long-context", True)
         table = await ds.validate_or_die()
-        self.assertEqual(table.ladder("long-context"), ["m"])
+        self.assertEqual(table.ladder("long-context"),
+                         ["vllm/Qwen3.6-35B-A3B-NVFP4"])
+        # 45 (long-context baseline) x 2.0 (score 5) x [ 12.0/12.0 +
+        # 3 x (11.1/12.0) ] = 339.75s, well under the 1,500s ceiling, and the
+        # free rung costs nothing -- so the start above is a real pass of all
+        # six invariants rather than a vacuous one.
+        self.assertAlmostEqual(table.worst_case_path_s("long-context"),
+                               339.75, places=3)
+        self.assertAlmostEqual(table.tree_cost_usd("long-context"), 0.0,
+                               places=6)
 
     async def test_the_error_names_every_broken_invariant_not_just_the_first(self):
         """'The error lists every broken invariant so the operator can fix the

@@ -11,6 +11,11 @@ import {createConversationController, parseTimestamp, prefersAutoFocus} from './
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
+// updateVoiceButtonVisibility is the only thing that shows or hides the mic
+// and live-conversation buttons, and toggling voice mode has to re-run it --
+// see toggleChatVoiceMode. voice-engine.js imports nothing, so this cannot
+// cycle back into app.js.
+import {updateVoiceButtonVisibility} from './voice-engine.js?v=7083095';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
 
@@ -247,7 +252,6 @@ function updateVoiceToggleIcon() {
 }
 
 async function toggleChatVoiceMode() {
-  updateVoiceToggleIcon();
   const chat = state.currentChat;
   if (!chat || !chat.id) return;
   const btn = byId('voiceModeToggleBtn');
@@ -280,6 +284,15 @@ async function toggleChatVoiceMode() {
       ensurePinnedModels(chat);
     }
     updateModelDisplay(chat.model || chat.last_model_used);
+    // Both of these read chat.voice_mode, so they have to run *after* it is
+    // updated above. They used to run before: updateVoiceToggleIcon was the
+    // first line of this function, so the button kept the title of the state
+    // it had just left, and nothing re-ran updateVoiceButtonVisibility at all
+    // -- which is the only thing that unhides the mic and live-conversation
+    // buttons. Enabling voice mode left them hidden until the page was
+    // reloaded, because a reload is what re-evaluated visibility from scratch.
+    updateVoiceToggleIcon();
+    updateVoiceButtonVisibility();
     listController.render(state.chats, chat.id);
     showToast(isVoice ? 'Voice mode enabled' : 'Voice mode disabled');
   } catch (err) {

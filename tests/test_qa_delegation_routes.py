@@ -186,6 +186,29 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
             await delegation_routes.handle_operational_put(_request(body="x"))
         self.assertEqual(ctx.exception.status_code, 400)
 
+    async def test_a_non_string_model_field_is_refused_with_400_not_500(self):
+        """`_require_json_object` catches a non-object body one level up, but
+        a body like `{"model": 5, "task_type": "coding"}` is a dict, so it
+        passes that check and used to reach `(data.get("model") or
+        "").strip()`, which raises `AttributeError` on an int -- an unhandled
+        500, not a 400."""
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_row_put(_request(body={
+                "model": 5, "task_type": "coding"}))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_a_non_string_task_type_field_on_the_flip_endpoint_is_refused_with_400_not_500(self):
+        """Same defect class, the other call site (`handle_operational_put`).
+        A previous fix in this branch covered two endpoints with a single
+        test and the uncovered one was silently green when broken -- so this
+        is its own test, not a variation appended to the row-put one."""
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(body={
+                "task_type": 5, "operational": True}))
+        self.assertEqual(ctx.exception.status_code, 400)
+
     async def test_a_non_numeric_value_is_refused_and_the_page_stays_readable(self):
         """Reproduced defect: a PUT with accuracy="abc" used to return 200 and
         store TEXT (SQLite REAL affinity does not coerce it), and every later

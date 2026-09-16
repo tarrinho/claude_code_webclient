@@ -48,12 +48,20 @@ def check_python(code: str, timeout_s: float = 10.0) -> OracleVerdict:
     snippet into a command string. `timeout_s` bounds the whole call, not
     just the immediate child: the child is started as its own session
     leader (`start_new_session=True`), so it and anything it spawns share
-    one process group, and on timeout the whole group is killed rather than
-    just the process we launched directly. Without that, a candidate that
-    spawns a grandchild and then hangs would time out at the top level while
-    the grandchild kept running, reparented to init -- the timeout would
-    have bounded the check's wall-clock time without bounding what it
-    started.
+    one process group, and the whole group is killed in a `finally` after
+    every path -- pass, fail, timeout, exception -- rather than just the
+    process we launched directly. Without that, a candidate that spawns a
+    grandchild and then exits 0 (or hangs) would report its verdict while
+    the grandchild kept running, reparented to init: a leaked runaway from
+    a *passing* verdict is worse than one from a timeout, because nothing
+    about a pass invites a second look.
+
+    The child runs in the same temporary directory the snippet was written
+    to, not this process's own (writable) working directory, and with a
+    scrubbed environment containing only what the interpreter needs --
+    this module exists to execute model-produced code, so the parent's own
+    environment (tokens included) is not something the candidate should be
+    handed.
     """
     if not code.strip():
         # A real benchmark outcome ("no extractable code in the response").
@@ -63,52 +71,89 @@ def check_python(code: str, timeout_s: float = 10.0) -> OracleVerdict:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "candidate.py"
         path.write_text(code, encoding="utf-8")
+        proc: subprocess.Popen | None = None
         try:
-            proc = subprocess.Popen(
-                [sys.executable, str(path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            return OracleVerdict(
-                False,
-                f"could not run the checker: {exc}",
-                infrastructure_failure=True,
-            )
-
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            # Kill the whole process group the child leads, not just the
-            # child, so anything it spawned dies with it. The child may
-            # already have exited by the time we get here (it raced its own
-            # death against the timeout) -- that races os.getpgid/os.killpg
-            # into ProcessLookupError, which must not be read as "the kill
-            # failed" or "this wasn't really a timeout": the verdict for a
-            # timeout is unconditional, only the cleanup is best-effort.
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()  # reap our own child by exit status, not by pipe EOF --
-            # a grandchild that inherited the stdout/stderr pipes can hold
-            # them open past our own child's death, so communicate() here
-            # would block on *that*, not on anything we still need.
-            if proc.stdout is not None:
-                proc.stdout.close()
-            if proc.stderr is not None:
-                proc.stderr.close()
-            return OracleVerdict(
-                False,
-                f"timed out after {timeout_s}s",
-                infrastructure_failure=True,
-            )
+                proc = subprocess.Popen(
+                    [sys.executable, str(path)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                    cwd=tmp,
+                    env=_child_env(),
+                )
+            except OSError as exc:
+                return OracleVerdict(
+                    False,
+                    f"could not run the checker: {exc}",
+                    infrastructure_failure=True,
+                )
 
-    if proc.returncode == 0:
-        return OracleVerdict(True, "compiles")
-    detail = (stderr or stdout or "").strip()
-    return OracleVerdict(
-        False, detail.splitlines()[-1] if detail else "did not compile"
-    )
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                # The kill happens in `finally`, below -- not here, and not
+                # before it: `proc.wait()` blocks until the child actually
+                # exits, and a CPU-bound infinite loop never will on its
+                # own, so waiting before the kill would hang forever rather
+                # than time out. `finally` kills the group first and reaps
+                # with `wait()` after.
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                if proc.stderr is not None:
+                    proc.stderr.close()
+                return OracleVerdict(
+                    False,
+                    f"timed out after {timeout_s}s",
+                    infrastructure_failure=True,
+                )
+
+            if proc.returncode == 0:
+                return OracleVerdict(True, "compiles")
+            detail = (stderr or stdout or "").strip()
+            return OracleVerdict(
+                False, detail.splitlines()[-1] if detail else "did not compile"
+            )
+        finally:
+            # Kill the whole process group the child leads, not just the
+            # child, so anything it spawned dies with it -- on every path,
+            # not only the timeout this mirrors. The child may already have
+            # exited by the time we get here (it raced its own death against
+            # us, or simply finished) -- that races os.getpgid/os.killpg into
+            # ProcessLookupError, which must not be read as "the kill
+            # failed": cleanup here is best-effort and must never change the
+            # verdict already computed above.
+            if proc is not None:
+                # `proc.pid` IS the group id, not something to look up via
+                # `os.getpgid`: `start_new_session=True` makes this child a
+                # session (and process-group) leader, whose pgid equals its
+                # own pid for its entire life, set before exec. That
+                # matters here specifically because on the pass/fail path
+                # (unlike the timeout path) `communicate()` has already
+                # reaped the child by the time we get here -- its pid entry
+                # is gone, so `os.getpgid(proc.pid)` would raise
+                # `ProcessLookupError` and skip the kill even though the
+                # group (and the leaked grandchild in it) is very much
+                # still alive. Killing the group id directly has no such
+                # dependency on the leader still existing.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()  # reap by exit status; a no-op if communicate()
+                # already reaped it on the pass/fail path above.
+
+
+def _child_env() -> dict[str, str]:
+    """The minimal environment the checker subprocess needs to run a Python
+    interpreter -- not the parent's full environment (64 variables on this
+    machine, some token-named), which a module built to execute
+    model-produced code must not hand to that code. Never logged, before or
+    after scrubbing."""
+    env = {}
+    for key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT"):
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env

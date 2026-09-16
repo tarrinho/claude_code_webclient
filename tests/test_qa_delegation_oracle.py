@@ -144,6 +144,95 @@ class OracleTests(unittest.TestCase):
                     pass
             shutil.rmtree(marker_dir, ignore_errors=True)
 
+    def _run_with_leaked_grandchild(self, exit_code: int):
+        """Shared setup for the two "leaks on a non-timeout verdict" tests
+        below: the candidate spawns a grandchild (redirected fds, no
+        `start_new_session` of its own, so it stays in the immediate
+        child's process group rather than becoming a session leader) and
+        then exits with *exit_code* itself. Returns
+        (verdict, grandchild_pid, marker_dir); the caller is responsible for
+        the same finally-block cleanup used by test_timeout_kills_grandchildren_too.
+        """
+        marker_dir = tempfile.mkdtemp()
+        pid_file = os.path.join(marker_dir, "grandchild.pid")
+        snippet = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(30)'],\n"
+            "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            "    stdin=subprocess.DEVNULL)\n"
+            f"with open({pid_file!r}, 'w') as fh:\n"
+            "    fh.write(str(child.pid))\n"
+            f"sys.exit({exit_code})\n"
+        )
+        verdict = oracle.check_python(snippet, timeout_s=5.0)
+        with open(pid_file) as fh:
+            grandchild_pid = int(fh.read().strip())
+        return verdict, grandchild_pid, marker_dir
+
+    def test_a_passing_verdict_does_not_leak_the_grandchild(self):
+        """Reproduced defect (F2): a candidate that spawns a detached
+        grandchild and exits 0 used to return a clean, fast 'compiles'
+        verdict while the grandchild kept running, reparented to PID 1.
+        A leaked runaway from a *passing* verdict is worse than one from a
+        timeout, because nothing about a pass invites a second look."""
+        verdict, grandchild_pid, marker_dir = self._run_with_leaked_grandchild(0)
+        try:
+            self.assertTrue(verdict.passed)
+            self.assertFalse(verdict.infrastructure_failure)
+
+            deadline = time.monotonic() + 2.0
+            alive = True
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild_pid, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                time.sleep(0.05)
+            self.assertFalse(
+                alive,
+                "grandchild outlived a passing verdict -- the kill did not "
+                "run on the success path",
+            )
+        finally:
+            try:
+                os.kill(grandchild_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            shutil.rmtree(marker_dir, ignore_errors=True)
+
+    def test_a_failing_verdict_does_not_leak_the_grandchild(self):
+        """Same defect, the non-zero-exit path: the reviewer measured that
+        only the timeout path killed the process group, so a candidate that
+        spawns a grandchild and exits non-zero leaked it exactly as the
+        passing case did."""
+        verdict, grandchild_pid, marker_dir = self._run_with_leaked_grandchild(1)
+        try:
+            self.assertFalse(verdict.passed)
+            self.assertFalse(verdict.infrastructure_failure)
+
+            deadline = time.monotonic() + 2.0
+            alive = True
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild_pid, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                time.sleep(0.05)
+            self.assertFalse(
+                alive,
+                "grandchild outlived a failing verdict -- the kill did not "
+                "run on the non-zero-exit path",
+            )
+        finally:
+            try:
+                os.kill(grandchild_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            shutil.rmtree(marker_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

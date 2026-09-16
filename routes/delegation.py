@@ -88,6 +88,22 @@ def _require_json_object(data: Any) -> dict:
     return data
 
 
+def _require_str_field(data: dict, key: str) -> str:
+    """Coerce one field of an already-validated JSON object to a stripped
+    string, refusing anything that isn't a string (or missing/None) with a
+    400. `_require_json_object` stops a non-object body from reaching
+    `.get()`; this stops a non-string *field* -- a body like
+    `{"model": 5, ...}` -- from reaching `.strip()` and escaping as an
+    unhandled `AttributeError` (a 500) one level down."""
+    value = data.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=400, detail=f"{key} must be a string")
+    return value.strip()
+
+
 def _coerce_measured_value(column: str, value: Any) -> float | int | None:
     """Coerce one of the five measured columns to number-or-`None`, refusing
     anything else with a 400.
@@ -228,8 +244,8 @@ async def handle_row_put(request: Request):
     """
     _require_admin(request)
     data = _require_json_object(await request.json())
-    model = (data.get("model") or "").strip()
-    task_type = (data.get("task_type") or "").strip()
+    model = _require_str_field(data, "model")
+    task_type = _require_str_field(data, "task_type")
     if not model or not task_type:
         raise HTTPException(status_code=400, detail="model and task_type are required")
 
@@ -285,7 +301,7 @@ async def handle_operational_put(request: Request):
     """
     _require_admin(request)
     data = _require_json_object(await request.json())
-    task_type = (data.get("task_type") or "").strip()
+    task_type = _require_str_field(data, "task_type")
     operational = bool(data.get("operational"))
     if not task_type:
         raise HTTPException(status_code=400, detail="task_type is required")

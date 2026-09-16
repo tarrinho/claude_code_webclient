@@ -160,10 +160,45 @@ class ChatRunningDotBrowserTests(_BrowserFixture):
         page.wait_for_selector("#settingsBtn", timeout=15_000)
 
     def _has_dot(self, chat_id):
-        row = self.page.query_selector(
-            f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"]')
-        self.assertIsNotNone(row, f"chat {chat_id} is not in the list at all")
-        return row.query_selector(".chat-running") is not None
+        """Read the row and its dot in one evaluate, never across two calls.
+
+        This was the cause of the flakiness, and the earlier `_wait_for_dots`
+        fix below did not address it. The previous version took a row handle
+        in one round trip and asked *that handle* for its dot in a second:
+
+            row = self.page.query_selector(...)          # round trip 1
+            return row.query_selector(".chat-running")   # round trip 2
+
+        The list re-renders every CHAT_POLL_MS, so a render landing between
+        the two calls leaves `row` pointing at a detached node. That alone
+        would be survivable, except chat-list.js keeps one dot element per
+        chat in `_chatDots` and re-attaches it with `title.prepend(dot)` --
+        and prepend *moves* a node rather than copying it. So the dot leaves
+        the old row for the new one, and the stale handle truthfully reports
+        that it has no dot while the page on screen is entirely correct.
+
+        Measured 2026-09-16 rather than reasoned about. A MutationObserver
+        plus a 4ms sampler over 25 seconds recorded 6,225 observations and
+        *zero* moments where the rendered row lacked its dot, which ruled out
+        a real flicker. Holding a handle across a forced re-render then
+        reproduced it on demand: the stale handle reported dot=False with
+        isConnected=False, while a fresh query in the same instant reported
+        dot=True.
+
+        One evaluate cannot straddle a render, because the DOM cannot change
+        while it runs. That is the whole fix.
+        """
+        present = self.page.evaluate(
+            """(selector) => {
+                 const row = document.querySelector(selector);
+                 if (!row) return null;       // told apart from "row, no dot"
+                 return !!row.querySelector('.chat-running');
+               }""",
+            f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"]',
+        )
+        self.assertIsNotNone(
+            present, f"chat {chat_id} is not in the list at all")
+        return present
 
     def _wait_for_dots(self):
         """Block until the running dots have been applied to the rendered list.

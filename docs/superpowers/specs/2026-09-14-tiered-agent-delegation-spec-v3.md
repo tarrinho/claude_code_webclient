@@ -132,7 +132,7 @@ So the ordering is not "fix recording first". It is: **run the orchestrator at a
 
 Patterns are ranked by **specificity**, not list order.
 
-**Specificity is defined, not judged.** For a matched alternative (one branch of a pattern's `|`), specificity is the count of **literal characters** in it — every character that is not a regex metacharacter (`.` `*` `+` `?` `|` `(` `)` `[` `]` `\` `^` `$`). So `refactor.*large` scores 15 and `quick` scores 5, and the first wins on the text `quick refactor large module`. Ties resolve by longer matched span in the input; a remaining tie resolves by table order, so the result is always deterministic.
+**Specificity is defined, not judged.** For a matched alternative (one branch of a pattern's `|`), specificity is the count of **literal characters** in it — every character that is not a regex metacharacter (`.` `*` `+` `?` `|` `(` `)` `[` `]` `\` `^` `$`). So `refactor.*large` scores 13 — the `.` and `*` are metacharacters and do not count — and `quick` scores 5, and the first wins on the text `quick refactor large module`. Ties resolve by longer matched span in the input; a remaining tie resolves by table order, so the result is always deterministic.
 
 Resolution, per field:
 

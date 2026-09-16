@@ -41,22 +41,26 @@ def _ok(gate):
 
 class GateEscalationTests(unittest.TestCase):
     def test_a_reviewer_rejection_moves_the_generator(self):
-        self.assertEqual(pipeline.next_generator_rung(0, _reject("reviewer")), 1)
+        self.assertEqual(
+            pipeline.next_generator_rung(0, _reject(pipeline.GATE_REVIEWER)), 1)
 
     def test_a_qa_rejection_escalates_the_same_way(self):
-        self.assertEqual(pipeline.next_generator_rung(0, _reject("qa")), 1)
+        self.assertEqual(
+            pipeline.next_generator_rung(0, _reject(pipeline.GATE_QA)), 1)
 
     def test_a_security_rejection_escalates_the_same_way(self):
-        self.assertEqual(pipeline.next_generator_rung(0, _reject("security")), 1)
+        self.assertEqual(
+            pipeline.next_generator_rung(0, _reject(pipeline.GATE_SECURITY)), 1)
 
     def test_a_pass_does_not_escalate(self):
-        ok = pipeline.GateResult(gate="reviewer", passed=True, reason="")
+        ok = pipeline.GateResult(gate=pipeline.GATE_REVIEWER, passed=True, reason="")
         self.assertEqual(pipeline.next_generator_rung(1, ok), 1)
 
     def test_escalation_stops_at_the_attempt_cap(self):
         """MAX_ATTEMPTS is 3, so the top rung index is 2 and a rejection there
         does not invent a fourth."""
-        self.assertEqual(pipeline.next_generator_rung(2, _reject("reviewer")), 2)
+        self.assertEqual(
+            pipeline.next_generator_rung(2, _reject(pipeline.GATE_REVIEWER)), 2)
 
 
 class GateRungClimbTests(unittest.TestCase):
@@ -71,7 +75,7 @@ class GateRungClimbTests(unittest.TestCase):
         this is an ordinary rejection and the gate must not move."""
         self.assertEqual(
             pipeline.next_gate_rung(
-                0, _reject("security"),
+                0, _reject(pipeline.GATE_SECURITY),
                 generator_rung=1, generator_max_rung=2, max_rung=1,
             ),
             0,
@@ -80,7 +84,7 @@ class GateRungClimbTests(unittest.TestCase):
     def test_the_gate_climbs_when_the_generator_is_at_its_top_rung(self):
         self.assertEqual(
             pipeline.next_gate_rung(
-                0, _reject("security"),
+                0, _reject(pipeline.GATE_SECURITY),
                 generator_rung=2, generator_max_rung=2, max_rung=1,
             ),
             1,
@@ -91,7 +95,7 @@ class GateRungClimbTests(unittest.TestCase):
         invent rung 2."""
         self.assertEqual(
             pipeline.next_gate_rung(
-                1, _reject("security"),
+                1, _reject(pipeline.GATE_SECURITY),
                 generator_rung=2, generator_max_rung=2, max_rung=1,
             ),
             1,
@@ -100,7 +104,7 @@ class GateRungClimbTests(unittest.TestCase):
     def test_a_pass_does_not_climb_the_gate_either(self):
         self.assertEqual(
             pipeline.next_gate_rung(
-                0, _ok("security"),
+                0, _ok(pipeline.GATE_SECURITY),
                 generator_rung=2, generator_max_rung=2, max_rung=1,
             ),
             0,
@@ -127,21 +131,21 @@ class GateExhaustionOutcomeTests(unittest.TestCase):
     def test_reviewer_exhaustion_is_an_ordinary_failed_leaf(self):
         self.assertEqual(
             pipeline.gate_exhaustion_outcome(
-                "reviewer", cycles=3, gate_rung=1, gate_max_rung=1),
+                pipeline.GATE_REVIEWER, cycles=3, gate_rung=1, gate_max_rung=1),
             pipeline.LEAF_FAILED,
         )
 
     def test_qa_exhaustion_is_an_ordinary_failed_leaf(self):
         self.assertEqual(
             pipeline.gate_exhaustion_outcome(
-                "qa", cycles=3, gate_rung=1, gate_max_rung=1),
+                pipeline.GATE_QA, cycles=3, gate_rung=1, gate_max_rung=1),
             pipeline.LEAF_FAILED,
         )
 
     def test_security_inside_both_caps_is_an_ordinary_failed_leaf(self):
         self.assertEqual(
             pipeline.gate_exhaustion_outcome(
-                "security", cycles=1, gate_rung=0, gate_max_rung=1),
+                pipeline.GATE_SECURITY, cycles=1, gate_rung=0, gate_max_rung=1),
             pipeline.LEAF_FAILED,
         )
 
@@ -151,7 +155,7 @@ class GateExhaustionOutcomeTests(unittest.TestCase):
         so this is NOT the gate's-own-top-rung addition."""
         self.assertEqual(
             pipeline.gate_exhaustion_outcome(
-                "security", cycles=3, gate_rung=0, gate_max_rung=1),
+                pipeline.GATE_SECURITY, cycles=3, gate_rung=0, gate_max_rung=1),
             pipeline.FAILED_HUMAN_FLAGGED,
         )
 
@@ -161,7 +165,7 @@ class GateExhaustionOutcomeTests(unittest.TestCase):
         while still inside the 2-cycle cap."""
         self.assertEqual(
             pipeline.gate_exhaustion_outcome(
-                "security", cycles=1, gate_rung=1, gate_max_rung=1),
+                pipeline.GATE_SECURITY, cycles=1, gate_rung=1, gate_max_rung=1),
             pipeline.ESCALATED_TO_HUMAN,
         )
 
@@ -173,7 +177,7 @@ class GateExhaustionOutcomeTests(unittest.TestCase):
         the older cycle-cap one."""
         self.assertEqual(
             pipeline.gate_exhaustion_outcome(
-                "security", cycles=3, gate_rung=1, gate_max_rung=1),
+                pipeline.GATE_SECURITY, cycles=3, gate_rung=1, gate_max_rung=1),
             pipeline.ESCALATED_TO_HUMAN,
         )
 
@@ -184,3 +188,44 @@ class GateExhaustionOutcomeTests(unittest.TestCase):
             pipeline.ESCALATED_TO_HUMAN,
         }
         self.assertEqual(len(outcomes), 3)
+
+
+class UnrecognisedGateTests(unittest.TestCase):
+    """F6: an unrecognised gate name must be a loud, explicit error -- never
+    a silent fall-through to the reviewer/QA path. Before this fix,
+    `gate_exhaustion_outcome("Security", ...)` (wrong case) or a stage
+    number returned `LEAF_FAILED` -- the safe-looking answer that turns off
+    4.5's human-escalation rule with no error and no failing test.
+    """
+
+    def test_constructing_a_gateresult_with_an_unknown_name_raises(self):
+        with self.assertRaises(ValueError):
+            pipeline.GateResult(gate="Security", passed=False, reason="nope")
+
+    def test_a_stage_number_is_not_a_gate_name(self):
+        with self.assertRaises(ValueError):
+            pipeline.GateResult(gate=5, passed=False, reason="nope")
+
+    def test_a_near_miss_gate_name_is_not_silently_accepted(self):
+        with self.assertRaises(ValueError):
+            pipeline.GateResult(gate="security_gate", passed=False, reason="nope")
+
+    def test_gate_exhaustion_outcome_rejects_an_unknown_gate_directly(self):
+        """`gate_exhaustion_outcome` takes a bare string, not a `GateResult`,
+        so it must validate independently -- a caller can reach it without
+        ever constructing a `GateResult`."""
+        with self.assertRaises(ValueError):
+            pipeline.gate_exhaustion_outcome(
+                "Security", cycles=3, gate_rung=1, gate_max_rung=1)
+
+    def test_an_unknown_gate_does_not_return_leaf_failed(self):
+        """The exact regression this fix closes: an unrecognised gate must
+        not quietly resolve to the reviewer/QA outcome."""
+        try:
+            outcome = pipeline.gate_exhaustion_outcome(
+                "security_gate", cycles=3, gate_rung=1, gate_max_rung=1)
+        except ValueError:
+            pass
+        else:
+            self.fail(
+                f"expected ValueError, got a returned outcome: {outcome!r}")

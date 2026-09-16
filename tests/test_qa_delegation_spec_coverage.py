@@ -363,7 +363,7 @@ class GateAxisTests(unittest.TestCase):
         each axis in its own test with its own arguments; the property is about
         one rejection moving one axis and not the other, so both are asserted
         here for a single `GateResult`."""
-        rejection = pipeline.GateResult(gate="reviewer", passed=False,
+        rejection = pipeline.GateResult(gate=pipeline.GATE_REVIEWER, passed=False,
                                         reason="nope")
         self.assertEqual(pipeline.next_generator_rung(0, rejection), 1)
         self.assertEqual(

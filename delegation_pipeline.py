@@ -204,25 +204,66 @@ def gate_effective_deadline(table: CapabilityTable, task_type: str,
 # generation-attempts control from spec 5, and a second copy under a second
 # name is exactly how a re-benchmark would update one and miss the other.
 #
-# None of the three functions below can fail for a data reason -- each is a
-# pure function of the ints/strings it is handed, with no missing-data case
-# to report -- so none of them takes the `(value, reason)` shape that
+# None of the functions below can fail for a *data* reason -- each is a pure
+# function of the ints/strings it is handed, with no missing-data case to
+# report -- so none of them takes the `(value, reason)` shape that
 # `gate_effective_deadline` and `CapabilityTable._worst_case` / `gate_latency_s`
-# use for the functions that *can* fail that way.
+# use for the functions that *can* fail that way. `GateResult.__post_init__`
+# and `gate_exhaustion_outcome` do raise `ValueError` on an unrecognised
+# `gate` name, but that is a caller-error check, not a missing-data one --
+# see their docstrings -- so it stays a plain raise rather than borrowing the
+# `(value, reason)` shape.
+
+
+#: The three stage-3/4/5 gate names (4.3-4.5), following the same pattern as
+#: `delegation_classifier`'s MUTATES_FALSE/SIDE_EFFECTING_READ/TRUE: a named
+#: constant per value instead of a bare string, so a typo or a stray literal
+#: ("Security", "security_gate", the stage number 5) cannot pass as a gate
+#: name -- see `_VALID_GATES` and the validation in `GateResult.__post_init__`
+#: and `gate_exhaustion_outcome` below, which is the fix for exactly that.
+GATE_REVIEWER: Final[str] = "reviewer"
+GATE_QA: Final[str] = "qa"
+GATE_SECURITY: Final[str] = "security"
+
+#: Every gate name this module recognises. Anything else is rejected rather
+#: than defaulted -- see the docstrings below for why a silent default here
+#: is the release's canonical cannot-be-noticed-until-wired defect: an
+#: unrecognised gate used to compare unequal to "security" and fall through
+#: to the reviewer/QA path (`LEAF_FAILED`), silently turning off 4.5's
+#: human-escalation rule with no error and no failing test.
+_VALID_GATES: Final[frozenset[str]] = frozenset({GATE_REVIEWER, GATE_QA, GATE_SECURITY})
 
 
 @dataclass(frozen=True)
 class GateResult:
     """One stage-3/4/5 gate's verdict on one generation attempt (4.3-4.5).
 
-    `gate` is "reviewer", "qa" or "security" -- each tagged with its own
-    name so an escalation is traceable to which gate rejected it (spec 10),
-    and so a security rejection can be told apart from a reviewer or QA one
-    downstream (see `gate_exhaustion_outcome`) without inspecting `reason`.
+    `gate` must be one of `GATE_REVIEWER`, `GATE_QA` or `GATE_SECURITY` --
+    each tagged with its own name so an escalation is traceable to which
+    gate rejected it (spec 10), and so a security rejection can be told
+    apart from a reviewer or QA one downstream (see `gate_exhaustion_outcome`)
+    without inspecting `reason`.
+
+    Construction raises `ValueError` for any other value. This is a
+    programmer-error check, not a missing-data one -- unlike
+    `gate_effective_deadline` or `CapabilityTable.gate_latency_s`, there is
+    no legitimate case where a caller has a real gate and this module simply
+    does not have data for it yet; an unrecognised `gate` string is always a
+    mistake at the call site, so it is raised immediately at construction
+    rather than threaded through as a `(value, reason)` pair for a caller to
+    check later.
     """
     gate: str
     passed: bool
     reason: str
+
+    def __post_init__(self) -> None:
+        if self.gate not in _VALID_GATES:
+            raise ValueError(
+                f"unrecognised gate {self.gate!r}; expected one of "
+                f"GATE_REVIEWER ({GATE_REVIEWER!r}), GATE_QA ({GATE_QA!r}), "
+                f"GATE_SECURITY ({GATE_SECURITY!r})"
+            )
 
 
 #: 4.5: generation -> security review -> fix -> security review. After this
@@ -324,9 +365,20 @@ def gate_exhaustion_outcome(gate: str, cycles: int, gate_rung: int,
                             gate_max_rung: int) -> str:
     """What happens to the leaf once a gate is exhausted (spec 4.5).
 
+    Raises `ValueError` if `gate` is not one of `GATE_REVIEWER`, `GATE_QA` or
+    `GATE_SECURITY`. This function takes a bare `gate: str`, not a
+    `GateResult`, so `GateResult.__post_init__` validating its own field does
+    not cover a caller that constructs the string by hand and passes it here
+    directly -- this is the exact function the follow-up called out
+    (`if gate != "security": return LEAF_FAILED`), where a typo'd or
+    stage-numbered gate used to silently take the safe-looking reviewer/QA
+    path instead of erroring, disabling 4.5's human-escalation rule with no
+    failing test. Checked before anything else below, so an unrecognised
+    name never reaches the "not security" fallthrough.
+
     A reviewer or QA gate that keeps rejecting the generator's top rung is
     an ordinary failed leaf -- 4.3 and 4.4 give neither of them a cap-based
-    or rung-based escape hatch, so `gate` values other than "security"
+    or rung-based escape hatch, so `gate` values other than `GATE_SECURITY`
     always return `LEAF_FAILED` regardless of the other arguments.
 
     The security gate has two distinct exhaustion conditions, checked in
@@ -347,11 +399,17 @@ def gate_exhaustion_outcome(gate: str, cycles: int, gate_rung: int,
        its own top rung: the pre-existing rule, `FAILED_HUMAN_FLAGGED` --
        still a failed leaf, with a human alerted alongside it.
 
-    Neither check is `gate == "security"` alone: a security gate still
+    Neither check is `gate == GATE_SECURITY` alone: a security gate still
     inside both its own rung cap and its cycle cap is an ordinary
     `LEAF_FAILED`, same as reviewer or QA.
     """
-    if gate != "security":
+    if gate not in _VALID_GATES:
+        raise ValueError(
+            f"unrecognised gate {gate!r}; expected one of "
+            f"GATE_REVIEWER ({GATE_REVIEWER!r}), GATE_QA ({GATE_QA!r}), "
+            f"GATE_SECURITY ({GATE_SECURITY!r})"
+        )
+    if gate != GATE_SECURITY:
         return LEAF_FAILED
     if gate_rung >= gate_max_rung:
         return ESCALATED_TO_HUMAN

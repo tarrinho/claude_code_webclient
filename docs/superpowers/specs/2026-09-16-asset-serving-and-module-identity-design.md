@@ -1,8 +1,12 @@
 # Asset serving and module identity — design
 
-**Status:** tests implemented and verified 2026-09-16; the one-line Caddyfile
-change is pending — `/etc/caddy/Caddyfile` is root-owned and this session
-cannot write it, so it is the operator's to apply.
+**Status:** done — applied and verified live on 2026-09-16. The operator ran
+the one-line Caddyfile change (this session cannot write root-owned files);
+the reload was done from the user instance, since Caddy runs as a user
+service here and `sudo systemctl reload caddy` targets a system instance that
+does not exist. Proven by diverging one working-tree asset and confirming the
+site still served the release copy, plus a browser check: one `app.js` URL,
+one click listener on the conversation list, menu opens.
 
 **Goal:** make the frontend the deployed release serves, so a page can never
 load two copies of the same module and register every event listener twice.
@@ -94,8 +98,19 @@ One line in `/etc/caddy/Caddyfile`:
 
 `current` is the symlink `bin/wc-deploy.sh` already flips on every deploy, so
 the assets follow the release automatically and the HTML and the modules it
-names can never come from different builds. Applied with `caddy reload`,
-which is graceful — no dropped connections on Caddy 2.11.4.
+names can never come from different builds.
+
+Applied with `caddy validate` then `caddy reload` against the running user
+instance — graceful, no dropped connections on Caddy 2.11.4. Worth recording
+for the next person: Caddy here is a **user** service, so `sudo systemctl
+reload caddy` fails with "caddy.service is not active" while the site is
+plainly up. It is looking at the system instance, which was never running.
+
+Verified after the change by making one working-tree asset differ from the
+release and fetching it: the site returned the release copy, so an edit under
+`web/assets/` no longer reaches users. Caching survived the move —
+`cache-control: public, max-age=3600` is still served, which was the whole
+reason for keeping Caddy in front rather than serving from the app.
 
 **Why not remove the block and let FastAPI serve `/assets` instead.** That was
 the first proposal here and it is wrong, on measurement rather than on taste.

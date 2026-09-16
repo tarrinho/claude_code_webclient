@@ -85,7 +85,7 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | model resolution | **pass** | all three resolve to real backend-and-model pairs |
 | no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all three rungs have §2.6 rows |
-| ceiling fits the budget | **not yet answerable** | 1,243s against the 1,500s ceiling is a **lower bound** — the gate-climb term needs sonnet's `reviewer-gate` latency, which is TBD (§5.1, decided 2026-09-16) |
+| ceiling fits the budget | **pass, on a remaining lower bound** | 1,398.2s against the 1,500s ceiling, 101.8s of margin, with the gate climb now measured (§5.1, 2026-09-16). Still excludes §4.5's security re-run term, which cannot be priced until §12's gate-type item is decided |
 | ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
@@ -265,7 +265,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | multi-turn | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | planning | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | reviewer-gate | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | reviewer-gate | TBD | 20* | 1.5709 | 3.675 | 1,000,000 |
 | `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | 1,000,000 |
 | `claude-opus-5` | reasoning | TBD | TBD | 3.6082 | TBD | 1,000,000 |
 
@@ -281,7 +281,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 **The free model's output cap is 32,768 — a quarter of every other model's.** Its input window is ample, so a naive read of `max_context` alone says it fits anything; the constraint is on what it can *write*. That is the same shape as the failure already recorded for this deployment, where a 32k-window gateway model raised `ContextWindowExceededError` on an obviously small prompt because the requested output budget consumed the whole window. A coding task whose patch exceeds ~32k tokens cannot complete at rung 0 no matter how accurate the model is, and it will fail in a way that reads like a context error rather than a capacity one. The column stores the input window because that is what §3's tooltip is for; the output cap is recorded here because it is the figure that will actually stop a leaf.
 
-**An `n` marked with `*` is a latency sample, not an accuracy sample.** Four rows carry measured `median_latency_s` from `bench/pipeline_ab.py` (2026-09-15) while their `accuracy` is still TBD. The `n` column means *accuracy* sample size everywhere else, and §2.6's blocking constraint on Opus depends on that reading, so the two must not be confused: **no row in this table yet carries a measured accuracy sample size for coding.** A row needs both before its task type can go operational.
+**An `n` marked with `*` is a latency sample, not an accuracy sample.** Five rows carry measured `median_latency_s` from `bench/pipeline_ab.py` while their `accuracy` is still TBD — four from 2026-09-15, plus `claude-sonnet-5` on `reviewer-gate` measured 2026-09-16 at **3.675s over n=20**, pooled from three separate passes (medians 3.705, 3.500, 4.190). That row was the one §5.1's ceiling derivation was blocked on. It is deliberately pooled across passes rather than taken from one: §5.1's own history has the same quantity reading 22.4, 33.2, 36.5 and 26.8 across four passes in a single day, so a single pass cannot establish one. A fourth pass of the same shape failed entirely — 14 calls, 14 errors — because the gate model was named `gpt-5.6-terra` rather than `azure_ai/gpt-5.6-terra`, and a bare id returns a 429 that reads like capacity (§9.3); its results are discarded, not averaged in. The `n` column means *accuracy* sample size everywhere else, and §2.6's blocking constraint on Opus depends on that reading, so the two must not be confused: **no row in this table yet carries a measured accuracy sample size for coding.** A row needs both before its task type can go operational.
 
 **Provenance of the `cost_per_1M_tokens` column, which comes from three different places.** Anthropic figures (sonnet 1.5709, opus 3.6082) are blended from `usage_events` rows carrying `cost_basis='list'`. Azure figures (luna 0.0285, mini 0.5261) come from **gateway billing**, which is a separate source from this database and the reason they never reconciled with it (§2.5). `0.0000` for the self-hosted model is a property of the deployment, not a measurement. Every one of them is a **rate**, independent of request size — which is the whole point of the unit change, since the previous per-request column silently encoded how large each model's historical jobs happened to be (§2.7).
 
@@ -848,13 +848,27 @@ The derivation sums three gate calls, each run once, each at the gate's entry ru
 
 Where §5.1 and §4.3/§4.5 disagree, **§4.3/§4.5 win and this formula is corrected**, because §5.1's own decision above is that the ceiling is *derived from the worst-case path, not chosen*. A formula that models less than the pipeline does is not a derivation of the ceiling; it is a derivation of something cheaper than the ceiling has to cover.
 
-**The corrected worst case cannot be computed today.** The gate-climb term needs `claude-sonnet-5`'s `median_latency_s` on `reviewer-gate`, and §2.6 records it as TBD. Luna's gate row is measured at 11.1s; sonnet's is not measured at all. So the honest statement of the position is:
+**Measured 2026-09-16, and the ceiling holds.** The gate-climb term needed `claude-sonnet-5`'s `median_latency_s` on `reviewer-gate`, which §2.6 now records at **3.675s over n=20**, pooled from three passes. With the climb included:
 
-- **1,243.125s is a lower bound on the worst-case path, not the worst-case path.** Every figure previously published against the 1,500s ceiling — including §1.2's `ceiling fits the budget | pass` for `coding` — was computed from this incomplete model and inherits that status.
-- **The 1,500s ceiling is provisional** until sonnet's `reviewer-gate` latency is measured and the full path is recomputed. For scale: one extra gate call at the floor costs `90 × 2.0 × (11.1 ÷ 12.8)` = **156.1s** against the 257s of margin, so two extra calls at the floor already exceed the ceiling — and a climb runs on sonnet, not at the floor.
-- **A task type whose full worst-case path cannot be computed does not become operational.** This follows the rule §1.1 already applies to every other unmeasured quantity: an unmeasured value is not a pass, and the §1.1 check must refuse rather than compare against a number it knows to be understated. Silently comparing a lower bound to a ceiling is the failure mode this section exists to prevent — a leaf killed after paying for all five stages.
+```
+reference = 12.8s   (luna, fastest ladder-eligible on coding)
 
-Nothing routes in 0.19.0 and `reviewer-gate` is non-operational, so this changes no behaviour today. It is written down because the arithmetic is now recomputed on every boot, and a figure that looks complete and is not would be compared against on each one.
+generation   (26.8 + 12.8 + 15.5) / 12.8 = 4.30469
+gate entry   3 x (11.1  / 12.8)          = 2.60156
+gate climb   3 x (3.675 / 12.8)          = 0.86133
+                                    sum  = 7.76758
+
+binding case: coding, score 5, size factor 2.0
+90 x 2.0 x 7.76758 = 1,398.2s   against the 1,500s ceiling — 101.8s of margin
+```
+
+**The climb is affordable because sonnet's gate is fast, not because the term is small.** At 3.675s a gate call on sonnet is *less than a third* of one on Luna (11.1s), so climbing costs less than the entry rung it climbs from. Had sonnet's gate matched Luna's, the same path would be **1,711.4s** and the ceiling would already be broken. That is the sense in which this measurement was load-bearing rather than confirmatory.
+
+**Sensitivity, because the margin is now thinner than it was.** Each additional second of sonnet's gate median adds `3 × 180 ÷ 12.8` = **42.2s** to the worst case. The break-even is a median of **6.09s**; the three passes read 3.705, 3.500 and 4.190, so even the slowest gives 1,419.9s with 80.1s to spare. A re-measurement above 6.09s breaks the ceiling and must re-derive it rather than be averaged away.
+
+**One term is still not modelled: the security re-run.** §4.5's `SECURITY_RERUN_CAP` permits two generation → security review → fix → security review cycles, and a cycle contains generation work. Modelling it requires knowing which rung backs a re-run's fix-generation call, and that is precisely §12's open gate-type item — so pricing it here would decide that question in passing, which the same "derived, not chosen" rule forbids. **1,398.2s therefore remains a lower bound**, though a far tighter one than 1,243.125s was. `coding` cannot go operational until that term is either modelled or ruled out of the path.
+
+`reviewer-gate` also remains non-operational on its own account: both its rows still lack a measured *accuracy*, and this measurement was latency only (§2.6's `*` convention).
 
 The derivation is the durable part, not the number. `1,500` is what today's §2.6 produces; it is recomputed whenever a ladder or a measured latency changes, and it is **not** an independent constant to be tuned on its own. §1.1 enforces that by refusing to start when the two disagree — so a future re-measurement that pushes the worst case past 1,500s stops the system at load rather than truncating leaves in production.
 

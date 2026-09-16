@@ -388,6 +388,17 @@ class CapabilityTable:
             f"{GATE_TASK_TYPE} or {task_type}"
         )
 
+    def gate_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
+        """Public accessor for `_gate_latency_s` (spec 5.1's per-gate
+        deadline: `per_type_baseline x size_factor x model_speed_multiplier`
+        computed with the gate model's own latency). Added for
+        `delegation_pipeline.gate_effective_deadline`, which needs this
+        table's gate-model-and-row selection but must not duplicate it --
+        two copies of "which model, which row" is how the two would drift
+        apart. No logic lives here; it only exposes the private method.
+        """
+        return self._gate_latency_s(task_type)
+
     def _worst_case(self, task_type: str) -> tuple[float | None, list[str]]:
         """5.1's worst-case path, and why it could not be computed.
 

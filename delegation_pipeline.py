@@ -46,6 +46,12 @@ from __future__ import annotations
 from typing import Final
 
 from delegation_classifier import Classification, MUTATES_FALSE
+from tiered_delegation import (
+    CapabilityTable,
+    SIZE_FACTOR,
+    TIER0_DEADLINE,
+    unknown_type_baseline_s,
+)
 
 #: Above this many changed files, a task gets the full pipeline whatever the
 #: classifier's score said (4.6).
@@ -87,3 +93,98 @@ def stages_for(decision: Classification, files_changed: int) -> list[int]:
         stages.add(3)
 
     return sorted(stages)
+
+
+# --- deadlines (spec 5.1) ----------------------------------------------------
+#
+# TIER0_DEADLINE, SIZE_FACTOR and LATENCY_CEILING_S already live in
+# tiered_delegation, alongside the ladder generator they must never drift
+# from -- see that module's header and spec 5.1's own argument for deriving
+# the deadline and the ladder from one table. They are imported above, not
+# redefined here: a second copy under a second name is exactly how a
+# re-benchmark updates one and not the other.
+
+
+def speed_multiplier(table: CapabilityTable, model: str, task_type: str) -> float:
+    """5.1's model-speed multiplier: this model's own measured latency
+    divided by the fastest **ladder-eligible** model's latency for
+    `task_type` (`CapabilityTable.latency_reference_s`).
+
+    The reference set is ladder-eligible rows only, never every row: a
+    cost-excluded or unmeasured model can never be a rung, so letting it set
+    the 1.0 reference would shrink the deadline of every model that can
+    actually run one. `latency_reference_s` already enforces that filter;
+    this function does not repeat it, it only divides by it.
+
+    Falls back to 1.0 -- the reference model's own multiplier, never a
+    fraction below it -- when the reference cannot be computed (an
+    unmeasured task type) or when `model` has no measured latency under
+    `task_type` at all. A multiplier manufactured out of missing data must
+    not shrink a deadline.
+    """
+    reference = table.latency_reference_s(task_type)
+    if reference is None or reference <= 0:
+        return 1.0
+    mine = next(
+        (r.median_latency_s for r in table.rows_for(task_type)
+         if r.model == model and r.median_latency_s is not None),
+        None,
+    )
+    if mine is None:
+        return 1.0
+    return mine / reference
+
+
+def effective_deadline(table: CapabilityTable, model: str, task_type: str,
+                        score: int) -> float:
+    """5.1: effective_deadline = per_type_baseline x size_factor x
+    model_speed_multiplier, for one generation attempt.
+
+    An unknown task type (absent from `TIER0_DEADLINE`) takes
+    `unknown_type_baseline_s()` -- the LONGEST baseline, never the shortest:
+    "we have not measured this" must not become a timeout.
+    """
+    baseline = TIER0_DEADLINE.get(task_type)
+    if baseline is None:
+        baseline = unknown_type_baseline_s()
+    size = SIZE_FACTOR.get(score, 1.0)
+    return float(baseline) * size * speed_multiplier(table, model, task_type)
+
+
+def gate_effective_deadline(table: CapabilityTable, task_type: str,
+                             score: int) -> float:
+    """5.1: a model-backed gate's deadline (stages 3-5, spec 4.3-4.5).
+
+    Baseline and size factor come from the LEAF's own task type and score,
+    same as `effective_deadline`, but the multiplier is the GATE model's --
+    `CapabilityTable.gate_latency_s` (the floor `reviewer-gate` rung, or its
+    fallback to the leaf task type's own row for that model) divided by the
+    leaf task type's own reference. This is spec 5.1's worked example:
+    reference 12.8 (luna, coding) against the gate row 11.1 (luna,
+    reviewer-gate) gives a gate multiplier of 11.1/12.8, not a `coding`
+    generation multiplier.
+
+    Uses the table's public `gate_latency_s` accessor rather than
+    re-deriving which model is the gate floor and which row times it --
+    that logic already lives in `tiered_delegation.CapabilityTable` and
+    duplicating it is how the two would drift apart.
+
+    Raises `ValueError` (with the table's own reason) when the gate latency
+    or the leaf task type's reference cannot be computed. A gate deadline
+    that silently defaulted here would hide exactly the missing-data case
+    spec 1.1's startup check exists to catch.
+    """
+    gate_latency, reason = table.gate_latency_s(task_type)
+    if gate_latency is None:
+        raise ValueError(reason)
+    reference = table.latency_reference_s(task_type)
+    if reference is None or reference <= 0:
+        raise ValueError(
+            f"{task_type}: no ladder-eligible row has a usable "
+            f"median_latency_s to be the 1.0 reference (spec 5.1)"
+        )
+    baseline = TIER0_DEADLINE.get(task_type)
+    if baseline is None:
+        baseline = unknown_type_baseline_s()
+    size = SIZE_FACTOR.get(score, 1.0)
+    return float(baseline) * size * (gate_latency / reference)

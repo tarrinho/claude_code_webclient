@@ -126,6 +126,38 @@ class SeedScriptProductionGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(Path(scratch).exists())
 
+    async def test_the_configured_path_is_accepted_with_the_override_flag(self):
+        """`--yes-this-is-production` is the sanctioned way to cross the
+        guard -- production's table is genuinely supposed to hold spec 2.6's
+        rows, and §9.2's alternative is 115 cells by hand. `config.DB_PATH`
+        is patched to a throwaway temp file, never the real default, so this
+        never touches the actual production database."""
+        prod = str(Path(self.tmp.name) / "prod.db")
+        with patch.object(config, "DB_PATH", prod):
+            rc = await self.module.main(
+                ["--db-path", prod, "--yes-this-is-production"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(Path(prod).exists())
+
+    async def test_the_override_flag_alone_is_not_sufficient(self):
+        """`--db-path` stays required even with the override present --
+        seeding production must never happen by a single flag alone."""
+        with patch.object(config, "DB_PATH", str(Path(self.tmp.name) / "prod.db")):
+            with self.assertRaises(SystemExit):
+                await self.module.main(["--yes-this-is-production"])
+
+    async def test_the_override_flag_does_not_change_a_non_production_seed(self):
+        """The flag is an affirmation, not a mode: passing it while seeding a
+        throwaway database must behave identically to not passing it."""
+        prod = str(Path(self.tmp.name) / "prod.db")
+        scratch = str(Path(self.tmp.name) / "scratch.db")
+        with patch.object(config, "DB_PATH", prod):
+            rc = await self.module.main(
+                ["--db-path", scratch, "--yes-this-is-production"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(Path(scratch).exists())
+        self.assertFalse(Path(prod).exists(), "the flag must not touch production")
+
 
 class SeedRowCoverageTests(unittest.TestCase):
     """The seed script's ROWS must cover every (model, task_type) pair in

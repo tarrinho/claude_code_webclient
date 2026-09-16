@@ -15,11 +15,22 @@ the database a running deployment actually uses (it honours `WC_DB_PATH`,
 which is how `systemd/webconsole.service` points it at the real production
 file), and a seed script that fell back to it silently would eventually be
 run once with no arguments by someone who meant to point it at a scratch
-database and forgot to. This script refuses `config.DB_PATH` outright --
-pass a throwaway or a staging database, not the production one. There is no
-override flag; if the production table genuinely needs seeding, run this
-against a copy and swap it in by hand, so the write happens by a deliberate
-deploy step rather than a CLI default.
+database and forgot to. This script refuses `config.DB_PATH` by default --
+pass a throwaway or a staging database, not the production one.
+
+Production's `delegation_capability` table can still be seeded, but only
+through `--yes-this-is-production`. That flag is an affirmation, not a mode:
+it is inert against anything that is not `config.DB_PATH` -- naming it changes
+no behaviour unless `--db-path` also resolves to production, so seeding
+production still takes two deliberate things done together (naming the
+database *and* affirming what it is), never one flag alone and never a
+default. The alternative is real: spec 2.6's 23 rows are measurements taken
+on this deployment, not generic defaults, and the only sanctioned fallback
+(section 9.2) is typing all 115 cells into the settings page by hand, which
+is not a substitute anyone should be reaching for when this script already
+has the values. When the flag does cross the guard, the script says so
+loudly, naming the database and the time, so a scrollback shows unambiguously
+that production was seeded and when.
 
 The refusal compares against `config.DB_PATH` itself, after environment
 resolution -- never against a second computation of what that default
@@ -45,6 +56,7 @@ import argparse
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -102,6 +114,16 @@ async def main(argv: list[str] | None = None) -> int:
         help="SQLite database to seed. Required, with no default, so this "
              "can never land on the production database by omission.",
     )
+    parser.add_argument(
+        "--yes-this-is-production", action="store_true",
+        help="Affirm that --db-path is meant to be config.DB_PATH, the "
+             "database a real deployment uses, and seed it anyway. Has no "
+             "effect unless --db-path also resolves to config.DB_PATH -- it "
+             "is an affirmation, not a mode, and does not by itself pick "
+             "production or change behaviour against a throwaway database. "
+             "Naming the database and affirming what it is are both "
+             "required; neither alone seeds production.",
+    )
     args = parser.parse_args(argv)
 
     target = _canonical(args.db_path)
@@ -111,10 +133,20 @@ async def main(argv: list[str] | None = None) -> int:
     # live value, read fresh at call time.
     production = _canonical(config.DB_PATH)
     if target == production:
-        parser.error(
-            f"refusing to seed {target} -- that is config.DB_PATH, the "
-            "database a real deployment uses (WC_DB_PATH honoured). Point "
-            "--db-path at a throwaway or staging database instead."
+        if not args.yes_this_is_production:
+            parser.error(
+                f"refusing to seed {target} -- that is config.DB_PATH, the "
+                "database a real deployment uses (WC_DB_PATH honoured). "
+                "Point --db-path at a throwaway or staging database "
+                "instead, or pass --yes-this-is-production if you mean to "
+                "seed production, deliberately, right now."
+            )
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        print(
+            f"PRODUCTION SEED [{stamp}]: --yes-this-is-production was "
+            f"passed and --db-path resolves to {target}, which is "
+            "config.DB_PATH -- writing spec 2.6's rows to the real "
+            "deployment database now."
         )
 
     config.DB_PATH = str(target)

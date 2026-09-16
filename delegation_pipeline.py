@@ -243,15 +243,52 @@ def next_generator_rung(current: int, gate: GateResult,
     keeps it "as before" for security too -- one rung on rejection, capped
     at `max_attempts - 1` so a leaf pinned at its top rung never invents a
     fourth. The security gate's extra behaviour from 4.5 -- routing back
-    with the vulnerability flagged, and eventually escalating to a human
-    instead of failing the leaf -- is a separate axis, tracked by
-    `security_exhausted` / `gate_exhaustion_outcome` on a *cycle* count, not
-    a different number returned from here. This function does not take the
-    gate's name into account beyond `gate.passed`.
+    with the vulnerability flagged, the gate's own rung climbing, and
+    eventually escalating to a human instead of failing the leaf -- lives
+    on separate axes (`next_gate_rung`, `security_exhausted`,
+    `gate_exhaustion_outcome`), not a different number returned from here.
+    This function does not take the gate's name into account beyond
+    `gate.passed`.
     """
     if gate.passed:
         return current
     return min(current + 1, max_attempts - 1)
+
+
+def next_gate_rung(current: int, gate: GateResult, generator_rung: int,
+                    generator_max_rung: int, max_rung: int) -> int:
+    """The GATE's own rung (spec 4.3, 4.5's "the gate climbs too").
+
+    Mirrors `next_generator_rung`'s shape -- current rung in, next rung
+    out, capped -- but on a different condition. The gate does not climb on
+    every rejection, only when it rejects output produced at the
+    generator's own top rung (`generator_rung == generator_max_rung`):
+    "rejecting the best generator available is evidence about the gate,
+    not about the code" (4.5). An ordinary rejection at any lower generator
+    rung leaves the gate exactly where it is, to re-review the escalated
+    generator's next attempt -- the reviewer "stays at Luna" case 4.3
+    already describes.
+
+    `generator_max_rung` should be the same top-rung index the caller is
+    passing as `max_attempts - 1` to `next_generator_rung` for this same
+    leaf -- "top rung" has to mean the same generator position on both
+    sides of the pipeline, or a gate could climb on a generator attempt
+    that was not actually its last available one.
+
+    `max_rung` bounds the gate's own climb and is a plain parameter, never
+    a value looked up from a capability table here. Which concrete model
+    sits at the gate's own top rung -- and how many rungs a gate ladder
+    even has -- is exactly the `reviewer-gate` ladder-eligibility question
+    section 12 defers as an open item; this function decides none of that,
+    the same way `SECURITY_RERUN_CAP = 2` decides none of it either. A
+    caller resolves the model-name question separately and passes the
+    resulting integer in.
+    """
+    if gate.passed:
+        return current
+    if generator_rung < generator_max_rung:
+        return current
+    return min(current + 1, max_rung)
 
 
 def security_exhausted(cycles: int) -> bool:
@@ -262,35 +299,62 @@ def security_exhausted(cycles: int) -> bool:
     return cycles > SECURITY_RERUN_CAP
 
 
-#: `gate_exhaustion_outcome`'s two possible answers, spec 4.5. Plain string
-#: constants rather than a bool: `delegation_classifier`'s three-valued
-#: `mutates` already sets the precedent in this codebase for naming a
-#: multi-way outcome this way instead of overloading True/False.
+#: `gate_exhaustion_outcome`'s three possible answers, spec 4.5. Plain
+#: string constants rather than a bool: `delegation_classifier`'s
+#: three-valued `mutates` already sets the precedent in this codebase for
+#: naming a multi-way outcome this way instead of overloading True/False.
+#:
+#: 4.5 names two different triggers for human involvement, in different
+#: words, and this module reads the wording as two different outcomes
+#: rather than one restated:
+#:   - the 2-cycle cap (the pre-existing rule): "the leaf fails with a
+#:     human-flag" -- still a FAILED leaf, a human is alerted alongside it.
+#:   - the gate's own top rung, still rejecting after it climbed there
+#:     ("the addition"): "escalated to a human, not recorded as a failed
+#:     leaf" -- explicitly NOT a failure.
+#: Collapsing the two into one constant would lose that "not recorded as a
+#: failed leaf" is a stronger claim than "fails ... with a human-flag";
+#: they are kept apart here so a caller cannot make that mistake silently.
 LEAF_FAILED: Final[str] = "failed_leaf"
+FAILED_HUMAN_FLAGGED: Final[str] = "failed_human_flagged"
 ESCALATED_TO_HUMAN: Final[str] = "escalated_to_human"
 
 
-def gate_exhaustion_outcome(gate: str, cycles: int) -> str:
+def gate_exhaustion_outcome(gate: str, cycles: int, gate_rung: int,
+                            gate_max_rung: int) -> str:
     """What happens to the leaf once a gate is exhausted (spec 4.5).
 
     A reviewer or QA gate that keeps rejecting the generator's top rung is
     an ordinary failed leaf -- 4.3 and 4.4 give neither of them a cap-based
-    escape hatch. The security gate is the one exception 4.5 carves out:
-    "a security rejection that survives the gate's own top rung is
-    escalated to a human, not recorded as a failed leaf" -- because a
-    false reject is indistinguishable from a true one without judgement,
-    and discarding correct work silently is the worse of the two errors.
+    or rung-based escape hatch, so `gate` values other than "security"
+    always return `LEAF_FAILED` regardless of the other arguments.
 
-    Takes `cycles`, not a rung count, because the security cap tracks
-    pipeline round-trips (generation -> security review -> fix -> security
-    review) -- a different counter from the generator's rung that
-    `next_generator_rung` advances. Conflating the two would let a
-    reviewer's rung-cap failure and a security cycle-cap failure collapse
-    onto the same code path, which is exactly the distinction this
-    function exists to keep apart: it checks `security_exhausted(cycles)`,
-    not `gate == "security"` alone, so a security gate still inside its cap
-    is an ordinary failed leaf too.
+    The security gate has two distinct exhaustion conditions, checked in
+    this order:
+
+    1. **The gate's own top rung** (`gate_rung >= gate_max_rung`), still
+       rejecting: 4.5's addition, `ESCALATED_TO_HUMAN` -- not a failed
+       leaf, because a false reject at the gate's ceiling is indistinguish-
+       able from a true one without judgement, and discarding correct work
+       silently is the worse of the two errors. Checked first, and wins
+       even if the cycle cap has also been reached: 4.5 introduces this
+       rung-based rule as "the addition" layered on top of the pre-existing
+       cycle cap, and states it in stronger terms ("not recorded as a
+       failed leaf" versus "fails ... with a human-flag") -- the
+       false-reject risk that motivates it does not go away just because
+       the cycle count ran out at the same time.
+    2. **The 2-cycle cap** (`security_exhausted(cycles)`), gate not yet at
+       its own top rung: the pre-existing rule, `FAILED_HUMAN_FLAGGED` --
+       still a failed leaf, with a human alerted alongside it.
+
+    Neither check is `gate == "security"` alone: a security gate still
+    inside both its own rung cap and its cycle cap is an ordinary
+    `LEAF_FAILED`, same as reviewer or QA.
     """
-    if gate == "security" and security_exhausted(cycles):
+    if gate != "security":
+        return LEAF_FAILED
+    if gate_rung >= gate_max_rung:
         return ESCALATED_TO_HUMAN
+    if security_exhausted(cycles):
+        return FAILED_HUMAN_FLAGGED
     return LEAF_FAILED

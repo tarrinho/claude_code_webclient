@@ -68,6 +68,20 @@ GATE_SINGLE = [
          922_000),
 ]
 
+# F5 (2026-09-16): the exact divergent shape the ruling names -- luna is
+# still the cheapest priced, non-excluded `reviewer-gate` row (the old
+# fallback pick, 11.1s) but has no measured accuracy, while sonnet's
+# accuracy IS measured, priced, and not excluded -- so sonnet, not luna, is
+# the only ladder-eligible row and therefore `ladder("reviewer-gate")[0]`,
+# the gate's real rung 0, at 14.0s. A test using this must see 14.0, not
+# 11.1, once `_gate_latency_s` follows the ladder rather than cheapest-first.
+GATE_LADDER_DIVERGENT = [
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+         922_000),
+    _row("claude-sonnet-5", "reviewer-gate", 0.95, 10, 1.5709, 14.0,
+         1_000_000),
+]
+
 # `CODING_MEASURED`'s rows under a task type that is never `coding` --
 # spec 12 forbids flipping `coding` operational, and these tests are about
 # the operational-flag machinery, not about `coding` specifically, so a
@@ -283,6 +297,50 @@ class OperationalFlagTests(unittest.TestCase):
                 + [_row("b", "voice", None, None, 0.1)])
         table = td.CapabilityTable(rows, operational={"coding-shaped-1"})
         self.assertEqual(table.validate(), [])
+
+
+class GateRung0Tests(unittest.TestCase):
+    """F5 ruling (2026-09-16): `_gate_latency_s` follows `reviewer-gate`'s
+    own ladder once it has one, falling back to the cheapest-priced,
+    non-excluded pick only while it does not -- and says which of the two it
+    used.
+    """
+
+    def test_the_fallback_path_is_used_while_reviewer_gate_has_no_ladder(self):
+        """Today's real, shipped state: neither `reviewer-gate` row has a
+        measured accuracy, so `ladder("reviewer-gate")` is empty and the
+        cheapest-priced pick (luna, 11.1s) is what the invariant must still
+        be computed against -- this is the behaviour F5 says must not
+        regress."""
+        table = td.CapabilityTable(CODING_SHAPED_MEASURED + GATE_SINGLE)
+        self.assertEqual(table.ladder("reviewer-gate"), [])
+        latency, reason = table._gate_latency_s("coding-shaped-1")
+        self.assertIsNone(reason)
+        self.assertEqual(latency, 11.1)
+        self.assertEqual(table.gate_rung0("coding-shaped-1"),
+                          ("azure_ai/gpt-5.6-luna", "fallback"))
+
+    def test_the_ladder_path_wins_once_reviewer_gate_has_one(self):
+        """The divergence F5 exists to close: luna is still cheaper and
+        still the old fallback's answer, but sonnet is the only
+        ladder-eligible `reviewer-gate` row, so it -- not luna -- is the
+        model that actually runs, and the invariant must be timed against
+        its 14.0s, not luna's 11.1s."""
+        table = td.CapabilityTable(CODING_SHAPED_MEASURED
+                                    + GATE_LADDER_DIVERGENT)
+        self.assertEqual(table.ladder("reviewer-gate"), ["claude-sonnet-5"])
+        latency, reason = table._gate_latency_s("coding-shaped-1")
+        self.assertIsNone(reason)
+        self.assertEqual(latency, 14.0)
+        self.assertEqual(table.gate_rung0("coding-shaped-1"),
+                          ("claude-sonnet-5", "ladder"))
+
+    def test_neither_path_can_name_a_model_when_the_table_holds_no_gate_row(self):
+        table = td.CapabilityTable(CODING_SHAPED_MEASURED)
+        latency, reason = table._gate_latency_s("coding-shaped-1")
+        self.assertIsNone(latency)
+        self.assertIn("reviewer-gate", reason)
+        self.assertEqual(table.gate_rung0("coding-shaped-1"), (None, None))
 
 
 if __name__ == "__main__":

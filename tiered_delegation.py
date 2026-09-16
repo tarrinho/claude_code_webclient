@@ -325,6 +325,71 @@ class CapabilityTable:
                     if r.median_latency_s is not None]
         return min(measured) if measured else None
 
+    def _gate_rung0_row(
+        self, task_type: str
+    ) -> tuple[CapabilityRow | None, str, str | None]:
+        """Which row is the gate's real entry rung right now, and which of
+        two paths named it (ruling F5, 2026-09-16).
+
+        `_gate_latency_s` used to pick the cheapest priced, non-excluded
+        `reviewer-gate` row unconditionally, deliberately not requiring a
+        measured accuracy so the invariant would not pre-decide section 12's
+        open gate-type question. That is correct only while `reviewer-gate`
+        has no ladder-eligible row at all. Once it does,
+        `ladder(GATE_TASK_TYPE)[0]` **is** the model that actually runs first
+        -- the ladder is what "runs first" means for every other task type,
+        and `reviewer-gate` is not a special case of that. Timing the
+        invariant against a different, cheaper row at that point would be
+        timing it against a model the pipeline does not run.
+
+        So: try the ladder first. `ladder(GATE_TASK_TYPE)` is non-empty only
+        once some `reviewer-gate` row has a measured accuracy and survives
+        the cost ceiling -- exactly the condition under which its first rung
+        stops being a guess. Fall back to the pre-existing cheapest-priced
+        pick (`_gate_candidates`, no accuracy required) only when it is
+        empty, which is today's real, shipped state: `reviewer-gate` has two
+        rows and neither carries an accuracy, so it is not ladder-eligible at
+        all and this fallback is live code, not a dead branch kept "just in
+        case". This never asks whether gate types *must* be ladder-eligible
+        -- section 12's open item -- it only uses the ladder's answer when
+        the ladder has one.
+
+        Returns `(row, "ladder", None)`, `(row, "fallback", None)`, or
+        `(None, "", why)` when neither path can name a model at all -- `why`
+        is `_gate_candidates`'s reason, reused rather than duplicated.
+        """
+        ladder_rungs = self.ladder(GATE_TASK_TYPE)
+        if ladder_rungs:
+            top = ladder_rungs[0]
+            row = next(
+                (r for r in self.rows_for(GATE_TASK_TYPE) if r.model == top),
+                None,
+            )
+            if row is not None:
+                return row, "ladder", None
+        candidates, why = self._gate_candidates(task_type)
+        if not candidates:
+            return None, "", why
+        return candidates[0], "fallback", None
+
+    def gate_rung0(self, task_type: str) -> tuple[str | None, str | None]:
+        """Which model is the gate's entry rung (5.1) right now, and which of
+        F5's two paths named it: `"ladder"` when `reviewer-gate` is
+        ladder-eligible and its real rung 0 was used, `"fallback"` when it
+        fell back to the pre-existing cheapest-priced pick instead, or
+        `(None, None)` when neither path can name a model at all.
+
+        Not used by `_gate_latency_s` for its own arithmetic -- that calls
+        `_gate_rung0_row` directly, because it also needs the row's
+        `median_latency_s`, not just its model id -- but exists for a caller
+        that only wants to *say* which claim a downstream figure rests on. A
+        latency computed against the ladder's rung 0 is a different claim
+        from one computed against the fallback, and 5.1's worst-case ceiling
+        depends on knowing which one it got.
+        """
+        row, source, _ = self._gate_rung0_row(task_type)
+        return (row.model if row is not None else None), (source or None)
+
     def _gate_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
         """The `median_latency_s` the three model gates are timed against.
 
@@ -335,36 +400,41 @@ class CapabilityTable:
         *Which model.* The gates run on the `reviewer-gate` task type (3, 4.3),
         and 4.3 names their entry rung as the floor of that type, with a per-
         gate `MAX_ATTEMPTS` of 1 (section 5) -- so in the worst case each gate
-        runs once, at the floor. The floor is taken here as the cheapest priced
-        `reviewer-gate` row that is not cost-excluded. Note what it deliberately
-        does **not** require: a measured accuracy. Requiring one would make
-        every operational task type depend on `reviewer-gate` being
-        ladder-eligible, which is precisely the gate-type dependency section 12
-        records as an open question and forbids resolving in passing. This
-        invariant asks only whether the leaf's own worst case can be computed
-        and fits.
+        runs once, at the floor. `_gate_rung0_row` (F5) picks that floor: the
+        ladder's own rung 0 when `reviewer-gate` is ladder-eligible, falling
+        back to the cheapest priced, non-excluded row (no accuracy required)
+        only when it is not -- see that method for why. Requiring an accuracy
+        unconditionally would make every operational task type depend on
+        `reviewer-gate` being ladder-eligible, which is precisely the gate-type
+        dependency section 12 records as an open question and forbids
+        resolving in passing; using the ladder's answer *when it has one*
+        does not do that, because it never asserts gate types must have one.
 
         *Which row.* 5.1: "A gate uses the `reviewer-gate` row when one exists
         for that model, falling back to the leaf's task-type row when it does
         not" -- the gate row is the direct measurement of the call being timed.
 
-        Returns `(latency, None)` or `(None, reason)`.
+        Returns `(latency, None)` or `(None, reason)`. The reason, when there
+        is one, names which of the two paths was tried so the two failure
+        modes ("no gate model at all" vs. "the picked gate model has no
+        latency") are never printed identically -- see `gate_rung0` for the
+        same fact when the call instead succeeds.
         """
-        candidates, why = self._gate_candidates(task_type)
-        if not candidates:
+        gate, source, why = self._gate_rung0_row(task_type)
+        if gate is None:
             return None, (
                 f"{why}, so the model its three gates run on (spec 4.3) "
                 f"cannot be named"
             )
-        gate = candidates[0]
         if gate.median_latency_s is not None:
             return gate.median_latency_s, None
         for row in self.rows_for(task_type):          # 5.1's fallback
             if row.model == gate.model and row.median_latency_s is not None:
                 return row.median_latency_s, None
         return None, (
-            f"gate model {gate.model} has no measured median_latency_s under "
-            f"{GATE_TASK_TYPE} or {task_type}"
+            f"gate model {gate.model} (the reviewer-gate {source} pick) has "
+            f"no measured median_latency_s under {GATE_TASK_TYPE} or "
+            f"{task_type}"
         )
 
     def _gate_candidates(self, task_type: str) -> tuple[list[CapabilityRow], str | None]:

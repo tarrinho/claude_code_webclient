@@ -8,6 +8,7 @@ gets satisfied with junk values instead.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -34,9 +35,13 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         await db.delegation_row_set(model, task_type, **defaults)
 
     async def _seed_machine_serving(self, *model_ids: str) -> str:
-        """Register a machine whose active list names *model_ids*, so
-        `routes.machines.known_backend_models` reports them as live -- the
-        DB-only stand-in for "the combo box actually offers this".
+        """Register a machine whose active list AND force-refreshed
+        `models_list` name *model_ids*, so `routes.machines.known_backend_models`
+        reports them as live -- the DB-only stand-in for "the combo box
+        actually offers this", complete included: F1's completeness rule
+        requires a populated `models_list`, which only a real force-refresh
+        (`ai_machine_set_models_list`, normally reached through the
+        Backends UI's `?force=1`) ever writes.
 
         `db.ai_machine_create` returns its write timestamp, not the id --
         the id passed in is the one to reuse for the follow-up update.
@@ -48,6 +53,10 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         )
         await db.ai_machine_set_models(machine_id, "tester", list(model_ids),
                                        model_ids[0])
+        await db.ai_machine_set_models_list(
+            machine_id, "tester",
+            json.dumps([{"id": m} for m in model_ids]), db._now(),
+        )
         return machine_id
 
     async def test_an_empty_table_starts_fine(self):
@@ -194,6 +203,60 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reasoning", message)
         self.assertIn("claude-sonnet-5", message)
         self.assertIn("climb", message)
+
+    async def test_a_never_force_refreshed_machine_does_not_refuse_boot(self):
+        """F1's ruling, through the real startup path: a machine registered
+        but never force-refreshed on the Backends UI (`ai_machine_create`
+        only, no `ai_machine_set_models`) leaves `known_backend_models`'s
+        view incomplete -- it has default `model`/`active_models` for that
+        machine but no positive evidence of what else it serves. A rung on
+        a *different* backend, absent from that partial view, must not be
+        refused for it: an unknown is not a negative, and rejecting a
+        served model here is unrepairable (the settings page needs the app
+        running). Before the fix this raised `DelegationConfigError`
+        because `vllm/SomeGatewayModel` is not among the unprobed machine's
+        default model/active list.
+        """
+        await db.ai_machine_create(
+            "m-unprobed", "Unprobed Machine", "localhost", 0, None,
+            "vllm/never-probed", None, None, "tester", provider="claude_code",
+        )
+        await self._row("vllm/SomeGatewayModel", "reasoning", accuracy=0.9,
+                        n=4, cost_per_1m_tokens=0.0, median_latency_s=12.0,
+                        max_context=229376)
+        await self._gate_rows_single()
+        await db.delegation_operational_set("reasoning", True)
+        table = await ds.validate_or_die()  # must not raise
+        self.assertEqual(table.ladder("reasoning"), ["vllm/SomeGatewayModel"])
+
+    async def test_a_never_force_refreshed_machine_logs_which_one_to_refresh(self):
+        """The operator-facing half of the same fix: falling back must say
+        which machine to force-refresh, not just that it fell back."""
+        await db.ai_machine_create(
+            "m-unprobed", "Unprobed Machine", "localhost", 0, None,
+            "vllm/never-probed", None, None, "tester", provider="claude_code",
+        )
+        with self.assertLogs("wc.app", level="WARNING") as ctx:
+            known = await ds.live_known_models()
+        self.assertIsNone(known)
+        self.assertTrue(any("Unprobed Machine" in m for m in ctx.output))
+
+    async def test_known_backend_models_is_complete_once_force_refreshed(self):
+        from routes.machines import known_backend_models
+        await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
+        result = await known_backend_models()
+        self.assertTrue(result.complete)
+        self.assertEqual(result.incomplete_machines, ())
+        self.assertIn("vllm/Qwen3.6-35B-A3B-NVFP4", result.ids)
+
+    async def test_known_backend_models_is_vacuously_complete_with_no_machines(self):
+        """An empty `ai_machines` table has no machine to be incomplete
+        about -- completeness must not default to False just because
+        nothing has been configured yet, or the bootstrap case (no machines,
+        nothing operational) would degrade for no reason."""
+        from routes.machines import known_backend_models
+        result = await known_backend_models()
+        self.assertTrue(result.complete)
 
     async def test_the_error_names_every_broken_invariant_not_just_the_first(self):
         """'The error lists every broken invariant so the operator can fix the

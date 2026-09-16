@@ -21,6 +21,7 @@ import os
 import time
 import urllib.request
 import uuid
+from dataclasses import dataclass
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -755,11 +756,42 @@ def _parse_model_list(body: bytes) -> list[dict[str, str]]:
     return models
 
 
-async def known_backend_models() -> frozenset[str]:
-    """Every backend-and-model id the combo box (spec 9.3) could show right
-    now, read from local DB state only -- no network call.
+@dataclass(frozen=True)
+class KnownBackendModels:
+    """Return shape for `known_backend_models`: what the combo box (spec 9.3)
+    could show right now, plus whether that view is *complete*.
 
-    Used by `delegation_startup.validate_or_die` for 1.1's model-resolution
+    `complete` is True only when there is positive evidence the model list
+    for every configured machine is known -- not merely that `ids` is
+    non-empty (it never is: `config.KNOWN_MODELS` alone guarantees that).
+    The evidence this module treats as sufficient: a populated, parseable
+    `models_list` on every row of `ai_machines`. That column is written only
+    by a force-refresh through the Backends UI (`handle_models_list`), so its
+    presence means a human actually asked that machine what it serves, rather
+    than the machine merely being configured with a default `model` and a
+    curated `active_models` guess. A machine that has never been
+    force-refreshed -- or whose stored `models_list` fails to parse -- makes
+    the whole view incomplete: there is no way to tell "this machine serves
+    nothing else" apart from "nobody has asked it yet".
+
+    `incomplete_machines` names every machine responsible (its display name),
+    so a caller falling back to the shape-only check can log which machine to
+    force-refresh to close the gap. Empty, including when `ai_machines` has
+    no rows at all -- an empty table has no machine to be incomplete about,
+    so it is vacuously complete.
+    """
+    ids: frozenset[str]
+    complete: bool
+    incomplete_machines: tuple[str, ...] = ()
+
+
+async def known_backend_models() -> KnownBackendModels:
+    """Every backend-and-model id the combo box (spec 9.3) could show right
+    now, read from local DB state only -- no network call -- plus whether
+    that reading is complete enough to be authoritative (see
+    `KnownBackendModels`).
+
+    Used by `delegation_startup.live_known_models` for 1.1's model-resolution
     invariant. That function runs in the app lifespan and must not turn a
     slow or unreachable backend into a boot failure, so this reads what is
     already on disk rather than re-probing every machine's `/v1/models`:
@@ -769,15 +801,18 @@ async def known_backend_models() -> frozenset[str]:
     (populated by a force-refresh through `handle_models_list`, not by this
     function). A machine that has never been force-refreshed contributes
     only its default model and active list, same as the live UI would show
-    it before that machine's models tab is opened with `?force=1`.
+    it before that machine's models tab is opened with `?force=1` -- and
+    marks the whole result incomplete, because `ids` alone cannot say that
+    happened.
 
     Callers that need a fresh answer -- the Backends/Models UI itself --
     still go through `handle_models_list`, which probes, times out, and
     reports failure to a human. This function never probes.
     """
     ids: set[str] = set(config.KNOWN_MODELS)
+    incomplete_machines: list[str] = []
     cur = await db.db_conn.execute(
-        "SELECT model, active_models, models_list FROM ai_machines"
+        "SELECT name, model, active_models, models_list FROM ai_machines"
     )
     rows = await cur.fetchall()
     for row in rows:
@@ -786,20 +821,28 @@ async def known_backend_models() -> frozenset[str]:
             ids.add(model)
         ids.update(db.parse_active_models(row["active_models"]))
         stored = row["models_list"]
-        if not stored:
-            continue
-        try:
-            parsed = json.loads(stored)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
+        parsed = None
+        if stored:
+            try:
+                parsed = json.loads(stored)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
         if not isinstance(parsed, list):
+            # No models_list, or one that failed to parse: no evidence this
+            # machine's contribution is complete, only its default model and
+            # active list.
+            incomplete_machines.append(row["name"])
             continue
         for entry in parsed:
             if isinstance(entry, dict):
                 model_id = entry.get("id")
                 if isinstance(model_id, str) and model_id.strip():
                     ids.add(model_id.strip())
-    return frozenset(ids)
+    return KnownBackendModels(
+        ids=frozenset(ids),
+        complete=not incomplete_machines,
+        incomplete_machines=tuple(incomplete_machines),
+    )
 
 
 def _machine_model_selection(machine: dict | None) -> dict:

@@ -10,7 +10,7 @@ import logging
 
 import db
 from routes.db_delegation import rows_to_capability
-from tiered_delegation import CapabilityTable
+from tiered_delegation import GATE_TASK_TYPE, CapabilityTable
 
 _log = logging.getLogger("wc.app")
 
@@ -54,10 +54,28 @@ async def live_known_models() -> frozenset[str] | None:
     by every caller.
 
     `routes.machines.known_backend_models` is DB-only (see its docstring) so
-    this is not expected to fail in practice, but no caller may treat "the
+    this is not expected to *raise* in practice, but no caller may treat "the
     query raised" as "this data is unsafe" -- that would convert a local
     hiccup into a refusal that has nothing to do with what the operator is
     trying to fix.
+
+    A second, likelier way to not know is not raising at all: the query can
+    succeed and still be a partial answer, because `models_list` is written
+    only by a force-refresh through the Backends UI and a machine that has
+    never been visited there contributes just its default `model` and
+    `active_models`. `known_backend_models` reports that as
+    `KnownBackendModels.complete = False`. This function folds that into the
+    same "could not find out" outcome as the exception path -- returning
+    `None` rather than the partial `ids` -- because an incomplete cache is
+    ignorance about what exists, not evidence that a given rung does not
+    exist, and 1.1's job is to refuse on bad *configuration*, never on our
+    own incomplete evidence about the world. The asymmetry is why: accepting
+    a model that turns out not to be served surfaces later as a recoverable
+    429 at routing time (and nothing routes before the first operational
+    flip); rejecting one that is genuinely served refuses the boot, with the
+    settings page -- the only repair tool -- unreachable because it needs the
+    app running. Logged once here, naming the machine(s) to force-refresh, so
+    an operator who wants strict membership back knows what to do about it.
 
     Fetched fresh on every call, no caching: every caller here is either the
     once-per-boot lifespan or an admin settings write, both cheap enough that
@@ -66,7 +84,7 @@ async def live_known_models() -> frozenset[str] | None:
     """
     try:
         from routes.machines import known_backend_models
-        return await known_backend_models()
+        result = await known_backend_models()
     except Exception:
         _log.warning(
             "delegation: could not read the live model list for spec "
@@ -74,6 +92,15 @@ async def live_known_models() -> frozenset[str] | None:
             exc_info=True,
         )
         return None
+    if not result.complete:
+        _log.warning(
+            "delegation: model cache is incomplete (never force-refreshed "
+            "through the Backends UI): %s; falling back to config.KNOWN_MODELS "
+            "for spec 1.1's resolution check until it is",
+            ", ".join(result.incomplete_machines),
+        )
+        return None
+    return result.ids
 
 
 async def validate_or_die() -> CapabilityTable:
@@ -102,6 +129,17 @@ async def validate_or_die() -> CapabilityTable:
     if operational:
         _log.info("delegation: operational task types: %s",
                    ", ".join(sorted(operational)))
+        # F5 (2026-09-16): every operational type's worst-case path (spec
+        # 5.1) is timed against the reviewer-gate's entry rung, and that rung
+        # is either the ladder's real answer or a stand-in -- a different
+        # claim either way. Said here, once per boot, rather than left to be
+        # inferred from which figure came out.
+        gate_model, gate_source = table.gate_rung0(GATE_TASK_TYPE)
+        if gate_model is not None:
+            _log.info(
+                "delegation: reviewer-gate's entry rung is %s, selected via "
+                "the %s (spec 5.1/F5)", gate_model, gate_source,
+            )
     else:
         # The shipped state for 0.19.0. Said out loud so an operator wondering
         # why nothing routes finds the answer in the log rather than in a spec.

@@ -45,6 +45,20 @@ CODING_MEASURED = [
     _row("azure_ai/gpt-5.4-mini", "coding", None, None, 0.5261, None, 1_050_000),
 ]
 
+# Section 2.6's `reviewer-gate` rows. Needed by any table that flips a type
+# operational: stages 3-5 run on this task type (3, 4.3), so section 1.1's
+# "the ceiling fits the budget" invariant cannot compute a worst-case path
+# without them -- luna's 11.1s is the gate latency 5.1's own derivation uses.
+# Neither row has a measured accuracy, which is why `reviewer-gate` itself is
+# not operational (1.2); the latency invariant deliberately does not require
+# one, so it does not import section 12's open gate-type dependency.
+GATE_MEASURED = [
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+         922_000),
+    _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
+         1_000_000),
+]
+
 
 class LadderEligibilityTests(unittest.TestCase):
     """Spec 2.6: one predicate, three conditions, used everywhere."""
@@ -214,7 +228,8 @@ class OperationalFlagTests(unittest.TestCase):
         measured from this deployment; under the broad rule coding could never
         go operational, blocked by a model that is not a rung and cannot
         become one."""
-        table = td.CapabilityTable(CODING_MEASURED, operational={"coding"})
+        table = td.CapabilityTable(CODING_MEASURED + GATE_MEASURED,
+                                   operational={"coding"})
         self.assertEqual(table.validate(), [])
 
     def test_an_incomplete_eligible_row_fails_validation(self):
@@ -240,7 +255,8 @@ class OperationalFlagTests(unittest.TestCase):
         """Editing a non-operational type's rows stays free -- that is the
         bootstrap path, and gating it would make the table impossible to fill
         in."""
-        rows = CODING_MEASURED + [_row("b", "voice", None, None, 0.1)]
+        rows = (CODING_MEASURED + GATE_MEASURED
+                + [_row("b", "voice", None, None, 0.1)])
         table = td.CapabilityTable(rows, operational={"coding"})
         self.assertEqual(table.validate(), [])
 

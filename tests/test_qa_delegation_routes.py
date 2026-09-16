@@ -463,6 +463,55 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await delegation_routes.handle_delegation_get(_request())
         self.assertEqual(await db.delegation_operational_all(), set())
 
+    async def test_reasoning_cannot_be_flipped_operational_even_with_complete_data(self):
+        """F7 / spec amendment b782e4d: `reasoning` is held non-operational
+        until it is enforced in code or lifted by measurement, the identical
+        argument spec 12 already applies to `coding`. Same shape as
+        test_coding_cannot_be_flipped_operational_even_with_complete_data --
+        the row would otherwise clear validate() cleanly, so a pass here
+        means the guard, not incomplete data, is what is being tested."""
+        from fastapi import HTTPException
+        await db.delegation_row_set("claude-sonnet-5", "reasoning",
+                                    accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
+                                    median_latency_s=12.0, max_context=229376)
+        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        with self.assertRaises(HTTPException) as ctx:
+            await delegation_routes.handle_operational_put(_request(body={
+                "task_type": "reasoning", "operational": True}))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("reasoning", str(ctx.exception.detail))
+        self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_flipping_reasoning_off_is_not_blocked(self):
+        """The guard is specifically about *flipping to* operational -- it
+        must not reject `operational: false` for `reasoning`."""
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "reasoning", "operational": False}))
+        self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_reasoning_is_never_flipped_operational_by_this_module(self):
+        """Same statement as test_coding_is_never_flipped_operational_by_this_module,
+        for the type spec amendment b782e4d added the hold for."""
+        self.assertEqual(await db.delegation_operational_all(), set())
+        await delegation_routes.handle_delegation_get(_request())
+        self.assertEqual(await db.delegation_operational_all(), set())
+
+    async def test_coding_and_reasoning_are_blocked_for_different_reasons(self):
+        """The two holds exist for different reasons -- coding waits on
+        spec 12's gate-type question, reasoning waits on a 75% n=2 accuracy
+        figure being re-measured -- so a single generic refusal message would
+        tell an operator nothing about which blocker applies to them. Assert
+        the two messages actually differ and each names its own reason,
+        rather than both happening to share one generic string."""
+        coding_reason = delegation_routes._OPERATIONAL_FLIP_BLOCKED["coding"]
+        reasoning_reason = delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"]
+        self.assertNotEqual(coding_reason, reasoning_reason)
+        self.assertIn("section 12", coding_reason)
+        self.assertIn("75%", reasoning_reason)
+
 
 if __name__ == "__main__":
     unittest.main()

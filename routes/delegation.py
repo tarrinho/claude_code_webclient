@@ -65,10 +65,46 @@ _EDITABLE = ("accuracy", "n", "cost_per_1m_tokens", "median_latency_s", "max_con
 # `coding` to operational" -- and 1.2 measures `coding` as already clearing
 # every one of 1.1's six invariants, so nothing else in this codebase stops
 # the flip. Same pattern 2.7 uses for excluding `azure_ai/gpt-5.4-mini`: a
-# decision, not a derived value, so nothing recomputes it and re-admitting
-# `coding` means deleting this line -- once section 12's reviewer-gate item
-# resolves, not before.
-_OPERATIONAL_FLIP_BLOCKED: Final[frozenset[str]] = frozenset({"coding"})
+# decision, not a derived value, so nothing recomputes it.
+#
+# Spec amendment b782e4d added, of the `reasoning` ladder: "Until it is either
+# enforced in code or lifted by measurement, `reasoning` must stay
+# non-operational (spec 1.1)." That amendment landed after `coding`'s guard
+# was written, so nobody re-applied the same reasoning to `reasoning` -- the
+# ruling behind `coding`'s entry was that the constraint "was being held only
+# by nobody having clicked", and that argument is identical here.
+#
+# Today's data would refuse the `reasoning` flip on its own regardless of this
+# guard: `claude-sonnet-5`'s reasoning row carries no `median_latency_s`, and
+# its one-rung tree already costs $3.736 against a `BUDGET_USD` of 1.00. So
+# this entry does not close an open door -- it closes the gap between a
+# decision and data that happens, today, to agree with it. The hold itself is
+# about a 75% n=2 accuracy figure being re-measured; a latency-and-cost
+# measurement alone would not lift it.
+#
+# Each entry is a task type mapped to *why* it is held -- the two types are
+# blocked for different reasons (a still-open spec-12 gate-type question for
+# `coding`, an unmeasured accuracy figure for `reasoning`), so a single
+# generic refusal message would not tell an operator which blocker applies to
+# them. Still a named constant, and still removable per task type: deleting
+# `coding`'s entry needs section 12's reviewer-gate item resolved, and deleting
+# `reasoning`'s entry needs its accuracy figure re-measured above the bar --
+# neither should be deleted for the other's reason.
+_OPERATIONAL_FLIP_BLOCKED: Final[dict[str, str]] = {
+    "coding": (
+        "spec section 12 leaves the gate-type validation question open and "
+        "forbids flipping coding until it is decided"
+    ),
+    "reasoning": (
+        "spec amendment b782e4d holds reasoning non-operational until its "
+        "75% n=2 accuracy figure is either re-measured or enforced in code "
+        "(spec 1.1); today's data would refuse this flip anyway -- "
+        "claude-sonnet-5's reasoning row has no median_latency_s and its "
+        "one-rung tree costs $3.736 against a BUDGET_USD of 1.00 -- but this "
+        "guard is what stops that data gap from silently becoming the only "
+        "thing enforcing the hold"
+    ),
+}
 
 
 def _require_admin(request: Request) -> dict:
@@ -310,9 +346,8 @@ async def handle_operational_put(request: Request):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"{task_type} cannot be flipped operational: spec section 12 "
-                "leaves the gate-type validation question open and forbids "
-                f"flipping {task_type} until it is decided"
+                f"{task_type} cannot be flipped operational: "
+                f"{_OPERATIONAL_FLIP_BLOCKED[task_type]}"
             ))
 
     if operational:

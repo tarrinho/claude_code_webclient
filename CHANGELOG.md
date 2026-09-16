@@ -22,6 +22,93 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **Settings › Delegation is now a page rather than a raw table.** A status band
+  saying in plain English what is routing (nothing), how many cells are
+  measured, and the ceiling and budget; then one card per task type carrying its
+  operational knob, its derived ladder with the five-field rung tooltips, its
+  model rows, and — new — **why that type cannot go operational**, inline. Two
+  kinds of blocker are surfaced separately: a policy hold recorded in code
+  (spec 12 holds `coding`, an amendment holds `reasoning`) and the data
+  invariants of spec 1.1, computed per type by the same validation a real flip
+  runs. Previously the page reported a refusal only after you clicked.
+- **`bin/wc-screenshot.py`** — capture a page or element from a server booted off
+  the working tree, and optionally register it in the image gallery. Exists
+  because previewing an undeployed change is not obvious: the live service
+  serves a deployed release, a fresh temporary database renders data-driven
+  pages blank, and a plain Playwright element screenshot captures only what was
+  scrolled into view. Registration is opt-in behind a flag and refuses a missing
+  or suspiciously small PNG.
+- **`bench/gate_accuracy.py`** — measured accuracy for the reviewer and security
+  gates, against labelled samples built by mutating known-good solutions. The
+  existing pipeline benchmark can observe a gate wrongly rejecting good code but
+  never a gate waving through bad code, because the oracle filters broken output
+  before a gate sees it. This closes that half, and it is what spec 12's
+  gate-type question has been blocked on.
+- **`--yes-this-is-production`** on `bin/wc-seed-delegation.py`. The guard that
+  refuses to seed the production database stays; this is the deliberate way
+  across it. `--db-path` is still required, so seeding production takes naming
+  the database *and* affirming what it is — never omission or a default. The
+  flag is inert against any other path.
+
+### Fixed
+
+- **The delegation page discarded every refusal the server explained.** This app
+  serialises errors as `{"error": ...}`; `delegation.js` read `data.detail` in
+  both write paths, so the reason was always `undefined` and a generic fallback
+  always won. A knob that would not move said only "Could not change the
+  operational flag", and — worse — a rejected cell edit said "Could not save"
+  instead of naming the broken invariant and the offending column, which spec
+  1.1 requires it to name. The server named it correctly every time. Nothing
+  caught this because the route tests assert the API response, which was right
+  all along; the loss happened in the browser.
+- **A blocker message claimed the opposite of the truth.** Cards read
+  "multi-turn: **is operational** but its ladder is empty" for types that are
+  not operational, directly contradicting the status band above them. The string
+  was written for `validate()` running against genuinely operational types; the
+  page reuses the same validation against a hypothetical candidate, and the
+  wording did not follow. Now describes the condition without asserting the
+  type's state, so it is true in both callers.
+- **The seed script had drifted from spec 2.6, and the test meant to catch it
+  could not.** `claude-sonnet-5`'s `reviewer-gate` row still read unmeasured
+  after that latency was measured and recorded in the spec. The guard compared
+  `(model, task_type)` pairs and discarded every measured value, so any number
+  could rot indefinitely while the test stayed green. It now compares
+  column-by-column and names the row and column on failure.
+- **The read-only config block was unreadable.** Its `<dl>` sized the value
+  column to fit full sentences, squeezing labels to one word per line; since
+  `dt`/`dd` share a grid row, label fragments and value lines interleaved into
+  runs like "Cinnat implemented in this release". Labels now stack above their
+  values.
+
+### Changed
+
+- `delegation.js` is imported lazily, matching `supervisor-map.js` and
+  `stats.js`. It was a static import, so every page load parsed it even for
+  users who never open the tab.
+
+### Security
+
+- **Markdown 3.7 → 3.8.1** for CVE-2025-69534 (GHSA-5wmx-573v-2qwq): malformed
+  HTML-like sequences raise an uncaught `AssertionError` during parsing, a
+  denial of service for anything rendering untrusted Markdown. Defence in depth
+  here rather than incident response — `specs_gallery.render_markdown` already
+  wrapped the parse in `try/except Exception`, which catches it, and its only
+  caller renders spec files committed to this repo rather than attacker-supplied
+  input.
+
+### Testing
+
+- The full suite ran as a single invocation for the first time on this branch:
+  **4,913 passed, 4 failed, 6 skipped** in 29:47. Six skips is the documented
+  signature of a trustworthy run. All four failures are Playwright timeouts —
+  two are the Backends/Transports flake this file's own helper documents, and
+  two pass 3/3 standalone. Worth recording that the batched run used earlier
+  disagreed with it **in both directions**: a test that failed batched passed in
+  the full run, and two that passed batched failed in it. Both are
+  order-dependent, and neither run alone would have shown it.
+
 ## [0.19.0] — 2026-09-16
 
 ### Added

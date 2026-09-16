@@ -1451,10 +1451,20 @@ button{touch-action:manipulation}
 }
 .delegation-config-section h4 { margin:0 0 6px; font-size:12px; font-weight:650; }
 .delegation-config-section p { margin:0; font-size:12px; color:var(--muted); }
+/* Label above value, not side-by-side: a two-column grid squeezed the label
+   into a sliver and let the value's own line-wrap run underneath the next
+   label, so words from both interleaved into unreadable runs. Several values
+   here are full sentences ("not implemented in this release -- ...") rather
+   than short numbers, and stacking is the layout that survives that content
+   at any column width. */
 .delegation-config-section dl {
-  margin:0; display:grid; grid-template-columns:minmax(0,1fr) auto;
-  gap:3px 10px; font-size:11.5px;
+  margin:0; display:flex; flex-direction:column; font-size:11.5px;
 }
-.delegation-config-section dt { color:var(--muted); text-transform:capitalize; }
-.delegation-config-section dd { margin:0; color:var(--fg); text-align:right; }
-@media(min-width:700px){ .delegation-config { grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); } }
+.delegation-config-section dt {
+  color:var(--muted); text-transform:capitalize; margin-top:8px;
+}
+.delegation-config-section dt:first-child { margin-top:0; }
+.delegation-config-section dd {
+  margin:2px 0 0; color:var(--fg); text-align:left; overflow-wrap:anywhere;
+}
+@media(min-width:700px){ .delegation-config { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); } }

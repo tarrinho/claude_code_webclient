@@ -13,11 +13,17 @@ file's trivial-read and blast-radius-on-a-read cases exist specifically to
 catch that collapse.
 
 It also checks that `mutates` is treated as the three-valued string it is,
-not as a boolean or a truthiness check: MUTATES_SIDE_EFFECTING_READ must be
-refused the read-only exemption (4.7 holds it to the same five stages as
-MUTATES_TRUE), including under the trivial bypass, where a string-equality
-bug (or a bug that only distinguishes "== MUTATES_TRUE" from "everything
-else") would let it slip through as if it were a read.
+not as a boolean or a truthiness check: for a NON-trivial task,
+MUTATES_SIDE_EFFECTING_READ must be refused the mutates=False exemption from
+stages 4 and 5 (4.7 holds it to the same five stages as MUTATES_TRUE), where
+a string-equality bug (or a bug that only distinguishes "== MUTATES_TRUE"
+from "everything else") would let it slip through as if it were a read.
+Under the TRIVIAL bypass, though, it takes the read row and keeps stage 3
+(4.8) -- the bypass is scoped by whether an oracle can still verify the
+output, not by the read/write alignment 4.7 uses for the non-trivial case,
+so a trivial side_effecting_read is not "sliding through as a read" here,
+it is the correct outcome. See
+`test_trivial_side_effecting_read_keeps_stage_three` below.
 """
 from __future__ import annotations
 
@@ -119,23 +125,38 @@ class StageSelectionTests(unittest.TestCase):
             [1, 2, 3, 4, 5],
         )
 
-    def test_trivial_side_effecting_read_loses_stage_three_too(self):
+    def test_trivial_side_effecting_read_keeps_stage_three(self):
         """Combination of the trivial bypass and the three-valued mutates
-        check. side_effecting_read is not a read for 4.7's purposes (it
-        takes the full five stages, same as True) and 4.8's bypass table has
-        no read-shaped row for it -- it follows the write row. So a score-1
-        side_effecting_read task runs [1, 2], same as a score-1 True task,
-        and UNLIKE a score-1 False task (previous test). An implementation
-        that grants the read-only stage-3 protection to anything that is not
-        literally MUTATES_TRUE -- rather than to exactly MUTATES_FALSE --
-        would keep stage 3 here and fail only this test.
+        check -- and the case that reverses an earlier, wrong ruling of
+        2026-09-16.
+
+        That ruling read 4.7's "side_effecting_read takes the same five
+        stages as True" as license to also put it on 4.8's write row,
+        stripping stage 3 under the trivial bypass. That is wrong, and 4.8
+        already says why: the bypass may drop the reviewer gate only where
+        an oracle can still check the output. A trivial write's output is
+        code stage 2 can execute. A trivial side_effecting_read's output may
+        be prose, which stage 2 cannot check at all (4.2, 4.7) -- so the old
+        ruling ran stage 1, then a stage 2 that verifies nothing, then
+        stopped, with no gate having checked the result at all. That is
+        exactly the hole 4.8 exists to close, reproduced for the third
+        value instead of closed by it.
+
+        So a score-1 side_effecting_read task runs [1, 2, 3], the same as a
+        score-1 False task (previous test), and UNLIKE a score-1 True task,
+        which does lose stage 3 here because its output is verifiable code.
+        An implementation that grants the read-only stage-3 protection to
+        anything that is not literally MUTATES_TRUE -- rather than to
+        exactly MUTATES_FALSE -- is the CORRECT one for this case; the old
+        version of this test asserted the opposite and encoded the wrong
+        ruling in its own name.
         """
         self.assertEqual(
             pipeline.stages_for(
                 _d(score=1, mutates=dc.MUTATES_SIDE_EFFECTING_READ),
                 files_changed=0,
             ),
-            [1, 2],
+            [1, 2, 3],
         )
 
     def test_blast_radius_never_fires_on_a_read(self):

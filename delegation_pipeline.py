@@ -9,10 +9,15 @@ and the order they resolve in is the whole behaviour:
      bypass: a score-1 task that touched more than MAX_FILES_TRIVIAL files
      runs the full pipeline regardless of what the classifier guessed.
   2. Trivial bypass (4.8) next, if blast radius did not override it. Its
-     effect depends on `mutates`: a trivial WRITE drops stages 3, 4 and 5;
-     a trivial READ drops only 4 and 5 -- stage 3 is never removed from a
-     read here, because 4.7 makes it the read's only real gate and 4.8 is
-     explicit that no rule may take it away.
+     effect depends on `mutates`: a trivial WRITE (`mutates=True`) drops
+     stages 3, 4 and 5; anything else -- `mutates=False` or
+     `side_effecting_read` -- drops only 4 and 5. Stage 3 is never removed
+     from either read variant by this rule: 4.8 scopes the bypass to cases
+     where an oracle can still check the output, and that is a write
+     argument, not a read/write-row-membership argument. A trivial write's
+     output is code stage 2 can execute; a trivial read's -- side-effecting
+     or not -- may be prose stage 2 cannot check at all (4.2, 4.7), so
+     neither read variant may lose its only real gate here.
   3. Read-only (4.7) last, applied to whatever survives: mutates=False
      drops 4 and 5 (a no-op if step 2 already dropped them) and restores
      stage 3 if any earlier rule removed it. 4.8's invariant is that a
@@ -20,10 +25,20 @@ and the order they resolve in is the whole behaviour:
      matter how the earlier rules resolved.
 
 `mutates` is the three-valued string from delegation_classifier, not a
-bool. Only the literal MUTATES_FALSE value is "read-only" for this module:
-MUTATES_SIDE_EFFECTING_READ spends money or consumes an external rate
-limit, so 4.7 explicitly holds it to the same five stages as MUTATES_TRUE,
-including under the trivial bypass, which has no read-shaped row for it.
+bool. Only the literal MUTATES_FALSE value is "read-only" for this
+module's read-only-restore purposes (step 3 above): a NON-trivial
+MUTATES_SIDE_EFFECTING_READ still takes the same five stages as
+MUTATES_TRUE, because it spends money or consumes an external rate limit
+and 4.7 does not exempt it. But the TRIVIAL bypass (step 2) is scoped by
+whether an oracle can still verify the output, not by that same
+read/write split, so a trivial side_effecting_read keeps stage 3 -- this
+reverses a 2026-09-16 ruling that had aligned it with MUTATES_TRUE under
+the bypass specifically because 4.7 aligns it with MUTATES_TRUE elsewhere.
+That analogy does not hold for the bypass: the bypass's own stated
+justification is that a trivial write is cheap to verify by oracle, which
+is an argument about executable output, and it does not transfer to a
+read whose oracle may be vacuous. See this file's git history and spec
+4.8 for the earlier reasoning and why it was reversed.
 
 Stage 2 (the oracle) is a special case worth stating plainly. 4.2 and 4.7
 both make it conditional on the output being executable -- parse, import,
@@ -46,7 +61,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from delegation_classifier import Classification, MUTATES_FALSE
+from delegation_classifier import Classification, MUTATES_FALSE, MUTATES_TRUE
 from tiered_delegation import (
     CapabilityTable,
     MAX_ATTEMPTS,
@@ -75,21 +90,29 @@ def stages_for(decision: Classification, files_changed: int) -> list[int]:
     stages = set(ALL_STAGES)
 
     is_read_only = decision.mutates == MUTATES_FALSE
+    is_write = decision.mutates == MUTATES_TRUE
     over_blast_radius = files_changed > MAX_FILES_TRIVIAL
     trivial_bypass_applies = decision.score <= TRIVIAL_SCORE and not over_blast_radius
 
-    # 2. Trivial bypass, scoped by mutates (4.8): a trivial write loses its
-    #    reviewer gate along with QA and security; a trivial read never
-    #    loses the reviewer gate, only QA and security.
+    # 2. Trivial bypass, scoped by whether an oracle can still verify the
+    #    output (4.8), not by read/write-row membership: a trivial WRITE's
+    #    output is code stage 2 can execute, so it loses its reviewer gate
+    #    along with QA and security. Everything else -- mutates=False or
+    #    side_effecting_read -- may produce prose stage 2 cannot check, so
+    #    only QA and security are dropped; stage 3 is never removed here
+    #    for either read variant.
     if trivial_bypass_applies:
-        if is_read_only:
-            stages -= {4, 5}
-        else:
+        if is_write:
             stages -= {3, 4, 5}
+        else:
+            stages -= {4, 5}
 
     # 3. Read-only, last, applied to whatever survives (4.7): drop 4 and 5,
     #    and restore 3 if an earlier rule removed it -- a read-only leaf
-    #    never ends up with no verification at all.
+    #    never ends up with no verification at all. This rule proper is
+    #    mutates=False only; for side_effecting_read the trivial bypass
+    #    above never removed 3 in the first place, so there is nothing
+    #    left for this step to restore on that path.
     if is_read_only:
         stages -= {4, 5}
         stages.add(3)

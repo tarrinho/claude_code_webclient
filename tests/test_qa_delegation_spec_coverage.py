@@ -424,7 +424,15 @@ class ReadOnlyFloorTests(unittest.TestCase):
         prose / executable output, and blast radius, and assert stage 3 appears
         in every `mutates=False` row of 4.8's table". Asserting each rule
         separately is what the row warns against: the rules interact, and only
-        read-only's last-applied restore keeps stage 3 in the intersection."""
+        read-only's last-applied restore keeps stage 3 in the intersection.
+
+        `side_effecting_read` is included here too, and split into its own
+        branch below (reversing a 2026-09-16 ruling): a NON-trivial one still
+        takes the full five stages, same as `True` (4.7 does not exempt it),
+        but a TRIVIAL one keeps stage 3 -- the trivial bypass (4.8) is scoped
+        by whether an oracle can still check the output, not by the
+        read/write alignment 4.7 uses for the non-trivial case, and a trivial
+        side_effecting_read's output may be prose the oracle cannot check."""
         for mutates in (dc.MUTATES_FALSE, dc.MUTATES_SIDE_EFFECTING_READ,
                         dc.MUTATES_TRUE):
             for score in (1, 3, 5):
@@ -435,10 +443,16 @@ class ReadOnlyFloorTests(unittest.TestCase):
                         stages = pipeline.stages_for(
                             dc.Classification("coding", score, mutates),
                             files_changed=files_changed)
+                        trivial = score <= pipeline.TRIVIAL_SCORE and \
+                            files_changed <= pipeline.MAX_FILES_TRIVIAL
                         if mutates == dc.MUTATES_FALSE:
                             self.assertEqual(stages, [1, 2, 3])
-                        elif score <= pipeline.TRIVIAL_SCORE and \
-                                files_changed <= pipeline.MAX_FILES_TRIVIAL:
+                        elif mutates == dc.MUTATES_SIDE_EFFECTING_READ:
+                            if trivial:
+                                self.assertEqual(stages, [1, 2, 3])
+                            else:
+                                self.assertEqual(stages, [1, 2, 3, 4, 5])
+                        elif trivial:
                             self.assertEqual(stages, [1, 2])
                         else:
                             self.assertEqual(stages, [1, 2, 3, 4, 5])

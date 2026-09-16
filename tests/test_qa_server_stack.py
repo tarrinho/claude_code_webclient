@@ -165,8 +165,13 @@ class OneCaddyOwnsTheSiteTests(unittest.TestCase):
         try:
             result = subprocess.run(
                 ["systemctl", *args], capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover
-            self.skipTest(f"systemctl unavailable: {exc}")
+        except FileNotFoundError as exc:  # pragma: no cover
+            # Only "systemctl is not installed here" is a skip. A timeout or a
+            # permission error means the thing under test is broken, not
+            # inapplicable, and test_qa_skip_honesty.py refuses that
+            # conversion: a skip decided by a broad except reports "not
+            # applicable" and "the code is broken" as the same silence.
+            self.skipTest(f"systemctl not installed: {exc}")
         return (result.stdout or result.stderr).strip()
 
     def test_the_system_caddy_unit_is_not_enabled(self):

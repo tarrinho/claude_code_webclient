@@ -1,9 +1,12 @@
 """QA: the classifier of spec section 2.
 
-Three properties that are easy to get wrong and invisible when wrong:
-specificity beats list order, a score is the MAXIMUM of matched patterns
-rather than the winning pattern's own, and both defaults fail toward the
-expensive branch.
+Properties that are easy to get wrong and invisible when wrong: specificity
+is the matched alternative's literal-character count (not the whole pattern's
+length, not list order), ties resolve by matched span then table order, a
+score is the MAXIMUM of matched patterns rather than the winning alternative's
+own, mutates resolves to True on any disagreement (not a three-way ladder),
+and every default -- including score, which the spec itself leaves unstated --
+fails toward the expensive/safe branch.
 """
 from __future__ import annotations
 
@@ -20,26 +23,33 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.mutates, dc.MUTATES_FALSE)
 
     def test_unmatched_text_defaults_to_comprehension_and_mutates(self):
-        """Section 2.2: both defaults fail toward the expensive/safe branch."""
+        """Section 2.2 states only two defaults -- task_type and mutates --
+        and both fail toward the expensive/safe branch. Score is a third
+        default the spec does not state; this ruling supplies 3 (5.1's
+        reference/mid-size score) rather than the table's minimum, because
+        under-budgeting a deadline manufactures a false timeout escalation."""
         result = dc.classify("zzzz nothing matches this at all")
         self.assertEqual(result.task_type, "comprehension")
         self.assertEqual(result.mutates, dc.MUTATES_TRUE)
+        self.assertEqual(result.score, dc.DEFAULT_SCORE)
+        self.assertEqual(result.score, 3)
 
     def test_score_is_the_maximum_of_every_match_not_the_winner_s(self):
         """Section 2.1. Score feeds the size factor and therefore the deadline;
         under-budgeting manufactures a false timeout, which costs a rung.
 
-        The input is chosen so the two computations DIFFER: the most specific
-        match here is the long-context pattern, which scores 1, while the
-        planning pattern it also matches scores 5. With an input where the
-        most specific match is also the highest scoring, this test passes
-        under either implementation and proves nothing.
+        Input verified against the real PATTERNS table: `list.*directory`
+        (literal 13, span 14, row 7, long-context, score 1) is the most
+        specific matched alternative and wins task_type, but `orchestrate`
+        (literal 11, span 11, row 1, planning, score 5) is also matched and
+        carries the higher score. Returning the winner's own score (1)
+        instead of the maximum across matched rows (5) fails this test. The
+        same input also shows specificity beating list order from the other
+        direction: the winning alternative sits in a *later* table row than
+        the losing one.
         """
-        result = dc.classify("read file and orchestrate the agents")
+        result = dc.classify("list directory and orchestrate the agents")
         self.assertEqual(result.score, 5)
-        # The same input proves the two rules of 2.1 are independent: the type
-        # comes from specificity, the score from the maximum, and here they
-        # come from different patterns.
         self.assertEqual(result.task_type, "long-context")
 
     def test_a_mutates_conflict_resolves_to_true(self):
@@ -49,9 +59,48 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.mutates, dc.MUTATES_TRUE)
 
     def test_task_type_is_decided_by_specificity_not_list_order(self):
-        """The most specific matching pattern wins. 'migrate database' is a
-        longer, more specific pattern than 'simple'."""
-        result = dc.classify("simple migrate database task")
+        """Input verified against the real PATTERNS table: `design.*system`
+        (literal 12, span 13, row 0, planning) and `debug.*complex` (literal
+        12, span 13, row 2, reasoning) tie on both literal count and span, so
+        table order decides -- row 0 beats row 2. The two task types differ,
+        so this assertion can actually fail, unlike an input where every
+        matched alternative shares one task_type.
+        """
+        result = dc.classify("design system and debug complex")
+        self.assertEqual(result.task_type, "planning")
+
+    def test_specificity_is_literal_character_count_not_pattern_length(self):
+        """Section 11, line 1057's mandated test: specificity is computed by
+        asserting a hand-picked winner -- `refactor.*large` beats `quick` on
+        "quick refactor large module" by literal-character count, and a tie
+        falls to longer match span then table order.
+
+        Both alternatives carry task_type "coding", so a test that only
+        inspected classify().task_type could not observe which one won; the
+        winning alternative is asserted directly.
+        """
+        self.assertEqual(dc.literal_character_count("refactor.*large"), 13)
+        self.assertEqual(dc.literal_character_count("quick"), 5)
+        self.assertEqual(dc.winning_alternative("quick refactor large module"), "refactor.*large")
+
+    def test_specificity_tie_breaks_on_matched_span_before_table_order(self):
+        """Input verified against the real PATTERNS table: `grep.*pattern`
+        (literal 11, span 12, row 7, long-context) and `orchestrate` (literal
+        11, span 11, row 1, planning) tie on literal count. The longer
+        matched span (12 vs 11) decides in favour of the later row. If span
+        were skipped and the tie fell straight to table order, row 1 would
+        win instead and the result would be "planning".
+        """
+        result = dc.classify("orchestrate and grep pattern here")
+        self.assertEqual(result.task_type, "long-context")
+
+    def test_specificity_tie_breaks_on_table_order_as_a_last_resort(self):
+        """Input verified against the real PATTERNS table: `refactor.*large`
+        (literal 13, span 14, row 4, coding) and `list.*directory` (literal
+        13, span 14, row 7, long-context) tie on both literal count and span,
+        so the earlier row wins.
+        """
+        result = dc.classify("refactor large and list directory")
         self.assertEqual(result.task_type, "coding")
 
 
@@ -66,3 +115,17 @@ class MutatesVocabularyTests(unittest.TestCase):
         known = {dc.MUTATES_FALSE, dc.MUTATES_SIDE_EFFECTING_READ, dc.MUTATES_TRUE}
         for pattern, _score, _task_type, mutates in dc.PATTERNS:
             self.assertIn(mutates, known, pattern)
+
+    def test_resolve_mutates_unanimous_side_effecting_read_is_preserved(self):
+        """No production PATTERNS row declares side_effecting_read yet, so
+        this drives the resolution helper directly: unanimous agreement on
+        side_effecting_read must not be pulled up to True."""
+        result = dc.resolve_mutates([dc.MUTATES_SIDE_EFFECTING_READ, dc.MUTATES_SIDE_EFFECTING_READ])
+        self.assertEqual(result, dc.MUTATES_SIDE_EFFECTING_READ)
+
+    def test_resolve_mutates_disagreement_resolves_to_true_not_side_effecting_read(self):
+        """Section 2.1, literally: any disagreement is True. A False/
+        side_effecting_read disagreement must not settle on
+        side_effecting_read -- that was the old, now-removed ranking."""
+        result = dc.resolve_mutates([dc.MUTATES_FALSE, dc.MUTATES_SIDE_EFFECTING_READ])
+        self.assertEqual(result, dc.MUTATES_TRUE)

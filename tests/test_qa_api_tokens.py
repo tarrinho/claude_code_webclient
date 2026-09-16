@@ -117,7 +117,10 @@ class ApiTokenBase(unittest.IsolatedAsyncioTestCase):
                     expires_at=None) -> str:
         """Create a token directly and return the secret."""
         token_id, secret, token_hash = auth.new_api_token()
-        await db.api_token_create(token_id, name, token_hash, user, role, expires_at)
+        # Must use the real owner UUID (not the plain username) because
+        # owner_of() resolves names to UUIDs and the route queries by UUID.
+        owner = await _owner_id(user)
+        await db.api_token_create(token_id, name, token_hash, owner, role, expires_at)
         self.last_token_id = token_id
         return secret
 
@@ -188,13 +191,25 @@ class DevExemptionIsGoneTests(ApiTokenBase):
         block = source.split("public_route = ")[1].split("if not public_route")[0]
         self.assertIn('== "/login"', block)
         self.assertIn('== "/api/version"', block)
+        self.assertIn('== "/api/hard-refresh"', block)
         self.assertIn('startswith("/assets/")', block)
         # Nothing else: any other startswith in that expression is a new
         # exemption and should be read by a person.
+        #
+        # What "read by a person" has to mean, because this test firing is not
+        # the same as the question being answered. /api/hard-refresh was added
+        # here and the counts below were updated to let it through -- which is
+        # exactly what this guard asks for -- while the endpoint itself passed
+        # an unvalidated `to` parameter into a redirect. Anyone unauthenticated
+        # could make the console redirect off-origin, and the guard had already
+        # been satisfied. See tests/test_qa_hard_refresh_open_redirect.py.
+        #
+        # So: adding a route here means auditing what that route does with
+        # user-controlled input, not just incrementing a number.
         self.assertEqual(block.count("startswith"), 1, block)
-        # And no other `==` path check either -- same reasoning, for the two
+        # And no other `==` path check either -- same reasoning, for the
         # exact-match exemptions rather than the one prefix-match one.
-        self.assertEqual(block.count(' == "'), 2, block)
+        self.assertEqual(block.count(' == "'), 3, block)
 
 
 class PublicVersionEndpointTests(ApiTokenBase):
@@ -257,7 +272,8 @@ class TokenAuthenticationTests(ApiTokenBase):
         secret = await self._mint()
         headers = {"Authorization": f"Bearer {secret}"}
         self.assertEqual(_client().get("/api/chats", headers=headers).status_code, 200)
-        self.assertTrue(await db.api_token_revoke(self.last_token_id, "alice"))
+        owner = await _owner_id("alice")
+        self.assertTrue(await db.api_token_revoke(self.last_token_id, owner))
         self.assertEqual(_client().get("/api/chats", headers=headers).status_code, 401)
 
     async def test_an_expired_token_is_refused(self):
@@ -298,7 +314,8 @@ class TokenAuthenticationTests(ApiTokenBase):
     async def test_use_is_recorded(self):
         secret = await self._mint()
         _client().get("/api/chats", headers={"Authorization": f"Bearer {secret}"})
-        rows = await db.api_token_list("alice")
+        owner = await _owner_id("alice")
+        rows = await db.api_token_list(owner)
         self.assertIsNotNone(rows[0]["last_used_at"],
                              "a credential nobody can tell is in use cannot be "
                              "retired with any confidence")

@@ -1,5 +1,30 @@
 # Mobile Conversation Management Design
 
+**Status:** done — verified in a real browser at 420x860 with touch emulation
+on 2026-09-16. The drawer (`.sidebar-mobile`, opened by `#menuBtn`) holds
+`#chatList` and listed 93 conversations; opening the drawer, selecting a
+conversation (which closes it), reaching the composer, and the 44x44 touch
+target on the menu button all work. Favourites / Recent / Archived sections,
+drafts, last-conversation restore and `GET /api/chats/{id}/export` are all
+present in `chat-list.js`, `conversation.js`, `app.js` and `routes/chats.py`.
+
+**Correction, recorded because it was published before it was checked:** a
+sweep on 2026-09-15 reported this spec as unimplemented and claimed "at 420px
+the desktop chat list measures zero height and there is no mobile list, so the
+chat list is unreachable". That was wrong twice over. The probe looked for an
+element id `#chatListMobile`, which has never existed in this codebase — the
+mobile list is `#chatList` — and it sampled before the list had rendered. The
+desktop list measuring zero height at 420px is the responsive design working:
+`@media(min-width:768px)` is what swaps `.sidebar-mobile` for
+`.sidebar-desktop`.
+
+**One real defect was found while checking this, and it is not a mobile
+defect:** the conversation `⋯` menu opened nothing, at every width. The cause
+is assets being served from the working tree while the HTML comes from the
+deployed release, so the page loads two instances of every module and binds
+every listener twice. See
+`docs/superpowers/specs/2026-09-16-asset-serving-and-module-identity-design.md`.
+
 ## Purpose
 
 WebConsole is a mobile-first remote control surface for Claude Code. This milestone makes it fast to find and organize work, reliable during long-running responses, and unambiguous about what Claude is doing.

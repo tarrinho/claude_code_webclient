@@ -1273,42 +1273,41 @@ These persist across restarts and override config.py defaults:
 
 ```
 claude-code-webconsole/
-├── db.py                   3600  SQLite: schema, CRUD, migrations, CLI sync
-├── app.py                  463   FastAPI app, entry point, middleware, route registration
-├── transcripts.py          1678  Read and parse Claude CLI transcripts
-├── orchestrator.py           1134  Orchestration: plan parsing, task graph, scheduler
-├── runner.py               1031  Claude Code invocation (direct + proxy)
-├── prompts.py               788  Detect and answer a CLI permission prompt
-├── classification.py        718  Attention: which conversations need a person, and why
-├── claude_proxy.py          667  Host-side TCP proxy to Claude Code
-├── auth.py                  477  Auth: passwords, sessions, CSRF, rate-limit, tokens
-├── sysstats.py              458  Host sampling from /proc + write-health probe
-├── turns.py                 380  Turn lifecycle: a turn outlives its request
-├── tiered_delegation.py     648  Delegation 0.19.0: CapabilityTable, ladder generator,
+├── db.py                   1631  SQLite: schema, CRUD, migrations, CLI sync
+├── app.py                  764   FastAPI app, entry point, middleware, route registration
+├── transcripts.py          2180  Read and parse Claude CLI transcripts
+├── orchestrator.py           1364  Orchestration: plan parsing, task graph, scheduler
+├── runner.py               1394  Claude Code invocation (direct + proxy)
+├── prompts.py               937  Detect and answer a CLI permission prompt
+├── classification.py        733  Attention: which conversations need a person, and why
+├── claude_proxy.py          638  Host-side TCP proxy to Claude Code
+├── auth.py                  599  Auth: passwords, sessions, CSRF, rate-limit, tokens
+├── sysstats.py              463  Host sampling from /proc + write-health probe
+├── turns.py                 393  Turn lifecycle: a turn outlives its request
+├── tiered_delegation.py     764  Delegation 0.19.0: CapabilityTable, ladder generator,
 │                                 6-invariant validation (spec 1.1, 2.6, 2.7). Pure --
 │                                 no database, no config, no import from app.
-├── delegation_pipeline.py   360  Delegation 0.19.0: which review-gate stages run and
+├── delegation_pipeline.py   418  Delegation 0.19.0: which review-gate stages run and
 │                                 in what order (spec 4.8's precedence rules as code)
 ├── delegation_classifier.py 153  Delegation 0.19.0: task -> (task_type, score, mutates)
-├── delegation_oracle.py     114  Delegation 0.19.0: coding oracle -- does the produced
+├── delegation_oracle.py     159  Delegation 0.19.0: coding oracle -- does the produced
 │                                 code parse/import/compile (spec 4.2). Not wired in yet.
 ├── delegation_startup.py    112  Delegation 0.19.0: loads the capability table from the
 │                                 database and runs CapabilityTable.validate() at boot
-├── routes/misc.py          1278  Settings, sessions, skills, health, orchestrator feed
 ├── net_validation.py        232  Outbound address validation (SSRF guard)
-├── middleware.py            207  The three middleware classes and the API-token session
-├── config.py                185  Env-driven config with validation
-├── launch.sh                203  Start with TLS on the tailnet address
+├── middleware.py            214  The three middleware classes and the API-token session
+├── config.py                384  Env-driven config with validation
+├── launch.sh                225  Start with TLS on the tailnet address
 ├── start.sh                  31  Thin wrapper around launch.sh
-├── logging.conf              84  Rotating file handler; path from config.LOG_FILE
-├── requirements.txt          13  Pinned runtime dependencies
-├── requirements-dev.txt      15  Dev + security tooling
-├── CHANGELOG.md            1862  Operator-facing record; see §15a of rules.md
-├── ARCHITECTURE.md        ~1400  This document
-├── rules.md                 943  Build/release pipeline (gitignored, not shipped)
+├── logging.conf             199  Rotating file handler; path from config.LOG_FILE
+├── requirements.txt          25  Pinned runtime dependencies
+├── requirements-dev.txt      18  Dev + security tooling
+├── CHANGELOG.md            3026  Operator-facing record; see §15a of rules.md
+├── ARCHITECTURE.md        ~1560  This document
+├── rules.md                1139  Build/release pipeline (gitignored, not shipped)
 ├── docs/threat-model.md     841  Dated attacker analysis (see its currency note)
-├── README.md                255  User documentation
-├── Backend_Models_...md     249  Model comparison, 2026-09-02
+├── README.md                298  User documentation
+├── Backend_Models_...md     200  Model comparison, 2026-09-02
 ├── SECURITY.md               74  Security policy + deployment requirements
 ├── TODO.md                   37  Outstanding work
 ├── LICENSE                        Proprietary
@@ -1325,39 +1324,39 @@ claude-code-webconsole/
 ├── docs/superpowers/              Design specs and implementation plans
 ├── .env                           Local secrets (gitignored)
 ├── .env.example              62   Config template (committed)
-├── web/                    8489  Vanilla-JS SPA; no framework, no build step
-│   ├── orchestrator.html      1095  Orchestrator page markup
-│   ├── index.html            304  Main SPA
-│   ├── login.html             81  Login page
+├── web/                   13075  Vanilla-JS SPA; no framework, no build step
+│   ├── orchestrator.html      1169  Orchestrator page markup
+│   ├── index.html             766  Main SPA
+│   ├── login.html              89  Login page
 │   └── assets/
-│       ├── app.js           3021  Core: auth, API, chat, SSE, settings, machines
-│       ├── conversation.js  1019  Message render, drafts, stream lifecycle
-│       ├── chat-list.js      812  Sidebar: groups, highlights, dismiss, "?" mark
-│       ├── styles.css        583  Full stylesheet (light/dark theme)
-│       ├── transcript.js     567  CLI transcript viewer
-│       ├── stats.js          404  Charts shared by the usage and server pages
-│       ├── server.js         285  Server statistics rendering
-│       ├── api.js             61  escapeHtml + fetch wrapper with CSRF
-│       ├── login.js           54  Login page
+│       ├── app.js           2875  Core: auth, API, chat, SSE, settings, machines
+│       ├── conversation.js  1532  Message render, drafts, stream lifecycle
+│       ├── chat-list.js     1052  Sidebar: groups, highlights, dismiss, "?" mark
+│       ├── styles.css       1368  Full stylesheet (light/dark theme)
+│       ├── transcript.js     593  CLI transcript viewer
+│       ├── stats.js          609  Charts shared by the usage and server pages
+│       ├── server.js         435  Server statistics rendering
+│       ├── delegation.js     269  Delegation 0.19.0: Settings > Delegation matrix UI
+│       ├── api.js             81  escapeHtml + fetch wrapper with CSRF
+│       ├── login.js           68  Login page
 │       ├── favicon.svg
-│       └── orchestrator/      1881  Ten ES modules, split from the old
-│           ├── list.js       324  single-file orchestrator.js in 0.10.0.
-│           ├── main.js       302  Loaded as `type="module"`; entry is main.js.
-│           ├── members.js    275
-│           ├── tasks.js      241
+│       └── orchestrator/      2169  Ten ES modules, split from the old
+│           ├── list.js       345  single-file orchestrator.js in 0.10.0.
+│           ├── main.js       317  Loaded as `type="module"`; entry is main.js.
+│           ├── members.js    280
+│           ├── tasks.js      427
 │           ├── layout.js     226
-│           ├── stream.js     195
-│           ├── banners.js    113
+│           ├── stream.js     197
+│           ├── banners.js    156
 │           ├── api.js         94
-│           ├── state.js       70
-│           └── dom.js         41
-├── routes/                4923  Six route modules: four extracted from app.py in
+│           ├── state.js       83
+│           └── dom.js         44
+├── routes/                 7249  Five route modules: three extracted from app.py in
 │                                 0.10.3, two added for tiered delegation in 0.19.0
-│   ├── chats.py            1704  Chat CRUD, turns, questions, transcript, streaming
-│   ├── misc.py             1278  Settings, sessions, skills, health, orchestrator feed
-│   ├── supervisors.py       860  Orchestrator orchestration routes
-│   ├── machines.py           665  AI machine CRUD and connectivity tests
-│   ├── delegation.py         331  Delegation matrix API (spec 9.2): GET/PUT rows,
+│   ├── chats.py            3353  Chat CRUD, turns, questions, transcript, streaming
+│   ├── misc.py             2303  Settings, sessions, skills, health, orchestrator feed
+│   ├── machines.py         1126  AI machine CRUD and connectivity tests
+│   ├── delegation.py         382  Delegation matrix API (spec 9.2): GET/PUT rows,
 │   │                              PUT operational -- validates every write (1.1)
 │   └── db_delegation.py       85  Delegation 2.6 table CRUD: rows_all, row_set,
 │                                  operational_all/_set

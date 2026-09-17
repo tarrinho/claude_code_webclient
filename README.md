@@ -151,8 +151,9 @@ being spread across modules that install themselves on import.
 app.py            wiring, login/logout, templates, lifespan
 routes/chats.py   conversations, turns, questions, transcripts
 routes/misc.py    tokens, sessions, settings, system, usage, admin
-routes/supervisors.py  the orchestrator panel and its subtasks
+routes/supervisor_map.py  the orchestrator panel and its subtasks
 routes/machines.py     /api/machines and /api/models
+routes/delegation.py   /api/delegation — the benchmark matrix and its flags
 middleware.py     auth, CSRF and security-header middleware
 classification.py which conversations need a person, and why
 net_validation.py host and base-URL validation
@@ -160,6 +161,23 @@ shared.py         helpers reached from more than one prefix
 db.py             SQLite schema, queries, migrations
 runner.py         turn execution: direct spawn or host proxy
 transcripts.py    reading and repairing the CLI's JSONL
+```
+
+Tiered agent delegation (0.19.0) adds its own set. All of it is built and
+none of it routes: every task type is non-operational, so work falls back to
+today's routing and each fallback is logged. Nothing in the list below has a
+production caller yet.
+
+```text
+tiered_delegation.py     the benchmark table, ladder generation, the six
+                         startup invariants of the design's section 1.1
+delegation_classifier.py text -> (task_type, score, mutates)
+delegation_pipeline.py   which of the five stages run, derived deadlines,
+                         the review gates' escalation rules
+delegation_oracle.py     stage 2: does the produced code actually run
+delegation_startup.py    loads the table and refuses to boot on a broken
+                         invariant
+routes/db_delegation.py  the table's queries and row/capability conversion
 ```
 
 ## Security model

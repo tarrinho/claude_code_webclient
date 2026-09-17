@@ -129,7 +129,6 @@ BINDING_SIZE_FACTOR: Final[float] = SIZE_FACTOR[5]
 #: Section 5's control table. MAX_ATTEMPTS exists nowhere in this codebase yet,
 #: so the value comes from the spec rather than from an import.
 MAX_ATTEMPTS: Final[int] = 3            # generation attempts, per leaf (5)
-MODEL_GATE_COUNT: Final[int] = 3        # stages 3-5, one model call each (4.3-4.5)
 
 #: 5 ("combined latency ceiling | 1,500 -- derived, see 5.1"), per leaf, all
 #: five stages.
@@ -160,9 +159,39 @@ LATENCY_CEILING_S: Final[int] = 1_500
 CEILING_ENFORCEMENT_SETTING: Final[str] = "delegation_enforce_latency_ceiling"
 CEILING_ENFORCEMENT_DEFAULT: Final[bool] = False
 
-#: 3 and 4.3: all three review gates run on one task type, so there is no
-#: separate security-gate type and the table keeps nine rows.
-GATE_TASK_TYPE: Final[str] = "reviewer-gate"
+#: The gate task types, and how many of stages 3-5's model calls each backs.
+#:
+#: **Split 2026-09-17, by operator decision, on measurement.** Until then all
+#: three model gates shared one `reviewer-gate` row per model, on 3/4.3's
+#: reasoning that they are the same call shape. Measured at n=28 per model per
+#: gate, they are not the same call:
+#:
+#:     model                    reviewer   security
+#:     azure_ai/gpt-5.6-luna      0.964      0.857
+#:     claude-sonnet-5            0.786      0.929
+#:
+#: Luna is the better reviewer and sonnet the better security gate, and the
+#: gap runs the opposite way on each -- sonnet waved through 3 real defects as
+#: a reviewer where luna waved through none. A single pooled row averages two
+#: materially different behaviours and hands both gates one compromise model;
+#: split, each gate gets the model that measures best at the job it does.
+#:
+#: The reviewer gate backs TWO calls (4.3's reviewer and 4.4's QA) and the
+#: security gate ONE (4.5). The counts live here rather than as a bare 3 so
+#: the worst-case path weights each gate type by its own model's latency
+#: instead of multiplying one figure by three.
+REVIEWER_GATE_TASK_TYPE: Final[str] = "reviewer-gate"
+SECURITY_GATE_TASK_TYPE: Final[str] = "security-gate"
+
+GATE_CALLS: Final[dict[str, int]] = {
+    REVIEWER_GATE_TASK_TYPE: 2,     # 4.3 reviewer + 4.4 QA
+    SECURITY_GATE_TASK_TYPE: 1,     # 4.5 security
+}
+
+#: The gate type a caller means when it does not say. Every gate helper below
+#: defaults to it, so a call site that predates the split keeps its behaviour
+#: rather than silently averaging the two types.
+GATE_TASK_TYPE: Final[str] = REVIEWER_GATE_TASK_TYPE
 
 
 def _truncate_to_attempt_budget(
@@ -504,7 +533,7 @@ class CapabilityTable:
         return min(measured) if measured else None
 
     def _gate_rung0_row(
-        self, task_type: str
+        self, task_type: str, gate_task_type: str = GATE_TASK_TYPE
     ) -> tuple[CapabilityRow | None, str, str | None]:
         """Which row is the gate's real entry rung right now, and which of
         two paths named it (ruling F5, 2026-09-16).
@@ -536,21 +565,23 @@ class CapabilityTable:
         `(None, "", why)` when neither path can name a model at all -- `why`
         is `_gate_candidates`'s reason, reused rather than duplicated.
         """
-        ladder_rungs = self.ladder(GATE_TASK_TYPE)
+        ladder_rungs = self.ladder(gate_task_type)
         if ladder_rungs:
             top = ladder_rungs[0]
             row = next(
-                (r for r in self.rows_for(GATE_TASK_TYPE) if r.model == top),
+                (r for r in self.rows_for(gate_task_type) if r.model == top),
                 None,
             )
             if row is not None:
                 return row, "ladder", None
-        candidates, why = self._gate_candidates(task_type)
+        candidates, why = self._gate_candidates(task_type, gate_task_type)
         if not candidates:
             return None, "", why
         return candidates[0], "fallback", None
 
-    def gate_rung0(self, task_type: str) -> tuple[str | None, str | None]:
+    def gate_rung0(self, task_type: str,
+                   gate_task_type: str = GATE_TASK_TYPE
+                   ) -> tuple[str | None, str | None]:
         """Which model is the gate's entry rung (5.1) right now, and which of
         F5's two paths named it: `"ladder"` when `reviewer-gate` is
         ladder-eligible and its real rung 0 was used, `"fallback"` when it
@@ -565,10 +596,12 @@ class CapabilityTable:
         from one computed against the fallback, and 5.1's worst-case ceiling
         depends on knowing which one it got.
         """
-        row, source, _ = self._gate_rung0_row(task_type)
+        row, source, _ = self._gate_rung0_row(task_type, gate_task_type)
         return (row.model if row is not None else None), (source or None)
 
-    def _gate_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
+    def _gate_latency_s(self, task_type: str,
+                        gate_task_type: str = GATE_TASK_TYPE
+                        ) -> tuple[float | None, str | None]:
         """The `median_latency_s` the three model gates are timed against.
 
         Two choices live here, both of which 5.1 pins and neither of which is
@@ -598,11 +631,11 @@ class CapabilityTable:
         latency") are never printed identically -- see `gate_rung0` for the
         same fact when the call instead succeeds.
         """
-        gate, source, why = self._gate_rung0_row(task_type)
+        gate, source, why = self._gate_rung0_row(task_type, gate_task_type)
         if gate is None:
             return None, (
-                f"{why}, so the model its three gates run on (spec 4.3) "
-                f"cannot be named"
+                f"{why}, so the model its {gate_task_type} calls run on "
+                f"(spec 4.3-4.5) cannot be named"
             )
         if gate.median_latency_s is not None:
             return gate.median_latency_s, None
@@ -610,12 +643,14 @@ class CapabilityTable:
             if row.model == gate.model and row.median_latency_s is not None:
                 return row.median_latency_s, None
         return None, (
-            f"gate model {gate.model} (the reviewer-gate {source} pick) has "
-            f"no measured median_latency_s under {GATE_TASK_TYPE} or "
+            f"gate model {gate.model} (the {gate_task_type} {source} pick) "
+            f"has no measured median_latency_s under {gate_task_type} or "
             f"{task_type}"
         )
 
-    def _gate_candidates(self, task_type: str) -> tuple[list[CapabilityRow], str | None]:
+    def _gate_candidates(self, task_type: str,
+                         gate_task_type: str = GATE_TASK_TYPE
+                         ) -> tuple[list[CapabilityRow], str | None]:
         """Usable `reviewer-gate` rows, cheapest first (spec 4.3's floor
         pick and 4.3/4.5's climb target).
 
@@ -634,13 +669,13 @@ class CapabilityTable:
         rows they can already see; what they actually have to fix is the
         blank rate or the exclusion.
         """
-        gate_rows = self.rows_for(GATE_TASK_TYPE)
+        gate_rows = self.rows_for(gate_task_type)
         candidates = [r for r in gate_rows
                       if r.model not in EXCLUDED_MODELS
                       and r.cost_per_1m_tokens is not None]
         if not candidates:
             if not gate_rows:
-                why = (f"the table holds no {GATE_TASK_TYPE} row at all")
+                why = (f"the table holds no {gate_task_type} row at all")
             else:
                 unusable = ", ".join(
                     f"{r.model} ("
@@ -650,13 +685,15 @@ class CapabilityTable:
                     + ")"
                     for r in sorted(gate_rows, key=lambda r: r.model)
                 )
-                why = (f"every {GATE_TASK_TYPE} row is unusable as a gate "
+                why = (f"every {gate_task_type} row is unusable as a gate "
                        f"model: {unusable}")
             return [], why
         candidates.sort(key=lambda r: (r.cost_per_1m_tokens, r.model))
         return candidates, None
 
-    def _gate_climb_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
+    def _gate_climb_latency_s(self, task_type: str,
+                              gate_task_type: str = GATE_TASK_TYPE
+                              ) -> tuple[float | None, str | None]:
         """The gate's second call, at the rung above its entry (spec 4.3:
         "The reviewer itself only climbs (`luna -> sonnet`) if it keeps
         rejecting output from the generator's top rung"; 4.5 gives the
@@ -686,18 +723,20 @@ class CapabilityTable:
         `median_latency_s` is not measured -- the climb is possible, the
         worst case must assume it happens, and it cannot be priced.
         """
-        candidates, _ = self._gate_candidates(task_type)
+        candidates, _ = self._gate_candidates(task_type, gate_task_type)
         if len(candidates) < 2:
             return None, None
         climb = candidates[1]
         if climb.median_latency_s is not None:
             return climb.median_latency_s, None
         return None, (
-            f"gate climb model {climb.model} has no measured median_latency_s "
-            f"under {GATE_TASK_TYPE}"
+            f"gate climb model {climb.model} has no measured "
+            f"median_latency_s under {gate_task_type}"
         )
 
-    def gate_latency_s(self, task_type: str) -> tuple[float | None, str | None]:
+    def gate_latency_s(self, task_type: str,
+                       gate_task_type: str = GATE_TASK_TYPE
+                       ) -> tuple[float | None, str | None]:
         """Public accessor for `_gate_latency_s` (spec 5.1's per-gate
         deadline: `per_type_baseline x size_factor x model_speed_multiplier`
         computed with the gate model's own latency). Added for
@@ -706,7 +745,7 @@ class CapabilityTable:
         two copies of "which model, which row" is how the two would drift
         apart. No logic lives here; it only exposes the private method.
         """
-        return self._gate_latency_s(task_type)
+        return self._gate_latency_s(task_type, gate_task_type)
 
     def _worst_case(self, task_type: str) -> tuple[float | None, list[str]]:
         """5.1's worst-case path, and why it could not be computed.
@@ -724,13 +763,20 @@ class CapabilityTable:
         of it:
 
             worst_case = baseline x size_factor x [ sum(m_rung) over MAX_ATTEMPTS
-                                                  + MODEL_GATE_COUNT
-                                                    x (m_gate_entry + m_gate_climb) ]
+                                                  + SUM over gate types of
+                                                    calls x (m_entry + m_climb) ]
 
-        Every generation attempt runs to its deadline, then every one of the
-        three gates runs its entry call and, if the reviewer-gate table
-        holds a second usable model to climb to, its climb call too. Rungs
-        past `MAX_ATTEMPTS` are not summed because no leaf can reach them.
+        Every generation attempt runs to its deadline, then each gate type
+        runs its entry call and, if its own table holds a second usable model
+        to climb to, its climb call too. Rungs past `MAX_ATTEMPTS` are not
+        summed because no leaf can reach them.
+
+        Amended again 2026-09-17: the gate term is a sum over GATE_CALLS
+        rather than one term times three. The reviewer and security gates now
+        have separate task types with separate rows, so they can have
+        different rung 0 models and different latencies -- multiplying one
+        gate's figure by three would time two of the three calls against a
+        model that does not run them.
 
         `m_gate_climb` is 0, not missing, when there is only one usable
         `reviewer-gate` model: a gate cannot climb to a rung that does not
@@ -793,19 +839,28 @@ class CapabilityTable:
             else:
                 multiplier_sum += latency / reference
 
-        entry_latency, entry_reason = self._gate_latency_s(task_type)
-        if entry_reason is not None:
-            problems.append(f"{prefix} -- {entry_reason}")
+        # One term per GATE TASK TYPE, each weighted by how many of stages
+        # 3-5's calls it backs (2026-09-17's split). Before the split this was
+        # one term multiplied by three, which silently assumed every gate runs
+        # on the same model -- true while there was one gate type, and wrong
+        # the moment the reviewer and security gates got their own rows and
+        # their own, different, rung 0.
+        for gate_type, calls in sorted(GATE_CALLS.items()):
+            entry_latency, entry_reason = self._gate_latency_s(
+                task_type, gate_type)
+            if entry_reason is not None:
+                problems.append(f"{prefix} -- {entry_reason}")
 
-        climb_latency, climb_reason = self._gate_climb_latency_s(task_type)
-        if climb_reason is not None:
-            problems.append(f"{prefix} -- {climb_reason}")
+            climb_latency, climb_reason = self._gate_climb_latency_s(
+                task_type, gate_type)
+            if climb_reason is not None:
+                problems.append(f"{prefix} -- {climb_reason}")
 
-        if entry_latency is not None:
-            gate_multiplier = entry_latency / reference
-            if climb_latency is not None:
-                gate_multiplier += climb_latency / reference
-            multiplier_sum += MODEL_GATE_COUNT * gate_multiplier
+            if entry_latency is not None:
+                gate_multiplier = entry_latency / reference
+                if climb_latency is not None:
+                    gate_multiplier += climb_latency / reference
+                multiplier_sum += calls * gate_multiplier
 
         if problems:
             return None, problems

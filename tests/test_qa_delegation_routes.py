@@ -292,6 +292,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
 
@@ -334,6 +341,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
         self.assertEqual(await db.delegation_operational_all(), {"long-context"})
@@ -366,6 +380,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
 
@@ -387,6 +408,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
@@ -412,6 +440,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
         with self.assertRaises(HTTPException) as ctx:
             await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "long-context", "operational": True}))
@@ -426,6 +461,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
@@ -445,6 +487,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
@@ -485,6 +534,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
@@ -585,6 +641,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
         response = await delegation_routes.handle_delegation_get(_request())
@@ -601,6 +664,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
+                                    accuracy=None, n=None,
+                                    cost_per_1m_tokens=0.0,
+                                    median_latency_s=5.0, max_context=None)
+        # Stage 5's own task type since the 2026-09-17 gate split. Same model
+        # and latency as the reviewer row, so every figure these tests were
+        # written against still reproduces.
+        await db.delegation_row_set("claude-sonnet-5", "security-gate",
                                     accuracy=None, n=None,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=None)

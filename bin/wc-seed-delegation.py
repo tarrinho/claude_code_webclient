@@ -79,7 +79,19 @@ ROWS = [
     ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.5261, None, 1050000),
     ("azure_ai/gpt-5.6-luna", "multi-turn", 0.917, 12, 0.0285, 13.5, 922000),
     ("azure_ai/gpt-5.6-luna", "planning", 0.75, 12, 0.0285, 40.7, 922000),
-    ("azure_ai/gpt-5.6-luna", "reviewer-gate", None, 56, 0.0285, 6.055, 922000),
+    # The gate rows, measured 2026-09-17 by bench/gate_accuracy.py at n=28 per
+    # model per gate, and SPLIT into two task types by operator decision the
+    # same day. Pooled into one `reviewer-gate` row they averaged two
+    # materially different behaviours: luna is the best reviewer (0.9643, and
+    # it false-accepted nothing) while opus is the best security gate
+    # (0.9643); sonnet is the worst reviewer of the three and waved through 3
+    # real defects. See spec 4.3/4.5 and 2.6.
+    ("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.9643, 28, 0.0285, 6.07, 922000),
+    ("claude-sonnet-5", "reviewer-gate", 0.7857, 28, 1.5709, 4.555, 1000000),
+    ("claude-opus-5", "reviewer-gate", 0.8929, 28, 3.6082, 5.025, 1000000),
+    ("azure_ai/gpt-5.6-luna", "security-gate", 0.8571, 28, 0.0285, 5.83, 922000),
+    ("claude-sonnet-5", "security-gate", 0.9286, 28, 1.5709, 4.635, 1000000),
+    ("claude-opus-5", "security-gate", 0.9643, 28, 3.6082, 4.8, 1000000),
     ("claude-sonnet-5", "coding", 1.0, 24, 1.5709, 15.5, 1000000),
     ("claude-sonnet-5", "long-context", 0.667, 12, 1.5709, 4.2, 1000000),
     ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
@@ -88,7 +100,6 @@ ROWS = [
     ("claude-sonnet-5", "multi-turn", 1.0, 12, 1.5709, 7.8, 1000000),
     ("claude-sonnet-5", "planning", 0.833, 12, 1.5709, 17.5, 1000000),
     ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),
-    ("claude-sonnet-5", "reviewer-gate", None, 56, 1.5709, 4.605, 1000000),
     ("claude-opus-5", "comprehension", 1.0, 12, 3.6082, 11.9, 1000000),
     ("claude-opus-5", "reasoning", 1.0, 6, 3.6082, 10.2, 1000000),
     # azure_ai/gpt-5.6-terra, added 2026-09-17. accuracy/n/median_latency_s are

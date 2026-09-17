@@ -87,6 +87,8 @@ def _row(model, task_type, accuracy=None, n=None, rate=0.0, latency=None,
 GATE_ROWS = [
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
          922_000),
+    _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285, 11.1,
+         922_000),
 ]
 
 VLLM = "vllm/Qwen3.6-35B-A3B-NVFP4"
@@ -754,6 +756,13 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
                 max_context=context)
         await db.delegation_row_set(
             LUNA, "reviewer-gate", accuracy=None, n=9,
+            cost_per_1m_tokens=RATE[LUNA], median_latency_s=11.1,
+            max_context=922_000)
+        # Stage 5's own task type since the 2026-09-17 split. Same latency as
+        # the reviewer gate, so 2 reviewer calls + 1 security call reproduce
+        # the arithmetic this test was written against (one figure x 3).
+        await db.delegation_row_set(
+            LUNA, "security-gate", accuracy=None, n=9,
             cost_per_1m_tokens=RATE[LUNA], median_latency_s=11.1,
             max_context=922_000)
         await db.delegation_operational_set(self.TASK_TYPE, True)

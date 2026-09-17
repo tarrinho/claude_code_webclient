@@ -109,15 +109,32 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
                         max_context=922_000)
         await self._row("claude-sonnet-5", "reviewer-gate",
                         cost_per_1m_tokens=1.5709, max_context=1_000_000)
+        await self._security_gate_row()
+
+    async def _security_gate_row(self):
+        """Stage 5's own task type, split out from `reviewer-gate` on
+        2026-09-17.
+
+        Every fixture that flips a type operational now needs one: 4.5's
+        security gate runs on this type, so without a row 1.1's ceiling
+        invariant has no multiplier for a third of its gate calls and
+        correctly refuses. The latency matches luna's reviewer-gate figure so
+        the arithmetic in tests written before the split -- which multiplied
+        ONE gate latency by three -- still reproduces.
+        """
+        await self._row("azure_ai/gpt-5.6-luna", "security-gate",
+                        cost_per_1m_tokens=0.0285, median_latency_s=11.1,
+                        max_context=922_000)
 
     async def _gate_rows_single(self):
-        """One usable `reviewer-gate` row: no second, climbable rung, so a
-        type validated against this fixture computes its worst-case path
+        """One usable rung on each gate task type: no second, climbable rung,
+        so a type validated against this fixture computes its worst-case path
         exactly as the pre-2026-09-16 formula did.
         """
         await self._row("azure_ai/gpt-5.6-luna", "reviewer-gate",
                         cost_per_1m_tokens=0.0285, median_latency_s=11.1,
                         max_context=922_000)
+        await self._security_gate_row()
 
     async def test_a_complete_operational_type_starts(self):
         """The one end-to-end check that a complete operational type boots

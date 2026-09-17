@@ -65,7 +65,8 @@ A write is rejected only against the invariants of task types that are *already*
 | multi-turn | 2 | 0 | 0 | **2** | 0 | **2** |
 | planning | 2 | 0 | 0 | **2** | 0 | **2** |
 | reasoning | 4 | 2 | 1 | **4** | 0 | **4** |
-| reviewer-gate | 2 | 0 | 0 | **2** | 1 | **2** |
+| reviewer-gate | 3 | 3 | 3 | **3** | 0 | **3** |
+| security-gate | 3 | 3 | 3 | **3** | 0 | **3** |
 | split-decision | 1 | 0 | 0 | **1** | 0 | **1** |
 | voice | 2 | 0 | 0 | **2** | 0 | **2** |
 
@@ -287,7 +288,11 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0285 | 13.5 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | planning | 75% | 12 | 0.0285 | 40.7 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 56* | 0.0285 | 6.055 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | 96.43% | 28 | 0.0285 | 6.07 | 922,000 |
+| `claude-opus-5` | reviewer-gate | 89.29% | 28 | 3.6082 | 5.025 | 1,000,000 |
+| `azure_ai/gpt-5.6-luna` | security-gate | 85.71% | 28 | 0.0285 | 5.83 | 922,000 |
+| `claude-sonnet-5` | security-gate | 92.86% | 28 | 1.5709 | 4.635 | 1,000,000 |
+| `claude-opus-5` | security-gate | 96.43% | 28 | 3.6082 | 4.8 | 1,000,000 |
 | `claude-sonnet-5` | coding | 100% | 24 | 1.5709 | 15.5 | 1,000,000 |
 | `claude-sonnet-5` | long-context | 66.7% | 12 | 1.5709 | 4.2 | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 12 | 1.5709 | 6.0 | 1,000,000 |
@@ -296,7 +301,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 1.5709 | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 1.5709 | 17.5 | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | reviewer-gate | TBD | 56* | 1.5709 | 4.605 | 1,000,000 |
+| `claude-sonnet-5` | reviewer-gate | 78.57% | 28 | 1.5709 | 4.555 | 1,000,000 |
 | `claude-opus-5` | comprehension | 100% | 12 | 3.6082 | 11.9 | 1,000,000 |
 | `claude-opus-5` | reasoning | 100% | 6 | 3.6082 | 10.2 | 1,000,000 |
 | `azure_ai/gpt-5.6-terra` | coding | 100% | 18 | 0.0285† | 7.2 | 922,000 |

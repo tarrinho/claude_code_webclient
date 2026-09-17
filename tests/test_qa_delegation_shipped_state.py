@@ -183,10 +183,14 @@ class SeedRowCoverageTests(unittest.TestCase):
 
     def test_spec_pairs_parsed_sanely(self):
         # Guards the parser itself: if the table's shape ever changes enough
-        # that this stops finding 29 rows (23 plus azure_ai/gpt-5.6-terra's
-        # six, added 2026-09-17), the pairs test below would pass trivially
-        # on an empty set rather than failing usefully.
-        self.assertEqual(len(self._spec_pairs()), 29)
+        # that this stops finding the expected rows, the pairs test below
+        # would pass trivially on an empty set rather than failing usefully.
+        #
+        # 33 = 23 original, plus azure_ai/gpt-5.6-terra's six (2026-09-17),
+        # plus four net from the gate split the same day: the two pooled
+        # `reviewer-gate` rows became three `reviewer-gate` and three
+        # `security-gate` rows, now that opus is measured on both.
+        self.assertEqual(len(self._spec_pairs()), 33)
 
     def test_every_spec_2_6_row_has_a_seeded_row(self):
         module = _load_seed_module()

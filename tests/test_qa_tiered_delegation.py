@@ -57,6 +57,8 @@ GATE_MEASURED = [
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
          1_000_000),
+    _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285, 11.1,
+         922_000),
 ]
 
 # One usable reviewer-gate model, used wherever a test needs an operational
@@ -65,6 +67,8 @@ GATE_MEASURED = [
 # this fixture's arithmetic matches the pre-amendment formula exactly.
 GATE_SINGLE = [
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+         922_000),
+    _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285, 11.1,
          922_000),
 ]
 

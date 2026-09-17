@@ -50,6 +50,28 @@ CODING_MEASURED = [
     _row("azure_ai/gpt-5.4-mini", "coding", None, None, 0.5261, None, 1_050_000),
 ]
 
+def _security_gate_rows(climb: bool = False, latency: float = 11.1):
+    """`security-gate` rows, for the gate task type split out on 2026-09-17.
+
+    Every fixture in this file needs them now: stage 5 runs on its own task
+    type, so a table holding only `reviewer-gate` rows genuinely cannot time
+    the security gate and `_worst_case` correctly refuses. The default latency
+    matches luna's reviewer-gate figure so the arithmetic in tests written
+    before the split -- which multiplied ONE gate latency by three -- still
+    reproduces: 2 reviewer calls + 1 security call at the same latency is the
+    same sum as 3 calls at that latency.
+
+    `climb=True` adds a measured second rung, for the tests that are about the
+    climb term itself.
+    """
+    rows = [_row("azure_ai/gpt-5.6-luna", "security-gate", None, None,
+                 0.0285, latency, 922_000)]
+    if climb:
+        rows.append(_row("claude-sonnet-5", "security-gate", None, None,
+                         1.5709, latency, 1_000_000))
+    return rows
+
+
 # Spec 2.6: the real reviewer-gate rows. Luna's 11.1s is the only measured
 # gate latency in the table and is what 5.1's derivation divides by 12.8.
 # Sonnet is the climb rung (spec 4.3/4.5) and its reviewer-gate latency is
@@ -63,7 +85,7 @@ GATE_ROWS = [
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
          1_000_000),
-]
+] + _security_gate_rows(climb=False)
 
 # One usable reviewer-gate model: there is no second rung to climb to, so
 # the gate-climb term is correctly zero rather than missing. Every test that
@@ -72,7 +94,7 @@ GATE_ROWS = [
 GATE_SINGLE = [
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
          922_000),
-]
+] + _security_gate_rows(climb=False)
 
 # Both reviewer-gate rungs measured, so a gate that climbs has a priced
 # second call. Used only by tests about the climb term itself.
@@ -81,7 +103,7 @@ GATE_CLIMB_MEASURED = [
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, 14.0,
          1_000_000),
-]
+] + _security_gate_rows(climb=False)
 
 
 def _widget_rows(task_type="widget"):
@@ -332,11 +354,17 @@ class WorstCasePathTests(unittest.TestCase):
         slow_gate = [
             _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285,
                  22.2, 922_000),
-        ]
+        ] + _security_gate_rows(climb=False)
         base = _table(_widget_rows() + GATE_SINGLE).worst_case_path_s("widget")
         slowed = _table(_widget_rows() + slow_gate).worst_case_path_s("widget")
         self.assertAlmostEqual(base, WIDGET_WORST_CASE_S, places=3)
-        self.assertAlmostEqual(slowed, 1954.8, places=3)
+        # Since the 2026-09-17 split this moves 2 calls, not 3: the reviewer
+        # gate backs 4.3's reviewer and 4.4's QA, and 4.5's security gate is
+        # untouched at 11.1s. That the delta is 2x rather than 3x is the
+        # assertion -- it is what proves the security call is timed against
+        # its OWN row instead of the reviewer's.
+        self.assertAlmostEqual(
+            slowed - base, 2 * (22.2 - 11.1) / 10.0 * 180.0, places=3)
 
     def test_the_gate_climb_term_is_added_when_the_climb_rung_is_measured(self):
         """Spec 4.3/4.5, 2026-09-16 amendment: each of the three gates can
@@ -346,21 +374,17 @@ class WorstCasePathTests(unittest.TestCase):
         (11.1s) with nothing else changed, so the whole difference is the
         climb term:
 
-            entry+climb per gate  (11.1 + 14.0) / 10.0 = 2.51
-            3 gates                                    = 7.53
-            generation             (20 + 10 + 12) / 10.0 = 4.2
-            sum                                         = 11.73
-            180 x 11.73                                 = 2,111.4s
-
-        against `GATE_SINGLE`'s 1,355.4s (`WIDGET_WORST_CASE_S`) -- a rise of
-        exactly 180 x 3 x (14.0/10.0) = 756.0s, the climb rung's own
-        contribution and nothing else."""
+        Since the 2026-09-17 split only the REVIEWER gate gains a climb rung
+        here, so the rise is 2 calls' worth, not 3 -- and that asymmetry is
+        the point: the security gate still has one usable model, so its climb
+        term is correctly zero rather than borrowed from the reviewer's
+        table."""
         single = _table(_widget_rows() + GATE_SINGLE).worst_case_path_s("widget")
         climbable = _table(
             _widget_rows() + GATE_CLIMB_MEASURED).worst_case_path_s("widget")
         self.assertAlmostEqual(single, WIDGET_WORST_CASE_S, places=3)
-        self.assertAlmostEqual(climbable, 2111.4, places=3)
-        self.assertAlmostEqual(climbable - single, 756.0, places=3)
+        self.assertAlmostEqual(
+            climbable - single, 2 * (14.0 / 10.0) * 180.0, places=3)
 
     def test_a_measured_but_unresolved_climb_rung_is_a_problem_not_zero(self):
         """The negative of the test above, on the exact real-spec fixture:
@@ -385,6 +409,8 @@ class WorstCasePathTests(unittest.TestCase):
         itself, so all three gates come out at 1.00 and the sum is 7.2."""
         gate_without_latency = [
             _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285,
+                 None, 922_000),
+            _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285,
                  None, 922_000),
         ]
         table = _table(_widget_rows() + gate_without_latency,

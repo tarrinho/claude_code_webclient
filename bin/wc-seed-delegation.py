@@ -97,6 +97,23 @@ ROWS = [
     ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
     ("claude-sonnet-5", "reasoning", 0.834, 6, 1.5709, 24.6, 1000000),
     ("claude-sonnet-5", "voice", 1.0, 12, 1.5709, None, 1000000),
+    # azure_ai/gpt-5.6-sol, measured 2026-09-17 (bin/wc-bench.py --repeats 3)
+    # and seeded the same day. Price is ASSUMED to be luna's, marked with a
+    # dagger in 2.6, on the same operator decision that covered terra: the
+    # gateway publishes no rate for the gpt-5.6 family. Replace both families'
+    # rates together when the real numbers land.
+    #
+    # The reason it matters is `planning`: sol scores 0.833, identical to
+    # sonnet, at 1/55th of sonnet's assumed rate. It does not remove sonnet
+    # from the ladder -- equal accuracy is kept (spec 3) -- it DEMOTES it from
+    # rung 1 to rung 2, where 2.7's reach probability is 1/6 instead of 1/2.
+    # That alone takes planning's tree cost from $1.936 to $0.724.
+    ("azure_ai/gpt-5.6-sol", "coding", 1.0, 18, 0.0285, 7.85, 922000),
+    ("azure_ai/gpt-5.6-sol", "long-context", 1.0, 12, 0.0285, 7.84, 922000),
+    ("azure_ai/gpt-5.6-sol", "multi-turn", 0.833, 12, 0.0285, 17.02, 922000),
+    ("azure_ai/gpt-5.6-sol", "planning", 0.833, 12, 0.0285, 39.41, 922000),
+    ("azure_ai/gpt-5.6-sol", "comprehension", 0.583, 12, 0.0285, 14.53, 922000),
+    ("azure_ai/gpt-5.6-sol", "reasoning", 0.5, 6, 0.0285, 11.78, 922000),
     # The model that ACTUALLY serves voice on this deployment, added
     # 2026-09-17. It had no row at all until then, so no 1.1 invariant could
     # see it while section 3's voice ladder named two models that have never

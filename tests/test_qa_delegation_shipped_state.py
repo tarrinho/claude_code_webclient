@@ -192,7 +192,10 @@ class SeedRowCoverageTests(unittest.TestCase):
         # `security-gate` rows, now that opus is measured on both), plus
         # azure_ai/gpt-5.4-mini-copilot's voice row -- the model that actually
         # serves voice, which had no row at all until then.
-        self.assertEqual(len(self._spec_pairs()), 34)
+        # 40 = 34, plus azure_ai/gpt-5.6-sol's six (2026-09-17). sol is
+        # what takes planning's tree cost from $1.936 to $0.724, by
+        # demoting sonnet from rung 1 to rung 2 rather than removing it.
+        self.assertEqual(len(self._spec_pairs()), 40)
 
     def test_every_spec_2_6_row_has_a_seeded_row(self):
         module = _load_seed_module()

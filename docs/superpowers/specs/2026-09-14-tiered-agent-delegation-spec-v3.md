@@ -285,6 +285,12 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0285 | 16.5 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 3.5167‡ | 2.002 | TBD |
+| `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 0.0285† | 7.85 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 0.0285† | 7.84 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | multi-turn | 83.3% | 12 | 0.0285† | 17.02 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | planning | 83.3% | 12 | 0.0285† | 39.41 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | comprehension | 58.3% | 12 | 0.0285† | 14.53 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | reasoning | 50% | 6 | 0.0285† | 11.78 | 922,000 |
 | `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0285 | 13.5 | 922,000 |

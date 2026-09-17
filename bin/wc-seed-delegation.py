@@ -97,6 +97,14 @@ ROWS = [
     ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
     ("claude-sonnet-5", "reasoning", 0.834, 6, 1.5709, 24.6, 1000000),
     ("claude-sonnet-5", "voice", None, None, 1.5709, None, 1000000),
+    # The model that ACTUALLY serves voice on this deployment, added
+    # 2026-09-17. It had no row at all until then, so no 1.1 invariant could
+    # see it while section 3's voice ladder named two models that have never
+    # served a voice turn. accuracy is TBD because bench/tasks.py has no voice
+    # tasks; latency and n are real (46 voice_turn_timing rows); the rate is
+    # blended from usage_events and is marked with a double dagger in 2.6 --
+    # 3.5167/1M for a "mini" model is not credible and needs a real price.
+    ("azure_ai/gpt-5.4-mini-copilot", "voice", None, 46, 3.5167, 2.002, None),
     ("claude-sonnet-5", "multi-turn", 1.0, 12, 1.5709, 7.8, 1000000),
     ("claude-sonnet-5", "planning", 0.833, 12, 1.5709, 17.5, 1000000),
     ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),

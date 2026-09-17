@@ -68,7 +68,7 @@ A write is rejected only against the invariants of task types that are *already*
 | reviewer-gate | 3 | 3 | 3 | **3** | 0 | **3** |
 | security-gate | 3 | 3 | 3 | **3** | 0 | **3** |
 | split-decision | 1 | 0 | 0 | **1** | 0 | **1** |
-| voice | 2 | 0 | 0 | **2** | 0 | **2** |
+| voice | 3 | 0 | 1 | **3** | 0 | **3** |
 
 Cost and `max_context` are complete (23/23). Accuracy is 8/23 and latency 4/23 after today's coding run (§3.1).
 
@@ -284,6 +284,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0285 | 9.2 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0285 | 16.5 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | voice | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 3.5167‡ | 2.002 | TBD |
 | `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0285 | 13.5 | 922,000 |
@@ -314,6 +315,8 @@ Holding each model against each task type, with columns: measured accuracy, samp
 **A `cost_per_1M_tokens` cell marked `†` is assumed, not billed — a distinct marker from the `*` above, which means "latency sample, not accuracy sample."** `azure_ai/gpt-5.6-terra`'s six rows carry **0.0285**, `azure_ai/gpt-5.6-luna`'s own rate, because the operator assumed luna-equivalent pricing so terra could enter the ladders today, rather than sit unpriced until billing catches up (**operator, 2026-09-17**). Real gateway billing figures are expected tomorrow. §2.5 sources every other Azure rate from **gateway billing**, not from this database — terra's `†` is the one cost figure in this table that gateway billing has not yet supplied, and it is not a substitute for that source. **Every ladder position and tree cost derived from terra is provisional until the real rate lands.**
 
 This is in direct tension with §2.7's **"a model nobody priced must not come out cheapest"** — assuming a cheap price is exactly how an unpriced model comes out cheapest, and this assumption does that. That tension is not resolved here: it is a **deliberate operator decision**, recorded rather than argued away, not an oversight.
+
+**`‡` marks a rate blended from this deployment's own `usage_events` rather than a published price.** `azure_ai/gpt-5.4-mini-copilot` at **3.5167**/1M is 47 recorded events totalling 25,309 tokens for $0.089. Treat it with suspicion rather than confidence: a model named *mini* pricing within 3% of `claude-opus-5` (3.6082) is not what a mini model should cost, and the likeliest explanations are a gateway markup, a cost field the gateway populates differently, or too small a sample. It is recorded because the alternative — leaving the only model that actually serves voice unpriced — is what §2.7 warns against most directly ("a model nobody priced must not come out cheapest"). Re-derive it from a real price list before any ladder depends on it.
 
 **`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available. **`azure_ai/gpt-5.6-terra` added 2026-09-17, same source**: `/model/info` reports `max_input_tokens: 922000` for it, the same figure as luna — unlike its cost cell (marked `†` above), this column is measured, not assumed.
 
@@ -570,6 +573,8 @@ The table below is a **snapshot of what this computation is expected to produce 
 | planning | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | comprehension | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | `claude-opus-5` |
 | voice | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
+
+**The voice ladder above names two models that have never served a voice turn.** Production voice runs `azure_ai/gpt-5.4-mini-copilot` — 46 measured turns, and every `voice_turn_timing` row in the database is that model. It had no row in §2.6 at all until 2026-09-17, so no §1.1 invariant could see it and the published ladder described a configuration that has never existed. The row is added with what is measured; it is **not** ladder-eligible (no accuracy), so the ladder above is still what the generator produces — the discrepancy is between the ladder and reality, not between the ladder and the table.
 | reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set (an editorial hold; see below) | — | — |
 | split-decision | `claude-sonnet-5` | — | — |
 | **reviewer-gate** | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` (see §4.3) | — |

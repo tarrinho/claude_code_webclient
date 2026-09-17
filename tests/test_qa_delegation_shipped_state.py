@@ -186,11 +186,13 @@ class SeedRowCoverageTests(unittest.TestCase):
         # that this stops finding the expected rows, the pairs test below
         # would pass trivially on an empty set rather than failing usefully.
         #
-        # 33 = 23 original, plus azure_ai/gpt-5.6-terra's six (2026-09-17),
-        # plus four net from the gate split the same day: the two pooled
+        # 34 = 23 original, plus azure_ai/gpt-5.6-terra's six (2026-09-17),
+        # plus four net from the gate split the same day (the two pooled
         # `reviewer-gate` rows became three `reviewer-gate` and three
-        # `security-gate` rows, now that opus is measured on both.
-        self.assertEqual(len(self._spec_pairs()), 33)
+        # `security-gate` rows, now that opus is measured on both), plus
+        # azure_ai/gpt-5.4-mini-copilot's voice row -- the model that actually
+        # serves voice, which had no row at all until then.
+        self.assertEqual(len(self._spec_pairs()), 34)
 
     def test_every_spec_2_6_row_has_a_seeded_row(self):
         module = _load_seed_module()
@@ -233,13 +235,15 @@ def _spec_n(cell: str) -> int | None:
 def _spec_float(cell: str) -> float | None:
     """A plain decimal cell (`cost_per_1M_tokens`, `median_latency_s`).
 
-    `cost_per_1M_tokens` may carry a trailing `†`, spec 2.6's marker for
-    "assumed, not billed" (added 2026-09-17 for `azure_ai/gpt-5.6-terra`) --
-    a distinct marker from `_spec_n`'s `*`, so stripped the same way rather
-    than folded into that one. The seed script stores the number either
-    way; the marker itself carries no value to compare here."""
+    `cost_per_1M_tokens` may carry a trailing marker, and there are two:
+    `†` for "assumed, not billed" (2026-09-17, `azure_ai/gpt-5.6-terra`) and
+    `‡` for "blended from this deployment's own usage_events rather than a
+    published price" (2026-09-17, `azure_ai/gpt-5.4-mini-copilot`). Both are
+    distinct from `_spec_n`'s `*`, so both are stripped here rather than
+    folded into that one. The seed script stores the number either way; a
+    marker carries no value to compare."""
     v = _spec_cell(cell)
-    return None if v is None else float(v.rstrip("†").replace(",", ""))
+    return None if v is None else float(v.rstrip("†‡").replace(",", ""))
 
 
 def _spec_int(cell: str) -> int | None:

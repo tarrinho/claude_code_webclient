@@ -302,8 +302,16 @@ def _blockers_by_task_type(
         # set, not only the one being asked about here -- filter down to the
         # problems that actually name this task type.
         data_problems = [p for p in problems if p.startswith(f"{task_type}:")]
+        policy = _OPERATIONAL_FLIP_BLOCKED.get(task_type)
         blockers[task_type] = {
-            "policy": _OPERATIONAL_FLIP_BLOCKED.get(task_type),
+            # Prefixed with the task type, like every string `validate()`
+            # produces. The stored reason is deliberately unprefixed --
+            # `handle_operational_put` interpolates it into a sentence that
+            # already names the type -- but on the settings page a policy line
+            # sits directly beside data lines that ARE prefixed, and the
+            # mismatch read as two different kinds of message about two
+            # different things.
+            "policy": None if policy is None else f"{task_type}: {policy}",
             "data": data_problems,
             "warnings": warnings,
         }

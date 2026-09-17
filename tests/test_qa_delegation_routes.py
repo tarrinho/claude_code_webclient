@@ -522,11 +522,37 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(response.body)
         coding = body["blockers"]["coding"]
         reasoning = body["blockers"]["reasoning"]
-        self.assertEqual(coding["policy"],
-                          delegation_routes._OPERATIONAL_FLIP_BLOCKED["coding"])
-        self.assertEqual(reasoning["policy"],
-                          delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"])
+        self.assertIn(
+            delegation_routes._OPERATIONAL_FLIP_BLOCKED["coding"],
+            coding["policy"])
+        self.assertIn(
+            delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"],
+            reasoning["policy"])
         self.assertNotEqual(coding["policy"], reasoning["policy"])
+
+    async def test_a_policy_blocker_names_its_task_type_like_a_data_one(self):
+        """On the page a policy line sits directly beside data lines, and
+        every string `validate()` produces opens with `<task type>: `. The
+        stored reason is deliberately unprefixed -- `handle_operational_put`
+        interpolates it into a sentence that already names the type -- so the
+        prefix is added where the two are shown together. Without it the
+        rendered box mixes prefixed and unprefixed lines and reads as two
+        different kinds of message about two different things."""
+        await db.delegation_row_set("claude-sonnet-5", "coding", accuracy=1.0)
+        await db.delegation_row_set("claude-sonnet-5", "reasoning", accuracy=1.0)
+        body = json.loads(
+            (await delegation_routes.handle_delegation_get(_request())).body)
+        for task_type in ("coding", "reasoning"):
+            with self.subTest(task_type=task_type):
+                entry = body["blockers"][task_type]
+                self.assertTrue(entry["policy"].startswith(f"{task_type}: "),
+                                entry["policy"])
+                # The stored reason itself must stay unprefixed, or the flip
+                # refusal would read "coding cannot be flipped operational:
+                # coding: spec section 12 ...".
+                self.assertFalse(
+                    delegation_routes._OPERATIONAL_FLIP_BLOCKED[task_type]
+                    .startswith(f"{task_type}: "))
 
     async def test_get_computes_a_data_blocker_for_an_incomplete_non_operational_type(self):
         """`long-context` has no policy hold, but a row missing

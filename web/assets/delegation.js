@@ -443,9 +443,15 @@ function _ceilingKnob(state) {
   wrap.className = 'delegation-ceiling-knob';
   const label = document.createElement('span');
   label.className = 'delegation-fact';
+  // Carries the ceiling's VALUE as well as its state, because this replaces
+  // the plain `latency ceiling: 1500s` fact rather than sitting beside it --
+  // two facts both opening with "latency ceiling" read as two unrelated
+  // settings, and the knob looked like it governed something else.
+  const value = state.ceiling_s === null || state.ceiling_s === undefined
+    ? 'latency ceiling' : `latency ceiling: ${state.ceiling_s}s`;
   label.textContent = state.enabled
-    ? 'latency ceiling: enforced'
-    : 'latency ceiling: reported, not enforced';
+    ? `${value} — enforced`
+    : `${value} — reported, not enforced`;
   const knob = document.createElement('button');
   knob.type = 'button';
   knob.className = 'toggle-knob';
@@ -489,13 +495,15 @@ function _renderStatus(payload) {
   const budget = cfg.cost_ceiling && cfg.cost_ceiling.budget_usd_per_tree
     ? cfg.cost_ceiling.budget_usd_per_tree.value : null;
 
-  const items = [
-    `${measured} of ${total} cells measured`,
-    ceiling === null || ceiling === undefined
-      ? 'latency ceiling: not available' : `latency ceiling: ${ceiling}s`,
-    budget === null || budget === undefined
-      ? 'tree budget: not available' : `tree budget: $${budget}`,
-  ];
+  // The ceiling fact is rendered by `_ceilingKnob` when the server sent the
+  // enforcement state, so it is omitted here rather than printed twice.
+  const items = [`${measured} of ${total} cells measured`];
+  if (!payload.ceiling_enforcement) {
+    items.push(ceiling === null || ceiling === undefined
+      ? 'latency ceiling: not available' : `latency ceiling: ${ceiling}s`);
+  }
+  items.push(budget === null || budget === undefined
+    ? 'tree budget: not available' : `tree budget: $${budget}`);
   items.forEach(text => {
     const span = document.createElement('span');
     span.className = 'delegation-fact';

@@ -63,6 +63,8 @@ from typing import Final
 
 from delegation_classifier import Classification, MUTATES_FALSE, MUTATES_TRUE
 from tiered_delegation import (
+    CEILING_ENFORCEMENT_DEFAULT,
+    LATENCY_CEILING_S,
     CapabilityTable,
     MAX_ATTEMPTS,
     SIZE_FACTOR,
@@ -439,3 +441,105 @@ def gate_exhaustion_outcome(gate: str, cycles: int, gate_rung: int,
     if security_exhausted(cycles):
         return FAILED_HUMAN_FLAGGED
     return LEAF_FAILED
+
+
+# --- the combined latency ceiling, enforced per stage (spec 5.1, 6.1) --------
+#
+# 5.1: "It is evaluated **before each stage starts**, never mid-stage. If the
+# elapsed time plus the next stage's deadline would exceed the ceiling, the
+# leaf stops there. Interrupting a stage in flight would pay for a model call
+# and discard its verdict, which is the most expensive possible way to save
+# time."
+#
+# 6.1: a leaf stopped this way emits `latency_ceiling_exhausted`, which
+# TERMINATES rather than escalates. A timeout says a model was too slow and a
+# different rung may help; a ceiling exhaustion says the leaf is out of total
+# budget, and every higher rung is SLOWER -- so escalating would answer a
+# budget problem by spending more.
+#
+# Like the rest of this module, nothing calls these yet: the decision is built
+# ahead of the stage loop that will run it, which is the same order the gate
+# rules above were built in.
+
+#: 6.1's signal. Deliberately NOT one of `LEAF_FAILED` / `FAILED_HUMAN_FLAGGED`
+#: / `ESCALATED_TO_HUMAN`: those describe a leaf that produced a verdict or
+#: reached a human, and this one describes a leaf that ran out of clock. 6.1
+#: also insists it stay distinct from a deadline expiry, because the two look
+#: identical in a log and call for opposite responses.
+LATENCY_CEILING_EXHAUSTED: Final[str] = "latency_ceiling_exhausted"
+
+
+@dataclass(frozen=True)
+class CeilingDecision:
+    """What the pre-stage ceiling check decided, and what it observed.
+
+    `proceed` and `exceeded` are separate fields and that separation is the
+    point of the knob. With enforcement off, a leaf over the ceiling reports
+    `proceed=True, exceeded=True` -- it keeps running AND the breach is
+    recorded. 5.1 asks for "the rate of such cuts monitored" (spec 10), and a
+    check that returned only "carry on" while enforcement was off would leave
+    nothing to monitor, so turning the knob on later would be a decision taken
+    with no evidence.
+    """
+
+    proceed: bool
+    exceeded: bool
+    projected_total_s: float
+    signal: str | None
+    reason: str | None
+
+
+def ceiling_decision(
+    elapsed_s: float,
+    next_stage_deadline_s: float,
+    *,
+    enforce: bool = CEILING_ENFORCEMENT_DEFAULT,
+    ceiling_s: float = LATENCY_CEILING_S,
+) -> CeilingDecision:
+    """5.1's pre-stage ceiling check for one leaf.
+
+    Call this BEFORE starting a stage, never during one, with the time the
+    leaf has already spent and the deadline the next stage would be given
+    (`effective_deadline` for a generation attempt, `gate_effective_deadline`
+    for a model-backed gate).
+
+    The comparison is `elapsed + next_stage_deadline > ceiling`, strictly:
+    5.1 says the leaf stops when the projection "would exceed" the ceiling, so
+    a projection landing exactly ON the ceiling still fits and the stage runs.
+
+    `enforce` is 9.2's knob (`CEILING_ENFORCEMENT_SETTING`, off by default).
+    It changes only `proceed`. `exceeded`, `projected_total_s` and `reason`
+    are computed identically either way -- see `CeilingDecision`.
+
+    Negative inputs raise `ValueError`. That is a caller error, not missing
+    data: elapsed time and a deadline are both durations, and a negative one
+    means the caller computed it wrongly rather than failed to measure it. It
+    takes the same plain-raise treatment as `gate_exhaustion_outcome`'s
+    unrecognised gate, not the `(value, reason)` shape the missing-data
+    functions above use.
+    """
+    if elapsed_s < 0:
+        raise ValueError(f"elapsed_s must not be negative; got {elapsed_s!r}")
+    if next_stage_deadline_s < 0:
+        raise ValueError(
+            f"next_stage_deadline_s must not be negative; "
+            f"got {next_stage_deadline_s!r}")
+
+    projected = elapsed_s + next_stage_deadline_s
+    exceeded = projected > ceiling_s
+    if not exceeded:
+        return CeilingDecision(True, False, projected, None, None)
+
+    reason = (
+        f"the next stage would bring this leaf to {projected:.0f}s "
+        f"({elapsed_s:.0f}s elapsed + a {next_stage_deadline_s:.0f}s stage "
+        f"deadline), above the {ceiling_s:.0f}s combined latency ceiling "
+        f"(spec 5.1)"
+    )
+    if not enforce:
+        # Observed, recorded, not acted on. No signal: the leaf is not being
+        # stopped, and emitting 6.1's terminating signal for a leaf that
+        # carries on would make the log say the opposite of what happened.
+        return CeilingDecision(True, True, projected, None, reason)
+    return CeilingDecision(
+        False, True, projected, LATENCY_CEILING_EXHAUSTED, reason)

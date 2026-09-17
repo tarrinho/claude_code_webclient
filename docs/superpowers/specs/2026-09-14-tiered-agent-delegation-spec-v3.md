@@ -985,6 +985,25 @@ Note what drives it: the free rung is **2.09x slower than the model it exists to
 
 **How the ceiling is enforced.** It is evaluated **before each stage starts**, never mid-stage. If the elapsed time plus the next stage's deadline would exceed the ceiling, the leaf stops there. Interrupting a stage in flight would pay for a model call and discard its verdict, which is the most expensive possible way to save time.
 
+The comparison is strict. A projection landing **exactly on** the ceiling has not exceeded it, so that stage runs — a `>=` here would cut a leaf that fits, which is the same waste the "never interrupt a stage in flight" rule exists to avoid.
+
+#### Added 2026-09-17: enforcement is a knob, and it is off by default
+
+**The ceiling is computed and reported always; whether it *blocks* is a setting.** `delegation_enforce_latency_ceiling` (§9.2, stored in `settings`, default **off**) governs both places the ceiling can stop something: §1.1's refusal to start or to flip a type operational, and the per-stage runtime check above.
+
+The default is off for a reason that is about evidence, not about convenience:
+
+- **The ceiling is derived from the worst case of the most expensive *operational* task type. Nothing is operational.** So today it is derived from nothing — a placeholder that has held through seven successive re-derivations of the arithmetic behind it. Enforcing a constant that is currently unbound by any measurement is choosing it, which this section's own "derived, not chosen" rule forbids.
+- **Every task type currently over the ceiling is over for a reason that is not its latency.** `multi-turn` (1,515.7s), `reasoning` (1,658.0s) and `comprehension` (1,772.4s) have no entry in `TIER0_BASELINE_CALIBRATION`, so each pairs a *fixed* 90s baseline with *derived* multipliers — precisely the defect the 2026-09-17 change fixed for calibrated types only. Recomputed with a calibrated baseline they land at 923.6s, 1,152.8s and 830.8s, all comfortably inside. Blocking those types today would be blocking them on a formula known to be wrong for them.
+
+**What "off" does not mean.** Off means **not blocking**; it never means **not measured**. With the knob off, a breach still appears in `CapabilityTable.latency_ceiling_breaches`, still shows on the §9.2 page as a warning distinct from a blocker, still logs at boot, and the runtime check still returns `exceeded=True` alongside `proceed=True`. §10 asks for the rate of ceiling cuts to be monitored, and that rate is wanted *precisely* while nothing is being stopped by it — a knob that suppressed the measurement along with the block would make the decision to turn it on one taken with no evidence.
+
+**What the knob does not gate.** An **incomputable** worst-case path. Missing data and a breach are different failures: "we cannot tell how long this takes" is not relaxed by deciding not to enforce a limit, and §1.1 refuses on it either way.
+
+**Turning it on is validated before it is stored.** Enabling enforcement can invalidate a task type that is already operational, and writing the flag first would leave a deployment that refuses to start on its next restart. Turning it **off** is never validated — relaxing a blocking invariant cannot break another one, and an operator must never be trapped in the enforcing state with no way back.
+
+**A leaf stopped by the runtime check emits `latency_ceiling_exhausted` (§6.1) and terminates.** A leaf that is over the ceiling while enforcement is off emits **no signal at all**: it is not being stopped, and emitting the terminating signal for a leaf that carries on would make the log say the opposite of what happened.
+
 A leaf stopped this way emits a **distinct signal, `latency_ceiling_exhausted`** — not a timeout (§6). A timeout says a model was too slow and escalating to a different rung may help; a ceiling exhaustion says the leaf ran out of total budget and escalating cannot help, because a higher rung is slower. Conflating them would make the system respond to a budget problem by spending more.
 
 Every sub-agent call additionally carries a **strict hard timeout independent of the gate cap**, so a hung sub-agent cannot silently stall a leaf.

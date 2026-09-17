@@ -52,6 +52,31 @@ churn.
   the database *and* affirming what it is — never omission or a default. The
   flag is inert against any other path.
 
+- **A knob for spec 5.1's combined latency ceiling, off by default.**
+  Settings › Delegation now carries an enforcement toggle beside the status
+  facts. With it off — the default — a task type whose worst-case path exceeds
+  the 1,500s ceiling is still measured, still logged at boot and still shown on
+  its card, but as a *warning* rather than a blocker: it does not stop the type
+  going operational and does not refuse startup. With it on, the ceiling blocks
+  as it always did, and a leaf is stopped before any stage that would carry it
+  past the ceiling (`latency_ceiling_exhausted`, spec 6.1 — a terminating
+  signal, never an escalation, because every higher rung is slower).
+
+  Off by default because the ceiling is derived from the worst case of the most
+  expensive *operational* task type and nothing is operational, so today it is
+  derived from nothing. More concretely: the three task types currently over it
+  are over because they have no baseline calibration and so pair a fixed
+  baseline with derived multipliers — the same defect fixed below for
+  calibrated types. Given a calibrated baseline they land at 923.6s, 1,152.8s
+  and 830.8s, all inside. Blocking them today would block them on arithmetic
+  known to be wrong for them.
+
+  Turning enforcement **on** is validated before it is stored, because enabling
+  it can invalidate a type that is already operational and would otherwise
+  leave a deployment that refuses to start on its next restart. Turning it
+  **off** is never validated — an operator must not be trapped in the enforcing
+  state.
+
 ### Fixed
 
 - **Measuring a faster model made two delegation task types fail their own

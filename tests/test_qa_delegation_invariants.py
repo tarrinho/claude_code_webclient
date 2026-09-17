@@ -259,8 +259,56 @@ class WorstCasePathTests(unittest.TestCase):
         table = _table(rows + GATE_SINGLE, operational={"widget"})
         self.assertAlmostEqual(table.worst_case_path_s("widget"), 2579.4,
                                places=3)
+        enforced = table.validate(enforce_latency_ceiling=True)
         self.assertTrue(any("ceiling" in p and "widget" in p
-                            for p in table.validate()), table.validate())
+                            for p in enforced), enforced)
+
+    def test_the_ceiling_blocks_only_when_enforcement_is_on(self):
+        """9.2's knob, off by default. The SAME table: the breach is computed
+        and reported through `latency_ceiling_breaches` either way, and
+        reaches `validate` -- and so blocks -- only when enforcement is on.
+
+        A knob that suppressed the measurement as well as the block would make
+        "off" mean "not checked", and 5.1 wants the breach rate visible
+        precisely while nothing is being stopped by it."""
+        rows = [
+            _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
+            _row("vllm/slow", "widget", 0.90, 20, 0.0, 100.0),
+        ]
+        table = _table(rows + GATE_SINGLE, operational={"widget"})
+
+        # measured regardless of the knob
+        breaches = table.latency_ceiling_breaches()
+        self.assertIn("widget", breaches)
+        self.assertIn("ceiling", breaches["widget"])
+
+        # off (the default) -- no ceiling problem, and the default really is
+        # off rather than the call below merely agreeing with it by accident
+        self.assertFalse(td.CEILING_ENFORCEMENT_DEFAULT)
+        for problems in (table.validate(),
+                         table.validate(enforce_latency_ceiling=False)):
+            self.assertFalse([p for p in problems if "ceiling" in p], problems)
+
+        # on
+        self.assertTrue(
+            [p for p in table.validate(enforce_latency_ceiling=True)
+             if "ceiling" in p])
+
+    def test_an_incomputable_path_blocks_whatever_the_knob_says(self):
+        """The knob gates the COMPARISON, never the missing data. A rung with
+        no measured latency cannot be timed at all, and "we do not know how
+        long this takes" is not relaxed by deciding not to enforce a limit --
+        5.1's ceiling and 1.1's no-blank-fields rule are different failures."""
+        rows = [
+            _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
+            _row("vllm/untimed", "widget", 0.90, 20, 0.0, None),
+        ]
+        table = _table(rows + GATE_SINGLE, operational={"widget"})
+        for enforce in (False, True):
+            with self.subTest(enforce=enforce):
+                problems = table.validate(enforce_latency_ceiling=enforce)
+                self.assertTrue(
+                    any("median_latency_s" in p for p in problems), problems)
 
     def test_a_path_under_the_ceiling_is_not_reported(self):
         """The same table with the slow rung at 20.0s instead of 100.0s:
@@ -540,7 +588,8 @@ class AllSixTogetherTests(unittest.TestCase):
             _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
             _row("claude-sonet-5", "widget", 0.90, 20, 1.5709, 100.0),
         ]
-        problems = _table(rows + GATE_SINGLE, operational={"widget"}).validate()
+        problems = _table(rows + GATE_SINGLE, operational={"widget"}).validate(
+            enforce_latency_ceiling=True)
         self.assertTrue(any("claude-sonet-5" in p for p in problems), problems)
         self.assertTrue(any("ceiling" in p for p in problems), problems)
         self.assertTrue(any("BUDGET_USD" in p for p in problems), problems)

@@ -108,6 +108,17 @@ function _blockerLines(entry) {
   return lines;
 }
 
+/** The `warnings` channel: wrong, but not blocking. Today this is a
+ *  worst-case path over spec 5.1's ceiling while the enforcement knob is off.
+ *  Kept separate from `_blockerLines` on purpose -- "this is why you cannot
+ *  flip" and "this is over the ceiling and we are not stopping you" are
+ *  different sentences, and merging them would make turning the knob off read
+ *  as the breach having gone away. */
+function _warningLines(entry) {
+  if (!entry) return [];
+  return (Array.isArray(entry.warnings) ? entry.warnings : []).filter(Boolean);
+}
+
 /** All five measured fields for one row, formatted for a hover tooltip.
  *  Spec 9.2: "Hover tooltips on rung values in the settings page show all
  *  five measured fields for the current task type ... the same five the
@@ -250,6 +261,12 @@ function _blockerElement(entry) {
     p.textContent = text;
     wrap.appendChild(p);
   });
+  _warningLines(entry).forEach(text => {
+    const p = document.createElement('p');
+    p.className = 'delegation-blocker-line delegation-warning-line';
+    p.textContent = `not enforced: ${text}`;
+    wrap.appendChild(p);
+  });
   return wrap;
 }
 
@@ -389,6 +406,72 @@ function _renderConfig(config, host) {
  *  (measured coverage, latency ceiling, tree budget). Reads the same
  *  `config` block `_renderConfig` shows in full further down the page --
  *  this is the condensed version an operator checks first. */
+/** Turn spec 5.1's combined latency ceiling into a blocking invariant, or
+ *  back off. Global rather than per-card: the ceiling is one number for every
+ *  task type, so a per-card knob would imply nine independent settings.
+ *
+ *  Same optimistic-then-revert shape as `_setOperational`: the knob shows the
+ *  requested state immediately and snaps back if the server refuses, which it
+ *  will when enabling enforcement would invalidate an already-operational
+ *  type. */
+async function _setCeilingEnforcement(enabled, knob) {
+  knob.setAttribute('aria-pressed', String(enabled));
+  try {
+    const res = await fetch('/api/delegation/ceiling-enforcement', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      knob.setAttribute('aria-pressed', String(!enabled));
+      showToast(_errorMessage(
+        data, 'Could not change latency ceiling enforcement'), 'error');
+      return;
+    }
+    await _refreshDelegation();
+  } catch (err) {
+    knob.setAttribute('aria-pressed', String(!enabled));
+    showToast('Could not change latency ceiling enforcement', 'error');
+  }
+}
+
+/** The status band's enforcement knob, built from the same `toggle-knob`
+ *  component the per-card operational knobs use. */
+function _ceilingKnob(state) {
+  const wrap = document.createElement('div');
+  wrap.className = 'delegation-ceiling-knob';
+  const label = document.createElement('span');
+  label.className = 'delegation-fact';
+  label.textContent = state.enabled
+    ? 'latency ceiling: enforced'
+    : 'latency ceiling: reported, not enforced';
+  const knob = document.createElement('button');
+  knob.type = 'button';
+  knob.className = 'toggle-knob';
+  knob.setAttribute('aria-pressed', String(Boolean(state.enabled)));
+  knob.setAttribute('aria-label', 'enforce the combined latency ceiling');
+  knob.title = state.enabled
+    ? 'A task type whose worst-case path exceeds the ceiling cannot go '
+      + 'operational, and a leaf is stopped before a stage that would exceed it.'
+    : 'Breaches are computed and shown, but do not block. Off by default: the '
+      + 'ceiling is derived from the most expensive operational task type and '
+      + 'nothing is operational yet.';
+  const track = document.createElement('span');
+  track.className = 'knob-track';
+  const thumb = document.createElement('span');
+  thumb.className = 'knob-thumb';
+  track.appendChild(thumb);
+  knob.appendChild(track);
+  knob.addEventListener('click', () => {
+    _setCeilingEnforcement(
+      knob.getAttribute('aria-pressed') !== 'true', knob);
+  });
+  wrap.appendChild(label);
+  wrap.appendChild(knob);
+  return wrap;
+}
+
 function _renderStatus(payload) {
   const line = byId('delegationStatusLine');
   const facts = byId('delegationFacts');
@@ -419,6 +502,12 @@ function _renderStatus(payload) {
     span.textContent = text;
     facts.appendChild(span);
   });
+  // Rendered only when the server sent the field, so an older payload shows
+  // the band unchanged rather than a knob defaulting to a state it never
+  // reported.
+  if (payload.ceiling_enforcement) {
+    facts.appendChild(_ceilingKnob(payload.ceiling_enforcement));
+  }
 }
 
 /** "⟳ Refresh" row: same disable/status-text/timeout shape as Backends'

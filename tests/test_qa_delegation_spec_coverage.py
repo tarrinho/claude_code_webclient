@@ -59,6 +59,7 @@ import db
 import delegation_classifier as dc
 import delegation_pipeline as pipeline
 import delegation_startup as ds
+from routes.db_users import setting_set
 import tiered_delegation as td
 from orchestrator import ModelRouter
 
@@ -783,14 +784,48 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_raising_a_ladder_eligible_latency_stops_it_loading(self):
         """The other side, with one column changed and nothing else: 60.0s for
-        the free rung puts the sum at 9.50 and the worst case at 1,710s."""
+        the free rung puts the sum at 9.50 and the worst case at 1,710s.
+
+        Enforcement is turned ON here, because this is the test of the ceiling
+        INVARIANT. 9.2's knob is off by default (see
+        `td.CEILING_ENFORCEMENT_SETTING`), and the off case is
+        `test_the_same_table_loads_with_the_ceiling_knob_off` below -- the two
+        together are what stop this from reading as either "the ceiling never
+        blocks" or "the knob does nothing"."""
         await self._seed(60.0)
+        await setting_set(td.CEILING_ENFORCEMENT_SETTING, "1")
         with self.assertRaises(ds.DelegationConfigError) as ctx:
             await ds.validate_or_die()
         message = str(ctx.exception)
         self.assertIn(self.TASK_TYPE, message)
         self.assertIn("ceiling", message)
         self.assertIn(str(td.LATENCY_CEILING_S), message)
+
+    async def test_the_same_table_loads_with_the_ceiling_knob_off(self):
+        """Identical table, knob off (the default): it must LOAD, and the
+        breach must still be visible rather than silently dropped.
+
+        Two assertions, and the second is the one that matters. A knob that
+        merely skipped the check would pass the first on its own while making
+        "off" mean "not measured" -- so the breach is also asserted to come
+        back from `latency_ceiling_breaches`, which is what the settings page
+        and the boot log both read."""
+        await self._seed(60.0)
+        self.assertFalse(td.CEILING_ENFORCEMENT_DEFAULT)
+        table = await ds.validate_or_die()          # must not raise
+        breaches = table.latency_ceiling_breaches()
+        self.assertIn(self.TASK_TYPE, breaches)
+        self.assertIn("ceiling", breaches[self.TASK_TYPE])
+        self.assertIn(str(td.LATENCY_CEILING_S), breaches[self.TASK_TYPE])
+
+    async def test_an_explicit_off_value_is_honoured_like_a_missing_row(self):
+        """A stored "0" and no row at all must behave identically. A reader
+        that treated "any stored value" as on would turn the act of switching
+        enforcement OFF into switching it on."""
+        await self._seed(60.0)
+        await setting_set(td.CEILING_ENFORCEMENT_SETTING, "0")
+        await ds.validate_or_die()                  # must not raise
+        self.assertFalse(await ds.ceiling_enforcement_enabled())
 
 
 if __name__ == "__main__":

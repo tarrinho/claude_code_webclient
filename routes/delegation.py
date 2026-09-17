@@ -44,10 +44,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import db
-from delegation_startup import live_known_models
+from delegation_startup import ceiling_enforcement_enabled, live_known_models
 from routes.db_delegation import rows_to_capability
+from routes.db_users import setting_set
 from tiered_delegation import (
     BUDGET_USD,
+    CEILING_ENFORCEMENT_DEFAULT,
+    CEILING_ENFORCEMENT_SETTING,
     EXCLUDED_MODELS,
     LATENCY_CEILING_S,
     LEAVES_PER_TREE,
@@ -251,6 +254,7 @@ def _config_overview() -> dict[str, Any]:
 def _blockers_by_task_type(
     capability_rows: list[CapabilityRow], operational_set: set[str],
     known_models: frozenset[str] | None,
+    enforce_latency_ceiling: bool = CEILING_ENFORCEMENT_DEFAULT,
 ) -> dict[str, dict[str, Any]]:
     """Why each task type cannot go operational, for the settings page.
 
@@ -265,18 +269,35 @@ def _blockers_by_task_type(
       task type, is nine in-memory calls on a GET -- no new storage, no new
       endpoint.
 
+    A third channel, `warnings`, carries what is WRONG but not BLOCKING: with
+    9.2's ceiling knob off (`CEILING_ENFORCEMENT_SETTING`, the default), a
+    worst-case path over 5.1's ceiling appears here instead of in `data`. It
+    is deliberately not merged into `data`: the page has to be able to say
+    "this is why you cannot flip" and "this is over the ceiling and we are not
+    stopping you" as different sentences, or turning the knob off would read
+    as the breach having gone away.
+
     An already-operational task type, or one blocked neither way, reports
-    `{"policy": None, "data": []}` -- never an invented problem.
+    `{"policy": None, "data": [], "warnings": []}` -- never an invented
+    problem.
     """
     blockers: dict[str, dict[str, Any]] = {}
     task_types = sorted({row.task_type for row in capability_rows})
     for task_type in task_types:
-        if task_type in operational_set:
-            blockers[task_type] = {"policy": None, "data": []}
-            continue
         candidate = CapabilityTable(
             capability_rows, operational=operational_set | {task_type})
-        problems = candidate.validate(known_models=known_models)
+        # The breach is computed for every type, operational or not, and
+        # whatever the knob says -- the knob decides whether it also appears
+        # in `data` below, never whether it is measured.
+        breach = candidate.latency_ceiling_breaches().get(task_type)
+        warnings = [breach] if breach is not None and not enforce_latency_ceiling else []
+        if task_type in operational_set:
+            blockers[task_type] = {
+                "policy": None, "data": [], "warnings": warnings}
+            continue
+        problems = candidate.validate(
+            known_models=known_models,
+            enforce_latency_ceiling=enforce_latency_ceiling)
         # `validate()` is scoped to every type in the candidate's operational
         # set, not only the one being asked about here -- filter down to the
         # problems that actually name this task type.
@@ -284,6 +305,7 @@ def _blockers_by_task_type(
         blockers[task_type] = {
             "policy": _OPERATIONAL_FLIP_BLOCKED.get(task_type),
             "data": data_problems,
+            "warnings": warnings,
         }
     return blockers
 
@@ -302,8 +324,9 @@ async def handle_delegation_get(request: Request):
     # this table (see live_known_models's docstring) -- the blocker computed
     # here must agree with what a real flip attempt would say.
     known_models = await live_known_models()
+    enforce_ceiling = await ceiling_enforcement_enabled()
     blockers = _blockers_by_task_type(
-        capability_rows, operational_set, known_models)
+        capability_rows, operational_set, known_models, enforce_ceiling)
     return JSONResponse({
         "rows": rows,
         "operational": operational,
@@ -314,6 +337,12 @@ async def handle_delegation_get(request: Request):
         "editable_columns": list(_EDITABLE),
         "config": _config_overview(),
         "blockers": blockers,
+        "ceiling_enforcement": {
+            "enabled": enforce_ceiling,
+            "default": CEILING_ENFORCEMENT_DEFAULT,
+            "setting": CEILING_ENFORCEMENT_SETTING,
+            "ceiling_s": LATENCY_CEILING_S,
+        },
     })
 
 
@@ -372,7 +401,13 @@ async def handle_row_put(request: Request):
         # every moment a table is validated, and a write endpoint must not
         # start refusing writes because a backend happens to be unreachable.
         known_models = await live_known_models()
-        problems = table.validate(known_models=known_models)
+        # Same knob the startup check and the settings page read. If these
+        # ever disagreed, a table would pass through one path and be refused
+        # by another -- which is how an operator ends up with a deployment
+        # that will not boot after its next restart.
+        problems = table.validate(
+            known_models=known_models,
+            enforce_latency_ceiling=await ceiling_enforcement_enabled())
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
@@ -409,7 +444,13 @@ async def handle_operational_put(request: Request):
         # Same live list, same fallback, as handle_row_put above and as
         # delegation_startup.validate_or_die -- see the comment there.
         known_models = await live_known_models()
-        problems = table.validate(known_models=known_models)
+        # Same knob the startup check and the settings page read. If these
+        # ever disagreed, a table would pass through one path and be refused
+        # by another -- which is how an operator ends up with a deployment
+        # that will not boot after its next restart.
+        problems = table.validate(
+            known_models=known_models,
+            enforce_latency_ceiling=await ceiling_enforcement_enabled())
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
@@ -429,6 +470,56 @@ async def _api_delegation_row_put(request: Request):
     return await handle_row_put(request)
 
 
+async def handle_ceiling_enforcement_put(request: Request):
+    """PUT /api/delegation/ceiling-enforcement -- make 5.1's combined latency
+    ceiling a blocking invariant, or back off again.
+
+    Off by default (`CEILING_ENFORCEMENT_DEFAULT`). See
+    `tiered_delegation.CEILING_ENFORCEMENT_SETTING` for why: the ceiling is
+    derived from the worst case of the most expensive *operational* task type,
+    nothing is operational, and every type currently over it is over because
+    it is uncalibrated rather than because it is slow.
+
+    Turning it ON is validated before it is stored, because enabling
+    enforcement can invalidate a task type that is ALREADY operational.
+    Storing the flag first would leave a deployment that refuses to start on
+    its next restart, and a settings write that bricks the boot path is
+    exactly what 1.1's checks exist to prevent. Turning it OFF is never
+    validated: relaxing a blocking invariant cannot break another one.
+    """
+    _require_admin(request)
+    data = _require_json_object(await request.json())
+    if "enabled" not in data:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    enabled = bool(data["enabled"])
+
+    if enabled:
+        rows = rows_to_capability(await db.delegation_rows_all())
+        operational = await db.delegation_operational_all()
+        table = CapabilityTable(rows, operational=operational)
+        known_models = await live_known_models()
+        problems = table.validate(known_models=known_models,
+                                  enforce_latency_ceiling=True)
+        if problems:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "enforcing the latency ceiling would invalidate an "
+                    "already-operational task type, and this deployment would "
+                    "refuse to start on its next restart: "
+                    + "; ".join(problems)
+                ))
+
+    await setting_set(CEILING_ENFORCEMENT_SETTING, "1" if enabled else "0")
+    _log.info("delegation_ceiling_enforcement enabled=%s", enabled)
+    return JSONResponse({"ok": True, "enabled": enabled})
+
+
 @router.put("/api/delegation/operational")
 async def _api_delegation_operational_put(request: Request):
     return await handle_operational_put(request)
+
+
+@router.put("/api/delegation/ceiling-enforcement")
+async def _api_delegation_ceiling_enforcement_put(request: Request):
+    return await handle_ceiling_enforcement_put(request)

@@ -135,6 +135,31 @@ MODEL_GATE_COUNT: Final[int] = 3        # stages 3-5, one model call each (4.3-4
 #: five stages.
 LATENCY_CEILING_S: Final[int] = 1_500
 
+#: The settings key holding 9.2's enforcement knob for the ceiling above, and
+#: its default. **Off by default, deliberately.**
+#:
+#: The ceiling is derived (5.1), and 5.1 derives it "from the worst case for
+#: the most expensive OPERATIONAL task type". Nothing is operational, so today
+#: the ceiling is derived from nothing -- it is a placeholder that has held
+#: through seven re-derivations of the arithmetic behind it. Worse, the types
+#: currently over it are over for a known reason that is not their latency:
+#: they have no entry in `TIER0_BASELINE_CALIBRATION`, so they pair a FIXED
+#: baseline with a DERIVED multiplier, which is precisely the defect the
+#: 2026-09-17 change fixed for calibrated types only. Enforcing a comparison
+#: against figures produced that way would block task types on a formula known
+#: to be wrong for them.
+#:
+#: So the comparison is always computed and always reported; the knob decides
+#: only whether it BLOCKS. Turning it on is the deliberate act of asserting the
+#: arithmetic is trustworthy for every operational type.
+#:
+#: What the knob does NOT gate: an incomputable worst-case path. Missing data
+#: and a breach are different failures -- "we cannot tell how long this takes"
+#: is not relaxed by deciding not to enforce a limit, and 1.1 refuses on it
+#: either way.
+CEILING_ENFORCEMENT_SETTING: Final[str] = "delegation_enforce_latency_ceiling"
+CEILING_ENFORCEMENT_DEFAULT: Final[bool] = False
+
 #: 3 and 4.3: all three review gates run on one task type, so there is no
 #: separate security-gate type and the table keeps nine rows.
 GATE_TASK_TYPE: Final[str] = "reviewer-gate"
@@ -847,8 +872,58 @@ class CapabilityTable:
                 )
         return problems
 
-    def validate(self, known_models: Iterable[str] | None = None) -> list[str]:
+    def _ceiling_breach(
+        self, task_type: str, worst_case: float | None
+    ) -> str | None:
+        """5.1's ceiling comparison for one task type, as a message or `None`.
+
+        Separated from `validate` so the comparison can be reported when the
+        enforcement knob is off. The knob decides whether a breach BLOCKS; it
+        never decides whether the breach is computed, because 5.1's own
+        monitoring argument needs the rate of breaches even -- especially --
+        while nothing is being stopped by them.
+        """
+        if worst_case is None or worst_case <= LATENCY_CEILING_S:
+            return None
+        return (
+            f"{task_type}: its worst-case path is {worst_case:.0f}s, "
+            f"above the {LATENCY_CEILING_S}s combined latency ceiling "
+            f"(spec 5.1)"
+        )
+
+    def latency_ceiling_breaches(self) -> dict[str, str]:
+        """Every operational task type whose worst-case path is over the
+        ceiling, keyed by task type, whatever the enforcement knob says.
+
+        This is what the settings page shows when enforcement is off: the
+        breach is visible as a warning rather than silently dropped. A knob
+        that hid the measurement as well as the block would make "off" mean
+        "not measured", and 5.1 asks for exactly the opposite.
+        """
+        breaches: dict[str, str] = {}
+        for task_type in sorted(self._operational):
+            breach = self._ceiling_breach(
+                task_type, self._worst_case(task_type)[0])
+            if breach is not None:
+                breaches[task_type] = breach
+        return breaches
+
+    def validate(self, known_models: Iterable[str] | None = None, *,
+                 enforce_latency_ceiling: bool = CEILING_ENFORCEMENT_DEFAULT
+                 ) -> list[str]:
         """All six of 1.1's invariants.
+
+        `enforce_latency_ceiling` is 9.2's knob (`CEILING_ENFORCEMENT_SETTING`,
+        off by default). When it is off, a worst-case path OVER the ceiling is
+        still computed and still reported through `latency_ceiling_breaches`,
+        but it does not appear here and so does not block. See that constant
+        for why the default is off. An INCOMPUTABLE worst-case path is not
+        affected by the knob and still blocks -- missing data and a breach are
+        different failures.
+
+        It is keyword-only on purpose: this is a safety-relevant argument, and
+        a positional `True`/`False` at a call site would be unreadable next to
+        `known_models`.
 
         Returns every problem rather than the first, because 1.1 requires the
         error to list all broken invariants so an operator can fix the data in
@@ -903,15 +978,16 @@ class CapabilityTable:
             # "model resolution" (1.1, 9.3)
             problems.extend(self._resolution_problems(task_type, known))
 
-            # "the ceiling fits the budget" (1.1, 5.1)
+            # "the ceiling fits the budget" (1.1, 5.1).
+            #
+            # `why_not` is unconditional: an incomputable worst-case path is
+            # MISSING DATA, not a breach, and the enforcement knob does not
+            # reach it. Only the comparison against the ceiling is gated.
             worst_case, why_not = self._worst_case(task_type)
             problems.extend(why_not)
-            if worst_case is not None and worst_case > LATENCY_CEILING_S:
-                problems.append(
-                    f"{task_type}: its worst-case path is {worst_case:.0f}s, "
-                    f"above the {LATENCY_CEILING_S}s combined latency ceiling "
-                    f"(spec 5.1)"
-                )
+            breach = self._ceiling_breach(task_type, worst_case)
+            if breach is not None and enforce_latency_ceiling:
+                problems.append(breach)
 
             # "the ladder fits the budget" (1.1, 2.7)
             tree_cost, why_not, costliest_rung = self._tree_cost(task_type)

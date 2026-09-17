@@ -564,7 +564,7 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         response = await delegation_routes.handle_delegation_get(_request())
         body = json.loads(response.body)
         self.assertEqual(body["blockers"]["long-context"],
-                          {"policy": None, "data": []})
+                          {"policy": None, "data": [], "warnings": []})
 
     async def test_get_reports_no_blockers_for_a_clean_non_operational_type(self):
         """A non-operational type with complete, valid data and no policy
@@ -581,7 +581,7 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         response = await delegation_routes.handle_delegation_get(_request())
         body = json.loads(response.body)
         self.assertEqual(body["blockers"]["long-context"],
-                          {"policy": None, "data": []})
+                          {"policy": None, "data": [], "warnings": []})
 
     async def test_coding_and_reasoning_are_blocked_for_different_reasons(self):
         """The two holds exist for different reasons -- coding waits on

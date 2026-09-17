@@ -10,7 +10,33 @@ import logging
 
 import db
 from routes.db_delegation import rows_to_capability
-from tiered_delegation import GATE_TASK_TYPE, CapabilityTable
+from tiered_delegation import (
+    CEILING_ENFORCEMENT_DEFAULT,
+    CEILING_ENFORCEMENT_SETTING,
+    GATE_TASK_TYPE,
+    CapabilityTable,
+)
+
+
+async def ceiling_enforcement_enabled() -> bool:
+    """9.2's knob for 5.1's combined latency ceiling, read from `settings`.
+
+    The single reader, so every caller that validates this table agrees about
+    whether the ceiling blocks -- the startup check, the settings page's
+    per-type blockers, and a real operational flip must never disagree, or a
+    type would flip through one path and be refused by another.
+
+    Anything other than the stored `"1"` is off, including a missing row and a
+    malformed value. The default is off (`CEILING_ENFORCEMENT_DEFAULT`), and a
+    value nobody can parse must land on the default rather than on the
+    blocking behaviour: a corrupt settings row must not be able to refuse
+    startup.
+    """
+    from routes.db_users import setting_get
+    raw = await setting_get(CEILING_ENFORCEMENT_SETTING)
+    if raw is None:
+        return CEILING_ENFORCEMENT_DEFAULT
+    return raw.strip() == "1"
 
 _log = logging.getLogger("wc.app")
 
@@ -114,7 +140,9 @@ async def validate_or_die() -> CapabilityTable:
     operational = await db.delegation_operational_all()
     table = CapabilityTable(rows, operational=operational)
     known_models = await live_known_models()
-    problems = table.validate(known_models=known_models)
+    enforce_ceiling = await ceiling_enforcement_enabled()
+    problems = table.validate(known_models=known_models,
+                              enforce_latency_ceiling=enforce_ceiling)
     if problems:
         detail = "\n".join(f"  - {p}" for p in problems)
         raise DelegationConfigError(
@@ -126,6 +154,15 @@ async def validate_or_die() -> CapabilityTable:
     # is_operational(task_type), and reaching past that for data this
     # function already holds would be gratuitous coupling to a private
     # attribute.
+    # A breach reported but not enforced must be visible in the boot log, not
+    # only on a page someone has to open. "Off" means not blocking; it does
+    # not mean not measured (spec 5.1 / the CEILING_ENFORCEMENT_SETTING note).
+    if not enforce_ceiling:
+        for task_type, breach in table.latency_ceiling_breaches().items():
+            _log.warning(
+                "delegation: %s -- NOT ENFORCED (%s is off): %s",
+                task_type, CEILING_ENFORCEMENT_SETTING, breach)
+
     if operational:
         _log.info("delegation: operational task types: %s",
                    ", ".join(sorted(operational)))

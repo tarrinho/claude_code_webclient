@@ -1418,6 +1418,14 @@ button{touch-action:manipulation}
   margin:0; font-size:11.5px; color:var(--fg); line-height:1.5;
 }
 .delegation-blocker-line + .delegation-blocker-line { margin-top:4px; }
+/* A breach that is reported but not enforced (spec 5.1's ceiling knob, off by
+   default). Muted and italic so it reads as an observation rather than as a
+   reason the type cannot flip -- the two must not look alike, or turning
+   enforcement off would read as the breach having gone away. */
+.delegation-warning-line { color:var(--muted); font-style:italic; }
+
+/* The status band's ceiling-enforcement knob, beside the facts row. */
+.delegation-ceiling-knob { display:inline-flex; align-items:center; gap:8px; }
 
 /* Model rows, as a small table rather than a column of bare input rows. */
 .delegation-model-table {

@@ -85,9 +85,9 @@ def _row(model, task_type, accuracy=None, n=None, rate=0.0, latency=None,
 # file incomputable and mask what these tests actually check. The climb term
 # itself is covered in tests/test_qa_delegation_invariants.py.
 GATE_ROWS = [
-    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
-    _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "security-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
 ]
 
@@ -574,7 +574,7 @@ class CostCeilingPositionTests(unittest.TestCase):
         $0.623 as rung 2, against a $1.00 tree budget."""
         at_rung_zero = td.CapabilityTable(
             [_row(SONNET, "widget", 1.00, 6, RATE[SONNET], 10.0, 1_000_000)]
-            + GATE_ROWS, operational={"widget"})
+            + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
         self.assertAlmostEqual(at_rung_zero.tree_cost_usd("widget"), 3.7358,
                                places=3)
         problems = at_rung_zero.validate()
@@ -585,7 +585,7 @@ class CostCeilingPositionTests(unittest.TestCase):
             _row("vllm/a", "widget", 0.90, 6, 0.0, 10.0, 229_376),
             _row("vllm/b", "widget", 0.95, 6, 0.0, 10.0, 229_376),
             _row(SONNET, "widget", 1.00, 6, RATE[SONNET], 10.0, 1_000_000),
-        ] + GATE_ROWS, operational={"widget"})
+        ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
         self.assertEqual(at_rung_two.ladder("widget"),
                          ["vllm/a", "vllm/b", SONNET])
         self.assertAlmostEqual(at_rung_two.tree_cost_usd("widget"), 0.6226,
@@ -605,7 +605,7 @@ class CostCeilingPositionTests(unittest.TestCase):
             _row("vllm/a", "widget", 0.90, 6, 0.0, 10.0, 229_376),
             _row("vllm/b", "widget", 0.95, 6, 0.0, 10.0, 229_376),
             _row(OPUS, "widget", 1.00, 6, RATE[OPUS], 10.0, 1_000_000),
-        ] + GATE_ROWS, operational={"widget"})
+        ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
         self.assertEqual(deepest.ladder("widget")[2], OPUS)
         self.assertTrue(any("BUDGET_USD" in p for p in deepest.validate()),
                         deepest.validate())
@@ -618,7 +618,7 @@ class CostCeilingPositionTests(unittest.TestCase):
         table = td.CapabilityTable([
             _row(LUNA, "widget", 0.90, 6, RATE[LUNA], 10.0, 922_000),
             _row(SONNET, "widget", 0.95, 6, RATE[SONNET], 10.5, 1_000_000),
-        ] + GATE_ROWS, operational={"widget"})
+        ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
         self.assertEqual(table.ladder("widget"), [LUNA, SONNET])
         self.assertAlmostEqual(table.tree_cost_usd("widget"), 1.9359, places=3)
         self.assertTrue(any("BUDGET_USD" in p for p in table.validate()))
@@ -636,7 +636,7 @@ class CostCeilingPositionTests(unittest.TestCase):
         the exclusion to eligibility but not to routing would return it."""
         table = td.CapabilityTable(
             [_row(MINI, "long-context", 1.00, 20, RATE[MINI], 10.0, 1_050_000)]
-            + GATE_ROWS, operational={"long-context"})
+            + GATE_ROWS, operational={"long-context", *td.GATE_CALLS})
         self.assertEqual(table.ladder("long-context"), [])
         self.assertTrue(any("ladder is empty" in p and "long-context" in p
                             for p in table.validate()), table.validate())
@@ -755,16 +755,20 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
                 cost_per_1m_tokens=rate, median_latency_s=latency,
                 max_context=context)
         await db.delegation_row_set(
-            LUNA, "reviewer-gate", accuracy=None, n=9,
+            LUNA, "reviewer-gate", accuracy=0.95, n=28,
             cost_per_1m_tokens=RATE[LUNA], median_latency_s=11.1,
             max_context=922_000)
         # Stage 5's own task type since the 2026-09-17 split. Same latency as
         # the reviewer gate, so 2 reviewer calls + 1 security call reproduce
         # the arithmetic this test was written against (one figure x 3).
         await db.delegation_row_set(
-            LUNA, "security-gate", accuracy=None, n=9,
+            LUNA, "security-gate", accuracy=0.95, n=28,
             cost_per_1m_tokens=RATE[LUNA], median_latency_s=11.1,
             max_context=922_000)
+        # Spec 12's coverage rule (2026-09-17): the gate types must be
+        # operational before an ordinary type may route through them.
+        for gate_type in td.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await db.delegation_operational_set(self.TASK_TYPE, True)
         # `validate_or_die` (delegation_startup.py) now wires the live model
         # list into 1.1's resolution check instead of the config.KNOWN_MODELS

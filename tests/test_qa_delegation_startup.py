@@ -105,6 +105,7 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         resolve.
         """
         await self._row("azure_ai/gpt-5.6-luna", "reviewer-gate",
+                        accuracy=0.95, n=28,
                         cost_per_1m_tokens=0.0285, median_latency_s=11.1,
                         max_context=922_000)
         await self._row("claude-sonnet-5", "reviewer-gate",
@@ -123,8 +124,14 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         ONE gate latency by three -- still reproduces.
         """
         await self._row("azure_ai/gpt-5.6-luna", "security-gate",
+                        accuracy=0.95, n=28,
                         cost_per_1m_tokens=0.0285, median_latency_s=11.1,
                         max_context=922_000)
+        # Spec 12, decided 2026-09-17: an ordinary task type may not route
+        # through a gate type that has not itself cleared 1.1, so every
+        # fixture that flips a type operational must flip the gate types too.
+        for gate_type in td.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
 
     async def _gate_rows_single(self):
         """One usable rung on each gate task type: no second, climbable rung,
@@ -132,6 +139,7 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         exactly as the pre-2026-09-16 formula did.
         """
         await self._row("azure_ai/gpt-5.6-luna", "reviewer-gate",
+                        accuracy=0.95, n=28,
                         cost_per_1m_tokens=0.0285, median_latency_s=11.1,
                         max_context=922_000)
         await self._security_gate_row()
@@ -153,7 +161,11 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         await self._row("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context",
                         accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                         median_latency_s=12.0, max_context=229376)
-        await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
+        # Luna is served too: since spec 12's coverage rule the gate types
+        # are operational here, so THEIR rungs go through 1.1's model
+        # resolution check as well.
+        await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4",
+                                         "azure_ai/gpt-5.6-luna")
         await self._gate_rows_single()
         await db.delegation_operational_set("long-context", True)
         table = await ds.validate_or_die()

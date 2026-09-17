@@ -188,6 +188,61 @@ GATE_CALLS: Final[dict[str, int]] = {
     SECURITY_GATE_TASK_TYPE: 1,     # 4.5 security
 }
 
+#: A gate ladder's own attempt budget. 4.3 gives a gate ONE climb -- "the
+#: reviewer itself only climbs (`luna -> sonnet`) if it keeps rejecting output
+#: from the generator's top rung" -- and 4.5 gives the security gate the same.
+#: So a gate makes at most two calls, and a third gate rung can never be
+#: reached, exactly as a fourth generation rung cannot. `_gate_climb_latency_s`
+#: already assumed this by looking only at `candidates[1]`; this makes the
+#: ladder agree with it instead of publishing a rung nothing can run.
+GATE_MAX_ATTEMPTS: Final[int] = 2
+
+#: What ONE gate call costs in tokens, measured 2026-09-17 from
+#: `bench/gate_accuracy.py`'s 168 recorded calls (median of input+output;
+#: reviewer 13,908, security 13,854).
+#:
+#: This is a correction, not a refinement. 2.7 priced every ladder with
+#: `TOKENS_PER_LEAF` (59,460), which is a measured GENERATION leaf -- and a
+#: gate call is a different shape: the code plus the task description in, one
+#: line out. Pricing a gate ladder as though each call were a full generation
+#: leaf overstated it by 4.28x, which is most of why `security-gate` looked
+#: unaffordable.
+GATE_TOKENS_PER_CALL: Final[int] = 13_883
+
+#: **PROVISIONAL (2026-09-17) -- borrowed, not measured. See 2.7.**
+#:
+#: 2.7's `REACH_PROBABILITY` is measured against GENERATION behaviour, and a
+#: gate does not escalate the way a generator does: 4.3 lets a gate climb only
+#: when the generator has already reached its own top rung and the gate keeps
+#: rejecting it. So P(a gate reaches its rung 1) is bounded above by P(the
+#: generator reaches its top rung), which 2.7 publishes as 1/6 -- and that
+#: bound is what is used here, unmeasured.
+#:
+#: The direction of the error is the reason this is tolerable as a stand-in:
+#: an upper bound OVERPRICES the gate ladder, so a gate type that fits the
+#: budget under this figure fits under the true one too. A gate type that does
+#: NOT fit under it is the case that must not be trusted, and 1.1's problem
+#: string says so.
+#:
+#: Replace with a measured figure -- `bench/pipeline_ab.py` already runs leaves
+#: through the gates, and the rate at which a gate rejects the top rung twice
+#: IS this number. Until then every figure derived from it is provisional and
+#: marked with a dagger in 2.7.
+GATE_REACH_PROBABILITY_IS_PROVISIONAL: Final[bool] = True
+GATE_REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 1.0 / 6.0)
+
+
+def is_gate_task_type(task_type: str) -> bool:
+    """Whether a task type is one of the model gates (4.3-4.5).
+
+    Gate ladders are priced and capped differently from generation ladders --
+    their own attempt budget, their own per-call token size, their own reach
+    probabilities -- so this predicate is what the cost and ladder code branch
+    on. One definition, rather than three places each testing a different pair
+    of strings.
+    """
+    return task_type in GATE_CALLS
+
 #: The gate type a caller means when it does not say. Every gate helper below
 #: defaults to it, so a call site that predates the split keeps its behaviour
 #: rather than silently averaging the two types.
@@ -195,9 +250,13 @@ GATE_TASK_TYPE: Final[str] = REVIEWER_GATE_TASK_TYPE
 
 
 def _truncate_to_attempt_budget(
-    rungs: list[tuple[str, float]]
+    rungs: list[tuple[str, float]], budget: int = MAX_ATTEMPTS
 ) -> list[tuple[str, float]]:
-    """Cut a generated ladder down to `MAX_ATTEMPTS` rungs (spec 5).
+    """Cut a generated ladder down to `budget` rungs (spec 5).
+
+    `budget` is `MAX_ATTEMPTS` for a generation ladder and `GATE_MAX_ATTEMPTS`
+    for a gate's -- 4.3 gives a gate one climb, so a gate makes at most two
+    calls and a third gate rung is as unreachable as a fourth generation rung.
 
     A ladder longer than the attempt budget contains rungs that **can never
     run**: generation stops after `MAX_ATTEMPTS` attempts, and `_worst_case`
@@ -236,15 +295,15 @@ def _truncate_to_attempt_budget(
     it, so the single attempt goes to the accuracy ceiling rather than to the
     cheapest model.
     """
-    if len(rungs) <= MAX_ATTEMPTS:
+    if len(rungs) <= budget:
         return rungs
-    if MAX_ATTEMPTS <= 0:
+    if budget <= 0:
         return []
-    if MAX_ATTEMPTS == 1:
+    if budget == 1:
         return [rungs[-1]]
 
     kept = list(rungs)
-    while len(kept) > MAX_ATTEMPTS:
+    while len(kept) > budget:
         middle = range(1, len(kept) - 1)
         victim = next(
             (i for i in middle if kept[i][1] <= kept[i - 1][1]), None)
@@ -289,7 +348,9 @@ def expected_tokens(task_type: str) -> int:
     return EXPECTED_TOKENS.get(task_type, DEFAULT_EXPECTED_TOKENS)
 
 
-def rung_cost_usd(rung: int, cost_per_1m_tokens: float) -> float:
+def rung_cost_usd(rung: int, cost_per_1m_tokens: float,
+                  tokens_per_call: int = TOKENS_PER_LEAF,
+                  reach: tuple[float, ...] = REACH_PROBABILITY) -> float:
     """What one rung contributes to the expected tree cost (spec 2.7).
 
         leaves_per_tree x tokens_per_leaf x P(reach rung) x rate
@@ -301,13 +362,13 @@ def rung_cost_usd(rung: int, cost_per_1m_tokens: float) -> float:
     caller turns that into a 1.1 problem string; it is never treated as zero,
     which is the one failure mode a deeper ladder must not have.
     """
-    if rung < 0 or rung >= len(REACH_PROBABILITY):
+    if rung < 0 or rung >= len(reach):
         raise ValueError(
             f"spec 2.7 publishes reach probabilities for rungs "
-            f"0-{len(REACH_PROBABILITY) - 1} only; rung {rung} cannot be priced"
+            f"0-{len(reach) - 1} only; rung {rung} cannot be priced"
         )
-    return (LEAVES_PER_TREE * TOKENS_PER_LEAF
-            * REACH_PROBABILITY[rung] * cost_per_1m_tokens / 1_000_000)
+    return (LEAVES_PER_TREE * tokens_per_call
+            * reach[rung] * cost_per_1m_tokens / 1_000_000)
 
 
 def default_known_models() -> frozenset[str]:
@@ -442,7 +503,10 @@ class CapabilityTable:
                 continue
             rungs.append((row.model, row.accuracy))
             current = row.accuracy
-        return [model for model, _ in _truncate_to_attempt_budget(rungs)]
+        budget = (GATE_MAX_ATTEMPTS if is_gate_task_type(task_type)
+                  else MAX_ATTEMPTS)
+        return [model for model, _ in
+                _truncate_to_attempt_budget(rungs, budget)]
 
     # ── Latency (spec 5.1) ──────────────────────────────────────────────────
 
@@ -905,6 +969,18 @@ class CapabilityTable:
         if not rungs:
             return None, [], None
 
+        # A gate call is not a generation leaf: it is measurably 4.28x
+        # smaller (GATE_TOKENS_PER_CALL), it makes at most two calls rather
+        # than three, and it reaches its second rung far less often. Pricing
+        # one with the other's constants is what made `security-gate` look
+        # unaffordable.
+        if is_gate_task_type(task_type):
+            tokens_per_call = GATE_TOKENS_PER_CALL
+            reach = GATE_REACH_PROBABILITY
+        else:
+            tokens_per_call = TOKENS_PER_LEAF
+            reach = REACH_PROBABILITY
+
         rate_of = {r.model: r.cost_per_1m_tokens for r in self.rows_for(task_type)}
         total = 0.0
         costliest_rung: str | None = None
@@ -917,7 +993,7 @@ class CapabilityTable:
                 )
                 continue
             try:
-                rung_cost = rung_cost_usd(rung, rate)
+                rung_cost = rung_cost_usd(rung, rate, tokens_per_call, reach)
             except ValueError as exc:
                 # Since 2026-09-17 `ladder()` caps itself at MAX_ATTEMPTS, so
                 # this is no longer reachable by a ladder merely being long.
@@ -926,9 +1002,11 @@ class CapabilityTable:
                 # published reach probabilities, and raising the attempt
                 # budget without publishing one must refuse rather than
                 # price the extra attempt at zero.
+                budget = (GATE_MAX_ATTEMPTS if is_gate_task_type(task_type)
+                          else MAX_ATTEMPTS)
                 problems.append(
                     f"{prefix} -- its ladder has {len(rungs)} rungs against "
-                    f"MAX_ATTEMPTS={MAX_ATTEMPTS}, and {exc}"
+                    f"an attempt budget of {budget}, and {exc}"
                 )
                 break
             total += rung_cost
@@ -1101,6 +1179,26 @@ class CapabilityTable:
 
             # "model resolution" (1.1, 9.3)
             problems.extend(self._resolution_problems(task_type, known))
+
+            # Gate-type coverage (spec 12, decided 2026-09-17).
+            #
+            # Every 1.1 invariant is per task type, so before this a type
+            # could clear all six while the gate types its stages 3-5 run on
+            # cleared none -- `coding` passing while `reviewer-gate` had no
+            # measured accuracy at all. Nothing refused that combination.
+            #
+            # Gate types are exempt from the rule: a gate does not itself run
+            # gates, and requiring one to depend on the other would make the
+            # pair unsatisfiable.
+            if not is_gate_task_type(task_type):
+                for gate_type in sorted(GATE_CALLS):
+                    if gate_type not in self._operational:
+                        problems.append(
+                            f"{task_type}: its stages 3-5 run on {gate_type} "
+                            f"(spec 4.3-4.5), which is not operational -- a "
+                            f"task type may not route through a gate type "
+                            f"that has not itself cleared 1.1 (spec 12)"
+                        )
 
             # "the ceiling fits the budget" (1.1, 5.1).
             #

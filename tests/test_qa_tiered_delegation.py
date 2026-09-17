@@ -53,11 +53,11 @@ CODING_MEASURED = [
 # not operational (1.2); the latency invariant deliberately does not require
 # one, so it does not import section 12's open gate-type dependency.
 GATE_MEASURED = [
-    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
          1_000_000),
-    _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "security-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
 ]
 
@@ -66,6 +66,19 @@ GATE_MEASURED = [
 # is no climb rung to be unmeasured (spec 4.3/4.5, 2026-09-16 amendment), so
 # this fixture's arithmetic matches the pre-amendment formula exactly.
 GATE_SINGLE = [
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.95, 28, 0.0285, 11.1,
+         922_000),
+    _row("azure_ai/gpt-5.6-luna", "security-gate", 0.95, 28, 0.0285, 11.1,
+         922_000),
+]
+
+# The same one usable model per gate type, with accuracy UNMEASURED, so
+# neither gate type is ladder-eligible. F5's fallback path (cheapest priced,
+# non-excluded row, no accuracy required) is the only thing that can name a
+# gate model against this fixture -- which is what the fallback test needs,
+# and what the real table looked like until the gates were measured on
+# 2026-09-17.
+GATE_SINGLE_UNMEASURED = [
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
          922_000),
     _row("azure_ai/gpt-5.6-luna", "security-gate", None, None, 0.0285, 11.1,
@@ -80,6 +93,11 @@ GATE_SINGLE = [
 # the gate's real rung 0, at 14.0s. A test using this must see 14.0, not
 # 11.1, once `_gate_latency_s` follows the ladder rather than cheapest-first.
 GATE_LADDER_DIVERGENT = [
+    # Unmeasured on purpose: sonnet must be the ONLY ladder-eligible
+    # reviewer-gate row, so the ladder path and the cheapest-first fallback
+    # name different models. Giving luna an accuracy here would make the
+    # ladder start at luna and the divergence this fixture exists to create
+    # would vanish.
     _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", 0.95, 10, 1.5709, 14.0,
@@ -270,7 +288,7 @@ class OperationalFlagTests(unittest.TestCase):
         test is about the completeness scoping, not about the reviewer-gate
         climb term, so the gate needs exactly one usable model."""
         table = td.CapabilityTable(CODING_SHAPED_MEASURED + GATE_SINGLE,
-                                   operational={"coding-shaped-1"})
+                                   operational={"coding-shaped-1", *td.GATE_CALLS})
         self.assertEqual(table.validate(), [])
 
     def test_an_incomplete_eligible_row_fails_validation(self):
@@ -280,7 +298,7 @@ class OperationalFlagTests(unittest.TestCase):
         rows = list(CODING_SHAPED_MEASURED)
         rows[1] = _row("azure_ai/gpt-5.6-luna", "coding-shaped-1", 1.00, 24,
                        0.0285, None, 922_000)  # measured, eligible, no latency
-        table = td.CapabilityTable(rows, operational={"coding-shaped-1"})
+        table = td.CapabilityTable(rows, operational={"coding-shaped-1", *td.GATE_CALLS})
         problems = table.validate()
         self.assertTrue(problems)
         joined = " ".join(problems)
@@ -290,7 +308,7 @@ class OperationalFlagTests(unittest.TestCase):
 
     def test_an_operational_type_with_an_empty_ladder_fails(self):
         table = td.CapabilityTable(
-            [_row("a", "voice", None, None, 0.1)], operational={"voice"})
+            [_row("a", "voice", None, None, 0.1)], operational={"voice", *td.GATE_CALLS})
         self.assertTrue(any("ladder" in p for p in table.validate()))
 
     def test_validation_only_considers_operational_types(self):
@@ -299,7 +317,7 @@ class OperationalFlagTests(unittest.TestCase):
         in. `coding` itself stays non-operational (spec 12)."""
         rows = (CODING_SHAPED_MEASURED + GATE_SINGLE
                 + [_row("b", "voice", None, None, 0.1)])
-        table = td.CapabilityTable(rows, operational={"coding-shaped-1"})
+        table = td.CapabilityTable(rows, operational={"coding-shaped-1", *td.GATE_CALLS})
         self.assertEqual(table.validate(), [])
 
 
@@ -316,7 +334,8 @@ class GateRung0Tests(unittest.TestCase):
         cheapest-priced pick (luna, 11.1s) is what the invariant must still
         be computed against -- this is the behaviour F5 says must not
         regress."""
-        table = td.CapabilityTable(CODING_SHAPED_MEASURED + GATE_SINGLE)
+        table = td.CapabilityTable(
+            CODING_SHAPED_MEASURED + GATE_SINGLE_UNMEASURED)
         self.assertEqual(table.ladder("reviewer-gate"), [])
         latency, reason = table._gate_latency_s("coding-shaped-1")
         self.assertIsNone(reason)

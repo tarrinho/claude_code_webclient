@@ -45,6 +45,21 @@ def _request(role="admin", body=None, query=None):
     return request
 
 
+async def _ordinary_operational():
+    """The operational set with the gate task types removed.
+
+    Spec 12's coverage rule (2026-09-17) means every fixture that flips an
+    ordinary type operational must flip `reviewer-gate` and `security-gate`
+    too, so a bare equality against `delegation_operational_all()` would now
+    be asserting the fixture's own setup rather than what the request under
+    test did. Subtracting them keeps the assertion exactly as strong about the
+    types these tests are actually about -- it still catches a flip that
+    should not have happened.
+    """
+    return await db.delegation_operational_all() - set(
+        tiered_delegation.GATE_CALLS)
+
+
 class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -289,16 +304,20 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
 
@@ -338,19 +357,23 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
-        self.assertEqual(await db.delegation_operational_all(), {"long-context"})
+        self.assertEqual(await _ordinary_operational(), {"long-context"})
 
     async def test_a_refused_flip_leaves_the_stored_state_alone(self):
         """'the stored value is left as it was' -- a rejected write that half
@@ -363,7 +386,7 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):
             await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "long-context", "operational": True}))
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_a_row_write_introducing_an_unserved_backend_qualified_rung_is_refused(self):
         """`handle_row_put`'s validate() call uses the live model list
@@ -377,16 +400,20 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
 
@@ -408,16 +435,20 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
 
@@ -437,23 +468,27 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         with self.assertRaises(HTTPException) as ctx:
             await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "long-context", "operational": True}))
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("vllm/NotAModel", str(ctx.exception.detail))
         self.assertIn("is not in the model combo box", str(ctx.exception.detail))
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_flipping_operational_with_a_machine_served_backend_qualified_rung_is_accepted(self):
         await self._seed_machine_serving("vllm/Qwen3.6-35B-A3B-NVFP4")
@@ -461,19 +496,23 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
-        self.assertEqual(await db.delegation_operational_all(), {"long-context"})
+        self.assertEqual(await _ordinary_operational(), {"long-context"})
 
     async def test_coding_cannot_be_flipped_operational_even_with_complete_data(self):
         """Spec 12: `coding` is blocked regardless of whether the data would
@@ -487,23 +526,27 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         with self.assertRaises(HTTPException) as ctx:
             await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "coding", "operational": True}))
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("coding", str(ctx.exception.detail))
         self.assertIn("section 12", str(ctx.exception.detail))
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_flipping_coding_off_is_not_blocked(self):
         """The guard is specifically about *flipping to* operational -- it
@@ -512,15 +555,15 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         special case that raises on the way out too."""
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "coding", "operational": False}))
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_coding_is_never_flipped_operational_by_this_module(self):
         """Spec 12 forbids flipping `coding` operational until the gate-type
         validation question is decided. Nothing in this route module may do
         it -- not as a default, not as a side effect of another call."""
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
         await delegation_routes.handle_delegation_get(_request())
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_reasoning_cannot_be_flipped_operational_even_with_complete_data(self):
         """F7 / spec amendment b782e4d: `reasoning` is held non-operational
@@ -534,36 +577,40 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         with self.assertRaises(HTTPException) as ctx:
             await delegation_routes.handle_operational_put(_request(body={
                 "task_type": "reasoning", "operational": True}))
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("reasoning", str(ctx.exception.detail))
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_flipping_reasoning_off_is_not_blocked(self):
         """The guard is specifically about *flipping to* operational -- it
         must not reject `operational: false` for `reasoning`."""
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "reasoning", "operational": False}))
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_reasoning_is_never_flipped_operational_by_this_module(self):
         """Same statement as test_coding_is_never_flipped_operational_by_this_module,
         for the type spec amendment b782e4d added the hold for."""
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
         await delegation_routes.handle_delegation_get(_request())
-        self.assertEqual(await db.delegation_operational_all(), set())
+        self.assertEqual(await _ordinary_operational(), set())
 
     async def test_get_reports_policy_blockers_for_coding_and_reasoning(self):
         """The redesigned settings page shows *why* a type cannot go
@@ -638,16 +685,20 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         await delegation_routes.handle_operational_put(_request(body={
             "task_type": "long-context", "operational": True}))
         response = await delegation_routes.handle_delegation_get(_request())
@@ -664,16 +715,20 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
         await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
         # Stage 5's own task type since the 2026-09-17 gate split. Same model
         # and latency as the reviewer row, so every figure these tests were
         # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=None, n=None,
+                                    accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=None)
+                                    median_latency_s=5.0, max_context=0)
+        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
+        # route through a gate type that has not itself cleared 1.1.
+        for gate_type in tiered_delegation.GATE_CALLS:
+            await db.delegation_operational_set(gate_type, True)
         response = await delegation_routes.handle_delegation_get(_request())
         body = json.loads(response.body)
         self.assertEqual(body["blockers"]["long-context"],

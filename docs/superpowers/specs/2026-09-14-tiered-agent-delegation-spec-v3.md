@@ -1280,4 +1280,31 @@ Every test is mutation-checked: break the ladder order, the guard, the terminati
 
 - `claude_proxy.py` drift on the pentester transport (`bb117e85…` vs HEAD `691fe393…`) — a deployment decision to settle before any wholesale transport sync. **Do not sync transports until it is decided.**
 - **§10.1's ≥70% free-rung target is not met by `coding`'s measured 66%** (§2.6). The target sits inside the 51%–78% interval, so it is not yet disproved, but it was written before any measurement and has never been checked against one. Resolve by deciding whether it is a per-tree average (`long-context` measures 100% on the free rung and would pull the weighted figure up), an aspirational floor that triggers review, or a genuine constraint that `coding`'s rung 0 fails. **Do not treat the target as met.**
-- **A task type's gate types are not covered by its own validation** (§1.2). `coding` clears all six §1.1 invariants while `reviewer-gate`, which its stages 3–5 run on, does not — reviewer-gate has no measured accuracy on either row, and §2.7 prices `claude-sonnet-5` at its rung 1 at $1.868 against a $1.00 tree budget. Every §1.1 invariant is per task type, so nothing currently refuses this combination. Resolve either by requiring gate types to be operational first, or by scoping reviewer-gate affordability to reachable rungs — §4.3 reaches sonnet only when the generator's top rung keeps being rejected, which the flat reach-probability model prices as routine when it is a tail case. **Until it is decided, do not flip `coding` to operational.**
+- **~~A task type's gate types are not covered by its own validation~~ — RESOLVED 2026-09-17.** Both remedies §12 offered were taken, and a measurement dissolved the premise of the third.
+
+  **The gates were measured** (`bench/gate_accuracy.py`, n=28 per model per gate), and pooled into one `reviewer-gate` row they had been averaging two different behaviours:
+
+  | model | reviewer | security |
+  |---|---|---|
+  | `azure_ai/gpt-5.6-luna` | **96.4%** (0 false accepts) | 85.7% |
+  | `claude-sonnet-5` | 78.6% (3 false accepts) | 92.9% |
+  | `claude-opus-5` | 89.3% (0 false accepts) | **96.4%** |
+
+  So `reviewer-gate` (§4.3's reviewer, §4.4's QA) and `security-gate` (§4.5) are now **separate task types**, each getting the model that measures best at the job it does.
+
+  **§12's affordability argument does not survive the measurement.** It priced `claude-sonnet-5` at reviewer-gate rung 1 at $1.868 — but sonnet is the *worst* reviewer of the three, so the ladder rule skips it as measured worse and it is never a rung. The concern was an artefact of the rows being unmeasured.
+
+  **§4.3's climb rung moves off sonnet, and for the reviewer gate it disappears.** Nothing measured beats luna at reviewing, so `reviewer-gate` is a one-rung ladder with no climb. The security gate climbs `luna → opus`.
+
+  **Remedy 1 — gate types must be operational first.** A task type may not route through a gate type that has not itself cleared §1.1. Gate types are exempt from the rule: a gate does not run gates, and requiring them to depend on each other would make the pair unsatisfiable. Enforced in `CapabilityTable.validate`.
+
+  **Remedy 2 — gate ladders are priced as gate calls, not as leaves.** §2.7 priced every ladder with `TOKENS_PER_LEAF` (59,460), a measured *generation* leaf. A gate call is the code plus the task description in and one line out: **13,883 tokens**, measured over 168 calls. Pricing a gate as a leaf overstated it by **4.28×**, which is most of why `security-gate` looked unaffordable. Gate ladders also take their own attempt budget — §4.3 grants one climb, so `GATE_MAX_ATTEMPTS` is 2 and a third gate rung is as unreachable as a fourth generation rung.
+
+  ```
+  reviewer-gate   [luna]          $0.0158    fits
+  security-gate   [luna, opus]    $0.3498    fits
+  ```
+
+  **One input here is PROVISIONAL and marked `†`.** A gate's reach probability is not measured. `GATE_REACH_PROBABILITY` is `(1.0, 1/6)`, where 1/6 is **borrowed** from §2.7's P(the generator reaches its top rung) — the precondition for a gate climb, and therefore an upper bound on it. The direction of the error is what makes it usable as a stand-in: an upper bound **overprices**, so a gate type that fits under this figure fits under the true one. A gate type that does **not** fit under it is the case that must not be trusted.
+
+  **`bench/pipeline_ab.py` already runs leaves through the gates, and the rate at which a gate rejects the top rung twice *is* this number.** Until it is measured, both gate costs above and anything derived from them are provisional. `GATE_REACH_PROBABILITY_IS_PROVISIONAL` carries the same flag in code so it cannot be quietly promoted.

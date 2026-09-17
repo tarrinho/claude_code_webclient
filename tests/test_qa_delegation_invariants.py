@@ -27,6 +27,7 @@ check.
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import tiered_delegation as td
 
@@ -64,7 +65,7 @@ def _security_gate_rows(climb: bool = False, latency: float = 11.1):
     `climb=True` adds a measured second rung, for the tests that are about the
     climb term itself.
     """
-    rows = [_row("azure_ai/gpt-5.6-luna", "security-gate", None, None,
+    rows = [_row("azure_ai/gpt-5.6-luna", "security-gate", 0.95, 28,
                  0.0285, latency, 922_000)]
     if climb:
         rows.append(_row("claude-sonnet-5", "security-gate", None, None,
@@ -81,7 +82,7 @@ def _security_gate_rows(climb: bool = False, latency: float = 11.1):
 # GATE_SINGLE (no climb rung to be unmeasured) or GATE_CLIMB_MEASURED (a
 # climb rung that is measured).
 GATE_ROWS = [
-    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, None,
          1_000_000),
@@ -92,14 +93,14 @@ GATE_ROWS = [
 # is not about gate-climbing itself uses this, so its numbers stay the ones
 # the pre-climb formula already published.
 GATE_SINGLE = [
-    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
 ] + _security_gate_rows(climb=False)
 
 # Both reviewer-gate rungs measured, so a gate that climbs has a priced
 # second call. Used only by tests about the climb term itself.
 GATE_CLIMB_MEASURED = [
-    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", None, None, 0.0285, 11.1,
+    _row("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.95, 28, 0.0285, 11.1,
          922_000),
     _row("claude-sonnet-5", "reviewer-gate", None, None, 1.5709, 14.0,
          1_000_000),
@@ -124,8 +125,26 @@ def _widget_rows(task_type="widget"):
 WIDGET_WORST_CASE_S = 1355.4
 
 
+def _with_gates_operational(operational):
+    """Add the gate task types to an operational set.
+
+    Spec 12, decided 2026-09-17: a task type may not route through a gate type
+    that has not itself cleared 1.1, so every table that flips an ordinary type
+    operational must flip the gate types too. The fixtures below are about
+    OTHER invariants, and threading two extra strings through every one of them
+    would bury what each is testing. The rule itself has its own test --
+    `GateTypeCoverageTests` -- which passes the operational set directly and
+    would catch this helper masking a regression.
+    """
+    ops = set(operational)
+    if ops and not ops <= set(td.GATE_CALLS):
+        ops |= set(td.GATE_CALLS)
+    return ops
+
+
 def _table(rows, operational=()):
-    return td.CapabilityTable(rows, operational=operational)
+    return td.CapabilityTable(
+        rows, operational=_with_gates_operational(operational))
 
 
 class ModelResolutionTests(unittest.TestCase):
@@ -417,7 +436,13 @@ class WorstCasePathTests(unittest.TestCase):
                        operational={"widget"})
         self.assertAlmostEqual(table.worst_case_path_s("widget"), 1296.0,
                                places=3)
-        self.assertEqual(table.validate(), [])
+        # Scoped to `widget`'s own problems. The gate rows here deliberately
+        # carry no latency -- that absence is what makes the fallback the only
+        # path that can produce a figure -- so the gate task types cannot
+        # themselves be clean, and asserting a globally empty problem list
+        # would be asserting something this fixture is built not to have.
+        self.assertEqual([p for p in table.validate()
+                          if p.startswith("widget:")], [])
 
     def test_a_gate_with_no_row_at_all_is_a_problem_not_a_crash(self):
         """Absent data is a reason a type cannot be operational, not a
@@ -750,6 +775,142 @@ class LadderTruncationTests(unittest.TestCase):
             _table(rows + GATE_SINGLE).ladder("coding"),
             ["vllm/Qwen3.6-35B-A3B-NVFP4", "azure_ai/gpt-5.6-luna",
              "claude-sonnet-5"])
+
+
+class GatePricingTests(unittest.TestCase):
+    """2.7's cost model, applied to a GATE ladder rather than a generation
+    ladder (2026-09-17).
+
+    A gate call is not a leaf. Pricing one with the other's constants is what
+    made `security-gate` look unaffordable, and the three constants that
+    differ -- per-call size, attempt budget, reach probability -- each move the
+    answer on their own.
+    """
+
+    def _gate_rows(self):
+        """Three security-gate rungs, improving with cost, as measured."""
+        return [
+            _row("azure_ai/gpt-5.6-luna", "security-gate", 0.857, 28,
+                 0.0285, 5.83, 922_000),
+            _row("claude-sonnet-5", "security-gate", 0.929, 28,
+                 1.5709, 4.635, 1_000_000),
+            _row("claude-opus-5", "security-gate", 0.964, 28,
+                 3.6082, 4.8, 1_000_000),
+        ]
+
+    def test_a_gate_call_is_priced_at_its_own_measured_size(self):
+        """`GATE_TOKENS_PER_CALL` (13,883, measured over 168 calls) against
+        `TOKENS_PER_LEAF` (59,460, a measured generation leaf). Using the leaf
+        figure overprices a gate ladder by 4.28x."""
+        self.assertLess(td.GATE_TOKENS_PER_CALL, td.TOKENS_PER_LEAF)
+        table = _table(self._gate_rows())
+        cost = table.tree_cost_usd("security-gate")
+        as_a_leaf = cost * td.TOKENS_PER_LEAF / td.GATE_TOKENS_PER_CALL
+        self.assertLess(cost, td.BUDGET_USD)
+        self.assertGreater(as_a_leaf, td.BUDGET_USD)
+
+    def test_a_gate_ladder_is_capped_at_its_own_attempt_budget(self):
+        """4.3 gives a gate ONE climb, so a gate makes at most two calls and a
+        third gate rung is as unreachable as a fourth generation rung. The
+        three rungs above are capped to two, keeping both ends."""
+        self.assertLess(td.GATE_MAX_ATTEMPTS, td.MAX_ATTEMPTS)
+        ladder = _table(self._gate_rows()).ladder("security-gate")
+        self.assertEqual(len(ladder), td.GATE_MAX_ATTEMPTS)
+        self.assertEqual(ladder,
+                         ["azure_ai/gpt-5.6-luna", "claude-opus-5"])
+
+    def test_a_generation_ladder_keeps_the_longer_budget(self):
+        """The cap must be per-kind, not global: capping generation at 2 would
+        remove a rung the pipeline really does run."""
+        self.assertEqual(
+            len(_table(_widget_rows() + GATE_SINGLE).ladder("widget")),
+            td.MAX_ATTEMPTS)
+
+    def test_the_gate_reach_probability_is_the_provisional_one(self):
+        """The one figure in this chain that is borrowed rather than measured
+        (`GATE_REACH_PROBABILITY_IS_PROVISIONAL`). It is 2.7's P(the generator
+        reaches its top rung), used as an upper bound because a gate can only
+        climb once the generator has got there -- so it OVERprices, and a gate
+        type that fits under it fits under the true figure too.
+
+        Asserted rather than left implicit so that replacing it with a
+        measured number is a deliberate edit here, not a silent one."""
+        self.assertTrue(td.GATE_REACH_PROBABILITY_IS_PROVISIONAL)
+        self.assertEqual(len(td.GATE_REACH_PROBABILITY), td.GATE_MAX_ATTEMPTS)
+        self.assertEqual(td.GATE_REACH_PROBABILITY[0], 1.0)
+        self.assertAlmostEqual(td.GATE_REACH_PROBABILITY[1],
+                               td.REACH_PROBABILITY[-1])
+        # Strictly cheaper than a generation ladder's rung 1, which is the
+        # whole claim: a gate climbs far less often than a generator escalates.
+        self.assertLess(td.GATE_REACH_PROBABILITY[1], td.REACH_PROBABILITY[1])
+
+    def test_the_gate_reach_probability_actually_reaches_the_cost(self):
+        """A constant that is defined and then not used would pass every
+        assertion above. Halving it must halve the climb rung's contribution,
+        and rung 0 is unaffected because its probability is 1.0 either way."""
+        table = _table(self._gate_rows())
+        base = table.tree_cost_usd("security-gate")
+        with patch.object(td, "GATE_REACH_PROBABILITY", (1.0, 1.0 / 12.0)):
+            halved = _table(self._gate_rows()).tree_cost_usd("security-gate")
+        rung0 = (td.LEAVES_PER_TREE * td.GATE_TOKENS_PER_CALL
+                 * 1.0 * 0.0285 / 1_000_000)
+        self.assertAlmostEqual(halved - rung0, (base - rung0) / 2, places=9)
+
+
+class GateTypeCoverageTests(unittest.TestCase):
+    """Spec 12, decided 2026-09-17: a task type may not route through a gate
+    type that has not itself cleared 1.1.
+
+    These pass the operational set to `CapabilityTable` DIRECTLY rather than
+    through `_table`, because `_with_gates_operational` exists to keep the
+    other fixtures readable and would mask exactly this rule.
+    """
+
+    def _rows(self):
+        return _widget_rows() + GATE_SINGLE
+
+    def test_a_type_whose_gate_types_are_not_operational_is_refused(self):
+        """The hole 12 records: every 1.1 invariant is per task type, so
+        before this `coding` could clear all six while `reviewer-gate`, which
+        its stages 3-5 run on, cleared none."""
+        table = td.CapabilityTable(self._rows(), operational={"widget"})
+        problems = table.validate()
+        for gate_type in td.GATE_CALLS:
+            with self.subTest(gate_type=gate_type):
+                self.assertTrue(
+                    any(p.startswith("widget:") and gate_type in p
+                        and "not operational" in p for p in problems),
+                    problems)
+
+    def test_the_same_table_passes_once_the_gate_types_are_operational(self):
+        """The other direction, and the one that proves the rule is about the
+        FLAG rather than about the data: identical rows, only the operational
+        set differs."""
+        table = td.CapabilityTable(
+            self._rows(), operational={"widget", *td.GATE_CALLS})
+        self.assertEqual(table.validate(), [])
+
+    def test_every_gate_type_is_required_not_just_the_first(self):
+        """Flipping one gate type on must not satisfy the rule for the other.
+        A loop that broke on its first success, or a check written against a
+        single `GATE_TASK_TYPE` constant, would pass with only the reviewer
+        gate operational -- which is exactly the pre-split shape."""
+        table = td.CapabilityTable(
+            self._rows(),
+            operational={"widget", td.REVIEWER_GATE_TASK_TYPE})
+        problems = table.validate()
+        self.assertTrue(
+            any(td.SECURITY_GATE_TASK_TYPE in p and "not operational" in p
+                for p in problems), problems)
+
+    def test_a_gate_type_is_exempt_from_the_rule(self):
+        """A gate does not run gates. Requiring gate types to depend on each
+        other would make the pair unsatisfiable: neither could ever be the
+        first one flipped."""
+        table = td.CapabilityTable(
+            self._rows(), operational=set(td.GATE_CALLS))
+        self.assertFalse([p for p in table.validate()
+                          if "not operational" in p], table.validate())
 
 
 class AllSixTogetherTests(unittest.TestCase):

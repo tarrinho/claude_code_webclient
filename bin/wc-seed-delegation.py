@@ -79,7 +79,7 @@ ROWS = [
     ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.5261, None, 1050000),
     ("azure_ai/gpt-5.6-luna", "multi-turn", 0.917, 12, 0.0285, 13.5, 922000),
     ("azure_ai/gpt-5.6-luna", "planning", 0.75, 12, 0.0285, 40.7, 922000),
-    ("azure_ai/gpt-5.6-luna", "reviewer-gate", None, 9, 0.0285, 11.1, 922000),
+    ("azure_ai/gpt-5.6-luna", "reviewer-gate", None, 56, 0.0285, 6.055, 922000),
     ("claude-sonnet-5", "coding", 1.0, 24, 1.5709, 15.5, 1000000),
     ("claude-sonnet-5", "long-context", 0.667, 12, 1.5709, 4.2, 1000000),
     ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
@@ -88,7 +88,7 @@ ROWS = [
     ("claude-sonnet-5", "multi-turn", 1.0, 12, 1.5709, 7.8, 1000000),
     ("claude-sonnet-5", "planning", 0.833, 12, 1.5709, 17.5, 1000000),
     ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),
-    ("claude-sonnet-5", "reviewer-gate", None, 20, 1.5709, 3.675, 1000000),
+    ("claude-sonnet-5", "reviewer-gate", None, 56, 1.5709, 4.605, 1000000),
     ("claude-opus-5", "comprehension", 1.0, 12, 3.6082, 11.9, 1000000),
     ("claude-opus-5", "reasoning", 1.0, 6, 3.6082, 10.2, 1000000),
     # azure_ai/gpt-5.6-terra, added 2026-09-17. accuracy/n/median_latency_s are

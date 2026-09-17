@@ -85,7 +85,7 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | model resolution | **pass** | all four resolve to real backend-and-model pairs |
 | no empty ladder | **pass** | `vllm → luna → terra → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all four rungs have §2.6 rows |
-| ceiling fits the budget | **pass, on a remaining lower bound** | 1,281.4s against the 1,500s ceiling, 218.6s of margin, with the baseline derived against the current reference (§5.1, 2026-09-17). Still excludes §4.5's security re-run term, which cannot be priced until §12's gate-type item is decided |
+| ceiling fits the budget | **pass, on a remaining lower bound** | 1,107.8s against the 1,500s ceiling, 392.2s of margin, with the baseline derived against the current reference and the gate rows re-measured at n=56 (§5.1, 2026-09-17). Against the gate rows still live in `delegation_capability` it is 1,281.4s and 218.6s; both pass. Still excludes §4.5's security re-run term, which cannot be priced until §12's gate-type item is decided |
 | ladder fits the budget | **FAIL — the cost cannot be computed at all** | the ladder is **four rungs** since terra was measured, and §2.7 publishes reach probabilities for rungs 0–2 only, so rung 3 cannot be priced. §2.7 refuses such a ladder rather than truncating it, because truncation would price the fourth rung at zero and make an unpriced rung indistinguishable from a free one. This is a **new** blocker, and it is the only one of the six `coding` now fails |
 
 This table was re-derived from the live `delegation_capability` on 2026-09-17 and previously reported three rungs, a 1,398.2s worst case, and a passing budget check — all three superseded by terra's arrival and by §5.1's baseline fix. The last row is the substantive change: adding a fourth rung did not make `coding` expensive, it made `coding` **unpriceable**, which §1.1 treats as a refusal to start rather than as a cost to weigh.
@@ -258,7 +258,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0285 | 13.5 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | planning | 75% | 12 | 0.0285 | 40.7 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 56* | 0.0285 | 6.055 | 922,000 |
 | `claude-sonnet-5` | coding | 100% | 24 | 1.5709 | 15.5 | 1,000,000 |
 | `claude-sonnet-5` | long-context | 66.7% | 12 | 1.5709 | 4.2 | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 12 | 1.5709 | 6.0 | 1,000,000 |
@@ -267,7 +267,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 1.5709 | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 1.5709 | 17.5 | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | reviewer-gate | TBD | 20* | 1.5709 | 3.675 | 1,000,000 |
+| `claude-sonnet-5` | reviewer-gate | TBD | 56* | 1.5709 | 4.605 | 1,000,000 |
 | `claude-opus-5` | comprehension | 100% | 12 | 3.6082 | 11.9 | 1,000,000 |
 | `claude-opus-5` | reasoning | 100% | 6 | 3.6082 | 10.2 | 1,000,000 |
 | `azure_ai/gpt-5.6-terra` | coding | 100% | 18 | 0.0285† | 7.2 | 922,000 |
@@ -829,7 +829,7 @@ All three models have now run the **same six `coding` tasks**, so these are medi
 | `azure_ai/gpt-5.6-luna` | 12.8 | 24 | **1.00** (reference — fastest ladder-eligible on `coding`) |
 | `claude-sonnet-5` | 15.5 | 24 | 1.21 |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | 26.8 | 44 | **2.09** |
-| `azure_ai/gpt-5.6-luna` on `reviewer-gate` | 11.1 | 9 | 0.87 |
+| `azure_ai/gpt-5.6-luna` on `reviewer-gate` | 11.1 | 9 | 0.87 | *(superseded: re-measured at 6.055 over n=56 on 2026-09-17, below)* |
 
 **The reference moved from Sonnet to Luna when the task mix was equalised**, and that is the whole argument for insisting on one: measured over the two hard tasks alone Sonnet was faster (13.8 against 15.2), measured over all six Luna is faster (12.8 against 15.5). Neither model changed. The earlier ordering was an artefact of Sonnet having run only the harder half, and a multiplier built on it would have been scaling every deadline against a reference that does not hold.
 
@@ -952,6 +952,26 @@ Note what the change does **not** do: it does not re-found 45 and 90. Neither wa
 **`long-context` is not this defect, and this fix does not clear it.** Its reference never moved: `claude-sonnet-5` at 4.2s was and remains the fastest ladder-eligible model on the type, because terra measured 6.3s — identical to luna. What terra did was **add a third rung**. The ladder went `vllm → luna` to `vllm → luna → terra`, and the generation sum went `13.9 + 6.3 = 20.2s` to `26.5s`. That is the real latency of a real rung, not a normalisation artefact, and the type is over the ceiling by 17.7s on honest arithmetic.
 
 `long-context` therefore stays non-operational on a **live** blocker, separate from every other open item, and it has exactly the three resolutions §5.1 already names: re-derive the ceiling from the new worst case (option 1, the standing default), drop a rung (option 2 — here terra, the rung that is neither the free one nor the accuracy ceiling, at the price of an escalation step), or accept truncation (option 3). **Option 1 is the one this section's own rule points at** — the ceiling is derived from the worst case of the most expensive operational type, and the worst case moved — but no type is operational, so nothing is harmed by leaving the ceiling at 1,500 until terra's real price lands and the ladders are recomputed. Deciding it before that would set the ceiling from a table that is about to change.
+
+#### Re-measured 2026-09-17: the gate rows were the stalest input, and they clear `long-context`
+
+The three model gates are **52% of `coding`'s multiplier sum**, so `reviewer-gate` is the single most load-bearing row in this section — and it was carried at `n=9` and `n=20` while every generation row had been re-measured at `n=12` or better. Re-derived from `bench/gate_accuracy.py` at **n=56 per model**, pooled across the reviewer and security gates (both are the same call shape: code plus task description in, one line out):
+
+| model | stored | re-measured (n=56) | |
+|---|---|---|---|
+| `azure_ai/gpt-5.6-luna` | 11.1 (n=9) | **6.055** | the stored value was 1.83× too high |
+| `claude-sonnet-5` | 3.675 (n=20) | **4.605** | the stored value was 25% too low |
+
+```
+coding        gates 6.15625 → 4.44167   worst 1,281.4s → 1,107.8s   margin 218.6s → 392.2s
+long-context  sum  16.86310 → 13.92381  worst 1,517.7s → 1,253.1s   margin  −17.7s → 246.9s
+```
+
+**`long-context` clears the ceiling on this measurement alone.** Its breach was 17.7s against a gate row overstated by 5 seconds and sampled at n=9 — so the breach was an artefact of the stalest number in the computation, not of the third rung terra added. The rung is still real and still costs 6.3s of generation; it simply was never what put the type over.
+
+Note what this does **not** settle. It does not vindicate `long-context`'s 4.2 anchor, which remains chosen rather than derived and still scales the whole type linearly — the type now passes with that anchor, which is a weaker claim than the anchor being right. And it does not touch `multi-turn` (1,515.7s), `reasoning` (1,658.0s) or `comprehension` (1,772.4s), which stay over because they are uncalibrated and take the fixed 90s baseline against derived multipliers — the defect this section fixed for calibrated types only.
+
+**These figures take effect when the rows are seeded.** `bin/wc-seed-delegation.py` and §2.6 above carry the re-measured values; the live `delegation_capability` still holds the stored ones until a seeding run is made, so the Delegation page will keep reporting `long-context`'s breach until then.
 
 **What the fix costs, stated plainly.** A faster fleet now yields *shorter* absolute deadlines. That is correct if a production task's duration scales with a benchmark task's on the same model, and wrong if production tasks have a fixed absolute size the benchmark does not capture. The ratio is where that assumption lives, and it is the least-evidenced quantity in this section: both values are inherited from figures that were estimates. A measured distribution of real leaf durations per task type (§10) is what would replace them, and until it exists the ratios should be treated as the calibration they are, not as measurements.
 

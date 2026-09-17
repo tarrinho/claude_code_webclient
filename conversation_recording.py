@@ -239,24 +239,39 @@ def forget_turns(chat_id: str) -> None:
     _TURNS.pop(chat_id, None)
 
 
-#: Recording is OPT-IN, per benchmark run. Off by default.
+#: Recording is ON by default: every voice chat is recorded.
 #:
-#: The brief scopes this to "voice-benchmark test conversations, not a general
-#: recording feature for all chats". A `voice_mode` filter alone is not that --
-#: it catches every voice conversation anyone has, which is both broader than
-#: asked and a standing privacy surface for a file that exists to hold raw
-#: conversation content. Gating on a setting means nothing is written unless
-#: someone turned it on for a benchmark, and turning it off stops it.
+#: This reversed on 2026-09-17 and both positions are recorded, because the
+#: reasons pull against each other and whoever revisits this needs both.
+#:
+#: The written brief scoped it to "voice-benchmark test conversations, not a
+#: general recording feature for all chats", which argued for opt-in: a
+#: `voice_mode` filter alone catches every voice conversation anyone has, and
+#: a file holding raw conversation content is a standing privacy surface.
+#:
+#: The operator then asked for every voice chat to be recorded, so that
+#: examples exist to benchmark against. That wins, because it is the later
+#: instruction and because the earlier one was about SCOPE OF PURPOSE rather
+#: than about a flag: in this deployment the voice chats are the benchmark
+#: conversations.
+#:
+#: The setting remains, so recording can still be switched OFF -- which is the
+#: half that matters now that the default is on. Anything other than a stored
+#: `"0"` leaves it enabled.
 BENCHMARK_RECORDING_SETTING: Final[str] = "voice_benchmark_recording"
-BENCHMARK_RECORDING_DEFAULT: Final[bool] = False
+BENCHMARK_RECORDING_DEFAULT: Final[bool] = True
 
 
 async def benchmark_recording_enabled() -> bool:
     """Whether voice-benchmark recording is switched on.
 
-    Anything other than the stored `"1"` is off, including a missing row and a
-    malformed value: a file holding raw conversation content must never start
-    being written because a settings row could not be parsed.
+    Anything other than a stored `"0"` leaves recording ON, including a
+    missing row and a malformed value. That polarity flipped with the default
+    (2026-09-17): when recording was opt-in, an unparseable row had to mean
+    "do not write raw conversation content"; now that every voice chat is
+    recorded on purpose, an unparseable row must not silently stop the
+    recording an operator is relying on. Switching it off is an explicit
+    `"0"`, which is the one value that has to be unambiguous.
     """
     try:
         from routes.db_users import setting_get
@@ -265,7 +280,7 @@ async def benchmark_recording_enabled() -> bool:
         return BENCHMARK_RECORDING_DEFAULT
     if raw is None:
         return BENCHMARK_RECORDING_DEFAULT
-    return raw.strip() == "1"
+    return raw.strip() != "0"
 
 
 async def is_voice_chat(chat_id: str) -> bool:

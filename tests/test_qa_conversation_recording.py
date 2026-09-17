@@ -255,9 +255,9 @@ class NotARetentionChangeTests(unittest.IsolatedAsyncioTestCase):
         p = patch.object(cr, "default_root", lambda: Path(self.root))
         p.start()
         self.addCleanup(p.stop)
-        # Recording is opt-in per benchmark run and off by default, so every
-        # fixture that expects a file has to switch it on explicitly. That the
-        # default is off is asserted separately, in BenchmarkGateTests.
+        # Explicit rather than relying on the default, so these fixtures keep
+        # testing what they are about if the default ever moves again -- it
+        # has moved once already (2026-09-17, opt-in to on-by-default).
         await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
 
     async def _chat(self, chat_id, owner="u1", voice=True, parent=None):
@@ -364,9 +364,9 @@ class SurvivesTheHandoffDeletionTests(unittest.IsolatedAsyncioTestCase):
         p = patch.object(cr, "default_root", lambda: Path(self.root))
         p.start()
         self.addCleanup(p.stop)
-        # Recording is opt-in per benchmark run and off by default, so every
-        # fixture that expects a file has to switch it on explicitly. That the
-        # default is off is asserted separately, in BenchmarkGateTests.
+        # Explicit rather than relying on the default, so these fixtures keep
+        # testing what they are about if the default ever moves again -- it
+        # has moved once already (2026-09-17, opt-in to on-by-default).
         await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
 
     async def _voice_chat_with_turns(self):
@@ -466,9 +466,9 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
         p = patch.object(cr, "default_root", lambda: Path(self.root))
         p.start()
         self.addCleanup(p.stop)
-        # Recording is opt-in per benchmark run and off by default, so every
-        # fixture that expects a file has to switch it on explicitly. That the
-        # default is off is asserted separately, in BenchmarkGateTests.
+        # Explicit rather than relying on the default, so these fixtures keep
+        # testing what they are about if the default ever moves again -- it
+        # has moved once already (2026-09-17, opt-in to on-by-default).
         await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
         cr.forget_turns("v1")
         self.addCleanup(cr.forget_turns, "v1")
@@ -642,12 +642,17 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BenchmarkGateTests(unittest.IsolatedAsyncioTestCase):
-    """Scoped to voice-BENCHMARK conversations, not to voice in general.
+    """The recording switch: on by default, and switchable off.
 
-    A `voice_mode` filter alone catches every voice conversation anyone has,
-    which is broader than the brief ("not a general recording feature for all
-    chats") and leaves a file holding raw conversation content being written
-    continuously. Recording is opt-in per benchmark run and off by default.
+    This reversed on 2026-09-17. It shipped opt-in, on the written brief's
+    "not a general recording feature for all chats"; the operator then asked
+    for every voice chat to be recorded so that examples exist to benchmark
+    against. Both positions are kept in `BENCHMARK_RECORDING_SETTING`'s note,
+    because the reasons pull against each other.
+
+    The polarity of the switch flipped with it: when recording was opt-in an
+    unparseable settings row had to mean "write nothing"; now it must not
+    silently stop a recording an operator is relying on.
     """
 
     async def asyncSetUp(self):
@@ -672,24 +677,20 @@ class BenchmarkGateTests(unittest.IsolatedAsyncioTestCase):
         from routes import db_chats
         await db_chats.messages_append("v1", "user", "spoken")
 
-    def test_the_default_is_off(self):
-        self.assertFalse(cr.BENCHMARK_RECORDING_DEFAULT)
+    def test_the_default_is_on(self):
+        """Reversed 2026-09-17: every voice chat is recorded, so that examples
+        exist to benchmark against."""
+        self.assertTrue(cr.BENCHMARK_RECORDING_DEFAULT)
 
-    async def test_nothing_is_written_while_it_is_off(self):
-        """The property that makes this not a general recording feature: a
-        real voice conversation, ended properly, writes no file at all."""
-        self.assertIsNone(await cr.record_conversation("v1"))
-        self.assertFalse(cr.recording_path().exists())
-
-    async def test_it_records_once_switched_on(self):
-        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
+    async def test_a_voice_chat_is_recorded_with_no_setting_at_all(self):
+        """The property the reversal is for: a fresh deployment, nobody having
+        touched a setting, records its voice conversations."""
         self.assertIsNotNone(await cr.record_conversation("v1"))
         self.assertTrue(cr.recording_path().exists())
 
-    async def test_switching_it_off_again_stops_new_writes(self):
-        """Turning it off must actually stop recording, not merely stop
-        starting -- a benchmark run that ended should not keep writing."""
-        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
+    async def test_it_can_still_be_switched_off(self):
+        """The half that matters now the default is on. Turning it off must
+        actually stop recording, not merely stop starting."""
         await cr.record_conversation("v1")
         first = cr.recording_path().read_text()
         await setting_set(cr.BENCHMARK_RECORDING_SETTING, "0")
@@ -698,13 +699,23 @@ class BenchmarkGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await cr.record_conversation("v1"))
         self.assertEqual(cr.recording_path().read_text(), first)
 
-    async def test_a_malformed_setting_is_off_not_on(self):
-        """A file holding raw conversation content must never start being
-        written because a settings row could not be parsed."""
-        for raw in ("", "true", "yes", "01", " ", "None"):
+    async def test_it_can_be_switched_back_on(self):
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "0")
+        self.assertFalse(await cr.benchmark_recording_enabled())
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
+        self.assertTrue(await cr.benchmark_recording_enabled())
+
+    async def test_only_an_explicit_zero_switches_it_off(self):
+        """The polarity flipped with the default. An unparseable row must not
+        silently stop a recording an operator is relying on, so `"0"` is the
+        one value that has to be unambiguous -- and nothing else may be read
+        as it."""
+        for raw in ("", "true", "yes", "01", " ", "None", "false"):
             with self.subTest(raw=raw):
                 await setting_set(cr.BENCHMARK_RECORDING_SETTING, raw)
-                self.assertFalse(await cr.benchmark_recording_enabled())
+                self.assertTrue(await cr.benchmark_recording_enabled())
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, " 0 ")
+        self.assertFalse(await cr.benchmark_recording_enabled())
 
 
 class EveryEndingPathRecordsTests(unittest.IsolatedAsyncioTestCase):

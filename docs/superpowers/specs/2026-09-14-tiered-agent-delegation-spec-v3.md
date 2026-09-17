@@ -81,12 +81,14 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 
 | invariant | `coding` | why |
 |---|---|---|
-| no blank fields | **pass** | its three ladder-eligible rows (vllm, luna, sonnet) are complete in all five columns; mini's row is exempt because it is not ladder-eligible |
-| model resolution | **pass** | all three resolve to real backend-and-model pairs |
-| no empty ladder | **pass** | `vllm → luna → sonnet` survives the cost ceiling |
-| every rung backed by a row | **pass** | all three rungs have §2.6 rows |
-| ceiling fits the budget | **pass, on a remaining lower bound** | 1,398.2s against the 1,500s ceiling, 101.8s of margin, with the gate climb now measured (§5.1, 2026-09-16). Still excludes §4.5's security re-run term, which cannot be priced until §12's gate-type item is decided |
-| ladder fits the budget | **pass** | `coding` is one of only two ladders that fit unchanged (§2.7) |
+| no blank fields | **pass** | its four ladder-eligible rows (vllm, luna, terra, sonnet) are complete in all five columns; mini's row is exempt because it is not ladder-eligible |
+| model resolution | **pass** | all four resolve to real backend-and-model pairs |
+| no empty ladder | **pass** | `vllm → luna → terra → sonnet` survives the cost ceiling |
+| every rung backed by a row | **pass** | all four rungs have §2.6 rows |
+| ceiling fits the budget | **pass, on a remaining lower bound** | 1,281.4s against the 1,500s ceiling, 218.6s of margin, with the baseline derived against the current reference (§5.1, 2026-09-17). Still excludes §4.5's security re-run term, which cannot be priced until §12's gate-type item is decided |
+| ladder fits the budget | **FAIL — the cost cannot be computed at all** | the ladder is **four rungs** since terra was measured, and §2.7 publishes reach probabilities for rungs 0–2 only, so rung 3 cannot be priced. §2.7 refuses such a ladder rather than truncating it, because truncation would price the fourth rung at zero and make an unpriced rung indistinguishable from a free one. This is a **new** blocker, and it is the only one of the six `coding` now fails |
+
+This table was re-derived from the live `delegation_capability` on 2026-09-17 and previously reported three rungs, a 1,398.2s worst case, and a passing budget check — all three superseded by terra's arrival and by §5.1's baseline fix. The last row is the substantive change: adding a fourth rung did not make `coding` expensive, it made `coding` **unpriceable**, which §1.1 treats as a refusal to start rather than as a cost to weigh.
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
 
@@ -1117,7 +1119,7 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | voice ladder exists and stops at Sonnet | omitting voice because §3's prose says less about it — assert voice has a rung 0 and rung 1 and that **Opus is not a voice rung at any accuracy** |
 | rung 0 is scoped | asserting the free model appears somewhere — assert it is attempt 1 for `coding` and `long-context` and **attempt 1 for nothing else** |
 | `TIER0_BASELINE_CALIBRATION` contents | asserting the two present keys — also assert the other types are **absent**, and that each entry carries a reference beside its published seconds |
-| the baseline is derived, not published | asserting the published 45/90 — change the table's fastest ladder-eligible latency and assert the baseline moves with it. This is the 2026-09-17 defect: a baseline read out of the map keeps 90 while the multipliers renormalise, and `coding` goes 880s over the ceiling with no model having got slower |
+| the baseline is derived, not published | asserting the published 45/90 — change the table's fastest ladder-eligible latency and assert the baseline moves with it. This is the 2026-09-17 defect: a baseline read out of the map keeps 90 while the multipliers renormalise, and `coding` lands at 2,278.1s -- **778.1s over** the 1,500s ceiling -- with no model having got slower |
 | the reference cancels | asserting one model's deadline in isolation — assert a model's deadline is unchanged when only its **neighbours'** latencies move, which is the property deriving both halves from one reference buys |
 | unknown task type | letting `KeyError` escape, or defaulting to the shortest deadline — assert it gets the **longest**, and assert **both directions** of the coupling: a calibrated type deriving *below* its published baseline must not drag the unmeasured type down, and one deriving far *above* it must not drag the unmeasured type up. The upward direction was the untested one, and the maximum was unbounded above until 2026-09-17 |
 | deadline is configuration | hardcoding the number in router and test so both agree and neither tracks the map — change a value in the test and assert the router follows |

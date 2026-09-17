@@ -17,8 +17,8 @@ grouped:
     rows, the voice ladder, the scoping of the free rung, and the "no row means
     not a candidate" mechanism were untested (rows 995, 996, 997, 1014, 1049,
     1065);
-  * `TIER0_DEADLINE` was asserted for the keys it holds, never for the keys it
-    must NOT hold, and no test changed a deadline and checked the router
+  * the per-type baseline map was asserted for the keys it holds, never for the
+    keys it must NOT hold, and no test changed a deadline and checked the router
     followed (rows 998, 1000, 1002);
   * the classifier's score rule was asserted, but never that the score it
     produces reaches the size factor -- the binding score-5 case and the
@@ -37,9 +37,13 @@ grouped:
 Nothing here flips `coding` operational -- spec section 12's third open item
 forbids it, and the two rows that need an operational coding-shaped task type
 use a synthetic type carrying `coding`'s measured numbers instead. A synthetic
-type is absent from `TIER0_DEADLINE`, so it takes the unknown-type baseline of
-90s, which is `coding`'s own baseline: the arithmetic is identical and the
-prohibition is untouched.
+type is absent from `TIER0_BASELINE_CALIBRATION`, so it takes the unknown-type
+baseline of 90s and the prohibition is untouched. Note this is NO LONGER the
+same figure as `coding`'s own baseline: since the 2026-09-17 derivation change
+`coding` derives to 50.625s against the live table, so a synthetic coding-shaped
+type is budgeted more generously than real `coding` would be. That is acceptable
+here because these tests assert invariants rather than reproduce `coding`'s
+numbers, but it is not the identity the earlier wording claimed.
 """
 from __future__ import annotations
 
@@ -297,8 +301,11 @@ class Tier0DeadlineTests(unittest.TestCase):
         """The 2026-09-17 defect in one assertion: the published seconds stay
         put while the table's fastest ladder-eligible model changes, and the
         deadline must move anyway. A baseline read straight out of the map
-        keeps the published 90.0 here and is what put `coding`'s worst case
-        880s over the ceiling with no model having got slower."""
+        keeps the published 90.0 here and is what put `coding`'s worst case at
+        2,278.1s -- 778.1s over the 1,500s ceiling -- with no model having got
+        slower. (778.1s is the overage; 879.9s, which an earlier revision of
+        this docstring quoted as the overage, is the increase over the previous
+        1,398.2s worst case. The two are different quantities.)"""
         ratio = td.baseline_task_ratio("coding")
         for reference in (10.0, 5.0, 40.0):
             with self.subTest(reference=reference):
@@ -713,9 +720,12 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     `coding` is NOT flipped operational here -- spec 12 forbids it. The
     synthetic type below carries `coding`'s measured rows, and because it is
-    absent from `TIER0_DEADLINE` it takes the unknown-type baseline of 90s,
-    which is `coding`'s own baseline: the worst case is the same 1,243.125s
-    arithmetic, with nothing routed and no prohibition touched.
+    absent from `TIER0_BASELINE_CALIBRATION` it takes the unknown-type baseline
+    of 90s, with nothing routed and no prohibition touched. The 90s is no longer
+    `coding`'s own baseline -- since 2026-09-17 that derives against the live
+    reference -- so this reproduces the 2026-09-15 arithmetic on a fixed
+    baseline, which is what the startup path under test needs, not `coding`'s
+    current figure.
     """
 
     TASK_TYPE = "coding-shaped"

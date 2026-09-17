@@ -91,6 +91,20 @@ ROWS = [
     ("claude-sonnet-5", "reviewer-gate", None, 20, 1.5709, 3.675, 1000000),
     ("claude-opus-5", "comprehension", 1.0, 12, 3.6082, 11.9, 1000000),
     ("claude-opus-5", "reasoning", 1.0, 6, 3.6082, 10.2, 1000000),
+    # azure_ai/gpt-5.6-terra, added 2026-09-17. accuracy/n/median_latency_s are
+    # measured (bin/wc-bench.py --repeats 3); max_context is measured from the
+    # gateway's own /model/info (922000, same as luna). cost_per_1m_tokens is
+    # NOT measured -- it is luna's own rate, assumed onto terra by operator
+    # decision (2026-09-17) pending real gateway billing. See spec 2.6's `†`
+    # marker and prose note: this column cannot carry that distinction, so
+    # every ladder position and tree cost derived from these six rows is
+    # provisional until the real rate lands.
+    ("azure_ai/gpt-5.6-terra", "coding", 1.0, 18, 0.0285, 7.2, 922000),
+    ("azure_ai/gpt-5.6-terra", "long-context", 1.0, 12, 0.0285, 6.3, 922000),
+    ("azure_ai/gpt-5.6-terra", "multi-turn", 1.0, 12, 0.0285, 12.4, 922000),
+    ("azure_ai/gpt-5.6-terra", "planning", 0.667, 12, 0.0285, 26.9, 922000),
+    ("azure_ai/gpt-5.6-terra", "comprehension", 0.5, 12, 0.0285, 9.8, 922000),
+    ("azure_ai/gpt-5.6-terra", "reasoning", 0.5, 6, 0.0285, 8.9, 922000),
 ]
 
 

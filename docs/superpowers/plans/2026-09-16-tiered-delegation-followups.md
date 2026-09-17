@@ -26,6 +26,50 @@ That last row is worth keeping visible. F1's ruling silently downgraded two pass
 
 **The §5.1 ceiling contradiction (F4 below) has since been ruled on and measured** — see §5.1's "Decided 2026-09-16" subsection and §2.6's `claude-sonnet-5` × `reviewer-gate` row at 3.675s over n=20. The worst case is now 1,398.2s against the 1,500s ceiling. It remains a lower bound because §4.5's security re-run term is still unpriced, which is the §12 dependency below.
 
+## Must close tomorrow
+
+### F9 — `azure_ai/gpt-5.6-terra`'s price is provisional and the live table cannot say so
+
+`data/webconsole.db` (`delegation_capability`), `bin/wc-seed-delegation.py`,
+spec §2.6.
+
+Six rows for `azure_ai/gpt-5.6-terra` (coding, long-context, multi-turn,
+planning, comprehension, reasoning) were added 2026-09-17 with measured
+`accuracy`/`n`/`median_latency_s` and a measured `max_context` (922,000, from
+the gateway's `/model/info`) — but `cost_per_1m_tokens` is **0.0285**, luna's
+rate, assumed onto terra by operator decision pending real gateway billing.
+Spec §2.6 can carry that distinction: the table there marks the cell `†` and
+says in prose that it is assumed, not billed. **The production table cannot
+express it.** `cost_per_1m_tokens` is a plain `REAL` column, and 0.0285 reads
+there exactly the same as a rate someone actually billed — to `validate()`, to
+`CapabilityTable.ladder()`, and to the Settings › Delegation page, which will
+render it as though it were as solid as any other cell.
+
+This is why §2.7's "a model nobody priced must not come out cheapest" and
+this row are in direct tension: an assumed-cheap price is exactly how an
+unpriced model comes out cheapest, and nothing downstream of the database can
+tell the difference between this row and a genuinely measured one.
+
+**Close by replacing 0.0285 with the real billed rate** the moment gateway
+billing supplies it (`db.delegation_row_set("azure_ai/gpt-5.6-terra",
+<task_type>, cost_per_1m_tokens=<real rate>, ...)`, preserving the other
+columns) for all six rows, and update spec §2.6's table and `†` note to match.
+
+Ladder effect measured 2026-09-17, `CapabilityTable.ladder()` over the live
+29-row table: terra enters `coding` (rung 2 of 4), `long-context` (rung 2 of
+3), `multi-turn` (rung 1 of 3) and `reasoning` (rung 1 of 4); `comprehension`
+and `planning` are unchanged (terra measured worse than the rung it would
+have joined). `coding` and `reasoning` now have 4 rungs each, past what
+§2.7's published reach probabilities (rungs 0-2 only) can price — their
+`tree_cost_usd()` returns `None` with a "cannot be priced" problem rather than
+a number. Every one of these positions is provisional on the assumed price;
+none of it is a live routing decision, because no task type here is flagged
+`operational` and none of this is read by `assign_model`.
+
+**Risk bound: nothing is operational, so no routing depends on this yet.**
+The exposure is confined to what the ladder generator would compute and what
+the Settings page would display, not to any turn actually being routed by it.
+
 ## Must close before the first `operational` flip
 
 ### F1 — a partially populated model cache becomes a boot refusal

@@ -268,14 +268,25 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | reviewer-gate | TBD | 20* | 1.5709 | 3.675 | 1,000,000 |
 | `claude-opus-5` | comprehension | 100% | 12 | 3.6082 | 11.9 | 1,000,000 |
 | `claude-opus-5` | reasoning | 100% | 6 | 3.6082 | 10.2 | 1,000,000 |
+| `azure_ai/gpt-5.6-terra` | coding | 100% | 18 | 0.0285† | 7.2 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | long-context | 100% | 12 | 0.0285† | 6.3 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | multi-turn | 100% | 12 | 0.0285† | 12.4 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | planning | 66.7% | 12 | 0.0285† | 26.9 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | comprehension | 50% | 12 | 0.0285† | 9.8 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | reasoning | 50% | 6 | 0.0285† | 8.9 | 922,000 |
 
-**`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The three gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available.
+**A `cost_per_1M_tokens` cell marked `†` is assumed, not billed — a distinct marker from the `*` above, which means "latency sample, not accuracy sample."** `azure_ai/gpt-5.6-terra`'s six rows carry **0.0285**, `azure_ai/gpt-5.6-luna`'s own rate, because the operator assumed luna-equivalent pricing so terra could enter the ladders today, rather than sit unpriced until billing catches up (**operator, 2026-09-17**). Real gateway billing figures are expected tomorrow. §2.5 sources every other Azure rate from **gateway billing**, not from this database — terra's `†` is the one cost figure in this table that gateway billing has not yet supplied, and it is not a substitute for that source. **Every ladder position and tree cost derived from terra is provisional until the real rate lands.**
+
+This is in direct tension with §2.7's **"a model nobody priced must not come out cheapest"** — assuming a cheap price is exactly how an unpriced model comes out cheapest, and this assumption does that. That tension is not resolved here: it is a **deliberate operator decision**, recorded rather than argued away, not an oversight.
+
+**`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available. **`azure_ai/gpt-5.6-terra` added 2026-09-17, same source**: `/model/info` reports `max_input_tokens: 922000` for it, the same figure as luna — unlike its cost cell (marked `†` above), this column is measured, not assumed.
 
 | model | max input | max output |
 |---|---|---|
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | 229,376 | **32,768** |
 | `azure_ai/gpt-5.6-luna` | 922,000 | 128,000 |
 | `azure_ai/gpt-5.4-mini` | 1,050,000 | 128,000 |
+| `azure_ai/gpt-5.6-terra` | 922,000 | 128,000 |
 | `claude-sonnet-5` | 1,000,000 | 128,000 |
 | `claude-opus-5` | 1,000,000 | 128,000 |
 
@@ -306,7 +317,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 Luna is the better reviewer; Sonnet is the better security check. §3 mandates one shared `reviewer-gate` row set for all three gates, so a single `accuracy` figure has to stand for both, and whichever model is chosen leaves one gate running on its worse option. That is §12's open gate-type question to resolve, not a fact this table can average away — so both `reviewer-gate` rows (luna, sonnet) keep `accuracy = TBD` here **deliberately**: TBD because the choice is undecided, not because nobody measured it.
 
-**Provenance of the `cost_per_1M_tokens` column, which comes from three different places.** Anthropic figures (sonnet 1.5709, opus 3.6082) are blended from `usage_events` rows carrying `cost_basis='list'`. Azure figures (luna 0.0285, mini 0.5261) come from **gateway billing**, which is a separate source from this database and the reason they never reconciled with it (§2.5). `0.0000` for the self-hosted model is a property of the deployment, not a measurement. Every one of them is a **rate**, independent of request size — which is the whole point of the unit change, since the previous per-request column silently encoded how large each model's historical jobs happened to be (§2.7).
+**Provenance of the `cost_per_1M_tokens` column, which comes from four different places now.** Anthropic figures (sonnet 1.5709, opus 3.6082) are blended from `usage_events` rows carrying `cost_basis='list'`. Azure figures (luna 0.0285, mini 0.5261) come from **gateway billing**, which is a separate source from this database and the reason they never reconciled with it (§2.5). `0.0000` for the self-hosted model is a property of the deployment, not a measurement. Terra's 0.0285 is **none of the above** — it is luna's rate, assumed onto an unbilled model by operator decision (marked `†` above), and it is the one figure in this column that is not a rate this deployment has actually observed. Every priced-and-measured one of them is a **rate**, independent of request size — which is the whole point of the unit change, since the previous per-request column silently encoded how large each model's historical jobs happened to be (§2.7).
 
 Azure values carry one dependency the others do not: the **EUR→USD rate of 1.0812** stated in §2.5. A materially different rate moves luna and mini against the Anthropic figures and can reorder a ladder, so the rate is versioned with the table (§9).
 

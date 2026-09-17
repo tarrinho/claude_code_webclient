@@ -183,9 +183,10 @@ class SeedRowCoverageTests(unittest.TestCase):
 
     def test_spec_pairs_parsed_sanely(self):
         # Guards the parser itself: if the table's shape ever changes enough
-        # that this stops finding 23 rows, the pairs test below would pass
-        # trivially on an empty set rather than failing usefully.
-        self.assertEqual(len(self._spec_pairs()), 23)
+        # that this stops finding 29 rows (23 plus azure_ai/gpt-5.6-terra's
+        # six, added 2026-09-17), the pairs test below would pass trivially
+        # on an empty set rather than failing usefully.
+        self.assertEqual(len(self._spec_pairs()), 29)
 
     def test_every_spec_2_6_row_has_a_seeded_row(self):
         module = _load_seed_module()
@@ -226,9 +227,15 @@ def _spec_n(cell: str) -> int | None:
 
 
 def _spec_float(cell: str) -> float | None:
-    """A plain decimal cell (`cost_per_1M_tokens`, `median_latency_s`)."""
+    """A plain decimal cell (`cost_per_1M_tokens`, `median_latency_s`).
+
+    `cost_per_1M_tokens` may carry a trailing `†`, spec 2.6's marker for
+    "assumed, not billed" (added 2026-09-17 for `azure_ai/gpt-5.6-terra`) --
+    a distinct marker from `_spec_n`'s `*`, so stripped the same way rather
+    than folded into that one. The seed script stores the number either
+    way; the marker itself carries no value to compare here."""
     v = _spec_cell(cell)
-    return None if v is None else float(v.replace(",", ""))
+    return None if v is None else float(v.rstrip("†").replace(",", ""))
 
 
 def _spec_int(cell: str) -> int | None:

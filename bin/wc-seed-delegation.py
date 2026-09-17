@@ -69,7 +69,7 @@ import db  # noqa: E402
 #: All 23 (model, task_type) pairs of spec 2.6's table, in its row order.
 ROWS = [
     ("vllm/Qwen3.6-35B-A3B-NVFP4", "coding", 0.66, 44, 0.0, 26.8, 229376),
-    ("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context", 1.0, 10, 0.0, None, 229376),
+    ("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context", 0.833, 12, 0.0, 13.9, 229376),
     ("azure_ai/gpt-5.6-luna", "coding", 1.0, 24, 0.0285, 12.8, 922000),
     ("azure_ai/gpt-5.6-luna", "long-context", 1.0, 12, 0.0285, 6.3, 922000),
     ("azure_ai/gpt-5.6-luna", "comprehension", 0.583, 12, 0.0285, 9.2, 922000),
@@ -82,14 +82,14 @@ ROWS = [
     ("azure_ai/gpt-5.6-luna", "reviewer-gate", None, 9, 0.0285, 11.1, 922000),
     ("claude-sonnet-5", "coding", 1.0, 24, 1.5709, 15.5, 1000000),
     ("claude-sonnet-5", "long-context", 0.667, 12, 1.5709, 4.2, 1000000),
-    ("claude-sonnet-5", "comprehension", 1.0, 2, 1.5709, None, 1000000),
-    ("claude-sonnet-5", "reasoning", 0.75, 2, 1.5709, None, 1000000),
+    ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
+    ("claude-sonnet-5", "reasoning", 0.834, 6, 1.5709, 24.6, 1000000),
     ("claude-sonnet-5", "voice", None, None, 1.5709, None, 1000000),
     ("claude-sonnet-5", "multi-turn", 1.0, 12, 1.5709, 7.8, 1000000),
     ("claude-sonnet-5", "planning", 0.833, 12, 1.5709, 17.5, 1000000),
     ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),
     ("claude-sonnet-5", "reviewer-gate", None, 20, 1.5709, 3.675, 1000000),
-    ("claude-opus-5", "comprehension", 0.5, 2, 3.6082, None, 1000000),
+    ("claude-opus-5", "comprehension", 1.0, 12, 3.6082, 11.9, 1000000),
     ("claude-opus-5", "reasoning", 1.0, 6, 3.6082, 10.2, 1000000),
 ]
 

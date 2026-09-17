@@ -246,7 +246,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | model | task_type | accuracy | n | cost_per_1M_tokens | median_latency_s | max_context |
 |---|---|---|---|---|---|---|
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 66% | 44 | 0.0000 | 26.8 | 229,376 |
-| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | 229,376 |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 83.3% | 12 | 0.0000 | 13.9 | 229,376 |
 | `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0285 | 12.8 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0285 | 6.3 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0285 | 9.2 | 922,000 |
@@ -259,14 +259,14 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | 922,000 |
 | `claude-sonnet-5` | coding | 100% | 24 | 1.5709 | 15.5 | 1,000,000 |
 | `claude-sonnet-5` | long-context | 66.7% | 12 | 1.5709 | 4.2 | 1,000,000 |
-| `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | comprehension | 100% | 12 | 1.5709 | 6.0 | 1,000,000 |
+| `claude-sonnet-5` | reasoning | 83.4% | 6 | 1.5709 | 24.6 | 1,000,000 |
 | `claude-sonnet-5` | voice | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 1.5709 | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 1.5709 | 17.5 | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | reviewer-gate | TBD | 20* | 1.5709 | 3.675 | 1,000,000 |
-| `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | 1,000,000 |
+| `claude-opus-5` | comprehension | 100% | 12 | 3.6082 | 11.9 | 1,000,000 |
 | `claude-opus-5` | reasoning | 100% | 6 | 3.6082 | 10.2 | 1,000,000 |
 
 **`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The three gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available.
@@ -284,6 +284,17 @@ Holding each model against each task type, with columns: measured accuracy, samp
 **An `n` marked with `*` is a latency sample, not an accuracy sample.** Five rows carry measured `median_latency_s` from `bench/pipeline_ab.py` while their `accuracy` is still TBD — four from 2026-09-15, plus `claude-sonnet-5` on `reviewer-gate` measured 2026-09-16 at **3.675s over n=20**, pooled from three separate passes (medians 3.705, 3.500, 4.190). That row was the one §5.1's ceiling derivation was blocked on. It is deliberately pooled across passes rather than taken from one: §5.1's own history has the same quantity reading 22.4, 33.2, 36.5 and 26.8 across four passes in a single day, so a single pass cannot establish one. A fourth pass of the same shape failed entirely — 14 calls, 14 errors — because the gate model was named `gpt-5.6-terra` rather than `azure_ai/gpt-5.6-terra`, and a bare id returns a 429 that reads like capacity (§9.3); its results are discarded, not averaged in. The `n` column means *accuracy* sample size everywhere else, and §2.6's blocking constraint on Opus depends on that reading, so the two must not be confused: **no row in this table yet carries a measured accuracy sample size for coding.** A row needs both before its task type can go operational.
 
 **`multi-turn`'s jump to 91.7%/100% is a harness fix, not a capability change, and needs saying so nobody re-derives from an earlier run and gets confused.** Measured tonight (`bin/wc-bench.py --repeats 3`), both `azure_ai/gpt-5.6-luna` and `claude-sonnet-5` score far above what four models — including these two — scored earlier: the `multi-turn-recall` task was unwinnable until commit `7414482` fixed the harness, which had verified only the last turn of the exchange, leaving `join_fields` undefined so the round trip could never complete. All four models previously measured on it scored 0.0. The figures recorded above (`luna` 91.7%/n=12, `sonnet` 100%/n=12) are from the re-measured, fixed harness — the `multi-turn-recall` task itself now reads 1.0 for both models. Anyone diffing against a run predating `7414482` will see `multi-turn` jump and should read this paragraph before concluding either model improved.
+
+**Four cells re-measured 2026-09-17 (`bin/wc-bench.py --repeats 3`), all at a larger `n` than what they replace.** Accuracy is the mean `pass_rate` across the task type's tasks; `median_latency_s` is the median of those tasks' own medians:
+
+| model | task_type | old (small-sample) | new |
+|---|---|---|---|
+| `claude-opus-5` | comprehension | 50% at n=2 | **100% at n=12**, latency 11.9s |
+| `claude-sonnet-5` | comprehension | 100% at n=2 | 100% at **n=12**, latency 6.0s |
+| `claude-sonnet-5` | reasoning | 75% at n=2 | **83.4% at n=6**, latency 24.6s |
+| `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% at n=10 | **83.3% at n=12**, latency 13.9s |
+
+**The `claude-opus-5` / `comprehension` row is the one that matters downstream, and it reverses §3.** At n=2 Opus measured worse than Sonnet on comprehension (50% against 100%), which is why the 2026-09-16 amendment (commit `b782e4d`) rewrote §3's comprehension row to `claude-sonnet-5` alone — Opus was skipped under the generator's own "measured worse than the current rung" rule, correctly applied to the data that existed then. At n=12 Opus now ties Sonnet at 100%. Tied is not worse, so Opus is no longer skipped, and §3's comprehension row is corrected below to match. See §3 for the full account of why the row changed twice in two days.
 
 **`reviewer-gate`'s accuracy cell stays `TBD` — pending §12's open gate-type decision, not for lack of a measurement.** Measured tonight with `bench/gate_accuracy.py`, the reviewer gate and the security gate disagree about which of the two candidate models is better, and both climb the same shared `reviewer-gate` ladder (§3):
 
@@ -510,7 +521,7 @@ The table below is a **snapshot of what this computation is expected to produce 
 | long-context | `vllm/Qwen3.6-35B-A3B-NVFP4` | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` |
 | multi-turn | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | planning | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
-| comprehension | `claude-sonnet-5` | — (Opus is skipped — see below) | — |
+| comprehension | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | `claude-opus-5` |
 | voice | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` | — |
 | reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set (an editorial hold; see below) | — | — |
 | split-decision | `claude-sonnet-5` | — | — |
@@ -520,12 +531,17 @@ The table below is a **snapshot of what this computation is expected to produce 
 
 Reasoning has no rung until Luna is benchmarked on that type. The existing 86%/75% accuracy figures are from a small sample (n=—) and must be re-verified against production request shapes before any rung is set.
 
-**Two rows of this snapshot are not what the generator would produce from today's table, and both were previously stated as though they were.** Recorded here rather than left for whoever next compares the two:
+**One row of this snapshot is not what the generator would produce from today's table, and it was previously stated as though it were.** Recorded here rather than left for whoever next compares the two:
 
-- **`comprehension` generates as `claude-sonnet-5` alone, not `sonnet → opus`.** Both are ladder-eligible (sonnet 100%, opus 50%, n=2 each), and cheapest-first orders sonnet before opus — so step 3 skips Opus as *measured worse than the current rung*. An earlier version of this line justified the two-rung ladder "because no measured model beats sonnet on comprehension", which is the reason Opus is **dropped**, not the reason it is kept. Opus becomes rung 2 only if a re-measurement puts it at or above sonnet. Nothing is lost meanwhile: a single-rung ladder still satisfies §1.1's "no empty ladder", and `comprehension` is non-operational regardless.
-- **`reasoning`'s hold is editorial and the generator does not enforce it.** With today's data the only ladder-eligible reasoning model is `claude-sonnet-5` (mini is cost-excluded by §2.7, Luna and Opus are TBD), so the generator returns `[claude-sonnet-5]` — not the "TBD" this table shows. The hold is a judgement that a 75% n=2 figure should not set a rung, and it lives in prose. **Until it is either enforced in code or lifted by measurement, `reasoning` must stay non-operational (§1.1)** — that flag, not this table, is what actually prevents the rung being used.
+- **`reasoning`'s hold is editorial and the generator does not enforce it.** With today's data the only ladder-eligible reasoning model is `claude-sonnet-5` (mini is cost-excluded by §2.7, Luna and Opus are TBD), so the generator returns `[claude-sonnet-5]` — not the "TBD" this table shows. The hold is a judgement that an 83.4% n=6 figure should not set a rung, and it lives in prose. **Until it is either enforced in code or lifted by measurement, `reasoning` must stay non-operational (§1.1)** — that flag, not this table, is what actually prevents the rung being used.
 
-The general point applies beyond these two: this table is a statement of intent, the generator is the mechanism, and where they disagree the generator wins at runtime. §1.1's "every rung is backed by a row" checks the snapshot against the table, not against intent.
+The general point applies beyond this one: this table is a statement of intent, the generator is the mechanism, and where they disagree the generator wins at runtime. §1.1's "every rung is backed by a row" checks the snapshot against the table, not against intent.
+
+**`comprehension`'s row above supersedes the 2026-09-16 amendment (commit `b782e4d`), and the reason is kept visible rather than overwritten — this row has now changed twice in two days, and the second change reverses the first.**
+
+- **2026-09-16 (`b782e4d`):** with `azure_ai/gpt-5.6-luna`'s comprehension row still TBD, the only two ladder-eligible models were `claude-sonnet-5` (100%, n=2) and `claude-opus-5` (50%, n=2). Cheapest-first ordered Sonnet before Opus, and step 3 skipped Opus as *measured worse than the current rung* — a correct read of the generator's own rule against the data that existed that day. The amendment rewrote the row from `sonnet → opus` to `sonnet` alone on exactly that evidence, and said so explicitly rather than silently.
+- **Since then, the data changed twice, not once.** Luna's comprehension row was filled in this morning (58.3%, n=12), which makes Luna — cheapest and now ladder-eligible — the real rung 0, ahead of Sonnet. And `claude-opus-5` on comprehension was re-measured today at **n=12: 100%, tying Sonnet** — not "measured worse" any longer, so step 3 no longer skips it.
+- **Neither edit was a mistake; the rule was applied correctly to two different tables.** The 2026-09-16 amendment is exactly what §3 elsewhere warns against building a rung on: a figure "from a small sample (n=—) [that] must be re-verified against production request shapes before any rung is set". That is precisely what happened here — an n=2 figure was used to justify dropping Opus from the ladder, and re-measurement at n=12 reversed the drop. The row above, `luna → sonnet → opus`, is what the generator now produces from the current table.
 
 **Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. Voice stays non-operational (§1.1) until both its rows carry a measured `median_latency_s`, because a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
 

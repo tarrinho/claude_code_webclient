@@ -4,7 +4,7 @@ fastapi==0.141.1
 # Imported directly by app.py (starlette.middleware.base.BaseHTTPMiddleware),
 # so it is pinned here rather than inherited as a transitive FastAPI dependency.
 starlette==1.6.0
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.53.0
 aiosqlite==0.22.1
 # Required by handle_db_restore: Starlette raises on request.form() without it,
 # so POST /api/admin/import returns 500 unconditionally when this is absent.

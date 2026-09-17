@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bench import cost as cost_mod
 from bench import tasks as tasks_mod
 from bench import transports
+from bench import verify as verify_mod
 
 #: All ten backends this deployment can reach, in one list.
 #:
@@ -69,6 +70,32 @@ DEFAULT_MODELS = [
 DEFAULT_TRANSPORTS = "cli"
 
 
+def answer_for_verification(task, replies: list) -> str:
+    """The text handed to `task.verifier`, for a task's whole reply list.
+
+    Every task but ``multi-turn-recall`` is scored on its last reply alone
+    (`task.needs_all_turns` is False), because that reply is written to be
+    self-contained -- the followup asks for "the full function". For a task
+    that opts in, the last reply is not self-contained by design (see
+    `Task.needs_all_turns`), so this joins the *extracted code* from every
+    turn instead of the raw text.
+
+    Extraction must happen per turn, before joining: `verify.extract_code`
+    returns the single longest fenced block (`max(blocks, key=len)`), so
+    concatenating raw multi-fenced text and extracting once would still
+    return only one function. Joining unfenced code is also what keeps the
+    verifier's own `extract_code(response)` call a no-op: no fences remain,
+    so it falls through to the `ast.parse` branch and returns the joined
+    text unchanged, rather than picking one turn's block and discarding the
+    other's.
+    """
+    if task.needs_all_turns and len(replies) > 1:
+        return "\n\n".join(
+            verify_mod.extract_code(r.text) for r in replies if r.text
+        )
+    return replies[-1].text
+
+
 def run_one(task, model: str, transport: str, key: str) -> dict:
     """One task, one model, one transport, one repeat."""
     messages: list[dict] = [{"role": "user", "content": task.prompt}]
@@ -95,7 +122,7 @@ def run_one(task, model: str, transport: str, key: str) -> dict:
             ]
         replies.append(transports.send(transport, model, follow_messages, key))
 
-    answer = replies[-1].text
+    answer = answer_for_verification(task, replies)
     verdict = task.verifier(answer)
     last = replies[-1]
 

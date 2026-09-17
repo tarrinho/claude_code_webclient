@@ -758,5 +758,120 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(agg["repeats"], 2)
 
 
+class _FakeReply:
+    """Only `.text` is read by `answer_for_verification`; nothing else on a
+    real transport reply matters to this join."""
+
+    def __init__(self, text):
+        self.text = text
+
+
+class MultiTurnRecallJoinTests(unittest.TestCase):
+    """`multi-turn-recall` scored 0.0 against every model ever run, because
+    `run_one` verified `replies[-1].text` alone -- turn 2's reply defines
+    `split_fields` only, so `join_fields` was never defined and the round-trip
+    assertion could not execute. `Task.needs_all_turns` plus
+    `answer_for_verification` fix that by joining extracted code from both
+    turns, for this task only.
+
+    Two cases matter, and the second is the one that proves the fix does not
+    neuter the test: `multi-turn-recall`'s whole point is that the harness
+    never learns the chosen delimiter, so a model that forgets it and picks a
+    fresh one for the pair must still fail.
+    """
+
+    #: Turn 1: explanation plus a fenced `join_fields` using "|".
+    TURN_1 = ("I'll use the pipe character `|` as the delimiter.\n\n"
+              "```python\n"
+              "def join_fields(fields):\n"
+              "    return '|'.join(fields)\n"
+              "```")
+
+    @staticmethod
+    def _module():
+        return RunnerTests._runner()
+
+    def _task(self):
+        return tasks.BY_ID["multi-turn-recall"]
+
+    def test_the_task_opted_in_and_only_this_task_did(self):
+        for task in tasks.TASKS:
+            if task.id == "multi-turn-recall":
+                self.assertTrue(task.needs_all_turns,
+                                "this is the task the flag exists for")
+            else:
+                self.assertFalse(
+                    task.needs_all_turns,
+                    f"{task.id} must keep being verified on its last reply "
+                    "alone -- that reply is written to be self-contained, "
+                    "and joining would change a measurement already in spec "
+                    "§2.6")
+
+    def test_reusing_the_turn_one_delimiter_passes(self):
+        """Case 1: a model that carries the delimiter across turns round-trips."""
+        module = self._module()
+        turn_2 = "```python\ndef split_fields(s):\n    return s.split('|')\n```"
+        answer = module.answer_for_verification(
+            self._task(), [_FakeReply(self.TURN_1), _FakeReply(turn_2)])
+        verdict = self._task().verifier(answer)
+        self.assertTrue(verdict.solved, f"detail: {verdict.detail}")
+
+    def test_a_forgotten_delimiter_still_fails(self):
+        """Case 2, the one that proves the fix, not a no-op.
+
+        Turn 2 here picks a *different* delimiter (",") than turn 1 chose
+        ("|"). If this passed, the joining would let a model satisfy a recall
+        check by answering fresh in turn 2 with no memory of turn 1 -- exactly
+        the no-op the task's docstring warns against.
+        """
+        module = self._module()
+        turn_2 = "```python\ndef split_fields(s):\n    return s.split(',')\n```"
+        answer = module.answer_for_verification(
+            self._task(), [_FakeReply(self.TURN_1), _FakeReply(turn_2)])
+        verdict = self._task().verifier(answer)
+        self.assertFalse(
+            verdict.solved,
+            "a model that picked a fresh delimiter in turn 2 must still "
+            "fail the round trip -- the recall check would otherwise be a "
+            "no-op")
+
+    def test_joined_unfenced_code_survives_the_verifiers_own_extract_code(self):
+        """Detail 2 from the fix's spec: the verifier calls `extract_code` on
+        whatever is passed to it. Confirm the joined, fence-free code takes
+        the `ast.parse` path and comes back intact, rather than being
+        silently truncated to one function."""
+        module = self._module()
+        turn_2 = "```python\ndef split_fields(s):\n    return s.split('|')\n```"
+        joined = module.answer_for_verification(
+            self._task(), [_FakeReply(self.TURN_1), _FakeReply(turn_2)])
+        self.assertNotIn("```", joined, "nothing left to re-fence")
+        reextracted = verify.extract_code(joined)
+        self.assertIn("def join_fields", reextracted)
+        self.assertIn("def split_fields", reextracted)
+
+    def test_other_multi_turn_tasks_still_see_only_the_last_reply(self):
+        """The blanket-change risk the constraint calls out: this must not
+        alter what any task besides `multi-turn-recall` hands its verifier."""
+        module = self._module()
+        for task_id in ("multi-turn-resume", "multi-turn-rename",
+                        "multi-turn-constraint"):
+            task = tasks.BY_ID[task_id]
+            replies = [_FakeReply("turn one reply, must be ignored"),
+                      _FakeReply("turn two reply, the only one that counts")]
+            answer = module.answer_for_verification(task, replies)
+            self.assertEqual(answer, "turn two reply, the only one that counts",
+                             f"{task_id} must still be scored on its last "
+                             "reply alone")
+
+    def test_single_turn_falls_back_to_that_one_reply(self):
+        """If turn 1 errors, `run_one` never sends the followup and this task
+        gets exactly one reply -- `answer_for_verification` must not crash or
+        silently invent a second turn."""
+        module = self._module()
+        answer = module.answer_for_verification(
+            self._task(), [_FakeReply(self.TURN_1)])
+        self.assertEqual(answer, self.TURN_1)
+
+
 if __name__ == "__main__":
     unittest.main()

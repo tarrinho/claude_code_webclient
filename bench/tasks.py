@@ -48,6 +48,17 @@ class Task:
     #: Rough input size, so a long-context task is not silently compared with a
     #: 100-token one on cost.
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: When true, the verifier needs code from *every* turn, not just the
+    #: last. ``multi-turn-recall`` is the only task where this is true: turn 2
+    #: asks for ``split_fields`` alone, reusing a delimiter turn 1 chose and
+    #: never restated, so the last reply by itself never defines
+    #: ``join_fields`` and the round-trip assertion cannot execute. Every other
+    #: multi-turn followup asks for "the full function", making its last reply
+    #: self-contained on purpose -- this flag must stay off for those, or a
+    #: model could satisfy a recall check by answering fresh in turn 2 with no
+    #: memory of turn 1 at all. Runner support lives in `bin/wc-bench.py`,
+    #: `run_one`.
+    needs_all_turns: bool = False
     #: ``floor`` is a control every model must pass -- a failure there means a
     #: broken invocation, not a weak model. ``simple`` discriminates at the
     #: bottom, ``hard`` at the top. The original set was all ``hard``, which is
@@ -1117,6 +1128,7 @@ backoff, and does it reach the 503? Explain why.""",
         prompt="""Choose a single delimiter character and write a Python function join_fields(fields) that joins a list of strings with it. State which delimiter you chose. Return the explanation and valid Python code.""",
         followup="""Now write split_fields(s) that reverses it, using the same delimiter you chose. Return valid Python code only.""",
         tags=("multi-turn",),
+        needs_all_turns=True,
     ),
 )
 

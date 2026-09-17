@@ -74,7 +74,7 @@ ROWS = [
     ("azure_ai/gpt-5.6-luna", "long-context", 1.0, 12, 0.0285, 6.3, 922000),
     ("azure_ai/gpt-5.6-luna", "comprehension", 0.583, 12, 0.0285, 9.2, 922000),
     ("azure_ai/gpt-5.6-luna", "reasoning", 0.5, 6, 0.0285, 16.5, 922000),
-    ("azure_ai/gpt-5.6-luna", "voice", None, None, 0.0285, None, 922000),
+    ("azure_ai/gpt-5.6-luna", "voice", 0.833, 12, 0.0285, None, 922000),
     ("azure_ai/gpt-5.4-mini", "coding", None, None, 0.5261, None, 1050000),
     ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.5261, None, 1050000),
     ("azure_ai/gpt-5.6-luna", "multi-turn", 0.917, 12, 0.0285, 13.5, 922000),
@@ -96,7 +96,7 @@ ROWS = [
     ("claude-sonnet-5", "long-context", 0.667, 12, 1.5709, 4.2, 1000000),
     ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
     ("claude-sonnet-5", "reasoning", 0.834, 6, 1.5709, 24.6, 1000000),
-    ("claude-sonnet-5", "voice", None, None, 1.5709, None, 1000000),
+    ("claude-sonnet-5", "voice", 1.0, 12, 1.5709, None, 1000000),
     # The model that ACTUALLY serves voice on this deployment, added
     # 2026-09-17. It had no row at all until then, so no 1.1 invariant could
     # see it while section 3's voice ladder named two models that have never

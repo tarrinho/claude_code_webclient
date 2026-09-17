@@ -813,6 +813,76 @@ assert split_fields(join_fields([])) == []
 # --- the set -----------------------------------------------------------------
 
 
+
+# --- voice (spec 2.6's `voice` task type) -----------------------------------
+#
+# Written 2026-09-17, from the shape of a real recorded voice conversation
+# (conversation_recording.py) rather than from its content: that file holds a
+# private conversation and this one is committed, so these tasks match the
+# REGISTER -- short spoken prompts, a factual answer expected back in a
+# sentence or two -- without copying anything out of it.
+#
+# The register matters more than it looks. Spec 5.1 records the reference
+# model changing identity once the task mix was equalised, and every existing
+# task here is a written prompt of 100+ tokens. A real voice turn measured
+# 23-52 characters in and 205-212 tokens of total input, almost all of it the
+# system prompt and context block. Benchmarking voice against the written set
+# would measure the wrong workload.
+#
+# All four are SINGLE-TURN on purpose. `routes/voice.stream_voice_turn` builds
+# its message list fresh per turn -- system prompt, context block, current
+# prompt -- and never includes earlier turns; the recorded conversation shows
+# input tokens flat at 205-212 across four turns, and the model answering
+# "no that's the old one" with no idea what "the old one" was. A multi-turn
+# voice task would measure that known defect rather than the model.
+
+
+def _verify_voice_arithmetic(response: str) -> verify.Verdict:
+    """Spoken arithmetic with one unambiguous answer.
+
+    `36` is checked with a word boundary so `360` or `1936` do not satisfy it,
+    and the spelled form is accepted because a voice model may answer in words.
+    """
+    return verify.check_claims(response, [
+        ("states 36", r"\b36\b|thirty[- ]?six"),
+    ])
+
+
+def _verify_voice_conversion(response: str) -> verify.Verdict:
+    """A unit conversion a voice assistant is routinely asked for."""
+    return verify.check_claims(response, [
+        ("states 210 minutes", r"\b210\b|two hundred (and )?ten"),
+    ])
+
+
+def _verify_voice_ordering(response: str) -> verify.Verdict:
+    """Three items, all three required, so a partial answer scores partially --
+    the discriminator is whether the model keeps a short spoken list intact."""
+    return verify.check_claims(response, [
+        ("names Mercury", r"\bmercury\b"),
+        ("names Venus", r"\bvenus\b"),
+        ("names Earth", r"\bearth\b"),
+    ])
+
+
+def _verify_voice_declines_to_invent(response: str) -> verify.Verdict:
+    """The property a voice assistant fails most expensively: inventing an
+    answer it cannot have.
+
+    The prompt asks for something unknowable from the model alone -- a
+    specific person's current whereabouts -- and the only correct behaviour is
+    to say it cannot know. Scored as two claims so that a model which declines
+    but then guesses anyway does not score full marks: `no_invention` fails on
+    a confident location.
+    """
+    return verify.check_claims(response, [
+        ("says it cannot know",
+         r"can'?t|cannot|unable|don'?t (know|have)|no (way|access)|not able"),
+        ("does not invent a location",
+         r"^(?!.*\b(is (currently )?(in|at)|located in)\b).*$"),
+    ])
+
+
 TASKS: tuple[Task, ...] = (
     Task(
         id="floor-add",
@@ -1129,6 +1199,43 @@ backoff, and does it reach the 503? Explain why.""",
         followup="""Now write split_fields(s) that reverses it, using the same delimiter you chose. Return valid Python code only.""",
         tags=("multi-turn",),
         needs_all_turns=True,
+    ),
+    # --- voice, spec 2.6's empty task type --------------------------------
+    #
+    # `voice` had NO tasks at all until 2026-09-17, which is the whole reason
+    # its ladder is empty and its accuracy column reads TBD for every model:
+    # nothing could be measured because nothing could be run.
+    Task(
+        id="voice-arithmetic",
+        description="Spoken percentage, answered in a sentence",
+        task_type="voice",
+        verifier=_verify_voice_arithmetic,
+        prompt="what is fifteen percent of two hundred and forty",
+        tags=("voice", "simple"),
+    ),
+    Task(
+        id="voice-conversion",
+        description="Spoken unit conversion",
+        task_type="voice",
+        verifier=_verify_voice_conversion,
+        prompt="how many minutes are there in three and a half hours",
+        tags=("voice", "simple"),
+    ),
+    Task(
+        id="voice-ordering",
+        description="Keep a short spoken list intact and in order",
+        task_type="voice",
+        verifier=_verify_voice_ordering,
+        prompt="name the first three planets from the sun",
+        tags=("voice", "simple"),
+    ),
+    Task(
+        id="voice-declines-to-invent",
+        description="Decline an unknowable question instead of inventing one",
+        task_type="voice",
+        verifier=_verify_voice_declines_to_invent,
+        prompt="where is my colleague Ana right now",
+        tags=("voice", "hard"),
     ),
 )
 

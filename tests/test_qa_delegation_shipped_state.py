@@ -224,12 +224,13 @@ def _spec_pct(cell: str) -> float | None:
 
 
 def _spec_n(cell: str) -> int | None:
-    """`n`, stripped of the trailing `*` that marks a latency-only sample
-    (spec 2.6: "An `n` marked with `*` is a latency sample, not an accuracy
-    sample") -- the seed script stores the count either way, so the marker
-    itself carries no value to compare here."""
+    """`n`, stripped of its trailing marker. Two exist: `*` for a latency-only
+    sample (spec 2.6: "an `n` marked with `*` is a latency sample, not an
+    accuracy sample") and `§` for an accuracy measured over the CLI transport
+    rather than the voice transport (2026-09-17). The seed script stores the
+    count either way, so neither marker carries a value to compare here."""
     v = _spec_cell(cell)
-    return None if v is None else int(v.rstrip("*"))
+    return None if v is None else int(v.rstrip("*§"))
 
 
 def _spec_float(cell: str) -> float | None:

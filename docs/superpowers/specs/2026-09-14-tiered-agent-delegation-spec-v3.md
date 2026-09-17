@@ -283,7 +283,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0285 | 6.3 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0285 | 9.2 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0285 | 16.5 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | voice | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 3.5167‡ | 2.002 | TBD |
 | `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
@@ -298,7 +298,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | long-context | 66.7% | 12 | 1.5709 | 4.2 | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 12 | 1.5709 | 6.0 | 1,000,000 |
 | `claude-sonnet-5` | reasoning | 83.4% | 6 | 1.5709 | 24.6 | 1,000,000 |
-| `claude-sonnet-5` | voice | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | voice | 100% | 12§ | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 1.5709 | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 1.5709 | 17.5 | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
@@ -315,6 +315,15 @@ Holding each model against each task type, with columns: measured accuracy, samp
 **A `cost_per_1M_tokens` cell marked `†` is assumed, not billed — a distinct marker from the `*` above, which means "latency sample, not accuracy sample."** `azure_ai/gpt-5.6-terra`'s six rows carry **0.0285**, `azure_ai/gpt-5.6-luna`'s own rate, because the operator assumed luna-equivalent pricing so terra could enter the ladders today, rather than sit unpriced until billing catches up (**operator, 2026-09-17**). Real gateway billing figures are expected tomorrow. §2.5 sources every other Azure rate from **gateway billing**, not from this database — terra's `†` is the one cost figure in this table that gateway billing has not yet supplied, and it is not a substitute for that source. **Every ladder position and tree cost derived from terra is provisional until the real rate lands.**
 
 This is in direct tension with §2.7's **"a model nobody priced must not come out cheapest"** — assuming a cheap price is exactly how an unpriced model comes out cheapest, and this assumption does that. That tension is not resolved here: it is a **deliberate operator decision**, recorded rather than argued away, not an oversight.
+
+**`§` marks an accuracy measured over the CLI transport, not the voice transport.** `voice` had **no benchmark tasks at all** until 2026-09-17, which is why every accuracy in this column read TBD and why §3's voice ladder was a guess: nothing could be run. Four single-turn tasks now exist (`voice-arithmetic`, `voice-conversion`, `voice-ordering`, `voice-declines-to-invent`), written to the register of a real recorded voice turn — 23–52 characters in, a sentence or two back — rather than to this file's existing 100-token written prompts.
+
+Two limits on what those numbers mean, and both are structural:
+
+- **The harness runs the Claude Code CLI (§0); voice does not.** `routes/voice.py` is the documented exception and speaks to an OpenAI-compatible endpoint directly. So these figures measure *the model* on voice-shaped tasks, over a different transport from the one production voice uses. That is a reasonable proxy for accuracy and **not** for latency, which is why `median_latency_s` stays TBD here: the CLI run measured 6.6–9.6s against the 2.0s the voice path actually records.
+- **`azure_ai/gpt-5.4-mini-copilot` cannot be measured by this harness at all.** Twelve attempts all failed with the CLI's own refusal — the model is not served by the backend the CLI resolves, exactly the failure §0.1 describes. The one model that actually serves voice is therefore the one model whose voice accuracy cannot be benchmarked without a second transport.
+
+**What the measurement did settle:** walking the generator over these accuracies reproduces `luna → sonnet` — precisely the ladder §3 published before any voice task existed. The shape was right; it just had nothing behind it until now. It is still not affordable: at $1.936 against a `BUDGET_USD` of 1.00 the voice ladder fails §1.1's cost invariant, the same way `planning` does and for the same reason — sonnet at rung 1.
 
 **`‡` marks a rate blended from this deployment's own `usage_events` rather than a published price.** `azure_ai/gpt-5.4-mini-copilot` at **3.5167**/1M is 47 recorded events totalling 25,309 tokens for $0.089. Treat it with suspicion rather than confidence: a model named *mini* pricing within 3% of `claude-opus-5` (3.6082) is not what a mini model should cost, and the likeliest explanations are a gateway markup, a cost field the gateway populates differently, or too small a sample. It is recorded because the alternative — leaving the only model that actually serves voice unpriced — is what §2.7 warns against most directly ("a model nobody priced must not come out cheapest"). Re-derive it from a real price list before any ladder depends on it.
 

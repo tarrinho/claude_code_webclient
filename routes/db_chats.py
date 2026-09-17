@@ -727,6 +727,29 @@ async def _fts_rebuild(chat_id: str | None = None) -> None:
     await _fts_guard(work)
 
 
+async def _record_latest(chat_id: str) -> None:
+    """Refresh the rolling recording, for VOICE chats only.
+
+    `record_conversation` filters on `chats.voice_mode`, so an ordinary text
+    chat costs one indexed lookup and writes nothing. That filter is the point
+    rather than an optimisation: text chats are kept forever already, and
+    letting one overwrite the recording would mean the "most recent
+    conversation" was routinely a text chat the feature was never about.
+
+    Keeping this hook at all -- rather than recording only at handoff -- is
+    what covers a voice conversation that never hands off, because the user
+    closed the tab. The handoff path writes the final copy with its summary;
+    this one keeps the file current until then.
+
+    Imported lazily and awaited after the message is committed, never before:
+    the recording is a copy and must not be able to fail, slow or reorder the
+    write it copies.
+    """
+    import conversation_recording
+
+    await conversation_recording.record_conversation(chat_id)
+
+
 async def messages_append(chat_id: str, role: str, content: str) -> int:
     cur = await db.db_conn.execute(
         "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
@@ -735,6 +758,7 @@ async def messages_append(chat_id: str, role: str, content: str) -> int:
     await db.db_conn.commit()
     last_id = cur.lastrowid
     await _fts_index_ids([last_id])
+    await _record_latest(chat_id)
     return last_id
 
 
@@ -763,6 +787,7 @@ async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]
             await db.db_conn.rollback()
             raise
         await _fts_index_ids(ids)
+        await _record_latest(chat_id)
         return ids
 
 

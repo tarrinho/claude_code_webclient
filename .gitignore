@@ -48,6 +48,19 @@ htmlcov/
 # owner, not something a reader of the source needs. (rules.md used to be
 # named here too; it is tracked now -- see above.)
 /PT_request.md
+
+# The rolling recording of the most recent conversation
+# (conversation_recording.py). Holds raw conversation text -- and, if voice
+# turns are ever recorded, audio -- so it is never committed. The directory is
+# 0700 and the file 0600, both set at creation and re-asserted on every write.
+#
+# It normally lives beside the database (data/recordings/), which /data/ above
+# already covers; this entry is the belt to that braces, and covers a
+# repo-root recordings/ for any deployment whose WC_DB_PATH points elsewhere.
+# A path that is only private because of an unrelated rule is one refactor
+# away from being public.
+/recordings/
+/data/recordings/
 /.claude/settings.local.json
 # Agent instructions for this checkout. Deliberately not published: it describes
 # how turns reach the model backends on *this* deployment -- the proxy hop, the

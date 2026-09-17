@@ -302,6 +302,28 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     )
 
 
+async def _record_voice_conversation(chat_id: str,
+                                     summary: str | None) -> None:
+    """Write the rolling recording of this voice conversation.
+
+    Called immediately before every `chat_delete` in `voice_handoff`, which is
+    the last moment the conversation exists: that call removes the chat, its
+    messages and their FTS entries, leaving only a 2-4 sentence summary in the
+    parent chat -- and on two of the three paths, not even that.
+
+    `require_voice=False` because the caller has already established this is a
+    voice chat by reaching `voice_handoff` at all, and re-reading `voice_mode`
+    here would fail for a chat mid-teardown.
+
+    Never raises: losing the recording must not stop the teardown it is part
+    of, or a failure here would leave voice chats undeleted and accumulating.
+    """
+    import conversation_recording
+
+    await conversation_recording.record_conversation(
+        chat_id, handoff_summary=summary, require_voice=False)
+
+
 async def voice_handoff(chat_id: str, owner: str) -> str | None:
     """Generate a handoff summary from a voice chat's messages, append to parent.
 
@@ -377,7 +399,10 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
     # used, which read as though the provider selected a client.
 
     if not parent_base_url or not parent_api_key:
-        # Fallback: delete the voice chat without handoff summary
+        # Fallback: delete the voice chat without handoff summary.
+        # Record it first -- there is no summary on this path, so without the
+        # recording the conversation leaves no trace at all.
+        await _record_voice_conversation(chat_id, None)
         await db.chat_delete(chat_id, owner)
         return None
 
@@ -416,12 +441,21 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
         # Insert summary as an assistant message in the parent chat
         await db.messages_batch(parent_id, [("assistant", summary)])
 
+        # Record before deleting, with the summary: chat_delete removes the
+        # chat's messages and their FTS entries too, so this is the last
+        # moment the conversation exists anywhere.
+        await _record_voice_conversation(chat_id, summary)
+
         # chat_delete removes the chat's messages and their FTS entries too.
         await db.chat_delete(chat_id, owner)
 
         return summary
     except Exception:
         _log.exception("voice_handoff failed for chat_id=%s", chat_id)
-        # Still delete the voice chat even if handoff failed
+        # Still delete the voice chat even if handoff failed -- so record it
+        # first. This is the path that loses the most: the summary never got
+        # written to the parent either, so the recording is the only thing
+        # that will survive this conversation.
+        await _record_voice_conversation(chat_id, None)
         await db.chat_delete(chat_id, owner)
         return None

@@ -1,0 +1,431 @@
+"""QA: the rolling recording of the most recent conversation.
+
+Two things are being asserted, and they fail in different ways:
+
+  * **The behaviour.** One file, overwritten each time, holding the latest
+    conversation -- and, critically, NOT a retention change: the `chats` and
+    `messages` rows must all still be there afterwards. A recorder that
+    quietly pruned history would satisfy every "the file holds the latest
+    conversation" assertion.
+
+  * **The handling.** The operator's brief was "this file will contain raw
+    audio/text on disk, gitignore it and set restrictive file permissions by
+    default". Permissions are asserted by reading them back off the
+    filesystem, never by checking that the code asked for them -- `os.makedirs`
+    and `open` both subtract the process umask, so a requested mode and an
+    effective mode are different claims. Every permission test below runs
+    under a deliberately permissive umask for exactly that reason: under the
+    default 022 a naive implementation would look correct.
+"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import config
+import conversation_recording as cr
+import db
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _mode(path) -> int:
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+class _PermissiveUmask:
+    """Run a block under umask 0, so a mode that is merely *requested* is not
+    accidentally corrected into looking right by the ambient umask."""
+
+    def __enter__(self):
+        self._old = os.umask(0)
+        return self
+
+    def __exit__(self, *exc):
+        os.umask(self._old)
+        return False
+
+
+CHAT = {"id": "c1", "title": "t", "model": "m", "voice_mode": 0,
+        "owner_id": "u1", "created_at": 1, "updated_at": 2}
+MESSAGES = [{"role": "user", "content": "hello", "created_at": 1},
+            {"role": "assistant", "content": "hi", "created_at": 2}]
+
+
+class RecordingShapeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def test_it_writes_the_conversation(self):
+        path = cr.write_recording(CHAT, MESSAGES, self.root)
+        data = json.loads(Path(path).read_text())
+        self.assertEqual(data["chat"]["id"], "c1")
+        self.assertEqual(data["message_count"], 2)
+        self.assertEqual([m["content"] for m in data["messages"]],
+                         ["hello", "hi"])
+
+    def test_the_owner_is_recorded(self):
+        """This console is multi-user, so "the most recent conversation" is
+        whichever happened last, which is not necessarily the reader's own.
+        The file must say whose it is rather than leave that to be assumed."""
+        path = cr.write_recording(CHAT, MESSAGES, self.root)
+        self.assertEqual(json.loads(Path(path).read_text())["chat"]["owner_id"],
+                         "u1")
+
+    def test_a_second_conversation_overwrites_the_first(self):
+        """The whole point: one recording, not an accumulating set. A
+        directory listing is asserted, not just the file's content -- an
+        implementation that wrote `last-conversation.1.json` beside it would
+        pass a content check and fail the requirement."""
+        cr.write_recording(CHAT, MESSAGES, self.root)
+        second = dict(CHAT, id="c2", title="second")
+        cr.write_recording(second, [{"role": "user", "content": "later",
+                                     "created_at": 9}], self.root)
+        data = json.loads(cr.recording_path(self.root).read_text())
+        self.assertEqual(data["chat"]["id"], "c2")
+        self.assertEqual(data["message_count"], 1)
+        self.assertEqual(sorted(p.name for p in cr.recording_dir(self.root).iterdir()),
+                         [cr.RECORDING_FILENAME])
+
+    def test_no_temp_file_is_left_behind(self):
+        """The atomic write uses a temp file in the same directory. Leaving it
+        would leave a second copy of the conversation on disk, which is the
+        opposite of what the handling requirement asks for."""
+        cr.write_recording(CHAT, MESSAGES, self.root)
+        self.assertEqual([p.name for p in cr.recording_dir(self.root).iterdir()],
+                         [cr.RECORDING_FILENAME])
+
+    def test_a_stale_temp_file_does_not_block_a_write(self):
+        """A crash between open and replace leaves the temp file behind. The
+        next write must recover rather than fail forever on O_EXCL."""
+        cr.ensure_recording_dir(self.root)
+        stale = cr.recording_path(self.root).with_name(
+            cr.RECORDING_FILENAME + ".tmp")
+        stale.write_text("junk")
+        cr.write_recording(CHAT, MESSAGES, self.root)
+        self.assertFalse(stale.exists())
+        self.assertEqual(
+            json.loads(cr.recording_path(self.root).read_text())["chat"]["id"],
+            "c1")
+
+
+class PermissionTests(unittest.TestCase):
+    """The handling requirement, read back off the filesystem."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def test_the_file_is_owner_only(self):
+        with _PermissiveUmask():
+            path = cr.write_recording(CHAT, MESSAGES, self.root)
+        self.assertEqual(_mode(path), 0o600, oct(_mode(path)))
+
+    def test_the_directory_is_owner_only(self):
+        with _PermissiveUmask():
+            directory = cr.ensure_recording_dir(self.root)
+        self.assertEqual(_mode(directory), 0o700, oct(_mode(directory)))
+
+    def test_nothing_is_readable_by_group_or_other(self):
+        """Stated as the property rather than as a number, so a future change
+        to a different-but-still-private mode does not read as a regression
+        while a genuinely wider one does."""
+        with _PermissiveUmask():
+            path = cr.write_recording(CHAT, MESSAGES, self.root)
+        for target in (path, cr.recording_dir(self.root)):
+            with self.subTest(target=target):
+                self.assertFalse(
+                    _mode(target) & (stat.S_IRWXG | stat.S_IRWXO),
+                    f"{target} is {oct(_mode(target))}")
+
+    def test_an_existing_wide_directory_is_tightened(self):
+        """The case that matters on a real host: a directory created earlier
+        under a laxer umask, or by another tool, keeps its mode forever unless
+        something tightens it -- and then the recording is protected by its
+        file mode alone."""
+        directory = cr.recording_dir(self.root)
+        directory.mkdir(parents=True)
+        os.chmod(directory, 0o777)
+        cr.write_recording(CHAT, MESSAGES, self.root)
+        self.assertEqual(_mode(directory), 0o700, oct(_mode(directory)))
+
+    def test_an_existing_wide_file_is_replaced_by_a_private_one(self):
+        """Overwriting must not inherit the old file's permissions. `os.replace`
+        keeps the SOURCE's mode, which is what makes this hold -- an
+        implementation that opened the destination in place would keep 0666."""
+        with _PermissiveUmask():
+            path = cr.write_recording(CHAT, MESSAGES, self.root)
+            os.chmod(path, 0o666)
+            cr.write_recording(dict(CHAT, id="c2"), MESSAGES, self.root)
+        self.assertEqual(_mode(path), 0o600, oct(_mode(path)))
+
+    def test_the_content_is_never_wider_than_the_file_at_any_point(self):
+        """The reason the mode is set at `os.open` rather than by a later
+        `chmod`: a chmod-after-write leaves a window in which the conversation
+        exists at the umask's mode. Asserted by watching the temp file's mode
+        at the moment it is created."""
+        seen = {}
+        real_open = os.open
+
+        def spy(path, flags, mode=0o777, *a, **kw):
+            fd = real_open(path, flags, mode, *a, **kw)
+            if str(path).endswith(".tmp"):
+                seen["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
+            return fd
+
+        with _PermissiveUmask(), patch.object(os, "open", spy):
+            cr.write_recording(CHAT, MESSAGES, self.root)
+        self.assertEqual(seen.get("mode"), 0o600, seen)
+
+
+class DefaultLocationTests(unittest.TestCase):
+    """Where the recording lives when nothing says otherwise."""
+
+    def test_it_lives_beside_the_database_not_beside_the_code(self):
+        """`bin/wc-deploy.sh` exports each commit to its own release directory
+        and prunes old ones, so a recording written next to this module would
+        be replaced by an empty directory on the next deploy and deleted when
+        that release aged out. "Always keeps a recording of the most recent
+        conversation" would silently mean "until the next deploy".
+
+        Asserted against `config.DB_PATH`'s directory rather than a literal
+        path, because that is what the systemd unit aims with `WC_DB_PATH`."""
+        self.assertEqual(cr.default_root(),
+                         Path(config.DB_PATH).resolve().parent)
+        self.assertNotEqual(cr.default_root(),
+                            Path(cr.__file__).resolve().parent)
+
+    def test_an_explicit_root_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(cr.recording_dir(tmp),
+                             Path(tmp) / cr.RECORDING_DIRNAME)
+
+
+class GitignoreTests(unittest.TestCase):
+    def test_the_recordings_directory_is_ignored(self):
+        """Asserted through git itself rather than by grepping .gitignore --
+        an entry can be present and still not match, and what matters is
+        whether git would track the file."""
+        result = subprocess.run(
+            ["git", "check-ignore", "-q",
+             f"{cr.RECORDING_DIRNAME}/{cr.RECORDING_FILENAME}"],
+            cwd=REPO_ROOT, capture_output=True)
+        self.assertEqual(result.returncode, 0,
+                         "the recording is not gitignored")
+
+    def test_a_stray_file_in_the_directory_is_ignored_too(self):
+        """The entry covers the directory, not one filename -- so a second
+        recording, a temp file, or an audio blob added later is private by
+        default rather than by remembering to add another rule."""
+        result = subprocess.run(
+            ["git", "check-ignore", "-q",
+             f"{cr.RECORDING_DIRNAME}/anything-else.wav"],
+            cwd=REPO_ROOT, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+
+
+class NotARetentionChangeTests(unittest.IsolatedAsyncioTestCase):
+    """The requirement this feature must NOT satisfy."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for name, value in (("DB_PATH", f"{self.tmp.name}/db"),
+                            ("PROJECTS_ROOT", f"{self.tmp.name}/p")):
+            p = patch.object(config, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+        self.root = f"{self.tmp.name}/rec"
+        # These go through `messages_append`, which records with the DEFAULT
+        # root. Without this the suite writes a real conversation into the
+        # working tree -- gitignored and 0600, but still a live recording
+        # created by a test run.
+        p = patch.object(cr, "default_root", lambda: Path(self.root))
+        p.start()
+        self.addCleanup(p.stop)
+
+    async def _chat(self, chat_id, owner="u1", voice=True, parent=None):
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "voice_mode, parent_chat_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, chat_id, owner, "/tmp", chat_id,
+             1 if voice else 0, parent, 1, 1))
+        await db.db_conn.commit()
+
+    async def test_recording_a_new_conversation_keeps_the_old_rows(self):
+        """The heart of it. Two conversations exist; the second is recorded;
+        the first must still be in the database untouched. A retention change
+        -- the thing this deliberately is NOT -- would delete it."""
+        from routes import db_chats
+        await self._chat("c1")
+        await self._chat("c2")
+        await db_chats.messages_append("c1", "user", "first")
+        await db_chats.messages_append("c2", "user", "second")
+
+        rows = await (await db.db_conn.execute(
+            "SELECT chat_id, content FROM messages ORDER BY id")).fetchall()
+        self.assertEqual([r["chat_id"] for r in rows], ["c1", "c2"])
+        chats = await (await db.db_conn.execute(
+            "SELECT COUNT(*) c FROM chats")).fetchone()
+        self.assertEqual(chats["c"], 2)
+
+    async def test_the_recording_follows_the_latest_conversation(self):
+        from routes import db_chats
+        await self._chat("c1")
+        await self._chat("c2")
+        await db_chats.messages_append("c1", "user", "first")
+        first = json.loads(cr.recording_path().read_text())
+        await db_chats.messages_append("c2", "user", "second")
+        second = json.loads(cr.recording_path().read_text())
+        self.assertEqual(first["chat"]["id"], "c1")
+        self.assertEqual(second["chat"]["id"], "c2")
+
+    async def test_a_recording_failure_never_breaks_the_message_write(self):
+        """The message is the thing that matters; the recording is a copy. A
+        full disk must not stop the console storing conversations."""
+        from routes import db_chats
+        await self._chat("c1")
+        with patch.object(cr, "write_recording",
+                          side_effect=OSError("No space left on device")):
+            msg_id = await db_chats.messages_append("c1", "user", "kept")
+        self.assertIsNotNone(msg_id)
+        row = await (await db.db_conn.execute(
+            "SELECT content FROM messages WHERE id = ?", (msg_id,))).fetchone()
+        self.assertEqual(row["content"], "kept")
+
+    async def test_a_text_chat_does_not_overwrite_the_recording(self):
+        """Voice only. Text chats are kept forever already, and letting one
+        overwrite the recording would mean the "most recent conversation" was
+        routinely a text chat this feature was never about."""
+        from routes import db_chats
+        await self._chat("voice1", voice=True)
+        await self._chat("text1", voice=False)
+        await db_chats.messages_append("voice1", "user", "spoken")
+        await db_chats.messages_append("text1", "user", "typed")
+        data = json.loads(cr.recording_path().read_text())
+        self.assertEqual(data["chat"]["id"], "voice1")
+
+    async def test_an_unknown_chat_records_nothing_rather_than_raising(self):
+        self.assertIsNone(await cr.record_conversation("no-such-chat",
+                                                        self.root))
+
+
+class SurvivesTheHandoffDeletionTests(unittest.IsolatedAsyncioTestCase):
+    """The reason this feature exists.
+
+    `routes/voice.voice_handoff` summarises a voice chat into its parent and
+    then calls `db.chat_delete`, which removes the chat, its messages and
+    their FTS entries. It does that on ALL THREE of its exit paths, so a voice
+    conversation is destroyed as a matter of course and only a 2-4 sentence
+    summary survives -- and on two of the three, not even that.
+
+    Measured on the live database 2026-09-17: a four-turn voice conversation
+    that afternoon left four `voice_turn_timing` rows (model and latency only,
+    no `chat_id`) and nothing else. No transcript, no chat, no audio.
+
+    So these tests assert the recording survives the deletion, on every path.
+    A recorder wired only to the success path would look correct in normal use
+    and lose exactly the conversations whose handoff failed.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for name, value in (("DB_PATH", f"{self.tmp.name}/db"),
+                            ("PROJECTS_ROOT", f"{self.tmp.name}/p")):
+            p = patch.object(config, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+        self.root = f"{self.tmp.name}/rec"
+        p = patch.object(cr, "default_root", lambda: Path(self.root))
+        p.start()
+        self.addCleanup(p.stop)
+
+    async def _voice_chat_with_turns(self):
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "voice_mode, parent_chat_id, created_at, updated_at) "
+            "VALUES ('v1','v1','u1','/tmp','v1',1,'p1',1,1)")
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "created_at, updated_at) VALUES ('p1','p1','u1','/tmp','p1',1,1)")
+        await db.db_conn.commit()
+        from routes import db_chats
+        await db_chats.messages_batch(
+            "v1", [("user", "what is the deploy status"),
+                   ("assistant", "it is live")])
+
+    async def test_the_conversation_survives_a_successful_handoff(self):
+        from routes import voice as voice_routes
+        await self._voice_chat_with_turns()
+        await voice_routes._record_voice_conversation("v1", "A summary.")
+        await db.chat_delete("v1", "u1")
+
+        gone = await (await db.db_conn.execute(
+            "SELECT COUNT(*) c FROM messages WHERE chat_id='v1'")).fetchone()
+        self.assertEqual(gone["c"], 0, "the chat really was deleted")
+
+        data = json.loads(cr.recording_path().read_text())
+        self.assertEqual(data["chat"]["id"], "v1")
+        self.assertEqual([m["content"] for m in data["messages"]],
+                         ["what is the deploy status", "it is live"])
+        self.assertEqual(data["handoff_summary"], "A summary.")
+
+    async def test_the_conversation_survives_a_handoff_with_no_summary(self):
+        """Two of the three deletion paths produce no summary at all -- the
+        missing-backend fallback and the exception handler. Those are the
+        cases where the recording is the ONLY thing that will survive, so
+        `handoff_summary` being None must not stop the write."""
+        from routes import voice as voice_routes
+        await self._voice_chat_with_turns()
+        await voice_routes._record_voice_conversation("v1", None)
+        await db.chat_delete("v1", "u1")
+        data = json.loads(cr.recording_path().read_text())
+        self.assertEqual(data["message_count"], 2)
+        self.assertIsNone(data["handoff_summary"])
+
+    async def test_every_deletion_path_records_first(self):
+        """Structural: each `chat_delete` in `voice_handoff` must be preceded
+        by a recording call. Asserted against the source because the three
+        paths are hard to drive end to end -- one needs a missing backend, one
+        a live model call, one an exception mid-call -- and a path that
+        deletes without recording is silent until a conversation is lost."""
+        source = (REPO_ROOT / "routes" / "voice.py").read_text()
+        body = source[source.index("async def voice_handoff"):]
+        deletes = body.count("await db.chat_delete(chat_id, owner)")
+        records = body.count("await _record_voice_conversation(")
+        self.assertEqual(deletes, 3, "voice_handoff's delete paths changed")
+        self.assertEqual(records, deletes,
+                         "a chat_delete path has no recording before it")
+
+    async def test_a_recording_failure_does_not_block_the_teardown(self):
+        """Losing the recording must not leave voice chats undeleted and
+        accumulating -- that would trade a privacy problem for a storage one.
+        """
+        from routes import voice as voice_routes
+        await self._voice_chat_with_turns()
+        with patch.object(cr, "write_recording",
+                          side_effect=OSError("No space left on device")):
+            await voice_routes._record_voice_conversation("v1", "s")
+        await db.chat_delete("v1", "u1")
+        gone = await (await db.db_conn.execute(
+            "SELECT COUNT(*) c FROM chats WHERE id='v1'")).fetchone()
+        self.assertEqual(gone["c"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

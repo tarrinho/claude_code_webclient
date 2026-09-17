@@ -31,6 +31,7 @@ from unittest.mock import patch
 import config
 import conversation_recording as cr
 import db
+from routes.db_users import setting_set
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -254,6 +255,10 @@ class NotARetentionChangeTests(unittest.IsolatedAsyncioTestCase):
         p = patch.object(cr, "default_root", lambda: Path(self.root))
         p.start()
         self.addCleanup(p.stop)
+        # Recording is opt-in per benchmark run and off by default, so every
+        # fixture that expects a file has to switch it on explicitly. That the
+        # default is off is asserted separately, in BenchmarkGateTests.
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
 
     async def _chat(self, chat_id, owner="u1", voice=True, parent=None):
         await db.db_conn.execute(
@@ -286,8 +291,10 @@ class NotARetentionChangeTests(unittest.IsolatedAsyncioTestCase):
         await self._chat("c1")
         await self._chat("c2")
         await db_chats.messages_append("c1", "user", "first")
+        await cr.record_conversation("c1")
         first = json.loads(cr.recording_path().read_text())
         await db_chats.messages_append("c2", "user", "second")
+        await cr.record_conversation("c2")
         second = json.loads(cr.recording_path().read_text())
         self.assertEqual(first["chat"]["id"], "c1")
         self.assertEqual(second["chat"]["id"], "c2")
@@ -314,6 +321,9 @@ class NotARetentionChangeTests(unittest.IsolatedAsyncioTestCase):
         await self._chat("text1", voice=False)
         await db_chats.messages_append("voice1", "user", "spoken")
         await db_chats.messages_append("text1", "user", "typed")
+        # Both conversations END; only the voice one may be written.
+        await cr.record_conversation("voice1")
+        await cr.record_conversation("text1")
         data = json.loads(cr.recording_path().read_text())
         self.assertEqual(data["chat"]["id"], "voice1")
 
@@ -354,6 +364,10 @@ class SurvivesTheHandoffDeletionTests(unittest.IsolatedAsyncioTestCase):
         p = patch.object(cr, "default_root", lambda: Path(self.root))
         p.start()
         self.addCleanup(p.stop)
+        # Recording is opt-in per benchmark run and off by default, so every
+        # fixture that expects a file has to switch it on explicitly. That the
+        # default is off is asserted separately, in BenchmarkGateTests.
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
 
     async def _voice_chat_with_turns(self):
         await db.db_conn.execute(
@@ -452,6 +466,10 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
         p = patch.object(cr, "default_root", lambda: Path(self.root))
         p.start()
         self.addCleanup(p.stop)
+        # Recording is opt-in per benchmark run and off by default, so every
+        # fixture that expects a file has to switch it on explicitly. That the
+        # default is off is asserted separately, in BenchmarkGateTests.
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
         cr.forget_turns("v1")
         self.addCleanup(cr.forget_turns, "v1")
         await db.db_conn.execute(
@@ -481,9 +499,13 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
         return turn
 
     async def _record(self):
+        """Drive a whole conversation and then END it, which is when the file
+        is written. There is no per-turn write any more: the file must hold
+        the PREVIOUS conversation while a new one is in progress."""
         from routes import db_chats
         cr.note_turn("v1", self._turn())
         await db_chats.messages_append("v1", "user", "what is the status")
+        await cr.record_conversation("v1")
         return json.loads(cr.recording_path().read_text())
 
     async def test_the_exact_messages_sent_are_recorded(self):
@@ -548,6 +570,7 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
             ttft_ms=900, total_ms=1633,
             input_tokens=120, output_tokens=8, failed=False)
         await db_chats.messages_append("v1", "user", "hi")
+        await cr.record_conversation("v1")
         data = json.loads(cr.recording_path().read_text())
 
         self.assertEqual(data["turns"][0]["ai_machine_id"], "machine-7")
@@ -571,6 +594,7 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
             ttft_ms=900, total_ms=1633,
             input_tokens=120, output_tokens=8, failed=False)
         await db_chats.messages_append("v1", "user", "hi")
+        await cr.record_conversation("v1")
         turn = json.loads(cr.recording_path().read_text())["turns"][0]
         for field in ("recorded_at", "model_requested", "model_served",
                       "ai_machine_id", "messages_sent", "assistant_text",
@@ -587,6 +611,7 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
         cr.note_turn("v1", self._turn())
         cr.note_turn("v1", self._turn(assistant_text="Second."))
         await db_chats.messages_append("v1", "user", "again")
+        await cr.record_conversation("v1")
         data = json.loads(cr.recording_path().read_text())
         self.assertEqual(len(data["turns"]), 2)
         self.assertEqual(data["turns"][1]["assistant_text"], "Second.")
@@ -611,8 +636,157 @@ class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
         tell "no turns" apart from "this recording predates the field"."""
         from routes import db_chats
         await db_chats.messages_append("v1", "user", "hi")
+        await cr.record_conversation("v1")
         data = json.loads(cr.recording_path().read_text())
         self.assertEqual(data["turns"], [])
+
+
+class BenchmarkGateTests(unittest.IsolatedAsyncioTestCase):
+    """Scoped to voice-BENCHMARK conversations, not to voice in general.
+
+    A `voice_mode` filter alone catches every voice conversation anyone has,
+    which is broader than the brief ("not a general recording feature for all
+    chats") and leaves a file holding raw conversation content being written
+    continuously. Recording is opt-in per benchmark run and off by default.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for name, value in (("DB_PATH", f"{self.tmp.name}/db"),
+                            ("PROJECTS_ROOT", f"{self.tmp.name}/p")):
+            p = patch.object(config, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+        self.root = f"{self.tmp.name}/rec"
+        p = patch.object(cr, "default_root", lambda: Path(self.root))
+        p.start()
+        self.addCleanup(p.stop)
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "voice_mode, created_at, updated_at) "
+            "VALUES ('v1','v1','u1','/tmp','v1',1,1,1)")
+        await db.db_conn.commit()
+        from routes import db_chats
+        await db_chats.messages_append("v1", "user", "spoken")
+
+    def test_the_default_is_off(self):
+        self.assertFalse(cr.BENCHMARK_RECORDING_DEFAULT)
+
+    async def test_nothing_is_written_while_it_is_off(self):
+        """The property that makes this not a general recording feature: a
+        real voice conversation, ended properly, writes no file at all."""
+        self.assertIsNone(await cr.record_conversation("v1"))
+        self.assertFalse(cr.recording_path().exists())
+
+    async def test_it_records_once_switched_on(self):
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
+        self.assertIsNotNone(await cr.record_conversation("v1"))
+        self.assertTrue(cr.recording_path().exists())
+
+    async def test_switching_it_off_again_stops_new_writes(self):
+        """Turning it off must actually stop recording, not merely stop
+        starting -- a benchmark run that ended should not keep writing."""
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
+        await cr.record_conversation("v1")
+        first = cr.recording_path().read_text()
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "0")
+        from routes import db_chats
+        await db_chats.messages_append("v1", "user", "later")
+        self.assertIsNone(await cr.record_conversation("v1"))
+        self.assertEqual(cr.recording_path().read_text(), first)
+
+    async def test_a_malformed_setting_is_off_not_on(self):
+        """A file holding raw conversation content must never start being
+        written because a settings row could not be parsed."""
+        for raw in ("", "true", "yes", "01", " ", "None"):
+            with self.subTest(raw=raw):
+                await setting_set(cr.BENCHMARK_RECORDING_SETTING, raw)
+                self.assertFalse(await cr.benchmark_recording_enabled())
+
+
+class EveryEndingPathRecordsTests(unittest.IsolatedAsyncioTestCase):
+    """A voice conversation ends three ways, and all three must write.
+
+    "Agree" and "Summarize Only" both POST to /voice/handoff, which records
+    before it deletes. "Reject" (web/assets/voice-handoff.js) calls
+    DELETE /api/chats/{id} and bypasses that path entirely -- and rejection is
+    the ordinary ending for a voice chat with no parent to hand off to. It is
+    how the 2026-09-17 20:47 conversation ended, and with the per-turn write
+    removed it is the path that would otherwise lose a benchmark conversation.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for name, value in (("DB_PATH", f"{self.tmp.name}/db"),
+                            ("PROJECTS_ROOT", f"{self.tmp.name}/p")):
+            p = patch.object(config, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+        self.root = f"{self.tmp.name}/rec"
+        p = patch.object(cr, "default_root", lambda: Path(self.root))
+        p.start()
+        self.addCleanup(p.stop)
+        await setting_set(cr.BENCHMARK_RECORDING_SETTING, "1")
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "voice_mode, created_at, updated_at) "
+            "VALUES ('v1','v1','u1','/tmp','v1',1,1,1)")
+        await db.db_conn.commit()
+        from routes import db_chats
+        await db_chats.messages_batch("v1", [("user", "spoken"),
+                                             ("assistant", "heard")])
+
+    async def test_the_reject_path_records_before_it_deletes(self):
+        from routes import chats as chat_routes
+        await chat_routes._record_voice_chat_before_delete("v1")
+        await db.chat_delete("v1", "u1")
+
+        gone = await (await db.db_conn.execute(
+            "SELECT COUNT(*) c FROM messages WHERE chat_id='v1'")).fetchone()
+        self.assertEqual(gone["c"], 0, "the chat really was deleted")
+        data = json.loads(cr.recording_path().read_text())
+        self.assertEqual(data["chat"]["id"], "v1")
+        self.assertEqual([m["content"] for m in data["messages"]],
+                         ["spoken", "heard"])
+
+    async def test_the_reject_path_leaves_a_text_chat_alone(self):
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "voice_mode, created_at, updated_at) "
+            "VALUES ('t1','t1','u1','/tmp','t1',0,1,1)")
+        await db.db_conn.commit()
+        from routes import chats as chat_routes, db_chats
+        await db_chats.messages_append("t1", "user", "typed")
+        await chat_routes._record_voice_chat_before_delete("t1")
+        self.assertFalse(cr.recording_path().exists())
+
+    async def test_the_reject_path_never_blocks_the_delete(self):
+        from routes import chats as chat_routes
+        with patch.object(cr, "record_conversation",
+                          side_effect=OSError("No space left on device")):
+            await chat_routes._record_voice_chat_before_delete("v1")
+        await db.chat_delete("v1", "u1")
+        gone = await (await db.db_conn.execute(
+            "SELECT COUNT(*) c FROM chats WHERE id='v1'")).fetchone()
+        self.assertEqual(gone["c"], 0)
+
+    async def test_every_delete_path_in_the_codebase_records_first(self):
+        """Structural, like the voice_handoff check: the generic hard-delete
+        route must record before it deletes, or the Reject button silently
+        loses the conversation."""
+        source = (REPO_ROOT / "routes" / "chats.py").read_text()
+        body = source[source.index("async def handle_chat_delete"):]
+        body = body[:body.index("def render_chat_markdown")]
+        self.assertIn("_record_voice_chat_before_delete", body)
+        self.assertLess(body.index("_record_voice_chat_before_delete"),
+                        body.index("await db.chat_delete"),
+                        "the recording must happen BEFORE the delete")
 
 
 if __name__ == "__main__":

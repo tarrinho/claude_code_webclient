@@ -994,10 +994,39 @@ async def handle_chats_reorder(request: Request):
     return JSONResponse({"ok": True, "placed": placed})
 
 
+async def _record_voice_chat_before_delete(chat_id: str) -> None:
+    """Write the rolling benchmark recording, if this is a voice chat and
+    recording is on. Never raises: the delete must proceed either way, or a
+    recording failure would leave chats undeletable."""
+    try:
+        import conversation_recording
+
+        if not await conversation_recording.is_voice_chat(chat_id):
+            return
+        await conversation_recording.record_conversation(
+            chat_id, require_voice=True)
+        conversation_recording.forget_turns(chat_id)
+    except Exception:                                # noqa: BLE001
+        _log.warning("voice benchmark recording failed for chat_id=%s",
+                     chat_id)
+
+
 async def handle_chat_delete(request: Request, chat_id: str):
     """DELETE /api/chats/{id} -- hard delete (never rm -rf)."""
     session = request.state.session
     owner = await owner_of(session)
+    # A voice conversation ends three ways, and this is the third. "Agree" and
+    # "Summarize Only" both POST to /voice/handoff, which records before it
+    # deletes; "Reject" (web/assets/voice-handoff.js) comes straight here and
+    # hard-deletes, bypassing that path entirely. Recording here is what stops
+    # a rejected benchmark conversation from being the one that vanishes --
+    # and rejection is not a rare case, it is the ordinary way to end a voice
+    # chat with no parent to hand off to.
+    #
+    # Before the delete, because `chat_delete` removes the chat, its messages
+    # and their FTS entries. No-ops unless benchmark recording is switched on
+    # and the chat is a voice chat.
+    await _record_voice_chat_before_delete(chat_id)
     deleted = await db.chat_delete(chat_id, owner)
     if not deleted:
         _log.warning(

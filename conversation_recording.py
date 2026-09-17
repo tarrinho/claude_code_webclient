@@ -239,6 +239,35 @@ def forget_turns(chat_id: str) -> None:
     _TURNS.pop(chat_id, None)
 
 
+#: Recording is OPT-IN, per benchmark run. Off by default.
+#:
+#: The brief scopes this to "voice-benchmark test conversations, not a general
+#: recording feature for all chats". A `voice_mode` filter alone is not that --
+#: it catches every voice conversation anyone has, which is both broader than
+#: asked and a standing privacy surface for a file that exists to hold raw
+#: conversation content. Gating on a setting means nothing is written unless
+#: someone turned it on for a benchmark, and turning it off stops it.
+BENCHMARK_RECORDING_SETTING: Final[str] = "voice_benchmark_recording"
+BENCHMARK_RECORDING_DEFAULT: Final[bool] = False
+
+
+async def benchmark_recording_enabled() -> bool:
+    """Whether voice-benchmark recording is switched on.
+
+    Anything other than the stored `"1"` is off, including a missing row and a
+    malformed value: a file holding raw conversation content must never start
+    being written because a settings row could not be parsed.
+    """
+    try:
+        from routes.db_users import setting_get
+        raw = await setting_get(BENCHMARK_RECORDING_SETTING)
+    except Exception:                                # noqa: BLE001
+        return BENCHMARK_RECORDING_DEFAULT
+    if raw is None:
+        return BENCHMARK_RECORDING_DEFAULT
+    return raw.strip() == "1"
+
+
 async def is_voice_chat(chat_id: str) -> bool:
     """Whether this chat is a voice conversation (`chats.voice_mode`)."""
     import db
@@ -254,7 +283,18 @@ async def record_conversation(chat_id: str,
                               require_voice: bool = True) -> Path | None:
     """Record `chat_id` as the most recent conversation, or do nothing.
 
-    **Voice conversations only, by default.** They are the ones that need it:
+    **Only while voice-benchmark recording is switched on**
+    (`BENCHMARK_RECORDING_SETTING`, off by default), and **voice conversations
+    only** within that.
+
+    Written at the END of a conversation, never during one, so the file holds
+    the PREVIOUS conversation while a new one is in progress -- which is what
+    a benchmark reading it needs: a complete conversation, not a partial one
+    being appended to. "Overwritten at the start of each new conversation" and
+    "written when the previous one ends" produce the same observable state,
+    and the second never loses a conversation that has no successor.
+
+    The rest of the original note still applies. They are the ones that need it:
     `routes/voice.voice_handoff` summarises a voice chat into its parent and
     then calls `db.chat_delete` on every one of its three exit paths, so a
     voice conversation is destroyed as a matter of course and only a 2-4
@@ -289,6 +329,8 @@ async def record_conversation(chat_id: str,
         # The consequence is recorded rather than hidden: `owner_id` goes into
         # the recording, so whose conversation this is can never be ambiguous
         # to whoever reads the file.
+        if not await benchmark_recording_enabled():
+            return None
         cur = await db.db_conn.execute(
             "SELECT id, title, model, voice_mode, owner_id, parent_chat_id, "
             "created_at, updated_at FROM chats WHERE id = ?", (chat_id,))

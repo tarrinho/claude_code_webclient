@@ -257,40 +257,82 @@ class Tier0DeadlineTests(unittest.TestCase):
         types are absent". A map that grew a third entry would keep every
         present-key assertion green while silently giving that type a shorter
         deadline than the unknown-type rule grants it."""
-        self.assertEqual(set(td.TIER0_DEADLINE), {"coding", "long-context"})
+        self.assertEqual(set(td.TIER0_BASELINE_CALIBRATION),
+                         {"coding", "long-context"})
         for task_type in ("multi-turn", "planning", "comprehension", "voice",
                           "reasoning", "split-decision", "reviewer-gate"):
             with self.subTest(task_type=task_type):
-                self.assertNotIn(task_type, td.TIER0_DEADLINE)
+                self.assertNotIn(task_type, td.TIER0_BASELINE_CALIBRATION)
+
+    def test_every_calibration_entry_publishes_its_reference(self):
+        """The reference beside each published baseline is what makes the
+        figure re-derivable when the fastest model changes. An entry carrying
+        a bare number would silently reintroduce the fixed map this replaced,
+        and the failure it caused is not visible until a faster model is
+        measured -- which is exactly how it shipped."""
+        for task_type, entry in td.TIER0_BASELINE_CALIBRATION.items():
+            with self.subTest(task_type=task_type):
+                published, reference = entry
+                self.assertGreater(published, 0)
+                self.assertGreater(reference, 0)
+                self.assertAlmostEqual(td.baseline_task_ratio(task_type),
+                                       published / reference)
 
     def test_the_deadline_follows_the_map_rather_than_a_hardcoded_number(self):
         """Row 1000: "hardcoding the number in router and test so both agree
         and neither tracks the map -- change a value in the test and assert the
-        router follows". Every delivered deadline test asserts 90 or 45, which
-        is exactly the agreement this row warns about."""
+        router follows"."""
         table = td.CapabilityTable(
             [_row("solo", "coding", 1.0, 6, 0.0, 10.0, 1_000_000)])
+        ratio = td.baseline_task_ratio("coding")
         self.assertEqual(
-            pipeline.effective_deadline(table, "solo", "coding", score=3), 90.0)
-        with patch.dict(td.TIER0_DEADLINE, {"coding": 123}):
+            pipeline.effective_deadline(table, "solo", "coding", score=3),
+            ratio * 10.0)
+        with patch.dict(td.TIER0_BASELINE_CALIBRATION, {"coding": (123.0, 1.0)}):
             self.assertEqual(
                 pipeline.effective_deadline(table, "solo", "coding", score=3),
-                123.0)
+                1230.0)
+
+    def test_the_deadline_follows_the_reference_rather_than_the_published_value(self):
+        """The 2026-09-17 defect in one assertion: the published seconds stay
+        put while the table's fastest ladder-eligible model changes, and the
+        deadline must move anyway. A baseline read straight out of the map
+        keeps the published 90.0 here and is what put `coding`'s worst case
+        880s over the ceiling with no model having got slower."""
+        ratio = td.baseline_task_ratio("coding")
+        for reference in (10.0, 5.0, 40.0):
+            with self.subTest(reference=reference):
+                table = td.CapabilityTable(
+                    [_row("solo", "coding", 1.0, 6, 0.0, reference, 1_000_000)])
+                self.assertEqual(table.baseline_deadline_s("coding"),
+                                 ratio * reference)
 
     def test_the_unknown_type_baseline_follows_a_changed_map(self):
-        """Row 999 / 1000 together: the longest baseline is taken from the map,
-        so raising `long-context` past `coding` must move the unknown type's
-        deadline with it. A module that returned a literal 90 would pass every
-        delivered test and fail here."""
+        """Row 999 / 1000 together: the longest baseline must move when the map
+        does. A module that returned a literal 90 would pass every delivered
+        test and fail here."""
         table = td.CapabilityTable(
             [_row("solo", "widget", 1.0, 6, 0.0, 10.0, 1_000_000)])
         self.assertEqual(
             pipeline.effective_deadline(table, "solo", "widget", score=3), 90.0)
-        with patch.dict(td.TIER0_DEADLINE, {"long-context": 300}):
-            self.assertEqual(td.unknown_type_baseline_s(), 300)
+        with patch.dict(td.TIER0_BASELINE_CALIBRATION,
+                        {"long-context": (300.0, 4.2)}):
+            self.assertEqual(table.unknown_type_baseline_s(), 300.0)
             self.assertEqual(
                 pipeline.effective_deadline(table, "solo", "widget", score=3),
                 300.0)
+
+    def test_the_unknown_type_baseline_never_falls_below_a_published_value(self):
+        """The derived baselines join the same maximum as the published ones,
+        so a fleet fast enough to derive `coding` down to 35s must NOT drag the
+        unmeasured type's deadline down with it. "We have not measured this"
+        must not become a timeout (5.1)."""
+        table = td.CapabilityTable([
+            _row("solo", "widget", 1.0, 6, 0.0, 10.0, 1_000_000),
+            _row("quick", "coding", 1.0, 6, 0.0, 5.0, 1_000_000),
+        ])
+        self.assertLess(table.baseline_deadline_s("coding"), 90.0)
+        self.assertEqual(table.unknown_type_baseline_s(), 90.0)
 
     def test_changing_a_median_latency_changes_the_deadline(self):
         """Row 1002: "assert ... that changing a `median_latency_s` in the
@@ -303,12 +345,17 @@ class Tier0DeadlineTests(unittest.TestCase):
                 _row("fast", "coding", 1.0, 6, 0.0, 10.0, 1_000_000),
                 _row("slow", "coding", 1.0, 6, 0.0, slow_latency, 1_000_000),
             ])
+        ratio = td.baseline_task_ratio("coding")
+        # "fast" at 10.0 is the 1.0 reference in both tables, and it cancels
+        # out of the product: the deadline is the ratio times "slow"'s OWN
+        # measured latency, which is the property deriving both halves from
+        # one reference buys.
         self.assertEqual(
             pipeline.effective_deadline(table(20.0), "slow", "coding", score=3),
-            180.0)
+            ratio * 20.0)
         self.assertEqual(
             pipeline.effective_deadline(table(50.0), "slow", "coding", score=3),
-            450.0)
+            ratio * 50.0)
 
 
 class ScoreReachesTheBudgetTests(unittest.TestCase):
@@ -348,10 +395,15 @@ class ScoreReachesTheBudgetTests(unittest.TestCase):
         self.assertEqual(decision.score, 4)
         self.assertEqual(td.SIZE_FACTOR[decision.score], 1.5)
         self.assertNotEqual(td.SIZE_FACTOR[decision.score], 0.5)
-        self.assertEqual(
-            pipeline.effective_deadline(
-                self.table, "solo", decision.task_type, score=decision.score),
-            135.0)
+        baseline = pipeline.effective_deadline(
+            self.table, "solo", "coding", score=3)
+        budgeted = pipeline.effective_deadline(
+            self.table, "solo", decision.task_type, score=decision.score)
+        self.assertEqual(budgeted, 1.5 * baseline)
+        # The invariant the row is really about: the larger task gets the
+        # larger budget, never the score-1 half-baseline.
+        self.assertGreater(budgeted, pipeline.effective_deadline(
+            self.table, "solo", "coding", score=1))
 
 
 class GateAxisTests(unittest.TestCase):

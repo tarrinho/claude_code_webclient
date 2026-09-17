@@ -54,6 +54,24 @@ churn.
 
 ### Fixed
 
+- **Measuring a faster model made two delegation task types fail their own
+  latency check.** Spec 5.1 defines a task type's deadline baseline as its cost
+  "on the fastest model measured for it", and the speed multiplier as each
+  model's latency divided by that same model's — but the baseline was stored as
+  a fixed number of seconds while the multiplier was derived from the benchmark
+  table. When `azure_ai/gpt-5.6-terra` was measured at 7.2s on `coding` against
+  the previous reference's 12.8s, every multiplier on the type inflated by 1.78×
+  while the baseline stayed at its older calibration, and the computed worst
+  case went 1,398s to 2,278s — past the 1,500s ceiling — with no model having
+  become slower. The baseline is now derived against the same reference the
+  multipliers use, which makes the normalisation cancel: a model's deadline
+  tracks its own measured latency instead of the spread of the fleet around it.
+  `coding` computes 1,281s and fits. `long-context` is still over, and honestly
+  so — a third ladder rung really did lengthen its worst-case path — so it keeps
+  showing that blocker on the Delegation page rather than having it explained
+  away. Nothing routes either way; the effect today is that the page reports
+  what is actually blocking each type.
+
 - **The delegation page discarded every refusal the server explained.** This app
   serialises errors as `{"error": ...}`; `delegation.js` read `data.detail` in
   both write paths, so the reason was always `undefined` and a generic fallback

@@ -595,7 +595,7 @@ A coding leaf above the trivial floor passes through five stages in order. Each 
 
 ### 4.1 Stage 1 — Generation
 
-Produced at whatever rung the ladder currently points to. Attempt 1 for `coding` and `long-context` is the free model with `TIER0_DEADLINE`.
+Produced at whatever rung the ladder currently points to. Attempt 1 for `coding` and `long-context` is the free model, at the per-type baseline derived in §5.1.
 
 ### 4.2 Stage 2 — Oracle check
 
@@ -751,16 +751,20 @@ effective_deadline = per_type_baseline × size_factor × model_speed_multiplier
 
 None of the three is a hardcoded table of every combination — each is derived from something already recorded, which is what keeps this from becoming a deadline × model × size matrix nobody maintains.
 
-**Per-type baseline.** What the task type costs on a mid-sized instance of that task, on the fastest model measured for it.
+**Per-type baseline.** What the task type costs on a mid-sized instance of that task, **on the fastest model measured for it**. That last clause is a dependency on the §2.6 table, so the baseline is stored as the published figure *paired with the reference it was calibrated against*, and re-derived whenever the reference moves:
 
 ```
-TIER0_DEADLINE = {
-    "long-context": 45,   # seconds
-    "coding":       90,
+TIER0_BASELINE_CALIBRATION = {           # (published baseline s, reference median_latency_s)
+    "long-context": (45.0, 4.2),         # claude-sonnet-5
+    "coding":       (90.0, 12.8),        # azure_ai/gpt-5.6-luna
 }
+
+baseline(task_type) = (published ÷ reference_at_calibration) × current_reference
 ```
 
-A type absent from this map never uses the free rung. An unknown type must receive the **longest** deadline, never the shortest.
+The dimensionless quotient — 7.03125 for `coding`, 10.714 for `long-context` — is the durable half: how long a mid-sized instance of the type takes relative to *one* benchmark task of that type on the same model. It is what does not move when the fleet does. See the 2026-09-17 subsection below for why a fixed seconds map broke both task types the day a faster model was measured.
+
+A type absent from this map never uses the free rung. An unknown type must receive the **longest** deadline, never the shortest — taken as the maximum over the derived baselines *and* the published ones together, so a fleet fast enough to derive a measured type below its published figure cannot drag an unmeasured type's deadline down with it.
 
 **Size factor** — from the classifier's complexity score (§2), which is the only size signal available before generation starts. Score 3 is the reference point, so a mid-sized task gets exactly the baseline:
 
@@ -908,6 +912,44 @@ binding case: coding, score 5, size factor 2.0
 **One term is still not modelled: the security re-run.** §4.5's `SECURITY_RERUN_CAP` permits two generation → security review → fix → security review cycles, and a cycle contains generation work. Modelling it requires knowing which rung backs a re-run's fix-generation call, and that is precisely §12's open gate-type item — so pricing it here would decide that question in passing, which the same "derived, not chosen" rule forbids. **1,398.2s therefore remains a lower bound**, though a far tighter one than 1,243.125s was. `coding` cannot go operational until that term is either modelled or ruled out of the path.
 
 `reviewer-gate` also remains non-operational on its own account: both its rows still lack a measured *accuracy*, and this measurement was latency only (§2.6's `*` convention).
+
+#### Decided 2026-09-17: the baseline is derived from the reference, not fixed
+
+**Adding a faster model broke both task types that previously validated, and no model got slower.** `azure_ai/gpt-5.6-terra` was measured on 2026-09-16 at **7.2s** on `coding` against luna's 12.8s. On the next read of the table:
+
+| task type | worst case before terra | after terra | ceiling |
+|---|---|---|---|
+| `coding` | 1,398.2s | **2,278.1s** | 1,500s |
+| `long-context` | 1,382.7s | **1,517.7s** | 1,500s |
+
+**The two failures have different mechanisms, and only one of them is this section's defect.**
+
+**`coding` is the defect.** Terra displaced luna as the fastest ladder-eligible model, so the 1.0 reference fell from 12.8s to 7.2s and every multiplier on the type inflated by `12.8 ÷ 7.2 = 1.78×` — while `TIER0_DEADLINE["coding"]` stayed at 90, a figure calibrated when luna *was* the reference. The multiplier was derived from the table and the baseline was not, so the two halves of the same formula were normalised against different references. Nothing about the work got slower; the arithmetic simply double-counted a change of reference.
+
+**The fix is to derive both halves from the same measurement**, which is what the calibration form above does. The normalisation then cancels:
+
+```
+baseline × multiplier = (ratio × reference) × (latency ÷ reference)
+                      =  ratio × latency
+```
+
+So a model's deadline tracks **its own measured latency** rather than the fleet's spread, which is what this section's prose always described. Re-derived against terra's 7.2s reference:
+
+```
+baseline      (90.0 ÷ 12.8) × 7.2      =    50.625s
+multiplier sum, first MAX_ATTEMPTS rungs plus 3 gates with climb
+              (26.8 + 12.8 + 7.2) ÷ 7.2 + 3 × ((11.1 + 3.675) ÷ 7.2)
+                                       =    12.65625
+binding case  50.625 × 2.0 × 12.65625  = 1,281.4s   against 1,500s — 218.6s of margin
+```
+
+Note what the change does **not** do: it does not re-found 45 and 90. Neither was ever derived from a measurement — both were published before the latencies they are now paired with existed. The ratios inherit them exactly (`coding` 7.03125, `long-context` 10.714), so today's figures are unchanged wherever today's reference equals the calibration reference. What changes is that they can no longer silently disagree with the table.
+
+**`long-context` is not this defect, and this fix does not clear it.** Its reference never moved: `claude-sonnet-5` at 4.2s was and remains the fastest ladder-eligible model on the type, because terra measured 6.3s — identical to luna. What terra did was **add a third rung**. The ladder went `vllm → luna` to `vllm → luna → terra`, and the generation sum went `13.9 + 6.3 = 20.2s` to `26.5s`. That is the real latency of a real rung, not a normalisation artefact, and the type is over the ceiling by 17.7s on honest arithmetic.
+
+`long-context` therefore stays non-operational on a **live** blocker, separate from every other open item, and it has exactly the three resolutions §5.1 already names: re-derive the ceiling from the new worst case (option 1, the standing default), drop a rung (option 2 — here terra, the rung that is neither the free one nor the accuracy ceiling, at the price of an escalation step), or accept truncation (option 3). **Option 1 is the one this section's own rule points at** — the ceiling is derived from the worst case of the most expensive operational type, and the worst case moved — but no type is operational, so nothing is harmed by leaving the ceiling at 1,500 until terra's real price lands and the ladders are recomputed. Deciding it before that would set the ceiling from a table that is about to change.
+
+**What the fix costs, stated plainly.** A faster fleet now yields *shorter* absolute deadlines. That is correct if a production task's duration scales with a benchmark task's on the same model, and wrong if production tasks have a fixed absolute size the benchmark does not capture. The ratio is where that assumption lives, and it is the least-evidenced quantity in this section: both values are inherited from figures that were estimates. A measured distribution of real leaf durations per task type (§10) is what would replace them, and until it exists the ratios should be treated as the calibration they are, not as measurements.
 
 The derivation is the durable part, not the number. `1,500` is what today's §2.6 produces; it is recomputed whenever a ladder or a measured latency changes, and it is **not** an independent constant to be tuned on its own. §1.1 enforces that by refusing to start when the two disagree — so a future re-measurement that pushes the worst case past 1,500s stops the system at load rather than truncating leaves in production.
 
@@ -1072,8 +1114,10 @@ The router is a **pure function** of `(task_type, score, resource snapshot)` ret
 | all ladders in §3 | testing only the types named in prose — assert all nine rows (coding, long-context, multi-turn, planning, comprehension, **voice**, reasoning, split decision, reviewer gate), including the three that break positional order |
 | voice ladder exists and stops at Sonnet | omitting voice because §3's prose says less about it — assert voice has a rung 0 and rung 1 and that **Opus is not a voice rung at any accuracy** |
 | rung 0 is scoped | asserting the free model appears somewhere — assert it is attempt 1 for `coding` and `long-context` and **attempt 1 for nothing else** |
-| `TIER0_DEADLINE` contents | asserting the two present keys — also assert the other types are **absent** |
-| unknown task type | letting `KeyError` escape, or defaulting to the shortest deadline — assert it gets the **longest** |
+| `TIER0_BASELINE_CALIBRATION` contents | asserting the two present keys — also assert the other types are **absent**, and that each entry carries a reference beside its published seconds |
+| the baseline is derived, not published | asserting the published 45/90 — change the table's fastest ladder-eligible latency and assert the baseline moves with it. This is the 2026-09-17 defect: a baseline read out of the map keeps 90 while the multipliers renormalise, and `coding` goes 880s over the ceiling with no model having got slower |
+| the reference cancels | asserting one model's deadline in isolation — assert a model's deadline is unchanged when only its **neighbours'** latencies move, which is the property deriving both halves from one reference buys |
+| unknown task type | letting `KeyError` escape, or defaulting to the shortest deadline — assert it gets the **longest**, and that a fleet fast enough to derive a measured type below its published baseline does **not** drag the unmeasured type down with it |
 | deadline is configuration | hardcoding the number in router and test so both agree and neither tracks the map — change a value in the test and assert the router follows |
 | size factor applied | asserting the baseline only — assert a score-1 and a score-5 task of the same type get **0.5× and 2.0×** the baseline |
 | multiplier is derived, not stored | asserting a multiplier constant — assert the fastest model on a task type computes to exactly **1.0**, and that changing a `median_latency_s` in the table changes the deadline without any other edit |

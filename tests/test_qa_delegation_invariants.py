@@ -214,17 +214,38 @@ class WorstCasePathTests(unittest.TestCase):
 
     def test_an_unknown_task_type_takes_the_longest_baseline(self):
         """5.1: "An unknown type must receive the longest deadline, never the
-        shortest." Same rows under a known short-baseline type and under an
-        unlisted one; the unlisted one must get 90, not 45. `GATE_SINGLE` is
-        used because this test is about the baseline, not about gate
-        climbing -- a second, unmeasured gate rung would make the path
-        incomputable and mask the property under test."""
+        shortest." Same rows under a calibrated type and under an unlisted
+        one: the calibrated one derives its baseline against the table's own
+        reference, the unlisted one takes the longest published baseline (90),
+        never the shortest (45). `GATE_SINGLE` is used because this test is
+        about the baseline, not about gate climbing -- a second, unmeasured
+        gate rung would make the path incomputable and mask the property under
+        test."""
         known = _table(_widget_rows("long-context") + GATE_SINGLE)
         unknown = _table(_widget_rows("widget") + GATE_SINGLE)
+        # Reference 10.0, so long-context derives to ratio x 10.0 rather than
+        # sitting at the published 45.0.
+        derived = td.baseline_task_ratio("long-context") * 10.0
+        self.assertAlmostEqual(known.baseline_deadline_s("long-context"),
+                               derived, places=9)
         self.assertAlmostEqual(known.worst_case_path_s("long-context"),
-                               677.7, places=3)
+                               derived * 2.0 * 7.53, places=6)
+        self.assertEqual(unknown.baseline_deadline_s("widget"), 90.0)
         self.assertAlmostEqual(unknown.worst_case_path_s("widget"),
                                WIDGET_WORST_CASE_S, places=3)
+
+    def test_an_unknown_type_is_not_dragged_down_by_a_fast_calibrated_type(self):
+        """The direction that matters now the baseline is derived: a fleet
+        fast enough to derive a calibrated type BELOW its published figure
+        must not shorten the unmeasured type's deadline with it. Rows here are
+        five times faster than `_widget_rows`, deriving `coding` well under
+        90 -- and `widget` must still get 90."""
+        fast = [_row(r.model, "coding", r.accuracy, r.n, r.cost_per_1m_tokens,
+                     r.median_latency_s / 5.0, r.max_context)
+                for r in _widget_rows()]
+        table = _table(fast + _widget_rows("widget") + GATE_SINGLE)
+        self.assertLess(table.baseline_deadline_s("coding"), 90.0)
+        self.assertEqual(table.baseline_deadline_s("widget"), 90.0)
 
     def test_a_path_over_the_ceiling_is_reported(self):
         """Free rungs on both ends, so cost cannot be what fails: a rung ten

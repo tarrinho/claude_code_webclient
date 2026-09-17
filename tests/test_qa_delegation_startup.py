@@ -16,6 +16,7 @@ from unittest.mock import patch
 import config
 import db
 import delegation_startup as ds
+import tiered_delegation as td
 
 
 class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -141,12 +142,20 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         table = await ds.validate_or_die()
         self.assertEqual(table.ladder("long-context"),
                          ["vllm/Qwen3.6-35B-A3B-NVFP4"])
-        # 45 (long-context baseline) x 2.0 (score 5) x [ 12.0/12.0 +
-        # 3 x (11.1/12.0) ] = 339.75s, well under the 1,500s ceiling, and the
-        # free rung costs nothing -- so the start above is a real pass of all
-        # six invariants rather than a vacuous one.
+        # The baseline is derived against this table's own 1.0 reference
+        # (12.0s, the only rung), not read out of the published 45.0:
+        #   (45.0 / 4.2) x 12.0 = 128.571s
+        # x 2.0 (score 5) x [ 12.0/12.0 + 3 x (11.1/12.0) ] = 970.714s, under
+        # the 1,500s ceiling, and the free rung costs nothing -- so the start
+        # above is a real pass of all six invariants rather than a vacuous one.
+        baseline = td.baseline_task_ratio("long-context") * 12.0
+        self.assertAlmostEqual(table.baseline_deadline_s("long-context"),
+                               baseline, places=9)
         self.assertAlmostEqual(table.worst_case_path_s("long-context"),
-                               339.75, places=3)
+                               baseline * 2.0 * (1.0 + 3 * (11.1 / 12.0)),
+                               places=6)
+        self.assertLess(table.worst_case_path_s("long-context"),
+                        td.LATENCY_CEILING_S)
         self.assertAlmostEqual(table.tree_cost_usd("long-context"), 0.0,
                                places=6)
 

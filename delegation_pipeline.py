@@ -66,8 +66,6 @@ from tiered_delegation import (
     CapabilityTable,
     MAX_ATTEMPTS,
     SIZE_FACTOR,
-    TIER0_DEADLINE,
-    unknown_type_baseline_s,
 )
 
 #: Above this many changed files, a task gets the full pipeline whatever the
@@ -122,12 +120,14 @@ def stages_for(decision: Classification, files_changed: int) -> list[int]:
 
 # --- deadlines (spec 5.1) ----------------------------------------------------
 #
-# TIER0_DEADLINE, SIZE_FACTOR and LATENCY_CEILING_S already live in
+# The per-type baseline, SIZE_FACTOR and LATENCY_CEILING_S already live in
 # tiered_delegation, alongside the ladder generator they must never drift
 # from -- see that module's header and spec 5.1's own argument for deriving
-# the deadline and the ladder from one table. They are imported above, not
-# redefined here: a second copy under a second name is exactly how a
-# re-benchmark updates one and not the other.
+# the deadline and the ladder from one table. SIZE_FACTOR is imported above,
+# not redefined here: a second copy under a second name is exactly how a
+# re-benchmark updates one and not the other. The baseline is not imported at
+# all, because it is no longer a constant -- `CapabilityTable` derives it from
+# the same table and the same 1.0 reference the multipliers use.
 
 
 def speed_multiplier(table: CapabilityTable, model: str, task_type: str) -> float:
@@ -165,13 +165,15 @@ def effective_deadline(table: CapabilityTable, model: str, task_type: str,
     """5.1: effective_deadline = per_type_baseline x size_factor x
     model_speed_multiplier, for one generation attempt.
 
-    An unknown task type (absent from `TIER0_DEADLINE`) takes
-    `unknown_type_baseline_s()` -- the LONGEST baseline, never the shortest:
-    "we have not measured this" must not become a timeout.
+    The baseline comes from `CapabilityTable.baseline_deadline_s`, which
+    derives it against the same 1.0 reference `speed_multiplier` divides by --
+    never from a fixed seconds map. A baseline fixed while the multiplier is
+    derived makes the two disagree whenever the reference model changes; see
+    that method's docstring and 5.1's 2026-09-17 subsection. An unknown task
+    type (absent from `TIER0_BASELINE_CALIBRATION`) takes the LONGEST baseline,
+    never the shortest: "we have not measured this" must not become a timeout.
     """
-    baseline = TIER0_DEADLINE.get(task_type)
-    if baseline is None:
-        baseline = unknown_type_baseline_s()
+    baseline = table.baseline_deadline_s(task_type)
     size = SIZE_FACTOR.get(score, 1.0)
     return float(baseline) * size * speed_multiplier(table, model, task_type)
 
@@ -211,9 +213,7 @@ def gate_effective_deadline(table: CapabilityTable, task_type: str,
             f"{task_type}: no ladder-eligible row has a usable "
             f"median_latency_s to be the 1.0 reference (spec 5.1)"
         )
-    baseline = TIER0_DEADLINE.get(task_type)
-    if baseline is None:
-        baseline = unknown_type_baseline_s()
+    baseline = table.baseline_deadline_s(task_type)
     size = SIZE_FACTOR.get(score, 1.0)
     return float(baseline) * size * (gate_latency / reference), None
 

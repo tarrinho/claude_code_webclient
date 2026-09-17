@@ -79,17 +79,38 @@ _REQUIRED_COLUMNS: Final[tuple[str, ...]] = (
 # it has been redone five times without the ceiling ever moving.
 
 #: 5.1's per-type baseline: what the task type costs on a mid-sized instance of
-#: that task, on the fastest model measured for it.
-TIER0_DEADLINE: Final[dict[str, int]] = {
-    "long-context": 45,     # seconds
-    "coding": 90,
+#: that task, **on the fastest model measured for it**. That last clause is why
+#: this is a calibration record rather than a plain seconds map: the baseline is
+#: defined against a reference model, so it cannot stay fixed while the
+#: reference moves.
+#:
+#: Each entry is `(published baseline seconds, the reference median_latency_s it
+#: was calibrated against)`. The published seconds are the figures 5.1 prints;
+#: the reference beside them is what makes them re-derivable. See
+#: `baseline_task_ratio` and `CapabilityTable.baseline_deadline_s`, and 5.1's
+#: 2026-09-17 subsection for why a fixed map broke both task types the day a
+#: faster model was measured.
+TIER0_BASELINE_CALIBRATION: Final[dict[str, tuple[float, float]]] = {
+    # `claude-sonnet-5` is the fastest ladder-eligible model on `long-context`.
+    # 45s was published before any long-context latency was measured, so this
+    # pairing records the reference in force when the figure was first
+    # reconciled against the table, not a derivation of the 45 itself.
+    "long-context": (45.0, 4.2),
+    # `azure_ai/gpt-5.6-luna`, the reference 5.1 names for `coding` throughout
+    # its 2026-09-15 and 2026-09-16 derivations.
+    "coding": (90.0, 12.8),
 }
 
-#: 5.1: "An unknown type must receive the **longest** deadline, never the
-#: shortest." Taken as the maximum of the map rather than written out, so
-#: adding a slower type cannot leave this behind pointing at the old maximum.
-def unknown_type_baseline_s() -> int:
-    return max(TIER0_DEADLINE.values())
+#: The dimensionless half of the baseline: how long a mid-sized instance of the
+#: task type takes relative to ONE benchmark task of that type on the same
+#: model. This is the quantity that does not move when the fleet does, which is
+#: why it -- and not a seconds figure -- is what the baseline is stored as.
+def baseline_task_ratio(task_type: str) -> float | None:
+    calibration = TIER0_BASELINE_CALIBRATION.get(task_type)
+    if calibration is None:
+        return None
+    published_baseline_s, reference_at_calibration_s = calibration
+    return published_baseline_s / reference_at_calibration_s
 
 
 #: 5.1's size factor, keyed by the classifier's complexity score (section 2).
@@ -310,9 +331,72 @@ class CapabilityTable:
 
     # ── Latency (spec 5.1) ──────────────────────────────────────────────────
 
-    def baseline_deadline_s(self, task_type: str) -> int:
-        """5.1's per-type baseline, with the unknown type taking the longest."""
-        return TIER0_DEADLINE.get(task_type, unknown_type_baseline_s())
+    def _derived_baseline_s(self, task_type: str) -> float | None:
+        """The baseline re-derived against the table's CURRENT 1.0 reference:
+        `baseline_task_ratio(task_type) x latency_reference_s(task_type)`.
+
+        `None` when the type has no calibration entry or the table has no
+        usable reference -- both are handled by `baseline_deadline_s`, which
+        is the only caller.
+        """
+        ratio = baseline_task_ratio(task_type)
+        if ratio is None:
+            return None
+        reference = self.latency_reference_s(task_type)
+        if reference is None or reference <= 0:
+            return None
+        return ratio * reference
+
+    def unknown_type_baseline_s(self) -> float:
+        """5.1: "An unknown type must receive the **longest** deadline, never
+        the shortest."
+
+        The maximum is taken over the DERIVED baselines as well as the
+        published ones, for the same reason the published map was a maximum
+        rather than a literal: a type whose reference has moved must not leave
+        this pointing at a stale figure. Including the published values in the
+        same maximum keeps it from ever falling below what 5.1 prints, so a
+        fleet that gets faster can shorten a measured type's deadline (which is
+        the point) without shortening the deadline of a type nobody has
+        measured (which would turn "we have not measured this" into a timeout).
+        """
+        candidates = [published for published, _ in
+                      TIER0_BASELINE_CALIBRATION.values()]
+        for task_type in TIER0_BASELINE_CALIBRATION:
+            derived = self._derived_baseline_s(task_type)
+            if derived is not None:
+                candidates.append(derived)
+        return max(candidates)
+
+    def baseline_deadline_s(self, task_type: str) -> float:
+        """5.1's per-type baseline, derived against this table's own reference.
+
+        5.1 defines the baseline as the task type's cost "on the fastest model
+        measured for it" and the speed multiplier as each model's latency
+        divided by that same fastest model's. Storing the baseline as a fixed
+        number while deriving the multiplier from the table made the two
+        disagree the moment the reference moved: on 2026-09-17 a faster model
+        (`azure_ai/gpt-5.6-terra`, 7.2s against luna's 12.8s) inflated every
+        `coding` multiplier by 1.78x while the 90s baseline stayed at its
+        luna-era calibration, and `coding`'s worst case went 1,398.2s to
+        2,278.1s -- over the ceiling -- with no model having got slower.
+
+        Deriving both halves from one reference makes the normalisation cancel:
+        `ratio x reference x (latency / reference)` is `ratio x latency`. The
+        deadline then tracks a model's MEASURED latency rather than the fleet's
+        spread, which is what 5.1's prose describes.
+
+        Falls back to the published baseline when the type is calibrated but
+        the table has no usable reference, and to `unknown_type_baseline_s()`
+        -- the longest, never the shortest -- when it has no calibration at all.
+        """
+        derived = self._derived_baseline_s(task_type)
+        if derived is not None:
+            return derived
+        calibration = TIER0_BASELINE_CALIBRATION.get(task_type)
+        if calibration is not None:
+            return calibration[0]
+        return self.unknown_type_baseline_s()
 
     def latency_reference_s(self, task_type: str) -> float | None:
         """The 1.0 reference: the fastest **ladder-eligible** model (5.1).

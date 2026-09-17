@@ -20,7 +20,18 @@ from __future__ import annotations
 import unittest
 
 import delegation_pipeline as pipeline
-from tiered_delegation import CapabilityRow, CapabilityTable, TIER0_DEADLINE
+from tiered_delegation import (
+    CapabilityRow,
+    CapabilityTable,
+    TIER0_BASELINE_CALIBRATION,
+    baseline_task_ratio,
+)
+
+#: `_table()`'s coding reference. The baseline is derived against it, so every
+#: expected figure below is `CODING_RATIO x 10.0 x size x multiplier` rather
+#: than a fixed 90 -- see `CapabilityTable.baseline_deadline_s`.
+CODING_RATIO = baseline_task_ratio("coding")          # 90.0 / 12.8 = 7.03125
+CODING_BASELINE = CODING_RATIO * 10.0                 # 70.3125
 
 
 def _table():
@@ -73,37 +84,97 @@ class MultiplierTests(unittest.TestCase):
 class DeadlineTests(unittest.TestCase):
     def test_a_mid_sized_task_on_the_fastest_model_is_the_baseline(self):
         self.assertEqual(
-            pipeline.effective_deadline(_table(), "fast", "coding", score=3), 90.0)
+            pipeline.effective_deadline(_table(), "fast", "coding", score=3),
+            CODING_BASELINE)
 
     def test_the_size_factor_scales_it(self):
         """Score 3 is the reference point; 1 halves and 5 doubles."""
         self.assertEqual(
-            pipeline.effective_deadline(_table(), "fast", "coding", score=1), 45.0)
+            pipeline.effective_deadline(_table(), "fast", "coding", score=1),
+            CODING_BASELINE * 0.5)
         self.assertEqual(
-            pipeline.effective_deadline(_table(), "fast", "coding", score=5), 180.0)
+            pipeline.effective_deadline(_table(), "fast", "coding", score=5),
+            CODING_BASELINE * 2.0)
 
     def test_all_three_factors_compose(self):
-        """baseline 90 x size 2.0 x multiplier 3.0."""
+        """baseline x size 2.0 x multiplier 3.0."""
         self.assertEqual(
-            pipeline.effective_deadline(_table(), "slow", "coding", score=5), 540.0)
+            pipeline.effective_deadline(_table(), "slow", "coding", score=5),
+            CODING_BASELINE * 2.0 * 3.0)
+
+    def test_the_baseline_follows_the_reference_rather_than_a_fixed_number(self):
+        """5.1 defines the baseline as the type's cost "on the fastest model
+        measured for it", so it must move when that model does. A fixed
+        seconds map kept the baseline at its luna-era 90s while the
+        multipliers renormalised onto a faster reference, which is what put
+        `coding`'s worst case over the ceiling on 2026-09-17 with no model
+        having got slower.
+
+        Same fixture, reference halved: every deadline must halve with it.
+        """
+        halved = CapabilityTable([
+            CapabilityRow("fast", "coding", 1.0, 24, 1.57, 5.0, 1_000_000),
+            CapabilityRow("slow", "coding", 0.66, 44, 0.0, 15.0, 229_376),
+            CapabilityRow("ghost", "coding", None, None, 0.10, 0.001, 1_000_000),
+        ])
+        self.assertEqual(
+            pipeline.effective_deadline(halved, "fast", "coding", score=3),
+            CODING_BASELINE / 2)
+
+    def test_the_reference_cancels_so_the_deadline_tracks_measured_latency(self):
+        """The property the derivation buys: `ratio x reference x (latency /
+        reference)` is `ratio x latency`, so a model's own deadline depends on
+        its OWN measured latency and not on how fast its neighbours are.
+
+        "slow" is 30.0s in both tables below; only its neighbours differ.
+        """
+        faster_neighbours = CapabilityTable([
+            CapabilityRow("fast", "coding", 1.0, 24, 1.57, 2.0, 1_000_000),
+            CapabilityRow("slow", "coding", 0.66, 44, 0.0, 30.0, 229_376),
+        ])
+        self.assertAlmostEqual(
+            pipeline.effective_deadline(_table(), "slow", "coding", score=3),
+            pipeline.effective_deadline(faster_neighbours, "slow", "coding",
+                                        score=3))
+        self.assertAlmostEqual(
+            pipeline.effective_deadline(_table(), "slow", "coding", score=3),
+            CODING_RATIO * 30.0)
 
     def test_a_task_type_with_no_baseline_gets_the_longest_not_the_shortest(self):
         """5.1: an unknown type must receive the LONGEST deadline. Defaulting
-        to the shortest turns "we have not measured this" into a timeout."""
-        longest = max(TIER0_DEADLINE.values())
+        to the shortest turns "we have not measured this" into a timeout.
+
+        `_table()` holds no `reasoning` rows, so the derivation has no
+        reference and the unknown-type rule applies. The longest is taken over
+        the derived baselines AND the published ones, so it can never fall
+        below what 5.1 prints: here `coding` derives to 70.3125 against a
+        published 90.0, and 90.0 must win.
+        """
+        published = [b for b, _ in TIER0_BASELINE_CALIBRATION.values()]
         self.assertEqual(
             pipeline.effective_deadline(_table(), "fast", "reasoning", score=3),
-            float(longest))
+            float(max(published)))
 
     def test_unknown_type_deadline_is_not_the_shortest(self):
-        """Belt and suspenders on the same invariant, with the two
-        TIER0_DEADLINE entries pinned to differ so a defaulting-to-shortest
-        bug cannot agree with the correct answer by coincidence."""
-        shortest = min(TIER0_DEADLINE.values())
-        longest = max(TIER0_DEADLINE.values())
-        self.assertNotEqual(shortest, longest)  # guards the test itself
+        """Belt and suspenders on the same invariant, with the two published
+        baselines pinned to differ so a defaulting-to-shortest bug cannot
+        agree with the correct answer by coincidence."""
+        published = [b for b, _ in TIER0_BASELINE_CALIBRATION.values()]
+        self.assertNotEqual(min(published), max(published))  # guards the test
         result = pipeline.effective_deadline(_table(), "fast", "reasoning", score=3)
-        self.assertNotEqual(result, float(shortest))
+        self.assertNotEqual(result, float(min(published)))
+
+    def test_a_calibrated_type_with_no_reference_keeps_its_published_baseline(self):
+        """A `coding` table whose only row is unmeasured has no 1.0 reference,
+        so nothing can be derived. The fallback is the PUBLISHED baseline,
+        not a derived figure and not the unknown-type maximum: the type is
+        calibrated, it just has no data today."""
+        table = CapabilityTable([
+            CapabilityRow("ghost", "coding", None, None, 0.10, 0.001, 1_000_000),
+        ])
+        self.assertEqual(
+            pipeline.effective_deadline(table, "ghost", "coding", score=3),
+            TIER0_BASELINE_CALIBRATION["coding"][0])
 
 
 class GateDeadlineTests(unittest.TestCase):
@@ -122,7 +193,10 @@ class GateDeadlineTests(unittest.TestCase):
             CapabilityRow("azure_ai/gpt-5.6-luna", "reviewer-gate",
                           1.0, 9, 1.0, 11.1, 1_000_000),
         ])
-        expected = 90 * 1.0 * (11.1 / 12.8)
+        # 12.8 is `coding`'s calibration reference, so the derived baseline is
+        # exactly the published 90.0 here and the spec's worked example is
+        # reproduced unchanged.
+        expected = 90.0 * 1.0 * (11.1 / 12.8)
         value, reason = pipeline.gate_effective_deadline(table, "coding", score=3)
         self.assertIsNone(reason)
         self.assertAlmostEqual(value, expected)
@@ -135,7 +209,9 @@ class GateDeadlineTests(unittest.TestCase):
             CapabilityRow("solo", "reviewer-gate", 1.0, 6, 1.0, None, 1_000_000),
             CapabilityRow("solo", "coding", 1.0, 6, 1.0, 20.0, 1_000_000),
         ])
-        expected = 90 * 1.0 * (20.0 / 20.0)
+        # Reference 20.0, so the baseline derives to CODING_RATIO x 20.0
+        # rather than the published 90.0.
+        expected = (CODING_RATIO * 20.0) * 1.0 * (20.0 / 20.0)
         value, reason = pipeline.gate_effective_deadline(table, "coding", score=3)
         self.assertIsNone(reason)
         self.assertAlmostEqual(value, expected)

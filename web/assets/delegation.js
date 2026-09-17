@@ -222,16 +222,51 @@ async function _setOperational(taskType, operational, knob) {
   }
 }
 
+/** Whether this card's knob can move, and why not.
+ *
+ *  Three rules, and the two exclusions matter as much as the rule itself:
+ *
+ *  - A LIVE type is never blocked. A blocker explains why a type cannot be
+ *    turned ON; turning one OFF is always allowed, and greying the knob out
+ *    would strand an operator with a type they could not disable.
+ *  - WARNINGS never block. An over-ceiling type with enforcement off is
+ *    allowed to flip -- that is the whole point of the knob being off -- so
+ *    disabling on a warning would silently reimpose the enforcement the
+ *    operator deliberately switched off.
+ *  - Otherwise a policy hold or a data blocker disables it, because the
+ *    server will refuse the click anyway.
+ */
+function _knobBlockedReason(entry, live) {
+  if (live || !entry) return null;
+  if (entry.policy) return entry.policy;
+  const data = Array.isArray(entry.data) ? entry.data.filter(Boolean) : [];
+  return data.length ? data[0] : null;
+}
+
 /** The standard toggle-knob (web/index.html:558, :588 -- `.app-setting-row`'s
  *  App-tab settings), built here rather than reused from markup because one
  *  is needed per card and each must carry its own task type in its click
- *  handler's closure. */
-function _operationalKnob(taskType, live) {
+ *  handler's closure.
+ *
+ *  Disabled when the server would refuse the flip. Until 2026-09-17 every
+ *  knob was clickable regardless: six of the ten task types animated across,
+ *  were refused, and snapped back with a toast. The blockers needed to
+ *  prevent that were already in the payload; the knob simply did not read
+ *  them. */
+function _operationalKnob(taskType, live, entry) {
   const knob = document.createElement('button');
   knob.type = 'button';
   knob.className = 'toggle-knob';
   knob.setAttribute('aria-pressed', String(live));
   knob.setAttribute('aria-label', `${taskType} operational`);
+  const blocked = _knobBlockedReason(entry, live);
+  if (blocked) {
+    knob.disabled = true;
+    // The reason travels with the control, not only in the box below it --
+    // the knob is what the operator reaches for first.
+    knob.title = blocked;
+    knob.setAttribute('aria-describedby', `delegationBlocker-${taskType}`);
+  }
   const track = document.createElement('span');
   track.className = 'knob-track';
   const thumb = document.createElement('span');
@@ -252,21 +287,43 @@ function _operationalKnob(taskType, live) {
  *  `_blockerLines`, or nothing at all -- CSS hides `.delegation-blocker`
  *  when it has no children, so a clean or already-operational type shows no
  *  empty box. */
-function _blockerElement(entry) {
-  const wrap = document.createElement('div');
-  wrap.className = 'delegation-blocker';
-  _blockerLines(entry).forEach(text => {
+/** One labelled group of blocker lines, or nothing when the group is empty. */
+function _blockerGroup(wrap, label, lines, extraClass) {
+  if (!lines.length) return;
+  const heading = document.createElement('p');
+  heading.className = 'delegation-blocker-heading';
+  heading.textContent = label;
+  wrap.appendChild(heading);
+  lines.forEach(text => {
     const p = document.createElement('p');
-    p.className = 'delegation-blocker-line';
+    p.className = `delegation-blocker-line${extraClass ? ' ' + extraClass : ''}`;
     p.textContent = text;
     wrap.appendChild(p);
   });
-  _warningLines(entry).forEach(text => {
-    const p = document.createElement('p');
-    p.className = 'delegation-blocker-line delegation-warning-line';
-    p.textContent = `not enforced: ${text}`;
-    wrap.appendChild(p);
-  });
+}
+
+/** The blocker box for one card, grouped by KIND rather than run together.
+ *
+ *  A policy hold, a data invariant and an unenforced warning are three
+ *  different situations needing three different responses -- a decision, a
+ *  measurement, and nothing at all -- and as a flat list they read as one
+ *  undifferentiated wall of reasons. The headings are what let an operator
+ *  tell "I must decide this" from "I must measure this" from "this is only
+ *  being reported".
+ *
+ *  CSS hides `.delegation-blocker` when it has no children, so a clean type
+ *  still shows no empty box. */
+function _blockerElement(entry, taskType) {
+  const wrap = document.createElement('div');
+  wrap.className = 'delegation-blocker';
+  if (taskType) wrap.id = `delegationBlocker-${taskType}`;
+  const policy = entry && entry.policy ? [entry.policy] : [];
+  const data = (Array.isArray(entry && entry.data) ? entry.data : [])
+    .filter(Boolean);
+  _blockerGroup(wrap, 'policy — a decision, not data', policy);
+  _blockerGroup(wrap, 'data — needs a measurement or a cheaper rung', data);
+  _blockerGroup(wrap, 'latency ceiling — reported, not enforced',
+                _warningLines(entry), 'delegation-warning-line');
   return wrap;
 }
 
@@ -320,7 +377,8 @@ function _card(taskType, rowsForType, payload) {
   heading.textContent = taskType;
   head.appendChild(heading);
   const live = (payload.operational || []).includes(taskType);
-  head.appendChild(_operationalKnob(taskType, live));
+  const blockerEntryForKnob = (payload.blockers || {})[taskType];
+  head.appendChild(_operationalKnob(taskType, live, blockerEntryForKnob));
   card.appendChild(head);
 
   const ladderLine = document.createElement('p');
@@ -334,7 +392,7 @@ function _card(taskType, rowsForType, payload) {
   card.appendChild(ladderLine);
 
   const blockerEntry = (payload.blockers || {})[taskType];
-  card.appendChild(_blockerElement(blockerEntry));
+  card.appendChild(_blockerElement(blockerEntry, taskType));
 
   card.appendChild(_modelTable(rowsForType, _resolveColumns(payload)));
 

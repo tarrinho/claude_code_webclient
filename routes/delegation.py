@@ -49,6 +49,7 @@ from routes.db_delegation import rows_to_capability
 from routes.db_users import setting_set
 from tiered_delegation import (
     BUDGET_USD,
+    GATE_CALLS,
     CEILING_ENFORCEMENT_DEFAULT,
     CEILING_ENFORCEMENT_SETTING,
     EXCLUDED_MODELS,
@@ -458,6 +459,35 @@ async def handle_operational_put(request: Request):
                 f"{task_type} cannot be flipped operational: "
                 f"{_OPERATIONAL_FLIP_BLOCKED[task_type]}"
             ))
+
+    # Turning a GATE type off is validated too, and this half was missing.
+    #
+    # Spec 12's coverage rule says an ordinary type may not route through a
+    # gate type that has not cleared 1.1 -- and it was enforced only when
+    # flipping something ON. So switching `reviewer-gate` off under a live
+    # `long-context` was accepted, and left a stored state that 1.1 refuses:
+    # the console kept running and then failed to start on its next restart,
+    # with nothing connecting the two events.
+    #
+    # Checked against the dependents rather than by revalidating the table,
+    # because the message has to name what is in the way. "long-context is
+    # operational and runs its gates on this type" tells an operator what to
+    # do; a generic invariant failure does not.
+    if not operational and task_type in GATE_CALLS:
+        current = await db.delegation_operational_all()
+        dependents = sorted(t for t in current if t not in GATE_CALLS)
+        if dependents:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{task_type} cannot be turned off while "
+                    f"{', '.join(dependents)} "
+                    f"{'is' if len(dependents) == 1 else 'are'} operational: "
+                    f"stages 3-5 of {'that type' if len(dependents) == 1 else 'those types'} "
+                    f"run on it (spec 4.3-4.5, 12). Turn "
+                    f"{'it' if len(dependents) == 1 else 'them'} off first, or "
+                    f"this deployment will refuse to start on its next restart"
+                ))
 
     if operational:
         rows = rows_to_capability(await db.delegation_rows_all())

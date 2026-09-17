@@ -18,8 +18,11 @@ unit test had caught:
     real 240s and `security-gate` 1,644s against 413s -- which is the only
     reason `security-gate` ever showed a ceiling warning. Fixed, and
     `test_a_gate_type_is_not_charged_for_calling_itself` holds it.
-  * Turning a gate type OFF is not validated, while turning one ON is. See
-    `GateTypeTeardownTests`, which documents what that currently allows.
+  * Turning a gate type OFF was not validated while turning one ON was, so a
+    gate could be switched off under a live dependent, leaving a state that
+    1.1 refuses at the next restart. Closed 2026-09-17; `GateTypeTeardownTests`
+    now asserts the refusal, and that the rule stays satisfiable in both
+    directions.
 
 Everything here goes through `handle_operational_put` and
 `handle_delegation_get` rather than calling `CapabilityTable` directly: a flip
@@ -238,50 +241,56 @@ class GateTypeTeardownTests(_FlowFixture):
             await self._flip(gate_type)
         await self._flip(self.TASK_TYPE)
 
-    async def test_turning_a_gate_type_off_under_a_live_type_is_allowed(self):
-        """**Documents a real hole rather than asserting a fix.**
+    async def test_turning_a_gate_type_off_under_a_live_type_is_refused(self):
+        """The hole this class documented until 2026-09-17, now closed.
 
-        `handle_operational_put` validates only when flipping something ON.
-        Turning a gate type OFF while an ordinary type that depends on it is
-        still operational is therefore accepted, and leaves a stored state
-        that 1.1 refuses -- so the console keeps running and then fails to
-        start on its next restart, which is the worst shape for this failure
-        to take because nothing connects the two events.
+        `handle_operational_put` validated only when flipping something ON, so
+        turning a gate type OFF under a live dependent was accepted and left a
+        stored state that 1.1 refuses -- the console kept running and then
+        failed to start on its next restart, with nothing connecting the two
+        events. Same trap the ceiling-enforcement endpoint already guarded
+        against ("a settings write that bricks the boot path").
 
-        This is the same trap the ceiling-enforcement endpoint guards against
-        ("turning it on is validated before it is stored ... a settings write
-        that bricks the boot path"), and the operational flip does not guard
-        it. Asserted as it currently behaves, so that fixing it breaks this
-        test deliberately rather than silently.
+        Three assertions, and the third is the one that matters: refused, the
+        flag unchanged, and the deployment still able to boot. A handler that
+        stored first and raised afterwards would pass the first and brick the
+        deployment anyway.
         """
         await self._fully_operational()
+        detail = await self._flip_fails(td.REVIEWER_GATE_TASK_TYPE,
+                                        operational=False)
+        self.assertIn(self.TASK_TYPE, detail)
+        self.assertIn(td.REVIEWER_GATE_TASK_TYPE, await self._operational())
+        await ds.validate_or_die()                  # must still boot
+
+    async def test_the_refusal_names_what_is_in_the_way(self):
+        """A generic invariant failure would tell an operator nothing about
+        what to do. The dependent type is named, because turning THAT off is
+        the action that unblocks this one."""
+        await self._fully_operational()
+        detail = await self._flip_fails(td.REVIEWER_GATE_TASK_TYPE,
+                                        operational=False)
+        self.assertIn(self.TASK_TYPE, detail)
+        self.assertIn("restart", detail)
+
+    async def test_a_gate_type_can_be_turned_off_once_nothing_depends_on_it(self):
+        """The rule must be satisfiable: turn the dependent off first and the
+        gate type follows. A check that refused unconditionally would trap an
+        operator in the operational state with no way back."""
+        await self._fully_operational()
+        await self._flip(self.TASK_TYPE, operational=False)
         await self._flip(td.REVIEWER_GATE_TASK_TYPE, operational=False)
-        self.assertIn(self.TASK_TYPE, await self._operational())
         self.assertNotIn(td.REVIEWER_GATE_TASK_TYPE, await self._operational())
-
-        with self.assertRaises(ds.DelegationConfigError) as ctx:
-            await ds.validate_or_die()
-        self.assertIn(td.REVIEWER_GATE_TASK_TYPE, str(ctx.exception))
-        self.assertIn("not operational", str(ctx.exception))
-
-    async def test_the_page_shows_the_broken_state_rather_than_hiding_it(self):
-        """The mitigation that does exist: an operator who lands in the state
-        above can see it on the page, because the blockers are recomputed on
-        every GET rather than stored. Without this the only symptom would be
-        a failed restart hours later."""
-        await self._fully_operational()
-        await self._flip(td.REVIEWER_GATE_TASK_TYPE, operational=False)
-        entry = await self._blockers(self.TASK_TYPE)
-        self.assertTrue(any(td.REVIEWER_GATE_TASK_TYPE in d
-                            for d in entry["data"]), entry["data"])
-
-    async def test_turning_a_gate_type_back_on_repairs_it(self):
-        """And the state is recoverable by the obvious action, which is what
-        makes documenting the hole tolerable rather than urgent."""
-        await self._fully_operational()
-        await self._flip(td.REVIEWER_GATE_TASK_TYPE, operational=False)
-        await self._flip(td.REVIEWER_GATE_TASK_TYPE, operational=True)
         await ds.validate_or_die()                  # must not raise
+
+    async def test_a_gate_type_can_be_turned_off_when_only_gates_are_on(self):
+        """Gate types do not depend on each other, so one may be turned off
+        while the other stays on -- the exemption that keeps the rule from
+        being unsatisfiable applies in this direction too."""
+        for gate_type in td.GATE_CALLS:
+            await self._flip(gate_type)
+        await self._flip(td.REVIEWER_GATE_TASK_TYPE, operational=False)
+        self.assertNotIn(td.REVIEWER_GATE_TASK_TYPE, await self._operational())
 
 
 class GateSelfChargeTests(_FlowFixture):

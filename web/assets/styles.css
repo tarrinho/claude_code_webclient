@@ -1423,6 +1423,21 @@ button{touch-action:manipulation}
    reason the type cannot flip -- the two must not look alike, or turning
    enforcement off would read as the breach having gone away. */
 .delegation-warning-line { color:var(--muted); font-style:italic; }
+/* Group headings inside the blocker box. A policy hold, a data invariant and
+   an unenforced warning need three different responses -- a decision, a
+   measurement, and nothing -- and as a flat list they read as one wall of
+   reasons. */
+.delegation-blocker-heading {
+  margin:0; font-size:10px; font-weight:700; letter-spacing:.04em;
+  text-transform:uppercase; color:var(--muted);
+}
+.delegation-blocker-line + .delegation-blocker-heading { margin-top:8px; }
+
+/* A knob the server would refuse. Until 2026-09-17 every knob was clickable:
+   six of the ten task types animated across, were refused, and snapped back.
+   `not-allowed` plus the dimming is what says "not yet" before the click. */
+.toggle-knob[disabled] { opacity:.45; cursor:not-allowed; }
+.toggle-knob[disabled] .knob-track { filter:grayscale(1); }
 
 /* The status band's ceiling-enforcement knob, beside the facts row. */
 .delegation-ceiling-knob { display:inline-flex; align-items:center; gap:8px; }

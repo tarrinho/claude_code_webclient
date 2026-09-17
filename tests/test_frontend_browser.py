@@ -3944,6 +3944,239 @@ class StatisticsPanelBrowserTests(_BrowserFixture):
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
+    """Settings -> Delegation: a knob the server would refuse must say so
+    BEFORE it is clicked, and a card's blockers must be grouped by kind.
+
+    Until 2026-09-17 no operational knob was ever disabled. Six of the ten
+    task types looked identical to the four that work: the knob animated
+    across, the server refused, and it snapped back with a toast. Every fact
+    needed to prevent that was already in the GET payload -- the knob simply
+    did not read it.
+
+    The two exclusions are tested as hard as the rule, because both are ways
+    the fix could be wrong in the other direction: a LIVE type must stay
+    clickable (a blocker explains why a type cannot be turned ON, never why it
+    cannot be turned off), and a WARNING must never disable (an over-ceiling
+    type with enforcement off is allowed to flip -- that is the point of the
+    knob being off, and disabling would silently reimpose it).
+    """
+
+    def _seed_delegation(self, *, blocked_type="coding", clean_type="widget"):
+        """One type the server will refuse (`coding` carries a policy hold)
+        and one with nothing wrong with it."""
+        import sqlite3          # imported locally, as elsewhere in this file
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        for task_type in (blocked_type, clean_type):
+            con.execute(
+                "INSERT OR REPLACE INTO delegation_capability "
+                "(model, task_type, accuracy, n, cost_per_1m_tokens, "
+                " median_latency_s, max_context, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                ("claude-sonnet-5", task_type, 1.0, 12, 0.0, 10.0, 1_000_000,
+                 "2026-09-17T00:00:00Z"))
+        con.commit()
+        con.close()
+
+    def _open(self):
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="delegation"]')
+        self.page.wait_for_selector("#panelDelegation:not([hidden])",
+                                     timeout=10_000)
+        self.page.wait_for_selector(".delegation-card", timeout=10_000)
+        self.page.wait_for_timeout(300)
+
+    def _knob(self, task_type):
+        return self.page.query_selector(
+            f'.delegation-card .toggle-knob[aria-label="{task_type} operational"]')
+
+    def test_a_blocked_types_knob_is_disabled(self):
+        """`coding` carries a policy hold, so the server refuses the flip.
+        The knob must not invite the click."""
+        self._seed_delegation()
+        self._open()
+        knob = self._knob("coding")
+        self.assertIsNotNone(knob, "no coding knob rendered")
+        self.assertTrue(knob.is_disabled(),
+                        "coding's knob is clickable but the server refuses it")
+        self.assertEqual(self.errors, [])
+
+    def test_the_disabled_knob_carries_the_reason(self):
+        """The reason travels with the control, not only in the box below --
+        the knob is what an operator reaches for first."""
+        self._seed_delegation()
+        self._open()
+        title = self._knob("coding").get_attribute("title") or ""
+        self.assertIn("coding", title)
+        self.assertEqual(self.errors, [])
+
+    def test_blockers_are_grouped_by_kind(self):
+        """A policy hold and a data invariant need different responses -- a
+        decision and a measurement -- and as a flat list they read as one wall
+        of reasons."""
+        self._seed_delegation()
+        self._open()
+        headings = [h.inner_text().strip().lower() for h in
+                    self.page.query_selector_all(".delegation-blocker-heading")]
+        self.assertTrue(any("policy" in h for h in headings), headings)
+        self.assertTrue(any("data" in h for h in headings), headings)
+        self.assertEqual(self.errors, [])
+
+    def test_a_clean_type_keeps_a_usable_knob(self):
+        """The rule must not disable everything. A type with no policy hold,
+        no data blocker and no warning stays clickable.
+
+        Gate types are flipped operational here, because spec 12's coverage
+        rule blocks every ordinary type until they are -- a "clean" type
+        without them is not clean, which is how an earlier version of this
+        test asserted the wrong thing and passed.
+        """
+        self._seed_flippable_type()
+        self._open()
+        entry = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return d.blockers['slowtype'];
+               }""")
+        # Guards the test itself: a fixture that stopped being clean would
+        # make the assertion below vacuous.
+        self.assertFalse(entry["data"], f"fixture is not clean: {entry}")
+        self.assertFalse(entry["warnings"], f"fixture has a warning: {entry}")
+
+        knob = self._knob("slowtype")
+        self.assertIsNotNone(knob, "no slowtype knob rendered")
+        # is_disabled(), not get_attribute("disabled"): a present boolean
+        # attribute reads back as "", and bool("") is False -- so an
+        # attribute check passes whether or not the knob is disabled.
+        self.assertFalse(knob.is_disabled(),
+                         "a clean type's knob was disabled")
+        self.assertEqual(self.errors, [])
+
+    def _seed_flippable_type(self, *, gate_latency=1.0, type_latency=1.0):
+        """A type with nothing wrong with it: gate types flipped operational
+        (spec 12's coverage rule) and a rung that is complete, affordable and
+        fast enough to clear the ceiling.
+
+        `gate_latency` is the lever: raising it far above the type's own rung
+        inflates the gate terms in 5.1's worst-case path and pushes the type
+        over the ceiling, which is how `_seed_warning_only_type` produces a
+        warning without a data blocker.
+        """
+        import sqlite3
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        rows = [
+            ("claude-sonnet-5", "slowtype", 1.0, 12, 0.0, type_latency),
+            ("claude-sonnet-5", "reviewer-gate", 0.95, 28, 0.0, gate_latency),
+            ("claude-sonnet-5", "security-gate", 0.95, 28, 0.0, gate_latency),
+        ]
+        for model, task_type, acc, n, rate, latency in rows:
+            con.execute(
+                "INSERT OR REPLACE INTO delegation_capability "
+                "(model, task_type, accuracy, n, cost_per_1m_tokens, "
+                " median_latency_s, max_context, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (model, task_type, acc, n, rate, latency, 1_000_000,
+                 "2026-09-17T00:00:00Z"))
+        for gate_type in ("reviewer-gate", "security-gate"):
+            con.execute(
+                "INSERT OR REPLACE INTO delegation_operational "
+                "(task_type, updated_at) VALUES (?, ?)",
+                (gate_type, "2026-09-17T00:00:00Z"))
+        con.commit()
+        con.close()
+
+    def _seed_warning_only_type(self):
+        """A type whose ONLY problem is a ceiling breach, with enforcement off.
+
+        Both gate types are flipped operational directly so spec 12's coverage
+        rule is satisfied, and the gate rows are made far slower than the
+        type's own rung so its worst-case path clears 1,500s -- leaving a
+        warning and no data blocker, which is the exact state the knob must
+        NOT treat as blocking.
+        """
+        self._seed_flippable_type(gate_latency=10.0, type_latency=1.0)
+
+    def test_a_live_type_that_went_invalid_can_still_be_turned_off(self):
+        """The exclusion that matters most, and the hardest to reach.
+
+        A blocker explains why a type cannot be turned ON. A type that is
+        already operational and has since become invalid -- a column blanked,
+        a gate turned off underneath it -- reports blockers too, and disabling
+        its knob would strand an operator with a live, broken type they cannot
+        switch off. That is strictly worse than the problem the disabling
+        solves.
+
+        Built by flipping the type operational and then blanking a column its
+        ladder needs, which is the shape a real edit produces.
+        """
+        import sqlite3
+        self._seed_flippable_type()
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute(
+            "INSERT OR REPLACE INTO delegation_operational "
+            "(task_type, updated_at) VALUES ('slowtype', ?)",
+            ("2026-09-17T00:00:00Z",))
+        con.execute(
+            "UPDATE delegation_capability SET median_latency_s = NULL "
+            "WHERE task_type = 'slowtype'")
+        con.commit()
+        con.close()
+        self._open()
+
+        entry = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return {blockers: d.blockers['slowtype'],
+                         live: (d.operational || []).includes('slowtype')};
+               }""")
+        # Guards the test itself: it is only meaningful if the type really is
+        # live AND really is reporting a blocker.
+        self.assertTrue(entry["live"], "fixture type is not operational")
+        self.assertTrue(entry["blockers"]["data"],
+                        f"fixture type reports no blocker: {entry}")
+
+        knob = self._knob("slowtype")
+        self.assertIsNotNone(knob, "no slowtype knob rendered")
+        self.assertFalse(knob.is_disabled(),
+                         "a live type's knob was disabled, stranding an "
+                         "operator with a broken type they cannot switch off")
+        self.assertEqual(self.errors, [])
+
+    def test_a_warning_alone_never_disables_the_knob(self):
+        """The exclusion that is easiest to get wrong in the other direction.
+
+        An over-ceiling type with enforcement OFF is allowed to flip -- that
+        is precisely what switching enforcement off means. Disabling its knob
+        would silently reimpose the enforcement the operator turned off, which
+        is worse than the original problem because nothing on screen would say
+        the knob had done it.
+        """
+        self._seed_warning_only_type()
+        self._open()
+        entry = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return d.blockers['slowtype'];
+               }""")
+        # Guards the test itself: if the fixture stops producing a
+        # warning-only type, this asserts nothing and must fail loudly.
+        self.assertTrue(entry and entry["warnings"],
+                        f"fixture produced no warning: {entry}")
+        self.assertFalse(entry["data"], f"fixture produced a data blocker: {entry}")
+
+        knob = self._knob("slowtype")
+        self.assertIsNotNone(knob, "no slowtype knob rendered")
+        self.assertFalse(knob.is_disabled(),
+                         "a warning alone disabled the knob, which silently "
+                         "reimposes an enforcement the operator switched off")
+        self.assertEqual(self.errors, [])
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class DelegationConfigLayoutBrowserTests(_BrowserFixture):
     """Settings -> Delegation, the read-only config block (spec 9.1/5/2.7/10).
 

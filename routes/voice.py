@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 
 from openai import AsyncOpenAI
 
@@ -76,6 +77,61 @@ async def voice_model_timing_averages(active_models: list[str]) -> dict[str, dic
     return result
 
 
+def _note_replay_turn(*, chat_id, chat, sent_messages, assistant_text,
+                      model_requested, model_served, ttft_ms, total_ms,
+                      input_tokens, output_tokens, failed) -> None:
+    """Hand one voice turn's replay record to `conversation_recording`.
+
+    What makes a turn replayable is the exact `messages` array that went to
+    the model -- the system prompt, the structured parent-context block, and
+    the user's prompt -- together with the model and the generation settings.
+    The stored `messages` rows hold only the user's prompt and the reply, so
+    a benchmark replaying from those would send different input and score the
+    difference as a model result.
+
+    **`base_url` and `api_key` are deliberately absent.** This module warns
+    twice already that they must never be logged (CLAUDE.md #3, and the SSE
+    error path above), and a file on disk is a log by another name. The
+    backend is identified by `ai_machine_id`, an opaque row id that says
+    which backend without carrying the credential or the URL to reach it.
+
+    Never raises: a replay record is an extra on a turn that has already been
+    paid for.
+    """
+    try:
+        import conversation_recording
+
+        conversation_recording.note_turn(chat_id, {
+            "recorded_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds").replace("+00:00", "Z"),
+            "model_requested": model_requested,
+            # What the gateway actually served. A gateway may answer with a
+            # different model than the one asked for, and a replay compared
+            # against the wrong model is worse than no replay.
+            "model_served": model_served,
+            "ai_machine_id": chat.get("ai_machine_id"),
+            "messages_sent": sent_messages,
+            "assistant_text": assistant_text,
+            # The generation settings, written out rather than assumed. No
+            # temperature or max_tokens is set on this path, so the gateway's
+            # defaults apply -- which is itself a fact a replay needs, because
+            # "unset" and "whatever the default was in September" differ.
+            "params": {
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "temperature": None,
+                "max_tokens": None,
+            },
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "ttft_ms": ttft_ms,
+            "total_ms": total_ms,
+            "failed": failed,
+        })
+    except Exception:                                # noqa: BLE001
+        _log.warning("voice replay record failed for chat_id=%s", chat_id)
+
+
 async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     """Yields SSE frame strings identical in shape to stream_handler's own
     (type: text/done/error), so the existing frontend parser needs no
@@ -122,6 +178,8 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
     client = AsyncOpenAI(base_url=base_url, api_key=api_key or "unused")
     t0 = time.time()
     ttft_ms = None
+    model_served = None
+    sent_messages: list[dict[str, str]] = []
     assistant_text = ""
     input_tokens = 0
     output_tokens = 0
@@ -233,6 +291,11 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
                     })
 
         messages.append({"role": "user", "content": prompt})
+        # Kept for the replay record below: this is the exact input the model
+        # saw, including the structured parent-context block, which is built
+        # from the parent chat's then-current last 12 messages and cannot be
+        # reconstructed afterwards.
+        sent_messages = [dict(m) for m in messages]
 
         stream = await client.chat.completions.create(
             model=model,
@@ -252,6 +315,9 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
                         ttft_ms = int((time.time() - t0) * 1000)
                     assistant_text += delta
                     yield f"data: {json.dumps({'type': 'text', 'content': delta})}\n\n"
+            served = getattr(chunk, "model", None)
+            if served:
+                model_served = served
             usage = getattr(chunk, "usage", None)
             if usage:
                 input_tokens = usage.prompt_tokens or 0
@@ -281,6 +347,19 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         await client.close()
 
     total_ms = int((time.time() - t0) * 1000)
+    _note_replay_turn(
+        chat_id=chat_id,
+        chat=chat,
+        sent_messages=sent_messages,
+        assistant_text=assistant_text,
+        model_requested=model,
+        model_served=model_served,
+        ttft_ms=ttft_ms,
+        total_ms=total_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        failed=failed,
+    )
     if assistant_text.strip():
         await db.messages_batch(chat_id, [("user", prompt), ("assistant", assistant_text)])
     await record_voice_turn_timing(model, ttft_ms or total_ms, total_ms)
@@ -322,6 +401,9 @@ async def _record_voice_conversation(chat_id: str,
 
     await conversation_recording.record_conversation(
         chat_id, handoff_summary=summary, require_voice=False)
+    # The replay records have been written out; drop them so a long-lived
+    # service does not hold a torn-down chat's turns for the rest of its life.
+    conversation_recording.forget_turns(chat_id)
 
 
 async def voice_handoff(chat_id: str, owner: str) -> str | None:

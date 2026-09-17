@@ -134,7 +134,9 @@ def _write_private_atomic(path: Path, payload: str) -> None:
 
 
 def build_recording(chat: dict[str, Any], messages: list[dict[str, Any]],
-                    handoff_summary: str | None = None) -> dict[str, Any]:
+                    handoff_summary: str | None = None,
+                    turns: list[dict[str, Any]] | None = None
+                    ) -> dict[str, Any]:
     """The recorded shape, kept deliberately small and explicit.
 
     Only fields that describe the conversation are copied. The `chats` row
@@ -165,6 +167,9 @@ def build_recording(chat: dict[str, Any], messages: list[dict[str, Any]],
             for m in messages
         ],
         "message_count": len(messages),
+        # What was actually sent to the model, per turn -- the part that makes
+        # this replayable rather than merely readable. See `_TURNS`.
+        "turns": turns or [],
         # The summary voice_handoff writes into the PARENT chat. Recorded here
         # too because it is part of this conversation -- and because, once the
         # voice chat is deleted, the summary in the parent is the only thing
@@ -175,7 +180,8 @@ def build_recording(chat: dict[str, Any], messages: list[dict[str, Any]],
 
 def write_recording(chat: dict[str, Any], messages: list[dict[str, Any]],
                     root: str | os.PathLike[str] | None = None,
-                    handoff_summary: str | None = None) -> Path:
+                    handoff_summary: str | None = None,
+                    turns: list[dict[str, Any]] | None = None) -> Path:
     """Overwrite the rolling recording with this conversation.
 
     Returns the path written. Raises on failure -- callers on a hot path
@@ -184,9 +190,53 @@ def write_recording(chat: dict[str, Any], messages: list[dict[str, Any]],
     ensure_recording_dir(root)
     path = recording_path(root)
     _write_private_atomic(
-        path, json.dumps(build_recording(chat, messages, handoff_summary),
+        path, json.dumps(build_recording(chat, messages, handoff_summary,
+                                         turns),
                          indent=2, ensure_ascii=False) + "\n")
     return path
+
+
+#: Per-chat replay records for the turns seen since this process started.
+#:
+#: The `messages` table stores the user's prompt and the assistant's reply,
+#: which is what a person needs to read the conversation back -- and not what
+#: a benchmark needs to REPRODUCE it. `routes/voice.stream_voice_turn` sends
+#: the model a system prompt plus, when the chat has a parent, a structured
+#: context block distilled at call time from the parent's last 12 messages by
+#: an inline heuristic. That block cannot be rebuilt afterwards: the parent
+#: chat moves on, and the same code run later against it produces different
+#: text. Replaying from the stored messages alone would send different input
+#: and score the difference as a model result.
+#:
+#: Held in memory rather than in a table because it is scratch: it is folded
+#: into the recording on the next write, which happens on the same turn.
+_TURNS: dict[str, list[dict[str, Any]]] = {}
+
+#: A voice conversation is a handful of turns; this only bounds the damage if
+#: a chat is never torn down (a crash between turns, say) so the dict cannot
+#: grow without limit in a long-lived service.
+MAX_RECORDED_TURNS: Final[int] = 200
+
+
+def note_turn(chat_id: str, turn: dict[str, Any]) -> None:
+    """Record what was actually sent to the model for one voice turn.
+
+    Called by `stream_voice_turn` before it stores the messages, so the write
+    that follows picks this up. Never raises: a replay record is an extra,
+    and losing it must not fail the turn it describes.
+    """
+    try:
+        turns = _TURNS.setdefault(chat_id, [])
+        if len(turns) >= MAX_RECORDED_TURNS:
+            turns.pop(0)
+        turns.append(turn)
+    except Exception:                                # noqa: BLE001
+        pass
+
+
+def forget_turns(chat_id: str) -> None:
+    """Drop a chat's replay records, once they have been written out."""
+    _TURNS.pop(chat_id, None)
 
 
 async def is_voice_chat(chat_id: str) -> bool:
@@ -249,7 +299,7 @@ async def record_conversation(chat_id: str,
             return None
         messages = await db_chats.messages_get(chat_id)
         return write_recording(dict(chat), [dict(m) for m in messages], root,
-                               handoff_summary)
+                               handoff_summary, _TURNS.get(chat_id))
     except Exception as exc:                         # noqa: BLE001 - see above
         _log.warning("conversation recording failed for chat_id=%s path=%s: %s",
                      chat_id, recording_path(root), exc)

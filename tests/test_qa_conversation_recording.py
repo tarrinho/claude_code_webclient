@@ -427,5 +427,193 @@ class SurvivesTheHandoffDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gone["c"], 0)
 
 
+class ReplayCompletenessTests(unittest.IsolatedAsyncioTestCase):
+    """Enough to REPRODUCE a voice turn, not merely to read it back.
+
+    `stream_voice_turn` sends the model a system prompt, plus -- when the chat
+    has a parent -- a structured context block distilled at call time from the
+    parent's last 12 messages by an inline heuristic. The `messages` table
+    stores only the user's prompt and the reply. A benchmark replaying from
+    those alone would send different input and score the difference as a model
+    result, which is the specific failure these tests exist to prevent.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for name, value in (("DB_PATH", f"{self.tmp.name}/db"),
+                            ("PROJECTS_ROOT", f"{self.tmp.name}/p")):
+            p = patch.object(config, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+        self.root = f"{self.tmp.name}/rec"
+        p = patch.object(cr, "default_root", lambda: Path(self.root))
+        p.start()
+        self.addCleanup(p.stop)
+        cr.forget_turns("v1")
+        self.addCleanup(cr.forget_turns, "v1")
+        await db.db_conn.execute(
+            "INSERT INTO chats (id, title, owner_id, work_dir, session_id, "
+            "voice_mode, ai_machine_id, created_at, updated_at) "
+            "VALUES ('v1','v1','u1','/tmp','v1',1,'machine-7',1,1)")
+        await db.db_conn.commit()
+
+    def _turn(self, **over):
+        turn = {
+            "recorded_at": "2026-09-17T19:47:12Z",
+            "model_requested": "azure_ai/gpt-5.4-mini-copilot",
+            "model_served": "gpt-5.4-mini-copilot",
+            "ai_machine_id": "machine-7",
+            "messages_sent": [
+                {"role": "system", "content": "You are a voice assistant."},
+                {"role": "user", "content": "STRUCTURED CONTEXT: GOAL: ship"},
+                {"role": "user", "content": "what is the status"},
+            ],
+            "assistant_text": "It is live.",
+            "params": {"stream": True, "temperature": None,
+                       "max_tokens": None},
+            "input_tokens": 120, "output_tokens": 8,
+            "ttft_ms": 900, "total_ms": 1633, "failed": False,
+        }
+        turn.update(over)
+        return turn
+
+    async def _record(self):
+        from routes import db_chats
+        cr.note_turn("v1", self._turn())
+        await db_chats.messages_append("v1", "user", "what is the status")
+        return json.loads(cr.recording_path().read_text())
+
+    async def test_the_exact_messages_sent_are_recorded(self):
+        """The heart of it: the system prompt and the structured context block
+        are in the file, not just the user's prompt. Those two are what a
+        replay cannot rebuild."""
+        data = await self._record()
+        sent = data["turns"][0]["messages_sent"]
+        self.assertEqual([m["role"] for m in sent], ["system", "user", "user"])
+        self.assertIn("voice assistant", sent[0]["content"])
+        self.assertIn("STRUCTURED CONTEXT", sent[1]["content"])
+
+    async def test_the_stored_messages_alone_are_not_enough(self):
+        """States the gap explicitly, so the reason for `turns` survives
+        someone deciding it is redundant with `messages`."""
+        data = await self._record()
+        stored = " ".join(m["content"] for m in data["messages"])
+        self.assertNotIn("voice assistant", stored)
+        self.assertNotIn("STRUCTURED CONTEXT", stored)
+
+    async def test_both_the_requested_and_served_model_are_recorded(self):
+        """A gateway can answer with a different model than the one asked
+        for. A replay compared against the wrong model is worse than none."""
+        data = await self._record()
+        turn = data["turns"][0]
+        self.assertEqual(turn["model_requested"],
+                         "azure_ai/gpt-5.4-mini-copilot")
+        self.assertEqual(turn["model_served"], "gpt-5.4-mini-copilot")
+
+    async def test_generation_settings_and_measurements_are_recorded(self):
+        """Params are written out rather than assumed: nothing sets a
+        temperature or max_tokens on this path, so the gateway's defaults
+        apply -- and "unset" is itself a fact a replay needs."""
+        data = await self._record()
+        turn = data["turns"][0]
+        self.assertIn("temperature", turn["params"])
+        self.assertIsNone(turn["params"]["temperature"])
+        for field in ("input_tokens", "output_tokens", "ttft_ms", "total_ms"):
+            with self.subTest(field=field):
+                self.assertIsNotNone(turn[field])
+
+    async def test_the_backend_is_identified_without_its_url_or_key(self):
+        """`routes/voice.py` warns twice that base_url and api_key must never
+        be logged, and a file on disk is a log by another name. The backend is
+        named by its opaque row id instead -- enough to know WHICH backend,
+        with nothing to reach it.
+
+        This drives the PRODUCTION builder, `voice._note_replay_turn`, rather
+        than this class's own fixture. An earlier version asserted against the
+        fixture and so could not fail: adding a `base_url` to the real record
+        left it green, which is the one place in this file a can't-fail test
+        is least affordable.
+        """
+        from routes import db_chats, voice as voice_routes
+        voice_routes._note_replay_turn(
+            chat_id="v1",
+            chat={"id": "v1", "ai_machine_id": "machine-7"},
+            sent_messages=[{"role": "user", "content": "hi"}],
+            assistant_text="hello",
+            model_requested="azure_ai/gpt-5.4-mini-copilot",
+            model_served="gpt-5.4-mini-copilot",
+            ttft_ms=900, total_ms=1633,
+            input_tokens=120, output_tokens=8, failed=False)
+        await db_chats.messages_append("v1", "user", "hi")
+        data = json.loads(cr.recording_path().read_text())
+
+        self.assertEqual(data["turns"][0]["ai_machine_id"], "machine-7")
+        blob = json.dumps(data)
+        for forbidden in ("base_url", "api_key", "https://", "http://",
+                          "Bearer ", "sk-"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, blob)
+
+    async def test_the_production_builder_records_every_replay_field(self):
+        """The same builder, checked for completeness rather than for what it
+        must not contain -- so a field quietly dropped from the real record
+        fails here instead of surfacing as an unreplayable benchmark."""
+        from routes import db_chats, voice as voice_routes
+        voice_routes._note_replay_turn(
+            chat_id="v1", chat={"id": "v1", "ai_machine_id": "machine-7"},
+            sent_messages=[{"role": "system", "content": "sys"},
+                           {"role": "user", "content": "hi"}],
+            assistant_text="hello",
+            model_requested="m-req", model_served="m-served",
+            ttft_ms=900, total_ms=1633,
+            input_tokens=120, output_tokens=8, failed=False)
+        await db_chats.messages_append("v1", "user", "hi")
+        turn = json.loads(cr.recording_path().read_text())["turns"][0]
+        for field in ("recorded_at", "model_requested", "model_served",
+                      "ai_machine_id", "messages_sent", "assistant_text",
+                      "params", "input_tokens", "output_tokens",
+                      "ttft_ms", "total_ms", "failed"):
+            with self.subTest(field=field):
+                self.assertIn(field, turn)
+        self.assertEqual([m["role"] for m in turn["messages_sent"]],
+                         ["system", "user"])
+        self.assertEqual(turn["model_served"], "m-served")
+
+    async def test_turns_accumulate_across_a_conversation(self):
+        from routes import db_chats
+        cr.note_turn("v1", self._turn())
+        cr.note_turn("v1", self._turn(assistant_text="Second."))
+        await db_chats.messages_append("v1", "user", "again")
+        data = json.loads(cr.recording_path().read_text())
+        self.assertEqual(len(data["turns"]), 2)
+        self.assertEqual(data["turns"][1]["assistant_text"], "Second.")
+
+    async def test_the_turn_buffer_is_bounded(self):
+        """A chat that is never torn down must not grow without limit in a
+        long-lived service."""
+        for i in range(cr.MAX_RECORDED_TURNS + 25):
+            cr.note_turn("v1", self._turn(assistant_text=str(i)))
+        self.assertEqual(len(cr._TURNS["v1"]), cr.MAX_RECORDED_TURNS)
+        self.assertEqual(cr._TURNS["v1"][-1]["assistant_text"],
+                         str(cr.MAX_RECORDED_TURNS + 24))
+
+    async def test_turns_are_released_when_the_chat_is_torn_down(self):
+        cr.note_turn("v1", self._turn())
+        self.assertIn("v1", cr._TURNS)
+        cr.forget_turns("v1")
+        self.assertNotIn("v1", cr._TURNS)
+
+    async def test_a_chat_with_no_turns_records_an_empty_list(self):
+        """Never a missing key: a consumer reading `turns` must not have to
+        tell "no turns" apart from "this recording predates the field"."""
+        from routes import db_chats
+        await db_chats.messages_append("v1", "user", "hi")
+        data = json.loads(cr.recording_path().read_text())
+        self.assertEqual(data["turns"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

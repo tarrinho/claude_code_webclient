@@ -86,9 +86,38 @@ Checked individually against §1.1, with the decisions of 2026-09-15 applied:
 | no empty ladder | **pass** | `vllm → luna → terra → sonnet` survives the cost ceiling |
 | every rung backed by a row | **pass** | all four rungs have §2.6 rows |
 | ceiling fits the budget | **pass, on a remaining lower bound** | 1,107.8s against the 1,500s ceiling, 392.2s of margin, with the baseline derived against the current reference and the gate rows re-measured at n=56 (§5.1, 2026-09-17). Against the gate rows still live in `delegation_capability` it is 1,281.4s and 218.6s; both pass. Still excludes §4.5's security re-run term, which cannot be priced until §12's gate-type item is decided |
-| ladder fits the budget | **FAIL — the cost cannot be computed at all** | the ladder is **four rungs** since terra was measured, and §2.7 publishes reach probabilities for rungs 0–2 only, so rung 3 cannot be priced. §2.7 refuses such a ladder rather than truncating it, because truncation would price the fourth rung at zero and make an unpriced rung indistinguishable from a free one. This is a **new** blocker, and it is the only one of the six `coding` now fails |
+| ladder fits the budget | **pass** | $0.657 against `BUDGET_USD` of $1.00, on the capped ladder below |
 
-This table was re-derived from the live `delegation_capability` on 2026-09-17 and previously reported three rungs, a 1,398.2s worst case, and a passing budget check — all three superseded by terra's arrival and by §5.1's baseline fix. The last row is the substantive change: adding a fourth rung did not make `coding` expensive, it made `coding` **unpriceable**, which §1.1 treats as a refusal to start rather than as a cost to weigh.
+This table was re-derived from the live `delegation_capability` on 2026-09-17. It previously reported three rungs, a 1,398.2s worst case and a passing budget check; then four rungs and a budget check that could not be computed at all; and now three rungs again. `coding` fails **one** of the six invariants, and it is not a data invariant — it is §12's policy hold.
+
+#### The attempt budget caps the ladder (2026-09-17)
+
+When terra was measured, `coding`'s generated ladder became **four rungs** and the type became *unpriceable*: §2.7 publishes reach probabilities for rungs 0–2 only, and it refuses an unpriced rung rather than truncating it, because truncation would price the fourth rung at zero and make an unpriced rung indistinguishable from a free one.
+
+**But a fourth rung can never run.** `MAX_ATTEMPTS` is 3, and §5.1's worst-case path already timed only the first three rungs. So the two halves of the same table disagreed about whether rung 3 existed — §5.1 ignored it, §2.7 refused to price it. **The ladder is now capped at `MAX_ATTEMPTS` where it is generated**, so both halves see the same rungs.
+
+**Which rungs are dropped is the substantive part.** Taking the first `MAX_ATTEMPTS` would drop the *top* rung, and because §3's walk produces non-decreasing accuracies the top rung is always the accuracy ceiling — so plain truncation removes the most capable model the type has. On `reasoning` that is the difference between a ladder ending at 100% and one ending at 50%. The rule therefore keeps **both ends** and drops from the middle:
+
+- **rung 0 stays** — it is §4.1's free start and the cost thesis. §5.1 already rejected dropping it once, under its option 2, for exactly that reason.
+- **the last rung stays** — it is the accuracy ceiling.
+- **middle rungs go redundant-first**: a rung that does not improve on its predecessor's accuracy buys an attempt and no capability. That is what a four-rung ladder is made of in practice — `coding` had luna and terra both at 100% for the same price, `reasoning` had luna and terra both at 50%.
+- if no redundant middle rung remains, the **lowest-accuracy** middle rung goes.
+
+Note the last two rules disagree on exactly the case that caused this, and the redundancy rule is the one that is right: with luna and terra tied above a 66% free rung, a lowest-accuracy rule drops whichever is listed first and keeps the other, producing a ladder that escalates from the free model to a *repeat of the rung it just failed*.
+
+What it produces on today's table:
+
+| task type | before | after | tree cost |
+|---|---|---|---|
+| `coding` | `vllm → luna → terra → sonnet` (unpriceable) | **`vllm → luna → sonnet`** | $0.657 — fits |
+| `reasoning` | `luna → terra → sonnet → opus` (unpriceable) | **`luna → sonnet → opus`** | $3.366 — over |
+| every other type | ≤ 3 rungs | unchanged | unchanged |
+
+`coding` regenerates to **exactly what §3 publishes** and what §2.7 calls "correct and survives unchanged" — so the generator agrees with the spec it implements again, rather than contradicting it.
+
+`reasoning` is now honestly over budget rather than unpriceable, and that is an improvement even though it still blocks: its ladder previously *appeared* to cost $0.724 only because opus, the one model measured at 100%, sat at an unreachable rung 3. The cost is real — every cheap model measures 0.5 on reasoning (luna, terra, sol and mini all 0.5; sonnet 0.834; opus 1.0), so there is no affordable rung that can reason.
+
+**The rung-count refusal stays in §2.7**, no longer reachable by a ladder merely being long. It now guards the relationship that replaced that failure: `MAX_ATTEMPTS` attempts need `MAX_ATTEMPTS` published reach probabilities, and raising the attempt budget without publishing one must refuse rather than price the extra attempt at zero.
 
 **But a coding leaf is not only its generation ladder.** Stages 3–5 run on the `reviewer-gate` task type (§3, §4.3), and `reviewer-gate` is **not** operational: both its rows lack measured accuracy, and §2.7 puts `claude-sonnet-5` at its rung 1 at **$1.868** against a `BUDGET_USD` of 1.00, so its ladder does not fit. Its rung 0 (luna, $0.068) does fit.
 

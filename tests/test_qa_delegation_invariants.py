@@ -458,9 +458,15 @@ class WorstCasePathTests(unittest.TestCase):
                             for p in problems), problems)
 
     def test_generation_is_truncated_to_max_attempts(self):
-        """A four-rung ladder still runs at most MAX_ATTEMPTS generations, so
-        only three rung multipliers are summed: 180 x (3 x 1.0 + 3 x 1.11) =
-        1,139.4s, not the 1,319.4s a fourth rung would add."""
+        """At most MAX_ATTEMPTS generations run, so at most three rung
+        multipliers are summed: 180 x (3 x 1.0 + 3 x 1.11) = 1,139.4s, not the
+        1,319.4s a fourth rung would add.
+
+        Since 2026-09-17 the cap is applied by `ladder()` itself rather than
+        by `_worst_case` slicing a longer list, so the ladder IS three rungs
+        here. The worst-case figure is unchanged, which is the point: the two
+        halves of the module now agree about which rungs exist instead of one
+        ignoring a rung the other refused to price."""
         rows = [
             _row("vllm/a", "widget", 0.50, 20, 0.0, 10.0),
             _row("vllm/b", "widget", 0.60, 20, 0.0, 10.0),
@@ -468,7 +474,7 @@ class WorstCasePathTests(unittest.TestCase):
             _row("vllm/d", "widget", 0.80, 20, 0.0, 10.0),
         ]
         table = _table(rows + GATE_SINGLE)
-        self.assertEqual(len(table.ladder("widget")), 4)
+        self.assertEqual(len(table.ladder("widget")), td.MAX_ATTEMPTS)
         self.assertAlmostEqual(table.worst_case_path_s("widget"), 1139.4,
                                places=3)
 
@@ -562,10 +568,34 @@ class TreeCostTests(unittest.TestCase):
         table = _table(CODING_MEASURED + GATE_ROWS)  # nothing operational
         self.assertAlmostEqual(table.tree_cost_usd("coding"), 0.6566, places=3)
 
-    def test_a_fourth_rung_is_not_priced_as_free(self):
-        """2.7 publishes reach probabilities for three rungs. A deeper ladder
-        is refused rather than truncated, because a rung nobody can price is
-        indistinguishable from one that costs nothing."""
+    def test_an_unpriceable_rung_is_never_priced_as_free(self):
+        """2.7 publishes reach probabilities for `MAX_ATTEMPTS` rungs, and a
+        rung nobody can price must never be indistinguishable from one that
+        costs nothing.
+
+        `ladder()` now caps itself at MAX_ATTEMPTS, so this can no longer be
+        reached by a ladder simply being long -- which is why the assertion is
+        on `rung_cost_usd` directly. The guard protects the relationship that
+        replaced the old failure: MAX_ATTEMPTS attempts need MAX_ATTEMPTS
+        published probabilities, and raising the budget without publishing one
+        must refuse."""
+        with self.assertRaises(ValueError):
+            td.rung_cost_usd(len(td.REACH_PROBABILITY), 1.0)
+        with self.assertRaises(ValueError):
+            td.rung_cost_usd(-1, 1.0)
+
+    def test_the_attempt_budget_never_outruns_the_published_probabilities(self):
+        """The invariant the truncation rests on. If MAX_ATTEMPTS were ever
+        raised past the number of published reach probabilities, every ladder
+        would become unpriceable at once -- so this asserts the relationship
+        rather than either number."""
+        self.assertLessEqual(td.MAX_ATTEMPTS, len(td.REACH_PROBABILITY))
+
+    def test_a_capped_ladder_is_priced_over_the_rungs_that_can_run(self):
+        """Truncation must not quietly make a ladder cheaper by hiding rungs.
+        The four-rung table below prices exactly as the three rungs that
+        survive: a free rung 0, and two more that are also free here, so the
+        total is 0 -- and, crucially, computable rather than refused."""
         rows = [
             _row("vllm/a", "widget", 0.50, 20, 0.0, 10.0),
             _row("vllm/b", "widget", 0.60, 20, 0.0, 10.0),
@@ -573,9 +603,127 @@ class TreeCostTests(unittest.TestCase):
             _row("vllm/d", "widget", 0.80, 20, 0.0, 10.0),
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
-        self.assertIsNone(table.tree_cost_usd("widget"))
-        self.assertTrue(any("widget" in p and "reach probabilit" in p
-                            for p in table.validate()), table.validate())
+        self.assertEqual(len(table.ladder("widget")), td.MAX_ATTEMPTS)
+        self.assertEqual(table.tree_cost_usd("widget"), 0.0)
+        self.assertFalse([p for p in table.validate()
+                          if "reach probabilit" in p], table.validate())
+
+
+class LadderTruncationTests(unittest.TestCase):
+    """Spec 5's attempt budget, applied to spec 3's generated ladder.
+
+    A ladder longer than MAX_ATTEMPTS contains rungs that can never run. WHICH
+    rungs are dropped is the whole question: plain truncation would remove the
+    top rung, and because spec 3's walk produces non-decreasing accuracies the
+    top rung is always the accuracy ceiling.
+    """
+
+    def test_the_top_rung_survives_because_it_is_the_accuracy_ceiling(self):
+        """The failure plain `[:MAX_ATTEMPTS]` would cause. Here the only
+        model that reaches 100% is the most expensive one, so truncating from
+        the end would leave a ladder that tops out at 60%."""
+        rows = [
+            _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.55, 20, 0.0285, 10.0),
+            _row("claude-sonnet-5", "widget", 0.60, 20, 1.5709, 10.0),
+            _row("claude-opus-5", "widget", 1.00, 20, 3.6082, 10.0),
+        ]
+        ladder = _table(rows + GATE_SINGLE).ladder("widget")
+        self.assertEqual(len(ladder), td.MAX_ATTEMPTS)
+        self.assertEqual(ladder[-1], "claude-opus-5")
+
+    def test_rung_zero_survives_because_it_is_the_cost_thesis(self):
+        """4.1's free start. 5.1 rejected dropping the free rung once already,
+        under its option 2, for exactly this reason -- it fixes a number by
+        abandoning the thesis the design is built on."""
+        rows = [
+            _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.55, 20, 0.0285, 10.0),
+            _row("claude-sonnet-5", "widget", 0.60, 20, 1.5709, 10.0),
+            _row("claude-opus-5", "widget", 1.00, 20, 3.6082, 10.0),
+        ]
+        ladder = _table(rows + GATE_SINGLE).ladder("widget")
+        self.assertEqual(ladder[0], "vllm/free")
+
+    def test_a_redundant_rung_is_dropped_before_an_improving_one(self):
+        """What a four-rung ladder is actually made of. `dup` matches its
+        predecessor's accuracy at the same price, so it buys an attempt and no
+        capability; `better` improves. The redundant one goes even though it
+        is cheaper, because cheapness is not what an ESCALATION rung is for."""
+        rows = [
+            _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
+            _row("azure_ai/dup", "widget", 0.50, 20, 0.0285, 10.0),
+            _row("azure_ai/better", "widget", 0.80, 20, 0.0286, 10.0),
+            _row("claude-opus-5", "widget", 1.00, 20, 3.6082, 10.0),
+        ]
+        ladder = _table(rows + GATE_SINGLE).ladder("widget")
+        self.assertEqual(
+            ladder, ["vllm/free", "azure_ai/better", "claude-opus-5"])
+
+    def test_with_no_redundant_rung_the_lowest_accuracy_middle_goes(self):
+        """Strictly increasing accuracies, so no rung is redundant. The one
+        contributing least between the two ends is the lowest-accuracy middle
+        rung, and that is the one dropped."""
+        rows = [
+            _row("vllm/a", "widget", 0.50, 20, 0.0, 10.0),
+            _row("vllm/b", "widget", 0.60, 20, 0.0, 10.0),
+            _row("vllm/c", "widget", 0.70, 20, 0.0, 10.0),
+            _row("vllm/d", "widget", 0.80, 20, 0.0, 10.0),
+        ]
+        ladder = _table(rows + GATE_SINGLE).ladder("widget")
+        self.assertEqual(ladder, ["vllm/a", "vllm/c", "vllm/d"])
+
+    def test_redundancy_beats_low_accuracy_when_the_two_rules_disagree(self):
+        """The case that separates "drop the redundant rung" from "drop the
+        lowest-accuracy rung", which agree on most tables and not on this one.
+
+        Both middle rungs measure 0.90. `first` IMPROVES on rung 0 (0.50), so
+        it is the rung that earns its attempt; `dup` merely repeats `first`.
+        A lowest-accuracy rule sees a tie at 0.90 and drops whichever comes
+        first, removing the improving rung and keeping the redundant one. This
+        is the shape `coding` actually had -- luna and terra tied at 100% above
+        a 66% free rung -- so getting it backwards produces a ladder that
+        escalates from the free model to a repeat of the rung it just failed.
+        """
+        rows = [
+            _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
+            _row("azure_ai/a-first", "widget", 0.90, 20, 0.0285, 10.0),
+            _row("azure_ai/b-dup", "widget", 0.90, 20, 0.0286, 10.0),
+            _row("claude-opus-5", "widget", 1.00, 20, 3.6082, 10.0),
+        ]
+        ladder = _table(rows + GATE_SINGLE).ladder("widget")
+        self.assertEqual(
+            ladder, ["vllm/free", "azure_ai/a-first", "claude-opus-5"])
+        self.assertNotIn("azure_ai/b-dup", ladder)
+
+    def test_a_ladder_within_the_budget_is_untouched(self):
+        """The rule must not fire on ladders that already fit, or it would
+        start editing spec 3's published shapes. Equal accuracy is KEPT by
+        spec 3 ("a `<=` here would drop every tied rung"), and that stays true
+        for a three-rung ladder even though a tie is what truncation targets
+        first when there are four."""
+        rows = [
+            _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 1.00, 20, 0.0285, 10.0),
+            _row("claude-sonnet-5", "widget", 1.00, 20, 1.5709, 10.0),
+        ]
+        self.assertEqual(
+            _table(rows + GATE_SINGLE).ladder("widget"),
+            ["vllm/free", "azure_ai/gpt-5.6-luna", "claude-sonnet-5"])
+
+    def test_the_real_coding_rows_regenerate_the_published_ladder(self):
+        """The end-to-end case this change exists for. With terra measured,
+        `coding` generated four rungs and became unpriceable; capped, it is
+        `vllm -> luna -> sonnet` again -- exactly what spec 3 publishes and
+        what 2.7 calls "correct and survives unchanged"."""
+        rows = CODING_MEASURED + [
+            _row("azure_ai/gpt-5.6-terra", "coding", 1.00, 18, 0.0285, 7.2,
+                 922_000),
+        ]
+        self.assertEqual(
+            _table(rows + GATE_SINGLE).ladder("coding"),
+            ["vllm/Qwen3.6-35B-A3B-NVFP4", "azure_ai/gpt-5.6-luna",
+             "claude-sonnet-5"])
 
 
 class AllSixTogetherTests(unittest.TestCase):

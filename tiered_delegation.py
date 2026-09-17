@@ -164,6 +164,66 @@ CEILING_ENFORCEMENT_DEFAULT: Final[bool] = False
 #: separate security-gate type and the table keeps nine rows.
 GATE_TASK_TYPE: Final[str] = "reviewer-gate"
 
+
+def _truncate_to_attempt_budget(
+    rungs: list[tuple[str, float]]
+) -> list[tuple[str, float]]:
+    """Cut a generated ladder down to `MAX_ATTEMPTS` rungs (spec 5).
+
+    A ladder longer than the attempt budget contains rungs that **can never
+    run**: generation stops after `MAX_ATTEMPTS` attempts, and `_worst_case`
+    already times only `ladder(...)[:MAX_ATTEMPTS]`. Leaving them in made the
+    two halves of this module disagree about whether a fourth rung exists --
+    `_worst_case` ignored it, `_tree_cost` refused to price it, and `coding`
+    became unpriceable the day terra was measured.
+
+    **Which rungs go matters more than the fact of cutting.** Taking the first
+    `MAX_ATTEMPTS` would drop the TOP rung, and since spec 3's walk produces
+    non-decreasing accuracies the top rung is always the accuracy ceiling --
+    so plain truncation removes the most capable model the type has. On
+    `reasoning` that is the difference between a ladder ending at 100% and one
+    ending at 50%.
+
+    So the rule keeps **both ends** and drops from the middle:
+
+    * rung 0 stays -- it is the cost thesis (4.1's free start), and 5.1 already
+      rejected dropping it once, under option 2, for exactly that reason;
+    * the last rung stays -- it is the accuracy ceiling;
+    * middle rungs are dropped **redundant-first**: a rung that does not
+      improve on its predecessor's accuracy buys an attempt and no capability,
+      which is what a four-rung ladder is made of in practice. `coding` had
+      luna and terra both at 100% for the same price; `reasoning` had luna and
+      terra both at 50%.
+    * if no redundant middle rung remains, the lowest-accuracy middle rung
+      goes, since it is the one contributing least between the two ends.
+
+    On today's table that regenerates `coding` as `vllm -> luna -> sonnet`,
+    which is exactly what spec 3 publishes and what 2.7 calls "correct and
+    survives unchanged" -- so the generator agrees with the spec it implements
+    again, rather than contradicting it.
+
+    Degenerate budget: at `MAX_ATTEMPTS <= 1` there is no escalation at all,
+    and the free-start argument depends on being able to escalate away from
+    it, so the single attempt goes to the accuracy ceiling rather than to the
+    cheapest model.
+    """
+    if len(rungs) <= MAX_ATTEMPTS:
+        return rungs
+    if MAX_ATTEMPTS <= 0:
+        return []
+    if MAX_ATTEMPTS == 1:
+        return [rungs[-1]]
+
+    kept = list(rungs)
+    while len(kept) > MAX_ATTEMPTS:
+        middle = range(1, len(kept) - 1)
+        victim = next(
+            (i for i in middle if kept[i][1] <= kept[i - 1][1]), None)
+        if victim is None:
+            victim = min(middle, key=lambda i: (kept[i][1], i))
+        kept.pop(victim)
+    return kept
+
 # ── Tree cost (spec 2.7) ─────────────────────────────────────────────────────
 
 #: 2.7, measured 2026-09-15 (`bench/pipeline_ab.py`, 6 leaves).
@@ -320,7 +380,8 @@ class CapabilityTable:
     # ── Generation (spec 3) ─────────────────────────────────────────────────
 
     def ladder(self, task_type: str, expected_tokens: int | None = None) -> list[str]:
-        """The three steps of spec 3, in order.
+        """The three steps of spec 3, then 5's attempt budget applied to the
+        result -- see `_truncate_to_attempt_budget`.
 
         1. take the ladder-eligible models for the task type;
         2. sort cheapest-first on effective cost per task;
@@ -345,14 +406,14 @@ class CapabilityTable:
         candidates.sort(
             key=lambda r: (r.cost_per_1m_tokens * size / 1_000_000, r.model))
 
-        rungs: list[str] = []
+        rungs: list[tuple[str, float]] = []
         current: float | None = None
         for row in candidates:
             if current is not None and row.accuracy < current:
                 continue
-            rungs.append(row.model)
+            rungs.append((row.model, row.accuracy))
             current = row.accuracy
-        return rungs
+        return [model for model, _ in _truncate_to_attempt_budget(rungs)]
 
     # ── Latency (spec 5.1) ──────────────────────────────────────────────────
 
@@ -803,8 +864,16 @@ class CapabilityTable:
             try:
                 rung_cost = rung_cost_usd(rung, rate)
             except ValueError as exc:
+                # Since 2026-09-17 `ladder()` caps itself at MAX_ATTEMPTS, so
+                # this is no longer reachable by a ladder merely being long.
+                # It stays as the guard on the relationship that replaced
+                # that failure: MAX_ATTEMPTS attempts need MAX_ATTEMPTS
+                # published reach probabilities, and raising the attempt
+                # budget without publishing one must refuse rather than
+                # price the extra attempt at zero.
                 problems.append(
-                    f"{prefix} -- its ladder has {len(rungs)} rungs and {exc}"
+                    f"{prefix} -- its ladder has {len(rungs)} rungs against "
+                    f"MAX_ATTEMPTS={MAX_ATTEMPTS}, and {exc}"
                 )
                 break
             total += rung_cost

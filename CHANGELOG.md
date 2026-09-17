@@ -52,6 +52,25 @@ churn.
   the database *and* affirming what it is — never omission or a default. The
   flag is inert against any other path.
 
+- **Escalation ladders are capped at the attempt budget, and `coding` is
+  priceable again.** Measuring a fourth model gave `coding` a four-rung ladder,
+  and spec 2.7 publishes reach probabilities for three rungs only — so the type
+  stopped having a computable cost at all and the Delegation page showed it as
+  a blocker. A fourth rung can never run in any case: `MAX_ATTEMPTS` is 3, and
+  the worst-case latency path already counted only the first three rungs, so
+  the two halves of the same table disagreed about whether rung 3 existed.
+
+  Ladders are now capped where they are generated, keeping **both ends** and
+  dropping from the middle: rung 0 stays because it is the free start the whole
+  cost argument rests on, the last rung stays because it is always the most
+  accurate model available, and middle rungs go redundant-first — a rung that
+  does not improve on the one below it buys an attempt and no capability.
+  `coding` regenerates as `vllm → luna → sonnet`, which is exactly the ladder
+  the spec publishes, at $0.657 against a $1.00 budget. `reasoning` becomes
+  `luna → sonnet → opus` and is now *honestly* over budget at $3.366, where it
+  previously looked like $0.724 only because the one model measured at 100% sat
+  at an unreachable rung.
+
 - **A knob for spec 5.1's combined latency ceiling, off by default.**
   Settings › Delegation now carries an enforcement toggle beside the status
   facts. With it off — the default — a task type whose worst-case path exceeds

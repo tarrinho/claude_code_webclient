@@ -248,26 +248,26 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 66% | 44 | 0.0000 | 26.8 | 229,376 |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 100% | 10 | 0.0000 | TBD | 229,376 |
 | `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0285 | 12.8 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | long-context | TBD | — | 0.0285 | TBD | 922,000 |
-| `azure_ai/gpt-5.6-luna` | comprehension | TBD | — | 0.0285 | TBD | 922,000 |
-| `azure_ai/gpt-5.6-luna` | reasoning | TBD | TBD | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0285 | 6.3 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0285 | 9.2 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0285 | 16.5 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | voice | TBD | — | 0.0285 | TBD | 922,000 |
 | `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | 1,050,000 |
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
-| `azure_ai/gpt-5.6-luna` | multi-turn | TBD | — | 0.0285 | TBD | 922,000 |
-| `azure_ai/gpt-5.6-luna` | planning | TBD | — | 0.0285 | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0285 | 13.5 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | planning | 75% | 12 | 0.0285 | 40.7 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reviewer-gate | TBD | 9* | 0.0285 | 11.1 | 922,000 |
 | `claude-sonnet-5` | coding | 100% | 24 | 1.5709 | 15.5 | 1,000,000 |
-| `claude-sonnet-5` | long-context | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | long-context | 66.7% | 12 | 1.5709 | 4.2 | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 2 | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | reasoning | 75% | 2 | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | voice | TBD | — | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | multi-turn | TBD | — | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | planning | TBD | — | 1.5709 | TBD | 1,000,000 |
+| `claude-sonnet-5` | multi-turn | 100% | 12 | 1.5709 | 7.8 | 1,000,000 |
+| `claude-sonnet-5` | planning | 83.3% | 12 | 1.5709 | 17.5 | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
 | `claude-sonnet-5` | reviewer-gate | TBD | 20* | 1.5709 | 3.675 | 1,000,000 |
 | `claude-opus-5` | comprehension | 50% | 2 | 3.6082 | TBD | 1,000,000 |
-| `claude-opus-5` | reasoning | TBD | TBD | 3.6082 | TBD | 1,000,000 |
+| `claude-opus-5` | reasoning | 100% | 6 | 3.6082 | 10.2 | 1,000,000 |
 
 **`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The three gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available.
 
@@ -282,6 +282,18 @@ Holding each model against each task type, with columns: measured accuracy, samp
 **The free model's output cap is 32,768 — a quarter of every other model's.** Its input window is ample, so a naive read of `max_context` alone says it fits anything; the constraint is on what it can *write*. That is the same shape as the failure already recorded for this deployment, where a 32k-window gateway model raised `ContextWindowExceededError` on an obviously small prompt because the requested output budget consumed the whole window. A coding task whose patch exceeds ~32k tokens cannot complete at rung 0 no matter how accurate the model is, and it will fail in a way that reads like a context error rather than a capacity one. The column stores the input window because that is what §3's tooltip is for; the output cap is recorded here because it is the figure that will actually stop a leaf.
 
 **An `n` marked with `*` is a latency sample, not an accuracy sample.** Five rows carry measured `median_latency_s` from `bench/pipeline_ab.py` while their `accuracy` is still TBD — four from 2026-09-15, plus `claude-sonnet-5` on `reviewer-gate` measured 2026-09-16 at **3.675s over n=20**, pooled from three separate passes (medians 3.705, 3.500, 4.190). That row was the one §5.1's ceiling derivation was blocked on. It is deliberately pooled across passes rather than taken from one: §5.1's own history has the same quantity reading 22.4, 33.2, 36.5 and 26.8 across four passes in a single day, so a single pass cannot establish one. A fourth pass of the same shape failed entirely — 14 calls, 14 errors — because the gate model was named `gpt-5.6-terra` rather than `azure_ai/gpt-5.6-terra`, and a bare id returns a 429 that reads like capacity (§9.3); its results are discarded, not averaged in. The `n` column means *accuracy* sample size everywhere else, and §2.6's blocking constraint on Opus depends on that reading, so the two must not be confused: **no row in this table yet carries a measured accuracy sample size for coding.** A row needs both before its task type can go operational.
+
+**`multi-turn`'s jump to 91.7%/100% is a harness fix, not a capability change, and needs saying so nobody re-derives from an earlier run and gets confused.** Measured tonight (`bin/wc-bench.py --repeats 3`), both `azure_ai/gpt-5.6-luna` and `claude-sonnet-5` score far above what four models — including these two — scored earlier: the `multi-turn-recall` task was unwinnable until commit `7414482` fixed the harness, which had verified only the last turn of the exchange, leaving `join_fields` undefined so the round trip could never complete. All four models previously measured on it scored 0.0. The figures recorded above (`luna` 91.7%/n=12, `sonnet` 100%/n=12) are from the re-measured, fixed harness — the `multi-turn-recall` task itself now reads 1.0 for both models. Anyone diffing against a run predating `7414482` will see `multi-turn` jump and should read this paragraph before concluding either model improved.
+
+**`reviewer-gate`'s accuracy cell stays `TBD` — pending §12's open gate-type decision, not for lack of a measurement.** Measured tonight with `bench/gate_accuracy.py`, the reviewer gate and the security gate disagree about which of the two candidate models is better, and both climb the same shared `reviewer-gate` ladder (§3):
+
+| | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` |
+|---|---|---|
+| reviewer-gate accuracy | 96.4% (12 of 13 defects caught, 0 missed) | 78.6% (3 real defects waved through) |
+| security-gate accuracy | 85.7% (2 of 3 vulnerabilities caught) | 92.9% (3 of 3 caught) |
+| LRU `__repr__` fixture (labelled safe) | **rejected** — reproduces §4.5's documented miscalibration | **passed** correctly |
+
+Luna is the better reviewer; Sonnet is the better security check. §3 mandates one shared `reviewer-gate` row set for all three gates, so a single `accuracy` figure has to stand for both, and whichever model is chosen leaves one gate running on its worse option. That is §12's open gate-type question to resolve, not a fact this table can average away — so both `reviewer-gate` rows (luna, sonnet) keep `accuracy = TBD` here **deliberately**: TBD because the choice is undecided, not because nobody measured it.
 
 **Provenance of the `cost_per_1M_tokens` column, which comes from three different places.** Anthropic figures (sonnet 1.5709, opus 3.6082) are blended from `usage_events` rows carrying `cost_basis='list'`. Azure figures (luna 0.0285, mini 0.5261) come from **gateway billing**, which is a separate source from this database and the reason they never reconciled with it (§2.5). `0.0000` for the self-hosted model is a property of the deployment, not a measurement. Every one of them is a **rate**, independent of request size — which is the whole point of the unit change, since the previous per-request column silently encoded how large each model's historical jobs happened to be (§2.7).
 

@@ -165,16 +165,56 @@ class DeadlineTests(unittest.TestCase):
         self.assertNotEqual(result, float(min(published)))
 
     def test_a_calibrated_type_with_no_reference_keeps_its_published_baseline(self):
-        """A `coding` table whose only row is unmeasured has no 1.0 reference,
-        so nothing can be derived. The fallback is the PUBLISHED baseline,
-        not a derived figure and not the unknown-type maximum: the type is
-        calibrated, it just has no data today."""
+        """A table whose only row for the type is unmeasured has no 1.0
+        reference, so nothing can be derived. The fallback is that type's own
+        PUBLISHED baseline -- not a derived figure, and not the unknown-type
+        maximum: the type is calibrated, it just has no data today.
+
+        The type under test is `long-context` and that is the whole point of
+        the test. An earlier version used `coding`, whose published 90.0 IS the
+        unknown-type maximum, so the correct implementation and one that fell
+        straight through to `unknown_type_baseline_s()` returned the same
+        number and the test could not fail. `long-context` publishes 45.0
+        against a maximum of 90.0, so the two answers differ.
+        """
+        published = TIER0_BASELINE_CALIBRATION["long-context"][0]
         table = CapabilityTable([
-            CapabilityRow("ghost", "coding", None, None, 0.10, 0.001, 1_000_000),
+            CapabilityRow("ghost", "long-context", None, None, 0.10, 0.001,
+                          1_000_000),
         ])
+        # Guards the test itself: if these two ever coincide, this has gone
+        # back to being the assertion that could not fail.
+        self.assertNotEqual(published, table.unknown_type_baseline_s())
         self.assertEqual(
-            pipeline.effective_deadline(table, "ghost", "coding", score=3),
-            TIER0_BASELINE_CALIBRATION["coding"][0])
+            pipeline.effective_deadline(table, "ghost", "long-context", score=3),
+            published)
+
+    def test_the_unknown_type_baseline_is_not_moved_by_a_slow_calibrated_fleet(self):
+        """The direction that went untested when the unknown-type baseline
+        briefly consulted the table: a derived baseline is `ratio x reference`
+        and nothing bounds `reference`, so one slow calibrated type could set
+        the deadline for every type nobody has measured.
+
+        `coding`'s ratio is 7.03125, so a sole row at 600s derives a baseline
+        of 4,218.75s. The unknown type must still get the published 90.0.
+        """
+        for latency in (12.8, 60.0, 600.0):
+            with self.subTest(coding_latency=latency):
+                table = CapabilityTable([
+                    CapabilityRow("m", "coding", 1.0, 12, 0.0, latency,
+                                  1_000_000),
+                    CapabilityRow("w", "widget", 1.0, 12, 0.0, 10.0, 1_000_000),
+                ])
+                self.assertEqual(table.unknown_type_baseline_s(), 90.0)
+                self.assertEqual(
+                    pipeline.effective_deadline(table, "w", "widget", score=3),
+                    90.0)
+        # The clamp must not reach the calibrated type itself: `coding` still
+        # derives, which is what the whole 2026-09-17 change is for.
+        slow = CapabilityTable(
+            [CapabilityRow("m", "coding", 1.0, 12, 0.0, 600.0, 1_000_000)])
+        self.assertEqual(slow.baseline_deadline_s("coding"),
+                         CODING_RATIO * 600.0)
 
 
 class GateDeadlineTests(unittest.TestCase):

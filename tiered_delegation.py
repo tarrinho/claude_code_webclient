@@ -349,24 +349,32 @@ class CapabilityTable:
 
     def unknown_type_baseline_s(self) -> float:
         """5.1: "An unknown type must receive the **longest** deadline, never
-        the shortest."
+        the shortest." The longest of the PUBLISHED baselines, and deliberately
+        nothing else -- this method ignores the table it hangs off.
 
-        The maximum is taken over the DERIVED baselines as well as the
-        published ones, for the same reason the published map was a maximum
-        rather than a literal: a type whose reference has moved must not leave
-        this pointing at a stale figure. Including the published values in the
-        same maximum keeps it from ever falling below what 5.1 prints, so a
-        fleet that gets faster can shorten a measured type's deadline (which is
-        the point) without shortening the deadline of a type nobody has
-        measured (which would turn "we have not measured this" into a timeout).
+        It briefly did consult the table, taking the maximum over the derived
+        baselines as well as the published ones, on the reasoning that a type
+        whose reference had moved should not leave this pointing at a stale
+        figure. That is unbounded above, and the failure is severe. A derived
+        baseline is `ratio x reference`, nothing bounds `reference`, and the
+        maximum ran over every calibrated type -- so one slow fleet on ONE
+        calibrated type sets the deadline for every type nobody has measured:
+        `coding`'s sole row at 600s produced an unknown-type baseline of
+        4,218.75s, an inflation caused entirely by a task type the unknown type
+        has nothing to do with.
+
+        The published maximum has neither problem. It is a fixed, documented
+        floor that cannot be moved by a measurement, which is what "we have not
+        measured this must not become a timeout" needs -- a floor, not a figure
+        that tracks someone else's fleet. This is also the semantics the fixed
+        map had before the 2026-09-17 derivation change, so nothing about the
+        unknown-type rule moved with it.
+
+        The derived baseline still applies to CALIBRATED types; see
+        `baseline_deadline_s`. Only the unknown-type fallback is clamped.
         """
-        candidates = [published for published, _ in
-                      TIER0_BASELINE_CALIBRATION.values()]
-        for task_type in TIER0_BASELINE_CALIBRATION:
-            derived = self._derived_baseline_s(task_type)
-            if derived is not None:
-                candidates.append(derived)
-        return max(candidates)
+        return max(published for published, _ in
+                   TIER0_BASELINE_CALIBRATION.values())
 
     def baseline_deadline_s(self, task_type: str) -> float:
         """5.1's per-type baseline, derived against this table's own reference.

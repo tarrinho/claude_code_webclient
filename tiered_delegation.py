@@ -903,13 +903,22 @@ class CapabilityTable:
             else:
                 multiplier_sum += latency / reference
 
-        # One term per GATE TASK TYPE, each weighted by how many of stages
-        # 3-5's calls it backs (2026-09-17's split). Before the split this was
+        # A gate type does not itself run gates, for the same reason 12's
+        # coverage rule exempts them: stages 3-5 ARE the gates. Adding the
+        # gate terms to a gate type's own path charged it for calling itself,
+        # and inflated both gate types several times over -- `reviewer-gate`
+        # read 1,493s against a real 240s, and `security-gate` 1,644s against
+        # 413s, which is the only reason it showed a ceiling warning at all.
+        # A gate leaf is its own one or two model calls and nothing else.
+        #
+        # Otherwise: one term per GATE TASK TYPE, each weighted by how many of
+        # stages 3-5's calls it backs (2026-09-17's split). Before the split this was
         # one term multiplied by three, which silently assumed every gate runs
         # on the same model -- true while there was one gate type, and wrong
         # the moment the reviewer and security gates got their own rows and
         # their own, different, rung 0.
-        for gate_type, calls in sorted(GATE_CALLS.items()):
+        for gate_type, calls in (
+                () if is_gate_task_type(task_type) else sorted(GATE_CALLS.items())):
             entry_latency, entry_reason = self._gate_latency_s(
                 task_type, gate_type)
             if entry_reason is not None:

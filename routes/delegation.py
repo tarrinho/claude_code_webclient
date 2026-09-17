@@ -281,9 +281,19 @@ def _blockers_by_task_type(
     stopping you" as different sentences, or turning the knob off would read
     as the breach having gone away.
 
-    An already-operational task type, or one blocked neither way, reports
-    `{"policy": None, "data": [], "warnings": []}` -- never an invented
-    problem.
+    A task type blocked neither way reports `{"policy": None, "data": [],
+    "warnings": []}` -- never an invented problem.
+
+    **An already-operational type is validated too, and that is deliberate.**
+    It used to short-circuit to an empty result on the reasoning that a type
+    which cleared the flip has nothing to report. That is only true while
+    nothing changes underneath it, and things do: turning a gate type OFF is
+    not validated (spec 12's coverage rule applies to flipping ON), so an
+    operational type can become invalid without any action against it. The
+    short-circuit meant the page showed such a type as clean and the only
+    symptom was a refused restart later, with nothing connecting the two
+    events. A live type that has gone invalid is the single most urgent thing
+    this endpoint can say.
     """
     blockers: dict[str, dict[str, Any]] = {}
     task_types = sorted({row.task_type for row in capability_rows})
@@ -295,10 +305,6 @@ def _blockers_by_task_type(
         # in `data` below, never whether it is measured.
         breach = candidate.latency_ceiling_breaches().get(task_type)
         warnings = [breach] if breach is not None and not enforce_latency_ceiling else []
-        if task_type in operational_set:
-            blockers[task_type] = {
-                "policy": None, "data": [], "warnings": warnings}
-            continue
         problems = candidate.validate(
             known_models=known_models,
             enforce_latency_ceiling=enforce_latency_ceiling)
@@ -306,7 +312,11 @@ def _blockers_by_task_type(
         # set, not only the one being asked about here -- filter down to the
         # problems that actually name this task type.
         data_problems = [p for p in problems if p.startswith(f"{task_type}:")]
-        policy = _OPERATIONAL_FLIP_BLOCKED.get(task_type)
+        # A policy hold is about FLIPPING, so it does not apply to a type
+        # that is already operational -- reporting one there would tell an
+        # operator to undo something the hold never stopped.
+        policy = (None if task_type in operational_set
+                  else _OPERATIONAL_FLIP_BLOCKED.get(task_type))
         blockers[task_type] = {
             # Prefixed with the task type, like every string `validate()`
             # produces. The stored reason is deliberately unprefixed --

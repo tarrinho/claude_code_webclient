@@ -15,4 +15,4 @@ pytest-cov>=5.0,<7
 quickjs>=1.19.4,<2
 # Build dependency for the reviewed comparison PDF artifact.
 Markdown>=3.8.1,<4
-WeasyPrint>=68,<69
+WeasyPrint>=70.0,<71

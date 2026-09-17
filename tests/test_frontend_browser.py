@@ -3942,5 +3942,102 @@ class StatisticsPanelBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class DelegationConfigLayoutBrowserTests(_BrowserFixture):
+    """Settings -> Delegation, the read-only config block (spec 9.1/5/2.7/10).
+
+    Regression test for 808536f. The block is read from constants
+    (`_config_overview` in routes/delegation.py), not from any table, so it
+    renders the same against an empty database and needs no seeding.
+
+    Before that fix, `.delegation-config-section dl` used
+    `grid-template-columns: minmax(0,1fr) auto`. `minmax(0, ...)` overrides
+    the grid item's automatic min-content floor, so once the auto-sized value
+    column (full sentences like "not implemented in this release -- ...")
+    claimed enough width, the label column could be laid out narrower than a
+    single word of the label. Past that point the label's own glyphs render
+    outside their own box (overflow is visible by default) and land on top of
+    the value column's text one column-gap away -- the "unreadable runs" the
+    fix's commit message describes.
+
+    A same-row check on the *elements'* own boxes does not catch this: under
+    the broken CSS `dt.getBoundingClientRect()` collapses to a literal
+    zero-width rectangle (`left == right`), so comparing dt's and dd's own
+    boxes finds two non-overlapping rectangles even on the broken layout --
+    one of them has no area -- and a test written that way would pass against
+    the bug it means to catch (this was tried first, against a manual revert
+    of the CSS below, and it did not fail). What actually collides is the
+    *rendered text*, which only a `Range` over each element's contents
+    exposes via `getClientRects()`. That is what this test measures.
+
+    Confirmed by manually reverting `.delegation-config-section dl/dt/dd` in
+    web/assets/styles.css to the pre-fix rule and running this test: it
+    failed, reporting real collisions such as "max attempts per gate"'s
+    wrapped label glyphs sharing screen space with "not modeled as its own
+    constant..."'s value glyphs. Restored before committing.
+    """
+
+    def _open_delegation(self):
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="delegation"]')
+        self.page.wait_for_selector("#panelDelegation:not([hidden])", timeout=10_000)
+        # state="attached", not the wait_for_selector default of "visible":
+        # under the broken CSS the label column collapses to zero width and
+        # Playwright does not consider a zero-area element visible, so a
+        # default-state wait here would time out on the exact layout this
+        # test exists to catch, before the test body ever runs.
+        self.page.wait_for_selector(
+            ".delegation-config-section dl dt", state="attached", timeout=10_000)
+        self.page.wait_for_timeout(300)
+
+    def _config_pairs(self):
+        """Every (dt, dd) pair in the config block, as the client rects of
+        their actual rendered text -- see the class docstring for why the
+        text's own rects are measured rather than the elements' boxes."""
+        return self.page.eval_on_selector_all(
+            ".delegation-config-section dl",
+            """dls => dls.flatMap(dl => {
+                const rectsOf = el => {
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    return [...range.getClientRects()].map(r => (
+                        {top: r.top, bottom: r.bottom, left: r.left, right: r.right}
+                    ));
+                };
+                const dts = [...dl.querySelectorAll('dt')];
+                const dds = [...dl.querySelectorAll('dd')];
+                return dts.map((dt, i) => ({
+                    label: dt.textContent,
+                    dtRects: rectsOf(dt),
+                    ddRects: dds[i] ? rectsOf(dds[i]) : [],
+                }));
+            })"""
+        )
+
+    def test_labels_and_values_do_not_overlap(self):
+        self._open_delegation()
+        pairs = self._config_pairs()
+        self.assertTrue(pairs, "no config dt/dd pairs rendered")
+
+        def rects_overlap(a, b):
+            return (a["left"] < b["right"] and b["left"] < a["right"]
+                    and a["top"] < b["bottom"] and b["top"] < a["bottom"])
+
+        collisions = [
+            (pair["label"], dt_rect, dd_rect)
+            for pair in pairs
+            for dt_rect in pair["dtRects"]
+            for dd_rect in pair["ddRects"]
+            if rects_overlap(dt_rect, dd_rect)
+        ]
+
+        self.assertEqual(
+            collisions, [],
+            f"a label's rendered text overlaps its own value's rendered text: {collisions}",
+        )
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1397,6 +1397,12 @@ button{touch-action:manipulation}
   flex:1 1 auto; min-width:0; margin:0; font-size:14px; font-weight:650;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
+.delegation-budget-badge {
+  display:inline-flex; align-items:center; justify-content:center;
+  flex-shrink:0; width:18px; height:18px; border-radius:3px;
+  background:var(--warn); color:#fff; font-size:12px; font-weight:700;
+  line-height:1;
+}
 .delegation-ladder-line {
   margin:0 0 8px; font-size:12px; color:var(--muted); overflow-wrap:anywhere;
 }

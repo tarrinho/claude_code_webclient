@@ -320,10 +320,17 @@ function _blockerElement(entry, taskType) {
   const policy = entry && entry.policy ? [entry.policy] : [];
   const data = (Array.isArray(entry && entry.data) ? entry.data : [])
     .filter(Boolean);
+  const allWarnings = _warningLines(entry);
+  // Budget warnings (carry a $) travel with latency ceiling warnings but
+  // need their own heading so an operator can tell them apart.
+  const budgetWarnings = allWarnings.filter(w => w.startsWith('tree cost'));
+  const latencyWarnings = allWarnings.filter(w => !w.startsWith('tree cost'));
   _blockerGroup(wrap, 'policy — a decision, not data', policy);
   _blockerGroup(wrap, 'data — needs a measurement or a cheaper rung', data);
+  _blockerGroup(wrap, 'budget — reported, not enforced',
+                budgetWarnings, 'delegation-warning-line');
   _blockerGroup(wrap, 'latency ceiling — reported, not enforced',
-                _warningLines(entry), 'delegation-warning-line');
+                latencyWarnings, 'delegation-warning-line');
   return wrap;
 }
 
@@ -376,8 +383,19 @@ function _card(taskType, rowsForType, payload) {
   heading.className = 'delegation-card-title';
   heading.textContent = taskType;
   head.appendChild(heading);
-  const live = (payload.operational || []).includes(taskType);
+
+  // Budget warning badge — dollar icon when the type's tree cost
+  // exceeds BUDGET_USD but enforcement is off.
   const blockerEntryForKnob = (payload.blockers || {})[taskType];
+  if (blockerEntryForKnob && blockerEntryForKnob.over_budget) {
+    const badge = document.createElement('span');
+    badge.className = 'delegation-budget-badge';
+    badge.textContent = '$';
+    badge.title = 'Tree cost exceeds budget';
+    head.appendChild(badge);
+  }
+
+  const live = (payload.operational || []).includes(taskType);
   head.appendChild(_operationalKnob(taskType, live, blockerEntryForKnob));
   card.appendChild(head);
 

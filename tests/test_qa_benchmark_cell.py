@@ -95,14 +95,42 @@ class TimeoutBudgetTests(unittest.TestCase):
         self.assertGreater(coding_budget, reasoning_budget)
 
     def test_derived_budget_covers_every_run_at_the_harness_cap(self):
-        """The budget must be at least runs * per-run cap, or it can fire on
-        a cell that is working normally -- every run within the harness's
-        own per-run timeout (bench/transports.py TIMEOUT_S)."""
-        tasks = benchmark_cell._tasks_for("coding")
+        """Below the MAX_CELL_BUDGET_S ceiling, the budget must be at least
+        runs * per-run cap, or it can fire on a cell that is working normally
+        -- every run within the harness's own per-run timeout
+        (bench/transports.py TIMEOUT_S). Uses reasoning rather than coding:
+        coding's own derived value now exceeds the cap (see
+        TimeoutBudgetCapTests), so it is the wrong task_type to assert
+        uncapped derivation against."""
+        tasks = benchmark_cell._tasks_for("reasoning")
         repeats = 3
         budget = benchmark_cell._timeout_for(tasks, repeats)
         per_run_cap = 1000.0  # bench/transports.py's own default
+        self.assertLess(budget, benchmark_cell.MAX_CELL_BUDGET_S)
         self.assertGreaterEqual(budget, len(tasks) * repeats * per_run_cap)
+
+
+class TimeoutBudgetCapTests(unittest.TestCase):
+    def test_a_coding_cell_is_capped_at_the_ceiling(self):
+        """coding's raw derived value (12 tasks * 3 repeats * 1000s + margin
+        = 36,120s, just over ten hours) is not a usable backstop: the nightly
+        job only checks whether the box is busy between cells, never during
+        one (spec 8.3), so an uncapped budget is also the longest the sweep
+        can be deaf to that check. A `return MAX_CELL_BUDGET_S` stub would
+        pass this assertion alone, which is why it is paired below with a
+        task_type that must NOT be capped."""
+        tasks = benchmark_cell._tasks_for("coding")
+        budget = benchmark_cell._timeout_for(tasks, repeats=3)
+        self.assertEqual(budget, benchmark_cell.MAX_CELL_BUDGET_S)
+
+    def test_a_reasoning_cell_is_not_capped(self):
+        """reasoning's small task count must keep its own tighter, derived
+        budget rather than being handed the two-hour ceiling meant for a
+        pathological cell. Paired with the coding test above so a flat
+        `return MAX_CELL_BUDGET_S` implementation fails here."""
+        tasks = benchmark_cell._tasks_for("reasoning")
+        budget = benchmark_cell._timeout_for(tasks, repeats=3)
+        self.assertLess(budget, benchmark_cell.MAX_CELL_BUDGET_S)
 
 
 class TimeoutTests(unittest.IsolatedAsyncioTestCase):

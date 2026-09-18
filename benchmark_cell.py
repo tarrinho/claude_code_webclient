@@ -26,6 +26,27 @@ _log = logging.getLogger(__name__)
 #: run and none of which bench/transports.py's own per-run cap accounts for.
 _STARTUP_MARGIN_S = 120.0
 
+#: Hard ceiling on the derived per-cell budget, chosen rather than computed.
+#:
+#: The nightly job only checks whether the box is busy *between* cells, never
+#: during one (spec 8.3), so the per-cell budget is also the longest the
+#: sweep can be deaf to that check. Without a ceiling, a coding cell's
+#: derived budget is 36 runs * 1000s + margin = 36,120s -- just over ten
+#: hours, which is not a usable backstop: a pathological cell starting at
+#: 05:00 could keep measuring past 15:00, straight through the working day,
+#: contending with real turns and recording exactly the load-contaminated
+#: latencies the quiet-window design exists to prevent, all while a correct
+#: busy check sits there never getting a chance to run.
+#:
+#: Two hours is chosen against the measured average cell time of 6.0 minutes
+#: (2026-09-17, 22 real cells): a cell still running at the two-hour mark is
+#: roughly twenty times slower than normal and pathological by any reading.
+#: Recording it as a failed cell loses nothing real -- a failed cell writes
+#: no capability row, so the previous measurement stays in place -- while
+#: capping it bounds how far a single stuck cell can bleed into the day,
+#: which is the property that actually matters here.
+MAX_CELL_BUDGET_S = 7200.0
+
 
 @dataclass(frozen=True)
 class CellResult:
@@ -57,10 +78,15 @@ def _timeout_for(tasks: list[str], repeats: int) -> float:
     12 tasks * 3 repeats = 36 runs already exceeds it on its own). Reading
     the same env var the harness reads means the two figures cannot drift
     apart.
+
+    The derived value is then capped at `MAX_CELL_BUDGET_S`: see that
+    constant for why an unbounded per-cell budget is itself a problem, not
+    just a very generous one.
     """
     per_run_cap = float(os.environ.get("WC_BENCH_TIMEOUT_S", "1000"))
     runs = len(tasks) * max(repeats, 1)
-    return runs * per_run_cap + _STARTUP_MARGIN_S
+    derived = runs * per_run_cap + _STARTUP_MARGIN_S
+    return min(derived, MAX_CELL_BUDGET_S)
 
 
 def parse_bench_payload(payload: dict, task_type: str) -> CellResult:

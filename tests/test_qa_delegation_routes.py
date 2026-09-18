@@ -514,14 +514,16 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
             "task_type": "long-context", "operational": True}))
         self.assertEqual(await _ordinary_operational(), {"long-context"})
 
-    async def test_coding_cannot_be_flipped_operational_even_with_complete_data(self):
-        """Spec 12: `coding` is blocked regardless of whether the data would
-        otherwise pass -- 1.2 measures it as already clearing every one of
-        1.1's six invariants, so validate() alone would let it through. This
-        row is deliberately the same shape used for the long-context
-        "allowed" case, so a pass here would mean the guard, not incomplete
-        data, is what is being tested."""
-        from fastapi import HTTPException
+    async def test_coding_can_now_be_flipped_operational(self):
+        """`coding`'s hold was lifted by operator decision on 2026-09-18.
+
+        This test asserted the opposite until then, and deliberately used the
+        same complete row shape as the long-context "allowed" case so that a
+        pass meant the GUARD was being tested rather than incomplete data.
+        It now asserts the flip succeeds on that same shape -- so if the hold
+        is ever reinstated, this fails loudly rather than silently passing for
+        the wrong reason.
+        """
         await db.delegation_row_set("claude-sonnet-5", "coding",
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
@@ -529,24 +531,20 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
                                     accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=0)
-        # Stage 5's own task type since the 2026-09-17 gate split. Same model
-        # and latency as the reviewer row, so every figure these tests were
-        # written against still reproduces.
         await db.delegation_row_set("claude-sonnet-5", "security-gate",
                                     accuracy=0.95, n=28,
                                     cost_per_1m_tokens=0.0,
                                     median_latency_s=5.0, max_context=0)
-        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
-        # route through a gate type that has not itself cleared 1.1.
         for gate_type in tiered_delegation.GATE_CALLS:
             await db.delegation_operational_set(gate_type, True)
-        with self.assertRaises(HTTPException) as ctx:
-            await delegation_routes.handle_operational_put(_request(body={
-                "task_type": "coding", "operational": True}))
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("coding", str(ctx.exception.detail))
-        self.assertIn("section 12", str(ctx.exception.detail))
-        self.assertEqual(await _ordinary_operational(), set())
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "coding", "operational": True}))
+        self.assertIn("coding", await db.delegation_operational_all())
+
+    async def test_coding_is_not_in_the_policy_hold_map(self):
+        """The hold is lifted in the map itself, not merely worked around."""
+        self.assertNotIn("coding",
+                         delegation_routes._OPERATIONAL_FLIP_BLOCKED)
 
     async def test_flipping_coding_off_is_not_blocked(self):
         """The guard is specifically about *flipping to* operational -- it
@@ -625,13 +623,14 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(response.body)
         coding = body["blockers"]["coding"]
         reasoning = body["blockers"]["reasoning"]
-        self.assertIn(
-            delegation_routes._OPERATIONAL_FLIP_BLOCKED["coding"],
-            coding["policy"])
+        # `coding`'s hold was lifted 2026-09-18: it must now report NO policy
+        # blocker, while `reasoning` still reports its own. Asserting both
+        # sides keeps this from passing if the page simply stopped emitting
+        # policy blockers altogether.
+        self.assertIsNone(coding["policy"], coding)
         self.assertIn(
             delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"],
             reasoning["policy"])
-        self.assertNotEqual(coding["policy"], reasoning["policy"])
 
     async def test_a_policy_blocker_names_its_task_type_like_a_data_one(self):
         """On the page a policy line sits directly beside data lines, and
@@ -645,7 +644,7 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await db.delegation_row_set("claude-sonnet-5", "reasoning", accuracy=1.0)
         body = json.loads(
             (await delegation_routes.handle_delegation_get(_request())).body)
-        for task_type in ("coding", "reasoning"):
+        for task_type in ("reasoning",):
             with self.subTest(task_type=task_type):
                 entry = body["blockers"][task_type]
                 self.assertTrue(entry["policy"].startswith(f"{task_type}: "),
@@ -741,10 +740,13 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         tell an operator nothing about which blocker applies to them. Assert
         the two messages actually differ and each names its own reason,
         rather than both happening to share one generic string."""
-        coding_reason = delegation_routes._OPERATIONAL_FLIP_BLOCKED["coding"]
+        # `coding`'s hold was lifted 2026-09-18, so only `reasoning` remains.
+        # The property still worth holding is that a hold NAMES its own
+        # reason: a generic refusal would tell an operator nothing about
+        # which blocker applies to them.
+        self.assertNotIn("coding",
+                         delegation_routes._OPERATIONAL_FLIP_BLOCKED)
         reasoning_reason = delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"]
-        self.assertNotEqual(coding_reason, reasoning_reason)
-        self.assertIn("section 12", coding_reason)
         self.assertIn("75%", reasoning_reason)
 
 

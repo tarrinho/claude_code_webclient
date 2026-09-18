@@ -96,14 +96,19 @@ _EDITABLE = ("accuracy", "n", "cost_per_1m_tokens", "median_latency_s", "max_con
 # `reasoning`'s entry needs its accuracy figure re-measured above the bar --
 # neither should be deleted for the other's reason.
 _OPERATIONAL_FLIP_BLOCKED: Final[dict[str, str]] = {
-    "coding": (
-        "spec section 12's gate-type question was decided on 2026-09-17, so "
-        "this hold's original precondition is now met -- reviewer-gate and "
-        "security-gate are measured, split, and clear 1.1 on their own. The "
-        "hold stands until it is lifted deliberately: flipping coding is the "
-        "first task type that would actually route, and that is an operator "
-        "decision rather than a consequence of the gate question closing"
-    ),
+    # `coding` is NOT here any more. Its hold was lifted by operator decision
+    # on 2026-09-18, after spec 12's gate-type question closed and the
+    # worst-case formula was corrected to charge each gate per generation
+    # attempt. It clears all six of 1.1's invariants -- $0.657 against a $1.00
+    # budget, 1,726s against a 2,900s ceiling -- with the ceiling ENFORCED,
+    # not merely with it switched off.
+    #
+    # Flipping it is what makes something route for the first time:
+    # orchestrator.assign_model stops returning config.ANTHROPIC_MODEL for
+    # coding-classified tasks and returns the ladder's rung 0 instead, which
+    # is the free local model at 66% measured accuracy. That is the cost
+    # thesis working as designed, and it is a real change in which model
+    # answers, not just a flag.
     "reasoning": (
         "spec amendment b782e4d holds reasoning non-operational until its "
         "75% n=2 accuracy figure is either re-measured or enforced in code "

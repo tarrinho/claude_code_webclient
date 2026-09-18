@@ -1153,7 +1153,6 @@ git commit -m "Derive sweep progress from measured_at and add the dormancy rules
 - Consumes: `runner.slots_busy` (the `_sem.locked()` helper at `runner.py:541`), `db.db_conn`
 - Produces:
   - `IDLE_MARGIN_MINUTES = 10`
-  - `BUSY_RECHECK_SECONDS = 60`
   - `async def box_is_busy() -> tuple[bool, str]` — returns the reason, so `--status` can say *why* it stopped
 
 Voice is deliberately absent: `routes/voice.py` speaks to an OpenAI-compatible endpoint directly and does not contend with the harness's CLI transport.
@@ -1252,10 +1251,6 @@ Expected: FAIL with `AttributeError: module 'benchmark_sweep' has no attribute '
 #: so "no turn in flight" is not the same as idle. Chosen rather than measured,
 #: and labelled as such.
 IDLE_MARGIN_MINUTES = 10
-
-#: How long to wait before asking again once the box went busy.
-BUSY_RECHECK_SECONDS = 60
-
 
 async def box_is_busy() -> tuple[bool, str]:
     """Is the box in use? Returns (busy, reason).

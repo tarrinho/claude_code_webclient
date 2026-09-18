@@ -170,6 +170,7 @@ def __getattr__(name: str):
         "delegation_operational_all": "routes.db_delegation",
         "delegation_operational_set": "routes.db_delegation",
         "delegation_decision_record": "routes.db_delegation",
+        "delegation_decision_note_ran_model": "routes.db_delegation",
         "delegation_decisions_recent": "routes.db_delegation",
         "api_token_create": "routes.db_users",
         "api_token_by_hash": "routes.db_users",
@@ -540,6 +541,16 @@ async def init() -> None:
         -- `ladder` keeps the whole menu the decision was chosen from, because
         -- the capability table is re-seeded underneath these rows and a
         -- decision is not interpretable later without the options it had.
+        -- `actual_model` and `ran_model` are two different questions and the
+        -- first production row proved why both are needed. `actual_model` is
+        -- what the PLAN named (`ParsedTask.model`), which is NULL on almost
+        -- every task because plans rarely name a model -- so on its own the
+        -- column reads "nobody chose" forever. `ran_model` is what the task
+        -- actually executed on, resolved in `_execute_task` via
+        -- `runner.get_default_model` when the plan named none. The learn pass
+        -- needs the second: "did the ladder agree with what the system chose"
+        -- is answerable, "did the ladder agree with the plan author" usually
+        -- is not.
         CREATE TABLE IF NOT EXISTS delegation_routing_decision (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             task_table   TEXT NOT NULL,
@@ -550,6 +561,7 @@ async def init() -> None:
             source       TEXT NOT NULL,
             shadow_model TEXT NOT NULL,
             actual_model TEXT,
+            ran_model    TEXT,
             ladder       TEXT,
             decided_at   TEXT NOT NULL
         );
@@ -1019,6 +1031,17 @@ async def _ensure_orchestrator_columns() -> None:
     for name, sql in sup_migrations.items():
         if name not in sup_columns:
             await db_conn.execute(sql)
+
+    # `ran_model` was added to delegation_routing_decision after the table had
+    # already shipped and recorded a production row, so CREATE TABLE IF NOT
+    # EXISTS above is a no-op on every database that matters. Same additive
+    # shape as the migrations either side of it, and idempotent for the same
+    # reason.
+    cursor = await db_conn.execute("PRAGMA table_info(delegation_routing_decision)")
+    decision_columns = {row["name"] for row in await cursor.fetchall()}
+    if decision_columns and "ran_model" not in decision_columns:
+        await db_conn.execute(
+            "ALTER TABLE delegation_routing_decision ADD COLUMN ran_model TEXT")
 
     cursor = await db_conn.execute("PRAGMA table_info(orchestrator_tasks)")
     columns = {row["name"] for row in await cursor.fetchall()}

@@ -107,6 +107,33 @@ async def delegation_decision_record(**columns: Any) -> int:
     return int(cur.lastrowid)
 
 
+async def delegation_decision_note_ran_model(
+    task_table: str, task_id: str, ran_model: str,
+) -> int:
+    """Record which model a recorded task actually executed on. Returns the
+    number of decision rows updated.
+
+    Separate from `delegation_decision_record` because the two facts are known
+    at different times: the decision at plan materialisation, the model at
+    execution. Folding them into one write would mean either delaying the
+    record until the task finishes -- losing every task that never runs -- or
+    holding state between the two, which a crash discards.
+
+    Updates every row for the pair rather than one. A task can be re-planned
+    and the schema deliberately allows a second decision for the same task id
+    (there is no unique constraint), so "the" row is not a thing this can
+    assume. Rows already carrying a `ran_model` are left alone: the first
+    execution is the one the ladder was asked about.
+    """
+    cur = await db.db_conn.execute(
+        "UPDATE delegation_routing_decision SET ran_model = ? "
+        "WHERE task_table = ? AND task_id = ? AND ran_model IS NULL",
+        (ran_model, task_table, task_id),
+    )
+    await db.db_conn.commit()
+    return cur.rowcount
+
+
 async def delegation_decisions_recent(
     task_type: str | None = None, limit: int = 200,
 ) -> list[dict[str, Any]]:

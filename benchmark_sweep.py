@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import benchmark_writer
@@ -98,3 +99,47 @@ async def record_success(run_id: str, model: str, task_type: str,
         accuracy=result.accuracy, n=result.n,
         median_latency_s=result.median_latency_s,
         elapsed_s=result.elapsed_s, error=None)
+
+
+#: Spec 8.3. A turn that has just finished leaves the gateway still draining,
+#: so "no turn in flight" is not the same as idle. Chosen rather than measured,
+#: and labelled as such.
+IDLE_MARGIN_MINUTES = 10
+
+#: How long to wait before asking again once the box went busy.
+BUSY_RECHECK_SECONDS = 60
+
+
+async def box_is_busy() -> tuple[bool, str]:
+    """Is the box in use? Returns (busy, reason).
+
+    The reason is returned rather than logged so `--status` can say why a
+    sweep stopped, instead of leaving an operator to guess between "finished
+    for the night" and "crashed".
+
+    The idle cutoff is computed in Python, not via SQLite's datetime('now').
+    db._now() writes 'YYYY-MM-DDTHH:MM:SSZ'; datetime('now') produces
+    'YYYY-MM-DD HH:MM:SS' (space, no Z). Compared as strings the two forms
+    first differ at the date/time separator, where 'T' sorts above ' ', so
+    every message written today would satisfy
+    `created_at >= datetime('now', '-N minutes')` regardless of the hour --
+    the box would read as busy all day.
+
+    Voice sessions are deliberately NOT a signal. routes/voice.py speaks to an
+    OpenAI-compatible endpoint directly (CLAUDE.md section 0), so a voice
+    conversation does not contend with the CLI transport this harness measures
+    over -- counting it would stop sweeps for load that does not exist.
+    """
+    import runner
+    if runner.slots_busy():
+        return True, "a turn is in flight"
+
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(minutes=IDLE_MARGIN_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cur = await db.db_conn.execute(
+        "SELECT created_at FROM messages WHERE created_at >= ? LIMIT 1",
+        (cutoff,))
+    if await cur.fetchone():
+        return True, f"a message was written in the last {IDLE_MARGIN_MINUTES} minutes"
+
+    return False, "idle"

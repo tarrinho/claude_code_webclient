@@ -3962,9 +3962,13 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
     knob being off, and disabling would silently reimpose it).
     """
 
-    def _seed_delegation(self, *, blocked_type="coding", clean_type="widget"):
-        """One type the server will refuse (`coding` carries a policy hold)
-        and one with nothing wrong with it."""
+    def _seed_delegation(self, *, blocked_type="reasoning", clean_type="widget"):
+        """One type the server will refuse and one with nothing wrong with it.
+
+        `reasoning`, not `coding`: coding's policy hold was lifted on
+        2026-09-18, so it no longer carries one. reasoning still does
+        (amendment b782e4d), which is what these tests need -- a POLICY
+        blocker specifically, distinct from a data one."""
         import sqlite3          # imported locally, as elsewhere in this file
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
         for task_type in (blocked_type, clean_type):
@@ -3995,10 +3999,10 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
         The knob must not invite the click."""
         self._seed_delegation()
         self._open()
-        knob = self._knob("coding")
-        self.assertIsNotNone(knob, "no coding knob rendered")
+        knob = self._knob("reasoning")
+        self.assertIsNotNone(knob, "no reasoning knob rendered")
         self.assertTrue(knob.is_disabled(),
-                        "coding's knob is clickable but the server refuses it")
+                        "reasoning's knob is clickable but the server refuses it")
         self.assertEqual(self.errors, [])
 
     def test_the_disabled_knob_carries_the_reason(self):
@@ -4006,8 +4010,8 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
         the knob is what an operator reaches for first."""
         self._seed_delegation()
         self._open()
-        title = self._knob("coding").get_attribute("title") or ""
-        self.assertIn("coding", title)
+        title = self._knob("reasoning").get_attribute("title") or ""
+        self.assertIn("reasoning", title)
         self.assertEqual(self.errors, [])
 
     def test_blockers_are_grouped_by_kind(self):

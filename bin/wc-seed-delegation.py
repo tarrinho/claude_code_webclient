@@ -63,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
 import db  # noqa: E402
+import delegation_startup  # noqa: E402
 
 #: (model, task_type, accuracy, n, cost_per_1m_tokens, median_latency_s, max_context)
 #: None means TBD, which is not zero -- see CapabilityRow's docstring.
@@ -204,6 +205,44 @@ async def main(argv: list[str] | None = None) -> int:
 
     await db.init()
     try:
+        # Spec 1.1, checked BEFORE the first write rather than after the last.
+        #
+        # `db.delegation_row_set` stores whatever it is given. Every other
+        # path to it goes through routes/delegation.py, which builds the
+        # prospective table and refuses a write that would break an invariant;
+        # this script went straight to the accessor and bypassed that. While
+        # both enforcement knobs were reported-but-not-blocking that cost
+        # nothing. It stopped being free the moment either was switched on:
+        # a seed that puts an operational task type over BUDGET_USD makes
+        # `validate_or_die` refuse to start the service at the NEXT restart,
+        # which may be hours later and will look nothing like the seed.
+        #
+        # Refusing here leaves the database untouched, which is the whole
+        # reason the check is prospective. `--yes-this-is-production` does not
+        # override it: affirming which database you meant is a different
+        # question from whether the rows are admissible.
+        writes = [
+            (model, task_type, {
+                "accuracy": accuracy, "n": n, "cost_per_1m_tokens": cost,
+                "median_latency_s": latency, "max_context": context,
+            })
+            for model, task_type, accuracy, n, cost, latency, context in ROWS
+        ]
+        problems = await delegation_startup.problems_after_writing(writes)
+        if problems:
+            print(
+                "refusing to seed: these rows would break spec 1.1 for a task "
+                "type that is already operational, and this deployment would "
+                "refuse to start on its next restart. Nothing was written.",
+                file=sys.stderr)
+            for problem in problems:
+                print(f"  - {problem}", file=sys.stderr)
+            print(
+                "Turn the relevant enforcement knob off on the Delegation "
+                "settings page, or fix the rows, then seed again.",
+                file=sys.stderr)
+            return 1
+
         for model, task_type, accuracy, n, cost, latency, context in ROWS:
             await db.delegation_row_set(
                 model, task_type, accuracy=accuracy, n=n,

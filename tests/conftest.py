@@ -20,8 +20,10 @@ two routes reads as covered and is worse than none, because nobody looks again.
 """
 from __future__ import annotations
 
+import atexit
 import os
 import pathlib
+import shutil
 import tempfile
 
 # Not overridden if the caller already set it: test_qa_log_path drives
@@ -36,6 +38,53 @@ if not os.environ.get("WC_LOG_FILE"):
     # cost this file exists to keep *out* of the production log, not something
     # the test log needs to be protected from.
     os.environ["WC_LOG_FILE"] = str(_log_dir / "suite.log")
+
+
+# ---------------------------------------------------------------------------
+# tempfile.mkdtemp leaked every directory it ever made.
+#
+# `tempfile.TemporaryDirectory` cleans up after itself; `mkdtemp` does not, and
+# never has -- it is documented as the caller's responsibility. Seventeen test
+# modules call it directly and none of them removes the result, so every run of
+# the suite left a directory per call behind. Measured on 2026-09-18: 951 of
+# them under /tmp, led by 154 `wc-testing-model` and 108 `wc-pins`.
+#
+# That is not a tidiness problem. /tmp here is a 1.9 GB tmpfs, and it reached
+# 100% mid-run: `git archive` failed with "No space left on device", browser
+# tests that write to temp directories went red for reasons that had nothing to
+# do with the code under test, and a bisect built on those reds accused a
+# commit that touched one markdown file. Two operators cleared the space by
+# hand the same afternoon.
+#
+# Wrapping the function rather than editing seventeen call sites is deliberate.
+# Every one of those sites would have to be found and fixed again the next time
+# someone adds an eighteenth, and the failure mode is silent until a disk
+# fills. This covers call sites that do not exist yet, including ones in
+# `bin/` and `bench/` reached through the suite.
+#
+# Removal is at process exit, not per test: some fixtures hand a temp path to a
+# subprocess that outlives the test that made it, and pulling the directory out
+# from under a running server is a worse failure than leaving it for a few
+# seconds. `ignore_errors` because a caller that DOES clean up after itself --
+# and `TemporaryDirectory`, which calls this underneath -- must not turn an
+# already-removed directory into an error at interpreter shutdown.
+_created_tempdirs: list[str] = []
+_real_mkdtemp = tempfile.mkdtemp
+
+
+def _tracked_mkdtemp(*args, **kwargs):
+    path = _real_mkdtemp(*args, **kwargs)
+    _created_tempdirs.append(path)
+    return path
+
+
+tempfile.mkdtemp = _tracked_mkdtemp
+
+
+@atexit.register
+def _remove_tracked_tempdirs() -> None:
+    for path in _created_tempdirs:
+        shutil.rmtree(path, ignore_errors=True)
 
 # Session persistence now lives in a separate database to avoid writer
 # collision with the main app DB.  Point it at a throwaway so tests that

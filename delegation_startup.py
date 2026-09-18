@@ -153,6 +153,75 @@ async def live_known_models() -> frozenset[str] | None:
     return result.ids
 
 
+async def problems_with(
+    table: CapabilityTable,
+    known_models: frozenset[str] | None = None,
+) -> list[str]:
+    """Spec 1.1's invariants for *table*, judged by the LIVE enforcement knobs.
+
+    The one place that pairs a table with the current settings of the two
+    enforcement knobs. Three callers need that pairing and must never disagree
+    about it -- the startup check, the settings page's write endpoint, and
+    `bin/wc-seed-delegation.py` -- because a table that passes through one and
+    is refused by another is exactly how an operator ends up with a deployment
+    that will not boot after its next restart.
+
+    `known_models` is accepted rather than always fetched so a caller that has
+    already paid for `live_known_models()` does not pay twice. Passing None
+    fetches it; passing None is also what makes the fallback in that function
+    apply, which is deliberate -- an unreachable backend must not start
+    refusing writes.
+    """
+    if known_models is None:
+        known_models = await live_known_models()
+    return table.validate(
+        known_models=known_models,
+        enforce_latency_ceiling=await ceiling_enforcement_enabled(),
+        enforce_budget=await budget_enforcement_enabled(),
+    )
+
+
+async def problems_after_writing(
+    writes: list[tuple[str, str, dict[str, object]]],
+) -> list[str]:
+    """What spec 1.1 would say about the table once *writes* are applied.
+
+    Prospective, not post-hoc: the caller asks BEFORE writing, so a refusal
+    leaves the database untouched. `handle_row_put` already works this way;
+    this exists so a script can too.
+
+    Why it is needed at all: `db.delegation_row_set` stores whatever it is
+    given. Every validated path to it runs through `routes/delegation.py`,
+    which builds the prospective table and refuses a write that would break an
+    invariant. `bin/wc-seed-delegation.py` wrote straight to the accessor and
+    so bypassed that entirely -- harmless while the budget and ceiling were
+    reported-but-not-enforced, and not harmless once either knob is on, since
+    a seed that pushes an operational task type over the budget makes
+    `validate_or_die` refuse to start the service at the NEXT restart, which
+    may be hours later and will look nothing like the seed that caused it.
+
+    *writes* is a list of `(model, task_type, columns)`, the same three
+    arguments `delegation_row_set` takes. Rows already present are replaced,
+    matching that accessor's UPSERT; rows not mentioned are left alone.
+    """
+    from tiered_delegation import CapabilityRow
+
+    rows = rows_to_capability(await db.delegation_rows_all())
+    by_key = {(row.model, row.task_type): row for row in rows}
+    for model, task_type, columns in writes:
+        by_key[(model, task_type)] = CapabilityRow(
+            model=model, task_type=task_type,
+            accuracy=columns.get("accuracy"),
+            n=columns.get("n"),
+            cost_per_1m_tokens=columns.get("cost_per_1m_tokens"),
+            median_latency_s=columns.get("median_latency_s"),
+            max_context=columns.get("max_context"),
+        )
+    operational = await db.delegation_operational_all()
+    return await problems_with(
+        CapabilityTable(list(by_key.values()), operational=operational))
+
+
 async def validate_or_die() -> CapabilityTable:
     """Build the table and refuse to start if any invariant is broken.
 

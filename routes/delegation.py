@@ -46,7 +46,8 @@ from fastapi.responses import JSONResponse
 import db
 from delegation_startup import (budget_enforcement_enabled,
                                 ceiling_enforcement_enabled,
-                                live_known_models)
+                                live_known_models,
+                                problems_with)
 from routes.db_delegation import rows_to_capability
 from routes.db_users import setting_set
 from tiered_delegation import (
@@ -450,19 +451,16 @@ async def handle_row_put(request: Request):
                        if not (r["model"] == model and r["task_type"] == task_type)]
         merged_rows.append({"model": model, "task_type": task_type, **merged_columns})
         table = CapabilityTable(rows_to_capability(merged_rows), operational=operational)
-        # Same live list, same fallback, as delegation_startup.validate_or_die
-        # -- spec 1.1 requires the same code path and the same error text at
-        # every moment a table is validated, and a write endpoint must not
-        # start refusing writes because a backend happens to be unreachable.
-        known_models = await live_known_models()
-        # Same knob the startup check and the settings page read. If these
-        # ever disagreed, a table would pass through one path and be refused
-        # by another -- which is how an operator ends up with a deployment
-        # that will not boot after its next restart.
-        problems = table.validate(
-            known_models=known_models,
-            enforce_latency_ceiling=await ceiling_enforcement_enabled(),
-            enforce_budget=await budget_enforcement_enabled())
+        # `problems_with` is the single place that pairs a table with the
+        # live settings of both enforcement knobs, and it carries the same
+        # live-model list and the same fallback as
+        # delegation_startup.validate_or_die. Spec 1.1 requires the same code
+        # path and the same error text at every moment a table is validated:
+        # if the startup check, this endpoint and the seed script ever
+        # disagreed, a table would pass through one and be refused by another,
+        # which is how an operator ends up with a deployment that will not
+        # boot after its next restart.
+        problems = await problems_with(table)
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
@@ -525,17 +523,9 @@ async def handle_operational_put(request: Request):
         rows = rows_to_capability(await db.delegation_rows_all())
         current = await db.delegation_operational_all()
         table = CapabilityTable(rows, operational=current | {task_type})
-        # Same live list, same fallback, as handle_row_put above and as
-        # delegation_startup.validate_or_die -- see the comment there.
-        known_models = await live_known_models()
-        # Same knob the startup check and the settings page read. If these
-        # ever disagreed, a table would pass through one path and be refused
-        # by another -- which is how an operator ends up with a deployment
-        # that will not boot after its next restart.
-        problems = table.validate(
-            known_models=known_models,
-            enforce_latency_ceiling=await ceiling_enforcement_enabled(),
-            enforce_budget=await budget_enforcement_enabled())
+        # Same single definition as handle_row_put above -- see the comment
+        # there for why these three callers must never disagree.
+        problems = await problems_with(table)
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 

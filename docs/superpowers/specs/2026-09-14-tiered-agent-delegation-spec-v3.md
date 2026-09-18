@@ -339,15 +339,17 @@ Holding each model against each task type, with columns: measured accuracy, samp
 
 **The billing arrived on 2026-09-18 and no `†` survives in this column. Every cost above is now a rate somebody was charged.** The previous revision of this paragraph said terra carried luna's rate by operator assumption and that "real gateway billing figures are expected tomorrow". Tomorrow came; this records what it said.
 
-| model | was | now | how |
-|---|---|---|---|
-| `azure_ai/gpt-5.6-terra` | 0.0285† | **1.4760‡** | €2.43 / 1,780,071 tokens |
-| `azure_ai/gpt-5.6-sol` | 0.0285† | **3.4043‡** | €7.62 / 2,420,157 tokens |
-| `azure_ai/gpt-5.6-luna` | 0.0285 | **0.0370‡** | €9.30 / 271,978,522 tokens |
-| `azure_ai/gpt-5.4-mini` | 0.5261 | **0.0850‡** | €0.62 / 7,885,210 tokens |
-| `azure_ai/gpt-5.4-mini-copilot` | 3.5167‡ | **0.0781‡** | billed with 5.4-mini |
-| `claude-opus-5` | 3.6082 | **1.2310‡** | re-derived, below |
-| `claude-sonnet-5` | 1.5709 | **0.4769‡** | re-derived, below |
+**The first column below is deliberately not a model id.** `tests/test_qa_delegation_shipped_state.py` parses this section for capability rows by taking every line beginning with `` | ` `` — so a correction table whose rows begin with a backticked model name is read as seven more capability rows, and the suite goes red on `could not convert string to float: '**1.4760‡**'`. That is exactly what the first version of this table did.
+
+| repriced | model | was | now | how |
+|---|---|---|---|---|
+| terra | `azure_ai/gpt-5.6-terra` | 0.0285† | **1.4760‡** | €2.43 / 1,780,071 tokens |
+| sol | `azure_ai/gpt-5.6-sol` | 0.0285† | **3.4043‡** | €7.62 / 2,420,157 tokens |
+| luna | `azure_ai/gpt-5.6-luna` | 0.0285 | **0.0370‡** | €9.30 / 271,978,522 tokens |
+| mini | `azure_ai/gpt-5.4-mini` | 0.5261 | **0.0850‡** | €0.62 / 7,885,210 tokens |
+| copilot | `azure_ai/gpt-5.4-mini-copilot` | 3.5167‡ | **0.0781‡** | billed with 5.4-mini |
+| opus | `claude-opus-5` | 3.6082 | **1.2310‡** | re-derived, below |
+| sonnet | `claude-sonnet-5` | 1.5709 | **0.4769‡** | re-derived, below |
 
 Euro figures are converted at §2.5's dated **EUR→USD = 1.0812**.
 
@@ -386,7 +388,7 @@ Two limits on what those numbers mean, and both are structural:
 
 **`‡` marks a rate blended from this deployment's own `usage_events` rather than a published price.** `azure_ai/gpt-5.4-mini-copilot` at **3.5167**/1M is 47 recorded events totalling 25,309 tokens for $0.089. Treat it with suspicion rather than confidence: a model named *mini* pricing within 3% of `claude-opus-5` (3.6082) is not what a mini model should cost, and the likeliest explanations are a gateway markup, a cost field the gateway populates differently, or too small a sample. It is recorded because the alternative — leaving the only model that actually serves voice unpriced — is what §2.7 warns against most directly ("a model nobody priced must not come out cheapest"). Re-derive it from a real price list before any ladder depends on it.
 
-**`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available. **`azure_ai/gpt-5.6-terra` added 2026-09-17, same source**: `/model/info` reports `max_input_tokens: 922000` for it, the same figure as luna — unlike its cost cell (marked `†` above), this column is measured, not assumed.
+**`max_context` is the input window, and the output cap is the one that bites.** Filled 2026-09-15. The gateway models come from the gateway's own `/model/info`, which is authoritative and live; the two Anthropic figures come from the `claude-api` skill's model table (cached 2026-06-24) because this host authenticates Anthropic by OAuth with no stored key, so the Models API could not be queried directly. Re-check the Anthropic rows against `client.models.retrieve()` when a key is available. **`azure_ai/gpt-5.6-terra` added 2026-09-17, same source**: `/model/info` reports `max_input_tokens: 922000` for it, the same figure as luna. This column was measured while its cost cell was still assumed; since 2026-09-18 both are measured, so the contrast this sentence used to draw no longer exists.
 
 | model | max input | max output |
 |---|---|---|

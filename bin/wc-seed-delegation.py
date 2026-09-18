@@ -71,15 +71,15 @@ import delegation_startup  # noqa: E402
 ROWS = [
     ("vllm/Qwen3.6-35B-A3B-NVFP4", "coding", 0.66, 44, 0.0, 26.8, 229376),
     ("vllm/Qwen3.6-35B-A3B-NVFP4", "long-context", 0.833, 12, 0.0, 13.9, 229376),
-    ("azure_ai/gpt-5.6-luna", "coding", 1.0, 24, 0.0285, 12.8, 922000),
-    ("azure_ai/gpt-5.6-luna", "long-context", 1.0, 12, 0.0285, 6.3, 922000),
-    ("azure_ai/gpt-5.6-luna", "comprehension", 0.583, 12, 0.0285, 9.2, 922000),
-    ("azure_ai/gpt-5.6-luna", "reasoning", 0.5, 6, 0.0285, 16.5, 922000),
-    ("azure_ai/gpt-5.6-luna", "voice", 0.833, 12, 0.0285, None, 922000),
-    ("azure_ai/gpt-5.4-mini", "coding", None, None, 0.5261, None, 1050000),
-    ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.5261, None, 1050000),
-    ("azure_ai/gpt-5.6-luna", "multi-turn", 0.917, 12, 0.0285, 13.5, 922000),
-    ("azure_ai/gpt-5.6-luna", "planning", 0.75, 12, 0.0285, 40.7, 922000),
+    ("azure_ai/gpt-5.6-luna", "coding", 1.0, 24, 0.0370, 12.8, 922000),
+    ("azure_ai/gpt-5.6-luna", "long-context", 1.0, 12, 0.0370, 6.3, 922000),
+    ("azure_ai/gpt-5.6-luna", "comprehension", 0.583, 12, 0.0370, 9.2, 922000),
+    ("azure_ai/gpt-5.6-luna", "reasoning", 0.5, 6, 0.0370, 16.5, 922000),
+    ("azure_ai/gpt-5.6-luna", "voice", 0.833, 12, 0.0370, None, 922000),
+    ("azure_ai/gpt-5.4-mini", "coding", None, None, 0.0850, None, 1050000),
+    ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.0850, None, 1050000),
+    ("azure_ai/gpt-5.6-luna", "multi-turn", 0.917, 12, 0.0370, 13.5, 922000),
+    ("azure_ai/gpt-5.6-luna", "planning", 0.75, 12, 0.0370, 40.7, 922000),
     # The gate rows, measured 2026-09-17 by bench/gate_accuracy.py at n=28 per
     # model per gate, and SPLIT into two task types by operator decision the
     # same day. Pooled into one `reviewer-gate` row they averaged two
@@ -87,17 +87,17 @@ ROWS = [
     # it false-accepted nothing) while opus is the best security gate
     # (0.9643); sonnet is the worst reviewer of the three and waved through 3
     # real defects. See spec 4.3/4.5 and 2.6.
-    ("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.9643, 28, 0.0285, 6.07, 922000),
-    ("claude-sonnet-5", "reviewer-gate", 0.7857, 28, 1.5709, 4.555, 1000000),
-    ("claude-opus-5", "reviewer-gate", 0.8929, 28, 3.6082, 5.025, 1000000),
-    ("azure_ai/gpt-5.6-luna", "security-gate", 0.8571, 28, 0.0285, 5.83, 922000),
-    ("claude-sonnet-5", "security-gate", 0.9286, 28, 1.5709, 4.635, 1000000),
-    ("claude-opus-5", "security-gate", 0.9643, 28, 3.6082, 4.8, 1000000),
-    ("claude-sonnet-5", "coding", 1.0, 24, 1.5709, 15.5, 1000000),
-    ("claude-sonnet-5", "long-context", 0.667, 12, 1.5709, 4.2, 1000000),
-    ("claude-sonnet-5", "comprehension", 1.0, 12, 1.5709, 6.0, 1000000),
-    ("claude-sonnet-5", "reasoning", 0.834, 6, 1.5709, 24.6, 1000000),
-    ("claude-sonnet-5", "voice", 1.0, 12, 1.5709, None, 1000000),
+    ("azure_ai/gpt-5.6-luna", "reviewer-gate", 0.9643, 28, 0.0370, 6.07, 922000),
+    ("claude-sonnet-5", "reviewer-gate", 0.7857, 28, 0.4769, 4.555, 1000000),
+    ("claude-opus-5", "reviewer-gate", 0.8929, 28, 1.2310, 5.025, 1000000),
+    ("azure_ai/gpt-5.6-luna", "security-gate", 0.8571, 28, 0.0370, 5.83, 922000),
+    ("claude-sonnet-5", "security-gate", 0.9286, 28, 0.4769, 4.635, 1000000),
+    ("claude-opus-5", "security-gate", 0.9643, 28, 1.2310, 4.8, 1000000),
+    ("claude-sonnet-5", "coding", 1.0, 24, 0.4769, 15.5, 1000000),
+    ("claude-sonnet-5", "long-context", 0.667, 12, 0.4769, 4.2, 1000000),
+    ("claude-sonnet-5", "comprehension", 1.0, 12, 0.4769, 6.0, 1000000),
+    ("claude-sonnet-5", "reasoning", 0.834, 6, 0.4769, 24.6, 1000000),
+    ("claude-sonnet-5", "voice", 1.0, 12, 0.4769, None, 1000000),
     # azure_ai/gpt-5.6-sol, measured 2026-09-17 (bin/wc-bench.py --repeats 3)
     # and seeded the same day. Price is ASSUMED to be luna's, marked with a
     # dagger in 2.6, on the same operator decision that covered terra: the
@@ -109,12 +109,12 @@ ROWS = [
     # from the ladder -- equal accuracy is kept (spec 3) -- it DEMOTES it from
     # rung 1 to rung 2, where 2.7's reach probability is 1/6 instead of 1/2.
     # That alone takes planning's tree cost from $1.936 to $0.724.
-    ("azure_ai/gpt-5.6-sol", "coding", 1.0, 18, 0.0285, 7.85, 922000),
-    ("azure_ai/gpt-5.6-sol", "long-context", 1.0, 12, 0.0285, 7.84, 922000),
-    ("azure_ai/gpt-5.6-sol", "multi-turn", 0.833, 12, 0.0285, 17.02, 922000),
-    ("azure_ai/gpt-5.6-sol", "planning", 0.833, 12, 0.0285, 39.41, 922000),
-    ("azure_ai/gpt-5.6-sol", "comprehension", 0.583, 12, 0.0285, 14.53, 922000),
-    ("azure_ai/gpt-5.6-sol", "reasoning", 0.5, 6, 0.0285, 11.78, 922000),
+    ("azure_ai/gpt-5.6-sol", "coding", 1.0, 18, 3.4043, 7.85, 922000),
+    ("azure_ai/gpt-5.6-sol", "long-context", 1.0, 12, 3.4043, 7.84, 922000),
+    ("azure_ai/gpt-5.6-sol", "multi-turn", 0.833, 12, 3.4043, 17.02, 922000),
+    ("azure_ai/gpt-5.6-sol", "planning", 0.833, 12, 3.4043, 39.41, 922000),
+    ("azure_ai/gpt-5.6-sol", "comprehension", 0.583, 12, 3.4043, 14.53, 922000),
+    ("azure_ai/gpt-5.6-sol", "reasoning", 0.5, 6, 3.4043, 11.78, 922000),
     # The model that ACTUALLY serves voice on this deployment, added
     # 2026-09-17. It had no row at all until then, so no 1.1 invariant could
     # see it while section 3's voice ladder named two models that have never
@@ -122,12 +122,12 @@ ROWS = [
     # tasks; latency and n are real (46 voice_turn_timing rows); the rate is
     # blended from usage_events and is marked with a double dagger in 2.6 --
     # 3.5167/1M for a "mini" model is not credible and needs a real price.
-    ("azure_ai/gpt-5.4-mini-copilot", "voice", None, 46, 3.5167, 2.002, None),
-    ("claude-sonnet-5", "multi-turn", 1.0, 12, 1.5709, 7.8, 1000000),
-    ("claude-sonnet-5", "planning", 0.833, 12, 1.5709, 17.5, 1000000),
-    ("claude-sonnet-5", "split-decision", None, None, 1.5709, None, 1000000),
-    ("claude-opus-5", "comprehension", 1.0, 12, 3.6082, 11.9, 1000000),
-    ("claude-opus-5", "reasoning", 1.0, 6, 3.6082, 10.2, 1000000),
+    ("azure_ai/gpt-5.4-mini-copilot", "voice", None, 46, 0.0781, 2.002, None),
+    ("claude-sonnet-5", "multi-turn", 1.0, 12, 0.4769, 7.8, 1000000),
+    ("claude-sonnet-5", "planning", 0.833, 12, 0.4769, 17.5, 1000000),
+    ("claude-sonnet-5", "split-decision", None, None, 0.4769, None, 1000000),
+    ("claude-opus-5", "comprehension", 1.0, 12, 1.2310, 11.9, 1000000),
+    ("claude-opus-5", "reasoning", 1.0, 6, 1.2310, 10.2, 1000000),
     # azure_ai/gpt-5.6-terra, added 2026-09-17. accuracy/n/median_latency_s are
     # measured (bin/wc-bench.py --repeats 3); max_context is measured from the
     # gateway's own /model/info (922000, same as luna). cost_per_1m_tokens is
@@ -136,12 +136,12 @@ ROWS = [
     # marker and prose note: this column cannot carry that distinction, so
     # every ladder position and tree cost derived from these six rows is
     # provisional until the real rate lands.
-    ("azure_ai/gpt-5.6-terra", "coding", 1.0, 18, 0.0285, 7.2, 922000),
-    ("azure_ai/gpt-5.6-terra", "long-context", 1.0, 12, 0.0285, 6.3, 922000),
-    ("azure_ai/gpt-5.6-terra", "multi-turn", 1.0, 12, 0.0285, 12.4, 922000),
-    ("azure_ai/gpt-5.6-terra", "planning", 0.667, 12, 0.0285, 26.9, 922000),
-    ("azure_ai/gpt-5.6-terra", "comprehension", 0.5, 12, 0.0285, 9.8, 922000),
-    ("azure_ai/gpt-5.6-terra", "reasoning", 0.5, 6, 0.0285, 8.9, 922000),
+    ("azure_ai/gpt-5.6-terra", "coding", 1.0, 18, 1.4760, 7.2, 922000),
+    ("azure_ai/gpt-5.6-terra", "long-context", 1.0, 12, 1.4760, 6.3, 922000),
+    ("azure_ai/gpt-5.6-terra", "multi-turn", 1.0, 12, 1.4760, 12.4, 922000),
+    ("azure_ai/gpt-5.6-terra", "planning", 0.667, 12, 1.4760, 26.9, 922000),
+    ("azure_ai/gpt-5.6-terra", "comprehension", 0.5, 12, 1.4760, 9.8, 922000),
+    ("azure_ai/gpt-5.6-terra", "reasoning", 0.5, 6, 1.4760, 8.9, 922000),
 ]
 
 

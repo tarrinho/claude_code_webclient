@@ -49,6 +49,7 @@ from delegation_startup import (budget_enforcement_enabled,
                                 delegation_enabled,
                                 live_known_models,
                                 problems_with)
+from routes.db_benchmark import capability_meta_all
 from routes.db_delegation import rows_to_capability
 from routes.db_users import setting_set
 from tiered_delegation import (
@@ -372,6 +373,16 @@ async def handle_delegation_get(request: Request):
     why each non-operational type cannot flip yet (see
     `_blockers_by_task_type`)."""
     rows = await db.delegation_rows_all()
+    # Task 10: merge the benchmark subsystem's provenance columns into each
+    # row so the Delegation page can render dormant markers, reorder
+    # highlights and the Re-measure control without a second round trip.
+    meta = {(r["model"], r["task_type"]): r
+            for r in await capability_meta_all()}
+    for row in rows:
+        extra = meta.get((row["model"], row["task_type"])) or {}
+        row["dormant"] = int(extra.get("dormant") or 0)
+        row["reorder_flagged"] = int(extra.get("reorder_flagged") or 0)
+        row["measured_at"] = extra.get("measured_at")
     operational = sorted(await db.delegation_operational_all())
     operational_set = set(operational)
     capability_rows = rows_to_capability(rows)

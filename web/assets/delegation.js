@@ -327,8 +327,124 @@ function _blockerElement(entry, taskType) {
   return wrap;
 }
 
+/** Poll one forced cell run until it stops running.
+ *
+ *  Spec 9's re-measure takes roughly six minutes (three repeats at the
+ *  benchmark's own per-repeat cost), so the poll interval is generous on
+ *  purpose: a faster poll would not make the measurement finish any sooner,
+ *  it would only hit the endpoint harder. The row is refreshed on completion
+ *  (`_refreshDelegation`) rather than patched in place, because a re-measure
+ *  can also change `dormant`, the ladder and the reorder flag -- all of
+ *  which live outside the one row that was clicked. */
+async function _pollCell(cellRunId, button) {
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    let response;
+    try {
+      response = await apiFetch(`/api/delegation/benchmark/cell/${cellRunId}`);
+    } catch (error) {
+      button.textContent = 'Re-measure';
+      button.disabled = false;
+      notifyResult(error.message, 'error');
+      return;
+    }
+    if (!response.ok) {
+      button.textContent = 'Re-measure';
+      button.disabled = false;
+      return;
+    }
+    const state = await response.json();
+    if (state.status !== 'running') {
+      button.textContent = state.status === 'ok' ? 'Done' : 'Failed';
+      button.disabled = false;
+      await _refreshDelegation();
+      return;
+    }
+  }
+}
+
+/** The per-row Re-measure control (spec 9): forces one cell now, under load,
+ *  rather than waiting for the next nightly sweep. Runs immediately on
+ *  click, so the button disables itself and shows progress for the whole
+ *  ~6 minutes rather than reading as unresponsive. */
+function _remeasureButton(row) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'delegation-remeasure';
+  button.textContent = 'Re-measure';
+  button.title = 'Measure this cell now (~6 min). The result is recorded as '
+               + 'measured under load.';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'Measuring…';
+    let response;
+    try {
+      response = await apiFetch('/api/delegation/benchmark/cell', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: row.model, task_type: row.task_type}),
+      });
+    } catch (error) {
+      button.textContent = 'Re-measure';
+      button.disabled = false;
+      notifyResult(error.message, 'error');
+      return;
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      button.textContent = _errorMessage(data, 'Failed');
+      button.disabled = false;
+      return;
+    }
+    const {cell_run_id: cellRunId} = await response.json();
+    _pollCell(cellRunId, button);
+  });
+  return button;
+}
+
+/** The per-row Acknowledge control. Only rendered for a `reorder_flagged`
+ *  row (see `_modelTable`'s caller) -- an unflagged row has nothing to
+ *  acknowledge, and drawing the button unconditionally would make a renderer
+ *  bug that always shows it indistinguishable from correct behaviour.
+ *
+ *  The highlight this clears comes back only from a later measurement that
+ *  reorders the ladder again: not on reload, not on the next sweep, not with
+ *  time. That is enforced server-side (`benchmark_reorder.acknowledge`); this
+ *  button only calls it and reloads. */
+function _ackButton(row) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'delegation-ack';
+  button.textContent = 'Acknowledge';
+  button.title = 'This measurement reordered the ladder. Acknowledging clears '
+               + 'the highlight until a later measurement reorders it again.';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await apiFetch('/api/delegation/capability/ack', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: row.model, task_type: row.task_type}),
+      });
+    } catch (error) {
+      notifyResult(error.message, 'error');
+    }
+    await _refreshDelegation();
+  });
+  return button;
+}
+
 /** The model-rows table for one card: one row per (model, task_type), one
- *  editable cell per measured column. */
+ *  editable cell per measured column, plus the Re-measure control and (only
+ *  when flagged) the Acknowledge control.
+ *
+ *  Rule 1 (spec 9): a dormant cell is never dropped from this table -- it is
+ *  marked (`delegation-row-dormant`, the `dormant` tag on the model name) and
+ *  stays exactly where it was, because a silently skipped cell is
+ *  indistinguishable from a cell nobody thought to measure.
+ *  Rule 2: the reorder highlight (`delegation-row-reordered`) and its
+ *  Acknowledge button are driven only by `row.reorder_flagged`, which this
+ *  file never sets client-side -- it only ever reads it. */
 function _modelTable(rowsForType, columns) {
   const table = document.createElement('table');
   table.className = 'delegation-model-table';
@@ -342,21 +458,45 @@ function _modelTable(rowsForType, columns) {
     th.textContent = column;
     headRow.appendChild(th);
   });
+  const actionHead = document.createElement('th');
+  actionHead.textContent = '';
+  headRow.appendChild(actionHead);
   thead.appendChild(headRow);
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
   rowsForType.forEach(row => {
     const tr = document.createElement('tr');
+    if (row.reorder_flagged) tr.classList.add('delegation-row-reordered');
+    if (row.dormant) tr.classList.add('delegation-row-dormant');
+
     const modelCell = document.createElement('td');
     modelCell.className = 'delegation-model-name';
     modelCell.textContent = row.model;
+    if (row.dormant) {
+      const tag = document.createElement('span');
+      tag.className = 'delegation-dormant-tag';
+      tag.textContent = ' dormant';
+      // A silently skipped cell is indistinguishable from one nobody thought
+      // to measure, which is the failure this whole subsystem exists to stop.
+      tag.title = 'Failed three consecutive sweeps; no longer attempted. '
+                + 'Re-measure to clear.';
+      modelCell.appendChild(tag);
+    }
     tr.appendChild(modelCell);
+
     columns.forEach(column => {
       const td = document.createElement('td');
       td.appendChild(_cell(row, column));
       tr.appendChild(td);
     });
+
+    const actions = document.createElement('td');
+    actions.className = 'delegation-actions';
+    actions.appendChild(_remeasureButton(row));
+    if (row.reorder_flagged) actions.appendChild(_ackButton(row));
+    tr.appendChild(actions);
+
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);

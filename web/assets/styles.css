@@ -1493,6 +1493,23 @@ button{touch-action:manipulation}
 }
 .delegation-cell:focus { border-color:var(--accent); outline:none; }
 
+/* Task 10: per-cell Re-measure, dormant markers, reorder highlights. */
+.delegation-actions { white-space:nowrap; }
+.delegation-remeasure, .delegation-ack {
+  font-size:11px; padding:3px 8px; border-radius:5px; border:1px solid var(--line);
+  background:var(--panel); color:var(--fg); cursor:pointer;
+}
+.delegation-remeasure:disabled, .delegation-ack:disabled { opacity:0.6; cursor:default; }
+.delegation-ack { margin-left:6px; border-color:var(--accent); color:var(--accent); }
+.delegation-dormant-tag {
+  margin-left:6px; font-size:10px; font-weight:650; color:var(--muted);
+  text-transform:uppercase; letter-spacing:0.02em;
+}
+/* A dormant row stays fully visible (spec 9 rule 1) -- this only tints it, it
+   never hides it. */
+.delegation-row-dormant { background:color-mix(in srgb, var(--muted) 10%, transparent); }
+.delegation-row-reordered { background:color-mix(in srgb, var(--accent) 12%, transparent); }
+
 /* The read-only config overview (kill switch, attempts/caps, cost ceiling,
    observability) -- unstyled before this change, same as everything else on
    this panel. */

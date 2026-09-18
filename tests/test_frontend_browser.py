@@ -4484,5 +4484,99 @@ class DelegationConfigLayoutBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class DelegationBenchmarkControlsBrowserTests(_BrowserFixture):
+    """Settings -> Delegation: Task 10's per-cell Re-measure control, dormant
+    markers and reorder highlights (spec 9).
+
+    Rule 1: a dormant cell stays visible and is marked as such -- a silently
+    skipped cell is indistinguishable from one nobody thought to measure,
+    which is the exact failure this whole subsystem exists to stop.
+    Rule 2: the reorder highlight offers Acknowledge only on a row the server
+    actually flagged; clearing it on anything else (reload, the next sweep,
+    time) is covered at the routes layer (test_qa_benchmark_reorder.py). This
+    class checks the control renders where, and only where, the flag is set
+    -- the fourth test below is the direction that catches a renderer which
+    draws the button unconditionally.
+    """
+
+    _TASK_TYPE = "bench-demo"
+
+    def _seed(self):
+        """Three rows, one task type: clean, dormant, and reorder-flagged.
+        Model names sort alphabetically before/around 'dormant'/'reordered'
+        so 'clean-model' is the first non-reordered row in DOM order --
+        that ordering is what `test_an_unflagged_row_has_no_acknowledge_button`
+        relies on rather than asserting over every row."""
+        import sqlite3          # imported locally, as elsewhere in this file
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        con.execute("DELETE FROM delegation_capability WHERE task_type = ?",
+                    (self._TASK_TYPE,))
+        for model, dormant, reorder_flagged in (
+            ("clean-model", 0, 0),
+            ("dormant-model", 1, 0),
+            ("reordered-model", 0, 1),
+        ):
+            con.execute(
+                "INSERT OR REPLACE INTO delegation_capability "
+                "(model, task_type, accuracy, n, cost_per_1m_tokens, "
+                " median_latency_s, max_context, updated_at, dormant, "
+                " reorder_flagged) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (model, self._TASK_TYPE, 1.0, 12, 0.0, 10.0, 1_000_000,
+                 "2026-09-17T00:00:00Z", dormant, reorder_flagged))
+        con.commit()
+        con.close()
+
+    def _open(self):
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="delegation"]')
+        self.page.wait_for_selector("#panelDelegation:not([hidden])",
+                                     timeout=10_000)
+        self.page.wait_for_selector(".delegation-card", timeout=10_000)
+        # The model rows live inside a <details> (`_modelRows`), collapsed by
+        # default -- a closed <details>'s non-summary children are not
+        # visible, so `is_visible()` on a row inside would read false even
+        # though the row is correctly rendered. Open it first.
+        self.page.click(
+            f'.delegation-models[data-task-type="{self._TASK_TYPE}"] summary')
+        self.page.wait_for_selector(
+            f'.delegation-models[data-task-type="{self._TASK_TYPE}"] '
+            "table.delegation-model-table",
+            timeout=10_000)
+        self.page.wait_for_timeout(300)
+
+    def test_a_dormant_row_is_marked(self):
+        """A silently skipped cell reads as a cell nobody measured."""
+        self._seed()
+        self._open()
+        row = self.page.locator("tr.delegation-row-dormant").first
+        self.assertTrue(row.is_visible())
+        self.assertIn("dormant", row.inner_text().lower())
+        self.assertEqual(self.errors, [])
+
+    def test_a_reordered_row_offers_acknowledge(self):
+        self._seed()
+        self._open()
+        row = self.page.locator("tr.delegation-row-reordered").first
+        self.assertTrue(row.locator("button.delegation-ack").is_visible())
+        self.assertEqual(self.errors, [])
+
+    def test_an_unflagged_row_has_no_acknowledge_button(self):
+        """The direction that catches a renderer which always draws the
+        Acknowledge button regardless of `reorder_flagged`."""
+        self._seed()
+        self._open()
+        rows = self.page.locator(
+            "table.delegation-model-table tbody "
+            "tr:not(.delegation-row-reordered)")
+        self.assertGreater(rows.count(), 0, "no unflagged row rendered")
+        self.assertEqual(
+            rows.first.locator("button.delegation-ack").count(), 0,
+            "an unflagged row drew an Acknowledge button")
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

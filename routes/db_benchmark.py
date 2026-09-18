@@ -107,6 +107,30 @@ async def cells_for_run(run_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in await cur.fetchall()]
 
 
+async def measured_hours_per_night(limit: int = 10) -> list[float]:
+    """Hours of measurement recorded per calendar date, newest night first.
+
+    Spec 10's estimate needs a per-night rate, and there is no per-night
+    table -- `benchmark_cells.recorded_at` is the only record of when a cell
+    was measured. `db._now()` writes it as `%Y-%m-%dT%H:%M:%SZ`, so the
+    calendar date is the first 10 characters of the string, taken with
+    `substr` rather than SQLite's `date()`: `date()` expects a decimal-point
+    timestamp and returns NULL on this `T`-separated one, which would make
+    every night disappear silently rather than raise. Grouping by that slice
+    and summing `elapsed_s` gives measured hours per night.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT substr(recorded_at, 1, 10) AS night, SUM(elapsed_s) AS secs "
+        "FROM benchmark_cells "
+        "GROUP BY night "
+        "ORDER BY night DESC "
+        "LIMIT ?",
+        (int(limit),),
+    )
+    rows = await cur.fetchall()
+    return [row["secs"] / 3600.0 for row in rows]
+
+
 async def capability_meta_all() -> list[dict[str, Any]]:
     cur = await db.db_conn.execute(
         "SELECT model, task_type, measured_at, trigger, measured_under_load, "

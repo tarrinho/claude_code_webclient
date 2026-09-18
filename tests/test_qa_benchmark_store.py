@@ -84,3 +84,32 @@ class BenchmarkStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(cells), 1)
         self.assertEqual(cells[0]["status"], "failed")
         self.assertEqual(cells[0]["error"], "timeout after 900s")
+
+    async def test_measured_hours_per_night_sums_elapsed_s_by_calendar_date(self):
+        """Two distinct dates must yield two figures, each the date's own sum.
+
+        Inserted directly rather than through `cell_record` (which always
+        stamps `recorded_at` with the current time) so `recorded_at` can be
+        pinned to two different calendar dates. `recorded_at` uses `db._now`'s
+        `%Y-%m-%dT%H:%M:%SZ` format -- the date is its first 10 characters,
+        not something SQLite's `date()` can parse.
+        """
+        await self._run()
+        rows = [
+            ("r1", "m1", "coding", "ok", 900.0, "2026-09-17T02:00:00Z"),
+            ("r1", "m1", "planning", "ok", 1800.0, "2026-09-17T03:10:00Z"),
+            ("r1", "m1", "reasoning", "ok", 3600.0, "2026-09-18T02:00:00Z"),
+        ]
+        for run_id, model, task_type, status, elapsed_s, recorded_at in rows:
+            await db.db_conn.execute(
+                "INSERT INTO benchmark_cells (run_id, model, task_type, "
+                " status, accuracy, n, median_latency_s, elapsed_s, error, "
+                " recorded_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, NULL, ?)",
+                (run_id, model, task_type, status, elapsed_s, recorded_at))
+        await db.db_conn.commit()
+
+        hours = await store.measured_hours_per_night()
+        self.assertEqual(len(hours), 2)
+        # Newest night first: 2026-09-18 (one hour) then 2026-09-17 (0.75h).
+        self.assertAlmostEqual(hours[0], 3600.0 / 3600.0)
+        self.assertAlmostEqual(hours[1], (900.0 + 1800.0) / 3600.0)

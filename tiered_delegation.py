@@ -358,7 +358,34 @@ REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 0.5, 1.0 / 6.0)
 
 #: Section 5: per **tree**. All leaves share one pool -- it is not per goal and
 #: not per leaf.
-BUDGET_USD: Final[float] = 1.00
+#: Raised from 1.00 to 3.50 by operator decision, 2026-09-18, to let
+#: `comprehension` and `reasoning` go operational. Both price at $3.366, and
+#: the money is not where it looks: `claude-sonnet-5` at rung 1 costs $1.868
+#: alone -- more than the whole previous cap -- because rung 1 is reached half
+#: the time. opus at rung 2 adds $1.430; the free rung is $0.068.
+#:
+#: This raises the CAP rather than disabling the check, deliberately. A table
+#: that stops reporting cost is a table nobody can be warned by, and 2.7's
+#: "a model nobody priced must not come out cheapest" needs a line to compare
+#: against. Anything above 3.50 is still refused.
+#:
+#: Two things make this figure softer than it looks, both worth revisiting
+#: before treating it as settled:
+#:
+#: - the cost is dominated by ONE rung. Any competent model measured between
+#:   luna (0.0285) and sonnet (1.5709) would drop both types under the old
+#:   1.00 with no bypass at all. 2.7 names that gap as 55x wide with nothing
+#:   in it; `azure_ai/gpt-5.4-mini` sits there at 0.5261 and is excluded by a
+#:   separate operator decision.
+#: - `comprehension`'s ladder rests on a measurement taken while it was the
+#:   classifier's DEFAULT task type and absorbed most real coding traffic
+#:   (fixed 2026-09-18). Re-measuring it may move the ladder, and with it this
+#:   number.
+#:
+#: 2.7's own framing: this is one pool shared by every leaf in a tree, not a
+#: budget per goal. At 1.00 it bought roughly 335 luna requests; at 3.50,
+#: about 1,170.
+BUDGET_USD: Final[float] = 3.50
 
 
 def expected_tokens(task_type: str) -> int:

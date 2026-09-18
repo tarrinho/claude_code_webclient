@@ -109,15 +109,17 @@ _OPERATIONAL_FLIP_BLOCKED: Final[dict[str, str]] = {
     # is the free local model at 66% measured accuracy. That is the cost
     # thesis working as designed, and it is a real change in which model
     # answers, not just a flag.
-    "reasoning": (
-        "spec amendment b782e4d holds reasoning non-operational until its "
-        "75% n=2 accuracy figure is either re-measured or enforced in code "
-        "(spec 1.1); today's data would refuse this flip anyway -- "
-        "claude-sonnet-5's reasoning row has no median_latency_s and its "
-        "one-rung tree costs $3.736 against a BUDGET_USD of 1.00 -- but this "
-        "guard is what stops that data gap from silently becoming the only "
-        "thing enforcing the hold"
-    ),
+    # `reasoning` is NOT here any more either. Amendment b782e4d held it
+    # "until its 75% n=2 accuracy figure is either re-measured or enforced in
+    # code" -- and it was re-measured: 2.6 now carries reasoning at n=6 for
+    # five models. The hold was blocking on a condition that had already been
+    # met, which is the worst state for a guard to be in, because it reads as
+    # a live objection and is not one. Lifted by operator decision 2026-09-18.
+    #
+    # The map is now EMPTY. That is deliberate and not a sign the mechanism
+    # was removed: a policy hold is a decision recorded in code, and there is
+    # currently no undecided one. `_blockers_by_task_type` and the settings
+    # page still read this map, and a future hold is one entry away.
 }
 
 

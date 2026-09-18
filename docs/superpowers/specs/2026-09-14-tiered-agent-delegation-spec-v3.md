@@ -263,6 +263,24 @@ The list rates remain correct as list rates: opus 5.00/25.00, sonnet 2.00/10.00,
 
 The base design's `$0.23 per 1,000 tasks` for luna assumed 495 output tokens per response. Production luna requests average **104,895 tokens**. The per-task cost figures in the original design are therefore not wrong arithmetic — they price a task shape that does not occur here, and orchestrator leaves will resemble production, not the benchmark.
 
+#### Budget raised to $3.50, 2026-09-18 — and it re-opens three positions
+
+`BUDGET_USD` was raised from $1.00 by operator decision, to let `comprehension` and `reasoning` go operational. Both price at **$3.366**, and the money is concentrated in one rung: `claude-sonnet-5` at rung 1 costs **$1.868** alone — more than the entire previous cap — because rung 1 is reached half the time. opus at rung 2 adds $1.430; the free rung is $0.068.
+
+**This is not only a change for those two types.** §2.7's admissibility conclusions were derived against $1.00, and moving the line re-opens three of them:
+
+| model | rung | cost | at $1.00 | at $3.50 |
+|---|---|---|---|---|
+| `azure_ai/gpt-5.4-mini` | 0 | $1.251 | refused | **admissible** |
+| `claude-sonnet-5` | 1 | $1.868 | refused | **admissible** |
+| `claude-opus-5` | 2 | $1.430 | refused | **admissible** |
+
+The first matters most: **`mini`'s exclusion now rests on the operator decision alone, not on cost.** `EXCLUDED_MODELS` still keeps it out of every ladder, and that entry was always a decision rather than a derivation — but the cost argument that used to agree with it no longer does. There is no smaller version of this raise that avoids it: any budget above $1.251 admits mini at rung 0, and both task types need $3.366.
+
+opus stays refused at rungs 0 and 1, where it costs more than the whole tree budget.
+
+**Two reasons to treat $3.50 as provisional.** The cost is dominated by a single rung, so any competent model measured between luna (0.0285) and sonnet (1.5709) would drop both types under the *old* $1.00 with no raise at all — that is the 55× gap this section names. And `comprehension`'s ladder rests on a measurement taken while it was the classifier's **default** task type and absorbed most real coding traffic (fixed 2026-09-18), so re-measuring it may move the ladder and with it this number.
+
 **Consequence for the ladder:** the ordering survives — free is free, luna is ~5× cheaper per request than mini — but the *magnitudes* do not. `BUDGET_USD = 1.00` per **tree** (§5 — one pool shared by every leaf, not one budget per goal) buys roughly **335 luna requests or 67 mini requests** across the whole tree, not the thousands the original figures implied. Re-check that cap before implementation.
 
 #### 2.5.2 Attribution gaps to close first

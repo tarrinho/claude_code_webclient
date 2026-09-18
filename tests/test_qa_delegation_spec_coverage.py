@@ -592,23 +592,40 @@ class CostCeilingPositionTests(unittest.TestCase):
                                places=3)
         self.assertEqual(at_rung_two.validate(), [])
 
-    def test_opus_is_refused_at_every_published_rung(self):
-        """Row 1056: "asserting opus is merely expensive -- assert it is
-        refused at every rung of every ladder on the measured inputs". $8.582,
-        $4.291 and $1.430 against a $1.00 budget, the last of which is the one
-        an "it is only dear at rung 0" reading would miss."""
-        for rung in range(len(td.REACH_PROBABILITY)):
+    def test_opus_is_refused_at_the_shallow_rungs_but_not_the_deepest(self):
+        """Row 1056 asked for "opus is refused at every rung of every ladder on
+        the measured inputs" -- $8.582, $4.291 and $1.430 against a $1.00
+        budget. The budget moved to $3.50 on 2026-09-18 to let
+        `comprehension` and `reasoning` go operational, and opus at rung 2
+        ($1.430) became admissible with it.
+
+        That is a real consequence of the raise and not test drift, so it is
+        asserted as it now is rather than scaled away: opus stays refused at
+        rungs 0 and 1, where it costs more than the whole tree budget, and is
+        affordable only at the rung reached one time in six. The row's
+        underlying point -- that opus is not "merely expensive at rung 0" --
+        still holds for two of the three rungs.
+        """
+        for rung in (0, 1):
             with self.subTest(rung=rung):
                 self.assertGreater(td.rung_cost_usd(rung, RATE[OPUS]),
                                    td.BUDGET_USD)
-        deepest = td.CapabilityTable([
+        self.assertLess(td.rung_cost_usd(2, RATE[OPUS]), td.BUDGET_USD)
+
+    def test_a_ladder_can_still_be_refused_on_cost(self):
+        """The invariant itself must keep working at the new budget: a ladder
+        whose rungs exceed it is still refused. Uses a rate derived from
+        BUDGET_USD rather than a literal, so this cannot quietly stop
+        describing an unaffordable ladder the next time the budget moves --
+        which is exactly what happened to it on 2026-09-18."""
+        dear = td.BUDGET_USD / (td.LEAVES_PER_TREE * td.TOKENS_PER_LEAF
+                                * td.REACH_PROBABILITY[1] / 1_000_000) * 1.2
+        table = td.CapabilityTable([
             _row("vllm/a", "widget", 0.90, 6, 0.0, 10.0, 229_376),
-            _row("vllm/b", "widget", 0.95, 6, 0.0, 10.0, 229_376),
-            _row(OPUS, "widget", 1.00, 6, RATE[OPUS], 10.0, 1_000_000),
+            _row("claude-sonnet-5", "widget", 0.95, 6, dear, 10.0, 1_000_000),
         ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
-        self.assertEqual(deepest.ladder("widget")[2], OPUS)
-        self.assertTrue(any("BUDGET_USD" in p for p in deepest.validate()),
-                        deepest.validate())
+        self.assertTrue(any("BUDGET_USD" in p for p in table.validate()),
+                        table.validate())
 
     def test_lowering_leaves_per_tree_makes_sonnet_admissible_at_rung_one(self):
         """Row 1057: "hardcoding 40 -- assert lowering it to 10 makes sonnet
@@ -621,12 +638,20 @@ class CostCeilingPositionTests(unittest.TestCase):
         ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
         self.assertEqual(table.ladder("widget"), [LUNA, SONNET])
         self.assertAlmostEqual(table.tree_cost_usd("widget"), 1.9359, places=3)
-        self.assertTrue(any("BUDGET_USD" in p for p in table.validate()))
 
+        # $1.9359 was unaffordable against the $1.00 budget this row was
+        # written for and IS affordable against the $3.50 one set on
+        # 2026-09-18 -- sonnet at rung 1 is one of the three positions the
+        # raise re-admitted. The row's actual claim is that LEAVES_PER_TREE
+        # drives the figure, so that is what is asserted: the cost scales
+        # linearly with it, independent of where the budget line happens to
+        # sit.
         with patch.object(td, "LEAVES_PER_TREE", 10):
             self.assertAlmostEqual(table.tree_cost_usd("widget"), 0.4840,
                                    places=3)
             self.assertEqual(table.validate(), [])
+        self.assertAlmostEqual(table.tree_cost_usd("widget") / 0.4840,
+                               40 / 10, places=3)
 
     def test_a_type_whose_every_rung_is_excluded_goes_non_operational_and_falls_back(self):
         """Row 1064: "assert a task type whose every rung is excluded goes

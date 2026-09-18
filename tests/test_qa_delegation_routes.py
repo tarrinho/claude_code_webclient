@@ -563,38 +563,49 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await delegation_routes.handle_delegation_get(_request())
         self.assertEqual(await _ordinary_operational(), set())
 
-    async def test_reasoning_cannot_be_flipped_operational_even_with_complete_data(self):
-        """F7 / spec amendment b782e4d: `reasoning` is held non-operational
-        until it is enforced in code or lifted by measurement, the identical
-        argument spec 12 already applies to `coding`. Same shape as
-        test_coding_cannot_be_flipped_operational_even_with_complete_data --
-        the row would otherwise clear validate() cleanly, so a pass here
-        means the guard, not incomplete data, is what is being tested."""
-        from fastapi import HTTPException
+    async def test_reasoning_can_now_be_flipped_operational(self):
+        """Amendment b782e4d's hold was lifted 2026-09-18. It held `reasoning`
+        "until its 75% n=2 accuracy figure is either re-measured or enforced
+        in code" -- and it was re-measured, at n=6 for five models, so the
+        hold was blocking on a condition already met.
+
+        Same complete row shape the blocked version used, so a reinstated hold
+        fails here loudly rather than passing for the wrong reason."""
         await db.delegation_row_set("claude-sonnet-5", "reasoning",
                                     accuracy=1.0, n=10, cost_per_1m_tokens=0.0,
                                     median_latency_s=12.0, max_context=229376)
-        await db.delegation_row_set("claude-sonnet-5", "reviewer-gate",
-                                    accuracy=0.95, n=28,
-                                    cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=0)
-        # Stage 5's own task type since the 2026-09-17 gate split. Same model
-        # and latency as the reviewer row, so every figure these tests were
-        # written against still reproduces.
-        await db.delegation_row_set("claude-sonnet-5", "security-gate",
-                                    accuracy=0.95, n=28,
-                                    cost_per_1m_tokens=0.0,
-                                    median_latency_s=5.0, max_context=0)
-        # Spec 12's coverage rule (2026-09-17): an ordinary task type may not
-        # route through a gate type that has not itself cleared 1.1.
+        for gate in ("reviewer-gate", "security-gate"):
+            await db.delegation_row_set("claude-sonnet-5", gate,
+                                        accuracy=0.95, n=28,
+                                        cost_per_1m_tokens=0.0,
+                                        median_latency_s=5.0, max_context=0)
         for gate_type in tiered_delegation.GATE_CALLS:
             await db.delegation_operational_set(gate_type, True)
-        with self.assertRaises(HTTPException) as ctx:
-            await delegation_routes.handle_operational_put(_request(body={
-                "task_type": "reasoning", "operational": True}))
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("reasoning", str(ctx.exception.detail))
-        self.assertEqual(await _ordinary_operational(), set())
+        await delegation_routes.handle_operational_put(_request(body={
+            "task_type": "reasoning", "operational": True}))
+        self.assertIn("reasoning", await db.delegation_operational_all())
+
+    async def test_no_policy_hold_remains(self):
+        """Both holds lifted, so the map is empty. Asserted directly so adding
+        one is deliberate, and so an empty map is not mistaken for the
+        mechanism having been removed."""
+        self.assertEqual(dict(delegation_routes._OPERATIONAL_FLIP_BLOCKED), {})
+
+    async def test_the_policy_channel_still_works_when_a_hold_exists(self):
+        """The mechanism must keep working with no live hold to exercise it.
+
+        Patched rather than real: every real hold is now lifted, so without
+        this the policy path would be code that only a future decision
+        exercises -- for the first time, in production."""
+        await db.delegation_row_set("claude-sonnet-5", "planning", accuracy=1.0)
+        with patch.dict(delegation_routes._OPERATIONAL_FLIP_BLOCKED,
+                        {"planning": "held for a test"}, clear=False):
+            body = json.loads(
+                (await delegation_routes.handle_delegation_get(_request())).body)
+            entry = body["blockers"]["planning"]
+            self.assertIsNotNone(entry["policy"])
+            self.assertIn("held for a test", entry["policy"])
+            self.assertTrue(entry["policy"].startswith("planning: "))
 
     async def test_flipping_reasoning_off_is_not_blocked(self):
         """The guard is specifically about *flipping to* operational -- it
@@ -610,51 +621,17 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         await delegation_routes.handle_delegation_get(_request())
         self.assertEqual(await _ordinary_operational(), set())
 
-    async def test_get_reports_policy_blockers_for_coding_and_reasoning(self):
-        """The redesigned settings page shows *why* a type cannot go
-        operational rather than only refusing the click after the fact.
-        A blocker entry only exists for a task type the table actually has a
-        row for (the same scoping `ladders` already uses), so each gets one
-        bare row here -- just enough to appear, with the policy reason
-        expected regardless of how incomplete the row is."""
-        await db.delegation_row_set("claude-sonnet-5", "coding", accuracy=1.0)
-        await db.delegation_row_set("claude-sonnet-5", "reasoning", accuracy=1.0)
-        response = await delegation_routes.handle_delegation_get(_request())
-        body = json.loads(response.body)
-        coding = body["blockers"]["coding"]
-        reasoning = body["blockers"]["reasoning"]
-        # `coding`'s hold was lifted 2026-09-18: it must now report NO policy
-        # blocker, while `reasoning` still reports its own. Asserting both
-        # sides keeps this from passing if the page simply stopped emitting
-        # policy blockers altogether.
-        self.assertIsNone(coding["policy"], coding)
-        self.assertIn(
-            delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"],
-            reasoning["policy"])
-
-    async def test_a_policy_blocker_names_its_task_type_like_a_data_one(self):
-        """On the page a policy line sits directly beside data lines, and
-        every string `validate()` produces opens with `<task type>: `. The
-        stored reason is deliberately unprefixed -- `handle_operational_put`
-        interpolates it into a sentence that already names the type -- so the
-        prefix is added where the two are shown together. Without it the
-        rendered box mixes prefixed and unprefixed lines and reads as two
-        different kinds of message about two different things."""
+    async def test_no_task_type_reports_a_policy_blocker(self):
+        """Both holds lifted 2026-09-18. Asserted for BOTH previously-held
+        types, so reinstating either fails here rather than silently changing
+        what the page says."""
         await db.delegation_row_set("claude-sonnet-5", "coding", accuracy=1.0)
         await db.delegation_row_set("claude-sonnet-5", "reasoning", accuracy=1.0)
         body = json.loads(
             (await delegation_routes.handle_delegation_get(_request())).body)
-        for task_type in ("reasoning",):
+        for task_type in ("coding", "reasoning"):
             with self.subTest(task_type=task_type):
-                entry = body["blockers"][task_type]
-                self.assertTrue(entry["policy"].startswith(f"{task_type}: "),
-                                entry["policy"])
-                # The stored reason itself must stay unprefixed, or the flip
-                # refusal would read "coding cannot be flipped operational:
-                # coding: spec section 12 ...".
-                self.assertFalse(
-                    delegation_routes._OPERATIONAL_FLIP_BLOCKED[task_type]
-                    .startswith(f"{task_type}: "))
+                self.assertIsNone(body["blockers"][task_type]["policy"])
 
     async def test_get_computes_a_data_blocker_for_an_incomplete_non_operational_type(self):
         """`long-context` has no policy hold, but a row missing
@@ -732,22 +709,6 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(response.body)
         self.assertEqual(body["blockers"]["long-context"],
                           {"policy": None, "data": [], "warnings": []})
-
-    async def test_coding_and_reasoning_are_blocked_for_different_reasons(self):
-        """The two holds exist for different reasons -- coding waits on
-        spec 12's gate-type question, reasoning waits on a 75% n=2 accuracy
-        figure being re-measured -- so a single generic refusal message would
-        tell an operator nothing about which blocker applies to them. Assert
-        the two messages actually differ and each names its own reason,
-        rather than both happening to share one generic string."""
-        # `coding`'s hold was lifted 2026-09-18, so only `reasoning` remains.
-        # The property still worth holding is that a hold NAMES its own
-        # reason: a generic refusal would tell an operator nothing about
-        # which blocker applies to them.
-        self.assertNotIn("coding",
-                         delegation_routes._OPERATIONAL_FLIP_BLOCKED)
-        reasoning_reason = delegation_routes._OPERATIONAL_FLIP_BLOCKED["reasoning"]
-        self.assertIn("75%", reasoning_reason)
 
 
 if __name__ == "__main__":

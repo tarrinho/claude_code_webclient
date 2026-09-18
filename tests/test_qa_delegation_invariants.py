@@ -553,6 +553,23 @@ class WorstCasePathTests(unittest.TestCase):
                             for p in table.validate()), table.validate())
 
 
+def _rate_over_budget() -> float:
+    """A rung-1 rate whose tree cost exceeds BUDGET_USD, whatever it is.
+
+    The fixtures below used sonnet's literal 1.5709, which was unaffordable
+    against a $1.00 budget and affordable against the $3.50 one set on
+    2026-09-18 -- so the "unaffordable ladder" tests silently stopped
+    describing an unaffordable ladder. Derived from the constant instead.
+
+    rung 1 is reached with probability REACH_PROBABILITY[1], so the rate
+    needed to clear the budget on that rung alone is the budget divided by
+    (leaves x tokens x P), with a 20% margin so rounding cannot land it under.
+    """
+    per_unit = (td.LEAVES_PER_TREE * td.TOKENS_PER_LEAF
+                * td.REACH_PROBABILITY[1] / 1_000_000)
+    return td.BUDGET_USD / per_unit * 1.2
+
+
 class TreeCostTests(unittest.TestCase):
     """Spec 1.1 invariant 6 / 2.7: the ladder fits `BUDGET_USD`."""
 
@@ -581,10 +598,10 @@ class TreeCostTests(unittest.TestCase):
         which check caught it."""
         rows = [
             _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
-            _row("claude-sonnet-5", "widget", 0.95, 20, 1.5709, 10.5),
+            _row("claude-sonnet-5", "widget", 0.95, 20, _rate_over_budget(), 10.5),
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
-        self.assertAlmostEqual(table.tree_cost_usd("widget"), 1.9359, places=3)
+        self.assertGreater(table.tree_cost_usd("widget"), td.BUDGET_USD)
         problems = table.validate()
         self.assertTrue(any("widget" in p and "BUDGET_USD" in p
                             for p in problems), problems)
@@ -598,7 +615,7 @@ class TreeCostTests(unittest.TestCase):
         $1.9359 total, so sonnet is the rung to name."""
         rows = [
             _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
-            _row("claude-sonnet-5", "widget", 0.95, 20, 1.5709, 10.5),
+            _row("claude-sonnet-5", "widget", 0.95, 20, _rate_over_budget(), 10.5),
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
         problems = table.validate()
@@ -815,8 +832,15 @@ class GatePricingTests(unittest.TestCase):
         table = _table(self._gate_rows())
         cost = table.tree_cost_usd("security-gate")
         as_a_leaf = cost * td.TOKENS_PER_LEAF / td.GATE_TOKENS_PER_CALL
+        # Stated as the RATIO rather than against BUDGET_USD: the budget moved
+        # from $1.00 to $3.50 on 2026-09-18 and the "as a leaf it would be
+        # unaffordable" framing stopped holding, even though the 4.28x
+        # overstatement this test is about did not change at all.
+        self.assertAlmostEqual(as_a_leaf / cost,
+                               td.TOKENS_PER_LEAF / td.GATE_TOKENS_PER_CALL,
+                               places=6)
+        self.assertGreater(as_a_leaf, cost * 4)
         self.assertLess(cost, td.BUDGET_USD)
-        self.assertGreater(as_a_leaf, td.BUDGET_USD)
 
     def test_a_gate_ladder_is_capped_at_its_own_attempt_budget(self):
         """4.3 gives a gate ONE climb, so a gate makes at most two calls and a
@@ -930,7 +954,8 @@ class AllSixTogetherTests(unittest.TestCase):
             # unresolvable bare name, 10x the reference latency, and sonnet's
             # rate at rung 1 -- one row breaking all three new invariants.
             _row("vllm/fast", "widget", 0.90, 20, 0.0, 10.0),
-            _row("claude-sonet-5", "widget", 0.90, 20, 1.5709, 100.0),
+            _row("claude-sonet-5", "widget", 0.90, 20, _rate_over_budget(),
+                 100.0),
         ]
         problems = _table(rows + GATE_SINGLE, operational={"widget"}).validate(
             enforce_latency_ceiling=True)

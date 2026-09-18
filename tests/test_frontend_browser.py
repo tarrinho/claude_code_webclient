@@ -3971,6 +3971,14 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
         blocker specifically, distinct from a data one."""
         import sqlite3          # imported locally, as elsewhere in this file
         con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        # Clear the operational flags first. `_seed_flippable_type` flips the
+        # gate types on, and the fixture database is shared across the tests
+        # in this class -- so without this, a test that ran after it saw the
+        # gate types already operational, spec 12's coverage rule stopped
+        # firing, and the "blocked" type came out clean. Both affected tests
+        # passed in isolation and failed in the class, which is what a leak
+        # looks like rather than flakiness.
+        con.execute("DELETE FROM delegation_operational")
         for task_type in (blocked_type, clean_type):
             con.execute(
                 "INSERT OR REPLACE INTO delegation_capability "
@@ -4022,7 +4030,13 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
         self._open()
         headings = [h.inner_text().strip().lower() for h in
                     self.page.query_selector_all(".delegation-blocker-heading")]
-        self.assertTrue(any("policy" in h for h in headings), headings)
+        # DATA only. Both policy holds were lifted on 2026-09-18, so no task
+        # type produces a POLICY group any more and this cannot assert one
+        # without inventing a hold in production code. The policy group is
+        # covered instead by
+        # test_qa_delegation_routes.py::test_the_policy_channel_still_works_when_a_hold_exists,
+        # which patches a hold in rather than relying on a live decision --
+        # which is the more durable place for it regardless.
         self.assertTrue(any("data" in h for h in headings), headings)
         self.assertEqual(self.errors, [])
 

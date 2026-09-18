@@ -180,9 +180,16 @@ class StartupValidationTests(unittest.IsolatedAsyncioTestCase):
         baseline = td.baseline_task_ratio("long-context") * 12.0
         self.assertAlmostEqual(table.baseline_deadline_s("long-context"),
                                baseline, places=9)
-        self.assertAlmostEqual(table.worst_case_path_s("long-context"),
-                               baseline * 2.0 * (1.0 + 3 * (11.1 / 12.0)),
-                               places=6)
+        # Each gate's ENTRY call is charged once per generation attempt since
+        # 2026-09-18 (4.3/4.5: the gate re-reviews after the generator
+        # escalates); the climb stays once. Two gate types back 2 and 1 of
+        # stages 3-5's calls, and this fixture gives both the same 11.1s rung
+        # with no climb:
+        #     1 generation rung + (2 + 1) calls x MAX_ATTEMPTS x 11.1/12.0
+        self.assertAlmostEqual(
+            table.worst_case_path_s("long-context"),
+            baseline * 2.0 * (1.0 + 3 * td.MAX_ATTEMPTS * (11.1 / 12.0)),
+            places=6)
         self.assertLess(table.worst_case_path_s("long-context"),
                         td.LATENCY_CEILING_S)
         self.assertAlmostEqual(table.tree_cost_usd("long-context"), 0.0,

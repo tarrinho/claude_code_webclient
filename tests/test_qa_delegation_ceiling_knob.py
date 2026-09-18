@@ -119,7 +119,7 @@ class CeilingDecisionTests(unittest.TestCase):
         and `reason` surviving the off path there is nothing for section 10
         to monitor, and the decision to turn the knob on would be taken with
         no evidence."""
-        d = pipeline.ceiling_decision(2_000.0, 90.0, enforce=False)
+        d = pipeline.ceiling_decision(td.LATENCY_CEILING_S + 500.0, 90.0, enforce=False)
         self.assertTrue(d.proceed)
         self.assertTrue(d.exceeded)
         self.assertIsNotNone(d.reason)
@@ -130,7 +130,7 @@ class CeilingDecisionTests(unittest.TestCase):
         carries on would make the log say the opposite of what happened, and
         6.1 is explicit that this signal must stay distinguishable from a
         deadline expiry."""
-        d = pipeline.ceiling_decision(2_000.0, 90.0, enforce=False)
+        d = pipeline.ceiling_decision(td.LATENCY_CEILING_S + 500.0, 90.0, enforce=False)
         self.assertTrue(d.proceed)
         self.assertIsNone(d.signal)
 
@@ -145,7 +145,8 @@ class CeilingDecisionTests(unittest.TestCase):
             self.assertNotEqual(pipeline.LATENCY_CEILING_EXHAUSTED, other)
 
     def test_the_decision_defaults_to_not_enforcing(self):
-        self.assertTrue(pipeline.ceiling_decision(2_000.0, 90.0).proceed)
+        self.assertTrue(
+            pipeline.ceiling_decision(td.LATENCY_CEILING_S + 500.0, 90.0).proceed)
 
     def test_a_custom_ceiling_is_honoured(self):
         """The ceiling is derived (5.1) and is recomputed whenever a ladder or

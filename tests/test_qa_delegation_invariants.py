@@ -121,8 +121,16 @@ def _widget_rows(task_type="widget"):
 
 
 # 90 (unknown type -> longest baseline) x 2.0 (score 5) x
-# [ (20.0 + 10.0 + 12.0)/10.0 + 3 x (11.1/10.0) ] = 180 x 7.53
-WIDGET_WORST_CASE_S = 1355.4
+# [ generation (20.0 + 10.0 + 12.0)/10.0            = 4.20
+#   reviewer-gate 2 calls x 3 attempts x 11.1/10.0  = 6.66
+#   security-gate 1 call  x 3 attempts x 11.1/10.0  = 3.33 ]  = 14.19
+# = 180 x 14.19
+#
+# The entry call is multiplied by MAX_ATTEMPTS since 2026-09-18: 4.3 and 4.5
+# both say the gate re-reviews after the generator escalates, so a gate sees
+# every attempt's output rather than only the first. Hand-computed here and
+# independently in the module; the two agreeing is the check.
+WIDGET_WORST_CASE_S = 2554.2
 
 
 def _with_gates_operational(operational):
@@ -270,7 +278,7 @@ class WorstCasePathTests(unittest.TestCase):
         self.assertAlmostEqual(known.baseline_deadline_s("long-context"),
                                derived, places=9)
         self.assertAlmostEqual(known.worst_case_path_s("long-context"),
-                               derived * 2.0 * 7.53, places=6)
+                               derived * 2.0 * 14.19, places=6)
         self.assertEqual(unknown.baseline_deadline_s("widget"), 90.0)
         self.assertAlmostEqual(unknown.worst_case_path_s("widget"),
                                WIDGET_WORST_CASE_S, places=3)
@@ -298,7 +306,7 @@ class WorstCasePathTests(unittest.TestCase):
             _row("vllm/slow", "widget", 0.90, 20, 0.0, 100.0),
         ]
         table = _table(rows + GATE_SINGLE, operational={"widget"})
-        self.assertAlmostEqual(table.worst_case_path_s("widget"), 2579.4,
+        self.assertAlmostEqual(table.worst_case_path_s("widget"), 3778.2,
                                places=3)
         enforced = table.validate(enforce_latency_ceiling=True)
         self.assertTrue(any("ceiling" in p and "widget" in p
@@ -359,7 +367,7 @@ class WorstCasePathTests(unittest.TestCase):
             _row("vllm/slow", "widget", 0.90, 20, 0.0, 20.0),
         ]
         table = _table(rows + GATE_SINGLE, operational={"widget"})
-        self.assertAlmostEqual(table.worst_case_path_s("widget"), 1139.4,
+        self.assertAlmostEqual(table.worst_case_path_s("widget"), 2338.2,
                                places=3)
         self.assertEqual(table.validate(), [])
 
@@ -382,8 +390,9 @@ class WorstCasePathTests(unittest.TestCase):
         # untouched at 11.1s. That the delta is 2x rather than 3x is the
         # assertion -- it is what proves the security call is timed against
         # its OWN row instead of the reviewer's.
+        # x3: the entry call happens once per generation attempt.
         self.assertAlmostEqual(
-            slowed - base, 2 * (22.2 - 11.1) / 10.0 * 180.0, places=3)
+            slowed - base, 2 * 3 * (22.2 - 11.1) / 10.0 * 180.0, places=3)
 
     def test_the_gate_climb_term_is_added_when_the_climb_rung_is_measured(self):
         """Spec 4.3/4.5, 2026-09-16 amendment: each of the three gates can
@@ -434,7 +443,7 @@ class WorstCasePathTests(unittest.TestCase):
         ]
         table = _table(_widget_rows() + gate_without_latency,
                        operational={"widget"})
-        self.assertAlmostEqual(table.worst_case_path_s("widget"), 1296.0,
+        self.assertAlmostEqual(table.worst_case_path_s("widget"), 2376.0,
                                places=3)
         # Scoped to `widget`'s own problems. The gate rows here deliberately
         # carry no latency -- that absence is what makes the fallback the only
@@ -526,7 +535,7 @@ class WorstCasePathTests(unittest.TestCase):
         ]
         table = _table(rows + GATE_SINGLE)
         self.assertEqual(len(table.ladder("widget")), td.MAX_ATTEMPTS)
-        self.assertAlmostEqual(table.worst_case_path_s("widget"), 1139.4,
+        self.assertAlmostEqual(table.worst_case_path_s("widget"), 2338.2,
                                places=3)
 
     def test_a_rung_without_a_latency_is_a_problem_not_a_crash(self):

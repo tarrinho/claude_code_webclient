@@ -130,9 +130,27 @@ BINDING_SIZE_FACTOR: Final[float] = SIZE_FACTOR[5]
 #: so the value comes from the spec rather than from an import.
 MAX_ATTEMPTS: Final[int] = 3            # generation attempts, per leaf (5)
 
-#: 5 ("combined latency ceiling | 1,500 -- derived, see 5.1"), per leaf, all
-#: five stages.
-LATENCY_CEILING_S: Final[int] = 1_500
+#: 5's combined latency ceiling, per leaf, across all five stages.
+#:
+#: **2,900s, set by operator decision 2026-09-18**, raised from 1,500s after
+#: the worst-case formula was corrected to charge each gate once per
+#: generation attempt (4.3/4.5: "the generator escalates one rung and the gate
+#: re-reviews"). That correction put every ordinary task type over the old
+#: ceiling -- `coding` 1,726s, `comprehension` 2,843s -- none of which was a
+#: measurement changing, only the arithmetic catching up with the pipeline.
+#:
+#: 2,900 covers the slowest type measured today with **57s of margin, 2.0%**.
+#: 5.1 argues against exactly this: "a ceiling set flush to the worst case
+#: would be a coincidence rather than a margin: the next re-measurement of any
+#: of these latencies breaks it". The precedent it set was 1,243s worst case
+#: against a 1,500s ceiling -- 17.1% -- which here would be about 3,430s.
+#: Recorded as the operator's choice rather than argued away, and the thin
+#: margin is the thing to watch: a single re-measurement of `comprehension`'s
+#: gate or generation latencies can breach it.
+#:
+#: It is still not enforced unless CEILING_ENFORCEMENT_SETTING is switched on,
+#: so today this changes what is REPORTED, not what is blocked.
+LATENCY_CEILING_S: Final[int] = 2_900
 
 #: The settings key holding 9.2's enforcement knob for the ceiling above, and
 #: its default. **Off by default, deliberately.**
@@ -828,7 +846,8 @@ class CapabilityTable:
 
             worst_case = baseline x size_factor x [ sum(m_rung) over MAX_ATTEMPTS
                                                   + SUM over gate types of
-                                                    calls x (m_entry + m_climb) ]
+                                                    calls x (MAX_ATTEMPTS x m_entry
+                                                             + m_climb) ]
 
         Every generation attempt runs to its deadline, then each gate type
         runs its entry call and, if its own table holds a second usable model
@@ -930,7 +949,25 @@ class CapabilityTable:
                 problems.append(f"{prefix} -- {climb_reason}")
 
             if entry_latency is not None:
-                gate_multiplier = entry_latency / reference
+                # The ENTRY call happens once per generation attempt, not once
+                # per leaf. 4.3 and 4.5 both say so outright -- "on rejection,
+                # the generator escalates one rung and the gate re-reviews" --
+                # so a gate sees every attempt's output, and its calls scale
+                # with MAX_ATTEMPTS.
+                #
+                # The 2026-09-16 amendment found the formula incomplete and
+                # named two missing terms, the gate climbs and 4.5's security
+                # re-runs. It modelled the climb and deferred the re-run as
+                # unpriceable. Both readings missed that the re-run is not a
+                # separate term at all: a security cycle IS a generation
+                # attempt (generate -> review -> fix -> review, where the fix
+                # is the escalation), so MAX_ATTEMPTS and SECURITY_RERUN_CAP
+                # bound the same loop. Counting them separately double-counts;
+                # counting attempts covers both.
+                gate_multiplier = MAX_ATTEMPTS * entry_latency / reference
+                # The CLIMB happens once, not per attempt: 4.3 climbs only
+                # when the gate keeps rejecting the generator's TOP rung,
+                # which by definition is reached once.
                 if climb_latency is not None:
                     gate_multiplier += climb_latency / reference
                 multiplier_sum += calls * gate_multiplier

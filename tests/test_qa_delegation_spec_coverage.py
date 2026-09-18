@@ -710,6 +710,18 @@ class MedianLatencyProvenanceTests(unittest.TestCase):
         self.assertNotAlmostEqual(last, median, places=1)
 
 
+def _latency_over_the_ceiling() -> float:
+    """A free-rung latency large enough to breach whatever the ceiling is.
+
+    Was a literal 60.0, chosen against a 1,500s ceiling. When the ceiling was
+    raised to 2,900s on 2026-09-18 that stopped breaching, and the tests below
+    asserted a refusal that no longer happened -- they passed only because
+    `assertRaises` was the thing that failed, which is luck rather than
+    coverage. Scaled off the constant so the breach survives the next change.
+    """
+    return 60.0 * (td.LATENCY_CEILING_S / 1_500) * 1.2
+
+
 class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
     """Spec 11 row 1022: "assert startup FAILS for an operational task type
     whose computed worst case exceeds the ceiling. Both sides: an operational
@@ -791,7 +803,7 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
         table = await ds.validate_or_die()          # must not raise
         self.assertEqual(table.ladder(self.TASK_TYPE), [VLLM, LUNA, SONNET])
         self.assertAlmostEqual(table.worst_case_path_s(self.TASK_TYPE),
-                               1243.125, places=3)
+                               2179.6875, places=3)
         self.assertLess(table.worst_case_path_s(self.TASK_TYPE),
                         td.LATENCY_CEILING_S)
 
@@ -805,7 +817,7 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
         `test_the_same_table_loads_with_the_ceiling_knob_off` below -- the two
         together are what stop this from reading as either "the ceiling never
         blocks" or "the knob does nothing"."""
-        await self._seed(60.0)
+        await self._seed(_latency_over_the_ceiling())
         await setting_set(td.CEILING_ENFORCEMENT_SETTING, "1")
         with self.assertRaises(ds.DelegationConfigError) as ctx:
             await ds.validate_or_die()
@@ -823,7 +835,7 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
         "off" mean "not measured" -- so the breach is also asserted to come
         back from `latency_ceiling_breaches`, which is what the settings page
         and the boot log both read."""
-        await self._seed(60.0)
+        await self._seed(_latency_over_the_ceiling())
         self.assertFalse(td.CEILING_ENFORCEMENT_DEFAULT)
         table = await ds.validate_or_die()          # must not raise
         breaches = table.latency_ceiling_breaches()
@@ -835,7 +847,7 @@ class CeilingVersusAttemptBudgetTests(unittest.IsolatedAsyncioTestCase):
         """A stored "0" and no row at all must behave identically. A reader
         that treated "any stored value" as on would turn the act of switching
         enforcement OFF into switching it on."""
-        await self._seed(60.0)
+        await self._seed(_latency_over_the_ceiling())
         await setting_set(td.CEILING_ENFORCEMENT_SETTING, "0")
         await ds.validate_or_die()                  # must not raise
         self.assertFalse(await ds.ceiling_enforcement_enabled())

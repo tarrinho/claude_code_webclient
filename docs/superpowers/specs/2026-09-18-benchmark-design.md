@@ -1,5 +1,7 @@
 # Benchmark — design
 
+> **Superseded by [`2026-09-18-benchmark-design-v2.md`](2026-09-18-benchmark-design-v2.md), which is the current design.** This version is kept for §1's record of the 2026-09-17 failures that motivated the work.
+
 **Status:** design approved 2026-09-18, extended and re-approved 2026-09-18, not
 yet implemented.
 **Scope:** a `benchmark` functionality that measures every model against every

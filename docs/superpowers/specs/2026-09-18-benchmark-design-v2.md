@@ -123,12 +123,15 @@ columns on `delegation_capability`.
 benchmark_runs
     id            TEXT PRIMARY KEY     -- e.g. "2026-09-18T02-00-00Z"
     started_at    TEXT NOT NULL
+    expires_at    TEXT NOT NULL        -- started_at + 10 days; see 8.4
     finished_at   TEXT                 -- NULL while running or abandoned
+    cooling_until TEXT                 -- finished_at + 2 days; NULL until done
     status        TEXT NOT NULL        -- running | done | expired
     models        TEXT NOT NULL        -- JSON list, frozen at start
     task_types    TEXT NOT NULL        -- JSON list, frozen at start
     repeats       INTEGER NOT NULL
     cells_total   INTEGER NOT NULL
+    cells_dormant INTEGER NOT NULL DEFAULT 0   -- dormant now; rises mid-sweep, see 12.1
     trigger       TEXT NOT NULL DEFAULT 'scheduled'   -- scheduled | cli
 
 benchmark_cells
@@ -212,10 +215,17 @@ stamped with `measured_at`. There is no batch, no end-of-run transaction, and no
 review step. A sweep that stops for any reason — the box got busy, the host
 rebooted, the run expired — keeps every cell it had already measured.
 
-Failed cells are never written. A failure leaves the previous measurement in
-place: an old number is worth more than no number, and §7 already refuses to
-record a timeout as a measurement. The failure is recorded in `benchmark_cells`
-and counted against §12's dormancy rule.
+**A failed cell writes no capability row, and always writes a
+`benchmark_cells` row.** The two are separate acts and only the first is
+skipped. The capability row is left alone because an old number is worth more
+than no number, and §7 already refuses to record a timeout as a measurement.
+
+The `benchmark_cells` row is not optional bookkeeping: it is one of the three
+consecutive failures §12 counts, and dormancy is computed by reading those rows
+per sweep. A failure that left no row would be invisible to the counter, and the
+unreachable copilot cells would be retried forever. `benchmark_cells` holding
+history rather than resume state changes what its `status` column is *used for*;
+it does not change which rows exist.
 
 **Resume reads the capability table, not a ledger.** For a sweep with
 `started_at = T`, a cell is **done** if its `delegation_capability` row has
@@ -271,6 +281,18 @@ rather than introducing a scheduler. It fires **nightly at 02:00** and runs
 A sweep is *current* from the moment it starts until two days after it finishes.
 Nothing else is a case: there is no "wait for the interval" branch, because the
 interval is a property of the sweep rather than a state of the scheduler.
+
+**"Current" is a stored fact, not a computed one.** `expires_at` is written when
+the sweep starts and `cooling_until` when it reaches `done` (§4). The scheduler
+asks for the one current run — a row with `status = 'running'`, or
+`status = 'done'` with `cooling_until` in the future — and acts on what it finds.
+It does not re-derive eligibility from timestamps scattered across rows each
+time it wakes.
+
+That matters for testing more than for runtime: a stored window can be set to
+any value in a fixture, so "a sweep inside its cooling period" and "a sweep whose
+cooling has elapsed" are both one `UPDATE` away. A computed window would make
+every scheduler test a clock test.
 
 ### 8.2 Cadence
 
@@ -367,8 +389,12 @@ behaviour is testable without a browser.
 Per cell, on stdout:
 
 ```
-[14/70] azure_ai/gpt-5.6-luna / planning   done 5m42s   measured 1h18m   remaining ≈5h36m (from 14 cells)
+[14/63] azure_ai/gpt-5.6-luna / planning   done 5m42s   measured 1h18m
+        remaining ≈5h36m measurement (from 14 cells)   (7 dormant of 70)
 ```
+
+The denominator is the attemptable count and the dormant count rides alongside
+it, per §12.1.
 
 The remaining figure is computed from the cells **this sweep** has already
 measured, and states how many it is based on. A projection from two cells is not
@@ -447,6 +473,59 @@ stop.
 a human deciding the underlying problem is fixed, which is the judgment the
 counter cannot make.
 
+### 12.1 Dormant cells and progress reporting
+
+**`cells_total` counts every cell in the frozen matrix, including dormant ones.**
+It is the size of the matrix the sweep was defined over, and it does not change
+while the sweep runs.
+
+Progress is reported against the **attemptable** count, with the dormant count
+named alongside rather than folded away:
+
+```
+[14/63] azure_ai/gpt-5.6-luna / planning   done 5m42s   (7 dormant of 70)
+```
+
+`cells_dormant` is recorded on the run row at start (§4) so a finished sweep
+still says how much of the matrix it was never going to attempt. Without it, a
+sweep that completed 63 of 70 cells and one that skipped 7 unmeasurable ones are
+the same two numbers.
+
+Progress against 70 would stall at 90% forever and read as a stuck sweep;
+progress against 63 with no dormant count visible would read as a full matrix
+and quietly hide that a tenth of it is unmeasured. Both failures are the §1
+failure — a number that does not mean what it appears to mean — so the report
+carries both figures.
+
+A cell that goes dormant **mid-sweep** moves from attemptable to dormant at that
+moment: the denominator drops and `cells_dormant` rises. `cells_total` does not
+move.
+
+### 12.2 A sweep whose remainder is entirely dormant
+
+**It completes immediately.** §6's rule is that a sweep reaches `done` when no
+cell is pending, and a dormant cell is not pending. So a sweep whose every
+remaining cell has gone dormant has nothing left to do and finishes on the spot,
+setting `finished_at` and `cooling_until` like any other completed sweep.
+
+It does not sit waiting for something to change, and it does not run to its
+ten-day expiry. Both alternatives were considered and are worse:
+
+- **Sitting open** would block the next sweep for ten days, and the next sweep is
+  the only scheduled event that would retry anything. A cell cannot leave
+  dormancy on its own — only a manual re-measure clears it (§9) — so waiting
+  cannot improve the outcome.
+- **Expiring** would mark a sweep `expired` that did everything asked of it, and
+  §8.4 exists for sweeps the box was too busy to support, not for sweeps that
+  finished.
+
+The degenerate case is a matrix where **every** cell is dormant. That sweep
+starts and completes in the same run, writes nothing, and enters cooling. This is
+correct rather than a defect: the system has nothing it is permitted to measure,
+and it says so through `cells_dormant == cells_total` on the run row and seven
+dormant markers on the page. It stays in that state until a human clears a
+dormancy, which is exactly the intended escalation.
+
 ## 13. Reordering highlights
 
 When a new measurement would change the **relative order of two rungs** in a
@@ -501,8 +580,22 @@ direction that makes it able to fail.
 - **Dormancy**, all three transitions: three consecutive failures set `dormant`,
   a success before the third resets the counter, and a dormant cell is skipped by
   a sweep without being counted pending.
+- **A failed cell writes a `benchmark_cells` row** and no capability row. The
+  failing direction is an implementation that skips both writes, which would make
+  dormancy uncountable while every other test still passed.
 - **A manual re-measure clears dormancy**, including when the forced measurement
   itself fails.
+- **Progress arithmetic (§12.1)**: with 7 dormant cells of 70, `cells_total`
+  stays 70, progress counts against 63, and the run row carries
+  `cells_dormant = 7` after completion. A cell going dormant mid-sweep drops the
+  denominator and leaves `cells_total` alone.
+- **A sweep whose remaining cells are all dormant completes immediately**, with
+  `finished_at` and `cooling_until` set — it neither waits nor expires. The
+  all-dormant matrix completes in one run and writes no capability rows.
+- **The cooling window is read, not recomputed**: a run row with `cooling_until`
+  in the future is current and blocks a new sweep; the same row with
+  `cooling_until` in the past is not, and a new sweep starts. Both set by fixture
+  rather than by waiting on a clock.
 - **The voice latency exclusion**, asserted through **every** entry point — the
   nightly job, `--cell`, and the page endpoint. Each must write `accuracy` and
   `n` and leave `median_latency_s` untouched. Asserting one path only would pass

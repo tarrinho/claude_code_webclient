@@ -39,9 +39,47 @@ one closed off a cheaper alternative.
 | Decision | Chosen | Rejected, and why it matters |
 |---|---|---|
 | Where it runs | **CLI now, read-only page later**, with the database as the progress store | A page-first design needs a job subsystem the console does not have. Staging it means the page is later a reader, not a rewrite. |
-| Results flow | **Stored separately, promoted explicitly** | Writing straight into `delegation_capability` would re-order live ladders progressively across a 7-hour sweep, and leave a half-finished sweep in a state nobody chose. `coding` is operational as of 2026-09-18, so that is live routing. |
+| Results flow | **Stored separately, promoted explicitly** | Writing straight into `delegation_capability` would re-order ladders progressively across a 7-hour sweep, and leave a half-finished sweep in a state nobody chose. See §2.1 for what "live" does and does not mean today. |
 | Run scope | **Full matrix every time** | Incremental runs are cheaper but mix measurement days, which is the defect in §1. A run is a self-consistent snapshot taken in one window. |
 | Orchestrator shape | **Thin loop, one subprocess per cell** | An in-process loop loses crash containment. See §7. |
+
+## 2.1 What the capability table currently controls
+
+An earlier draft of this document asserted that promoting a measurement changes
+which model answers real work, on the grounds that `coding` was flipped
+operational on 2026-09-18. **That was wrong, and the error is recorded here
+rather than quietly deleted, because it is the kind of claim this design is
+otherwise built on.**
+
+The delegation ladder is not reachable from a conversation turn:
+
+- `ModelRouter.assign_model` has no production caller. `self.router` is
+  constructed at `orchestrator.py:525`.
+- `app.state.capability_table` is written at `app.py:629` by the startup
+  validation and is read nowhere.
+- An ordinary turn picks its model in `runner.get_default_model` — the chat's
+  own model, then the chat's backend default, then the `default_model` setting,
+  then `config.MODEL_NAME`. The capability table is not consulted.
+
+So release 0.19.0's stated scope — machinery complete, nothing routes — is still
+literally true, and flipping a task type operational changed nothing about which
+model serves a turn.
+
+**What follows for this design, and what does not.** The decision to store
+results separately and promote them explicitly **stands unchanged**: a
+half-finished 7-hour sweep left in the table is a state nobody chose, whether or
+not anything reads it, and the table is the artefact routing will read the
+moment it is wired. What does *not* follow is urgency. A promote today is a
+change to a data table, not to production behaviour, and this document must not
+be cited as evidence that it is more than that.
+
+**This is written as a property, not as a line count, so it does not go stale.**
+Shadow-mode recording of routing decisions is in progress in a parallel session
+and will give `self.router` a consumer. Recording what the ladder *would* decide
+is not routing, so the statement above survives it. The claim to re-check before
+relying on this section is the specific one that the capability table reaches
+the model actually spawned for a turn — not whether any particular symbol still
+has zero references.
 
 ## 3. What a run costs
 
@@ -199,9 +237,11 @@ would corrupt §5.1's deadline derivation, which divides by exactly this column.
 and prints the reason.**
 
 `--apply` also prints the **resulting ladder changes**, not only the cell diff.
-`coding` has been operational since 2026-09-18, so a promote changes which model
-answers real tasks; a diff of five numeric cells does not make that visible, and
-a ladder before/after does.
+A diff of five numeric cells does not show that a rung moved; a ladder
+before/after does, and the ladder is the thing a reviewer is actually approving.
+Per §2.1 this is not yet a change to production behaviour — the ladder is
+unreachable from a turn — so the ladder print is here to make the decision
+reviewable, not to gate a live incident.
 
 ## 9. What this does not do
 
@@ -228,8 +268,8 @@ Following the repo's `tests/test_qa_*.py` convention.
   re-runs everything.
 - **The frozen matrix**: changing `DEFAULT_MODELS` mid-run must not change the
   cells a resumed run executes.
-- **Promote, with no model calls at all** — the diff is pure, and it is the part
-  that touches live routing.
+- **Promote, with no model calls at all** — the diff is pure, and it is the only
+  part that writes to the table routing will read.
 - **The voice latency exclusion**, asserted directly: a promoted voice cell
   writes `accuracy` and `n` and leaves `median_latency_s` untouched.
 - **Projection**: an ETA from one cell must say it is from one cell.

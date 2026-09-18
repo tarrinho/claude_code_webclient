@@ -451,6 +451,33 @@ BUDGET_USD: Final[float] = 3.50
 BUDGET_ENFORCEMENT_SETTING: Final[str] = "delegation_enforce_budget"
 BUDGET_ENFORCEMENT_DEFAULT: Final[bool] = False
 
+#: Spec 9.1's one global kill switch, and its default.
+#:
+#: 9.1 is unusually prescriptive about the shape: "the entire design --
+#: classifier, all five stages, voice ladder, placement rules -- ships behind a
+#: single global kill switch. Old routing or new routing, nothing in between.
+#: No per-gate switches, no phased ramp, no percentage-of-traffic rollout."
+#: Per-gate toggles are rejected there by an argument worth repeating, because
+#: it is the reason not to add a second switch later: each one multiplies the
+#: reachable states, and every combination is a configuration nobody has
+#: tested. One switch has two states and both can be verified.
+#:
+#: **The polarity is the opposite of the two knobs above, and the difference is
+#: load-bearing.** Those default False and mean "measured but not blocking", so
+#: they read `raw == "1"` and anything unparseable lands on off. This one
+#: defaults True and means "the design is live", so it must read `raw != "0"`
+#: and anything unparseable must land on ON. Copying the wrong shape here would
+#: silently disable delegation on every deployment whose settings row is absent
+#: -- which is every deployment, until somebody touches the switch.
+#: `conversation_recording.BENCHMARK_RECORDING_DEFAULT` is the existing example
+#: of this polarity; follow that one, not the two directly above.
+#:
+#: Default ON preserves the behaviour that existed before the switch did: the
+#: shadow recorder writes and `validate_or_die` runs. A switch whose arrival
+#: changes behaviour is not a switch, it is a migration.
+DELEGATION_ENABLED_SETTING: Final[str] = "delegation_enabled"
+DELEGATION_ENABLED_DEFAULT: Final[bool] = True
+
 
 def expected_tokens(task_type: str) -> int:
     """The task type's expected call size, for the cost ceiling."""

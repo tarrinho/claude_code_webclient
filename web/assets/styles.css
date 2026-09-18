@@ -1442,6 +1442,16 @@ button{touch-action:manipulation}
 /* The status band's ceiling-enforcement knob, beside the facts row. */
 .delegation-ceiling-knob { display:inline-flex; align-items:center; gap:8px; }
 .delegation-budget-knob { display:inline-flex; align-items:center; gap:8px; }
+/* The master switch reads before the measurements it governs. Appended last in
+   delegation.js so the markup stays append-only; `order` does the rest. */
+.delegation-enabled-knob { display:inline-flex; align-items:center; gap:8px; order:-1; flex-basis:100%; }
+/* Delegation off: the page still shows the table, dimmed, so it reads as a
+   thing you are inspecting rather than a thing that is running. The knob
+   itself is excluded, or turning it back on would be the hardest control to
+   find on a page that says nothing works. */
+.delegation-off .delegation-card,
+.delegation-off .delegation-config-section { opacity:0.55; }
+.delegation-off .delegation-enabled-knob { opacity:1; font-weight:600; }
 
 /* Model rows, as a small table rather than a column of bare input rows. */
 /* Hide/unhide for one task type's model rows. Mirrors .spec-group above, so

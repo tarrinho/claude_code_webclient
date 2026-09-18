@@ -151,8 +151,6 @@ SECTION_3_FIXTURE = [
     _row(LUNA, "reasoning", None, None, RATE[LUNA], None, 922_000),
     _row(MINI, "reasoning", 0.86, None, RATE[MINI], None, 1_050_000),
     _row(OPUS, "reasoning", None, None, RATE[OPUS], None, 1_000_000),
-    # split-decision
-    _row(SONNET, "split-decision", 0.95, 6, RATE[SONNET], 14.0, 1_000_000),
     # reviewer-gate
     _row(LUNA, "reviewer-gate", 0.90, 9, RATE[LUNA], 11.1, 922_000),
     _row(SONNET, "reviewer-gate", 0.95, 6, RATE[SONNET], 14.0, 1_000_000),
@@ -169,7 +167,6 @@ SECTION_3_LADDERS = {
     "comprehension": [SONNET, OPUS],
     "voice": [LUNA, SONNET],
     "reasoning": [],
-    "split-decision": [SONNET],
     "reviewer-gate": [LUNA, SONNET],
 }
 
@@ -188,10 +185,14 @@ class Section3SnapshotTests(unittest.TestCase):
 
     def test_a_measured_fixture_regenerates_every_row_of_section_3(self):
         """Rows 995 and 1049. All nine task types, regenerated from the table
-        rather than compared against a hand-written snapshot -- and the three
+        rather than compared against a hand-written snapshot -- and the two
         rows that break positional order (comprehension starting at sonnet,
-        split-decision holding one rung, reviewer-gate being a gate type) are
-        in the dict like any other."""
+        reviewer-gate being a gate type) are in the dict like any other.
+
+        split-decision was removed on 2026-09-18: its own design said
+        "judging scope is comprehension work", and it was priced,
+        laddered and blocked identically to comprehension while never
+        gaining a bench task or a classifier pattern of its own."""
         for task_type, expected in SECTION_3_LADDERS.items():
             with self.subTest(task_type=task_type):
                 self.assertEqual(self.table.ladder(task_type), expected)
@@ -267,7 +268,7 @@ class Tier0DeadlineTests(unittest.TestCase):
         self.assertEqual(set(td.TIER0_BASELINE_CALIBRATION),
                          {"coding", "long-context"})
         for task_type in ("multi-turn", "planning", "comprehension", "voice",
-                          "reasoning", "split-decision", "reviewer-gate"):
+                          "reasoning", "reviewer-gate"):
             with self.subTest(task_type=task_type):
                 self.assertNotIn(task_type, td.TIER0_BASELINE_CALIBRATION)
 

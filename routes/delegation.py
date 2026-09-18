@@ -46,12 +46,15 @@ from fastapi.responses import JSONResponse
 import db
 from delegation_startup import (budget_enforcement_enabled,
                                 ceiling_enforcement_enabled,
+                                delegation_enabled,
                                 live_known_models,
                                 problems_with)
 from routes.db_delegation import rows_to_capability
 from routes.db_users import setting_set
 from tiered_delegation import (
     BUDGET_USD,
+    DELEGATION_ENABLED_DEFAULT,
+    DELEGATION_ENABLED_SETTING,
     GATE_CALLS,
     BUDGET_ENFORCEMENT_DEFAULT,
     BUDGET_ENFORCEMENT_SETTING,
@@ -198,9 +201,15 @@ def _config_overview() -> dict[str, Any]:
     return {
         "kill_switch": {
             "section": "9.1",
-            "available": False,
-            "note": "not implemented in this release -- nothing routes "
-                     "through this design yet, so there is no switch to read",
+            "available": True,
+            "setting": DELEGATION_ENABLED_SETTING,
+            "default": DELEGATION_ENABLED_DEFAULT,
+            "note": "one global switch, on by default. Off means the design "
+                    "is not in play at all: the capability table is not "
+                    "validated at startup and the shadow recorder writes "
+                    "nothing. Its live state is in the payload's `enabled` "
+                    "field -- this block is read from constants and cannot "
+                    "report a setting.",
         },
         "attempts_and_caps": {
             "section": "5",
@@ -387,6 +396,11 @@ async def handle_delegation_get(request: Request):
         "editable_columns": list(_EDITABLE),
         "config": _config_overview(),
         "blockers": blockers,
+        "enabled": {
+            "enabled": await delegation_enabled(),
+            "default": DELEGATION_ENABLED_DEFAULT,
+            "setting": DELEGATION_ENABLED_SETTING,
+        },
         "budget_enforcement": {
             "enabled": enforce_budget,
             "default": BUDGET_ENFORCEMENT_DEFAULT,
@@ -631,6 +645,53 @@ async def handle_budget_enforcement_put(request: Request):
     await setting_set(BUDGET_ENFORCEMENT_SETTING, "1" if enabled else "0")
     _log.info("delegation_budget_enforcement enabled=%s", enabled)
     return JSONResponse({"ok": True, "enabled": enabled})
+
+
+async def handle_enabled_put(request: Request):
+    """PUT /api/delegation/enabled -- spec 9.1's one global kill switch.
+
+    On by default (`DELEGATION_ENABLED_DEFAULT`), because on is what this
+    deployment did before the switch existed. Off means the design is not in
+    play at all: `validate_or_die` does not run at startup, so a capability
+    table nobody has fixed cannot stop the console booting, and the shadow
+    recorder writes nothing.
+
+    Turning it ON is validated first, for the same reason the two enforcement
+    knobs are: switching on means `validate_or_die` WILL run at the next boot,
+    so storing the flag against a table that breaks an invariant would leave a
+    deployment that refuses to start hours later, with nothing to connect the
+    failure to this click. Turning it OFF is never validated -- an off switch
+    that can be refused is not an off switch, and 9.1 requires rollback to be
+    one clean action.
+    """
+    _require_admin(request)
+    data = _require_json_object(await request.json())
+    if "enabled" not in data:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    enabled = bool(data["enabled"])
+
+    if enabled:
+        rows = rows_to_capability(await db.delegation_rows_all())
+        operational = await db.delegation_operational_all()
+        problems = await problems_with(
+            CapabilityTable(rows, operational=operational))
+        if problems:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "turning delegation on would leave a table that fails spec "
+                    "1.1, and this deployment would refuse to start on its "
+                    "next restart: " + "; ".join(problems)
+                ))
+
+    await setting_set(DELEGATION_ENABLED_SETTING, "1" if enabled else "0")
+    _log.info("delegation_enabled enabled=%s", enabled)
+    return JSONResponse({"ok": True, "enabled": enabled})
+
+
+@router.put("/api/delegation/enabled")
+async def _api_delegation_enabled_put(request: Request):
+    return await handle_enabled_put(request)
 
 
 @router.put("/api/delegation/budget-enforcement")

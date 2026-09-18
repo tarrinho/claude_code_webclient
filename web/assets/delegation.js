@@ -646,6 +646,73 @@ function _budgetKnob(state, budgetUsd) {
   return wrap;
 }
 
+/** Spec 9.1's one global kill switch.
+ *
+ *  Global by construction, not by convenience: 9.1 rejects per-gate toggles
+ *  because each one multiplies the reachable states and every combination is a
+ *  configuration nobody has tested. One switch, two states, both verifiable.
+ *
+ *  Turning it ON can be refused by the server -- switching on means the table
+ *  is validated at the next boot, so a table that breaks spec 1.1 would leave
+ *  a deployment that will not start. Turning it OFF is never refused. Same
+ *  optimistic-then-revert shape as the other knobs.  */
+async function _setDelegationEnabled(enabled, knob) {
+  knob.setAttribute('aria-pressed', String(enabled));
+  try {
+    const res = await apiFetch('/api/delegation/enabled', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      knob.setAttribute('aria-pressed', String(!enabled));
+      showToast(_errorMessage(data, 'Could not change delegation'), 'error');
+      return;
+    }
+    await _refreshDelegation();
+  } catch (err) {
+    knob.setAttribute('aria-pressed', String(!enabled));
+    showToast('Could not change delegation', 'error');
+  }
+}
+
+/** The master knob. Rendered above the facts row rather than inside it,
+ *  because it governs everything below and a switch that sits among the
+ *  measurements reads as one more measurement. */
+function _enabledKnob(state) {
+  const wrap = document.createElement('div');
+  wrap.className = 'delegation-enabled-knob';
+  const label = document.createElement('span');
+  label.className = 'delegation-fact';
+  label.textContent = state.enabled
+    ? 'delegation: on'
+    : 'delegation: OFF — nothing below is in effect';
+  const knob = document.createElement('button');
+  knob.type = 'button';
+  knob.className = 'toggle-knob';
+  knob.setAttribute('aria-pressed', String(Boolean(state.enabled)));
+  knob.setAttribute('aria-label', 'enable the delegation design');
+  knob.title = state.enabled
+    ? 'The capability table is validated at startup and the shadow recorder '
+      + 'writes a decision for every orchestrator task.'
+    : 'Off: the table is NOT validated at startup, so a broken table cannot '
+      + 'stop the console booting, and nothing in this design records or runs. '
+      + 'The page below still shows what the table WOULD produce.';
+  const track = document.createElement('span');
+  track.className = 'knob-track';
+  const thumb = document.createElement('span');
+  thumb.className = 'knob-thumb';
+  track.appendChild(thumb);
+  knob.appendChild(track);
+  knob.addEventListener('click', () => {
+    _setDelegationEnabled(knob.getAttribute('aria-pressed') !== 'true', knob);
+  });
+  wrap.appendChild(label);
+  wrap.appendChild(knob);
+  return wrap;
+}
+
 function _renderStatus(payload) {
   const line = byId('delegationStatusLine');
   const facts = byId('delegationFacts');
@@ -691,6 +758,19 @@ function _renderStatus(payload) {
   }
   if (payload.budget_enforcement) {
     facts.appendChild(_budgetKnob(payload.budget_enforcement, budget));
+  }
+  // Last in the DOM but first in meaning: `order: -1` in the stylesheet puts
+  // it ahead of the facts, so the markup stays append-only while the master
+  // switch reads before the things it governs.
+  if (payload.enabled) {
+    facts.appendChild(_enabledKnob(payload.enabled));
+  }
+  // The whole panel is marked when the design is off, so a ladder on this page
+  // cannot be mistaken for one that is in effect. It is still SHOWN -- you
+  // need to read the table to fix it before turning the switch back on.
+  const panel = byId('panelDelegation');
+  if (panel && payload.enabled) {
+    panel.classList.toggle('delegation-off', !payload.enabled.enabled);
   }
 }
 

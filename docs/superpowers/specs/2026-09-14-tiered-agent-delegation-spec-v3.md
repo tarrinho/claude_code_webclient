@@ -67,7 +67,6 @@ A write is rejected only against the invariants of task types that are *already*
 | reasoning | 4 | 2 | 1 | **4** | 0 | **4** |
 | reviewer-gate | 3 | 3 | 3 | **3** | 0 | **3** |
 | security-gate | 3 | 3 | 3 | **3** | 0 | **3** |
-| split-decision | 1 | 0 | 0 | **1** | 0 | **1** |
 | voice | 3 | 0 | 1 | **3** | 0 | **3** |
 
 Cost and `max_context` are complete (23/23). Accuracy is 8/23 and latency 4/23 after today's coding run (§3.1).
@@ -302,7 +301,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0370‡ | 6.3 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0370‡ | 9.2 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0370‡ | 16.5 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0370‡ | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0370‡ | 11.0◊ | 922,000 |
 | `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 0.0781‡ | 2.002 | TBD |
 | `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 3.4043‡ | 7.85 | 922,000 |
 | `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 3.4043‡ | 7.84 | 922,000 |
@@ -323,10 +322,9 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | long-context | 66.7% | 12 | 0.4769‡ | 4.2 | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 12 | 0.4769‡ | 6.0 | 1,000,000 |
 | `claude-sonnet-5` | reasoning | 83.4% | 6 | 0.4769‡ | 24.6 | 1,000,000 |
-| `claude-sonnet-5` | voice | 100% | 12§ | 0.4769‡ | TBD | 1,000,000 |
+| `claude-sonnet-5` | voice | 100% | 12§ | 0.4769‡ | 6.9◊ | 1,000,000 |
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 0.4769‡ | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 0.4769‡ | 17.5 | 1,000,000 |
-| `claude-sonnet-5` | split-decision | TBD | — | 0.4769‡ | TBD | 1,000,000 |
 | `claude-sonnet-5` | reviewer-gate | 78.57% | 28 | 0.4769‡ | 4.555 | 1,000,000 |
 | `claude-opus-5` | comprehension | 100% | 12 | 1.2310‡ | 11.9 | 1,000,000 |
 | `claude-opus-5` | reasoning | 100% | 6 | 1.2310‡ | 10.2 | 1,000,000 |
@@ -381,7 +379,11 @@ This is in direct tension with §2.7's **"a model nobody priced must not come ou
 
 Two limits on what those numbers mean, and both are structural:
 
-- **The harness runs the Claude Code CLI (§0); voice does not.** `routes/voice.py` is the documented exception and speaks to an OpenAI-compatible endpoint directly. So these figures measure *the model* on voice-shaped tasks, over a different transport from the one production voice uses. That is a reasonable proxy for accuracy and **not** for latency, which is why `median_latency_s` stays TBD here: the CLI run measured 6.6–9.6s against the 2.0s the voice path actually records.
+- **The harness runs the Claude Code CLI (§0); voice does not.** `routes/voice.py` is the documented exception and speaks to an OpenAI-compatible endpoint directly. So these figures measure *the model* on voice-shaped tasks, over a different transport from the one production voice uses. That is a reasonable proxy for accuracy and **not** for latency: the CLI run measured 6.6–9.6s against the 2.0s the voice path actually records.
+
+  **`◊` marks a latency borrowed from that CLI transport anyway, by operator decision on 2026-09-18, to let `voice` go operational without waiting for an on-transport measurement.** The value is each model's median `median_latency_s` across the eight task types where it IS measured — luna 11.0, sonnet 6.9 — chosen over its maximum because, counter-intuitively, larger borrowed latencies produce a *smaller* worst-case path (§5.1 normalises against the reference rung), so the median is the conservative choice as well as the more honest summary. Against the one on-transport data point available, 2.002s for `azure_ai/gpt-5.4-mini-copilot`, both are over-estimates by roughly 3–5x, which is the safe direction for a ceiling.
+
+  This paragraph previously said `median_latency_s` "stays TBD here", and §3 said voice would stay non-operational until it did not. Both were deliberate and both have been overridden rather than quietly edited away: the reasoning that produced them is below, unchanged, because it is still the argument for replacing these two cells with a real measurement.
 - **`azure_ai/gpt-5.4-mini-copilot` cannot be measured by this harness at all.** Twelve attempts all failed with the CLI's own refusal — the model is not served by the backend the CLI resolves, exactly the failure §0.1 describes. The one model that actually serves voice is therefore the one model whose voice accuracy cannot be benchmarked without a second transport.
 
 **What the measurement did settle:** walking the generator over these accuracies reproduces `luna → sonnet` — precisely the ladder §3 published before any voice task existed. The shape was right; it just had nothing behind it until now. It is still not affordable: at $1.936 against a `BUDGET_USD` of 1.00 the voice ladder fails §1.1's cost invariant, the same way `planning` does and for the same reason — sonnet at rung 1.
@@ -595,9 +597,41 @@ Cost of placing each model at each rung, for a whole tree:
 | multi-turn, planning, voice, reviewer-gate | `claude-sonnet-5` at **rung 1** | $1.868 |
 | comprehension | `claude-sonnet-5` at **rung 0** | $3.736 |
 | comprehension | `claude-opus-5` at **rung 1** | $4.291 |
-| split-decision | `claude-sonnet-5` at **rung 0** | $3.736 |
 
-`coding` and `long-context` — the two three-rung ladders, and the only two that start free — are the only ones that fit unchanged. **Comprehension and split-decision have no affordable ladder at all** on these inputs, and under §1.1 that makes them non-operational until one of the assumptions changes or a cheap rung is measured for them. Luna already holds a comprehension row awaiting accuracy, which is the cheapest way to fix it.
+`coding` and `long-context` — the two three-rung ladders, and the only two that start free — are the only ones that fit unchanged. **Comprehension had no affordable ladder at all** on these inputs, and under §1.1 that made it non-operational until one of the assumptions changed or a cheap rung was measured for it. (This sentence also named `split-decision`, removed 2026-09-18 — see below.) Luna already holds a comprehension row awaiting accuracy, which is the cheapest way to fix it.
+
+#### `split-decision` was removed on 2026-09-18, and is `comprehension`
+
+Operator decision, taken on the evidence below. Every row, ladder entry and
+readiness line for it is gone from this document and from
+`bin/wc-seed-delegation.py`; its one capability row was deleted from the
+database. Work that would have been a split-decision is classified
+`comprehension` and takes comprehension's ladder.
+
+**The type's own founding line said it was comprehension.** From the first
+design, 2026-09-12 (commit `627e85a`), where the tier table gave it
+`claude-sonnet-5` at $5.68/1k tasks — the same model, the same cost and the
+same justification as the `comprehension` row directly above it:
+
+> | split decision | `claude-sonnet-5` | 5.68 | judging scope is comprehension work, where cheap models fail |
+
+**Nothing since distinguished the two.** Both entered at sonnet; both priced a
+rung-0 tree at $3.736; §5.1 named them in one sentence as the two types with no
+affordable ladder. Where they diverged is only in the fix: comprehension had a
+cheap rung measured and cleared, `split-decision` never did.
+
+**And it was never reachable.** It is the only task type with no bench task and
+no classifier pattern — `classify()` could not return it, so no work has ever
+been routed to it or measured against it. That is not an oversight to correct
+but the consequence of the founding line: if judging scope *is* comprehension
+work, the classifier calling it `comprehension` is right.
+
+**What this costs, stated plainly.** If a future measurement shows that judging
+scope needs a different model from ordinary comprehension, this decision hides
+that: the two are now one type with one ladder and one accuracy figure. The
+signal to watch for is comprehension accuracy splitting by task shape. Bringing
+it back means a definition first — what a split-decision task looks like that a
+comprehension task does not — which is the thing that never existed.
 
 **Opus is affordable at no rung of any ladder.** Given §2.6's blocking constraint already refuses it the reasoning entry rung on evidence grounds, and its only measured row is comprehension at 50% (n=2), the case for Opus appearing anywhere in this design is now weak on both counts.
 
@@ -646,7 +680,6 @@ The table below is a **snapshot of what this computation is expected to produce 
 
 **The voice ladder above names two models that have never served a voice turn.** Production voice runs `azure_ai/gpt-5.4-mini-copilot` — 46 measured turns, and every `voice_turn_timing` row in the database is that model. It had no row in §2.6 at all until 2026-09-17, so no §1.1 invariant could see it and the published ladder described a configuration that has never existed. The row is added with what is measured; it is **not** ladder-eligible (no accuracy), so the ladder above is still what the generator produces — the discrepancy is between the ladder and reality, not between the ladder and the table.
 | reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set (an editorial hold; see below) | — | — |
-| split-decision | `claude-sonnet-5` | — | — |
 | **reviewer-gate** | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` (see §4.3) | — |
 
 **All three review gates share the `reviewer-gate` ladder** — stages 3, 4 and 5 climb the same rungs, so there is no separate `security-gate` task type and the table keeps nine rows. What differs is what happens at the top: a security rejection surviving the gate's top rung goes to a human rather than failing the leaf (§4.5).
@@ -665,7 +698,11 @@ The general point applies beyond this one: this table is a statement of intent, 
 - **Since then, the data changed twice, not once.** Luna's comprehension row was filled in this morning (58.3%, n=12), which makes Luna — cheapest and now ladder-eligible — the real rung 0, ahead of Sonnet. And `claude-opus-5` on comprehension was re-measured today at **n=12: 100%, tying Sonnet** — not "measured worse" any longer, so step 3 no longer skips it.
 - **Neither edit was a mistake; the rule was applied correctly to two different tables.** The 2026-09-16 amendment is exactly what §3 elsewhere warns against building a rung on: a figure "from a small sample (n=—) [that] must be re-verified against production request shapes before any rung is set". That is precisely what happened here — an n=2 figure was used to justify dropping Opus from the ladder, and re-measurement at n=12 reversed the drop. The row above, `luna → sonnet → opus`, is what the generator now produces from the current table.
 
-**Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. Voice stays non-operational (§1.1) until both its rows carry a measured `median_latency_s`, because a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
+**Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. The argument for keeping voice non-operational was that a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
+
+**Overridden 2026-09-18 by operator decision: voice is operational, on borrowed CLI latency (`◊` in §2.6).** The ladder is unchanged — `luna → sonnet` — because latency is not an input to §3's generation, which sorts on cost. What the override changes is only whether §1.1 lets the type flip: the two cells that were TBD now carry numbers, so the worst-case path computes (2,231.9s against a 2,900s ceiling) instead of being refused as missing data.
+
+The objection above is not answered by this, only set aside. Voice remains the one task type whose ladder is ordered by the wrong quantity, and its rung 0 and rung 1 are still two models that have never served a voice turn on this deployment. The measurement that would settle it is a run of the four voice tasks through `routes/voice.py`'s own transport, which no harness does today.
 
 Only `coding` and `long-context` start free (§4.1).
 

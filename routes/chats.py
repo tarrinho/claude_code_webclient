@@ -782,9 +782,26 @@ async def handle_chat_standby(request: Request, chat_id: str):
         raise HTTPException(status_code=400, detail="Chat has no linked session")
 
     # Map session_id → friendly name from ~/.claude/sessions/*.json.
-    name = _find_session_name(session_id)
-    if not name:
+    #
+    # Every live claimant, not one preferred claimant: this endpoint SIGTERMs
+    # whatever it resolves to, and on this host three live sessions have shared
+    # a single `sessionId`. Suspending the wrong one destroys work that nobody
+    # asked to stop, and the user cannot tell it happened -- the toast says
+    # "on standby" either way.
+    live = _live_session_names(session_id)
+    if not live:
         raise HTTPException(status_code=400, detail="Could not resolve session name")
+    if len(live) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{len(live)} live sessions share this conversation's session id "
+                f"({', '.join(live)}) — refusing to guess which one to suspend. "
+                f"Suspend it from its own terminal, or run "
+                f"bin/wc-session-standby.sh <name>."
+            ),
+        )
+    name = live[0]
 
     # Call the standby script with a timeout so we don't hang if the process
     # refuses to die. The record is already written, so the user can resume
@@ -808,6 +825,24 @@ async def handle_chat_standby(request: Request, chat_id: str):
         # standby. Exit 1 still means nothing happened (no such session, or
         # refused because it was busy) and stays a 500.
         lingering = result.returncode == 2
+        # Exit 3 is a deliberate refusal by the script's own rules -- the
+        # session is there, alive, and protected (mid-turn, waiting on a
+        # question, or not idle long enough). That is a 409: the request
+        # conflicts with the resource's state, and the operator can act on it.
+        # It used to arrive as a 500, which reads as "the server broke" and
+        # sent people looking for a fault that was not there.
+        if result.returncode == 3:
+            raise HTTPException(
+                status_code=409,
+                detail=stderr.decode().strip()[:300] or "Standby refused",
+            )
+        # Exit 1 is "nothing to suspend": no session matched, or the record
+        # named a pid that has since exited.
+        if result.returncode == 1:
+            raise HTTPException(
+                status_code=404,
+                detail=stderr.decode().strip()[:300] or "No such running session",
+            )
         if result.returncode not in (0, 2):
             raise HTTPException(
                 status_code=500,
@@ -925,6 +960,17 @@ def _find_session_name(session_id: str) -> str | None:
     the caller turns that into a 400 that says the session could not be
     resolved, which is the truth, instead of a 500 from a script that was sent
     looking for something that never existed.
+
+    **Callers that act destructively must use `_live_session_names` instead.**
+    "Prefer the most recently updated" is a reasonable guess for a display
+    label and an unacceptable one for choosing which process to kill. Measured
+    on this host 2026-09-18: three *live* sessions shared one `sessionId` --
+    `multiagent2` (pid 1798), `multiagent3 - testusage` (pid 3659449) and
+    `multiagent - benchmark plan` (pid 3763786). A standby click on a chat
+    titled `cweb4 - voice issue` resolved through here to
+    `multiagent3 - testusage`, a different session from the one named in the
+    chat, and would have suspended it had that session not been busy at the
+    time. The tie-break silently picked a victim.
     """
     import glob
 
@@ -958,6 +1004,45 @@ def _find_session_name(session_id: str) -> str | None:
     if not candidates:
         return None
     return max(candidates)[1]
+
+
+def _live_session_names(session_id: str) -> list[str]:
+    """Every live process serving *session_id*, most recently updated first.
+
+    The same scan `_find_session_name` performs, without the tie-break. A
+    caller that is about to signal a process needs to know that the answer was
+    ambiguous; `_find_session_name` cannot tell it, because one name is all it
+    returns and a guess is indistinguishable from a certainty.
+
+    Returning a list rather than raising keeps the decision with the caller:
+    standby refuses on ambiguity (killing the wrong session is unrecoverable),
+    while a read-only caller may legitimately still want a label.
+    """
+    import glob
+
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    found: list[tuple[int, str]] = []
+    for f in glob.glob(str(sessions_dir / "*.json")):
+        base = os.path.basename(f)[: -len(".json")]
+        if not base.isdigit():
+            continue
+        try:
+            with open(f) as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        if data.get("sessionId") != session_id:
+            continue
+        name = data.get("name")
+        if not name:
+            continue
+        try:
+            os.kill(int(base), 0)
+        except (OSError, ValueError):
+            continue
+        found.append((int(data.get("updatedAt") or 0), name))
+
+    return [name for _, name in sorted(found, reverse=True)]
 
 
 async def handle_chats_reorder(request: Request):

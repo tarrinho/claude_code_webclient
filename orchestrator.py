@@ -819,17 +819,25 @@ class OrchestratorEngine:
                 # because recording is diagnostics and must never be able to
                 # fail task creation. The log names the task id for the reason
                 # the `exception` call below does.
+                # Spec 9.1's kill switch gates this too: with delegation off,
+                # the design writes nothing at all. Read inside the `try` so a
+                # settings read that fails cannot take task creation with it,
+                # but tested before the call rather than signalled by an
+                # exception -- "the switch is off" is not a failure, and the
+                # `except` below would log it as one on every task.
                 try:
                     import delegation_recorder
+                    from delegation_startup import delegation_enabled
 
-                    await delegation_recorder.record_decision(
-                        task_table=delegation_recorder.ORCHESTRATOR_TASK_TABLE,
-                        task_id=node.id,
-                        title=parsed_task.title,
-                        description=parsed_task.description,
-                        actual_model=parsed_task.model,
-                        router=self.router,
-                    )
+                    if await delegation_enabled():
+                        await delegation_recorder.record_decision(
+                            task_table=delegation_recorder.ORCHESTRATOR_TASK_TABLE,
+                            task_id=node.id,
+                            title=parsed_task.title,
+                            description=parsed_task.description,
+                            actual_model=parsed_task.model,
+                            router=self.router,
+                        )
                 except Exception as rec_exc:
                     _log.warning(
                         "delegation shadow record failed for %s: %s",
@@ -1056,7 +1064,6 @@ class OrchestratorEngine:
         # failure wearing a capacity failure's clothes.
         if not model:
             model = await runner.get_default_model(owner=self.owner_id)
-
         graph.update_status(task_id, "running")
         self.tracker.record(ProgressEvent(
             event_type="task_start",
@@ -1073,6 +1080,44 @@ class OrchestratorEngine:
         # imported `db` was unbound on the early-failure path and swallowed the
         # message the block existed to record.
         task_chat_id = f"subtask_{task_id}"
+
+
+        # Shadow mode, second half: the model this task is about to run on.
+        #
+        # `_materialise_plan` already recorded what the delegation subsystem
+        # WOULD have chosen, beside `ParsedTask.model` -- but that is NULL
+        # whenever the plan named no model, which is almost always. The first
+        # production row proved the point: shadow_model was recorded, the task
+        # ran on a model, and the record said only "the plan named nothing".
+        # This is the line that makes "did the ladder agree with what actually
+        # ran" a query rather than a guess.
+        #
+        # Recorded here rather than at completion on purpose: a task that fails
+        # or is cancelled still ran on a model, and the ladder's answer is just
+        # as interesting for those.
+        #
+        # Diagnostics, so it can never fail the task -- same rule as the record
+        # itself, and the log names the task for the reason the calls around it
+        # do.
+        try:
+            # Local, as every db use in this module is: db imports orchestrator
+            # at load time, so a module-level import is a cycle.
+            import db as _db
+            import delegation_recorder
+            from delegation_startup import delegation_enabled
+
+            # Gated by 9.1's kill switch, like the record this annotates. With
+            # delegation off there is no decision row to annotate -- the
+            # UPDATE would match nothing and be a harmless no-op, but a switch
+            # that leaves half the design running is not the "nothing in
+            # between" 9.1 asks for.
+            if await delegation_enabled():
+                await _db.delegation_decision_note_ran_model(
+                    delegation_recorder.ORCHESTRATOR_TASK_TABLE, task_id, model)
+        except Exception as ran_exc:
+            _log.warning(
+                "delegation shadow ran_model failed for %s: %s", task_id, ran_exc)
+
 
         # Persisted, not only held in-memory, and deliberately still before the
         # main try below (not inside it): a telemetry write failing here must

@@ -626,26 +626,30 @@ class CostCeilingPositionTests(unittest.TestCase):
           $1.00 -> all three rungs refused (the row as written)
           $3.50 -> rung 2 ($1.430) admissible; rungs 0 and 1 refused
           $5.25 -> rungs 1 ($4.291) and 2 admissible; only rung 0 refused
+          $3.50 -> back where it was, later the same day
 
-        Both moves are real consequences of operator decisions and neither is
-        test drift, so this asserts what is true now rather than scaling the
-        fixture until the original sentence survives. The rates are spec 2.6's
-        measured ones on purpose: this test is about what the published table
-        actually costs, which is the one thing that must NOT be derived from
-        the budget it is being judged against.
+        The last move is a return, not a third position. 5.25 was set to buy
+        headroom against a 4% margin, and the margin turned out to be an
+        artefact of prices nobody had checked -- once section 2.6 was re-derived
+        from a real invoice the worst operational tree cost was 2.0046, which
+        3.50 covers with 74.6% to spare. So the budget came back down and rung
+        1 is refused again.
 
-        What survives of the row's point: opus is not merely expensive at rung
-        0, it is expensive by a margin no budget raise so far has closed --
-        $8.582 is still 63% above a budget that has been raised 5.25x. What no
-        longer holds is "refused at every rung", and the next raise would take
-        rung 0 too, at which point this test should be read as the record of a
-        decision rather than as a bug.
+        None of these are test drift, so this asserts what is true now rather
+        than scaling the fixture until the original sentence survives. The
+        rates are spec 2.6's published ones on purpose: this test is about what
+        the published table costs, which is the one thing that must NOT be
+        derived from the budget it is judged against.
+
+        What survives of the row's point at 3.50: opus is refused at the two
+        rungs a leaf is at all likely to reach, and affordable only at the one
+        reached one time in six.
         """
-        self.assertGreater(td.rung_cost_usd(0, RATE[OPUS]), td.BUDGET_USD)
-        for rung in (1, 2):
+        for rung in (0, 1):
             with self.subTest(rung=rung):
-                self.assertLess(td.rung_cost_usd(rung, RATE[OPUS]),
-                                td.BUDGET_USD)
+                self.assertGreater(td.rung_cost_usd(rung, RATE[OPUS]),
+                                   td.BUDGET_USD)
+        self.assertLess(td.rung_cost_usd(2, RATE[OPUS]), td.BUDGET_USD)
 
     def test_a_ladder_can_still_be_refused_on_cost(self):
         """The invariant itself must keep working at the new budget: a ladder

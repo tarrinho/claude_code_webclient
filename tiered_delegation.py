@@ -383,41 +383,45 @@ REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 0.5, 1.0 / 6.0)
 #:   number.
 #:
 #: 2.7's own framing: this is one pool shared by every leaf in a tree, not a
-#: budget per goal. At 1.00 it bought roughly 335 luna requests; at 3.50,
-#: about 1,170; at 5.25, about 1,750.
+#: budget per goal. In leaf-sized calls at the re-derived luna rate (0.0342 per
+#: 1M, TOKENS_PER_LEAF = 59,460) 3.50 buys about 1,721 of them; the assumed
+#: 0.0285 would have said 2,065, which is the size of the error that pricing
+#: carried. An earlier version of this comment quoted 335 / 1,170 / 1,750 for
+#: 1.00 / 3.50 / 5.25 -- those cannot be reproduced from any constant in this
+#: module and are not carried forward.
 #:
-#: Raised 3.50 -> 5.25 on 2026-09-18, by operator decision, as the condition
-#: for switching BUDGET_ENFORCEMENT_SETTING on. The raise was margin, not
-#: permission: at 3.50 nothing was over budget and `validate()` reported no
-#: problems, so enforcement could have been turned on that day with zero
-#: refusals. What 3.50 appeared not to leave was room -- `comprehension` and
-#: `reasoning` both sat at 3.3662, only 4.0% under the cap, so enforcement
-#: looked one re-measurement away from blocking two operational types.
+#: Raised to 5.25 and returned to 3.50 on 2026-09-18, both by operator
+#: decision, within a few hours. The round trip is recorded rather than tidied
+#: away, because the reason it happened is the useful part.
 #:
-#: **That premise did not survive the same afternoon, and this comment says so
-#: rather than quietly keeping the number.** Every price in section 2.6 was
-#: re-derived hours later from a real invoice: euro figures that had been
-#: written into a USD column were converted at 2.5's documented 1.0812,
+#: The raise was margin, not permission. Nothing was over budget at 3.50 and
+#: `validate()` reported no problems, so enforcement could have been switched
+#: on that day with zero refusals. What 3.50 appeared not to leave was room:
+#: `comprehension` and `reasoning` both sat at 3.3662, only 4.0% under the cap,
+#: so enforcement looked one re-measurement away from blocking two operational
+#: types.
+#:
+#: That premise did not survive the afternoon. Every price in section 2.6 was
+#: re-derived from a real invoice: euro figures that had been written into a
+#: USD column were converted at 2.5's documented 1.0812,
 #: `azure_ai/gpt-5.6-sol` went 0.0285 -> 3.1486, `azure_ai/gpt-5.6-terra`'s
-#: assumed 0.0285 turned out to be 1.4760 once its usage rows were found under
-#: an unprefixed model name, and opus and sonnet were re-derived from rows
-#: whose numerator and denominator finally matched. The worst operational tree
-#: cost fell from 3.3662 to 2.0046 (`planning`), which is 74.6% under 3.50 and
-#: 161.9% under 5.25.
+#: assumed 0.0285 turned out to be 1.4760 once its usage rows were found
+#: recorded under an unprefixed model name, and opus and sonnet were re-derived
+#: from rows whose numerator and denominator match. The worst operational tree
+#: cost fell from 3.3662 to 2.0046 (`planning`).
 #:
-#: So 5.25 now buys far more headroom than it was asked to buy, and 3.50 would
-#: have been ample. It is left at 5.25 because the operator set it knowing the
-#: raise was margin rather than permission, and because a budget that is too
-#: generous costs nothing while nothing routes -- but the honest reading is
-#: that this number is no longer derived from anything, and the next person to
-#: touch it should feel free to bring it back down.
+#: At 2.0046 the original 3.50 leaves 74.6% headroom, so the 4% that justified
+#: the raise had never really been the state of the system -- it was an
+#: artefact of prices nobody had checked. 5.25 was therefore buying headroom
+#: against a number that was wrong rather than against a number that was
+#: tight, which is not a reason to hold a safety ceiling open. Back to 3.50,
+#: which is now a measured figure rather than an inherited one.
 #:
-#: The raise also answers, partially, the argument in
-#: BUDGET_ENFORCEMENT_DEFAULT below for keeping enforcement off: the check's
-#: input is over-estimated in a known direction, so headroom absorbs some of
-#: that over-estimate rather than paying for it in false refusals. It does not
-#: make the input measured, and the note below stands.
-BUDGET_USD: Final[float] = 5.25
+#: What this does NOT do is answer the argument in BUDGET_ENFORCEMENT_DEFAULT
+#: below for keeping enforcement off by default. That rests on LEAVES_PER_TREE
+#: being assumed rather than measured, and no budget figure changes it.
+#:
+BUDGET_USD: Final[float] = 3.50
 
 #: The settings key holding 9.2's enforcement knob for the budget above, and
 #: its default. **Off by default, deliberately**, and for a reason of the same

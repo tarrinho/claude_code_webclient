@@ -5,19 +5,30 @@
 point's real name, and the unread `app.state.capability_table`) and §2 (the
 `"[]"` ladder case) came back from that implementation and are folded in here.
 
-**What "green" means here, precisely.** Green is HEAD plus this change, which is
-what was committed and what is deployed: 21 tests and 8 subtests across §8's
-four classes, verified by nine mutations that each turned a specific named test
-red. The full suite in the shared working tree is **not** green, and will not be
-until the author of an uncommitted budget-enforcement change finishes or
-withdraws it — 187 insertions across `tiered_delegation.py`,
-`delegation_startup.py`, `routes/delegation.py` and
-`tests/test_qa_delegation_routes.py`, present in no commit, holding six
-delegation tests red. That work is unrelated to this spec and belongs to none of
-the three sessions that looked. Causation was measured, not inferred: the same
-six tests pass against a clean `git archive` export of HEAD and fail in the
-working tree, same interpreter, the uncommitted change being the only
-difference.
+**The suite is green, confirmed 2026-09-18.** 296 files run as one pytest process
+per file, with the expected 6 skips. This change's own coverage is 21 tests and 8
+subtests across §8's four classes, each verified by one of nine mutations that
+turned a specific named test red.
+
+Getting there took three false alarms, recorded because each is a pattern rather
+than an incident:
+
+- **Six delegation tests were red for an unrelated reason.** An uncommitted
+  budget-enforcement change — 187 insertions across `tiered_delegation.py`,
+  `delegation_startup.py`, `routes/delegation.py` and
+  `tests/test_qa_delegation_routes.py` — was present in no commit and belonged to
+  none of the three sessions that looked for its author. Causation was measured,
+  not inferred: the same six passed against a clean `git archive` export of HEAD
+  and failed in the working tree, same interpreter. It has since been committed
+  as written, in `fedf31b`, on operator instruction.
+- **A bisect pointed at the wrong commit.** One run per ref is three coin flips,
+  not a bisect. The commit it accused touches a single markdown file, and no
+  mechanism connected it to the failing picker test. The real cause was `/tmp`,
+  a 1.9 GB tmpfs, at 100% from accumulated `git archive` exports.
+- **Four browser files carry intra-file flake.** Each fails a *different* test on
+  each whole-file run, always a Playwright `wait_for_selector` timeout, and each
+  passes alone and against its parent commit. A named failure from a browser file
+  is not evidence until it reproduces.
 
 **Live state.** `delegation_routing_decision` exists in the production database
 with both indexes and 0 rows — the recorder writes its first row the next time

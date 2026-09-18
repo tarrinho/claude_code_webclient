@@ -81,11 +81,11 @@ Measured on 2026-09-17 over 22 real cells: **6.0 minutes per
 (model × task type)**.
 
 ```
-10 models × 7 task types = 70 cells
-70 × 6.0 min             ≈ 7.0 hours of measurement, sequential, at 3 repeats
+11 models × 7 task types = 77 cells
+77 × 6.0 min             ≈ 7.7 hours of measurement, sequential, at 3 repeats
 ```
 
-That 7.0 hours is *measurement* time, not elapsed time. A sweep runs only while
+That 7.7 hours is *measurement* time, not elapsed time. A sweep runs only while
 the box is idle and stops the moment it is not (§8), so it spans several nights.
 §10 covers how to state that honestly.
 
@@ -95,10 +95,10 @@ disagree.** `bin/wc-bench.py`'s `DEFAULT_MODELS` holds 10;
 
 - `claude-fable-5` and `claude-haiku-4-5` are in the harness and have **no
   capability rows at all** — never measured on anything.
-- `azure_ai/gpt-5.6-terra` has **6 measured rows** in the capability table and is
-  **absent from `DEFAULT_MODELS`** — so a full sweep as currently configured
-  would never re-measure a model that is a live rung on `long-context` and
-  `multi-turn`.
+- `azure_ai/gpt-5.6-terra` has **6 measured rows** in the capability table and was
+  **absent from `DEFAULT_MODELS`** until 2026-09-18 — a full sweep would never
+  have re-measured a model that is a live rung on `long-context` and
+  `multi-turn`. It is now in the list, which is why the matrix is 11 models.
 
 **This design takes `DEFAULT_MODELS` as the source of truth** — it is the
 harness's own list and the thing a run must be reproducible against — and treats
@@ -389,8 +389,8 @@ behaviour is testable without a browser.
 Per cell, on stdout:
 
 ```
-[14/63] azure_ai/gpt-5.6-luna / planning   done 5m42s   measured 1h18m
-        remaining ≈5h36m measurement (from 14 cells)   (7 dormant of 70)
+[14/70] azure_ai/gpt-5.6-luna / planning   done 5m42s   measured 1h18m
+        remaining ≈5h36m measurement (from 14 cells)   (7 dormant of 77)
 ```
 
 The denominator is the attemptable count and the dormant count rides alongside
@@ -409,15 +409,15 @@ inputs from history: the median cell time of the last completed sweep, and the
 median measurement hours per night actually achieved across recent nights.
 
 ```
-estimate: 70 cells ≈ 7.0h measurement
-          ≈ 3 nights at 2.4h/night observed over the last 6 nights
+estimate: 77 cells ≈ 7.7h measurement
+          ≈ 4 nights at 2.4h/night observed over the last 6 nights
 ```
 
 With no nightly history, it reports measurement time only and says what it is
 excluding:
 
 ```
-estimate: 70 cells ≈ 7.0h measurement
+estimate: 77 cells ≈ 7.7h measurement
           nights unknown — no idle-time history yet; excludes all idle time
 ```
 
@@ -483,16 +483,16 @@ Progress is reported against the **attemptable** count, with the dormant count
 named alongside rather than folded away:
 
 ```
-[14/63] azure_ai/gpt-5.6-luna / planning   done 5m42s   (7 dormant of 70)
+[14/70] azure_ai/gpt-5.6-luna / planning   done 5m42s   (7 dormant of 77)
 ```
 
 `cells_dormant` is recorded on the run row at start (§4) so a finished sweep
 still says how much of the matrix it was never going to attempt. Without it, a
-sweep that completed 63 of 70 cells and one that skipped 7 unmeasurable ones are
+sweep that completed 70 of 77 cells and one that skipped 7 unmeasurable ones are
 the same two numbers.
 
-Progress against 70 would stall at 90% forever and read as a stuck sweep;
-progress against 63 with no dormant count visible would read as a full matrix
+Progress against 77 would stall at 90% forever and read as a stuck sweep;
+progress against 70 with no dormant count visible would read as a full matrix
 and quietly hide that a tenth of it is unmeasured. Both failures are the §1
 failure — a number that does not mean what it appears to mean — so the report
 carries both figures.

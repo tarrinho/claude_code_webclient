@@ -733,6 +733,23 @@ export async function loadDelegation(force = false) {
   _renderStatus(payload);
   _renderConfig(payload.config, byId('delegationConfig'));
 
+  // Which model tables were open, so a re-render does not shut them.
+  //
+  // Every save re-renders this panel: `_saveRow` calls loadDelegation so the
+  // ladder reflects the value just written. With the tables collapsed by
+  // default and the DOM rebuilt from scratch, editing one cell snapped shut
+  // the table being edited -- so the second edit of a session was made against
+  // a table the operator had to re-open every time. Found by
+  // test_qa_delegation_all_task_types_e2e, whose restore step could not reach
+  // the cell it had just written.
+  //
+  // Keyed by task type rather than by index: a re-render can add or remove a
+  // card, and an index would then reopen a different task type's table than
+  // the one the operator opened.
+  const wasOpen = new Set(
+    Array.from(host.querySelectorAll('.delegation-models[open]'))
+      .map(el => el.dataset.taskType));
+
   host.replaceChildren();
   const byType = {};
   (payload.rows || []).forEach(row => {
@@ -741,6 +758,12 @@ export async function loadDelegation(force = false) {
 
   Object.keys(byType).sort().forEach(taskType => {
     host.appendChild(_card(taskType, byType[taskType], payload));
+  });
+
+  wasOpen.forEach(taskType => {
+    const group = host.querySelector(
+      `.delegation-models[data-task-type="${CSS.escape(taskType)}"]`);
+    if (group) group.open = true;
   });
 
   return (payload.rows || []).length;

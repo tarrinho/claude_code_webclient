@@ -73,6 +73,22 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(("m1", "coding"), groups["pending"])
         self.assertNotIn(("m1", "coding"), groups["done"])
 
+    async def test_a_dormant_cell_with_a_fresh_measurement_is_still_dormant(self):
+        """Dormancy must be checked before measured_at, not after.
+
+        If the order were reversed, a dormant cell that also carries a fresh
+        measurement would be classified done instead of dormant. A finished
+        sweep reports cells_dormant from classify_cells (spec 12.1), so that
+        reversal would make the sweep claim it measured a cell it actually
+        skipped, and cells_dormant would under-report.
+        """
+        await store.capability_meta_set(
+            "m1", "coding", dormant=1,
+            measured_at="2026-09-18T03:00:00Z")
+        groups = await benchmark_sweep.classify_cells(self.run)
+        self.assertIn(("m1", "coding"), groups["dormant"])
+        self.assertNotIn(("m1", "coding"), groups["done"])
+
 
 class DormancyTests(ResumeTests):
     def _failure(self):

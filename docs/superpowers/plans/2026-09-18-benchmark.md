@@ -1150,7 +1150,7 @@ git commit -m "Derive sweep progress from measured_at and add the dormancy rules
 - Test: `tests/test_qa_benchmark_busy.py`
 
 **Interfaces:**
-- Consumes: `runner.is_saturated` (the `_sem.locked()` helper at `runner.py:549`), `db.db_conn`
+- Consumes: `runner.slots_busy` (the `_sem.locked()` helper at `runner.py:541`), `db.db_conn`
 - Produces:
   - `IDLE_MARGIN_MINUTES = 10`
   - `BUSY_RECHECK_SECONDS = 60`
@@ -1205,26 +1205,26 @@ class BusyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_idle_box_is_not_busy(self):
         """The direction that catches an always-busy detector."""
-        with patch("runner.is_saturated", return_value=False):
+        with patch("runner.slots_busy", return_value=False):
             busy, reason = await benchmark_sweep.box_is_busy()
         self.assertFalse(busy, reason)
 
     async def test_a_turn_in_flight_is_busy(self):
-        with patch("runner.is_saturated", return_value=True):
+        with patch("runner.slots_busy", return_value=True):
             busy, reason = await benchmark_sweep.box_is_busy()
         self.assertTrue(busy)
         self.assertIn("turn", reason)
 
     async def test_a_recent_message_is_busy(self):
         await self._message(db._now())
-        with patch("runner.is_saturated", return_value=False):
+        with patch("runner.slots_busy", return_value=False):
             busy, reason = await benchmark_sweep.box_is_busy()
         self.assertTrue(busy)
         self.assertIn("message", reason)
 
     async def test_an_old_message_is_not_busy(self):
         await self._message("2020-01-01T00:00:00Z")
-        with patch("runner.is_saturated", return_value=False):
+        with patch("runner.slots_busy", return_value=False):
             busy, reason = await benchmark_sweep.box_is_busy()
         self.assertFalse(busy, reason)
 
@@ -1235,7 +1235,7 @@ class BusyTests(unittest.IsolatedAsyncioTestCase):
             " voice_mode) VALUES ('v1', 'v', '/tmp', 'admin', ?, 1)",
             ("2020-01-01T00:00:00Z",))
         await db.db_conn.commit()
-        with patch("runner.is_saturated", return_value=False):
+        with patch("runner.slots_busy", return_value=False):
             busy, reason = await benchmark_sweep.box_is_busy()
         self.assertFalse(busy, reason)
 ```
@@ -1270,7 +1270,7 @@ async def box_is_busy() -> tuple[bool, str]:
     over -- counting it would stop sweeps for load that does not exist.
     """
     import runner
-    if runner.is_saturated():
+    if runner.slots_busy():
         return True, "a turn is in flight"
 
     cur = await db.db_conn.execute(

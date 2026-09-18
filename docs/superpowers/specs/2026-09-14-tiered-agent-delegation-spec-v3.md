@@ -67,7 +67,6 @@ A write is rejected only against the invariants of task types that are *already*
 | reasoning | 4 | 2 | 1 | **4** | 0 | **4** |
 | reviewer-gate | 3 | 3 | 3 | **3** | 0 | **3** |
 | security-gate | 3 | 3 | 3 | **3** | 0 | **3** |
-| split-decision | 1 | 0 | 0 | **1** | 0 | **1** |
 | voice | 3 | 0 | 1 | **3** | 0 | **3** |
 
 Cost and `max_context` are complete (23/23). Accuracy is 8/23 and latency 4/23 after today's coding run (§3.1).
@@ -326,7 +325,6 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | voice | 100% | 12§ | 0.4769‡ | 6.9◊ | 1,000,000 |
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 0.4769‡ | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 0.4769‡ | 17.5 | 1,000,000 |
-| `claude-sonnet-5` | split-decision | TBD | — | 0.4769‡ | TBD | 1,000,000 |
 | `claude-sonnet-5` | reviewer-gate | 78.57% | 28 | 0.4769‡ | 4.555 | 1,000,000 |
 | `claude-opus-5` | comprehension | 100% | 12 | 1.2310‡ | 11.9 | 1,000,000 |
 | `claude-opus-5` | reasoning | 100% | 6 | 1.2310‡ | 10.2 | 1,000,000 |
@@ -599,9 +597,41 @@ Cost of placing each model at each rung, for a whole tree:
 | multi-turn, planning, voice, reviewer-gate | `claude-sonnet-5` at **rung 1** | $1.868 |
 | comprehension | `claude-sonnet-5` at **rung 0** | $3.736 |
 | comprehension | `claude-opus-5` at **rung 1** | $4.291 |
-| split-decision | `claude-sonnet-5` at **rung 0** | $3.736 |
 
-`coding` and `long-context` — the two three-rung ladders, and the only two that start free — are the only ones that fit unchanged. **Comprehension and split-decision have no affordable ladder at all** on these inputs, and under §1.1 that makes them non-operational until one of the assumptions changes or a cheap rung is measured for them. Luna already holds a comprehension row awaiting accuracy, which is the cheapest way to fix it.
+`coding` and `long-context` — the two three-rung ladders, and the only two that start free — are the only ones that fit unchanged. **Comprehension had no affordable ladder at all** on these inputs, and under §1.1 that made it non-operational until one of the assumptions changed or a cheap rung was measured for it. (This sentence also named `split-decision`, removed 2026-09-18 — see below.) Luna already holds a comprehension row awaiting accuracy, which is the cheapest way to fix it.
+
+#### `split-decision` was removed on 2026-09-18, and is `comprehension`
+
+Operator decision, taken on the evidence below. Every row, ladder entry and
+readiness line for it is gone from this document and from
+`bin/wc-seed-delegation.py`; its one capability row was deleted from the
+database. Work that would have been a split-decision is classified
+`comprehension` and takes comprehension's ladder.
+
+**The type's own founding line said it was comprehension.** From the first
+design, 2026-09-12 (commit `627e85a`), where the tier table gave it
+`claude-sonnet-5` at $5.68/1k tasks — the same model, the same cost and the
+same justification as the `comprehension` row directly above it:
+
+> | split decision | `claude-sonnet-5` | 5.68 | judging scope is comprehension work, where cheap models fail |
+
+**Nothing since distinguished the two.** Both entered at sonnet; both priced a
+rung-0 tree at $3.736; §5.1 named them in one sentence as the two types with no
+affordable ladder. Where they diverged is only in the fix: comprehension had a
+cheap rung measured and cleared, `split-decision` never did.
+
+**And it was never reachable.** It is the only task type with no bench task and
+no classifier pattern — `classify()` could not return it, so no work has ever
+been routed to it or measured against it. That is not an oversight to correct
+but the consequence of the founding line: if judging scope *is* comprehension
+work, the classifier calling it `comprehension` is right.
+
+**What this costs, stated plainly.** If a future measurement shows that judging
+scope needs a different model from ordinary comprehension, this decision hides
+that: the two are now one type with one ladder and one accuracy figure. The
+signal to watch for is comprehension accuracy splitting by task shape. Bringing
+it back means a definition first — what a split-decision task looks like that a
+comprehension task does not — which is the thing that never existed.
 
 **Opus is affordable at no rung of any ladder.** Given §2.6's blocking constraint already refuses it the reasoning entry rung on evidence grounds, and its only measured row is comprehension at 50% (n=2), the case for Opus appearing anywhere in this design is now weak on both counts.
 
@@ -650,7 +680,6 @@ The table below is a **snapshot of what this computation is expected to produce 
 
 **The voice ladder above names two models that have never served a voice turn.** Production voice runs `azure_ai/gpt-5.4-mini-copilot` — 46 measured turns, and every `voice_turn_timing` row in the database is that model. It had no row in §2.6 at all until 2026-09-17, so no §1.1 invariant could see it and the published ladder described a configuration that has never existed. The row is added with what is measured; it is **not** ladder-eligible (no accuracy), so the ladder above is still what the generator produces — the discrepancy is between the ladder and reality, not between the ladder and the table.
 | reasoning | TBD — **Luna must be benchmarked on reasoning** before a rung is set (an editorial hold; see below) | — | — |
-| split-decision | `claude-sonnet-5` | — | — |
 | **reviewer-gate** | `azure_ai/gpt-5.6-luna` | `claude-sonnet-5` (see §4.3) | — |
 
 **All three review gates share the `reviewer-gate` ladder** — stages 3, 4 and 5 climb the same rungs, so there is no separate `security-gate` task type and the table keeps nine rows. What differs is what happens at the top: a security rejection surviving the gate's top rung goes to a human rather than failing the leaf (§4.5).

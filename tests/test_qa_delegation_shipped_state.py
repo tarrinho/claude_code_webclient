@@ -195,7 +195,14 @@ class SeedRowCoverageTests(unittest.TestCase):
         # 40 = 34, plus azure_ai/gpt-5.6-sol's six (2026-09-17). sol is
         # what takes planning's tree cost from $1.936 to $0.724, by
         # demoting sonnet from rung 1 to rung 2 rather than removing it.
-        self.assertEqual(len(self._spec_pairs()), 40)
+        #
+        # 39 = 40 minus split-decision's single sonnet row, removed
+        # 2026-09-18. That type's own founding line called it "comprehension
+        # work", it was priced and laddered identically to comprehension, and
+        # it never gained a bench task or a classifier pattern -- so no work
+        # could ever reach it. Work of that shape is classified
+        # `comprehension` now.
+        self.assertEqual(len(self._spec_pairs()), 39)
 
     def test_every_spec_2_6_row_has_a_seeded_row(self):
         module = _load_seed_module()

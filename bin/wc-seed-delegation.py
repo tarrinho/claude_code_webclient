@@ -125,7 +125,6 @@ ROWS = [
     ("azure_ai/gpt-5.4-mini-copilot", "voice", None, 46, 0.0781, 2.002, None),
     ("claude-sonnet-5", "multi-turn", 1.0, 12, 0.4769, 7.8, 1000000),
     ("claude-sonnet-5", "planning", 0.833, 12, 0.4769, 17.5, 1000000),
-    ("claude-sonnet-5", "split-decision", None, None, 0.4769, None, 1000000),
     ("claude-opus-5", "comprehension", 1.0, 12, 1.2310, 11.9, 1000000),
     ("claude-opus-5", "reasoning", 1.0, 6, 1.2310, 10.2, 1000000),
     # azure_ai/gpt-5.6-terra, added 2026-09-17. accuracy/n/median_latency_s are

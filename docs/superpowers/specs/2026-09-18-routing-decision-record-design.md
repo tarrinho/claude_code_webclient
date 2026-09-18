@@ -1,6 +1,11 @@
 # Routing decision record — design
 
-**Status:** design approved 2026-09-18, not yet implemented.
+**Status:** design approved 2026-09-18; implementation in progress the same day
+in a parallel session, which owns `db.py`, `routes/db_delegation.py`,
+`delegation_recorder.py`, `orchestrator.py` and
+`tests/test_qa_delegation_recorder.py`. The corrections in §1.1 (the hook
+point's real name) and §2 (the `"[]"` ladder case) came back from that
+implementation and are folded in here.
 **Scope:** record what the delegation classifier and ladder *would* decide for
 every real orchestrator task, so that a later `learn` pass has ground truth to
 argue from. Recording only. Nothing about routing behaviour changes.
@@ -45,18 +50,18 @@ routes/delegation.py:107:    # comment referring to it
 `routes/orchestrators.py:894`) and its rules are configurable from the
 orchestrator settings, but no code path invokes `assign_model`. A task's model
 is whatever the plan markdown named: `PlanParser` puts it on
-`ParsedTask.model`, and `OrchestratorEngine._create_tasks` writes that value
-straight through to `orchestrator_tasks.model` (`orchestrator.py:785` and
-`:798`). When the plan names no model, the row stores `NULL` and the ladder is
-never consulted.
+`ParsedTask.model`, and `OrchestratorEngine._materialise_plan`
+(`orchestrator.py:743`) writes that value straight through to
+`orchestrator_tasks.model` (`orchestrator.py:785` and `:798`). When the plan
+names no model, the row stores `NULL` and the ladder is never consulted.
 
 So the delegation ladder is not merely unrecorded — it is unreachable
 end-to-end. A recorder hooked into `assign_model` would have recorded zero rows
 for as long as it existed, and the silence would have read as "no tasks were
 routed" rather than "the hook is dead".
 
-**The hook therefore moves to `OrchestratorEngine._create_tasks`**, the place a
-task's model is actually decided. The recorder computes what the delegation
+**The hook therefore moves to `OrchestratorEngine._materialise_plan`**, the
+place a task's model is actually decided. The recorder computes what the delegation
 subsystem *would* have chosen and stores it beside what was actually used. This
 is shadow mode, and it is better than the original design for the learn pass's
 purpose: it produces a labelled disagreement set — classifier verdict versus
@@ -72,14 +77,14 @@ One row per created task, written at task-creation time:
 | Column | Meaning |
 |---|---|
 | `task_table` | `'orchestrator_tasks'`. A column, not a constant, because the table has been renamed once already (`supervisor_tasks` → `orchestrator_tasks`, `db.py:851`) and the rename map proves it can happen again. |
-| `task_id` | The namespaced row id `_create_tasks` builds (`<orchestrator[:8]>_<planId>`). Not a foreign key — see §5. |
+| `task_id` | The namespaced row id `_materialise_plan` builds (`<orchestrator[:8]>_<planId>`). Not a foreign key — see §5. |
 | `task_type` | `Classification.task_type` from `delegation_classifier.classify`. |
 | `score` | `Classification.score` (1–5). |
 | `mutates` | `Classification.mutates`. |
 | `source` | How the shadow model was arrived at: `rule` (an operator regex in `ModelRouter.rules` matched), `ladder` (the type is operational and its ladder produced a rung), `fallback` (neither — `config.ANTHROPIC_MODEL`). |
 | `shadow_model` | The model the delegation subsystem would have chosen. |
 | `actual_model` | What the task was actually given: `ParsedTask.model`, or `NULL` when the plan named none. |
-| `ladder` | The full ladder as a JSON array of model ids, or `NULL` when the type is not operational. Kept because the ladder changes underneath the record every time the capability table is re-seeded, and a decision is not interpretable later without the menu it was choosing from. |
+| `ladder` | The full ladder as a JSON array of model ids. Kept because the ladder changes underneath the record every time the capability table is re-seeded, and a decision is not interpretable later without the menu it was choosing from. Three cases, and they must stay distinguishable: a consulted ladder is its rungs; an **operational type whose ladder came back empty** is `"[]"`; and `NULL` means no ladder was consulted at all — either the type is not operational, or an operator rule matched first and the ladder was never reached. Without the `"[]"` case, a fallback caused by an empty ladder and a fallback caused by a non-operational type would be one indistinguishable row, and the learn pass needs to tell them apart: the first is a capability-table defect, the second is a deliberate setting. |
 | `decided_at` | Timestamp, `db._now()`. |
 
 **Nothing else.** No prompt text, no task title, no description, no result. The
@@ -131,7 +136,7 @@ and are registered in `db.py`'s dispatch map (`db.py:167-171`) the same way:
 
 ## 4. Where it hooks
 
-`OrchestratorEngine._create_tasks`, immediately after each successful
+`OrchestratorEngine._materialise_plan`, immediately after each successful
 `db.orchestrator_task_create`. After, not before: a decision record for a task
 that failed to be created is a record of nothing.
 
@@ -147,8 +152,13 @@ async def record_decision(
     description: str,
     actual_model: str | None,
     router: ModelRouter | None = None,
-) -> None
+) -> int | None
 ```
+
+It returns the new row id, and it **raises rather than swallowing**. Failure
+isolation belongs to the caller, because only the caller knows which task it was
+recording for — and a warning that does not name the task is exactly what hid a
+silent failure in this same loop once before (`orchestrator.py:755`).
 
 It classifies `title + " " + description` (the same concatenation
 `assign_model` uses, lowercased the same way), loads the capability table via
@@ -173,8 +183,8 @@ the operator's own rules are visible to the recorder without new plumbing.
 
 Recording is diagnostics. It must never be able to fail task creation.
 
-- The whole call is wrapped in `try/except Exception` inside `_create_tasks`,
-  logging at `warning` and continuing. `_create_tasks` already has a per-task
+- The whole call is wrapped in `try/except Exception` inside `_materialise_plan`,
+  logging at `warning` and continuing. `_materialise_plan` already has a per-task
   `try` for exactly this reason, and the module comment at `orchestrator.py:755`
   records what a bare warning cost the last time it hid a failure — so the log
   line names the task id and the exception, not just "recording failed".
@@ -249,7 +259,7 @@ identical for every row.
 
 **`RecorderIsolationTests`** — task creation survives the recorder raising. The
 mutation this guards is real: patch `record_decision` to raise, run
-`_create_tasks`, assert every task row was still created and that the warning
+`_materialise_plan`, assert every task row was still created and that the warning
 names the failing task id. Then the inverse, which is the one that actually
 catches a regression — patch it to raise and assert the test *fails* if the
 `try/except` is removed.

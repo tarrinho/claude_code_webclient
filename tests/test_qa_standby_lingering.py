@@ -127,14 +127,21 @@ class LingeringStandbyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("warning", body)
         self.assertTrue(await self._standby_reason(), "chat was not marked on standby")
 
-    async def test_a_real_failure_is_still_a_500_and_marks_nothing(self):
-        """Exit 1 means nothing happened, and must not be softened into success."""
+    async def test_a_real_failure_is_still_an_error_and_marks_nothing(self):
+        """Exit 1 means nothing happened, and must not be softened into success.
+
+        The status became 404 on 2026-09-18, when the script gained exit 3 for
+        a deliberate refusal: exit 1 is "there is no such session", which is
+        not a server fault. The two invariants this test exists for are
+        unchanged -- the response is an error carrying the script's own
+        sentence, and the chat is not marked on standby."""
         client, headers = self._login()
         with patch("routes.chats.asyncio.create_subprocess_exec",
                    return_value=_script(1, b"no running session found matching 'x'")):
             r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
 
-        self.assertEqual(r.status_code, 500, r.text)
+        self.assertEqual(r.status_code, 404, r.text)
+        self.assertGreaterEqual(r.status_code, 400, "must not be softened into success")
         self.assertIn("error", r.json())
         self.assertFalse(await self._standby_reason(),
                          "a failed standby must not mark the chat")

@@ -244,7 +244,8 @@ async function _setSpecStatus(spec, status, selectEl) {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not set status');
+      // See app.js's standbyChat: the server's contract is {"error": ...}.
+      throw new Error(data.error || data.detail || 'Could not set status');
     }
     spec.status = status;
     spec.status_manual = true;
@@ -265,7 +266,7 @@ async function _deleteSpec(specId, row) {
       // server's own detail text -- same pattern as machines.js's
       // _deleteMachine, so a rejected delete is never silent.
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not delete spec');
+      throw new Error(data.error || data.detail || 'Could not delete spec');
     }
     row.remove();
     // Update the overall count from the remaining rows.

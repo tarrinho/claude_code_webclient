@@ -23,6 +23,22 @@
 #
 # JSON via python3, not jq: jq is not installed on this host and python3
 # already is (every other bin/ script that touches JSON uses it).
+#
+# Exit codes, which routes/chats.py maps onto HTTP status:
+#
+#   0  suspended.
+#   1  nothing to suspend: no session matched the name or pid, or the file
+#      named a pid that is no longer running.
+#   2  usage error, or the signal was delivered and only the process's own
+#      shutdown is outstanding (see the caller's note on the 2026-09-15
+#      incident) -- the standby record is written either way.
+#   3  found it, alive, and declined on a rule: not idle, or not idle long
+#      enough, or its idle age could not be read. Split out from 1 on
+#      2026-09-18 because the two are different answers to the operator: 1 is
+#      "there is nothing here", 3 is "there is, and I am protecting it". The
+#      caller answers 404 and 409 respectively; before the split both arrived
+#      as an HTTP 500, which reads as a server fault rather than a deliberate
+#      refusal the user can act on.
 set -uo pipefail
 
 SESSIONS_DIR="${HOME}/.claude/sessions"
@@ -105,7 +121,7 @@ if [ "$status" != "idle" ]; then
     esac
     echo "session '${name:-$target}' (pid ${pid}) is ${why} -- refusing to standby it." >&2
     echo "Only a session whose status is 'idle' can be suspended." >&2
-    exit 1
+    exit 3
 fi
 
 # Idle is not the same as finished with: a session that stopped four seconds
@@ -115,7 +131,7 @@ min_idle="${WC_STANDBY_MIN_IDLE_S:-3600}"
 if [ -z "$status_updated_at" ]; then
     echo "session '${name:-$target}' (pid ${pid}) has no statusUpdatedAt, so it cannot show" >&2
     echo "how long it has been idle -- refusing rather than assuming it is old enough." >&2
-    exit 1
+    exit 3
 fi
 idle_for="$(python3 -c "
 import time
@@ -123,13 +139,13 @@ print(int(time.time() - int('${status_updated_at}') / 1000))
 " 2>/dev/null)"
 if [ -z "$idle_for" ]; then
     echo "could not read statusUpdatedAt ('${status_updated_at}') from ${match} -- refusing." >&2
-    exit 1
+    exit 3
 fi
 if [ "$idle_for" -lt "$min_idle" ]; then
     echo "session '${name:-$target}' (pid ${pid}) has only been idle ${idle_for}s, and the" >&2
     echo "minimum is ${min_idle}s -- refusing to standby it. Override deliberately with" >&2
     echo "WC_STANDBY_MIN_IDLE_S=<seconds> if you know it is finished with." >&2
-    exit 1
+    exit 3
 fi
 
 mkdir -p "$STANDBY_DIR"

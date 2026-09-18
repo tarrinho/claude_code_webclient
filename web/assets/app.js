@@ -17,7 +17,7 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 // cycle back into app.js.
 import {updateVoiceButtonVisibility} from './voice-engine.js?v=4274770';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
-import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=958043';
+import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=7600534';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -1922,7 +1922,14 @@ async function standbyChat(chat) {
     const response = await apiFetch(`/api/chats/${encodeURIComponent(chat.id)}/standby`, {method: 'POST'});
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Could not standby conversation');
+      // `data.error` first: app.py's handle_http_exception serialises every
+      // HTTPException as {"error": ...}, so `detail` is the FastAPI-side name
+      // and never reaches the browser. Reading only `detail` meant every
+      // refusal this endpoint takes care to explain -- "session X is mid-turn",
+      // "3 live sessions share this session id" -- arrived as undefined and was
+      // replaced by the generic string below. `detail` stays as a second choice
+      // for a plain FastAPI error path that never reached the custom handler.
+      throw new Error(data.error || data.detail || 'Could not standby conversation');
     }
     const data = await response.json();
     // Show the resume command so the user can paste it into the terminal

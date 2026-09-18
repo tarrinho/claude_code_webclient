@@ -4,7 +4,10 @@ Covers the four failure paths that the frontend must surface to the user:
 * 404 - chat not found
 * 400 - chat has no linked session (session_id is missing)
 * 400 - session name cannot be resolved from ~/.claude/sessions/*.json
-* 500 - standby script fails (return code != 0)
+* 409 - several live sessions share the conversation's session id
+* 409 - the script refused on one of its own rules (exit 3)
+* 404 - nothing to suspend: no match, or a stale pid (exit 1)
+* 500 - standby script fails in an unexpected way (any other return code)
 * 200 - success, includes resume_command
 
 The frontend (web/assets/app.js:standbyChat) reads response.json().error
@@ -175,26 +178,109 @@ class StandbyRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", body)
         self.assertIn("session name", body["error"].lower())
 
-    # -- 500: standby script fails --
+    # -- 409: the session id is ambiguous --
 
-    async def test_500_when_standby_script_fails(self):
-        """The route returns 500 with the script's stderr in detail."""
+    async def test_409_when_several_live_sessions_share_the_session_id(self):
+        """Observed on this host 2026-09-18: three live sessions shared one
+        `sessionId` -- multiagent2 (1798), multiagent3 - testusage (3659449)
+        and multiagent - benchmark plan (3763786). `_find_session_name`
+        tie-breaks on updatedAt, so a standby click on a chat titled
+        `cweb4 - voice issue` resolved to `multiagent3 - testusage` and would
+        have SIGTERMed a session nobody named.
+
+        The tie-break is fine for a display label and wrong for choosing a
+        victim, so this endpoint refuses instead, and names every candidate so
+        the operator can suspend the right one deliberately.
+
+        The script must never be reached: asserting the refusal alone would
+        pass even if the process had already been signalled."""
+        second = self.claude_sessions / f"{os.getppid()}.json"
+        second.write_text(json.dumps({
+            "pid": os.getppid(),
+            "name": "cweb-real-second",
+            "status": "idle",
+            "sessionId": self.real_session_id,
+            "cwd": str(Path.home()),
+            "updatedAt": 1789495999000,
+        }))
+        self.addCleanup(lambda: second.unlink(missing_ok=True))
+
         await self._create_chat(session_id=self.real_session_id)
         client, headers = self._login("alice")
 
-        mock_communicate = unittest.mock.AsyncMock(return_value=(b"", b"standby failed: process not found"))
-        async_mock = unittest.mock.AsyncMock(returncode=1)
-        async_mock.communicate = mock_communicate
+        with patch("routes.chats.asyncio.create_subprocess_exec") as spawn:
+            r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+            spawn.assert_not_called()
 
+        self.assertEqual(r.status_code, 409, r.text)
+        error = r.json()["error"]
+        self.assertIn("cweb-real", error)
+        self.assertIn("cweb-real-second", error)
+        self.assertIn("2 live sessions", error)
+
+    async def test_the_chat_is_not_marked_on_standby_when_it_is_ambiguous(self):
+        """A refusal that still flipped the flag would leave a live session
+        labelled as suspended, which is how the 2026-09-15 incident read from
+        the sidebar."""
+        second = self.claude_sessions / f"{os.getppid()}.json"
+        second.write_text(json.dumps({
+            "pid": os.getppid(), "name": "cweb-real-second", "status": "idle",
+            "sessionId": self.real_session_id, "cwd": str(Path.home()),
+            "updatedAt": 1789495999000,
+        }))
+        self.addCleanup(lambda: second.unlink(missing_ok=True))
+        await self._create_chat(session_id=self.real_session_id)
+        client, headers = self._login("alice")
+        client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+        row = await db.chat_get(self.chat_id, self.alice_id)
+        self.assertIsNone(row.get("standby_reason"))
+
+    # -- exit codes: each one is a different answer to the operator --
+
+    async def _run_with_returncode(self, code: int, stderr: bytes):
+        """POST standby with the script mocked to exit *code*."""
+        await self._create_chat(session_id=self.real_session_id)
+        client, headers = self._login("alice")
+        async_mock = unittest.mock.AsyncMock(returncode=code)
+        async_mock.communicate = unittest.mock.AsyncMock(return_value=(b"", stderr))
         with patch(
             "routes.chats.asyncio.create_subprocess_exec",
             return_value=async_mock,
         ):
-            r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
-            self.assertEqual(r.status_code, 500, r.text)
-            body = r.json()
-            self.assertIn("error", body)
-            self.assertIn("standby script failed", body["error"].lower())
+            return client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+
+    async def test_409_when_the_script_refuses_on_its_own_rules(self):
+        """Exit 3: the session is there, alive, and protected -- mid-turn,
+        waiting on a question, or not idle long enough.
+
+        This is the path a user actually hits. It used to be a 500, which reads
+        as "the server broke" and sends people looking for a fault that is not
+        there; the session was in fact being protected exactly as designed. The
+        script's own sentence is passed through, because it names the session,
+        the pid and the rule."""
+        r = await self._run_with_returncode(
+            3, b"session 'multiagent3' (pid 3659449) is mid-turn -- refusing to standby it.")
+        self.assertEqual(r.status_code, 409, r.text)
+        body = r.json()
+        self.assertIn("error", body)
+        self.assertIn("mid-turn", body["error"])
+        self.assertIn("3659449", body["error"],
+                      "the operator needs the pid to act on this")
+
+    async def test_404_when_there_is_nothing_to_suspend(self):
+        """Exit 1: no session matched, or the record named a dead pid. Not a
+        server fault and not a conflict -- the thing is simply not there."""
+        r = await self._run_with_returncode(
+            1, b"no running session found matching 'ghost' (checked pid and name)")
+        self.assertEqual(r.status_code, 404, r.text)
+        self.assertIn("no running session", r.json()["error"].lower())
+
+    async def test_500_only_for_an_unexpected_exit_code(self):
+        """Anything the script does not document stays a 500. A new exit code
+        must not be silently reclassified as a refusal the user can act on."""
+        r = await self._run_with_returncode(7, b"bash: line 1: python3: command not found")
+        self.assertEqual(r.status_code, 500, r.text)
+        self.assertIn("standby script failed", r.json()["error"].lower())
 
     # -- 200: success --
 

@@ -79,6 +79,32 @@ class TasksForTests(unittest.TestCase):
             self.assertIn(task_id, BY_ID)
 
 
+class TimeoutBudgetTests(unittest.TestCase):
+    def test_coding_gets_a_bigger_derived_budget_than_reasoning(self):
+        """coding has far more tasks than reasoning (bench/tasks.py), so a
+        budget that scales with the work must give coding a bigger timeout.
+        This fails against any fixed constant -- which was the bug: a single
+        1200s default was too small for coding's 12 tasks * 3 repeats = 36
+        runs while being needlessly huge for reasoning's 2 tasks."""
+        coding_tasks = benchmark_cell._tasks_for("coding")
+        reasoning_tasks = benchmark_cell._tasks_for("reasoning")
+        coding_budget = benchmark_cell._timeout_for(coding_tasks, repeats=3)
+        reasoning_budget = benchmark_cell._timeout_for(reasoning_tasks,
+                                                        repeats=3)
+        self.assertGreater(len(coding_tasks), len(reasoning_tasks))
+        self.assertGreater(coding_budget, reasoning_budget)
+
+    def test_derived_budget_covers_every_run_at_the_harness_cap(self):
+        """The budget must be at least runs * per-run cap, or it can fire on
+        a cell that is working normally -- every run within the harness's
+        own per-run timeout (bench/transports.py TIMEOUT_S)."""
+        tasks = benchmark_cell._tasks_for("coding")
+        repeats = 3
+        budget = benchmark_cell._timeout_for(tasks, repeats)
+        per_run_cap = 1000.0  # bench/transports.py's own default
+        self.assertGreaterEqual(budget, len(tasks) * repeats * per_run_cap)
+
+
 class TimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_timeout_is_a_failure_carrying_the_cap(self):
         async def _hang(*args, **kwargs):

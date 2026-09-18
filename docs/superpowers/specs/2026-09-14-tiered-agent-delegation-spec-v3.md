@@ -159,6 +159,7 @@ So the ordering is not "fix recording first". It is: **run the orchestrator at a
 | `research.*api.*document\|find.*replacement\|evaluate.*option` | 3 | comprehension | False |
 | `read.*file\|list.*directory\|grep.*pattern\|summarize.*log` | 1 | long-context | False |
 | `simple\|small\|quick\|minor\|fix.*typo` | 1 | coding | True |
+| `fix.*bug\|implement\|refactor\|debug\|add.*function\|write.*function` | 3 | coding | True |
 
 ### 2.1 Multi-pattern conflicts
 
@@ -703,6 +704,20 @@ So stage 5 takes the same rule as stage 3, with one addition that stage 3 does n
 A gate that rejects at every rung is reported with the rejection text at each rung attached, so the miscalibration is legible from the record rather than requiring a re-run to reproduce.
 
 ### 4.6 Blast-radius check
+
+**Ordinary coding work was reaching `comprehension`, not `coding` (added 2026-09-18).** Until the row above existed, `coding` matched three narrow shapes only — a test suite, a large refactor or a database migration, and trivia. Everything else fell through to the default task type, which is `comprehension`:
+
+```
+fix the bug in the auth middleware   → comprehension
+implement a retry decorator          → comprehension
+add a function to parse the config   → comprehension
+refactor this module                 → comprehension
+debug why the login fails            → comprehension
+```
+
+That made §4.1's cost thesis unreachable in practice. `coding` is the only task type with an oracle (§4.2) and one of only two that start free — and it was receiving almost none of the work it exists for, while `comprehension`, the most expensive ladder in §2.6 and a **default rather than a category**, absorbed it. It also means `comprehension`'s measured accuracy is a figure over a mixed bag, not over comprehension.
+
+The new row is score 3, the mid point, so §2.1's highest-score rule leaves its neighbours intact: `refactor.*large` still wins at 4, `simple|quick|minor` still at 1. Specificity keeps the other types too — `debug.*complex` outranks bare `debug` for `reasoning`, and `implement.*multiple` outranks bare `implement` for `planning`, both by literal-character count.
 
 The classifier is a first pass on free-text. A task matching `simple|small|quick|minor|fix.*typo` can still produce a large patch if the target file is big, or cascade through imports, or change config that affects other modules.
 

@@ -29,6 +29,30 @@ PATTERNS: Final[tuple[tuple[str, int, str, str], ...]] = (
     (r"research.*api.*document|find.*replacement|evaluate.*option", 3, "comprehension", MUTATES_FALSE),
     (r"read.*file|list.*directory|grep.*pattern|summarize.*log", 1, "long-context", MUTATES_FALSE),
     (r"simple|small|quick|minor|fix.*typo", 1, "coding", MUTATES_TRUE),
+    # Ordinary coding work, added 2026-09-18.
+    #
+    # Until this row, `coding` matched only three narrow shapes -- writing a
+    # test suite, a large refactor or a database migration, and trivia
+    # ("simple", "quick", "fix typo"). Everything else fell through to
+    # DEFAULT_TASK_TYPE, which is `comprehension`: "fix the bug in the auth
+    # middleware", "implement a retry decorator", "add a function to parse the
+    # config", "refactor this module", "debug why the login fails" all
+    # classified as comprehension.
+    #
+    # That made the cost thesis unreachable in practice. `coding` is the only
+    # type with an oracle (4.2) and one of only two that start free (4.1), and
+    # it was receiving almost none of the work it was designed for, while
+    # `comprehension` -- the most expensive ladder in the table and a DEFAULT
+    # rather than a category -- absorbed it.
+    #
+    # Score 3, the mid point, because these are ordinary-sized tasks: the
+    # existing score-4 row still wins for `refactor.*large` and the score-1
+    # row for "quick"/"minor", both by 2.1's highest-score rule. Specificity
+    # keeps the neighbours intact too -- `debug.*complex` beats bare `debug`
+    # for reasoning, and `implement.*multiple` beats bare `implement` for
+    # planning, because both carry more literal characters (2.1).
+    (r"fix.*bug|implement|refactor|debug|add.*function|write.*function",
+     3, "coding", MUTATES_TRUE),
 )
 
 DEFAULT_TASK_TYPE: Final[str] = "comprehension"

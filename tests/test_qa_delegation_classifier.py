@@ -129,3 +129,60 @@ class MutatesVocabularyTests(unittest.TestCase):
         side_effecting_read -- that was the old, now-removed ranking."""
         result = dc.resolve_mutates([dc.MUTATES_FALSE, dc.MUTATES_SIDE_EFFECTING_READ])
         self.assertEqual(result, dc.MUTATES_TRUE)
+
+
+class OrdinaryCodingWorkTests(unittest.TestCase):
+    """The 2026-09-18 row: ordinary coding work must reach `coding`.
+
+    Until it existed, `coding` matched only a test suite, a large refactor, a
+    database migration and trivia -- everything else fell through to
+    DEFAULT_TASK_TYPE, which is `comprehension`. That left 4.1's cost thesis
+    unreachable in practice: `coding` is the only type with an oracle (4.2)
+    and one of two that start free, and it was receiving almost none of the
+    work it exists for.
+    """
+
+    ORDINARY = (
+        "fix the bug in the auth middleware",
+        "implement a retry decorator",
+        "add a function to parse the config",
+        "refactor this module",
+        "debug why the login fails",
+        "write a function to sort rows",
+    )
+
+    def test_ordinary_coding_work_is_coding(self):
+        for text in self.ORDINARY:
+            with self.subTest(text=text):
+                self.assertEqual(dc.classify(text).task_type, "coding")
+
+    def test_it_did_not_steal_its_neighbours(self):
+        """2.1 resolves a multi-match by literal-character specificity for the
+        TYPE and by highest score for the SIZE. A bare `debug` or `implement`
+        must not outrank the more specific patterns that existed first --
+        which is how a broad new row breaks a classifier."""
+        for text, expected in (
+            ("debug complex error chain", "reasoning"),
+            ("implement multiple coordinated agents", "planning"),
+            ("architect a new system", "planning"),
+            ("summarize this log file", "long-context"),
+            ("explain the concept of currying", "comprehension"),
+            ("research the api documentation", "comprehension"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(dc.classify(text).task_type, expected)
+
+    def test_the_score_rows_still_win_on_size(self):
+        """Same type, different size: the score-4 and score-1 rows must still
+        beat the new score-3 one, or the size factor (5.1) silently flattens."""
+        self.assertEqual(dc.classify("refactor large module").score, 4)
+        self.assertEqual(dc.classify("quick fix").score, 1)
+        self.assertEqual(dc.classify("refactor this module").score, 3)
+
+    def test_comprehension_is_still_the_default_for_non_coding_text(self):
+        """The new row must not make everything coding. Text matching no
+        pattern still lands on DEFAULT_TASK_TYPE."""
+        for text in ("the weather is nice today", "hello", "zzzz qqqq"):
+            with self.subTest(text=text):
+                self.assertEqual(dc.classify(text).task_type,
+                                 dc.DEFAULT_TASK_TYPE)

@@ -280,20 +280,32 @@ async function _deleteSpec(specId, row) {
 function _makeGroup(label, key) {
   var details = document.createElement('details');
   details.className = 'spec-group';
-  // Open, because <details> defaults to closed and the gallery's whole job is
-  // showing the specs. Reported as "the specs do not show in Settings >
-  // Specs": every spec was present in the DOM and every one was folded behind
-  // its group header, so the panel rendered as a row of headings and nothing
-  // else. Worse in practice than it sounds, because spec_status_v2 maps any
-  // keyword hit to "implementing" and currently returns it for all 26 -- so
-  // there was exactly one group, and the panel looked empty apart from a
-  // single line.
+  // Closed. <details> defaults to closed, so this is the absence of an
+  // `open`, not a suppression -- but it is a deliberate reversal and the
+  // history matters, because the opposite was itself a fix.
   //
-  // The styling already expected this: .spec-group[open]>summary::before
-  // rotates the disclosure marker, a rule that could never fire while nothing
-  // set the attribute. Collapsing is still available, it is just not the
-  // state you arrive in.
-  details.open = true;
+  // Groups were opened on 2026-09-15 after "the specs do not show in Settings
+  // > Specs": every spec was in the DOM and every one was folded behind its
+  // group header. What made that total rather than merely tidy was that
+  // `spec_status_v2` maps any keyword hit to "implementing" and returned it
+  // for all 26 specs, so there was exactly ONE group and the panel was a
+  // single collapsed line with nothing under it.
+  //
+  // Two things changed, and together they are why closed is now the better
+  // arrival state rather than a reintroduced bug:
+  //
+  //   * A group's summary carries its own count (`label · N`, set by the
+  //     caller), so a collapsed group states how many specs it holds. The
+  //     2026-09-15 panel could not say that.
+  //   * Manual statuses are in use -- 17 done, 3 implementing, 1 planning as
+  //     of 2026-09-18 -- so the list groups into several labelled sections
+  //     instead of collapsing to one.
+  //
+  // Requested by Pedro on 2026-09-18: arrive at the categories, open the one
+  // you want. The disclosure marker rule `.spec-group[open]>summary::before`
+  // still fires on expansion, so the affordance is unchanged; only the state
+  // you land on is.
+  details.open = false;
   details.dataset.groupKey = key;
   var summary = document.createElement('summary');
   summary.className = 'spec-section-label';

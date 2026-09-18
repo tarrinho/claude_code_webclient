@@ -808,6 +808,33 @@ class OrchestratorEngine:
                         "model": parsed_task.model,
                     },
                 ))
+                # Shadow mode: record what the delegation subsystem would have
+                # chosen, beside what this task was actually given. It changes
+                # nothing about the model above -- the task still runs on
+                # `parsed_task.model`. Placed after the create, not before: a
+                # decision record for a task that failed to be created is a
+                # record of nothing.
+                #
+                # Its own try/except, inside the one that guards the create,
+                # because recording is diagnostics and must never be able to
+                # fail task creation. The log names the task id for the reason
+                # the `exception` call below does.
+                try:
+                    import delegation_recorder
+
+                    await delegation_recorder.record_decision(
+                        task_table=delegation_recorder.ORCHESTRATOR_TASK_TABLE,
+                        task_id=node.id,
+                        title=parsed_task.title,
+                        description=parsed_task.description,
+                        actual_model=parsed_task.model,
+                        router=self.router,
+                    )
+                except Exception as rec_exc:
+                    _log.warning(
+                        "delegation shadow record failed for %s: %s",
+                        node.id, rec_exc,
+                    )
             except Exception as exc:
                 # `exception`, not `warning`: this was a bare warning with no
                 # reason attached, which is why a task list that stayed empty

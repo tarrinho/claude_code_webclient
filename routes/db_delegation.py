@@ -71,6 +71,65 @@ async def delegation_operational_set(task_type: str, operational: bool) -> bool:
     return True
 
 
+_DECISION_COLUMNS = (
+    "task_table", "task_id", "task_type", "score", "mutates", "source",
+    "shadow_model", "actual_model", "ladder",
+)
+
+
+async def delegation_decision_record(**columns: Any) -> int:
+    """Insert one shadow-mode routing decision; return its new id.
+
+    Keyword-only, and unknown names are refused rather than dropped, for the
+    same reason `delegation_row_set` refuses them: a typo in a column name
+    would otherwise read as a successful write of nothing.
+
+    `actual_model` and `ladder` are the only nullable columns -- a plan that
+    named no model, and a task type that is not operational, respectively.
+    """
+    unknown = set(columns) - set(_DECISION_COLUMNS)
+    if unknown:
+        raise ValueError(f"unknown routing decision columns: {sorted(unknown)}")
+    missing = [
+        c for c in _DECISION_COLUMNS
+        if c not in ("actual_model", "ladder") and columns.get(c) is None
+    ]
+    if missing:
+        raise ValueError(f"missing routing decision columns: {missing}")
+    cur = await db.db_conn.execute(
+        "INSERT INTO delegation_routing_decision "
+        "(task_table, task_id, task_type, score, mutates, source, "
+        " shadow_model, actual_model, ladder, decided_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        tuple(columns.get(c) for c in _DECISION_COLUMNS) + (db._now(),),
+    )
+    await db.db_conn.commit()
+    return int(cur.lastrowid)
+
+
+async def delegation_decisions_recent(
+    task_type: str | None = None, limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Recorded decisions, newest first, optionally for one task type.
+
+    Ordered by `id` descending rather than `decided_at`: `db._now()` has
+    second resolution and a plan creates its tasks inside one second, so
+    ordering on the timestamp alone leaves the order within a plan undefined.
+    """
+    sql = (
+        "SELECT id, task_table, task_id, task_type, score, mutates, source, "
+        "shadow_model, actual_model, ladder, decided_at "
+        "FROM delegation_routing_decision"
+    )
+    params: tuple[Any, ...] = ()
+    if task_type:
+        sql += " WHERE task_type = ?"
+        params = (task_type,)
+    sql += " ORDER BY id DESC LIMIT ?"
+    cur = await db.db_conn.execute(sql, params + (int(limit),))
+    return [dict(row) for row in await cur.fetchall()]
+
+
 def rows_to_capability(rows: list[dict[str, Any]]) -> list[CapabilityRow]:
     """Database rows -> the dataclass the ladder generator already takes."""
     return [

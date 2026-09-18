@@ -169,6 +169,8 @@ def __getattr__(name: str):
         "delegation_row_set": "routes.db_delegation",
         "delegation_operational_all": "routes.db_delegation",
         "delegation_operational_set": "routes.db_delegation",
+        "delegation_decision_record": "routes.db_delegation",
+        "delegation_decisions_recent": "routes.db_delegation",
         "api_token_create": "routes.db_users",
         "api_token_by_hash": "routes.db_users",
         "api_token_touch": "routes.db_users",
@@ -520,6 +522,41 @@ async def init() -> None:
             task_type  TEXT PRIMARY KEY,
             updated_at TEXT NOT NULL
         );
+
+        -- Shadow mode: what the delegation classifier and ladder *would* have
+        -- chosen for a task, recorded beside what the task was actually given.
+        -- Nothing here changes a routing outcome; see the design document
+        -- docs/superpowers/specs/2026-09-18-routing-decision-record-design.md.
+        --
+        -- `task_table` is a column rather than a constant because this table
+        -- has been renamed once already (supervisor_tasks -> orchestrator_tasks,
+        -- see the rename map below) and the rename proves it can happen again.
+        --
+        -- `task_id` is deliberately NOT a foreign key. A REFERENCES clause
+        -- would let a delete of an orchestrator's tasks fail on this table,
+        -- which inverts the priority: the record exists to serve the task,
+        -- never the other way round. Orphaned rows are acceptable.
+        --
+        -- `ladder` keeps the whole menu the decision was chosen from, because
+        -- the capability table is re-seeded underneath these rows and a
+        -- decision is not interpretable later without the options it had.
+        CREATE TABLE IF NOT EXISTS delegation_routing_decision (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_table   TEXT NOT NULL,
+            task_id      TEXT NOT NULL,
+            task_type    TEXT NOT NULL,
+            score        INTEGER NOT NULL,
+            mutates      TEXT NOT NULL,
+            source       TEXT NOT NULL,
+            shadow_model TEXT NOT NULL,
+            actual_model TEXT,
+            ladder       TEXT,
+            decided_at   TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_routing_decision_task
+            ON delegation_routing_decision(task_table, task_id);
+        CREATE INDEX IF NOT EXISTS idx_routing_decision_type
+            ON delegation_routing_decision(task_type, decided_at);
 
         -- API tokens: the authenticated way for a script to reach this server.
         -- It exists because the alternative kept being invented ad hoc -- a

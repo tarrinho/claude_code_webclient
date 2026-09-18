@@ -298,46 +298,80 @@ Holding each model against each task type, with columns: measured accuracy, samp
 |---|---|---|---|---|---|---|
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | coding | 66% | 44 | 0.0000 | 26.8 | 229,376 |
 | `vllm/Qwen3.6-35B-A3B-NVFP4` | long-context | 83.3% | 12 | 0.0000 | 13.9 | 229,376 |
-| `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0285 | 12.8 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0285 | 6.3 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0285 | 9.2 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0285 | 16.5 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0285 | TBD | 922,000 |
-| `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 3.5167‡ | 2.002 | TBD |
-| `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 0.0285† | 7.85 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 0.0285† | 7.84 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | multi-turn | 83.3% | 12 | 0.0285† | 17.02 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | planning | 83.3% | 12 | 0.0285† | 39.41 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | comprehension | 58.3% | 12 | 0.0285† | 14.53 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | reasoning | 50% | 6 | 0.0285† | 11.78 | 922,000 |
-| `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.5261 | TBD | 1,050,000 |
-| `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.5261 | TBD | 1,050,000 |
-| `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0285 | 13.5 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | planning | 75% | 12 | 0.0285 | 40.7 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | reviewer-gate | 96.43% | 28 | 0.0285 | 6.07 | 922,000 |
-| `claude-opus-5` | reviewer-gate | 89.29% | 28 | 3.6082 | 5.025 | 1,000,000 |
-| `azure_ai/gpt-5.6-luna` | security-gate | 85.71% | 28 | 0.0285 | 5.83 | 922,000 |
-| `claude-sonnet-5` | security-gate | 92.86% | 28 | 1.5709 | 4.635 | 1,000,000 |
-| `claude-opus-5` | security-gate | 96.43% | 28 | 3.6082 | 4.8 | 1,000,000 |
-| `claude-sonnet-5` | coding | 100% | 24 | 1.5709 | 15.5 | 1,000,000 |
-| `claude-sonnet-5` | long-context | 66.7% | 12 | 1.5709 | 4.2 | 1,000,000 |
-| `claude-sonnet-5` | comprehension | 100% | 12 | 1.5709 | 6.0 | 1,000,000 |
-| `claude-sonnet-5` | reasoning | 83.4% | 6 | 1.5709 | 24.6 | 1,000,000 |
-| `claude-sonnet-5` | voice | 100% | 12§ | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | multi-turn | 100% | 12 | 1.5709 | 7.8 | 1,000,000 |
-| `claude-sonnet-5` | planning | 83.3% | 12 | 1.5709 | 17.5 | 1,000,000 |
-| `claude-sonnet-5` | split-decision | TBD | — | 1.5709 | TBD | 1,000,000 |
-| `claude-sonnet-5` | reviewer-gate | 78.57% | 28 | 1.5709 | 4.555 | 1,000,000 |
-| `claude-opus-5` | comprehension | 100% | 12 | 3.6082 | 11.9 | 1,000,000 |
-| `claude-opus-5` | reasoning | 100% | 6 | 3.6082 | 10.2 | 1,000,000 |
-| `azure_ai/gpt-5.6-terra` | coding | 100% | 18 | 0.0285† | 7.2 | 922,000 |
-| `azure_ai/gpt-5.6-terra` | long-context | 100% | 12 | 0.0285† | 6.3 | 922,000 |
-| `azure_ai/gpt-5.6-terra` | multi-turn | 100% | 12 | 0.0285† | 12.4 | 922,000 |
-| `azure_ai/gpt-5.6-terra` | planning | 66.7% | 12 | 0.0285† | 26.9 | 922,000 |
-| `azure_ai/gpt-5.6-terra` | comprehension | 50% | 12 | 0.0285† | 9.8 | 922,000 |
-| `azure_ai/gpt-5.6-terra` | reasoning | 50% | 6 | 0.0285† | 8.9 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | coding | 100% | 24 | 0.0370‡ | 12.8 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0370‡ | 6.3 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0370‡ | 9.2 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0370‡ | 16.5 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0370‡ | TBD | 922,000 |
+| `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 0.0781‡ | 2.002 | TBD |
+| `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 3.4043‡ | 7.85 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 3.4043‡ | 7.84 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | multi-turn | 83.3% | 12 | 3.4043‡ | 17.02 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | planning | 83.3% | 12 | 3.4043‡ | 39.41 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | comprehension | 58.3% | 12 | 3.4043‡ | 14.53 | 922,000 |
+| `azure_ai/gpt-5.6-sol` | reasoning | 50% | 6 | 3.4043‡ | 11.78 | 922,000 |
+| `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.0850‡ | TBD | 1,050,000 |
+| `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.0850‡ | TBD | 1,050,000 |
+| `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0370‡ | 13.5 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | planning | 75% | 12 | 0.0370‡ | 40.7 | 922,000 |
+| `azure_ai/gpt-5.6-luna` | reviewer-gate | 96.43% | 28 | 0.0370‡ | 6.07 | 922,000 |
+| `claude-opus-5` | reviewer-gate | 89.29% | 28 | 1.2310‡ | 5.025 | 1,000,000 |
+| `azure_ai/gpt-5.6-luna` | security-gate | 85.71% | 28 | 0.0370‡ | 5.83 | 922,000 |
+| `claude-sonnet-5` | security-gate | 92.86% | 28 | 0.4769‡ | 4.635 | 1,000,000 |
+| `claude-opus-5` | security-gate | 96.43% | 28 | 1.2310‡ | 4.8 | 1,000,000 |
+| `claude-sonnet-5` | coding | 100% | 24 | 0.4769‡ | 15.5 | 1,000,000 |
+| `claude-sonnet-5` | long-context | 66.7% | 12 | 0.4769‡ | 4.2 | 1,000,000 |
+| `claude-sonnet-5` | comprehension | 100% | 12 | 0.4769‡ | 6.0 | 1,000,000 |
+| `claude-sonnet-5` | reasoning | 83.4% | 6 | 0.4769‡ | 24.6 | 1,000,000 |
+| `claude-sonnet-5` | voice | 100% | 12§ | 0.4769‡ | TBD | 1,000,000 |
+| `claude-sonnet-5` | multi-turn | 100% | 12 | 0.4769‡ | 7.8 | 1,000,000 |
+| `claude-sonnet-5` | planning | 83.3% | 12 | 0.4769‡ | 17.5 | 1,000,000 |
+| `claude-sonnet-5` | split-decision | TBD | — | 0.4769‡ | TBD | 1,000,000 |
+| `claude-sonnet-5` | reviewer-gate | 78.57% | 28 | 0.4769‡ | 4.555 | 1,000,000 |
+| `claude-opus-5` | comprehension | 100% | 12 | 1.2310‡ | 11.9 | 1,000,000 |
+| `claude-opus-5` | reasoning | 100% | 6 | 1.2310‡ | 10.2 | 1,000,000 |
+| `azure_ai/gpt-5.6-terra` | coding | 100% | 18 | 1.4760‡ | 7.2 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | long-context | 100% | 12 | 1.4760‡ | 6.3 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | multi-turn | 100% | 12 | 1.4760‡ | 12.4 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | planning | 66.7% | 12 | 1.4760‡ | 26.9 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | comprehension | 50% | 12 | 1.4760‡ | 9.8 | 922,000 |
+| `azure_ai/gpt-5.6-terra` | reasoning | 50% | 6 | 1.4760‡ | 8.9 | 922,000 |
 
-**A `cost_per_1M_tokens` cell marked `†` is assumed, not billed — a distinct marker from the `*` above, which means "latency sample, not accuracy sample."** `azure_ai/gpt-5.6-terra`'s six rows carry **0.0285**, `azure_ai/gpt-5.6-luna`'s own rate, because the operator assumed luna-equivalent pricing so terra could enter the ladders today, rather than sit unpriced until billing catches up (**operator, 2026-09-17**). Real gateway billing figures are expected tomorrow. §2.5 sources every other Azure rate from **gateway billing**, not from this database — terra's `†` is the one cost figure in this table that gateway billing has not yet supplied, and it is not a substitute for that source. **Every ladder position and tree cost derived from terra is provisional until the real rate lands.**
+**The billing arrived on 2026-09-18 and no `†` survives in this column. Every cost above is now a rate somebody was charged.** The previous revision of this paragraph said terra carried luna's rate by operator assumption and that "real gateway billing figures are expected tomorrow". Tomorrow came; this records what it said.
+
+| model | was | now | how |
+|---|---|---|---|
+| `azure_ai/gpt-5.6-terra` | 0.0285† | **1.4760‡** | €2.43 / 1,780,071 tokens |
+| `azure_ai/gpt-5.6-sol` | 0.0285† | **3.4043‡** | €7.62 / 2,420,157 tokens |
+| `azure_ai/gpt-5.6-luna` | 0.0285 | **0.0370‡** | €9.30 / 271,978,522 tokens |
+| `azure_ai/gpt-5.4-mini` | 0.5261 | **0.0850‡** | €0.62 / 7,885,210 tokens |
+| `azure_ai/gpt-5.4-mini-copilot` | 3.5167‡ | **0.0781‡** | billed with 5.4-mini |
+| `claude-opus-5` | 3.6082 | **1.2310‡** | re-derived, below |
+| `claude-sonnet-5` | 1.5709 | **0.4769‡** | re-derived, below |
+
+Euro figures are converted at §2.5's dated **EUR→USD = 1.0812**.
+
+**Terra's assumption was wrong by 52×, and it had been holding rung 0 of four ladders.** The correction moves rung 0 to luna in six ladders — `coding`, `long-context`, `comprehension`, `planning`, `reasoning` and `multi-turn`. It does not threaten the budget: the worst operational tree cost *fell*, from $3.3662 to $2.0046 against `BUDGET_USD` $3.50.
+
+**Terra's usage was not missing; it was under a different key.** Two sessions independently read "no usage rows for terra" and stopped. The rows exist as `gpt-5.6-terra`, without the `azure_ai/` prefix the capability table uses — 159 events, 1,780,071 tokens, all inside a fifteen-minute window on 2026-09-17. Treat this as a class rather than an incident: **a model id that is a join key in one table and a display name in another will do this again.**
+
+**The two Anthropic figures could not be reproduced and were rebuilt.** §2.6's provenance note says they are "blended from `usage_events` rows carrying `cost_basis='list'`". No denominator reproduces them — not input+output, not with cache reads or writes, not restricted to September; the closest are 1.2310 and 0.4769, and the published pair looks like it divided the cost of **77 and 94** priced rows across **all 25,168 and 24,249** requests. The replacements take numerator and denominator from the same rows. Only `claude-opus-5` and `claude-sonnet-5` have any `cost_basis='list'` rows at all, so this method cannot reach any other Anthropic model.
+
+**Three models now carry a price and no accuracy, and are deliberately in no ladder:** `azure_ai/gpt-5-mini` (0.4375‡), `claude-haiku-4-5-20251001` (0.6896) and `claude-fable-5` (6.8902). The two Anthropic ones are priced from list rates against their own recorded token mix — a *fifth* provenance for this column, and not comparable to the `‡` figures beside them. `claude-opus-4-8` is left unpriced: no published rate for it exists in this repo, and the gateway refuses it outright (`403 … Model is blocked`).
+
+**What is now stale is the accuracy column, not the cost column.** Every accuracy above was measured against the old ordering, in which terra held rung 0. The ladders those numbers describe no longer exist.
+
+#### Sections below this point that still quote the superseded rates
+
+These were not rewritten, because each is an *argument* built on the old numbers and re-deriving them silently would be worse than saying which ones moved. Read them knowing the inputs changed:
+
+- **§2.6's `‡` paragraph on `gpt-5.4-mini-copilot`** said 3.5167 was suspicious because "a model named *mini* pricing within 3% of `claude-opus-5` is not what a mini model should cost". That suspicion was correct and is now resolved: the real rate is **0.0781**, and copilot is the second-cheapest priced model rather than the second-dearest.
+- **§2.6's provenance note** describes four sources and calls terra's figure "the one figure in this column that is not a rate this deployment has actually observed". Terra is observed now; there are five sources, and the fifth is the list-rate basis used for haiku and fable.
+- **§2.7's exclusion of `azure_ai/gpt-5.4-mini` is now built on an inverted premise.** It recorded mini as **2.99× cheaper than sonnet**; at the corrected rates mini (0.0850) is **5.6×** cheaper than sonnet (0.4769). The exclusion itself still stands — §2.7 line 3 already records it as an operator decision rather than an arithmetic result, precisely so it would not move when the numbers did. This is that provision doing its job.
+- **The "55× gap" between luna and sonnet, cited in §2.7 and §5, is now about 12.9×** (0.0370 → 0.4769). The argument that excluding mini forces a large jump survives; its magnitude does not.
+- **§5.1's per-rung admissibility table** prices every rung from the old column. Its conclusions about which rungs a model may occupy need recomputing against the new rates before anyone relies on them.
+
+**Nothing in this subsection changes a ladder by itself.** The ladders in use are generated from the database, not from this document — §2.6 is a snapshot of that table, and the snapshot is what has just been brought up to date.
 
 This is in direct tension with §2.7's **"a model nobody priced must not come out cheapest"** — assuming a cheap price is exactly how an unpriced model comes out cheapest, and this assumption does that. That tension is not resolved here: it is a **deliberate operator decision**, recorded rather than argued away, not an oversight.
 

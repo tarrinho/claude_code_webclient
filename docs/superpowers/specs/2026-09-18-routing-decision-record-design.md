@@ -1,11 +1,27 @@
 # Routing decision record — design
 
-**Status:** design approved 2026-09-18; implementation in progress the same day
-in a parallel session, which owns `db.py`, `routes/db_delegation.py`,
-`delegation_recorder.py`, `orchestrator.py` and
-`tests/test_qa_delegation_recorder.py`. The corrections in §1.1 (the hook
-point's real name) and §2 (the `"[]"` ladder case) came back from that
-implementation and are folded in here.
+**Status:** implemented and deployed 2026-09-18, commit `ce1a813`, release
+`ce1a813`. Built in a parallel session; the corrections in §1.1 (the hook
+point's real name, and the unread `app.state.capability_table`) and §2 (the
+`"[]"` ladder case) came back from that implementation and are folded in here.
+
+**What "green" means here, precisely.** Green is HEAD plus this change, which is
+what was committed and what is deployed: 21 tests and 8 subtests across §8's
+four classes, verified by nine mutations that each turned a specific named test
+red. The full suite in the shared working tree is **not** green, and will not be
+until the author of an uncommitted budget-enforcement change finishes or
+withdraws it — 187 insertions across `tiered_delegation.py`,
+`delegation_startup.py`, `routes/delegation.py` and
+`tests/test_qa_delegation_routes.py`, present in no commit, holding six
+delegation tests red. That work is unrelated to this spec and belongs to none of
+the three sessions that looked. Causation was measured, not inferred: the same
+six tests pass against a clean `git archive` export of HEAD and fail in the
+working tree, same interpreter, the uncommitted change being the only
+difference.
+
+**Live state.** `delegation_routing_decision` exists in the production database
+with both indexes and 0 rows — the recorder writes its first row the next time
+an orchestrator materialises a plan.
 **Scope:** record what the delegation classifier and ladder *would* decide for
 every real orchestrator task, so that a later `learn` pass has ground truth to
 argue from. Recording only. Nothing about routing behaviour changes.

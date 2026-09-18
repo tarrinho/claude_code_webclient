@@ -602,7 +602,12 @@ class TreeCostTests(unittest.TestCase):
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
         self.assertGreater(table.tree_cost_usd("widget"), td.BUDGET_USD)
-        problems = table.validate()
+        # `enforce_budget=True` because this asserts the invariant, not the
+        # knob's default. Since BUDGET_ENFORCEMENT_DEFAULT is False, a bare
+        # validate() suppresses the breach and this test would assert that an
+        # unaffordable ladder is tolerated -- which is a different claim, and
+        # one `BudgetEnforcementKnobTests` already makes on purpose.
+        problems = table.validate(enforce_budget=True)
         self.assertTrue(any("widget" in p and "BUDGET_USD" in p
                             for p in problems), problems)
         self.assertFalse([p for p in problems if "ceiling" in p], problems)
@@ -618,7 +623,7 @@ class TreeCostTests(unittest.TestCase):
             _row("claude-sonnet-5", "widget", 0.95, 20, _rate_over_budget(), 10.5),
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
-        problems = table.validate()
+        problems = table.validate(enforce_budget=True)
         budget_problems = [p for p in problems if "BUDGET_USD" in p]
         self.assertTrue(budget_problems, problems)
         self.assertTrue(
@@ -958,7 +963,7 @@ class AllSixTogetherTests(unittest.TestCase):
                  100.0),
         ]
         problems = _table(rows + GATE_SINGLE, operational={"widget"}).validate(
-            enforce_latency_ceiling=True)
+            enforce_latency_ceiling=True, enforce_budget=True)
         self.assertTrue(any("claude-sonet-5" in p for p in problems), problems)
         self.assertTrue(any("ceiling" in p for p in problems), problems)
         self.assertTrue(any("BUDGET_USD" in p for p in problems), problems)

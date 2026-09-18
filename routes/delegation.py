@@ -44,12 +44,16 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import db
-from delegation_startup import ceiling_enforcement_enabled, live_known_models
+from delegation_startup import (budget_enforcement_enabled,
+                                ceiling_enforcement_enabled,
+                                live_known_models)
 from routes.db_delegation import rows_to_capability
 from routes.db_users import setting_set
 from tiered_delegation import (
     BUDGET_USD,
     GATE_CALLS,
+    BUDGET_ENFORCEMENT_DEFAULT,
+    BUDGET_ENFORCEMENT_SETTING,
     CEILING_ENFORCEMENT_DEFAULT,
     CEILING_ENFORCEMENT_SETTING,
     EXCLUDED_MODELS,
@@ -267,6 +271,7 @@ def _blockers_by_task_type(
     capability_rows: list[CapabilityRow], operational_set: set[str],
     known_models: frozenset[str] | None,
     enforce_latency_ceiling: bool = CEILING_ENFORCEMENT_DEFAULT,
+    enforce_budget: bool = BUDGET_ENFORCEMENT_DEFAULT,
 ) -> dict[str, dict[str, Any]]:
     """Why each task type cannot go operational, for the settings page.
 
@@ -313,9 +318,17 @@ def _blockers_by_task_type(
         # in `data` below, never whether it is measured.
         breach = candidate.latency_ceiling_breaches().get(task_type)
         warnings = [breach] if breach is not None and not enforce_latency_ceiling else []
+        # The budget overrun travels the same road: computed for every type
+        # whatever the knob says, and appearing in `warnings` exactly when it
+        # is not also blocking. The settings page reads `over_budget` rather
+        # than pattern-matching this string, so the two never drift.
+        over_budget = candidate.budget_breaches().get(task_type)
+        if over_budget is not None and not enforce_budget:
+            warnings.append(over_budget)
         problems = candidate.validate(
             known_models=known_models,
-            enforce_latency_ceiling=enforce_latency_ceiling)
+            enforce_latency_ceiling=enforce_latency_ceiling,
+            enforce_budget=enforce_budget)
         # `validate()` is scoped to every type in the candidate's operational
         # set, not only the one being asked about here -- filter down to the
         # problems that actually name this task type.
@@ -336,6 +349,10 @@ def _blockers_by_task_type(
             "policy": None if policy is None else f"{task_type}: {policy}",
             "data": data_problems,
             "warnings": warnings,
+            # An explicit flag, not something the page infers from the text of
+            # a warning. The dollar marker has to survive the message being
+            # reworded, and a client grepping for "BUDGET_USD" would not.
+            "over_budget": over_budget is not None,
         }
     return blockers
 
@@ -355,8 +372,10 @@ async def handle_delegation_get(request: Request):
     # here must agree with what a real flip attempt would say.
     known_models = await live_known_models()
     enforce_ceiling = await ceiling_enforcement_enabled()
+    enforce_budget = await budget_enforcement_enabled()
     blockers = _blockers_by_task_type(
-        capability_rows, operational_set, known_models, enforce_ceiling)
+        capability_rows, operational_set, known_models, enforce_ceiling,
+        enforce_budget)
     return JSONResponse({
         "rows": rows,
         "operational": operational,
@@ -367,6 +386,11 @@ async def handle_delegation_get(request: Request):
         "editable_columns": list(_EDITABLE),
         "config": _config_overview(),
         "blockers": blockers,
+        "budget_enforcement": {
+            "enabled": enforce_budget,
+            "default": BUDGET_ENFORCEMENT_DEFAULT,
+            "setting": BUDGET_ENFORCEMENT_SETTING,
+        },
         "ceiling_enforcement": {
             "enabled": enforce_ceiling,
             "default": CEILING_ENFORCEMENT_DEFAULT,
@@ -437,7 +461,8 @@ async def handle_row_put(request: Request):
         # that will not boot after its next restart.
         problems = table.validate(
             known_models=known_models,
-            enforce_latency_ceiling=await ceiling_enforcement_enabled())
+            enforce_latency_ceiling=await ceiling_enforcement_enabled(),
+            enforce_budget=await budget_enforcement_enabled())
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
@@ -509,7 +534,8 @@ async def handle_operational_put(request: Request):
         # that will not boot after its next restart.
         problems = table.validate(
             known_models=known_models,
-            enforce_latency_ceiling=await ceiling_enforcement_enabled())
+            enforce_latency_ceiling=await ceiling_enforcement_enabled(),
+            enforce_budget=await budget_enforcement_enabled())
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
@@ -572,6 +598,54 @@ async def handle_ceiling_enforcement_put(request: Request):
     await setting_set(CEILING_ENFORCEMENT_SETTING, "1" if enabled else "0")
     _log.info("delegation_ceiling_enforcement enabled=%s", enabled)
     return JSONResponse({"ok": True, "enabled": enabled})
+
+
+async def handle_budget_enforcement_put(request: Request):
+    """PUT /api/delegation/budget-enforcement -- 9.2's knob for 2.7's budget.
+
+    Off by default (`BUDGET_ENFORCEMENT_DEFAULT`). See
+    `tiered_delegation.BUDGET_ENFORCEMENT_SETTING` for why: the tree cost is
+    computed from `LEAVES_PER_TREE`, the one input that is assumed rather than
+    measured, and an over-estimated leaf count refuses task types that would
+    in fact fit.
+
+    Turning it ON is validated first, exactly as the ceiling's is, and for the
+    same reason: storing the flag first would leave a deployment that refuses
+    to start on its next restart, and a settings write that bricks the boot
+    path is what 1.1's checks exist to prevent. Turning it OFF is never
+    validated -- relaxing a blocking invariant cannot break another one.
+    """
+    _require_admin(request)
+    data = _require_json_object(await request.json())
+    if "enabled" not in data:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    enabled = bool(data["enabled"])
+
+    if enabled:
+        rows = rows_to_capability(await db.delegation_rows_all())
+        operational = await db.delegation_operational_all()
+        table = CapabilityTable(rows, operational=operational)
+        known_models = await live_known_models()
+        problems = table.validate(known_models=known_models,
+                                  enforce_budget=True)
+        if problems:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "enforcing the budget would invalidate an "
+                    "already-operational task type, and this deployment would "
+                    "refuse to start on its next restart: "
+                    + "; ".join(problems)
+                ))
+
+    await setting_set(BUDGET_ENFORCEMENT_SETTING, "1" if enabled else "0")
+    _log.info("delegation_budget_enforcement enabled=%s", enabled)
+    return JSONResponse({"ok": True, "enabled": enabled})
+
+
+@router.put("/api/delegation/budget-enforcement")
+async def _api_delegation_budget_enforcement_put(request: Request):
+    return await handle_budget_enforcement_put(request)
 
 
 @router.put("/api/delegation/operational")

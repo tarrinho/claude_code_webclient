@@ -4195,6 +4195,138 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
 @unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class DelegationBudgetKnobBrowserTests(_BrowserFixture):
+    """Settings -> Delegation: the tree budget's enforcement knob (spec 2.7).
+
+    The backend knob shipped without any control on the page, so the only way
+    to switch it back off was a PUT by hand. That is a poor state for an
+    enforcement whose ON position makes the service refuse to START on its
+    next restart when an operational type goes over budget -- the operator who
+    needs to reverse it is, by construction, looking at a console that will not
+    come back up after they restart it.
+
+    `is_disabled()` rather than `get_attribute("disabled")`: a present boolean
+    attribute reads back as `""`, and `bool("")` is False, so the attribute
+    form passes whether or not the knob is disabled. That exact mistake shipped
+    in this file once already.
+    """
+
+    def _open(self):
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="delegation"]')
+        self.page.wait_for_selector("#panelDelegation:not([hidden])",
+                                     timeout=10_000)
+        self.page.wait_for_timeout(300)
+
+    def _budget_knob(self):
+        return self.page.query_selector(
+            '.delegation-budget-knob .toggle-knob[aria-label='
+            '"enforce the tree cost budget"]')
+
+    def test_the_budget_knob_is_rendered_and_usable(self):
+        self._open()
+        knob = self._budget_knob()
+        self.assertIsNotNone(knob, "no tree budget enforcement knob rendered")
+        self.assertFalse(knob.is_disabled(),
+                         "the budget knob was disabled, leaving no way to "
+                         "reverse an enforcement from the page")
+        self.assertEqual(self.errors, [])
+
+    def test_the_budget_fact_is_shown_once_not_twice(self):
+        """The knob's label CARRIES the budget's value, so the plain
+        `tree budget: $N` fact must be suppressed when the knob renders.
+        Two facts both opening with "tree budget" read as two unrelated
+        settings -- the same defect the ceiling knob's comment records."""
+        self._open()
+        texts = [el.inner_text() for el in
+                 self.page.query_selector_all("#delegationFacts .delegation-fact")]
+        budget_facts = [t for t in texts if "tree budget" in t]
+        self.assertEqual(len(budget_facts), 1,
+                         f"tree budget stated {len(budget_facts)} times: {texts}")
+        # Not asserted against a specific enforcement state: this class's
+        # click tests share one fixture database, so whichever ran first
+        # decides it. The claim under test is that the budget is stated once
+        # and that the single statement carries both the value and a state.
+        self.assertIn("$", budget_facts[0])
+        self.assertIn("enforced", budget_facts[0])
+        self.assertEqual(self.errors, [])
+
+    def test_clicking_the_knob_actually_enforces(self):
+        """Clicking it, not PUTting behind its back.
+
+        This is the assertion that earns the class. The knob's handler used a
+        bare `fetch`, so its PUT carried no `X-CSRF-Token` and the server
+        answered 403 on every click: the knob animated across, snapped back,
+        and enforcement never changed. Every other test here passed throughout,
+        because rendering was fine -- only the click was broken. The ceiling
+        knob shipped with the same defect and the same blind spot.
+
+        So the state is read back from the SERVER after the click, not from the
+        knob's own `aria-pressed`. `aria-pressed` is set optimistically before
+        the request goes out, so asserting on it would pass against a handler
+        that never reached the network at all.
+        """
+        self._open()
+        knob = self._budget_knob()
+        self.assertEqual(knob.get_attribute("aria-pressed"), "false")
+
+        knob.click()
+        self.page.wait_for_timeout(1200)
+
+        enabled = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return d.budget_enforcement && d.budget_enforcement.enabled;
+               }""")
+        self.assertTrue(
+            enabled,
+            "the knob was clicked and the server still reports enforcement "
+            "off -- the PUT was refused (CSRF) or never sent")
+
+        self.page.reload()
+        self._open()
+        reloaded = self._budget_knob()
+        self.assertIsNotNone(reloaded, "knob vanished after enabling")
+        self.assertEqual(reloaded.get_attribute("aria-pressed"), "true")
+        texts = [el.inner_text() for el in
+                 self.page.query_selector_all("#delegationFacts .delegation-fact")]
+        self.assertTrue(any("tree budget" in t and "enforced" in t
+                            and "not enforced" not in t for t in texts), texts)
+        self.assertEqual(self.errors, [])
+
+    def test_clicking_the_ceiling_knob_actually_enforces(self):
+        """The same assertion for the ceiling knob, which had the same bug.
+
+        Kept here rather than in a class of its own because the two knobs share
+        the defect, the fix and the shape of the test; splitting them would put
+        the regression test for one fix in two places.
+        """
+        self._open()
+        knob = self.page.query_selector(
+            '.delegation-ceiling-knob .toggle-knob[aria-label='
+            '"enforce the combined latency ceiling"]')
+        self.assertIsNotNone(knob, "no latency ceiling enforcement knob")
+        self.assertEqual(knob.get_attribute("aria-pressed"), "false")
+
+        knob.click()
+        self.page.wait_for_timeout(1200)
+
+        enabled = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return d.ceiling_enforcement && d.ceiling_enforcement.enabled;
+               }""")
+        self.assertTrue(
+            enabled,
+            "the ceiling knob was clicked and the server still reports "
+            "enforcement off -- the PUT was refused (CSRF) or never sent")
+        self.assertEqual(self.errors, [])
+
+
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
 class DelegationConfigLayoutBrowserTests(_BrowserFixture):
     """Settings -> Delegation, the read-only config block (spec 9.1/5/2.7/10).
 

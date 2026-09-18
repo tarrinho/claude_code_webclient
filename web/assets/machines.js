@@ -18,7 +18,7 @@ import {
   // "offered"/"default" checkbox threw ReferenceError on change.
   _toggleModelOffered, _setModelDefault,
   backendKindLabel,
-} from './app.js?v=9335935';
+} from './app.js?v=16559243';
 import {apiFetch} from './api.js?v=2741508';
 import {notifyResult, setStatus} from './server-stats.js?v=1383946';
 import {_transports, loadTransports, populateTransportPicker,

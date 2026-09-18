@@ -384,8 +384,68 @@ REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 0.5, 1.0 / 6.0)
 #:
 #: 2.7's own framing: this is one pool shared by every leaf in a tree, not a
 #: budget per goal. At 1.00 it bought roughly 335 luna requests; at 3.50,
-#: about 1,170.
-BUDGET_USD: Final[float] = 3.50
+#: about 1,170; at 5.25, about 1,750.
+#:
+#: Raised 3.50 -> 5.25 on 2026-09-18, by operator decision, as the condition
+#: for switching BUDGET_ENFORCEMENT_SETTING on. The raise was margin, not
+#: permission: at 3.50 nothing was over budget and `validate()` reported no
+#: problems, so enforcement could have been turned on that day with zero
+#: refusals. What 3.50 appeared not to leave was room -- `comprehension` and
+#: `reasoning` both sat at 3.3662, only 4.0% under the cap, so enforcement
+#: looked one re-measurement away from blocking two operational types.
+#:
+#: **That premise did not survive the same afternoon, and this comment says so
+#: rather than quietly keeping the number.** Every price in section 2.6 was
+#: re-derived hours later from a real invoice: euro figures that had been
+#: written into a USD column were converted at 2.5's documented 1.0812,
+#: `azure_ai/gpt-5.6-sol` went 0.0285 -> 3.1486, `azure_ai/gpt-5.6-terra`'s
+#: assumed 0.0285 turned out to be 1.4760 once its usage rows were found under
+#: an unprefixed model name, and opus and sonnet were re-derived from rows
+#: whose numerator and denominator finally matched. The worst operational tree
+#: cost fell from 3.3662 to 2.0046 (`planning`), which is 74.6% under 3.50 and
+#: 161.9% under 5.25.
+#:
+#: So 5.25 now buys far more headroom than it was asked to buy, and 3.50 would
+#: have been ample. It is left at 5.25 because the operator set it knowing the
+#: raise was margin rather than permission, and because a budget that is too
+#: generous costs nothing while nothing routes -- but the honest reading is
+#: that this number is no longer derived from anything, and the next person to
+#: touch it should feel free to bring it back down.
+#:
+#: The raise also answers, partially, the argument in
+#: BUDGET_ENFORCEMENT_DEFAULT below for keeping enforcement off: the check's
+#: input is over-estimated in a known direction, so headroom absorbs some of
+#: that over-estimate rather than paying for it in false refusals. It does not
+#: make the input measured, and the note below stands.
+BUDGET_USD: Final[float] = 5.25
+
+#: The settings key holding 9.2's enforcement knob for the budget above, and
+#: its default. **Off by default, deliberately**, and for a reason of the same
+#: class as CEILING_ENFORCEMENT_DEFAULT's, though not the same reason.
+#:
+#: The ceiling is off because it is derived from nothing while nothing is
+#: operational. The budget is off because **one of its inputs is assumed rather
+#: than measured**: LEAVES_PER_TREE is MAX_NODES used as an upper bound, and its
+#: own comment above says so -- "the one input on this list that is assumed,
+#: never measured". Spec 1.2 explains why it cannot be measured from this
+#: deployment: no orchestrator task has ever decomposed, so no tree has ever
+#: been formed and there is no shape to count.
+#:
+#: The direction of that error is the argument. An over-estimated leaf count
+#: inflates every tree cost, so an unconditional check refuses task types that
+#: would in fact fit. Refusing a flip outright on a number built from a
+#: deliberately conservative guess is the "check that cries wolf" this codebase
+#: already warns about, and a check that cries wolf gets switched off -- which
+#: is worse than one that warns, because switching it off takes the
+#: measurement with it.
+#:
+#: What does not change: the breach is still computed and still reported
+#: through `budget_breaches`, so the settings page can mark an over-budget type
+#: however enforcement is set. Off means "does not block", never "not
+#: measured". Turning it ON restores 1.1's original unconditional behaviour
+#: exactly.
+BUDGET_ENFORCEMENT_SETTING: Final[str] = "delegation_enforce_budget"
+BUDGET_ENFORCEMENT_DEFAULT: Final[bool] = False
 
 
 def expected_tokens(task_type: str) -> int:
@@ -1166,6 +1226,38 @@ class CapabilityTable:
             f"(spec 5.1)"
         )
 
+    def _budget_breach(self, task_type: str, tree_cost: float | None,
+                       costliest_rung: str | None) -> str | None:
+        """2.7's overrun message, or None when the ladder fits or cannot be
+        priced. Split out of `validate` so the settings page and the startup
+        check render the identical string -- a warning worded differently from
+        the error it becomes when enforcement is on would read as a different
+        finding."""
+        if tree_cost is None or tree_cost <= BUDGET_USD:
+            return None
+        return (
+            f"{task_type}: its ladder's expected tree cost is "
+            f"${tree_cost:.3f}, above BUDGET_USD (${BUDGET_USD:.2f}) "
+            f"-- rung {costliest_rung} is the costliest (spec 2.7)"
+        )
+
+    def budget_breaches(self) -> dict[str, str]:
+        """Every operational task type whose expected tree cost is over
+        `BUDGET_USD`, keyed by task type, whatever the enforcement knob says.
+
+        The mirror of `latency_ceiling_breaches`, and what the settings page
+        draws its dollar warning from. Scoped to operational types because a
+        non-operational one is exempt from 1.1 entirely -- marking it would put
+        a warning on a card nothing is judging yet.
+        """
+        breaches: dict[str, str] = {}
+        for task_type in sorted(self._operational):
+            tree_cost, _why_not, costliest = self._tree_cost(task_type)
+            breach = self._budget_breach(task_type, tree_cost, costliest)
+            if breach is not None:
+                breaches[task_type] = breach
+        return breaches
+
     def latency_ceiling_breaches(self) -> dict[str, str]:
         """Every operational task type whose worst-case path is over the
         ceiling, keyed by task type, whatever the enforcement knob says.
@@ -1184,7 +1276,8 @@ class CapabilityTable:
         return breaches
 
     def validate(self, known_models: Iterable[str] | None = None, *,
-                 enforce_latency_ceiling: bool = CEILING_ENFORCEMENT_DEFAULT
+                 enforce_latency_ceiling: bool = CEILING_ENFORCEMENT_DEFAULT,
+                 enforce_budget: bool = BUDGET_ENFORCEMENT_DEFAULT
                  ) -> list[str]:
         """All six of 1.1's invariants.
 
@@ -1285,12 +1378,13 @@ class CapabilityTable:
                 problems.append(breach)
 
             # "the ladder fits the budget" (1.1, 2.7)
+            # `why_not` is unconditional for the same reason it is on the
+            # ceiling above: a cost that cannot be COMPUTED is missing data,
+            # not an overrun, and the knob does not reach it. An unpriced rung
+            # must never be read as an affordable one.
             tree_cost, why_not, costliest_rung = self._tree_cost(task_type)
             problems.extend(why_not)
-            if tree_cost is not None and tree_cost > BUDGET_USD:
-                problems.append(
-                    f"{task_type}: its ladder's expected tree cost is "
-                    f"${tree_cost:.3f}, above BUDGET_USD (${BUDGET_USD:.2f}) "
-                    f"-- rung {costliest_rung} is the costliest (spec 2.7)"
-                )
+            breach = self._budget_breach(task_type, tree_cost, costliest_rung)
+            if breach is not None and enforce_budget:
+                problems.append(breach)
         return problems

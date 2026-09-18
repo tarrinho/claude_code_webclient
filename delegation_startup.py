@@ -11,6 +11,8 @@ import logging
 import db
 from routes.db_delegation import rows_to_capability
 from tiered_delegation import (
+    BUDGET_ENFORCEMENT_DEFAULT,
+    BUDGET_ENFORCEMENT_SETTING,
     CEILING_ENFORCEMENT_DEFAULT,
     CEILING_ENFORCEMENT_SETTING,
     GATE_TASK_TYPE,
@@ -37,6 +39,28 @@ async def ceiling_enforcement_enabled() -> bool:
     if raw is None:
         return CEILING_ENFORCEMENT_DEFAULT
     return raw.strip() == "1"
+
+async def budget_enforcement_enabled() -> bool:
+    """9.2's knob for 2.7's per-tree budget, read from `settings`.
+
+    The single reader, for the same reason `ceiling_enforcement_enabled` is:
+    the startup check, the settings page's per-type blockers and a real
+    operational flip must never disagree, or a type would flip through one
+    path and be refused by another -- which is precisely the stored-state
+    failure this knob exists to prevent.
+
+    Anything other than the stored `"1"` is off, including a missing row and a
+    malformed value. The default is off (`BUDGET_ENFORCEMENT_DEFAULT`), and a
+    value nobody can parse must land on the default rather than on the
+    blocking behaviour: a corrupt settings row must not be able to refuse
+    startup.
+    """
+    from routes.db_users import setting_get
+    raw = await setting_get(BUDGET_ENFORCEMENT_SETTING)
+    if raw is None:
+        return BUDGET_ENFORCEMENT_DEFAULT
+    return raw.strip() == "1"
+
 
 _log = logging.getLogger("wc.app")
 
@@ -141,8 +165,10 @@ async def validate_or_die() -> CapabilityTable:
     table = CapabilityTable(rows, operational=operational)
     known_models = await live_known_models()
     enforce_ceiling = await ceiling_enforcement_enabled()
+    enforce_budget = await budget_enforcement_enabled()
     problems = table.validate(known_models=known_models,
-                              enforce_latency_ceiling=enforce_ceiling)
+                              enforce_latency_ceiling=enforce_ceiling,
+                              enforce_budget=enforce_budget)
     if problems:
         detail = "\n".join(f"  - {p}" for p in problems)
         raise DelegationConfigError(
@@ -162,6 +188,14 @@ async def validate_or_die() -> CapabilityTable:
             _log.warning(
                 "delegation: %s -- NOT ENFORCED (%s is off): %s",
                 task_type, CEILING_ENFORCEMENT_SETTING, breach)
+    # Same rule for the budget: an overrun that is tolerated still has to be
+    # stated at boot. A cost the operator only ever sees on a settings page is
+    # a cost nobody reviews after the day they flipped the type.
+    if not enforce_budget:
+        for task_type, breach in table.budget_breaches().items():
+            _log.warning(
+                "delegation: %s -- NOT ENFORCED (%s is off): %s",
+                task_type, BUDGET_ENFORCEMENT_SETTING, breach)
 
     if operational:
         _log.info("delegation: operational task types: %s",

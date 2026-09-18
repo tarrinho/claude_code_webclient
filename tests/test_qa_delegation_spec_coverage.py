@@ -570,47 +570,82 @@ class CostCeilingPositionTests(unittest.TestCase):
     def test_the_same_model_is_admissible_at_rung_two_and_refused_at_rung_zero(self):
         """Row 1054: "assert the same model is admissible at rung 2 and refused
         at rung 0, because reach probability differs; a scalar threshold cannot
-        express this and must fail the test". Sonnet costs $3.736 as rung 0 and
-        $0.623 as rung 2, against a $1.00 tree budget."""
+        express this and must fail the test".
+
+        The rate is derived from `td.BUDGET_USD` rather than taken from
+        `RATE[SONNET]`, so the property survives the budget moving. It did not
+        survive the last two moves: sonnet's real 1.5709/1M puts rung 0 at
+        $3.736, which was over the $1.00 cap this was written against, over the
+        $3.50 cap that followed, and UNDER the $5.25 cap of 2026-09-18 -- at
+        which point the fixture stopped describing a refused ladder at all and
+        the test asserted nothing. Deriving the rate keeps the row's claim
+        (position decides admissibility, a scalar threshold cannot) the thing
+        under test at any budget.
+
+        `REACH_PROBABILITY` is (1.0, 0.5, 1/6), so the identical rate costs six
+        times as much at rung 0 as at rung 2. Pricing rung 0 at 1.2x the budget
+        therefore prices rung 2 at 0.2x it -- over and under, from one number.
+        """
+        per_unit_at_rung_zero = (td.LEAVES_PER_TREE * td.TOKENS_PER_LEAF
+                                 * td.REACH_PROBABILITY[0] / 1_000_000)
+        rate = td.BUDGET_USD / per_unit_at_rung_zero * 1.2
+
         at_rung_zero = td.CapabilityTable(
-            [_row(SONNET, "widget", 1.00, 6, RATE[SONNET], 10.0, 1_000_000)]
+            [_row(SONNET, "widget", 1.00, 6, rate, 10.0, 1_000_000)]
             + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
-        self.assertAlmostEqual(at_rung_zero.tree_cost_usd("widget"), 3.7358,
-                               places=3)
-        problems = at_rung_zero.validate()
+        self.assertAlmostEqual(at_rung_zero.tree_cost_usd("widget"),
+                               td.BUDGET_USD * 1.2, places=3)
+        # `enforce_budget=True`: this asserts 2.7's invariant, not the knob's
+        # default, which is off (BUDGET_ENFORCEMENT_DEFAULT).
+        problems = at_rung_zero.validate(enforce_budget=True)
         self.assertTrue(any("BUDGET_USD" in p and "widget" in p
                             for p in problems), problems)
 
         at_rung_two = td.CapabilityTable([
             _row("vllm/a", "widget", 0.90, 6, 0.0, 10.0, 229_376),
             _row("vllm/b", "widget", 0.95, 6, 0.0, 10.0, 229_376),
-            _row(SONNET, "widget", 1.00, 6, RATE[SONNET], 10.0, 1_000_000),
+            _row(SONNET, "widget", 1.00, 6, rate, 10.0, 1_000_000),
         ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
         self.assertEqual(at_rung_two.ladder("widget"),
                          ["vllm/a", "vllm/b", SONNET])
-        self.assertAlmostEqual(at_rung_two.tree_cost_usd("widget"), 0.6226,
-                               places=3)
-        self.assertEqual(at_rung_two.validate(), [])
+        self.assertAlmostEqual(
+            at_rung_two.tree_cost_usd("widget"),
+            td.BUDGET_USD * 1.2 * td.REACH_PROBABILITY[2], places=3)
+        # The same model, the same rate, the same table -- admissible here and
+        # refused above. That contrast is the row's whole claim, so it is
+        # asserted under enforcement too: with the budget suppressed this half
+        # would pass for the wrong reason.
+        self.assertEqual(at_rung_two.validate(enforce_budget=True), [])
 
     def test_opus_is_refused_at_the_shallow_rungs_but_not_the_deepest(self):
         """Row 1056 asked for "opus is refused at every rung of every ladder on
         the measured inputs" -- $8.582, $4.291 and $1.430 against a $1.00
-        budget. The budget moved to $3.50 on 2026-09-18 to let
-        `comprehension` and `reasoning` go operational, and opus at rung 2
-        ($1.430) became admissible with it.
+        budget. The budget has moved twice since, and each move bought opus a
+        rung:
 
-        That is a real consequence of the raise and not test drift, so it is
-        asserted as it now is rather than scaled away: opus stays refused at
-        rungs 0 and 1, where it costs more than the whole tree budget, and is
-        affordable only at the rung reached one time in six. The row's
-        underlying point -- that opus is not "merely expensive at rung 0" --
-        still holds for two of the three rungs.
+          $1.00 -> all three rungs refused (the row as written)
+          $3.50 -> rung 2 ($1.430) admissible; rungs 0 and 1 refused
+          $5.25 -> rungs 1 ($4.291) and 2 admissible; only rung 0 refused
+
+        Both moves are real consequences of operator decisions and neither is
+        test drift, so this asserts what is true now rather than scaling the
+        fixture until the original sentence survives. The rates are spec 2.6's
+        measured ones on purpose: this test is about what the published table
+        actually costs, which is the one thing that must NOT be derived from
+        the budget it is being judged against.
+
+        What survives of the row's point: opus is not merely expensive at rung
+        0, it is expensive by a margin no budget raise so far has closed --
+        $8.582 is still 63% above a budget that has been raised 5.25x. What no
+        longer holds is "refused at every rung", and the next raise would take
+        rung 0 too, at which point this test should be read as the record of a
+        decision rather than as a bug.
         """
-        for rung in (0, 1):
+        self.assertGreater(td.rung_cost_usd(0, RATE[OPUS]), td.BUDGET_USD)
+        for rung in (1, 2):
             with self.subTest(rung=rung):
-                self.assertGreater(td.rung_cost_usd(rung, RATE[OPUS]),
-                                   td.BUDGET_USD)
-        self.assertLess(td.rung_cost_usd(2, RATE[OPUS]), td.BUDGET_USD)
+                self.assertLess(td.rung_cost_usd(rung, RATE[OPUS]),
+                                td.BUDGET_USD)
 
     def test_a_ladder_can_still_be_refused_on_cost(self):
         """The invariant itself must keep working at the new budget: a ladder
@@ -624,8 +659,8 @@ class CostCeilingPositionTests(unittest.TestCase):
             _row("vllm/a", "widget", 0.90, 6, 0.0, 10.0, 229_376),
             _row("claude-sonnet-5", "widget", 0.95, 6, dear, 10.0, 1_000_000),
         ] + GATE_ROWS, operational={"widget", *td.GATE_CALLS})
-        self.assertTrue(any("BUDGET_USD" in p for p in table.validate()),
-                        table.validate())
+        problems = table.validate(enforce_budget=True)
+        self.assertTrue(any("BUDGET_USD" in p for p in problems), problems)
 
     def test_lowering_leaves_per_tree_makes_sonnet_admissible_at_rung_one(self):
         """Row 1057: "hardcoding 40 -- assert lowering it to 10 makes sonnet

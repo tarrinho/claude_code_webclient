@@ -475,7 +475,7 @@ function _renderConfig(config, host) {
 async function _setCeilingEnforcement(enabled, knob) {
   knob.setAttribute('aria-pressed', String(enabled));
   try {
-    const res = await fetch('/api/delegation/ceiling-enforcement', {
+    const res = await apiFetch('/api/delegation/ceiling-enforcement', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({enabled}),
@@ -536,6 +536,78 @@ function _ceilingKnob(state) {
   return wrap;
 }
 
+/** Turn spec 2.7's tree budget into a blocking invariant, or back off.
+ *
+ *  The mirror of `_setCeilingEnforcement`, and global for the same reason:
+ *  the budget is one number for every task type. Same optimistic-then-revert
+ *  shape -- the server refuses to enable when an already-operational type is
+ *  over budget, because storing the flag first would leave a deployment that
+ *  refuses to start on its next restart. */
+async function _setBudgetEnforcement(enabled, knob) {
+  knob.setAttribute('aria-pressed', String(enabled));
+  try {
+    const res = await apiFetch('/api/delegation/budget-enforcement', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      knob.setAttribute('aria-pressed', String(!enabled));
+      showToast(_errorMessage(
+        data, 'Could not change tree budget enforcement'), 'error');
+      return;
+    }
+    await _refreshDelegation();
+  } catch (err) {
+    knob.setAttribute('aria-pressed', String(!enabled));
+    showToast('Could not change tree budget enforcement', 'error');
+  }
+}
+
+/** The status band's budget knob. Built the same way as `_ceilingKnob`, and
+ *  carrying the budget's VALUE for the same reason: it replaces the plain
+ *  `tree budget: $5.25` fact rather than sitting beside it.
+ *
+ *  The value comes from the config block rather than from the enforcement
+ *  payload, because the server already publishes it there -- unlike the
+ *  ceiling, which sends `ceiling_s` with its knob state. */
+function _budgetKnob(state, budgetUsd) {
+  const wrap = document.createElement('div');
+  wrap.className = 'delegation-budget-knob';
+  const label = document.createElement('span');
+  label.className = 'delegation-fact';
+  const value = budgetUsd === null || budgetUsd === undefined
+    ? 'tree budget' : `tree budget: $${budgetUsd}`;
+  label.textContent = state.enabled
+    ? `${value} — enforced`
+    : `${value} — reported, not enforced`;
+  const knob = document.createElement('button');
+  knob.type = 'button';
+  knob.className = 'toggle-knob';
+  knob.setAttribute('aria-pressed', String(Boolean(state.enabled)));
+  knob.setAttribute('aria-label', 'enforce the tree cost budget');
+  knob.title = state.enabled
+    ? 'A task type whose ladder costs more than the budget cannot go '
+      + 'operational, and this deployment refuses to start if one already is.'
+    : 'Overruns are computed and shown, but do not block. Off by default: the '
+      + 'tree cost is computed from an assumed leaf count, so an over-estimate '
+      + 'would refuse task types that would in fact fit.';
+  const track = document.createElement('span');
+  track.className = 'knob-track';
+  const thumb = document.createElement('span');
+  thumb.className = 'knob-thumb';
+  track.appendChild(thumb);
+  knob.appendChild(track);
+  knob.addEventListener('click', () => {
+    _setBudgetEnforcement(
+      knob.getAttribute('aria-pressed') !== 'true', knob);
+  });
+  wrap.appendChild(label);
+  wrap.appendChild(knob);
+  return wrap;
+}
+
 function _renderStatus(payload) {
   const line = byId('delegationStatusLine');
   const facts = byId('delegationFacts');
@@ -560,8 +632,13 @@ function _renderStatus(payload) {
     items.push(ceiling === null || ceiling === undefined
       ? 'latency ceiling: not available' : `latency ceiling: ${ceiling}s`);
   }
-  items.push(budget === null || budget === undefined
-    ? 'tree budget: not available' : `tree budget: $${budget}`);
+  // Same rule as the ceiling above: rendered by `_budgetKnob` when the server
+  // sent the enforcement state, so it is omitted here rather than printed
+  // twice.
+  if (!payload.budget_enforcement) {
+    items.push(budget === null || budget === undefined
+      ? 'tree budget: not available' : `tree budget: $${budget}`);
+  }
   items.forEach(text => {
     const span = document.createElement('span');
     span.className = 'delegation-fact';
@@ -573,6 +650,9 @@ function _renderStatus(payload) {
   // reported.
   if (payload.ceiling_enforcement) {
     facts.appendChild(_ceilingKnob(payload.ceiling_enforcement));
+  }
+  if (payload.budget_enforcement) {
+    facts.appendChild(_budgetKnob(payload.budget_enforcement, budget));
   }
 }
 

@@ -495,7 +495,7 @@ async function _switchTab(tab) {
   // is a rarely-opened tab, and the module is dead weight in the initial parse
   // for every other page load.
   if (tab === 'delegation') {
-    const {loadDelegation} = await import('./delegation.js?v=2199793');
+    const {loadDelegation} = await import('./delegation.js?v=6387733c884');
     loadDelegation(true);
   }
 }
@@ -2462,7 +2462,13 @@ async function loadInitialData() {
 
 async function logout() {
   try {
-    await fetch('/logout', {method: 'POST', credentials: 'same-origin'});
+    // apiFetch, not fetch: POST /logout is a mutating request and is NOT in
+    // CsrfMiddleware._EXEMPT_PATHS (only /login is), so a bare fetch is
+    // answered 403 before handle_logout runs -- session_drop and
+    // clear_session_cookie never execute and the session stays live while the
+    // UI navigates away saying otherwise. fetch does not reject on 403, so the
+    // catch below cannot see it either.
+    await apiFetch('/logout', {method: 'POST'});
   } catch (error) {
     // Navigating away regardless is right -- the user asked to leave. Logging
     // is not optional though: if this call never lands the session is still

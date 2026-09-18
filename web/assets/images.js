@@ -8,7 +8,7 @@
 import {apiFetch} from './api.js?v=2741508';
 import {openImageViewer} from './conversation.js?v=8067332';
 import {_showConfirmDialog} from './machines.js?v=3055851';
-import {jumpToChatFromGallery} from './app.js?v=9335935';
+import {jumpToChatFromGallery} from './app.js?v=16559243';
 
 const byId = id => document.getElementById(id);
 

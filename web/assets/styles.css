@@ -1441,6 +1441,7 @@ button{touch-action:manipulation}
 
 /* The status band's ceiling-enforcement knob, beside the facts row. */
 .delegation-ceiling-knob { display:inline-flex; align-items:center; gap:8px; }
+.delegation-budget-knob { display:inline-flex; align-items:center; gap:8px; }
 
 /* Model rows, as a small table rather than a column of bare input rows. */
 .delegation-model-table {

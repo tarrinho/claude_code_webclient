@@ -206,38 +206,60 @@ async def _finish(run: dict[str, Any]) -> None:
 
 
 async def run_night(run: dict[str, Any], *, now: datetime | None = None) -> str:
-    """Measure until the box is busy, the sweep completes, or it expires.
+    """Measure until the box is busy, every cell has had its one attempt for
+    tonight, the sweep completes, or it expires.
 
     Returns "complete", "stopped", or "expired". Each cell writes as it
     finishes (spec 6), so stopping at any point keeps everything measured so
     far.
 
+    Each cell gets at most one attempt per call, tracked in `attempted`
+    below. Spec 12 counts THREE CONSECUTIVE SWEEPS, not three attempts in
+    one night: `classify_cells` recomputes `pending` every iteration, and a
+    failure writes no capability row (spec 6), so a cell that stayed at
+    index 0 without this guard would be retried immediately, burning the
+    whole dormancy allowance -- and the ten-day expiry check below it -- on
+    one night instead of three. Once every still-pending cell has had its
+    attempt for tonight, the night is done: pending cells remain, so this
+    returns "stopped", not "complete" -- only a later night, or a later
+    iteration once dormancy clears a name from `pending`, can attempt them
+    again.
+
     Busy means stop for the night (spec 8.3): finish nothing further, leave
     the sweep current, and let the next night's timer continue it. There is
     no re-check loop within a single call -- once busy, this returns.
 
-    Expiry is checked once, against `run["expires_at"]` as stored at
-    `start_sweep` and never recomputed here (rule 2). An expired sweep is by
-    definition one that failed to stay current, so it is abandoned rather
-    than measured further, and every cell it already wrote stays in
+    Expiry is checked against `run["expires_at"]` as stored at `start_sweep`
+    and never recomputed (rule 2) -- but checked before EVERY cell, not only
+    at entry, so a night that crosses the ten-day boundary mid-run stops
+    there instead of measuring on into the next invocation. An expired sweep
+    is by definition one that failed to stay current, so it is abandoned
+    rather than measured further, and every cell it already wrote stays in
     delegation_capability (rule 4).
     """
-    moment = now or _now()
-    if _stamp(moment) >= run["expires_at"]:
-        await store.run_expire(run["id"])
-        return "expired"
+    attempted: set[tuple[str, str]] = set()
 
     while True:
-        groups = await classify_cells(run)
-        if not groups["pending"]:
+        moment = now or _now()
+        if _stamp(moment) >= run["expires_at"]:
+            await store.run_expire(run["id"])
+            return "expired"
+
+        if await sweep_is_complete(run):
             await _finish(run)
             return "complete"
+
+        groups = await classify_cells(run)
+        remaining = [key for key in groups["pending"] if key not in attempted]
+        if not remaining:
+            return "stopped"
 
         busy, _reason = await box_is_busy()
         if busy:
             return "stopped"
 
-        model, task_type = groups["pending"][0]
+        model, task_type = remaining[0]
+        attempted.add((model, task_type))
         result = await benchmark_cell.run_cell(
             model, task_type, repeats=int(run["repeats"]))
         if result.status == "ok":

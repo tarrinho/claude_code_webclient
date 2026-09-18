@@ -16,9 +16,11 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import benchmark_cell
 import benchmark_sweep
 import config
 import db
+from benchmark_cell import CellResult
 from routes import db_benchmark as store
 from routes.db_delegation import delegation_row_set
 
@@ -106,3 +108,58 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(finished["cooling_until"])
         self.assertEqual(finished["cells_dormant"], 1)
         self.assertEqual(finished["cells_total"], 1)
+
+    async def test_a_failing_cell_is_attempted_at_most_once_per_night(self):
+        """Spec 12 counts three CONSECUTIVE SWEEPS. Without a per-night
+        attempt guard, a failed cell writes no capability row (spec 6), stays
+        pending, and gets retried immediately -- burning the whole
+        three-strike dormancy allowance, and up to 3 x MAX_CELL_BUDGET_S, on
+        one night instead of three."""
+        await delegation_row_set("bad", "coding")
+        await delegation_row_set("good", "coding")
+        run = await benchmark_sweep.start_sweep(["bad", "good"], ["coding"])
+        calls: list[tuple[str, str]] = []
+
+        async def fake_run_cell(model, task_type, repeats=3, timeout_s=None):
+            calls.append((model, task_type))
+            if model == "bad":
+                return CellResult("failed", None, None, None, 0.1, "boom")
+            return CellResult("ok", 0.9, 3, 1.0, 0.1, None)
+
+        with patch.object(benchmark_cell, "run_cell", fake_run_cell), \
+             patch.object(benchmark_sweep, "box_is_busy", new_callable=AsyncMock,
+                          return_value=(False, "idle")):
+            outcome = await benchmark_sweep.run_night(run)
+
+        self.assertEqual(outcome, "stopped")
+        self.assertEqual(calls.count(("bad", "coding")), 1)
+        self.assertEqual(calls.count(("good", "coding")), 1)
+        meta = {(r["model"], r["task_type"]): r
+                for r in await store.capability_meta_all()}
+        self.assertEqual(meta[("bad", "coding")]["consecutive_failures"], 1)
+        self.assertEqual((await store.run_get(run["id"]))["status"], "running")
+
+    async def test_expiry_crossed_mid_night_stops_and_keeps_written_cells(self):
+        """Fix 2: expiry is checked before EVERY cell, not only at loop
+        entry, so a long night that crosses the ten-day boundary mid-run
+        stops there instead of measuring on into the next invocation."""
+        await delegation_row_set("m2", "coding")
+        run = await benchmark_sweep.start_sweep(["m1", "m2"], ["coding"])
+
+        async def fake_run_cell(model, task_type, repeats=3, timeout_s=None):
+            if model == "m1":
+                # Simulate the clock crossing expires_at partway through
+                # tonight's run, after m1's cell has already been written.
+                run["expires_at"] = "2000-01-01T00:00:00Z"
+            return CellResult("ok", 0.9, 3, 1.0, 0.1, None)
+
+        with patch.object(benchmark_cell, "run_cell", fake_run_cell), \
+             patch.object(benchmark_sweep, "box_is_busy", new_callable=AsyncMock,
+                          return_value=(False, "idle")):
+            outcome = await benchmark_sweep.run_night(run)
+
+        self.assertEqual(outcome, "expired")
+        self.assertEqual((await store.run_get(run["id"]))["status"], "expired")
+        cells = await store.cells_for_run(run["id"])
+        self.assertEqual([(c["model"], c["task_type"]) for c in cells],
+                         [("m1", "coding")])

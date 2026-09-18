@@ -55,10 +55,28 @@ is whatever the plan markdown named: `PlanParser` puts it on
 `orchestrator_tasks.model` (`orchestrator.py:785` and `:798`). When the plan
 names no model, the row stores `NULL` and the ladder is never consulted.
 
+The same shape appears one level up, and it is worth recording because it is the
+other half of the same illusion. `app.py:629` calls `validate_or_die()` and
+stores the result:
+
+```python
+app.state.capability_table = await validate_or_die()
+```
+
+Nothing reads `app.state.capability_table`. The startup validation is real — it
+refuses to boot on a bad table, which is spec 1.1 working as designed — but the
+validated object it produces is then written to application state and never
+consulted. So a capability-table change is validated at startup and still
+reaches no routing decision.
+
 So the delegation ladder is not merely unrecorded — it is unreachable
 end-to-end. A recorder hooked into `assign_model` would have recorded zero rows
 for as long as it existed, and the silence would have read as "no tasks were
 routed" rather than "the hook is dead".
+
+**The consequence for any document in this repo:** a claim that editing the
+capability table changes what models live work runs on is not true today. It
+describes the system this subsystem is being built toward, not the one running.
 
 **The hook therefore moves to `OrchestratorEngine._materialise_plan`**, the
 place a task's model is actually decided. The recorder computes what the delegation

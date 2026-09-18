@@ -33,6 +33,7 @@ than for what it currently happens to contain.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -101,6 +102,79 @@ def ensure_recording_dir(root: str | os.PathLike[str] | None = None) -> Path:
     if current != DIR_MODE:
         os.chmod(directory, DIR_MODE)
     return directory
+
+
+ARCHIVE_DIRNAME: Final[str] = "archive"
+
+
+def archive_dir(root: str | os.PathLike[str] | None = None) -> Path:
+    """Where kept samples live. A subdirectory of `recording_dir`, so the
+    `/data/recordings/` gitignore entry and the `0700` mode both cover it
+    without a second rule to keep in step."""
+    return recording_dir(root) / ARCHIVE_DIRNAME
+
+
+def ensure_archive_dir(root: str | os.PathLike[str] | None = None) -> Path:
+    """Create the archive directory `0700`, tightening an existing wider one,
+    for the same reason `ensure_recording_dir` does."""
+    ensure_recording_dir(root)
+    directory = archive_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    current = directory.stat().st_mode & 0o777
+    if current != DIR_MODE:
+        os.chmod(directory, DIR_MODE)
+    return directory
+
+
+def archive_current(root: str | os.PathLike[str] | None = None) -> Path | None:
+    """Keep a copy of the rolling recording so the next voice chat cannot take
+    it. Returns the archived path, or None when there is nothing to archive.
+
+    The rolling file exists to hold exactly one conversation and is overwritten
+    at the start of the next one -- that is the feature, and it is also why a
+    sample worth benchmarking against has a lifetime of "until somebody speaks
+    to the console again". This is the deliberate act that ends that.
+
+    The name carries the recording's own start time rather than the archiving
+    time, so re-archiving the same file lands on the same name instead of
+    accumulating one copy per invocation, and so the ordering on disk is the
+    order the conversations happened rather than the order somebody got around
+    to keeping them. A content hash is appended because a chat that is resumed
+    keeps its id and its `created_at`, so those two alone do not distinguish a
+    later, longer recording of the same conversation from an earlier one.
+
+    Identical content already archived is a no-op returning the existing path:
+    archiving twice is something an operator will do, and a directory of
+    duplicates is worse than no answer.
+    """
+    source = recording_path(root)
+    if not source.exists():
+        return None
+    payload = source.read_text(encoding="utf-8")
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        # A truncated or half-written rolling file is not worth refusing over;
+        # keeping it is still better than letting the next chat overwrite it.
+        data = {}
+    chat = data.get("chat") or {}
+    stamp = str(chat.get("created_at") or "unknown").replace(":", "").replace("-", "")
+    chat_id = str(chat.get("id") or "unknown")[:8]
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+    directory = ensure_archive_dir(root)
+    target = directory / f"{stamp}-{chat_id}-{digest}.json"
+    if target.exists():
+        return target
+    _write_private_atomic(target, payload)
+    return target
+
+
+def archived_samples(root: str | os.PathLike[str] | None = None) -> list[Path]:
+    """Every kept sample, oldest first by the name's leading timestamp."""
+    directory = archive_dir(root)
+    if not directory.is_dir():
+        return []
+    return sorted(p for p in directory.glob("*.json") if p.is_file())
 
 
 def _write_private_atomic(path: Path, payload: str) -> None:

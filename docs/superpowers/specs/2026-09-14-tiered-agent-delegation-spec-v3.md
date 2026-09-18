@@ -302,7 +302,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | long-context | 100% | 12 | 0.0370‡ | 6.3 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0370‡ | 9.2 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0370‡ | 16.5 | 922,000 |
-| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0370‡ | TBD | 922,000 |
+| `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0370‡ | 11.0◊ | 922,000 |
 | `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 0.0781‡ | 2.002 | TBD |
 | `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 3.4043‡ | 7.85 | 922,000 |
 | `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 3.4043‡ | 7.84 | 922,000 |
@@ -323,7 +323,7 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `claude-sonnet-5` | long-context | 66.7% | 12 | 0.4769‡ | 4.2 | 1,000,000 |
 | `claude-sonnet-5` | comprehension | 100% | 12 | 0.4769‡ | 6.0 | 1,000,000 |
 | `claude-sonnet-5` | reasoning | 83.4% | 6 | 0.4769‡ | 24.6 | 1,000,000 |
-| `claude-sonnet-5` | voice | 100% | 12§ | 0.4769‡ | TBD | 1,000,000 |
+| `claude-sonnet-5` | voice | 100% | 12§ | 0.4769‡ | 6.9◊ | 1,000,000 |
 | `claude-sonnet-5` | multi-turn | 100% | 12 | 0.4769‡ | 7.8 | 1,000,000 |
 | `claude-sonnet-5` | planning | 83.3% | 12 | 0.4769‡ | 17.5 | 1,000,000 |
 | `claude-sonnet-5` | split-decision | TBD | — | 0.4769‡ | TBD | 1,000,000 |
@@ -381,7 +381,11 @@ This is in direct tension with §2.7's **"a model nobody priced must not come ou
 
 Two limits on what those numbers mean, and both are structural:
 
-- **The harness runs the Claude Code CLI (§0); voice does not.** `routes/voice.py` is the documented exception and speaks to an OpenAI-compatible endpoint directly. So these figures measure *the model* on voice-shaped tasks, over a different transport from the one production voice uses. That is a reasonable proxy for accuracy and **not** for latency, which is why `median_latency_s` stays TBD here: the CLI run measured 6.6–9.6s against the 2.0s the voice path actually records.
+- **The harness runs the Claude Code CLI (§0); voice does not.** `routes/voice.py` is the documented exception and speaks to an OpenAI-compatible endpoint directly. So these figures measure *the model* on voice-shaped tasks, over a different transport from the one production voice uses. That is a reasonable proxy for accuracy and **not** for latency: the CLI run measured 6.6–9.6s against the 2.0s the voice path actually records.
+
+  **`◊` marks a latency borrowed from that CLI transport anyway, by operator decision on 2026-09-18, to let `voice` go operational without waiting for an on-transport measurement.** The value is each model's median `median_latency_s` across the eight task types where it IS measured — luna 11.0, sonnet 6.9 — chosen over its maximum because, counter-intuitively, larger borrowed latencies produce a *smaller* worst-case path (§5.1 normalises against the reference rung), so the median is the conservative choice as well as the more honest summary. Against the one on-transport data point available, 2.002s for `azure_ai/gpt-5.4-mini-copilot`, both are over-estimates by roughly 3–5x, which is the safe direction for a ceiling.
+
+  This paragraph previously said `median_latency_s` "stays TBD here", and §3 said voice would stay non-operational until it did not. Both were deliberate and both have been overridden rather than quietly edited away: the reasoning that produced them is below, unchanged, because it is still the argument for replacing these two cells with a real measurement.
 - **`azure_ai/gpt-5.4-mini-copilot` cannot be measured by this harness at all.** Twelve attempts all failed with the CLI's own refusal — the model is not served by the backend the CLI resolves, exactly the failure §0.1 describes. The one model that actually serves voice is therefore the one model whose voice accuracy cannot be benchmarked without a second transport.
 
 **What the measurement did settle:** walking the generator over these accuracies reproduces `luna → sonnet` — precisely the ladder §3 published before any voice task existed. The shape was right; it just had nothing behind it until now. It is still not affordable: at $1.936 against a `BUDGET_USD` of 1.00 the voice ladder fails §1.1's cost invariant, the same way `planning` does and for the same reason — sonnet at rung 1.
@@ -665,7 +669,11 @@ The general point applies beyond this one: this table is a statement of intent, 
 - **Since then, the data changed twice, not once.** Luna's comprehension row was filled in this morning (58.3%, n=12), which makes Luna — cheapest and now ladder-eligible — the real rung 0, ahead of Sonnet. And `claude-opus-5` on comprehension was re-measured today at **n=12: 100%, tying Sonnet** — not "measured worse" any longer, so step 3 no longer skips it.
 - **Neither edit was a mistake; the rule was applied correctly to two different tables.** The 2026-09-16 amendment is exactly what §3 elsewhere warns against building a rung on: a figure "from a small sample (n=—) [that] must be re-verified against production request shapes before any rung is set". That is precisely what happened here — an n=2 figure was used to justify dropping Opus from the ladder, and re-measurement at n=12 reversed the drop. The row above, `luna → sonnet → opus`, is what the generator now produces from the current table.
 
-**Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. Voice stays non-operational (§1.1) until both its rows carry a measured `median_latency_s`, because a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
+**Voice is latency-bound, not accuracy-bound.** A spoken exchange is the most latency-sensitive path in the product, so the voice ladder starts at Luna and climbs only to Sonnet; Opus is not a voice rung at any accuracy. The argument for keeping voice non-operational was that a ladder ordered on cost alone is the wrong ordering for the one task type where latency is the binding constraint.
+
+**Overridden 2026-09-18 by operator decision: voice is operational, on borrowed CLI latency (`◊` in §2.6).** The ladder is unchanged — `luna → sonnet` — because latency is not an input to §3's generation, which sorts on cost. What the override changes is only whether §1.1 lets the type flip: the two cells that were TBD now carry numbers, so the worst-case path computes (2,231.9s against a 2,900s ceiling) instead of being refused as missing data.
+
+The objection above is not answered by this, only set aside. Voice remains the one task type whose ladder is ordered by the wrong quantity, and its rung 0 and rung 1 are still two models that have never served a voice turn on this deployment. The measurement that would settle it is a run of the four voice tasks through `routes/voice.py`'s own transport, which no harness does today.
 
 Only `coding` and `long-context` start free (§4.1).
 

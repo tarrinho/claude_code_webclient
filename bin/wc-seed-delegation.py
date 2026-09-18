@@ -75,7 +75,7 @@ ROWS = [
     ("azure_ai/gpt-5.6-luna", "long-context", 1.0, 12, 0.0370, 6.3, 922000),
     ("azure_ai/gpt-5.6-luna", "comprehension", 0.583, 12, 0.0370, 9.2, 922000),
     ("azure_ai/gpt-5.6-luna", "reasoning", 0.5, 6, 0.0370, 16.5, 922000),
-    ("azure_ai/gpt-5.6-luna", "voice", 0.833, 12, 0.0370, None, 922000),
+    ("azure_ai/gpt-5.6-luna", "voice", 0.833, 12, 0.0370, 11.0, 922000),
     ("azure_ai/gpt-5.4-mini", "coding", None, None, 0.0850, None, 1050000),
     ("azure_ai/gpt-5.4-mini", "reasoning", 0.86, None, 0.0850, None, 1050000),
     ("azure_ai/gpt-5.6-luna", "multi-turn", 0.917, 12, 0.0370, 13.5, 922000),
@@ -97,7 +97,7 @@ ROWS = [
     ("claude-sonnet-5", "long-context", 0.667, 12, 0.4769, 4.2, 1000000),
     ("claude-sonnet-5", "comprehension", 1.0, 12, 0.4769, 6.0, 1000000),
     ("claude-sonnet-5", "reasoning", 0.834, 6, 0.4769, 24.6, 1000000),
-    ("claude-sonnet-5", "voice", 1.0, 12, 0.4769, None, 1000000),
+    ("claude-sonnet-5", "voice", 1.0, 12, 0.4769, 6.9, 1000000),
     # azure_ai/gpt-5.6-sol, measured 2026-09-17 (bin/wc-bench.py --repeats 3)
     # and seeded the same day. Price is ASSUMED to be luna's, marked with a
     # dagger in 2.6, on the same operator decision that covered terra: the

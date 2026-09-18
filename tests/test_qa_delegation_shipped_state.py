@@ -239,15 +239,22 @@ def _spec_n(cell: str) -> int | None:
 def _spec_float(cell: str) -> float | None:
     """A plain decimal cell (`cost_per_1M_tokens`, `median_latency_s`).
 
-    `cost_per_1M_tokens` may carry a trailing marker, and there are two:
-    `†` for "assumed, not billed" (2026-09-17, `azure_ai/gpt-5.6-terra`) and
+    Both columns may carry a trailing marker, and there are three:
+    `†` for "assumed, not billed" (2026-09-17, `azure_ai/gpt-5.6-terra`),
     `‡` for "blended from this deployment's own usage_events rather than a
-    published price" (2026-09-17, `azure_ai/gpt-5.4-mini-copilot`). Both are
-    distinct from `_spec_n`'s `*`, so both are stripped here rather than
+    published price" (2026-09-17, `azure_ai/gpt-5.4-mini-copilot`), and `◊`
+    for a `median_latency_s` borrowed from the CLI transport because the model
+    has never served a voice turn (2026-09-18, both voice rungs). All three are
+    distinct from `_spec_n`'s `*`, so all three are stripped here rather than
     folded into that one. The seed script stores the number either way; a
-    marker carries no value to compare."""
+    marker carries no value to compare.
+
+    This function has now been the failure point twice in one day: first on
+    `**1.4760‡**` when a correction table was added to 2.6, and then on
+    `11.0◊` when a marker was introduced on a column that had never carried
+    one. Adding a marker to 2.6 means adding it here in the same change."""
     v = _spec_cell(cell)
-    return None if v is None else float(v.rstrip("†‡").replace(",", ""))
+    return None if v is None else float(v.rstrip("†‡◊").replace(",", ""))
 
 
 def _spec_int(cell: str) -> int | None:

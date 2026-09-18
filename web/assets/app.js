@@ -17,7 +17,7 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 // cycle back into app.js.
 import {updateVoiceButtonVisibility} from './voice-engine.js?v=4274770';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
-import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=1292480';
+import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=958043';
 
 // Exported for orchestrator.js/device-alerts.js, which need this live app state
 // but are also loaded standalone (own <script type="module">) and so cannot
@@ -495,7 +495,7 @@ async function _switchTab(tab) {
   // is a rarely-opened tab, and the module is dead weight in the initial parse
   // for every other page load.
   if (tab === 'delegation') {
-    const {loadDelegation} = await import('./delegation.js?v=6387733c884');
+    const {loadDelegation} = await import('./delegation.js?v=13718780c884');
     loadDelegation(true);
   }
 }

@@ -1444,6 +1444,24 @@ button{touch-action:manipulation}
 .delegation-budget-knob { display:inline-flex; align-items:center; gap:8px; }
 
 /* Model rows, as a small table rather than a column of bare input rows. */
+/* Hide/unhide for one task type's model rows. Mirrors .spec-group above, so
+   the two collapsible surfaces in this app read the same way: marker hidden,
+   own caret, rotated when open. */
+.delegation-models { margin-top:6px; }
+.delegation-models-summary {
+  cursor:pointer; list-style:none; user-select:none;
+  color:var(--muted); font:600 10.5px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;
+  letter-spacing:.06em; text-transform:uppercase; padding:3px 0;
+}
+.delegation-models-summary::-webkit-details-marker { display:none; }
+.delegation-models-summary::before {
+  content:"▸ "; display:inline-block; transition:transform .12s ease;
+}
+.delegation-models[open]>.delegation-models-summary::before { transform:rotate(90deg); }
+.delegation-models-summary:hover { color:var(--fg); }
+.delegation-models-summary:focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px; border-radius:4px;
+}
 .delegation-model-table {
   width:100%; border-collapse:collapse; font-size:11.5px;
 }

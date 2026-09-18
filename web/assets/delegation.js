@@ -394,9 +394,47 @@ function _card(taskType, rowsForType, payload) {
   const blockerEntry = (payload.blockers || {})[taskType];
   card.appendChild(_blockerElement(blockerEntry, taskType));
 
-  card.appendChild(_modelTable(rowsForType, _resolveColumns(payload)));
+  card.appendChild(_modelRows(taskType, rowsForType, _resolveColumns(payload)));
 
   return card;
+}
+
+/** The model table, behind a hide/unhide disclosure.
+ *
+ *  Collapsed by default. Eleven task types times the models measured on each
+ *  is a page you scroll rather than read, and the parts that answer "can this
+ *  go live" -- the knob, the ladder, the blockers -- are all above this point
+ *  and stay visible when it is shut.
+ *
+ *  The row count lives in the summary, which is the whole reason a shut table
+ *  is safe to arrive at. Settings > Specs shipped collapsible groups whose
+ *  headers said only the group name, and with one group holding everything it
+ *  read as an empty panel (see specs.js `_makeGroup`). A summary that states
+ *  what it is hiding does not have that failure mode.
+ *
+ *  <details> rather than a button and a class: it is the element the browser
+ *  already implements this with -- keyboard, focus, and the open attribute for
+ *  free -- and it is what the specs gallery uses, so the two pages behave the
+ *  same way. */
+function _modelRows(taskType, rowsForType, columns) {
+  const details = document.createElement('details');
+  details.className = 'delegation-models';
+  details.dataset.taskType = taskType;
+
+  const summary = document.createElement('summary');
+  summary.className = 'delegation-models-summary';
+  const count = rowsForType.length;
+  summary.textContent = `Models · ${count}`;
+  // The accessible name says what the control does; the visible text says what
+  // is behind it. A summary reading "Models · 5" alone leaves a screen-reader
+  // user to infer that it toggles.
+  summary.setAttribute(
+    'aria-label',
+    `Show or hide the ${count} model row${count === 1 ? '' : 's'} for ${taskType}`);
+
+  details.appendChild(summary);
+  details.appendChild(_modelTable(rowsForType, columns));
+  return details;
 }
 
 // ── Read-only config overview (spec 9.2's first sentence) ──────────────────

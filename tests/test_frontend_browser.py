@@ -4295,6 +4295,68 @@ class DelegationBudgetKnobBrowserTests(_BrowserFixture):
                             and "not enforced" not in t for t in texts), texts)
         self.assertEqual(self.errors, [])
 
+    def test_clicking_the_master_knob_turns_delegation_off(self):
+        """Spec 9.1's global switch, clicked rather than PUT behind its back.
+
+        Read back from the server, not from `aria-pressed`: that attribute is
+        set optimistically before the request goes out, so asserting on it
+        would pass against a handler that never reached the network — which is
+        exactly how both enforcement knobs shipped broken.
+        """
+        self._open()
+        knob = self.page.query_selector(
+            '.delegation-enabled-knob .toggle-knob[aria-label='
+            '"enable the delegation design"]')
+        self.assertIsNotNone(knob, "no delegation master knob rendered")
+        self.assertEqual(knob.get_attribute("aria-pressed"), "true",
+                         "the master switch should default on")
+
+        knob.click()
+        self.page.wait_for_timeout(1200)
+
+        enabled = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return d.enabled && d.enabled.enabled;
+               }""")
+        self.assertFalse(
+            enabled,
+            "the master knob was clicked and the server still reports "
+            "delegation on -- the PUT was refused (CSRF) or never sent")
+        self.assertEqual(self.errors, [])
+
+    def test_the_panel_is_marked_when_delegation_is_off(self):
+        """Off still SHOWS the table — you need to read it to fix it — so the
+        panel is marked instead, or a ladder on this page reads as one that is
+        in effect."""
+        self._open()
+        # Driven to a known state rather than assuming one. This class shares a
+        # database across its tests, so whichever ran first decides whether the
+        # switch is currently on -- and an earlier version of this test clicked
+        # it ON and then asserted the off marking, passing or failing on test
+        # order rather than on the code.
+        knob = self.page.query_selector(
+            '.delegation-enabled-knob .toggle-knob[aria-label='
+            '"enable the delegation design"]')
+        self.assertIsNotNone(knob, "no delegation master knob rendered")
+        if knob.get_attribute("aria-pressed") == "true":
+            knob.click()
+            self.page.wait_for_timeout(1200)
+
+        off = self.page.evaluate(
+            """async () => {
+                 const r = await fetch('/api/delegation');
+                 const d = await r.json();
+                 return d.enabled && d.enabled.enabled === false;
+               }""")
+        self.assertTrue(off, "could not reach the off state to assert against")
+
+        panel = self.page.query_selector("#panelDelegation")
+        self.assertIn("delegation-off", panel.get_attribute("class") or "",
+                      "the panel was not marked while delegation is off")
+        self.assertEqual(self.errors, [])
+
     def test_clicking_the_ceiling_knob_actually_enforces(self):
         """The same assertion for the ceiling knob, which had the same bug.
 

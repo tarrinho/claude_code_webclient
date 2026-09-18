@@ -13,11 +13,35 @@ from routes.db_delegation import rows_to_capability
 from tiered_delegation import (
     BUDGET_ENFORCEMENT_DEFAULT,
     BUDGET_ENFORCEMENT_SETTING,
+    DELEGATION_ENABLED_DEFAULT,
+    DELEGATION_ENABLED_SETTING,
     CEILING_ENFORCEMENT_DEFAULT,
     CEILING_ENFORCEMENT_SETTING,
     GATE_TASK_TYPE,
     CapabilityTable,
 )
+
+
+async def delegation_enabled() -> bool:
+    """Spec 9.1's global kill switch, read from `settings`.
+
+    The single reader, for the same reason the two enforcement readers below
+    are single: the startup path, the settings page and the orchestrator's
+    shadow recorder must never disagree about whether the design is live.
+
+    **Only an explicit `"0"` turns it off.** A missing row, a blank, or a value
+    nobody can parse all mean ON, because ON is what this deployment did before
+    the switch existed and a corrupt settings row must not be able to silently
+    disable a subsystem. Note this is the inverse of the two readers below,
+    which take `== "1"` because their default is off -- see
+    `DELEGATION_ENABLED_DEFAULT` for why the difference is deliberate rather
+    than an inconsistency to tidy up.
+    """
+    from routes.db_users import setting_get
+    raw = await setting_get(DELEGATION_ENABLED_SETTING)
+    if raw is None:
+        return DELEGATION_ENABLED_DEFAULT
+    return raw.strip() != "0"
 
 
 async def ceiling_enforcement_enabled() -> bool:

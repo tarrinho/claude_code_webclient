@@ -622,11 +622,24 @@ async def lifespan(app: FastAPI):
         _usage_import_loop(), name="usage_import"))
     _startup_tasks[-1].add_done_callback(_log_startup_task)
 
-    # Spec 1.1. Fails loudly rather than routing on bad data -- and on this
-    # release no task type is operational, so this validates an empty set and
-    # logs that nothing routes.
-    from delegation_startup import validate_or_die
-    app.state.capability_table = await validate_or_die()
+    # Spec 1.1. Fails loudly rather than routing on bad data.
+    #
+    # Behind 9.1's global kill switch: with delegation off this does not run at
+    # all, so a capability table nobody has fixed yet can never stop the
+    # console starting. That is the point of an off switch -- a subsystem that
+    # is not in play must not be able to refuse the boot. `capability_table` is
+    # left None in that case rather than built unvalidated, so anything that
+    # later reaches for it fails visibly instead of routing on a table no check
+    # has seen.
+    from delegation_startup import delegation_enabled, validate_or_die
+    if await delegation_enabled():
+        app.state.capability_table = await validate_or_die()
+    else:
+        app.state.capability_table = None
+        _log.warning(
+            "delegation: OFF (spec 9.1 kill switch, %s=0) -- the capability "
+            "table was not validated and nothing in this design runs",
+            "delegation_enabled")
 
     yield
     # Stopped before db.close(): the sampler writes through the connection.

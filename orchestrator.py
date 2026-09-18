@@ -819,17 +819,25 @@ class OrchestratorEngine:
                 # because recording is diagnostics and must never be able to
                 # fail task creation. The log names the task id for the reason
                 # the `exception` call below does.
+                # Spec 9.1's kill switch gates this too: with delegation off,
+                # the design writes nothing at all. Read inside the `try` so a
+                # settings read that fails cannot take task creation with it,
+                # but tested before the call rather than signalled by an
+                # exception -- "the switch is off" is not a failure, and the
+                # `except` below would log it as one on every task.
                 try:
                     import delegation_recorder
+                    from delegation_startup import delegation_enabled
 
-                    await delegation_recorder.record_decision(
-                        task_table=delegation_recorder.ORCHESTRATOR_TASK_TABLE,
-                        task_id=node.id,
-                        title=parsed_task.title,
-                        description=parsed_task.description,
-                        actual_model=parsed_task.model,
-                        router=self.router,
-                    )
+                    if await delegation_enabled():
+                        await delegation_recorder.record_decision(
+                            task_table=delegation_recorder.ORCHESTRATOR_TASK_TABLE,
+                            task_id=node.id,
+                            title=parsed_task.title,
+                            description=parsed_task.description,
+                            actual_model=parsed_task.model,
+                            router=self.router,
+                        )
                 except Exception as rec_exc:
                     _log.warning(
                         "delegation shadow record failed for %s: %s",
@@ -1096,9 +1104,16 @@ class OrchestratorEngine:
             # at load time, so a module-level import is a cycle.
             import db as _db
             import delegation_recorder
+            from delegation_startup import delegation_enabled
 
-            await _db.delegation_decision_note_ran_model(
-                delegation_recorder.ORCHESTRATOR_TASK_TABLE, task_id, model)
+            # Gated by 9.1's kill switch, like the record this annotates. With
+            # delegation off there is no decision row to annotate -- the
+            # UPDATE would match nothing and be a harmless no-op, but a switch
+            # that leaves half the design running is not the "nothing in
+            # between" 9.1 asks for.
+            if await delegation_enabled():
+                await _db.delegation_decision_note_ran_model(
+                    delegation_recorder.ORCHESTRATOR_TASK_TABLE, task_id, model)
         except Exception as ran_exc:
             _log.warning(
                 "delegation shadow ran_model failed for %s: %s", task_id, ran_exc)

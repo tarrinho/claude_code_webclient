@@ -120,16 +120,30 @@ class DelegationRoutesTests(unittest.IsolatedAsyncioTestCase):
         (9.1), the 5/10 tunables, and the cost ceiling (2.7), read only. The
         values that do exist as code must match tiered_delegation exactly
         (not a copied-by-hand number that can drift); values with no single
-        source in this release (the kill switch, per-gate MAX_ATTEMPTS,
-        MAX_DEPTH, MAX_CHILDREN, MAX_SUBAGENTS_PER_LEAF, the circuit-breaker
-        threshold, the spot-check rate, the free-tier target) must say so
-        rather than showing an invented number."""
+        source in this release (per-gate MAX_ATTEMPTS, MAX_DEPTH,
+        MAX_CHILDREN, MAX_SUBAGENTS_PER_LEAF, the circuit-breaker threshold,
+        the spot-check rate, the free-tier target) must say so rather than
+        showing an invented number.
+
+        The kill switch left that list on 2026-09-18: 9.1's global switch is
+        implemented, so this block reports it as available and names its
+        setting. Its LIVE state is deliberately not here -- `_config_overview`
+        is read from constants and cannot see a settings row, so the payload
+        carries it in `enabled` instead. A config block that reported a
+        stale on/off would be worse than one that reports none."""
         response = await delegation_routes.handle_delegation_get(_request())
         body = json.loads(response.body)
         cfg = body["config"]
 
-        self.assertFalse(cfg["kill_switch"]["available"])
+        self.assertTrue(cfg["kill_switch"]["available"])
         self.assertTrue(cfg["kill_switch"]["note"])
+        self.assertEqual(cfg["kill_switch"]["setting"],
+                         tiered_delegation.DELEGATION_ENABLED_SETTING)
+        self.assertEqual(cfg["kill_switch"]["default"],
+                         tiered_delegation.DELEGATION_ENABLED_DEFAULT)
+        # The constants block must not carry live state -- that is the
+        # payload's job, and two sources for one fact is how they drift.
+        self.assertNotIn("enabled", cfg["kill_switch"])
 
         caps = cfg["attempts_and_caps"]
         self.assertEqual(caps["max_attempts_generation"]["value"],

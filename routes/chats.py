@@ -803,10 +803,29 @@ async def handle_chat_standby(request: Request, chat_id: str):
     # a single `sessionId`. Suspending the wrong one destroys work that nobody
     # asked to stop, and the user cannot tell it happened -- the toast says
     # "on standby" either way.
-    live = _live_session_names(session_id)
+    # A chat bound to a specific process needs no resolution and tolerates no
+    # guess: suspend that process or nothing. Rows written before
+    # `session_proc` existed, and chats reopened from a transcript with no live
+    # process, fall through to the id-based path below.
+    bound = chat.get("session_proc")
+    if bound:
+        name = _name_of_bound_process(bound)
+        if not name:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "The session this conversation was attached to is no longer "
+                    "running. Nothing to suspend."
+                ),
+            )
+        live = [name]
+        raise_if_ambiguous = False
+    else:
+        live = _live_session_names(session_id)
+        raise_if_ambiguous = True
     if not live:
         raise HTTPException(status_code=400, detail="Could not resolve session name")
-    if len(live) > 1:
+    if raise_if_ambiguous and len(live) > 1:
         raise HTTPException(
             status_code=409,
             detail=(
@@ -1019,6 +1038,47 @@ def _find_session_name(session_id: str) -> str | None:
     if not candidates:
         return None
     return max(candidates)[1]
+
+
+def _name_of_bound_process(session_proc: str) -> str | None:
+    """The name of the live process a chat is bound to, or None if it is gone.
+
+    *session_proc* is `chats.session_proc`: "<pidDomain>|<pid>|<procStart>",
+    written by `routes/db_sessions._session_proc_key`. All three parts are
+    compared -- the start tick is what stops a recycled pid from answering for
+    the process that held it before, which would make this function suspend an
+    unrelated program.
+
+    No tie-break and no fallback: the binding either matches a live record or
+    it does not. Returning "close enough" here would reintroduce exactly the
+    guess this column exists to remove.
+    """
+    import glob
+
+    from routes.db_sessions import _session_proc_key
+
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    for f in glob.glob(str(sessions_dir / "*.json")):
+        base = os.path.basename(f)[: -len(".json")]
+        if not base.isdigit():
+            continue
+        try:
+            with open(f) as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        key = _session_proc_key(data)
+        if key is None or "|".join(key) != session_proc:
+            continue
+        name = data.get("name")
+        if not name:
+            return None
+        try:
+            os.kill(int(base), 0)
+        except (OSError, ValueError):
+            return None
+        return name
+    return None
 
 
 def _live_session_names(session_id: str) -> list[str]:

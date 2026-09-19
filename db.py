@@ -84,6 +84,7 @@ def __getattr__(name: str):
         "chat_delete": "routes.db_chats",
         "chat_fork": "routes.db_chats",
         "chat_set_session": "routes.db_chats",
+        "chat_set_session_proc": "routes.db_chats",
         "chat_set_transcript_offset": "routes.db_chats",
         "chat_set_question_ids": "routes.db_chats",
         "chat_get_question_ids": "routes.db_chats",
@@ -1263,6 +1264,20 @@ async def _ensure_chat_columns() -> None:
         "is_temporary": "ALTER TABLE chats ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 0",
         "goal": "ALTER TABLE chats ADD COLUMN goal TEXT",
         "standby_reason": "ALTER TABLE chats ADD COLUMN standby_reason TEXT",
+        # Which PROCESS serves this chat, as "<pidDomain>|<pid>|<procStart>".
+        #
+        # `session_id` cannot answer that: it names a conversation, and several
+        # live processes can serve one (`claude --resume`, worktree entry, and
+        # every WebConsole turn). Standby SIGTERMs what it resolves, so on
+        # 2026-09-18 it resolved a chat titled "cweb4 - voice issue" to
+        # `multiagent3 - testusage` -- a different session, chosen by a
+        # tie-break on updatedAt.
+        #
+        # procStart is the kernel's start tick for that pid, so the triple
+        # survives pid reuse; pidDomain separates pid namespaces. NULL on every
+        # row written before this column, which the standby path treats as "not
+        # bound" and falls back to the old resolution for.
+        "session_proc": "ALTER TABLE chats ADD COLUMN session_proc TEXT",
     }
     for name, sql in migrations.items():
         if name not in columns:

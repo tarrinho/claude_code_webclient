@@ -77,7 +77,14 @@ class LingeringStandbyTests(unittest.IsolatedAsyncioTestCase):
         await db.user_create("alice", None, auth.hash_password(self.password))
         self.alice_id = (await db.user_get_by_name("alice"))["id"]
 
-        # A live <pid>.json, the only shape _find_session_name will accept.
+        # A live <pid>.json, the only shape _find_session_name will accept,
+        # under a temp HOME rather than the operator's -- see the note in
+        # test_qa_standby_routes.py: this registry decides which live process
+        # standby signals, and tests must not write into it.
+        self.home = Path(self.tmp.name) / "home"
+        self.home_patch = patch.object(Path, "home", staticmethod(lambda: self.home))
+        self.home_patch.start()
+        self.addCleanup(self.home_patch.stop)
         self.session_id = "cweb-lingering-0000-0000-000000000001"
         sessions = Path.home() / ".claude" / "sessions"
         sessions.mkdir(parents=True, exist_ok=True)

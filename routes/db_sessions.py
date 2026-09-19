@@ -153,19 +153,78 @@ def _pid_is_running(pid: Any) -> bool:
     return True
 
 
+def _session_proc_key(item: dict[str, Any]) -> tuple[str, str, str] | None:
+    """A record's *process* identity, or None if it does not name one.
+
+    `(pidDomain, pid, procStart)`. `procStart` is the kernel's start tick for
+    that pid, so the triple stays unique after a pid is reused, and `pidDomain`
+    separates pid namespaces (containers, and remote hosts whose records are
+    merged into the same list).
+
+    Only `entrypoint == "cli"` records describe the session's own process. A
+    `webconsole` shadow holds the *server's* pid, which is the same for every
+    session it ever served -- keying those on pid would collapse unrelated
+    sessions into one.
+    """
+    if item.get("entrypoint") != "cli":
+        return None
+    pid = item.get("pid")
+    start = item.get("procStart")
+    if pid is None or start is None:
+        return None
+    return (str(item.get("pidDomain") or ""), str(pid), str(start))
+
+
 def _dedupe_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse records that describe the same CLI session."""
-    best: dict[str, dict[str, Any]] = {}
+    """Collapse records that describe the same running CLI process.
+
+    **Not the same `sessionId`.** A session id names a *conversation
+    transcript*, and several live processes can serve one: `claude --resume
+    <id>` attaches a new process to an existing conversation, as does entering
+    a worktree, and `runner.py` passes `--resume` for every WebConsole turn.
+    Renaming a session keeps the id -- one record on this host carries three
+    `formerNames`, all with the same `sessionId`.
+
+    Keying on `sessionId` therefore discarded live sessions. Measured
+    2026-09-18: `multiagent3 - testusage` (pid 3659449, cwd
+    /home/kali/projects) and `multiagent - benchmark plan` (pid 3763786, cwd
+    .../worktrees/benchmark-subsystem) both served `599ee395-...`, and this
+    function returned one of them. Everything downstream then inherited the
+    wrong idea that a session id identifies a process: the sessions list showed
+    one row for two terminals, `handle_sessions_resume` bound a new chat to
+    whichever record survived, and the standby endpoint -- which SIGTERMs what
+    it resolves -- aimed at a session nobody had named.
+
+    So: a record that names a process is keyed by that process, and only a
+    record that names none falls back to the session id. A `webconsole` shadow
+    that duplicates a surviving CLI record for the same conversation is still
+    dropped, which is the collapse this function was written for.
+    """
+    by_proc: dict[tuple[str, str, str], dict[str, Any]] = {}
+    by_sid: dict[str, dict[str, Any]] = {}
     unkeyed: list[dict[str, Any]] = []
+
     for item in sessions:
+        proc = _session_proc_key(item)
+        if proc is not None:
+            current = by_proc.get(proc)
+            if current is None or _session_rank(item) > _session_rank(current):
+                by_proc[proc] = item
+            continue
         key = item.get("sessionId")
         if not key:
             unkeyed.append(item)
             continue
-        current = best.get(key)
+        current = by_sid.get(key)
         if current is None or _session_rank(item) > _session_rank(current):
-            best[key] = item
-    return [*best.values(), *unkeyed]
+            by_sid[key] = item
+
+    # A conversation already represented by a live process record needs no
+    # second row from a shadow that describes the same conversation.
+    covered = {item.get("sessionId") for item in by_proc.values() if item.get("sessionId")}
+    remaining = [item for sid, item in by_sid.items() if sid not in covered]
+
+    return [*by_proc.values(), *remaining, *unkeyed]
 
 
 def _session_rank(item: dict[str, Any]) -> tuple[int, int]:

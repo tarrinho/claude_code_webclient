@@ -19,7 +19,7 @@ _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
     "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
     "transcript_offset, degraded, degraded_reason, degraded_at, voice_mode, type, "
-    "parent_chat_id, is_temporary, goal, standby_reason"
+    "parent_chat_id, is_temporary, goal, standby_reason, session_proc"
 )
 _ALLOWED_CHAT_FIELDS = {
     "title",
@@ -257,6 +257,25 @@ async def chat_set_session(chat_id: str, session_id: str) -> None:
     await db.db_conn.execute(
         "UPDATE chats SET session_id = ?, updated_at = ? WHERE id = ?",
         (session_id, db._now(), chat_id),
+    )
+    await db.db_conn.commit()
+
+
+async def chat_set_session_proc(chat_id: str, session_proc: str | None) -> None:
+    """Bind this chat to a specific PROCESS, or clear the binding.
+
+    Separate from `chat_set_session` because the two are known from different
+    places and one can be absent: a conversation reopened from its transcript
+    has a session id and no running process at all, and must not be left
+    pointing at whichever process happens to share its id.
+
+    `updated_at` is deliberately not bumped. This records which process the
+    chat is attached to, not activity in the conversation; bumping it would
+    reorder the sidebar every time a session was rebound.
+    """
+    await db.db_conn.execute(
+        "UPDATE chats SET session_proc = ? WHERE id = ?",
+        (session_proc, chat_id),
     )
     await db.db_conn.commit()
 

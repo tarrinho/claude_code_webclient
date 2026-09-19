@@ -86,6 +86,17 @@ class StandbyRouteTests(unittest.IsolatedAsyncioTestCase):
         # What that hid, observed 2026-09-15: Standby returned "no running
         # session found matching 'api.anthropic.com : 39 : Status'" for a
         # session that was running the whole time as `multi-agent`.
+        # A temp HOME, not the operator's. These records are read by the
+        # standby route and by bin/wc-session-standby.sh, so writing them to
+        # the real ~/.claude/sessions put test fixtures into the registry that
+        # decides which live process gets SIGTERMed. One such leak was still on
+        # this host on 2026-09-18: cweb-real-0000-...json, naming pid 1.
+        # test_qa_session_name_resolution.py already patches Path.home; this
+        # does the same.
+        self.home = Path(self.tmp.name) / "home"
+        self.home_patch = patch.object(Path, "home", staticmethod(lambda: self.home))
+        self.home_patch.start()
+        self.addCleanup(self.home_patch.stop)
         self.claude_sessions = Path.home() / ".claude" / "sessions"
         self.real_session_id = "cweb-real-0000-0000-0000-000000000001"
         (self.claude_sessions).mkdir(parents=True, exist_ok=True)
@@ -177,6 +188,86 @@ class StandbyRouteTests(unittest.IsolatedAsyncioTestCase):
         body = r.json()
         self.assertIn("error", body)
         self.assertIn("session name", body["error"].lower())
+
+    # -- bound to a process: no resolution, no guess --
+
+    async def _bind(self, proc: str):
+        await db.db_conn.execute(
+            "UPDATE chats SET session_proc = ? WHERE id = ?", (proc, self.chat_id))
+        await db.db_conn.commit()
+
+    def _second_session_file(self, name="cweb-real-second"):
+        """A second live process on the SAME session id -- the ambiguity."""
+        f = self.claude_sessions / f"{os.getppid()}.json"
+        f.write_text(json.dumps({
+            "entrypoint": "cli", "pid": os.getppid(), "procStart": 4242,
+            "pidDomain": "testdomain", "name": name, "status": "idle",
+            "sessionId": self.real_session_id, "cwd": str(Path.home()),
+            "updatedAt": 1789495999000,
+        }))
+        self.addCleanup(lambda: f.unlink(missing_ok=True))
+        return f
+
+    async def test_a_bound_chat_suspends_its_own_process_despite_ambiguity(self):
+        """The point of the column. Two live processes share the session id;
+        the chat names one of them, so there is nothing to resolve and the 409
+        does not apply."""
+        self._second_session_file()
+        await self._create_chat(session_id=self.real_session_id)
+        await self._bind(f"testdomain|{os.getppid()}|4242")
+        client, headers = self._login("alice")
+
+        async_mock = unittest.mock.AsyncMock(returncode=0)
+        async_mock.communicate = unittest.mock.AsyncMock(return_value=(b"", b""))
+        with patch("routes.chats.asyncio.create_subprocess_exec",
+                   return_value=async_mock) as spawn:
+            r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("cweb-real-second", spawn.call_args[0],
+                      "must signal the bound process, not the tie-break winner")
+
+    async def test_a_binding_whose_process_is_gone_is_404_not_a_substitute(self):
+        """The failure mode this column exists to prevent: the bound process
+        has exited, another live process still shares the session id, and the
+        old path would have suspended that one instead."""
+        self._second_session_file()
+        await self._create_chat(session_id=self.real_session_id)
+        await self._bind("testdomain|999999999|1")
+        client, headers = self._login("alice")
+
+        with patch("routes.chats.asyncio.create_subprocess_exec") as spawn:
+            r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+            spawn.assert_not_called()
+
+        self.assertEqual(r.status_code, 404, r.text)
+        self.assertIn("no longer running", r.json()["error"])
+
+    async def test_a_recycled_pid_does_not_answer_for_the_old_process(self):
+        """Same pid, different start tick. Without procStart in the key this
+        would suspend whatever program inherited the pid."""
+        self._second_session_file()
+        await self._create_chat(session_id=self.real_session_id)
+        await self._bind(f"testdomain|{os.getppid()}|1")  # same pid, older start
+        client, headers = self._login("alice")
+
+        with patch("routes.chats.asyncio.create_subprocess_exec") as spawn:
+            r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+            spawn.assert_not_called()
+
+        self.assertEqual(r.status_code, 404, r.text)
+
+    async def test_an_unbound_chat_still_uses_the_old_resolution(self):
+        """Every row written before this column is NULL, and must keep
+        working rather than becoming unsuspendable."""
+        await self._create_chat(session_id=self.real_session_id)
+        client, headers = self._login("alice")
+        async_mock = unittest.mock.AsyncMock(returncode=0)
+        async_mock.communicate = unittest.mock.AsyncMock(return_value=(b"", b""))
+        with patch("routes.chats.asyncio.create_subprocess_exec",
+                   return_value=async_mock):
+            r = client.post(f"/api/chats/{self.chat_id}/standby", headers=headers)
+        self.assertEqual(r.status_code, 200, r.text)
 
     # -- 409: the session id is ambiguous --
 

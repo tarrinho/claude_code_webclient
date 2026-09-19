@@ -1937,6 +1937,16 @@ async def handle_sessions_resume(request: Request, session_id: str):
     await db.chat_create(chat_id, title, None, work_dir, _owner_id)
     # Link the CLI session ID
     await db.chat_set_session(chat_id, session_id)
+    # ...and, when this came from a live terminal rather than a transcript on
+    # disk, which PROCESS that is. A session id names a conversation and can be
+    # served by several live processes at once, so it is not enough to identify
+    # what standby should signal. `source` here is a transcript fallback
+    # ({"sessionId", "cwd"}) when the session is not running, and that carries
+    # no process to bind to -- which is correct, because there is none.
+    from routes.db_sessions import _session_proc_key
+    proc = _session_proc_key(source)
+    if proc:
+        await db.chat_set_session_proc(chat_id, "|".join(proc))
     # Seed the chat with the conversation already on disk, so it opens where
     # the terminal left off rather than blank.
     imported = await _import_transcript(chat_id, session_id)

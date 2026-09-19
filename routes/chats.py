@@ -1923,7 +1923,7 @@ async def _start_turn(
         # slot it does not clear on its own. Reported the same way rather than
         # raised: the conversation stays intact and the user is told what is
         # holding the memory, which is a thing they can act on.
-        refusal = runner.memory_refusal()
+        refusal = await runner.memory_refusal(chat_id, owner)
         if refusal:
             _log.warning("turn_refused_low_memory chat_id=%s", chat_id)
             yield {

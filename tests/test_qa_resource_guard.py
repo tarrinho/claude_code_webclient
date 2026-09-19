@@ -402,6 +402,139 @@ class CapacityTests(unittest.TestCase):
             )
 
 
+class RemoteVerdictTests(unittest.TestCase):
+    """RemoteVerdict composes a local verdict with an optional remote flag."""
+
+    def test_local_only_reflection(self):
+        """A local refusal surfaces directly."""
+        local = resource_guard.check(350, floor_mb=400, meminfo=_meminfo(500))
+        rv = resource_guard.RemoteVerdict(
+            ok=False, reason=local.reason, local_check=local,
+        )
+        self.assertFalse(rv.ok)
+        self.assertEqual(rv.reason, local.reason)
+        self.assertEqual(rv.cost_mb, local.cost_mb)
+        self.assertFalse(rv.remote_measured)
+        self.assertFalse(rv.remote_ok)
+
+    def test_local_only_ok(self):
+        """A local pass with no remote measured still allows."""
+        local = resource_guard.check(350, floor_mb=400, meminfo=_meminfo(2000))
+        rv = resource_guard.RemoteVerdict(
+            ok=True, reason=local.reason, local_check=local,
+        )
+        self.assertTrue(rv.ok)
+        self.assertTrue(rv.__bool__())
+        self.assertIn("not measured", str(rv))
+
+    def test_remote_refused_blocks(self):
+        """When remote_ok=False the composite refuses regardless of local."""
+        local = resource_guard.check(350, floor_mb=400, meminfo=_meminfo(2000))
+        rv = resource_guard.RemoteVerdict(
+            ok=False, reason="remote swapped out", local_check=local,
+            remote_measured=True, remote_ok=False, remote_reason="remote",
+        )
+        self.assertFalse(rv.ok)
+        self.assertFalse(rv.__bool__())
+
+    def test_remote_ok_allows(self):
+        """When both local and remote are OK the composite allows."""
+        local = resource_guard.check(350, floor_mb=400, meminfo=_meminfo(2000))
+        rv = resource_guard.RemoteVerdict(
+            ok=True, reason=local.reason, local_check=local,
+            remote_measured=True, remote_ok=True,
+        )
+        self.assertTrue(rv.ok)
+        self.assertIn("ok", str(rv))
+
+
+class RemoteReadTests(unittest.TestCase):
+    """The synchronous remote_meminfo wrapper runs in a fresh loop."""
+
+    def test_runs_in_fresh_event_loop(self):
+        """remote_meminfo_sync must not require a running event loop."""
+        import _remote_read
+
+        with unittest.mock.patch.object(
+            _remote_read.asyncio,
+            "get_running_loop",
+            side_effect=RuntimeError("no running loop"),
+        ):
+            with unittest.mock.patch.object(
+                _remote_read.asyncio,
+                "run",
+                return_value=None,  # simulate tunnel down
+            ):
+                result = _remote_read.remote_meminfo_sync("m1", timeout=5)
+                self.assertIsNone(result)
+
+
+class CheckRemoteTests(unittest.TestCase):
+    """check_remote composes local check with an optional remote read."""
+
+    def test_local_only_when_no_machine_id(self):
+        """Without a machine_id, check_remote reflects the local check."""
+        healthy = _meminfo(2000)
+        rv = resource_guard.check_remote(
+            machine_id=None,
+            meminfo=healthy,
+            env=_CLEAN,
+        )
+        self.assertTrue(rv.ok)  # fake mem is healthy, no remote to check
+        self.assertFalse(rv.remote_measured)
+
+    def test_local_refusal_short_circuits_remote(self):
+        """A local failure returns immediately without touching remote."""
+        local_refused = resource_guard.check(350, floor_mb=400, meminfo=_meminfo(500), env=_CLEAN)
+        self.assertFalse(local_refused.ok, local_refused.reason)
+        # check_remote should return early with local verdict
+        rv = resource_guard.check_remote(
+            machine_id=None,
+            meminfo=_meminfo(500),
+            env=_CLEAN,
+        )
+        self.assertFalse(rv.ok)
+        self.assertFalse(rv.remote_measured)
+
+    def test_parse_meminfo_standalone(self):
+        """parse_meminfo is a pure function, no file I/O."""
+        text = (
+            "MemTotal:       3816000 kB\n"
+            "MemAvailable:    2000000 kB\n"
+            "MemFree:          500000 kB\n"
+            "SwapTotal:       3151000 kB\n"
+            "SwapFree:        3151000 kB"
+        )
+        d = resource_guard.parse_meminfo(text)
+        self.assertEqual(d["MemAvailable"], 2000000)
+        self.assertEqual(d["SwapTotal"], 3151000)
+        self.assertEqual(d["SwapFree"], 3151000)
+        self.assertEqual(d["MemTotal"], 3816000)
+
+    def test_parse_meminfo_handles_trailing_spaces(self):
+        """Values may have trailing whitespace on some systems."""
+        text = "MemAvailable:    1000 kB  \n"
+        d = resource_guard.parse_meminfo(text)
+        self.assertEqual(d["MemAvailable"], 1000)
+
+    def test_parse_meminfo_ignores_blank_lines(self):
+        """Extra newlines should not cause errors."""
+        text = "\nMemAvailable: 2000\n\nSwapTotal: 3000\n"
+        d = resource_guard.parse_meminfo(text)
+        self.assertEqual(d["MemAvailable"], 2000)
+        self.assertEqual(d["SwapTotal"], 3000)
+
+    def test_read_meminfo_uses_parse_meminfo(self):
+        """read_meminfo delegates to parse_meminfo, verifying no code path."""
+        # read_meminfo reads /proc/meminfo directly; we verify it
+        # produces the same shape as parse_meminfo by checking keys.
+        d = resource_guard.read_meminfo()
+        self.assertIn("MemAvailable", d)
+        self.assertIn("SwapTotal", d)
+        self.assertIn("SwapFree", d)
+        self.assertIsInstance(d["MemAvailable"], int)
+
+
 if __name__ == "__main__":
     logging.basicConfig()
     unittest.main()

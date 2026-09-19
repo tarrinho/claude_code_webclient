@@ -111,14 +111,12 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def read_meminfo(path: Path | None = None) -> dict[str, int]:
-    """`/proc/meminfo` as kilobytes, keyed without the trailing colon.
+def parse_meminfo(text: str) -> dict[str, int]:
+    """Parse kernel-style ``/proc/meminfo`` text as kilobytes.
 
-    Separate from sysstats._read_meminfo, which returns a different shape and
-    lives in a module that imports the world. Both read the same three lines;
-    this one is the version a shell script can afford.
+    Kept separate so that remote reads (which arrive as shell output rather
+    than a file) can reuse the parser without making this module know about SSH.
     """
-    text = (path or _MEMINFO).read_text(encoding="utf-8")
     out: dict[str, int] = {}
     for line in text.splitlines():
         name, _, rest = line.partition(":")
@@ -127,6 +125,16 @@ def read_meminfo(path: Path | None = None) -> dict[str, int]:
         except (IndexError, ValueError):
             continue
     return out
+
+
+def read_meminfo(path: Path | None = None) -> dict[str, int]:
+    """`/proc/meminfo` as kilobytes, keyed without the trailing colon.
+
+    Separate from sysstats._read_meminfo, which returns a different shape and
+    lives in a module that imports the world. Both read the same three lines;
+    this one is the version a shell script can afford.
+    """
+    return parse_meminfo((path or _MEMINFO).read_text(encoding="utf-8"))
 
 
 def check(
@@ -374,3 +382,121 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover - exercised via the CLI test
     raise SystemExit(main())
+
+
+def check_remote(
+    machine_id: str | None = None,
+    *,
+    cost_mb: int | None = None,
+    floor_mb: int | None = None,
+    swap_min_ratio: float | None = None,
+    meminfo: dict[str, int] | None = None,
+    env: dict[str, str] | None = None,
+) -> RemoteVerdict:
+    """Compose a local check with an optional remote SSH meminfo read.
+
+    When *machine_id* identifies a machine whose tunnel is live, the remote
+    host's ``/proc/meminfo`` is read over the existing SSH connection and
+    subjected to the same rules.  The turn is admitted only when **both**
+    hosts pass the headroom test.
+
+    If the tunnel is down, the machine_id is blank, or the SSH read raises,
+    the remote half is treated as *unmeasured* (fails open).
+
+    The caller (runner.py) holds the async machinery and the tunnel state
+    reference, so it resolves proxy_target and feeds the machine_id back in.
+    """
+    local_check = check(
+        cost_mb=cost_mb,
+        floor_mb=floor_mb,
+        swap_min_ratio=swap_min_ratio,
+        meminfo=meminfo,
+        env=env,
+    )
+
+    if not local_check:
+        return RemoteVerdict(
+            ok=False,
+            reason=local_check.reason,
+            local_check=local_check,
+        )
+
+    remote_measured = False
+    remote_ok = False
+    remote_verdict: Verdict | None = None
+
+    if machine_id:
+        try:
+            from _remote_read import remote_meminfo_sync
+
+            remote_text = remote_meminfo_sync(machine_id, timeout=5)
+            if remote_text is not None:
+                remote_measured = True
+                remote_meminfo_dict = parse_meminfo(remote_text)
+                remote_verdict = check(
+                    cost_mb=cost_mb,
+                    floor_mb=floor_mb,
+                    swap_min_ratio=swap_min_ratio,
+                    meminfo=remote_meminfo_dict,
+                    env=env,
+                )
+                remote_ok = bool(remote_verdict)
+        except Exception:
+            _log.debug("remote_meminfo failed for machine=%s — admitting", machine_id)
+
+    ok = bool(local_check)
+    if remote_measured and remote_verdict is not None and not remote_ok:
+        ok = False
+
+    reason = local_check.reason if (remote_ok or not remote_measured) else (
+        remote_verdict.reason if remote_verdict else local_check.reason
+    )
+
+    return RemoteVerdict(
+        ok=ok,
+        reason=reason,
+        local_check=local_check,
+        remote_measured=remote_measured,
+        remote_ok=remote_ok,
+    )
+
+
+class RemoteVerdict:
+    """A composite verdict for a turn that may span two hosts.
+
+    The turn is admitted only when both local and remote hosts pass.
+    When the remote host cannot be reached the local verdict stands.
+    """
+    def __init__(
+        self,
+        ok: bool,
+        reason: str,
+        local_check: Verdict,
+        remote_measured: bool = False,
+        remote_ok: bool = False,
+        remote_reason: str | None = None,
+    ):
+        self.ok = ok
+        self.reason = reason
+        self.local_check = local_check
+        self.remote_measured = remote_measured
+        self.remote_ok = remote_ok
+        self.remote_reason = remote_reason
+        self.cost_mb = local_check.cost_mb
+        self.floor_mb = local_check.floor_mb
+        self.available_mb = local_check.available_mb
+        self.swap_free_ratio = local_check.swap_free_ratio
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+    def __str__(self) -> str:
+        parts = [self.reason]
+        if self.remote_measured:
+            tag = "ok" if self.remote_ok else "refused"
+            parts.append(f"remote host: {tag}")
+            if self.remote_reason:
+                parts.append(f"  {self.remote_reason}")
+        else:
+            parts.append("remote host: not measured (tunnel down)")
+        return "\n".join(parts)

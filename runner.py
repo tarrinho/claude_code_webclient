@@ -556,25 +556,17 @@ def _get_sem() -> asyncio.Semaphore:
     return _sem
 
 
-def memory_refusal() -> str | None:
-    """Why this host cannot take another turn right now, or None.
+async def memory_refusal(
+    chat_id: str | None = None, owner: str | None = None
+) -> str | None:
+    """Why this host (and any remote transport) cannot take another turn, or None.
 
-    MAX_CONCURRENT bounds how many turns run at once; it says nothing about
-    whether the host has memory for even one. Measured 2026-09-08, the console's
-    own turns were 3 MB of the 2520 MB that claude processes held -- so this
-    limit has never been the one that mattered, and a turn admitted onto a
-    swapping box is how the server itself gets OOM-killed.
+    For local-only turns this is a simple ``/proc/meminfo`` read.  When a
+    chat is routed through a proxy to a remote transport, the remote host's
+    memory is also read over the SSH tunnel and must pass the same headroom
+    test.  A refusal from either host is returned as a single string.
 
-    Cheap enough for the admission path: two files read, no scan. The /proc walk
-    that names *who* is holding memory happens only when a refusal is being
-    explained.
-
-    Returns a string so the caller can put it straight into the event stream,
-    the way a full-slots wait already reports itself (routes/chats.py). None
-    means "no objection", including when the guard could not measure -- it fails
-    open, deliberately, so a monitoring fault cannot stop every turn at once.
-
-    See docs/superpowers/specs/2026-09-08-resource-guard-design.md.
+    Fails open on measurement errors (the guard itself never stops a turn).
     """
     try:
         _rg_path = Path(__file__).parent
@@ -582,10 +574,48 @@ def memory_refusal() -> str | None:
             sys.path.insert(0, str(_rg_path))
         import resource_guard
 
-        verdict = resource_guard.check()
-        if verdict.ok:
-            return None
-        return resource_guard.explain(verdict)
+        local_verdict = resource_guard.check()
+        if not local_verdict.ok:
+            return resource_guard.explain(local_verdict)
+
+        # Remote transport: resolve where the turn will land and check that
+        # host's memory too.  When the proxy target is the local machine the
+        # read is a no-op; when it is a remote transport we SSH in.
+        if chat_id and owner:
+            proxy_host, _ = await get_proxy_target(chat_id, owner)
+            if proxy_host not in ("127.0.0.1", "localhost", config.PROXY_HOST):
+                # The turn will run on a remote host.  Read that host's
+                # meminfo through the tunnel_manager SSH connection.
+                try:
+                    from _remote_read import remote_meminfo_sync
+                    import db
+
+                    machine = await db.ai_machine_backend(owner)
+                    if machine:
+                        machine_id = machine.get("id")
+                        if machine_id:
+                            remote_text = remote_meminfo_sync(
+                                machine_id, timeout=5
+                            )
+                            if remote_text:
+                                remote_meminfo_dict = resource_guard.parse_meminfo(
+                                    remote_text
+                                )
+                                remote_verdict = resource_guard.check(
+                                    meminfo=remote_meminfo_dict
+                                )
+                                if not remote_verdict.ok:
+                                    return resource_guard.explain(
+                                        remote_verdict, resource_guard.Load()
+                                    )
+                except Exception:
+                    # Tunnel down, SSH key issue, etc. — fail open.
+                    _log.debug(
+                        "remote memory check failed for chat=%s — admitting",
+                        chat_id,
+                    )
+
+        return None
     except Exception:
         # Never let the guard itself be the reason a turn cannot run.
         _log.exception("resource_guard_failed — admitting the turn anyway")

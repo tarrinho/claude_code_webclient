@@ -626,6 +626,26 @@ direction that makes it able to fail.
   and the seed rows disagree.
 - **It does not flip anything operational.**
 - **It does not add a run-history page.** §9 adds the per-cell control only.
+- **It does not measure the gate task types.** The matrix is derived from
+  `bench/tasks.py`, which holds tasks for seven task types. The live
+  `delegation_capability` table holds **nine**: the seven above plus
+  `reviewer-gate` and `security-gate`, which have three rows each and are both
+  **operational**. Those six rows are hand-maintained and no sweep will ever
+  refresh them.
+
+  This is a consequence of deriving the matrix from the harness rather than from
+  the table, which is the right derivation — a sweep must only claim task types
+  it can actually measure, and inventing gate cells would produce seventy-seven
+  plus six failures per run. But it means the two task types that every other
+  type routes *through* are the two this subsystem cannot keep current, and
+  their staleness is invisible: the page shows their rows exactly like any
+  other, with no marker saying nothing will ever update them.
+
+  Closing it needs bench tasks for the gate types — a gate prompt and a
+  mechanical verifier for the reviewer and security stages — at which point they
+  join the matrix automatically with no change to this design. Until then, treat
+  those six rows as manual data, and re-read them by hand whenever a gate model
+  changes.
 
 ## 16. Open items
 

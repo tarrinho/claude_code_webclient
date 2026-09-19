@@ -99,7 +99,7 @@ def parse_bench_payload(payload: dict, task_type: str) -> CellResult:
     but not to the latency median -- there is no latency to take. A cell where
     EVERY task errored has nothing to write and is a failure.
     """
-    summary = payload.get("summary") or {}
+    summary = payload.get("aggregate") or {}
     if not summary:
         return CellResult("failed", None, None, None, 0.0,
                           f"no tasks measured for task_type={task_type}")

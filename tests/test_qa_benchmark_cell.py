@@ -12,15 +12,76 @@ would be a lie in the capability table.
 """
 from __future__ import annotations
 
+import importlib.util
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import benchmark_cell
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+_spec = importlib.util.spec_from_file_location(
+    "wc_bench", REPO_ROOT / "bin" / "wc-bench.py")
+wc_bench = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(wc_bench)
+
+
+class RealPayloadTests(unittest.TestCase):
+    """Bind producer and consumer together: build the payload with the
+    real `_write`/`aggregate` from bin/wc-bench.py -- not a hand-built dict
+    that merely guesses the producer's contract -- and feed it to
+    `parse_bench_payload`. If `_write` ever renames its top-level key again,
+    this test fails alongside the real harness instead of staying green
+    while every real sweep reports "no tasks measured".
+
+    No model is spawned: `aggregate` and `_write` are pure functions over
+    plain dicts.
+    """
+
+    def _run(self, model, task, transport, total_s, ttft_s, score, correct,
+              error=None, hit_cap=False, verified_by="core"):
+        return {
+            "model": model, "task": task, "transport": transport,
+            "total_s": total_s, "ttft_s": ttft_s, "score": score,
+            "correct": correct, "error": error, "hit_cap": hit_cap,
+            "verified_by": verified_by,
+        }
+
+    def test_parses_the_payload_the_real_writer_produces(self):
+        runs = [
+            self._run("m1", "coding-1", "cli", 12.0, 1.1, 1.0, True),
+            self._run("m1", "coding-1", "cli", 14.0, 1.3, 1.0, True),
+            self._run("m1", "coding-2", "cli", 20.0, 1.5, 1.0, True),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "result.json"
+            wc_bench._write(out, runs, ["m1"], ["cli"], repeats=1)
+            payload = json.loads(out.read_text(encoding="utf-8"))
+
+        result = benchmark_cell.parse_bench_payload(payload, "coding")
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.n, 3)
+        self.assertIsNotNone(result.median_latency_s)
+
+    def test_a_real_payload_with_only_errors_is_a_failed_cell(self):
+        runs = [
+            self._run("m1", "coding-1", "cli", 0.0, None, 0.0, False,
+                       error="boom"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "result.json"
+            wc_bench._write(out, runs, ["m1"], ["cli"], repeats=1)
+            payload = json.loads(out.read_text(encoding="utf-8"))
+
+        result = benchmark_cell.parse_bench_payload(payload, "coding")
+        self.assertEqual(result.status, "failed")
+
 
 class ParseTests(unittest.TestCase):
     def _payload(self, summary):
-        return {"summary": summary}
+        return {"aggregate": summary}
 
     def test_a_successful_cell_aggregates_its_tasks(self):
         payload = self._payload({

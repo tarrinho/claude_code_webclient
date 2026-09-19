@@ -140,21 +140,43 @@ async def capability_meta_all() -> list[dict[str, Any]]:
 
 
 async def capability_meta_set(model: str, task_type: str, **columns: Any) -> None:
-    """Update provenance columns on an existing capability row.
+    """Insert-or-update provenance columns on a capability row.
 
     Unknown names are refused rather than dropped, matching
     `delegation_row_set`: a typo would otherwise read as a successful write of
     nothing.
+
+    A cell that has never been measured successfully has no
+    delegation_capability row -- `write_cell` (benchmark_writer.py) is the
+    only inserter, and a failed cell never calls it (spec: the capability
+    row is left alone on failure so an old number beats no number). A bare
+    UPDATE against a row that does not exist yet matches nothing, so
+    `consecutive_failures`/`dormant` silently never advance for a cell that
+    has never once succeeded. INSERT ... ON CONFLICT DO UPDATE fixes that
+    without changing behaviour for a row that already exists.
+
+    `updated_at` is NOT NULL on this table, so the INSERT branch must supply
+    it; it is set from `db._now()` only for that branch and is never part of
+    the UPDATE SET list below, matching the old UPDATE-only behaviour where
+    this function never touched `updated_at`. `accuracy`, `n`,
+    `cost_per_1m_tokens`, `median_latency_s` and `max_context` are never
+    written here on either branch -- only `write_cell` may invent those,
+    because this function's callers are provenance-only (failure counters,
+    dormancy, reorder flags), never a measurement.
     """
     unknown = set(columns) - set(_META_COLUMNS)
     if unknown:
         raise ValueError(f"unknown capability meta columns: {sorted(unknown)}")
     if not columns:
         return
-    assignments = ", ".join(f"{c} = ?" for c in columns)
+    cols = list(columns)
+    insert_cols = ", ".join(["model", "task_type", "updated_at"] + cols)
+    insert_placeholders = ", ".join(["?"] * (3 + len(cols)))
+    update_assignments = ", ".join(f"{c} = excluded.{c}" for c in cols)
     await db.db_conn.execute(
-        f"UPDATE delegation_capability SET {assignments} "
-        "WHERE model = ? AND task_type = ?",
-        tuple(columns.values()) + (model, task_type),
+        f"INSERT INTO delegation_capability ({insert_cols}) "
+        f"VALUES ({insert_placeholders}) "
+        f"ON CONFLICT(model, task_type) DO UPDATE SET {update_assignments}",
+        (model, task_type, db._now(), *columns.values()),
     )
     await db.db_conn.commit()

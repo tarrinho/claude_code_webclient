@@ -139,6 +139,29 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta[("bad", "coding")]["consecutive_failures"], 1)
         self.assertEqual((await store.run_get(run["id"]))["status"], "running")
 
+    async def test_record_failure_sets_dormant_with_no_capability_row_yet(self):
+        """Fix 2 (blocker): a cell that has never once succeeded has no
+        delegation_capability row -- `write_cell` is the only inserter, and
+        record_failure's failure path never calls it. Every other fixture in
+        this file pre-creates the row with `delegation_row_set` before
+        failing it, which is exactly why this survived: against the old
+        bare `UPDATE ... WHERE model=? AND task_type=?`, the UPDATE matches
+        zero rows on a cell with no row yet, so `consecutive_failures` never
+        advances and `dormant` never sets -- this test fails on that
+        implementation with consecutive_failures stuck at 0 and dormant
+        None/0 after all three calls. INSERT ... ON CONFLICT DO UPDATE fixes
+        it by writing the counters whether or not a row already exists."""
+        run = await benchmark_sweep.start_sweep(["never-measured"], ["coding"])
+        result = CellResult("failed", None, None, None, 0.1, "boom")
+        for _ in range(3):
+            await benchmark_sweep.record_failure(
+                run["id"], "never-measured", "coding", result)
+        meta = {(r["model"], r["task_type"]): r
+                for r in await store.capability_meta_all()}
+        row = meta[("never-measured", "coding")]
+        self.assertEqual(row["consecutive_failures"], 3)
+        self.assertEqual(row["dormant"], 1)
+
     async def test_expiry_crossed_mid_night_stops_and_keeps_written_cells(self):
         """Fix 2: expiry is checked before EVERY cell, not only at loop
         entry, so a long night that crosses the ten-day boundary mid-run

@@ -676,6 +676,21 @@ async def handle_chat_patch(request: Request, chat_id: str):
             raise HTTPException(
                 status_code=400, detail="Model name contains invalid characters"
             )
+        if model:
+            # A bare name like "test" that has no provider prefix and isn't a
+            # known claude-* family id will be rejected by wc-claude.sh because
+            # no backend serves it. Reject it early so the DB never stores
+            # unusable values and agents get a clear signal instead of a
+            # cryptic "may not exist" error.
+            if not fnmatch.fnmatch(model, "claude-*") and "/" not in model:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Model {model!r} is not a valid model id. "
+                        "Use a known model name (claude-opus-5, claude-sonnet-5, etc.) "
+                        "or a gateway-prefixed id (e.g. vllm/..., azure_ai/...)."
+                    ),
+                )
         fields["model"] = model
     if "voice_mode" in data:
         if not isinstance(data["voice_mode"], bool):
@@ -1506,6 +1521,15 @@ async def handle_submit_message(request: Request, chat_id: str):
             raise HTTPException(
                 status_code=400, detail="Model name contains invalid characters"
             )
+        if model and not fnmatch.fnmatch(model, "claude-*") and "/" not in model:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model {model!r} is not a valid model id. "
+                    "Use a known model name (claude-opus-5, claude-sonnet-5, etc.) "
+                    "or a gateway-prefixed id (e.g. vllm/..., azure_ai/...)."
+                ),
+            )
 
     # A conversation with a live terminal behind it gets the request typed
     # into that terminal, so the user sees it and its steps where they are
@@ -2162,6 +2186,15 @@ async def stream_handler(request: Request, chat_id: str):
                 status_code=400, detail="Model name contains invalid characters"
             )
         model = model.strip() or None
+        if model and not fnmatch.fnmatch(model, "claude-*") and "/" not in model:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model {model!r} is not a valid model id. "
+                    "Use a known model name (claude-opus-5, claude-sonnet-5, etc.) "
+                    "or a gateway-prefixed id (e.g. vllm/..., azure_ai/...)."
+                ),
+            )
 
     # Checked (and reserved) here, before the StreamingResponse is built: the
     # response commits to a 200 status the moment its generator first yields,

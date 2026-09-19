@@ -42,6 +42,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -190,6 +191,26 @@ def _cli_once(model: str, messages: list[dict], _key: str) -> Turn:
     prompt = messages[-1]["content"]
     session_id = messages[0].get("_session_id")
     resume = messages[0].get("_resume")
+    # Pre-flight validation: if the model is a bare name that doesn't look like
+    # any real model id, fail fast so the CLI never sees it and produces the
+    # cryptic "may not exist or you may not have access" error.
+    import re
+    _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]*$")
+    if model and not _MODEL_RE.fullmatch(model):
+        raise SystemExit(f"bench: model {model!r} contains invalid characters")
+    if model and len(model) > 120:
+        raise SystemExit(f"bench: model {model!r} exceeds 120 char limit")
+    # A bare name without a provider prefix (claude-* or */*) is almost
+    # certainly a stale picker value or a typo: the CLI / wc-claude.sh will
+    # reject it because no backend serves it, producing "may not exist..."
+    # rather than a clear "unknown model" message. Fail fast so the error is
+    # on our side, not buried in CLI stderr.
+    if model and not fnmatch.fnmatch(model, "claude-*") and "/" not in model:
+        raise SystemExit(
+            f"bench: model {model!r} has no provider prefix (claude-* or */*). "
+            "This is likely a stale picker value or a typo. Set WC_BENCH_MODEL env "
+            "or edit the pipeline constants."
+        )
     binary, env = _cli_invocation(model)
     cmd = [
         binary, "-p", "--output-format", "stream-json", "--verbose",

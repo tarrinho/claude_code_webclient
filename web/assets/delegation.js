@@ -344,6 +344,7 @@ function _blockerElement(entry, taskType) {
  *  can also change `dormant`, the ladder and the reorder flag -- all of
  *  which live outside the one row that was clicked. */
 async function _pollCell(cellRunId, button) {
+  let bar;
   for (;;) {
     await new Promise(resolve => setTimeout(resolve, 5000));
     let response;
@@ -364,8 +365,20 @@ async function _pollCell(cellRunId, button) {
     if (state.status !== 'running') {
       button.textContent = state.status === 'ok' ? 'Done' : 'Failed';
       button.disabled = false;
+      if (bar) bar.remove();
       await _refreshDelegation();
       return;
+    }
+    // Progress bar: [N/M] percentage with elapsed time.
+    if (state.progress_m && state.progress_m > 0) {
+      const pct = Math.round((state.progress_n / state.progress_m) * 100);
+      if (!bar) {
+        bar = document.createElement('span');
+        bar.className = 'delegation-progress';
+        bar.title = 'Progress';
+        button.parentNode.insertBefore(bar, button.nextSibling);
+      }
+      bar.textContent = `${pct}% (${state.progress_n}/${state.progress_m}) · ${Math.round(state.elapsed_s || 0)}s`;
     }
   }
 }

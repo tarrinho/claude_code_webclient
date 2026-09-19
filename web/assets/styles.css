@@ -1507,6 +1507,7 @@ button{touch-action:manipulation}
 }
 .delegation-remeasure:disabled, .delegation-ack:disabled { opacity:0.6; cursor:default; }
 .delegation-ack { margin-left:6px; border-color:var(--accent); color:var(--accent); }
+.delegation-progress { font-size:11px; color:var(--accent); margin-left:6px; white-space:nowrap; }
 .delegation-dormant-tag {
   margin-left:6px; font-size:10px; font-weight:650; color:var(--muted);
   text-transform:uppercase; letter-spacing:0.02em;

@@ -34,7 +34,8 @@ DORMANCY_THRESHOLD = 3
 _IN_FLIGHT: set[tuple[str, str]] = set()
 
 
-async def measure_one_cell(model: str, task_type: str) -> dict[str, Any]:
+async def measure_one_cell(model: str, task_type: str,
+                           on_progress=None) -> dict[str, Any]:
     """Measure, write, clear dormancy, and flag any reordering the write
     caused. The one implementation of a forced re-measure, shared by the
     Delegation page and `wc-benchmark.py --cell` (spec 9): a caller that
@@ -49,7 +50,8 @@ async def measure_one_cell(model: str, task_type: str) -> dict[str, Any]:
     before = await delegation_rows_all()
     _IN_FLIGHT.add((model, task_type))
     try:
-        result = await benchmark_cell.run_cell(model, task_type)
+        result = await benchmark_cell.run_cell(
+            model, task_type, on_progress=on_progress)
         if result.status == "ok":
             await record_success(
                 "manual", model, task_type, result,

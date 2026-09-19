@@ -56,6 +56,9 @@ class CellResult:
     median_latency_s: float | None
     elapsed_s: float
     error: str | None
+    #: (N, M) from ``[N/M]`` progress lines, or ``(0, 0)`` before the first.
+    progress_n: int = 0
+    progress_m: int = 0
 
 
 def _tasks_for(task_type: str) -> list[str]:
@@ -126,7 +129,30 @@ def parse_bench_payload(payload: dict, task_type: str) -> CellResult:
     )
 
 
-async def _run_subprocess(argv: list[str], timeout_s: float) -> int:
+def _parse_progress_line(line: str) -> tuple[int, int] | None:
+    """Extract [N/M] from wc-bench.py progress lines like
+    ``[3/36] azure_ai/gpt-5.6-luna cli coding-bug-fix #1``.
+
+    Returns ``(done, total)`` or ``None`` if the line does not match."""
+    if not line.startswith('['):
+        return None
+    rest = line.lstrip('[')
+    slash = rest.find('/')
+    bracket = rest.find(']')
+    if slash < 0 or bracket < 0 or bracket <= slash:
+        return None
+    try:
+        return int(rest[:slash]), int(rest[slash + 1:bracket])
+    except ValueError:
+        return None
+
+
+async def _run_subprocess(
+        argv: list[str],
+        timeout_s: float,
+        *,
+        on_progress: object | None = None,
+) -> int:
     # start_new_session=True puts the child in its own process group. Without
     # it, wc-bench.py's own grandchild -- the `claude` CLI it spawns via
     # subprocess.Popen (bench/transports.py:222) -- shares our process group,
@@ -139,8 +165,20 @@ async def _run_subprocess(argv: list[str], timeout_s: float) -> int:
         *argv, stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True)
+    stderr_lines: list[bytes] = []
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        async with asyncio.timeout(timeout_s):
+            while True:
+                raw = await proc.stderr.readline()
+                if not raw:
+                    break
+                stderr_lines.append(raw)
+                text = raw.decode(errors="replace").rstrip()
+                # On-progress progress callback: (done, total) or (0, 0).
+                if on_progress is not None:
+                    pair = _parse_progress_line(text)
+                    if pair is not None:
+                        on_progress(pair)
     except TimeoutError:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -149,12 +187,13 @@ async def _run_subprocess(argv: list[str], timeout_s: float) -> int:
         await proc.wait()
         raise
     if proc.returncode != 0:
-        raise RuntimeError((stderr or b"").decode(errors="replace")[:500])
+        raise RuntimeError((b"".join(stderr_lines) or b"").decode(errors="replace")[:500])
     return proc.returncode
 
 
 async def run_cell(model: str, task_type: str, repeats: int = 3,
-                   timeout_s: float | None = None) -> CellResult:
+                   timeout_s: float | None = None,
+                   on_progress: object | None = None) -> CellResult:
     """Measure one cell. Never raises: every failure becomes a CellResult.
 
     `timeout_s=None` (the default) derives the budget from the task list and
@@ -162,6 +201,9 @@ async def run_cell(model: str, task_type: str, repeats: int = 3,
     a constant that a bigger task_type can silently outgrow. Pass an explicit
     value to override -- tests do, so they do not have to wait out a real
     budget to exercise the timeout path.
+
+    ``progress_n`` / ``progress_m`` track the last ``[N/M]`` value seen in the
+    benchmark subprocess stderr so the caller can report progress to the caller.
     """
     tasks = _tasks_for(task_type)
     if not tasks:
@@ -172,6 +214,16 @@ async def run_cell(model: str, task_type: str, repeats: int = 3,
         timeout_s = _timeout_for(tasks, repeats)
 
     started = time.monotonic()
+    # Last-known [N/M] from the benchmark subprocess.
+    progress_n: int = 0
+    progress_m: int = 0
+
+    def _on_progress(pair: tuple[int, int]) -> None:
+        nonlocal progress_n, progress_m
+        progress_n, progress_m = pair
+        if on_progress is not None:
+            on_progress(pair)
+
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "result.json"
         argv = [
@@ -182,22 +234,21 @@ async def run_cell(model: str, task_type: str, repeats: int = 3,
             "--out", str(out),
         ]
         try:
-            await _run_subprocess(argv, timeout_s)
+            await _run_subprocess(argv, timeout_s, on_progress=_on_progress)
         except TimeoutError:
             return CellResult("failed", None, None, None,
                               time.monotonic() - started,
-                              f"timeout after {timeout_s:.0f}s")
+                              f"timeout after {timeout_s:.0f}s",
+                              progress_n=progress_n,
+                              progress_m=progress_m)
         except Exception as exc:                      # noqa: BLE001
-            # Logged before conversion to CellResult so a bug in this file
-            # (a NameError, an AttributeError) leaves a traceback in the
-            # journal instead of looking identical to an ordinary bad model
-            # run in the morning. KeyboardInterrupt/SystemExit/CancelledError
-            # are BaseException, not Exception, so they still propagate.
             _log.exception(
                 "benchmark_cell: run_cell subprocess failed "
                 "model=%s task_type=%s", model, task_type)
             return CellResult("failed", None, None, None,
-                              time.monotonic() - started, str(exc)[:500])
+                              time.monotonic() - started, str(exc)[:500],
+                              progress_n=progress_n,
+                              progress_m=progress_m)
         try:
             payload = json.loads(out.read_text(encoding="utf-8"))
         except Exception as exc:                      # noqa: BLE001
@@ -206,9 +257,12 @@ async def run_cell(model: str, task_type: str, repeats: int = 3,
                 "model=%s task_type=%s", model, task_type)
             return CellResult("failed", None, None, None,
                               time.monotonic() - started,
-                              f"unreadable bench output: {exc}"[:500])
+                              f"unreadable bench output: {exc}"[:500],
+                              progress_n=progress_n,
+                              progress_m=progress_m)
 
     result = parse_bench_payload(payload, task_type)
     elapsed = time.monotonic() - started
     return CellResult(result.status, result.accuracy, result.n,
-                      result.median_latency_s, elapsed, result.error)
+                      result.median_latency_s, elapsed, result.error,
+                      progress_n=progress_n, progress_m=progress_m)

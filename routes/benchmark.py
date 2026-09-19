@@ -18,7 +18,7 @@ from routes.delegation import _require_admin, _require_json_object, _require_str
 
 router = APIRouter()
 
-#: cell_run_id -> {"status", "elapsed_s", "result"}
+#: cell_run_id -> {"status", "elapsed_s", "result", "progress_n", "progress_m"}
 _CELL_RUNS: dict[str, dict[str, Any]] = {}
 
 
@@ -47,18 +47,38 @@ async def handle_cell_post(request: Request):
 
     cell_run_id = uuid.uuid4().hex
     _CELL_RUNS[cell_run_id] = {"status": "running", "elapsed_s": 0.0,
-                               "result": None}
+                               "result": None, "progress_n": 0,
+                               "progress_m": 0}
 
     async def _go():
+        import time
+        from benchmark_sweep import _IN_FLIGHT, measure_one_cell
+        import benchmark_cell
+
+        start = time.monotonic()
+
+        def _on_progress(pair: tuple[int, int]) -> None:
+            _CELL_RUNS[cell_run_id].update(
+                progress_n=pair[0], progress_m=pair[1],
+                elapsed_s=time.monotonic() - start)
+
         try:
-            outcome = await measure_one_cell(model, task_type)
-            _CELL_RUNS[cell_run_id] = {
-                "status": outcome["status"], "elapsed_s": outcome["elapsed_s"],
-                "result": outcome}
+            async def _tracked_run_cell(model_t: str, task_type_t: str,
+                                        repeats: int = 3,
+                                        timeout_s: float | None = None,
+                                        on_progress=None):
+                return await benchmark_cell.run_cell(
+                    model_t, task_type_t, repeats, timeout_s,
+                    on_progress=on_progress)
+
+            outcome = await measure_one_cell(model, task_type, on_progress=_on_progress)
+            _CELL_RUNS[cell_run_id].update(
+                status=outcome["status"], elapsed_s=outcome["elapsed_s"],
+                result=outcome)
         except Exception as exc:                        # noqa: BLE001
-            _CELL_RUNS[cell_run_id] = {
-                "status": "failed", "elapsed_s": 0.0,
-                "result": {"error": str(exc)[:500]}}
+            _CELL_RUNS[cell_run_id].update(
+                status="failed", elapsed_s=0.0,
+                result={"error": str(exc)[:500]})
 
     asyncio.create_task(_go())
     return {"cell_run_id": cell_run_id}

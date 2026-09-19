@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import benchmark_cell
 import benchmark_reorder
 import config
 import db
@@ -36,7 +37,7 @@ class BenchmarkRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_forced_cell_is_stamped_manual_and_under_load(self):
         import routes.benchmark as rb
         ok = CellResult("ok", 1.0, 3, 12.8, 60.0, None)
-        with patch.object(rb, "run_cell", AsyncMock(return_value=ok)):
+        with patch.object(benchmark_cell, "run_cell", AsyncMock(return_value=ok)):
             await rb.measure_one_cell("m1", "coding")
         meta = {(r["model"], r["task_type"]): r
                 for r in await store.capability_meta_all()}[("m1", "coding")]
@@ -48,7 +49,7 @@ class BenchmarkRoutesTests(unittest.IsolatedAsyncioTestCase):
         await store.capability_meta_set("m1", "coding", dormant=1,
                                         consecutive_failures=3)
         failed = CellResult("failed", None, None, None, 5.0, "nope")
-        with patch.object(rb, "run_cell", AsyncMock(return_value=failed)):
+        with patch.object(benchmark_cell, "run_cell", AsyncMock(return_value=failed)):
             await rb.measure_one_cell("m1", "coding")
         meta = {(r["model"], r["task_type"]): r
                 for r in await store.capability_meta_all()}[("m1", "coding")]
@@ -130,7 +131,8 @@ class BenchmarkRoutesReorderTests(unittest.IsolatedAsyncioTestCase):
                                      median_latency_s=10.0, max_context=900_000)
             return CellResult("ok", 0.9, 6, 10.0, 30.0, None)
 
-        with patch.object(rb, "run_cell", AsyncMock(side_effect=_bump_cost_then_report)):
+        with patch.object(benchmark_cell, "run_cell",
+                         AsyncMock(side_effect=_bump_cost_then_report)):
             await rb.measure_one_cell("cheap", "coding")
 
         after_ladder = benchmark_reorder._ladder_for(

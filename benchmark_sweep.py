@@ -13,16 +13,57 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import benchmark_cell
+import benchmark_reorder
 import benchmark_writer
 import db
 from benchmark_cell import CellResult
 from routes import db_benchmark as store
+from routes.db_delegation import delegation_rows_all
 
 #: Spec 12. Three consecutive failed sweeps take a cell out of rotation.
 #: azure_ai/gpt-5.4-mini-copilot cannot be reached by this harness at all
 #: (CLAUDE.md 0.1) and would otherwise burn 7 cells at up to the 900s cap on
 #: every sweep -- about 10% of the matrix spent re-confirming a known failure.
 DORMANCY_THRESHOLD = 3
+
+#: (model, task_type) pairs currently being measured, by anyone. Shared by
+#: the Delegation page's Re-measure button (routes/benchmark.py) and
+#: `wc-benchmark.py --cell` -- both go through `measure_one_cell` below, so a
+#: single set guards a collision between them regardless of which one holds
+#: a cell.
+_IN_FLIGHT: set[tuple[str, str]] = set()
+
+
+async def measure_one_cell(model: str, task_type: str) -> dict[str, Any]:
+    """Measure, write, clear dormancy, and flag any reordering the write
+    caused. The one implementation of a forced re-measure, shared by the
+    Delegation page and `wc-benchmark.py --cell` (spec 9): a caller that
+    reimplemented this by hand used to omit both the dormancy clear on a
+    failed force and the reorder flag, since those run only after
+    record_success/record_failure, not inside either of them.
+
+    Dormancy is cleared whether the measurement succeeds or fails: a forced
+    re-measure is a human deciding the underlying problem is fixed, and
+    that judgment is what the failure counter cannot make on its own.
+    """
+    before = await delegation_rows_all()
+    _IN_FLIGHT.add((model, task_type))
+    try:
+        result = await benchmark_cell.run_cell(model, task_type)
+        if result.status == "ok":
+            await record_success(
+                "manual", model, task_type, result,
+                trigger="manual", under_load=True)
+        else:
+            await record_failure("manual", model, task_type, result)
+        await store.capability_meta_set(
+            model, task_type, consecutive_failures=0, dormant=0)
+        after = await delegation_rows_all()
+        await benchmark_reorder.flag_reorderings(before, after, [task_type])
+        return {"status": result.status, "elapsed_s": result.elapsed_s,
+                "error": result.error}
+    finally:
+        _IN_FLIGHT.discard((model, task_type))
 
 
 def _matrix(run: dict[str, Any]) -> list[tuple[str, str]]:
@@ -236,27 +277,43 @@ async def run_night(run: dict[str, Any], *, now: datetime | None = None) -> str:
     is by definition one that failed to stay current, so it is abandoned
     rather than measured further, and every cell it already wrote stays in
     delegation_capability (rule 4).
+
+    Reorder detection (spec 13) runs ONCE, after the loop ends, over every
+    task type this call actually measured -- not once per cell. A ladder is
+    a property of a task type, not of one row, so comparing after every
+    cell would flag intermediate states of a ladder that was never finished
+    at that point in the loop. `measure_one_cell` (the page's and --cell's
+    shared per-cell path) is the one place a single-write before/after
+    comparison is correct, because there the snapshots bracket exactly one
+    write; here they bracket the whole night's.
     """
+    before = await delegation_rows_all()
     attempted: set[tuple[str, str]] = set()
+    measured_task_types: set[str] = set()
+    outcome: str
 
     while True:
         moment = now or _now()
         if _stamp(moment) >= run["expires_at"]:
             await store.run_expire(run["id"])
-            return "expired"
+            outcome = "expired"
+            break
 
         if await sweep_is_complete(run):
             await _finish(run)
-            return "complete"
+            outcome = "complete"
+            break
 
         groups = await classify_cells(run)
         remaining = [key for key in groups["pending"] if key not in attempted]
         if not remaining:
-            return "stopped"
+            outcome = "stopped"
+            break
 
         busy, _reason = await box_is_busy()
         if busy:
-            return "stopped"
+            outcome = "stopped"
+            break
 
         model, task_type = remaining[0]
         attempted.add((model, task_type))
@@ -267,3 +324,10 @@ async def run_night(run: dict[str, Any], *, now: datetime | None = None) -> str:
                                  trigger="scheduled", under_load=False)
         else:
             await record_failure(run["id"], model, task_type, result)
+        measured_task_types.add(task_type)
+
+    if measured_task_types:
+        after = await delegation_rows_all()
+        await benchmark_reorder.flag_reorderings(
+            before, after, sorted(measured_task_types))
+    return outcome

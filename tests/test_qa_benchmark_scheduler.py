@@ -17,12 +17,13 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import benchmark_cell
+import benchmark_reorder
 import benchmark_sweep
 import config
 import db
 from benchmark_cell import CellResult
 from routes import db_benchmark as store
-from routes.db_delegation import delegation_row_set
+from routes.db_delegation import delegation_row_set, delegation_rows_all
 
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -161,6 +162,65 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         row = meta[("never-measured", "coding")]
         self.assertEqual(row["consecutive_failures"], 3)
         self.assertEqual(row["dormant"], 1)
+
+    async def test_a_completed_sweep_that_reorders_a_ladder_flags_it(self):
+        """Fix 3: reorder detection wired into the nightly path itself
+        (spec 13). `flag_reorderings`' only production caller used to be
+        `measure_one_cell` -- the page's/`--cell`'s per-cell path -- so a
+        full nightly sweep of 77 cells flagged nothing, and the reorder
+        highlight (the only event the spec calls worth an operator's
+        attention) never fired from the path that produces almost all
+        measurements.
+
+        Ladder order comes from COST, not accuracy
+        (tiered_delegation.CapabilityTable.ladder sorts candidates
+        cheapest-first and only ever walks that order) -- a fixture that
+        changes only accuracy cannot reorder anything, so the fake
+        `run_cell` below bumps "cheap"'s cost past "dear"'s as a side
+        effect, between the loop's before/after snapshots, the same trick
+        Task 7's and the routes reorder test's fixtures use. Both ladders
+        are printed to prove the fixture actually reorders.
+        """
+        await delegation_row_set("cheap", "coding", accuracy=0.9, n=6,
+                                 cost_per_1m_tokens=0.01,
+                                 median_latency_s=10.0, max_context=900_000)
+        await delegation_row_set("dear", "coding", accuracy=0.9, n=6,
+                                 cost_per_1m_tokens=0.02,
+                                 median_latency_s=12.0, max_context=1_000_000)
+        before_ladder = benchmark_reorder._ladder_for(
+            await delegation_rows_all(), "coding")
+
+        run = await benchmark_sweep.start_sweep(["cheap", "dear"], ["coding"])
+
+        async def fake_run_cell(model, task_type, repeats=3, timeout_s=None):
+            if model == "cheap":
+                # Runs mid-sweep, between run_night's before/after
+                # snapshots -- the cost change that causes the flip, not
+                # the (unrelated) accuracy result returned below.
+                await delegation_row_set("cheap", "coding", accuracy=0.9,
+                                         n=6, cost_per_1m_tokens=0.05,
+                                         median_latency_s=10.0,
+                                         max_context=900_000)
+            return CellResult("ok", 0.9, 6, 10.0, 0.1, None)
+
+        with patch.object(benchmark_cell, "run_cell", fake_run_cell), \
+             patch.object(benchmark_sweep, "box_is_busy",
+                          new_callable=AsyncMock,
+                          return_value=(False, "idle")):
+            outcome = await benchmark_sweep.run_night(run)
+
+        after_ladder = benchmark_reorder._ladder_for(
+            await delegation_rows_all(), "coding")
+        print(f"before ladder: {before_ladder}")
+        print(f"after  ladder: {after_ladder}")
+        self.assertNotEqual(before_ladder, after_ladder,
+                            "fixture must actually provoke a reordering")
+
+        self.assertEqual(outcome, "complete")
+        meta = {(r["model"], r["task_type"]): r
+                for r in await store.capability_meta_all()}
+        self.assertEqual(meta[("cheap", "coding")]["reorder_flagged"], 1)
+        self.assertEqual(meta[("dear", "coding")]["reorder_flagged"], 1)
 
     async def test_expiry_crossed_mid_night_stops_and_keeps_written_cells(self):
         """Fix 2: expiry is checked before EVERY cell, not only at loop

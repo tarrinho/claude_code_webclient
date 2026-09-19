@@ -49,25 +49,24 @@ def format_estimate(cell_seconds: list[float], night_hours: list[float],
 async def _amain(args) -> int:
     import db
     import benchmark_sweep
-    from benchmark_cell import run_cell
     from bench_models import sweep_models, sweep_task_types
     from routes import db_benchmark as store
 
     await db.init()
     try:
         if args.cell:
+            # Shares routes/benchmark.py's measure_one_cell exactly (spec 9),
+            # via benchmark_sweep.py where it lives -- a hand-rolled
+            # run_cell + record_success/record_failure here used to omit
+            # both the dormancy clear on a forced re-measure and the reorder
+            # flag, since those only run inside measure_one_cell, after
+            # record_success/record_failure return.
             model, task_type = args.cell
-            result = await run_cell(model, task_type, repeats=args.repeats)
-            if result.status == "ok":
-                await benchmark_sweep.record_success(
-                    "cli", model, task_type, result,
-                    trigger="cli", under_load=True)
-                print(f"ok  {model} / {task_type}  "
-                      f"accuracy={result.accuracy}  n={result.n}")
+            outcome = await benchmark_sweep.measure_one_cell(model, task_type)
+            if outcome["status"] == "ok":
+                print(f"ok  {model} / {task_type}")
             else:
-                await benchmark_sweep.record_failure(
-                    "cli", model, task_type, result)
-                print(f"failed  {model} / {task_type}  {result.error}")
+                print(f"failed  {model} / {task_type}  {outcome['error']}")
             return 0
 
         if args.status:
@@ -120,7 +119,6 @@ def main() -> int:
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--estimate", action="store_true")
     parser.add_argument("--cell", nargs=2, metavar=("MODEL", "TASK_TYPE"))
-    parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     return asyncio.run(_amain(args))
 

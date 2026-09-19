@@ -13,15 +13,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 import benchmark_reorder
-import benchmark_sweep
-from benchmark_cell import run_cell
-from routes.db_delegation import delegation_rows_all
+from benchmark_sweep import _IN_FLIGHT, measure_one_cell
 from routes.delegation import _require_admin, _require_json_object, _require_str_field
 
 router = APIRouter()
-
-#: (model, task_type) pairs currently being measured, by anyone.
-_IN_FLIGHT: set[tuple[str, str]] = set()
 
 #: cell_run_id -> {"status", "elapsed_s", "result"}
 _CELL_RUNS: dict[str, dict[str, Any]] = {}
@@ -35,31 +30,11 @@ async def guard_cell(model: str, task_type: str) -> None:
             detail=f"{model} / {task_type} is already being measured")
 
 
-async def measure_one_cell(model: str, task_type: str) -> dict[str, Any]:
-    """Measure, write, and flag any reordering the write caused."""
-    before = await delegation_rows_all()
-    _IN_FLIGHT.add((model, task_type))
-    try:
-        result = await run_cell(model, task_type)
-        if result.status == "ok":
-            await benchmark_sweep.record_success(
-                "manual", model, task_type, result,
-                trigger="manual", under_load=True)
-        else:
-            await benchmark_sweep.record_failure(
-                "manual", model, task_type, result)
-        # Spec 9: a manual re-measure clears dormancy whether or not the
-        # measurement succeeded. It takes a human deciding the underlying
-        # problem is fixed, and that judgment is what the counter cannot make.
-        from routes.db_benchmark import capability_meta_set
-        await capability_meta_set(model, task_type,
-                                  consecutive_failures=0, dormant=0)
-        after = await delegation_rows_all()
-        await benchmark_reorder.flag_reorderings(before, after, [task_type])
-        return {"status": result.status, "elapsed_s": result.elapsed_s,
-                "error": result.error}
-    finally:
-        _IN_FLIGHT.discard((model, task_type))
+# `measure_one_cell` itself -- measure, write, clear dormancy, flag any
+# reordering the write caused -- lives in benchmark_sweep.py so that
+# bin/wc-benchmark.py's `--cell` can share this implementation exactly
+# (spec 9) instead of reimplementing it and omitting the dormancy clear and
+# the reorder flag, as it used to.
 
 
 @router.post("/api/delegation/benchmark/cell")

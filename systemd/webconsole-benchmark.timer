@@ -1,0 +1,12 @@
+[Unit]
+Description=Start a night of benchmark measurement at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+# A missed night is skipped rather than run late. The window exists because the
+# box is idle then; firing at 11:00 because the host was asleep would measure
+# contention on every cell.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

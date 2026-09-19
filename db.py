@@ -525,6 +525,43 @@ async def init() -> None:
             updated_at TEXT NOT NULL
         );
 
+        -- Benchmark sweeps. A sweep is "current" from the moment it starts
+        -- until `cooling_until` passes, which is why both windows are stored
+        -- rather than derived: the scheduler reads one row instead of
+        -- recomputing eligibility from timestamps every time it wakes.
+        CREATE TABLE IF NOT EXISTS benchmark_runs (
+            id            TEXT PRIMARY KEY,
+            started_at    TEXT NOT NULL,
+            expires_at    TEXT NOT NULL,
+            finished_at   TEXT,
+            cooling_until TEXT,
+            status        TEXT NOT NULL,
+            models        TEXT NOT NULL,
+            task_types    TEXT NOT NULL,
+            repeats       INTEGER NOT NULL,
+            cells_total   INTEGER NOT NULL,
+            cells_dormant INTEGER NOT NULL DEFAULT 0,
+            trigger       TEXT NOT NULL DEFAULT 'scheduled'
+        );
+
+        -- Measurement history, NOT the resume ledger -- resume derives from
+        -- delegation_capability.measured_at (spec 6). This table exists so a
+        -- failure is countable: dormancy (spec 12) reads three consecutive
+        -- failed rows, and a failure that wrote nothing would be invisible.
+        CREATE TABLE IF NOT EXISTS benchmark_cells (
+            run_id            TEXT NOT NULL,
+            model             TEXT NOT NULL,
+            task_type         TEXT NOT NULL,
+            status            TEXT NOT NULL,
+            accuracy          REAL,
+            n                 INTEGER,
+            median_latency_s  REAL,
+            elapsed_s         REAL NOT NULL DEFAULT 0,
+            error             TEXT,
+            recorded_at       TEXT NOT NULL,
+            PRIMARY KEY (run_id, model, task_type)
+        );
+
         -- Shadow mode: what the delegation classifier and ladder *would* have
         -- chosen for a task, recorded beside what the task was actually given.
         -- Nothing here changes a routing outcome; see the design document
@@ -1078,6 +1115,46 @@ async def _ensure_orchestrator_columns() -> None:
         await db_conn.execute(
             "ALTER TABLE orchestrator_messages ADD COLUMN metadata TEXT"
         )
+
+    cursor = await db_conn.execute("PRAGMA table_info(delegation_capability)")
+    cap_columns = {row["name"] for row in await cursor.fetchall()}
+    cap_migrations = {
+        # The resume key (spec 6). A cell is done when this is at or after the
+        # sweep's started_at. Deriving progress from the written result rather
+        # than a status column means the two can never disagree.
+        "measured_at": "ALTER TABLE delegation_capability ADD COLUMN measured_at TEXT",
+        "trigger": (
+            "ALTER TABLE delegation_capability ADD COLUMN trigger "
+            "TEXT NOT NULL DEFAULT 'scheduled'"
+        ),
+        # 7.33s measured on an idle box and 7.33s measured under three agent
+        # sessions mean different things, and only the second is suspect.
+        "measured_under_load": (
+            "ALTER TABLE delegation_capability ADD COLUMN measured_under_load "
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
+        "consecutive_failures": (
+            "ALTER TABLE delegation_capability ADD COLUMN consecutive_failures "
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
+        "dormant": (
+            "ALTER TABLE delegation_capability ADD COLUMN dormant "
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
+        "reorder_flagged": (
+            "ALTER TABLE delegation_capability ADD COLUMN reorder_flagged "
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
+        "reorder_seen_at": (
+            "ALTER TABLE delegation_capability ADD COLUMN reorder_seen_at TEXT"
+        ),
+        "reorder_acked_at": (
+            "ALTER TABLE delegation_capability ADD COLUMN reorder_acked_at TEXT"
+        ),
+    }
+    for name, sql in cap_migrations.items():
+        if name not in cap_columns:
+            await db_conn.execute(sql)
 
 
 async def _clear_dangling_machine_pins() -> None:

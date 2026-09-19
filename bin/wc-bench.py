@@ -52,6 +52,7 @@ DEFAULT_MODELS = [
     # Azure, paid
     "azure_ai/gpt-5.6-luna",
     "azure_ai/gpt-5.6-sol",
+    "azure_ai/gpt-5.6-terra",
     "azure_ai/gpt-5.4-mini-copilot",
     "azure_ai/gpt-5.4-mini",
     "azure_ai/gpt-5-mini",

@@ -1,0 +1,8 @@
+[Unit]
+Description=WebConsole benchmark sweep (one night's measurement)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/claude-code-webconsole
+ExecStart=%h/projects/claude-code-webconsole/.venv/bin/python \
+          %h/projects/claude-code-webconsole/bin/wc-benchmark.py --scheduled

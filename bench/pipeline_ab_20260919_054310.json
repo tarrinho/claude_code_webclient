@@ -1,0 +1,56 @@
+{
+  "runs": [
+    {
+      "arm": "A-baseline",
+      "task": "coding-bug-fix",
+      "task_type": "coding",
+      "correct": true,
+      "score": 88.9,
+      "wall_s": 29.14,
+      "calls": [
+        {
+          "stage": "generation",
+          "model": "claude-sonnet-5",
+          "total_s": 29.03,
+          "input_tokens": 14107,
+          "output_tokens": 2197,
+          "cache_read_tokens": 21800,
+          "cache_write_tokens": 9951,
+          "reported_cost_usd": 0.09434800000000002,
+          "cost_basis": "list",
+          "error": null
+        }
+      ],
+      "final_rung": "claude-sonnet-5",
+      "rung_index": 0,
+      "escalated": false,
+      "gate_rejections": [],
+      "stage4_collapsed": true,
+      "priced_cost_usd": 0.094348,
+      "unpriced_calls": 0,
+      "note": ""
+    }
+  ],
+  "aggregate": {
+    "A-baseline": {
+      "runs": 1,
+      "correct": 1,
+      "pass_rate": 1.0,
+      "wall_s_median": 29.14,
+      "calls_median": 1,
+      "escalation_rate": 0.0,
+      "priced_cost_usd_total": 0.094348,
+      "unpriced_calls_total": 0
+    }
+  },
+  "config": {
+    "ladder": [
+      "vllm/Qwen3.6-35B-A3B-NVFP4",
+      "azure_ai/gpt-5.6-luna",
+      "claude-sonnet-5"
+    ],
+    "baseline": "claude-sonnet-5",
+    "gate_model": "claude-sonnet-5",
+    "costing_note": "priced_cost_usd is a LOWER BOUND wherever unpriced_calls > 0. bench_rates.json records no rate for any Azure model."
+  }
+}

@@ -88,6 +88,11 @@ Thumbs.db
 # tests/test_qa_approval_questions.py and tests/test_qa_question_marker.py.
 scratch_*.py
 .worktrees/
+# EnterWorktree creates its worktrees here, and the pattern above does not
+# match that path. On 2026-09-19 a whole-tree `git add` swept the live
+# benchmark-subsystem worktree into commit b1c2f50 as a gitlink -- 31MB of
+# another session's checked-out branch, committed into main by accident.
+.claude/worktrees/
 
 # Throwaway visual-brainstorming mockups (screens + click events), distinct
 # from .superpowers/sdd/ which IS tracked (spec-driven-development artefacts).

@@ -7,6 +7,7 @@
 # second source of truth.
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import db
@@ -155,6 +156,37 @@ async def delegation_decisions_recent(
     sql += " ORDER BY id DESC LIMIT ?"
     cur = await db.db_conn.execute(sql, params + (int(limit),))
     return [dict(row) for row in await cur.fetchall()]
+
+
+async def delegation_pin_all() -> dict[str, list[str]]:
+    """Every pinned ladder, keyed by task_type. Absent means no pin."""
+    cur = await db.db_conn.execute(
+        "SELECT task_type, rungs FROM delegation_ladder_pin")
+    result: dict[str, list[str]] = {}
+    for row in await cur.fetchall():
+        rungs = json.loads(row["rungs"]) if row["rungs"] else []
+        result[row["task_type"]] = rungs
+    return result
+
+
+async def delegation_pin_set(
+    task_type: str, rungs: list[str] | None,
+) -> bool:
+    """Set or clear one ladder pin. None clears."""
+    if rungs is None:
+        await db.db_conn.execute(
+            "DELETE FROM delegation_ladder_pin WHERE task_type = ?",
+            (task_type,))
+    else:
+        await db.db_conn.execute(
+            "INSERT INTO delegation_ladder_pin "
+            "(task_type, rungs, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(task_type) DO UPDATE SET "
+            "  rungs = excluded.rungs, updated_at = excluded.updated_at",
+            (task_type, json.dumps(rungs), db._now()),
+        )
+    await db.db_conn.commit()
+    return True
 
 
 def rows_to_capability(rows: list[dict[str, Any]]) -> list[CapabilityRow]:

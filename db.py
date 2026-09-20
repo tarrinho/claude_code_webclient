@@ -173,6 +173,8 @@ def __getattr__(name: str):
         "delegation_decision_record": "routes.db_delegation",
         "delegation_decision_note_ran_model": "routes.db_delegation",
         "delegation_decisions_recent": "routes.db_delegation",
+        "delegation_pin_all": "routes.db_delegation",
+        "delegation_pin_set": "routes.db_delegation",
         "api_token_create": "routes.db_users",
         "api_token_by_hash": "routes.db_users",
         "api_token_touch": "routes.db_users",
@@ -522,6 +524,17 @@ async def init() -> None:
         -- being flipped here, and that is the only way it becomes routable.
         CREATE TABLE IF NOT EXISTS delegation_operational (
             task_type  TEXT PRIMARY KEY,
+            updated_at TEXT NOT NULL
+        );
+
+        -- Operator-pinned ladders (spec 3 extension). One row per task type
+        -- carries the rung order the operator chose; absence means "generate".
+        -- A pin that breaches invariants is allowed to survive -- the boot
+        -- fallback drops pins that would prevent startup, but the operator
+        -- may override that later.
+        CREATE TABLE IF NOT EXISTS delegation_ladder_pin (
+            task_type  TEXT PRIMARY KEY,
+            rungs      TEXT NOT NULL,   -- JSON array of model ids, in rung order
             updated_at TEXT NOT NULL
         );
 

@@ -554,12 +554,16 @@ class CapabilityTable:
     """The benchmark table, plus the ladder generator that walks it."""
 
     def __init__(self, rows: Iterable[CapabilityRow],
-                 operational: Iterable[str] = ()) -> None:
+                 operational: Iterable[str] = (),
+                 pins: dict[str, list[str]] | None = None) -> None:
         self._rows = list(rows)
         # Default false, per 1.1's bootstrap exemption. A type is submitted to
         # validation by being flipped here, and that is the only way it becomes
         # routable -- so no type can go live on unmeasured data.
         self._operational = frozenset(operational)
+        # Operator-pinned ladders (spec 3 extension). A pin overrides the
+        # generated ladder for that task type; pins absent means "use generated".
+        self._pins = pins if pins is not None else {}
 
     # ── Rows and eligibility (spec 2.6) ─────────────────────────────────────
 
@@ -605,7 +609,7 @@ class CapabilityTable:
 
     # ── Generation (spec 3) ─────────────────────────────────────────────────
 
-    def ladder(self, task_type: str, expected_tokens: int | None = None) -> list[str]:
+    def generated_ladder(self, task_type: str, expected_tokens: int | None = None) -> list[str]:
         """The three steps of spec 3, then 5's attempt budget applied to the
         result -- see `_truncate_to_attempt_budget`.
 
@@ -643,6 +647,17 @@ class CapabilityTable:
                   else MAX_ATTEMPTS)
         return [model for model, _ in
                 _truncate_to_attempt_budget(rungs, budget)]
+
+    def ladder(self, task_type: str, expected_tokens: int | None = None) -> list[str]:
+        """Return the pinned ladder for *task_type* when one exists, else
+        generate as per `generated_ladder`.
+
+        A pin that stores an empty list means "no ladder" -- distinct from
+        having no pin, which means "use the generated one".
+        """
+        if task_type in self._pins:
+            return list(self._pins[task_type])  # copy
+        return self.generated_ladder(task_type, expected_tokens)
 
     # ── Latency (spec 5.1) ──────────────────────────────────────────────────
 
@@ -1419,3 +1434,57 @@ class CapabilityTable:
             if breach is not None and enforce_budget:
                 problems.append(breach)
         return problems
+
+    def without_unusable_pins(self) -> tuple["CapabilityTable", list[str]]:
+        """Return a new table where pins that would prevent boot are dropped.
+
+        For each pinned task type it collects that type's problems twice —
+        once from a table carrying the pin, once with the pin removed — and
+        drops the pin if and only if the first set is not a subset of the
+        second. The comparison is on problem STRINGS scoped to the task type.
+
+        Both collections are made with enforcement forced ON so the drop
+        decision does not depend on knob state.
+
+        Returns ``(table, dropped)`` where ``dropped`` is a list of
+        human-readable reasons.
+        """
+        dropped: list[str] = []
+        pins = dict(self._pins)
+        operational = set(self._operational)
+
+        for task_type in sorted(pins):
+            # Collect problems WITH the pin (enforcement ON).
+            table_with = CapabilityTable(
+                self._rows, operational=operational, pins=pins,
+            )
+            problems_with_pin = [p for p in table_with.validate(
+                enforce_latency_ceiling=True, enforce_budget=True)
+                if p.startswith(f"{task_type}:")]
+
+            # Collect problems WITHOUT the pin (enforcement ON).
+            pins_no = dict(pins)
+            pins_no.pop(task_type)
+            table_without = CapabilityTable(
+                self._rows, operational=operational, pins=pins_no,
+            )
+            problems_without_pin = [p for p in table_without.validate(
+                enforce_latency_ceiling=True, enforce_budget=True)
+                if p.startswith(f"{task_type}:")]
+
+            # Drop if the pin adds a NEW problem that the generated ladder
+            # does not already have.
+            set_with = set(problems_with_pin)
+            set_without = set(problems_without_pin)
+            if not set_with.issubset(set_without):
+                del pins[task_type]
+                # Build a human-readable reason from the extra problems.
+                extra = sorted(set_with - set_without)
+                dropped.append(
+                    f"{task_type}: pin dropped -- {', '.join(extra)}")
+
+        if pins != self._pins:
+            return CapabilityTable(
+                self._rows, operational=operational, pins=pins,
+            ), dropped
+        return self, dropped

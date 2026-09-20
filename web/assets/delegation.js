@@ -159,6 +159,243 @@ function _ladderElement(ladder, rowsForType) {
   return wrap;
 }
 
+/** Inline ladder editor for one task type.
+ *
+ *  Shows a pin badge when the ladder is pinned, each rung as a <select>
+ *  populated from the task-type's own model rows, a "Sync from generated"
+ *  button (copies the generated ladder into the editor), add/remove rung
+ *  controls, and a Save button.
+ *
+ *  The model list comes from rowsForType so every selectable model is one
+ *  that actually exists in the matrix — no free-text model ids. */
+function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, payload) {
+  const row = document.createElement('p');
+  row.className = 'delegation-ladder-editor';
+  row.dataset.taskType = taskType;
+
+  // Pin badge.
+  if (isPinned) {
+    const badge = document.createElement('span');
+    badge.className = 'delegation-pin-badge';
+    badge.textContent = 'PINNED';
+    badge.title = 'This ladder is pinned (operator override). '
+                + 'It survives re-benchmarking.';
+    row.appendChild(badge);
+  }
+
+  // Sync from generated button (only when pinned).
+  if (isPinned && generated.length > 0) {
+    const syncBtn = document.createElement('button');
+    syncBtn.type = 'button';
+    syncBtn.className = 'delegation-ladder-sync';
+    syncBtn.textContent = 'Sync';
+    syncBtn.title = 'Copy the generated ladder into the editor';
+    syncBtn.addEventListener('click', () => {
+      // Replace all rung selects with the generated ladder.
+      const selects = row.querySelectorAll('.delegation-rung-select');
+      selects.forEach((sel, i) => {
+        if (i < generated.length) {
+          sel.value = generated[i];
+          // Show/hide remove button.
+          const remove = sel.parentElement.querySelector('.delegation-rung-remove');
+          if (remove) remove.style.display = '';
+        } else {
+          sel.value = '';
+        }
+      });
+    });
+    row.appendChild(syncBtn);
+  }
+
+  // Rung selectors.
+  const rungs = isPinned ? pinned : generated;
+  // Collect available models from the matrix rows.
+  const availableModels = rowsForType.map(r => r.model);
+
+  rungs.forEach((model, i) => {
+    const wrapper = document.createElement('span');
+    wrapper.className = 'delegation-rung-wrap';
+
+    const select = document.createElement('select');
+    select.className = 'delegation-rung-select';
+    select.setAttribute('aria-label', `Rung ${i} model`);
+
+    // Option: "(empty)" as default.
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = '(empty)';
+    select.appendChild(emptyOpt);
+
+    // Option: the current rung value if it's not in the matrix (warn).
+    if (model && !availableModels.includes(model)) {
+      const warnOpt = document.createElement('option');
+      warnOpt.value = model;
+      warnOpt.textContent = model + ' ⚠';
+      warnOpt.disabled = true;
+      warnOpt.selected = true;
+      select.appendChild(warnOpt);
+      wrapper.classList.add('delegation-rung-warn');
+    }
+
+    // Populate all available models.
+    availableModels.sort().forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === model) opt.selected = true;
+      select.appendChild(opt);
+    });
+
+    wrapper.appendChild(select);
+
+    // Remove button (only when pinned).
+    if (isPinned) {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'delegation-rung-remove';
+      removeBtn.textContent = '×';
+      removeBtn.title = 'Remove this rung';
+      removeBtn.addEventListener('click', () => {
+        select.value = '';
+        removeBtn.style.display = 'none';
+      });
+      wrapper.appendChild(removeBtn);
+    }
+
+    row.appendChild(wrapper);
+
+    if (i < rungs.length - 1) {
+      row.appendChild(document.createTextNode(' → '));
+    }
+  });
+
+  // Add rung button (only when pinned).
+  if (isPinned) {
+    const maxAttempts = (payload.config && payload.config.attempts_and_caps
+      && payload.config.attempts_and_caps.max_attempts_generation
+      && payload.config.attempts_and_caps.max_attempts_generation.value)
+      || 3;
+
+    // Count how many non-empty selects exist.
+    const allSelects = row.querySelectorAll('.delegation-rung-select');
+    let nonEmptyCount = 0;
+    allSelects.forEach(s => { if (s.value) nonEmptyCount++; });
+
+    if (nonEmptyCount < maxAttempts) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'delegation-rung-add';
+      addBtn.textContent = '+';
+      addBtn.title = 'Add rung (max ' + maxAttempts + ')';
+      addBtn.addEventListener('click', () => {
+        // Insert a new <select> before the add button.
+        const newSelect = document.createElement('select');
+        newSelect.className = 'delegation-rung-select delegation-rung-new';
+        newSelect.setAttribute('aria-label', `New rung model`);
+
+        const emptyOpt = document.createElement('option');
+        emptyOpt.value = '';
+        emptyOpt.textContent = '(empty)';
+        newSelect.appendChild(emptyOpt);
+
+        availableModels.sort().forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m;
+          opt.textContent = m;
+          newSelect.appendChild(opt);
+        });
+
+        const wrapper = document.createElement('span');
+        wrapper.className = 'delegation-rung-wrap';
+        wrapper.appendChild(newSelect);
+
+        // Remove button.
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'delegation-rung-remove';
+        removeBtn.textContent = '×';
+        removeBtn.title = 'Remove this rung';
+        removeBtn.addEventListener('click', () => {
+          newSelect.value = '';
+          removeBtn.style.display = 'none';
+        });
+        wrapper.appendChild(removeBtn);
+
+        row.insertBefore(wrapper, addBtn);
+      });
+      row.appendChild(addBtn);
+    }
+
+    // Revert to generated button (only when pinned and differs from generated).
+    const differs = !isPinned || pinned.join('\n') !== generated.join('\n');
+    if (differs) {
+      const revertBtn = document.createElement('button');
+      revertBtn.type = 'button';
+      revertBtn.className = 'delegation-ladder-revert';
+      revertBtn.textContent = 'Revert';
+      revertBtn.title = 'Clear the pin and regenerate the ladder';
+      revertBtn.addEventListener('click', async () => {
+        try {
+          const response = await apiFetch('/api/delegation/ladder', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({task_type: taskType}),
+          });
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(_errorMessage(data, 'Could not revert pin'));
+          }
+          await _refreshDelegation();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+      row.appendChild(revertBtn);
+    }
+
+    // Save button (only when pinned).
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'delegation-ladder-save';
+    saveBtn.textContent = 'Save';
+    saveBtn.title = 'Save changes to the pinned ladder';
+    saveBtn.addEventListener('click', async () => {
+      const selects = row.querySelectorAll('.delegation-rung-select');
+      const rungs = [];
+      selects.forEach(s => {
+        if (s.value.trim()) rungs.push(s.value.trim());
+      });
+      if (rungs.length === 0) {
+        showToast('At least one rung required', 'error');
+        return;
+      }
+      try {
+        const response = await apiFetch('/api/delegation/ladder', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({task_type: taskType, rungs}),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(_errorMessage(data, 'Could not save pin'));
+        }
+        const data = await response.json().catch(() => ({}));
+        if (data.problems && data.problems.length) {
+          notifyResult('Pin saved with warnings: ' + data.problems.join('; '), 'warning');
+        } else {
+          showToast('Pin saved');
+        }
+        await _refreshDelegation();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+    row.appendChild(saveBtn);
+  }
+
+  return row;
+}
+
 /** One editable cell: an input bound to one (model, task_type, column). */
 function _cell(row, column) {
   const input = document.createElement('input');
@@ -559,8 +796,14 @@ function _card(taskType, rowsForType, payload) {
   ladderLabel.textContent = 'Ladder: ';
   ladderLine.appendChild(ladderLabel);
   const ladder = (payload.ladders || {})[taskType] || [];
+  const generated = (payload.generated_ladders || {})[taskType] || [];
+  const pins = payload.pins || {};
+  const isPinned = taskType in pins;
   ladderLine.appendChild(_ladderElement(ladder, rowsForType));
   card.appendChild(ladderLine);
+
+  // Ladder editor row: pin badge, rung selects, sync/revert/save.
+  card.appendChild(_ladderEditor(taskType, ladder, generated, rowsForType, isPinned, payload));
 
   const blockerEntry = (payload.blockers || {})[taskType];
   card.appendChild(_blockerElement(blockerEntry, taskType));

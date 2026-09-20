@@ -50,7 +50,7 @@ from delegation_startup import (budget_enforcement_enabled,
                                 live_known_models,
                                 problems_with)
 from routes.db_benchmark import capability_meta_all
-from routes.db_delegation import rows_to_capability
+from routes.db_delegation import rows_to_capability, delegation_pin_all, delegation_pin_set
 from routes.db_users import setting_set
 from tiered_delegation import (
     BUDGET_USD,
@@ -62,9 +62,11 @@ from tiered_delegation import (
     CEILING_ENFORCEMENT_DEFAULT,
     CEILING_ENFORCEMENT_SETTING,
     EXCLUDED_MODELS,
+    GATE_MAX_ATTEMPTS,
     LATENCY_CEILING_S,
     LEAVES_PER_TREE,
     MAX_ATTEMPTS,
+    is_gate_task_type,
     CapabilityRow,
     CapabilityTable,
 )
@@ -388,6 +390,9 @@ async def handle_delegation_get(request: Request):
     capability_rows = rows_to_capability(rows)
     table = CapabilityTable(capability_rows, operational=operational_set)
     task_types = sorted({row["task_type"] for row in rows})
+    pins = await delegation_pin_all()
+    table_with_pins = CapabilityTable(
+        capability_rows, operational=operational_set, pins=pins)
     # Same live list, same fallback, as every other call site that validates
     # this table (see live_known_models's docstring) -- the blocker computed
     # here must agree with what a real flip attempt would say.
@@ -400,10 +405,11 @@ async def handle_delegation_get(request: Request):
     return JSONResponse({
         "rows": rows,
         "operational": operational,
-        # Derived, never stored: the ladder is the output of walking 2.6, so
-        # sending a stored copy would let the page show a ladder the generator
-        # does not produce.
-        "ladders": {t: table.ladder(t) for t in task_types},
+        "ladders": {t: table_with_pins.ladder(t) for t in task_types},
+        "generated_ladders": {
+            t: table.generated_ladder(t) for t in task_types
+        },
+        "pins": pins,
         "editable_columns": list(_EDITABLE),
         "config": _config_overview(),
         "blockers": blockers,
@@ -718,3 +724,134 @@ async def _api_delegation_operational_put(request: Request):
 @router.put("/api/delegation/ceiling-enforcement")
 async def _api_delegation_ceiling_enforcement_put(request: Request):
     return await handle_ceiling_enforcement_put(request)
+
+
+async def handle_ladder_pin_put(request: Request):
+    """PUT /api/delegation/ladder -- set or clear one task type's ladder pin.
+
+    Accepts {"task_type": "...", "rungs": ["model/one", ...]}.
+    rungs=[] clears the pin (back to generated).
+    rungs omitted → clears the pin.
+
+    Validation:
+      - Unknown task_type (not in delegation_capability rows): 400
+      - Rung count > MAX_ATTEMPTS (or GATE_MAX_ATTEMPTS for gate types): 400
+      - Duplicate rungs: 400
+      - Model ID shape via ModelRouter.validate_model: 400
+      Not refused: breaching pin, pin naming unmeasured model.
+
+    Returns {"ok": true, "problems": [...]} -- problems are warnings,
+    not refusals (a pin that breaches invariants is allowed to survive).
+    """
+    _require_admin(request)
+    data = _require_json_object(await request.json())
+    task_type = _require_str_field(data, "task_type")
+    if not task_type:
+        raise HTTPException(status_code=400, detail="task_type is required")
+
+    raw_rungs = data.get("rungs")
+    if raw_rungs is None:
+        # No rungs key → clear the pin
+        await delegation_pin_set(task_type, None)
+        return JSONResponse({"ok": True, "problems": []})
+
+    if not isinstance(raw_rungs, list):
+        raise HTTPException(status_code=400, detail="rungs must be an array")
+
+    rungs: list[str] = []
+    for r in raw_rungs:
+        if not isinstance(r, str):
+            raise HTTPException(
+                status_code=400, detail="each rung must be a string")
+        s = r.strip()
+        if not s:
+            raise HTTPException(
+                status_code=400, detail="rung string must not be blank")
+        rungs.append(s)
+
+    # Budget check: rung count must not exceed the attempt limit.
+    budget = (GATE_MAX_ATTEMPTS if is_gate_task_type(task_type)
+              else MAX_ATTEMPTS)
+    if len(rungs) > budget:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{task_type}: pin has {len(rungs)} rungs, "
+                   f"max {budget} (attempt budget exceeded)")
+
+    # Duplicate check.
+    if len(rungs) != len(set(rungs)):
+        seen: set[str] = set()
+        dups: list[str] = []
+        for r in rungs:
+            if r in seen:
+                dups.append(r)
+            seen.add(r)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{task_type}: duplicate rungs: {', '.join(sorted(set(dups)))}")
+
+    # All rows for this task type.
+    rows = await db.delegation_rows_all()
+    task_rows = [r for r in rows if r["task_type"] == task_type]
+    if not task_rows:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{task_type}: no delegation_capability rows for this task type")
+
+    # Model ID shape check for each rung: bare string or backend/name with
+    # both parts non-empty (same logic as _resolution_problems in the table).
+    for model_id in rungs:
+        backend, sep, name = model_id.partition("/")
+        if sep and (not backend or not name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{task_type}: rung {model_id!r} is not a valid "
+                       "backend-and-model pair")
+
+    # Now actually write the pin and surface any problems (warnings, not
+    # refusals).
+    await delegation_pin_set(task_type, rungs)
+
+    # Compute what the generated ladder would look like, so the caller can
+    # surface the delta on the page.
+    capability_rows = rows_to_capability(rows)
+    operational = await db.delegation_operational_all()
+    pins = await delegation_pin_all()
+    pins[task_type] = rungs  # the pin just written
+    table = CapabilityTable(
+        capability_rows, operational=operational, pins=pins)
+    generated = table.generated_ladder(task_type)
+    generated_pins = dict(pins)
+    del generated_pins[task_type]
+    gen_without_pin = CapabilityTable(
+        capability_rows, operational=operational, pins=generated_pins)
+
+    # Boot-safety: drop pins that would prevent startup. Log what is dropped.
+    safe_table, dropped = table.without_unusable_pins()
+    if dropped:
+        for reason in dropped:
+            _log.warning("delegation: pin dropped at boot: %s", reason)
+
+    # Problems are warnings, not refusals: a pin that breaches invariants is
+    # allowed to survive (operator decision 2026-09-18).
+    known_models = await live_known_models()
+    enforce_ceiling = await ceiling_enforcement_enabled()
+    enforce_budget = await budget_enforcement_enabled()
+    problems = safe_table.validate(
+        known_models=known_models,
+        enforce_latency_ceiling=enforce_ceiling,
+        enforce_budget=enforce_budget)
+    # Filter to only problems involving this task type.
+    type_problems = [p for p in problems if p.startswith(f"{task_type}:")]
+
+    return JSONResponse({
+        "ok": True,
+        "problems": type_problems,
+        "generated": generated,
+        "pinned": list(table.ladder(task_type)),
+    })
+
+
+@router.put("/api/delegation/ladder")
+async def _api_delegation_ladder_pin_put(request: Request):
+    return await handle_ladder_pin_put(request)

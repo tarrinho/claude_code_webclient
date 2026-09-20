@@ -40,6 +40,24 @@ RELEASES="${WC_RELEASES_DIR:-$HOME/.local/share/webconsole/releases}"
 CURRENT="$RELEASES/current"
 KEEP="${WC_RELEASES_KEEP:-5}"
 UNIT="${WC_UNIT:-webconsole.service}"
+# The host-side proxy, restarted alongside the app.
+#
+# It is a SECOND long-lived process running this project's code, and it was
+# not restarted by any deploy until 2026-09-20. `claude_proxy.usage_frame` is
+# a deliberate copy of `runner.usage_frame` -- under PROXY_ENABLED=True, which
+# is the deployed default, the proxy's copy is the one that runs. So a fix to
+# it took effect only when someone happened to restart the proxy by hand.
+#
+# That is not hypothetical. A usage-accounting fix deployed that day was live
+# and still broken for nine minutes: the app had the new parser, the proxy had
+# been up since 20:33 with the old one, and the first row written afterwards
+# still carried a session-cumulative 110,282,269 cache-read tokens. Only a
+# check against a real row caught it.
+#
+# Empty WC_PROXY_UNIT skips this, and a unit that is not installed is skipped
+# rather than failing the deploy -- a host running PROXY_ENABLED=False has no
+# proxy to restart and its deploy must not start failing because of that.
+PROXY_UNIT="${WC_PROXY_UNIT:-webconsole-proxy.service}"
 # Where the running instance is checked after the restart.
 #
 # This defaulted to empty, so every real deploy printed "no WC_HEALTH_URL set;
@@ -156,6 +174,26 @@ activate() {
 }
 
 restart_and_check() {
+    # The proxy first, so the app comes up against a proxy already running the
+    # new code rather than reconnecting to the old one mid-deploy.
+    #
+    # This does not widen the blast radius: restarting $UNIT below already
+    # cancels every in-flight turn (CLAUDE.md rule 9), and the proxy is what
+    # those turns run through.
+    #
+    # Note what this does NOT fix: the proxy unit's WorkingDirectory is the
+    # checkout, not $CURRENT, so it picks up the working tree as it stands at
+    # this instant -- including anything a peer has saved and not committed.
+    # That is the exact hazard this file's header describes, and the app is
+    # protected from it by the release directory while the proxy is not.
+    # Serving the proxy from a release too is a separate change.
+    if [ -n "$PROXY_UNIT" ] && systemctl --user cat "$PROXY_UNIT" >/dev/null 2>&1; then
+        systemctl --user restart "$PROXY_UNIT" || die \
+            "restart of $PROXY_UNIT failed -- current already points at $(readlink -f "$CURRENT"), roll back with --rollback"
+        echo "restarted $PROXY_UNIT"
+    elif [ -n "$PROXY_UNIT" ]; then
+        echo "no $PROXY_UNIT installed -- skipping (PROXY_ENABLED=False host?)"
+    fi
     # If this fails, `current` has already moved. Say so: the operator is now
     # in a state where the symlink names a release that never started, and a
     # message that omits that leaves them guessing which way round things are.

@@ -105,6 +105,33 @@ class ADeployEntryPointExistsTests(unittest.TestCase):
         source = DEPLOY.read_text(encoding="utf-8")
         self.assertIn("systemctl --user restart", source)
 
+    def test_it_restarts_the_proxy_too(self):
+        """The proxy is a second long-lived process running this code.
+
+        Under PROXY_ENABLED=True -- the deployed default -- it is
+        `claude_proxy.usage_frame`, not `runner.usage_frame`, that parses every
+        turn's usage. No deploy restarted it until 2026-09-20, so a fix to the
+        proxy's half took effect only if somebody restarted it by hand. A
+        usage-accounting fix shipped that day was live and still broken for
+        nine minutes for exactly that reason.
+
+        Asserted on the source rather than by running a deploy, matching the
+        file's other tests: this suite must not restart services.
+        """
+        source = DEPLOY.read_text(encoding="utf-8")
+        self.assertIn("PROXY_UNIT", source)
+        self.assertIn("webconsole-proxy.service", source)
+        self.assertIn('systemctl --user restart "$PROXY_UNIT"', source)
+
+    def test_a_missing_proxy_unit_does_not_fail_the_deploy(self):
+        """A host with PROXY_ENABLED=False has no proxy to restart.
+
+        Its deploys must not start failing because of a unit it was never
+        meant to have, so the restart is guarded rather than unconditional.
+        """
+        source = DEPLOY.read_text(encoding="utf-8")
+        self.assertIn('systemctl --user cat "$PROXY_UNIT"', source)
+
 
 class NothingElseClaimsToDeployTests(unittest.TestCase):
     """The other half. A deploy entry point existing is not enough if a

@@ -508,39 +508,78 @@ def _swap_used_kb():
     return total - free
 
 
+def _mem_available_kb() -> int:
+    """Return MemAvailable in kB, or 0 if it cannot be read."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1])
+    except Exception:
+        return 0
+    return 0
+
+
+#: RAM that must remain free *after* every swapped page has been read back,
+#: before a swapoff is allowed. 512 MB, because the moment swapoff starts the
+#: kernel is allocating hard and anything that misses is an OOM kill.
+_SWAPOFF_HEADROOM_KB = 512 * 1024
+
+
 def _clear_swap() -> float:
     """Run sync + swapoff -a && swapon -a. Returns freed MB or 0.
 
     Uses sudo; if that fails silently returns 0.  Measures before and after
     so callers see exactly how much was recovered.
+
+    Refuses outright unless RAM can absorb every swapped page with headroom
+    to spare. ``swapoff -a`` does not "clear" swap -- it reads all of it back
+    into RAM, so running it when swap holds more than free memory asks the
+    kernel for memory that does not exist. On 2026-09-20 at 20:31:05 this
+    function ran with ~2.4 GB in swap and ~1.0 GB MemAvailable; the machine
+    hard-locked and rebooted 55 seconds later, taking the live server and
+    every session's in-flight work with it. The guard below is that incident.
     """
     global _SWAP_RECLAIMED_KB
     before = _swap_used_kb()
     if before == 0:
         return 0.0
 
-    # Step 1: flush page cache so the kernel can reclaim dirty pages from
-    # swap before we unmount it.  This is safe — no sudo needed.
-    subprocess.run(
-        ["sync"], capture_output=True, timeout=30,
-    )
-    subprocess.run(
-        ["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
-        capture_output=True, timeout=30,
-    )
+    # The capacity check, before anything is touched. Deliberately conservative:
+    # a refusal costs a few hundred MB of swap left in place, and the failure it
+    # prevents costs the whole box.
+    available = _mem_available_kb()
+    if available < before + _SWAPOFF_HEADROOM_KB:
+        _log.warning(
+            "swap clear refused: %d MB in swap but only %d MB RAM available "
+            "(need %d MB + %d MB headroom). swapoff -a reads every swapped "
+            "page back into RAM and would OOM this host.",
+            before // 1024, available // 1024,
+            before // 1024, _SWAPOFF_HEADROOM_KB // 1024,
+        )
+        return 0.0
 
-    # Step 2: swapoff swaps every page back to RAM, then swapon re-enables it
-    # as a clean slate.  This needs root privileges.
+    # Flush dirty pages so the swapoff below has less to do. `sync` only --
+    # dropping the page cache here was actively counterproductive: it discards
+    # reclaimable memory that MemAvailable had just counted, immediately before
+    # the one operation that needs every page it can get. (It was also a no-op
+    # in practice: the redirect ran without sudo, so writing to
+    # /proc/sys/vm/drop_caches was refused as a non-root user.)
+    subprocess.run(["sync"], capture_output=True, timeout=30)
+
+    # swapoff reads every page back to RAM, then swapon re-enables it as a
+    # clean slate. Needs root. The timeout is minutes, not ten: a swapoff that
+    # is still going after this is thrashing, and waiting longer is how the
+    # host locks up rather than how it recovers.
     result = subprocess.run(
         ["sudo", "-n", "swapoff", "-a"],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, timeout=120,
     )
     if result.returncode != 0:
         return 0.0
 
     result = subprocess.run(
         ["sudo", "-n", "swapon", "-a"],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, timeout=120,
     )
     if result.returncode != 0:
         return 0.0

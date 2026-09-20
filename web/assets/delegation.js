@@ -11,6 +11,17 @@
 // or task type rendered straight into HTML is a stored-XSS hole.
 import {apiFetch} from './api.js?v=2741508';
 import {notifyResult} from './server-stats.js?v=7485924';
+// This module calls showToast in 13 places and never imported it, so every one
+// of them raised `ReferenceError: showToast is not defined` -- including the
+// handlers that report why a write was refused. A rejected PUT therefore threw
+// inside its own error path and the server's reason never reached the screen:
+// turning delegation on answered 400 with a full explanation of which rows
+// break spec 1.1, and the page showed nothing at all.
+//
+// Static import of app.js is safe here and is what server-stats.js already
+// does: app.js reaches this module through a dynamic `await import()`, so
+// there is no static cycle between the two.
+import {showToast} from './app.js?v=11484994';
 
 const byId = id => document.getElementById(id);
 

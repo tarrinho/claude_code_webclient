@@ -782,6 +782,72 @@ function _ackButton(row) {
  *  Rule 2: the reorder highlight (`delegation-row-reordered`) and its
  *  Acknowledge button are driven only by `row.reorder_flagged`, which this
  *  file never sets client-side -- it only ever reads it. */
+/** Pure: value-for-money per model, for one task type's rows.
+ *
+ *  Returns a Map of model -> `{kind: 'pct', value: N}` | `{kind: 'free'}` |
+ *  `{kind: 'none'}`. Advisory only. Nothing here feeds routing: the ladder is
+ *  still derived server-side by `CapabilityTable.generated_ladder`, which
+ *  sorts on cost alone and uses accuracy as a ratchet. This column exists so
+ *  an operator can SEE the trade the ladder is making and pin a different one
+ *  if they disagree -- a score that silently reordered anything would be a
+ *  second routing authority, which spec 2.6 deliberately does not have.
+ *
+ *  The number is `accuracy / cost_per_1m_tokens`, scaled so the best-value
+ *  priced row in this task type reads 100%. The ladder's own sort multiplies
+ *  cost by an expected token count per task type; that factor is the same for
+ *  every row here and so cancels in the ratio, which is why this needs no
+ *  task-size constant and cannot drift from one.
+ *
+ *  Two cases are deliberately not percentages:
+ *
+ *  - A priced-at-zero row (a local model) has no finite value ratio. It
+ *    reports 'free' and is kept OUT of the denominator. Including an infinite
+ *    value would drive every paid model to 0%, which is the opposite of
+ *    informative.
+ *  - An unmeasured accuracy or an absent price reports 'none', never 0%. Zero
+ *    would read as "measured, and terrible"; the truth is "not measured",
+ *    and conflating those is the mistake `is_ladder_eligible` exists to avoid.
+ */
+export function valueScores(rowsForType) {
+  const out = new Map();
+  const finite = [];
+  (rowsForType || []).forEach(row => {
+    const accuracy = row.accuracy;
+    const cost = row.cost_per_1m_tokens;
+    if (accuracy === null || accuracy === undefined
+        || cost === null || cost === undefined) {
+      out.set(row.model, {kind: 'none'});
+      return;
+    }
+    if (cost === 0) {
+      out.set(row.model, {kind: 'free'});
+      return;
+    }
+    const value = accuracy / cost;
+    if (!Number.isFinite(value) || value < 0) {
+      out.set(row.model, {kind: 'none'});
+      return;
+    }
+    finite.push(value);
+    out.set(row.model, {kind: 'pct', raw: value});
+  });
+  const best = finite.length ? Math.max(...finite) : 0;
+  out.forEach((entry, model) => {
+    if (entry.kind !== 'pct') return;
+    // best === 0 means every priced row measured 0 accuracy: they are all
+    // equally worthless, and 0% says that better than a division by zero.
+    out.set(model, {kind: 'pct', value: best > 0 ? Math.round(entry.raw / best * 100) : 0});
+  });
+  return out;
+}
+
+/** The cell text for one `valueScores` entry. */
+function _scoreText(entry) {
+  if (!entry || entry.kind === 'none') return '—';
+  if (entry.kind === 'free') return 'free';
+  return `${entry.value}%`;
+}
+
 function _modelTable(rowsForType, columns) {
   const table = document.createElement('table');
   table.className = 'delegation-model-table';
@@ -790,6 +856,16 @@ function _modelTable(rowsForType, columns) {
   const modelHead = document.createElement('th');
   modelHead.textContent = 'Model';
   headRow.appendChild(modelHead);
+  const scoreHead = document.createElement('th');
+  scoreHead.textContent = 'best';
+  scoreHead.className = 'delegation-score-head';
+  scoreHead.title = 'Value for money: accuracy divided by cost, scaled so the '
+                  + 'best-value priced model for this task type is 100%. '
+                  + 'Advisory only -- it does not change routing. The ladder '
+                  + 'is still built cheapest-first, keeping a model only while '
+                  + 'it is not less accurate than the rung above it, so a '
+                  + 'low-scoring model can still hold a rung.';
+  headRow.appendChild(scoreHead);
   columns.forEach(column => {
     const th = document.createElement('th');
     th.textContent = column;
@@ -802,6 +878,7 @@ function _modelTable(rowsForType, columns) {
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
+  const scores = valueScores(rowsForType);
   rowsForType.forEach(row => {
     const tr = document.createElement('tr');
     if (row.reorder_flagged) tr.classList.add('delegation-row-reordered');
@@ -821,6 +898,24 @@ function _modelTable(rowsForType, columns) {
       modelCell.appendChild(tag);
     }
     tr.appendChild(modelCell);
+
+    const entry = scores.get(row.model);
+    const scoreCell = document.createElement('td');
+    scoreCell.className = 'delegation-score';
+    scoreCell.textContent = _scoreText(entry);
+    if (entry && entry.kind === 'pct' && entry.value === 100) {
+      scoreCell.classList.add('delegation-score-best');
+    }
+    if (entry && entry.kind === 'free') {
+      scoreCell.classList.add('delegation-score-free');
+      scoreCell.title = 'Costs nothing to run, so it has no value-for-money '
+                      + 'ratio and is left out of the 100% comparison.';
+    }
+    if (entry && entry.kind === 'none') {
+      scoreCell.title = 'No score: this row has no measured accuracy or no '
+                      + 'price. Not the same as scoring zero.';
+    }
+    tr.appendChild(scoreCell);
 
     columns.forEach(column => {
       const td = document.createElement('td');

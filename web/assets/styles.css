@@ -1620,6 +1620,20 @@ button{touch-action:manipulation}
   padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:middle;
 }
 .delegation-model-table tr:last-child td { border-bottom:0; }
+/* Value-for-money column. Right-aligned and tabular so the percentages line
+   up on their digits and can be compared down the column at a glance, which
+   is the only thing this column is for. */
+.delegation-score {
+  text-align:right; white-space:nowrap;
+  font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-variant-numeric:tabular-nums; color:var(--muted);
+}
+.delegation-score-head { text-align:right; }
+/* The best-value row is the one the column exists to point at. */
+.delegation-score-best { color:var(--ok); font-weight:650; }
+/* Free is a category, not a high score -- coloured differently from 100% so
+   the two are not read as the same claim. */
+.delegation-score-free { color:var(--accent); }
 .delegation-model-name {
   font:12px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--fg);
   white-space:nowrap;

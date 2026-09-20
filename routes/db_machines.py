@@ -16,6 +16,7 @@ _BACKEND_COLUMNS = (
 )
 
 
+@db.write
 async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
     """Return the active machine without exposing its API key.
 
@@ -34,6 +35,7 @@ async def ai_machine_active(owner_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+@db.write
 async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
     """*owner_id* is accepted but no longer filters -- see ai_machine_active."""
     cur = await db.db_conn.execute(
@@ -46,6 +48,7 @@ async def ai_machines_list(owner_id: str) -> list[dict[str, Any]]:
     return [dict(r) for r in await cur.fetchall()]
 
 
+@db.write
 async def ai_machine_get(id: str, owner_id: str) -> dict[str, Any] | None:
     # ssh_host/ssh_user/ssh_key_path added: tunnel_manager_ssh.connect() reads
     # them from this function's return value to actually reach an ssh_proxy
@@ -157,6 +160,7 @@ async def ai_machine_update(
     return cur.rowcount > 0
 
 
+@db.write
 async def ai_machine_clear_transport(machine_id: str, owner_id: str) -> bool:
     """Set transport_id back to NULL -- a bare None through ai_machine_update
     is indistinguishable from "field not supplied" (its pairs-building only
@@ -173,6 +177,7 @@ async def ai_machine_clear_transport(machine_id: str, owner_id: str) -> bool:
     return cur.rowcount > 0
 
 
+@db.write
 async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
     """Deactivate every machine and activate the one requested.
 
@@ -217,6 +222,7 @@ async def ai_machine_activate(machine_id: str, owner_id: str) -> bool:
         raise
 
 
+@db.write
 async def ai_machine_delete(machine_id: str, owner_id: str) -> bool:
     """Delete a backend, and unpin any conversation that named it.
 
@@ -287,6 +293,7 @@ async def ai_machine_set_models_list(
     return cur.rowcount > 0
 
 
+@db.write
 async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
     """Return one machine's API key. Kept separate from ai_machine_get so the
     key is only ever fetched where it is deliberately needed.
@@ -301,6 +308,7 @@ async def ai_machine_api_key(machine_id: str, owner_id: str) -> str | None:
     return row["api_key"] if row else None
 
 
+@db.write
 async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
     """Ensure the owner has a machine pointing at the official Anthropic API.
 
@@ -363,6 +371,7 @@ async def ai_machine_seed_anthropic(owner_id: str) -> str | None:
     return machine_id
 
 
+@db.write
 async def chat_owner(chat_id: str) -> str | None:
     """Return the owner of *chat_id*, so the runner can resolve its backend."""
     cur = await db.db_conn.execute("SELECT owner_id FROM chats WHERE id = ?", (chat_id,))
@@ -370,6 +379,7 @@ async def chat_owner(chat_id: str) -> str | None:
     return row["owner_id"] if row else None
 
 
+@db.write
 async def ai_machine_backend(owner_id: str) -> dict[str, Any] | None:
     """Return the active machine *including* its API key, for the runner only.
 
@@ -404,6 +414,7 @@ async def ai_machine_backend_by_id(
     return dict(row) if row else None
 
 
+@db.write
 async def chat_routing(chat_id: str) -> dict[str, Any]:
     """Resolve where a conversation's next turn should go."""
     cur = await db.db_conn.execute(
@@ -426,6 +437,7 @@ async def chat_routing(chat_id: str) -> dict[str, Any]:
     }
 
 
+@db.write
 async def chat_set_machine(chat_id: str, owner_id: str, machine_id: str | None) -> bool:
     """Pin a conversation to a machine, or clear the pin with None."""
     cur = await db.db_conn.execute(

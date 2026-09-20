@@ -11,9 +11,41 @@ import time
 from pathlib import Path
 from typing import Final
 
+import asyncio
 import aiosqlite
 
 import config
+
+# Serialize writes on the shared aiosqlite connection so coroutines do not
+# collide with "cannot start a transaction within a transaction".  SQLite
+# auto-begins on the first execute(); a second coroutine hitting the same
+# connection without waiting raises that error.  Lock serialises every write
+# path so each coroutine either does the implicit BEGIN itself or waits until
+# the previous one has committed / rolled back.
+_db_write_lock: asyncio.Lock | None = None
+
+
+async def _ensure_lock() -> asyncio.Lock:
+    """Create (or reuse) the write serialisation lock."""
+    global _db_write_lock
+    if _db_write_lock is None:
+        _db_write_lock = asyncio.Lock()
+    return _db_write_lock
+
+
+async def _write(fn, *args, **kwargs):
+    """Run a DB write inside the serialisation lock.
+
+    SQLite auto-begins a transaction on the first ``execute()`` of a coroutine;
+    a second coroutine hitting the same ``db_conn`` without waiting collides
+    with "cannot start a transaction within a transaction".  This context
+    manager serialises all write paths so each coroutine either does the
+    implicit BEGIN itself or waits until the previous one has committed /
+    rolled back.
+    """
+    lock = await _ensure_lock()
+    async with lock:
+        return await fn(*args, **kwargs)
 
 
 def __getattr__(name: str):

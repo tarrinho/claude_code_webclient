@@ -141,6 +141,7 @@ def _import_tx_lock() -> asyncio.Lock:
     return lock
 
 
+@db.write
 async def usage_cursor_get(session_id: str) -> int:
     """How far a transcript has been consumed for usage accounting."""
     cur = await db.db_conn.execute(
@@ -243,6 +244,7 @@ async def usage_import(
     return written
 
 
+@db.write
 async def _ensure_usage_columns() -> None:
     """Additive usage schema migrations, and a one-time origin backfill.
 
@@ -469,6 +471,7 @@ async def routed_request_add(
         return None
 
 
+@db.write
 async def routed_markers(session_id: str) -> list[dict[str, Any]]:
     """Routed-request marks for a session, newest offset first."""
     try:
@@ -509,6 +512,7 @@ def routed_owner_of(
     return None
 
 
+@db.write
 async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
     """Totals split by where the turn came from: this website, or a terminal.
 
@@ -618,6 +622,7 @@ async def usage_by_session(
     return [dict(row) for row in await cur.fetchall()]
 
 
+@db.write
 async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
     """Per-model aggregates across every account. ``days=None`` means all time.
 
@@ -644,6 +649,7 @@ async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, A
     return [dict(row) for row in await cur.fetchall()]
 
 
+@db.write
 async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
     """Totals across every model and every account, so the header does not
     re-sum in the client.
@@ -669,6 +675,7 @@ async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
     return dict(row) if row else {}
 
 
+@db.write
 async def usage_recent(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     """Most recent turns across every account, with the conversation title
     joined in.
@@ -1274,6 +1281,7 @@ async def usage_agent_names(
     return names
 
 
+@db.write
 async def usage_prune(days: int) -> int:
     """Delete rows older than *days*. Returns the number removed."""
     if not days or days <= 0:
@@ -1371,6 +1379,7 @@ async def system_sample_insert(
     await db.db_conn.commit()
 
 
+@db.write
 async def system_latest() -> dict[str, Any] | None:
     """The most recent sample *of this host*, or None if nothing is stored.
 
@@ -1387,6 +1396,7 @@ async def system_latest() -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+@db.write
 async def system_latest_by_host() -> list[dict[str, Any]]:
     """The newest sample for each non-local host, newest sample first.
 
@@ -1545,6 +1555,7 @@ async def system_series(
     return _on_spine(rows, bucket, days, earliest)
 
 
+@db.write
 async def usage_earliest(owner_id: str) -> str | None:
     """The oldest usage timestamp across every account, or None.
 
@@ -1557,6 +1568,7 @@ async def usage_earliest(owner_id: str) -> str | None:
     return (row["first"] if row else None) or None
 
 
+@db.write
 async def _earliest(table: str) -> str | None:
     """The oldest ``created_at`` in *table*, or None when it is empty."""
     cur = await db.db_conn.execute(
@@ -1589,6 +1601,7 @@ def _on_spine(
     return filled
 
 
+@db.write
 async def system_prune(days: int) -> int:
     """Delete samples older than *days*. Returns the number removed."""
     if not days or days <= 0:
@@ -1603,6 +1616,7 @@ async def system_prune(days: int) -> int:
         return 0
 
 
+@db.write
 async def model_window_learn(model: str, window_tokens: int, source: str = "") -> bool:
     """Record what a backend said *model*'s context window is.
 
@@ -1630,6 +1644,7 @@ async def model_window_learn(model: str, window_tokens: int, source: str = "") -
         return False
 
 
+@db.write
 async def model_window_get(model: str) -> dict[str, Any] | None:
     """What is known about *model*'s window, or None if it has never refused.
 
@@ -1647,6 +1662,7 @@ async def model_window_get(model: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+@db.write
 async def model_windows_all() -> list[dict[str, Any]]:
     """Every window learned so far, newest first."""
     cur = await db.db_conn.execute(
@@ -1656,6 +1672,7 @@ async def model_windows_all() -> list[dict[str, Any]]:
     return [dict(r) for r in await cur.fetchall()]
 
 
+@db.write
 async def context_size_of(chat_id: str, session_id: str = "") -> dict[str, Any] | None:
     """How large this conversation's context was on its most recent turn.
 

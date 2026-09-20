@@ -361,6 +361,7 @@ def execute() -> dict:
     killed = []
     failed = []
     freed = 0.0
+    freed_swap = 0.0
     processed_pids = set()
 
     # --- zombie ---
@@ -430,9 +431,75 @@ def execute() -> dict:
         else:
             failed.append({"pid": pid, "kind": "python", "error": note})
 
+    # --- swap cleanup ---
+    freed_swap = _clear_swap()
+
     return {
         "killed": killed,
         "failed": failed,
         "freed_mb": round(freed, 1),
+        "freed_swap_mb": freed_swap,
         "counts": {k: v for k, v in stats.get("counts", {}).items()},
     }
+
+
+_SWAP_RECLAIMED_KB = 0
+
+
+def _swap_used_kb():
+    """Return current swap usage in kB."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("SwapTotal:"):
+                total = int(line.split()[1])
+            elif line.startswith("SwapFree:"):
+                free = int(line.split()[1])
+    except Exception:
+        return 0
+    return total - free
+
+
+def _clear_swap() -> float:
+    """Run sync + swapoff -a && swapon -a. Returns freed MB or 0.
+
+    Uses sudo; if that fails silently returns 0.  Measures before and after
+    so callers see exactly how much was recovered.
+    """
+    global _SWAP_RECLAIMED_KB
+    before = _swap_used_kb()
+    if before == 0:
+        return 0.0
+
+    # Step 1: flush page cache so the kernel can reclaim dirty pages from
+    # swap before we unmount it.  This is safe — no sudo needed.
+    subprocess.run(
+        ["sync"], capture_output=True, timeout=30,
+    )
+    subprocess.run(
+        ["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
+        capture_output=True, timeout=30,
+    )
+
+    # Step 2: swapoff swaps every page back to RAM, then swapon re-enables it
+    # as a clean slate.  This needs root privileges.
+    result = subprocess.run(
+        ["sudo", "-n", "swapoff", "-a"],
+        capture_output=True, text=True, timeout=600,
+    )
+    if result.returncode != 0:
+        return 0.0
+
+    result = subprocess.run(
+        ["sudo", "-n", "swapon", "-a"],
+        capture_output=True, text=True, timeout=600,
+    )
+    if result.returncode != 0:
+        return 0.0
+
+    after = _swap_used_kb()
+    reclaimed = before - after
+    if reclaimed <= 0:
+        reclaimed = 0
+
+    _SWAP_RECLAIMED_KB = reclaimed
+    return round(reclaimed / 1024, 1)

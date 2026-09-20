@@ -38,6 +38,7 @@ _ALLOWED_CHAT_FIELDS = {
 }
 
 
+@db.write
 async def chat_list(owner_id: str) -> list[dict[str, Any]]:
     cur = await db.db_conn.execute(
         f"SELECT {_CHAT_COLUMNS} FROM chats "  # nosec B608: columns are static
@@ -72,6 +73,7 @@ async def chat_get(
     return dict(row) if row else None
 
 
+@db.write
 async def chat_create(
     chat_id: str,
     title: str,
@@ -91,6 +93,7 @@ async def chat_create(
     return now
 
 
+@db.write
 async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
     if not fields or not set(fields).issubset(_ALLOWED_CHAT_FIELDS):
         return False
@@ -114,6 +117,7 @@ async def chat_update(chat_id: str, owner_id: str, **fields: Any) -> bool:
     return updated
 
 
+@db.write
 async def chats_reorder(owner_id: str, chat_ids: list[str]) -> int:
     """Place *chat_ids* in the given order. Returns how many were placed.
 
@@ -147,6 +151,7 @@ async def chats_reorder(owner_id: str, chat_ids: list[str]) -> int:
     return placed
 
 
+@db.write
 async def chats_clear_order(owner_id: str) -> int:
     """Unplace every conversation, returning the list to pure recency order."""
     cur = await db.db_conn.execute(
@@ -162,6 +167,7 @@ async def chat_archive(chat_id: str, owner_id: str, archived: int = 1) -> bool:
     return await chat_update(chat_id, owner_id, archived=archived)
 
 
+@db.write
 async def chat_delete(chat_id: str, owner_id: str) -> bool:
     """Delete an owned conversation and messages while preserving its workspace."""
     cur = await db.db_conn.execute(
@@ -253,6 +259,7 @@ async def chat_fork(
     return await chat_get(new_chat_id, owner_id)
 
 
+@db.write
 async def chat_set_session(chat_id: str, session_id: str) -> None:
     await db.db_conn.execute(
         "UPDATE chats SET session_id = ?, updated_at = ? WHERE id = ?",
@@ -261,6 +268,7 @@ async def chat_set_session(chat_id: str, session_id: str) -> None:
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_set_session_proc(chat_id: str, session_proc: str | None) -> None:
     """Bind this chat to a specific PROCESS, or clear the binding.
 
@@ -280,6 +288,7 @@ async def chat_set_session_proc(chat_id: str, session_proc: str | None) -> None:
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_set_transcript_offset(chat_id: str, offset: int) -> None:
     """Record how far the linked transcript has been consumed.
 
@@ -294,6 +303,7 @@ async def chat_set_transcript_offset(chat_id: str, offset: int) -> None:
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_set_question_ids(chat_id: str, question_ids: list[str]) -> None:
     """Persist the set of question IDs already rendered for this chat.
 
@@ -307,6 +317,7 @@ async def chat_set_question_ids(chat_id: str, question_ids: list[str]) -> None:
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_get_question_ids(chat_id: str) -> list[str]:
     """Return the set of question IDs already rendered for this chat."""
     cur = await db.db_conn.execute(
@@ -367,6 +378,7 @@ async def chat_auto_answer_set(
     return cur.rowcount > 0
 
 
+@db.write
 async def chat_auto_answer_get(chat_id: str, owner_id: str) -> bool:
     """Whether auto-approval is on. False for a chat that is not the owner's,
     which is the same answer as "off" on purpose: a caller that cannot set it
@@ -381,6 +393,7 @@ async def chat_auto_answer_get(chat_id: str, owner_id: str) -> bool:
     return bool(row and row["auto_answer"])
 
 
+@db.write
 async def chat_auto_answer_recommend_get(chat_id: str, owner_id: str) -> bool:
     """Whether the "accept recommended" authority is armed. Same not-yours-so-
     it-reads-as-off rule as :func:`chat_auto_answer_get`.
@@ -394,6 +407,7 @@ async def chat_auto_answer_recommend_get(chat_id: str, owner_id: str) -> bool:
     return bool(row and row["auto_answer_recommend"])
 
 
+@db.write
 async def chat_auto_answer_log_append(chat_id: str, entry: dict[str, Any]) -> None:
     """Record one answer or skip, newest first, keeping at most ten.
 
@@ -420,6 +434,7 @@ async def chat_auto_answer_log_append(chat_id: str, entry: dict[str, Any]) -> No
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_auto_answer_log_get(chat_id: str, owner_id: str) -> list[dict[str, Any]]:
     """The last ten answers and skips for this chat, newest first."""
     cur = await db.db_conn.execute(
@@ -455,6 +470,7 @@ def _auto_answer_log_decode(chat_id: str, raw: object) -> list[dict[str, Any]]:
     return [item for item in parsed if isinstance(item, dict)]
 
 
+@db.write
 async def chats_with_auto_answer() -> list[dict[str, Any]]:
     """Every armed conversation the watcher should poll.
 
@@ -473,6 +489,7 @@ async def chats_with_auto_answer() -> list[dict[str, Any]]:
     return [dict(row) for row in await cur.fetchall()]
 
 
+@db.write
 async def bump_chat_updated_at(chat_id: str) -> None:
     """Update the conversation's ``updated_at`` timestamp.
 
@@ -486,6 +503,7 @@ async def bump_chat_updated_at(chat_id: str) -> None:
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_set_model(chat_id: str, model: str) -> None:
     await db.db_conn.execute(
         "UPDATE chats SET model = ?, updated_at = ? WHERE id = ?",
@@ -494,6 +512,7 @@ async def chat_set_model(chat_id: str, model: str) -> None:
     await db.db_conn.commit()
 
 
+@db.write
 async def chat_set_title(chat_id: str, title: str) -> None:
     await db.db_conn.execute(
         "UPDATE chats SET title = ?, updated_at = ? WHERE id = ?",
@@ -515,6 +534,7 @@ def _fts_validate_query(query: str) -> bool:
     return bool(query) and bool(_FTSGOOD_RE.fullmatch(query))
 
 
+@db.write
 async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
     """Search message bodies using FTS5.
 
@@ -567,6 +587,7 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
 # ── Messages ───────────────────────────────────────────────────────────────────────────
 
 
+@db.write
 async def messages_get(chat_id: str) -> list[dict[str, Any]]:
     cur = await db.db_conn.execute(
         "SELECT id, role, content, created_at FROM messages "
@@ -576,6 +597,7 @@ async def messages_get(chat_id: str) -> list[dict[str, Any]]:
     return [dict(r) for r in await cur.fetchall()]
 
 
+@db.write
 async def messages_last(chat_id: str, count: int = 1) -> list[dict[str, Any]]:
     """Return the last *count* messages for a chat, ordered by insertion."""
     cur = await db.db_conn.execute(
@@ -655,6 +677,7 @@ async def _fts_guard(coro_fn) -> None:
             await db.db_conn.rollback()
 
 
+@db.write
 async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
     """Index exactly *msg_ids*, replacing any existing entries for them.
 
@@ -667,6 +690,7 @@ async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
         return
     marks = ",".join("?" for _ in ids)
 
+@db.write
     async def work() -> None:
         await db.db_conn.execute(
             f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
@@ -689,6 +713,7 @@ async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
     await _fts_guard(work)
 
 
+@db.write
 async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
     """Drop *msg_ids* from the index.
 
@@ -701,6 +726,7 @@ async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
         return
     marks = ",".join("?" for _ in ids)
 
+@db.write
     async def work() -> None:
         await db.db_conn.execute(
             f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
@@ -710,6 +736,7 @@ async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
     await _fts_guard(work)
 
 
+@db.write
 async def _fts_rebuild(chat_id: str | None = None) -> None:
     """Full rebuild of the index for one chat, or for every chat.
 
@@ -718,6 +745,7 @@ async def _fts_rebuild(chat_id: str | None = None) -> None:
     this walks every message of the chat.
     """
 
+@db.write
     async def work() -> None:
         if chat_id:
             await db.db_conn.execute(
@@ -746,6 +774,7 @@ async def _fts_rebuild(chat_id: str | None = None) -> None:
     await _fts_guard(work)
 
 
+@db.write
 async def messages_append(chat_id: str, role: str, content: str) -> int:
     cur = await db.db_conn.execute(
         "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
@@ -757,6 +786,7 @@ async def messages_append(chat_id: str, role: str, content: str) -> int:
     return last_id
 
 
+@db.write
 async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]:
     """Insert multiple messages atomically and return their exact IDs."""
     global _messages_batch_lock
@@ -791,6 +821,7 @@ async def messages_batch(chat_id: str, rows: list[tuple[str, str]]) -> list[int]
 _messages_batch_lock: asyncio.Lock | None = None
 
 
+@db.write
 async def chat_mark_degraded(chat_id: str, kind: str, detail: str) -> None:
     """Flag *chat_id* as carrying a known write failure of *kind*.
 
@@ -808,6 +839,7 @@ async def chat_mark_degraded(chat_id: str, kind: str, detail: str) -> None:
         _log.exception("chat_mark_degraded failed chat_id=%s kind=%s", chat_id, kind)
 
 
+@db.write
 async def chat_clear_degraded(chat_id: str, kind: str) -> None:
     """Clear *chat_id*'s degraded flag, but only if it names this same *kind*.
 
@@ -869,6 +901,7 @@ async def chats_pinned_to_machine(
     }
 
 
+@db.write
 async def chats_pinned_counts(owner_id: str) -> dict[str, int]:
     """Machine id -> number of conversations pinned to it, for one owner.
 

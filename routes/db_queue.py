@@ -33,6 +33,7 @@ async def queue_add(
     return (row["n"] if row else 0) + 1
 
 
+@db.write
 async def queue_list(chat_id: str, owner_id: str) -> list[dict[str, Any]]:
     """Every queued prompt for a conversation, oldest first."""
     cur = await db.db_conn.execute(
@@ -43,6 +44,7 @@ async def queue_list(chat_id: str, owner_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in await cur.fetchall()]
 
 
+@db.write
 async def queue_counts(owner_id: str) -> dict[str, int]:
     """How many prompts each conversation has queued, for the chat list."""
     cur = await db.db_conn.execute(
@@ -53,6 +55,7 @@ async def queue_counts(owner_id: str) -> dict[str, int]:
     return {row["chat_id"]: row["n"] for row in await cur.fetchall()}
 
 
+@db.write
 async def queue_held_counts(owner_id: str) -> dict[str, int]:
     """Held-only counterpart to `queue_counts`.
 
@@ -71,6 +74,7 @@ async def queue_held_counts(owner_id: str) -> dict[str, int]:
     return {row["chat_id"]: row["n"] for row in await cur.fetchall()}
 
 
+@db.write
 async def last_models_used(owner_id: str) -> dict[str, str]:
     """The model that actually served each conversation's most recent turn.
 
@@ -99,6 +103,7 @@ async def last_models_used(owner_id: str) -> dict[str, str]:
     return {row["chat_id"]: row["model"] for row in await cur.fetchall()}
 
 
+@db.write
 async def last_model_used(chat_id: str, owner_id: str) -> str:
     """Single-chat form of `last_models_used`, for GET /api/chats/{id}.
 
@@ -115,6 +120,7 @@ async def last_model_used(chat_id: str, owner_id: str) -> str:
     return row["model"] if row else ""
 
 
+@db.write
 async def queue_next(chat_id: str) -> dict[str, Any] | None:
     """The oldest pending prompt for a conversation, or None.
 
@@ -130,6 +136,7 @@ async def queue_next(chat_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+@db.write
 async def queue_delete(queue_id: int, owner_id: str) -> bool:
     """Remove one queued prompt.  Returns whether a row was removed."""
     cur = await db.db_conn.execute(
@@ -139,6 +146,7 @@ async def queue_delete(queue_id: int, owner_id: str) -> bool:
     return bool(cur.rowcount)
 
 
+@db.write
 async def queue_release(queue_id: int, owner_id: str) -> bool:
     """Return a held prompt to pending, so the next finish will send it."""
     cur = await db.db_conn.execute(
@@ -149,6 +157,7 @@ async def queue_release(queue_id: int, owner_id: str) -> bool:
     return bool(cur.rowcount)
 
 
+@db.write
 async def queue_hold_orphans() -> int:
     """Hold every pending prompt, across all conversations. Returns how many.
 
@@ -180,6 +189,7 @@ async def queue_hold_orphans() -> int:
     return cur.rowcount or 0
 
 
+@db.write
 async def queue_hold_all(chat_id: str) -> int:
     """Mark a conversation's pending prompts as held.  Returns how many."""
     cur = await db.db_conn.execute(

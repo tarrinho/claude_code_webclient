@@ -27,6 +27,20 @@ comment on ``tunnel_manager._queue`` (the same shape, latent).
 The discriminator that actually works, and the one every test here uses: make
 the primitive genuinely suspend, twice, in two separate ``asyncio.run()``
 calls. Anything less reports success against a broken object.
+
+Mutation-verified when written, rather than assumed -- each assertion was run
+against a deliberately broken implementation and watched to fail, because a
+guard that passes on both the fixed and the broken code is decoration:
+
+* the pre-fix lock (one global, never re-created) raises on the second loop;
+* the identity check sees one Lock object reused across two loops;
+* a naive "new lock on every call" fix -- which passes every cross-loop
+  assertion here while serialising nothing -- interleaves as
+  ``x-in, y-in, x-out, y-out`` and is caught by
+  :class:`TheLockMustStillBeALockTests`.
+
+If this file is ever changed, re-run that third one in particular. It is the
+assertion protecting the property most easily lost while "fixing" the first.
 """
 from __future__ import annotations
 

@@ -25,7 +25,7 @@ import auth
 import config
 import db
 import runner
-import sys_cleanup
+from routes import sys_cleanup
 import sysstats
 import transcripts
 from middleware import _token_touched

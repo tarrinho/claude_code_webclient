@@ -128,6 +128,11 @@ export async function loadServer(quiet = false) {
       const mem = Math.round(live.mem_pct || 0);
       count.textContent = `CPU ${cpu}% · memory ${mem}%`;
     }
+    // Render the cleanup panel on tab open so the button is always visible.
+    const cleanupPanel = byId('cleanupPanel');
+    if (cleanupPanel && !cleanupPanel.querySelector('#cleanupScanBtn')) {
+      _renderCleanupDefault(cleanupPanel);
+    }
   } catch (error) {
     // A background refresh keeps what is on screen. One failed poll is not
     // worth replacing a good reading with an error, and the next tick will

@@ -101,6 +101,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.url.path == "/login"
             or request.url.path == "/api/version"
             or request.url.path == "/api/hard-refresh"
+            or request.url.path == "/api/system/cleanup/preview"
             or request.url.path.startswith("/assets/")
         )
         if not public_route and request.state.session is None:

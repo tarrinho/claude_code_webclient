@@ -20,7 +20,7 @@ import {
   backendKindLabel,
 } from './app.js?v=10621393';
 import {apiFetch} from './api.js?v=2741508';
-import {notifyResult, setStatus} from './server-stats.js?v=5731908';
+import {notifyResult, setStatus} from './server-stats.js?v=5802461';
 import {_transports, loadTransports, populateTransportPicker,
   // The transport group header offers these; see _buildTransportHeader.
   _showEditTransport, _deleteTransport,

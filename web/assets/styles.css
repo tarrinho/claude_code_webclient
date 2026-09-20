@@ -865,6 +865,9 @@ button{touch-action:manipulation}
 /* Separates the actions from the list they act on, so a click target is never
    flush against the last checkbox row. */
 .srv-action-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+/* Pushes a trailing action away from a destructive one, so "Scan again" is
+   never adjacent to the button that kills processes. */
+.srv-action-bar .push-right{margin-left:auto}
 .stat-figure{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
 .stat-caption{font-size:12px;font-weight:600;color:var(--fg)}
 .stat-plot{position:relative}

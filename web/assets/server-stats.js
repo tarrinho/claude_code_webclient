@@ -476,14 +476,33 @@ function _renderPreview(stats, container) {
     html += '<div class="srv-action-bar">';
     html += `<button id="cleanupExecuteBtn" class="srv-action-btn danger">`;
     html += `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)})`;
-    html += '</button></div>';
+    html += '</button>';
+    // Rendering the results sets data-cleaned-up, which stops the 30s poll
+    // restoring the default panel -- deliberately, so a poll cannot wipe the
+    // list out from under you. The cost was that a scan had no way back: the
+    // only control left was the one that kills things, and re-scanning meant
+    // reloading the page. Pushed to the far end so it is never adjacent to it.
+    html += '<button id="cleanupRescan" class="srv-action-btn push-right">Scan again</button>';
+    html += '</div>';
   } else {
+    // Same dead end, and worse: this branch used to be a bare paragraph with
+    // no control at all, so a scan that found nothing left the panel inert
+    // until the page was reloaded.
     html = '<p style="color: var(--ok);">All processes healthy. Nothing to free.</p>';
+    html += '<div class="srv-action-bar">';
+    html += '<button id="cleanupRescan" class="srv-action-btn primary">Scan again</button>';
+    html += '</div>';
   }
 
   container.innerHTML = html;
   // Tell the 30s poll not to wipe this panel back to "scan first".
   container.setAttribute('data-cleaned-up', 'true');
+
+  // Both branches above render this button, so it is wired once here rather
+  // than in each. innerHTML discards listeners, so this has to run after the
+  // assignment above, not before it.
+  const rescan = container.querySelector('#cleanupRescan');
+  if (rescan) rescan.onclick = () => _scanCleanup(container);
 
   // Cache the full payload on the container for the execute handler.
   container._cleanupStats = stats;

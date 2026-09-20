@@ -607,25 +607,43 @@ class OrchestratorEngine:
                 # The CLI reports cost for the whole turn, not per model, so it
                 # is attached to the first row only -- the same rule app.py
                 # applies, or a two-model turn would be billed twice.
-                cost = frame.get("cost_usd")
+                #
+                # It is also the SESSION's running total rather than this
+                # turn's, so the previous total is subtracted, exactly as
+                # routes/chats.py::_record_turn_usage does. Both callers change
+                # together or neither: a fix here alone would leave web turns
+                # cumulative, and a fix there alone would leave orchestrator
+                # spend cumulative, while either reads as complete on its own
+                # (CLAUDE.md rule 5).
+                cumulative = frame.get("cost_usd")
+                charged = False
                 for name, stats in models.items():
+                    row_model = name or (model or "")
+                    charge = None
+                    if not charged and isinstance(cumulative, (int, float)):
+                        previous = await db.usage_last_cumulative(chat_id, row_model)
+                        if previous is None or cumulative < previous:
+                            charge = cumulative
+                        else:
+                            charge = cumulative - previous
                     row_id = await db.usage_record(
                         chat_id=chat_id,
                         owner_id=self.owner_id,
-                        model=name or (model or ""),
+                        model=row_model,
                         provider=provider,
                         input_tokens=stats.get("input_tokens", 0),
                         output_tokens=stats.get("output_tokens", 0),
                         cache_read_tokens=stats.get("cache_read_tokens", 0),
                         cache_creation_tokens=stats.get("cache_creation_tokens", 0),
-                        cost_usd=cost,
+                        cost_usd=charge,
+                        cost_cumulative_usd=cumulative if not charged else None,
                         cost_basis=stats.get("cost_basis"),
                         duration_ms=frame.get("duration_ms"),
                         is_error=bool(frame.get("is_error")),
                         origin="orchestrator",
                         billing_route=route,
                     )
-                    cost = None
+                    charged = True
                     if row_id is None:
                         any_failed = True
                     else:

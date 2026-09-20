@@ -259,6 +259,7 @@ def __getattr__(name: str):
         # usage
         "_cutoff": "routes.db_usage",
         "usage_record": "routes.db_usage",
+        "usage_last_cumulative": "routes.db_usage",
         "usage_cursor_get": "routes.db_usage",
         "usage_import": "routes.db_usage",
         "_ensure_usage_columns": "routes.db_usage",
@@ -1487,6 +1488,22 @@ async def _ensure_chat_columns() -> None:
         # chats, so borrowing that column for a session id joins nothing and
         # renders a blank title beside real numbers.
         await db_conn.execute("ALTER TABLE usage_events ADD COLUMN session_id TEXT")
+    if ue_columns and "cost_cumulative_usd" not in ue_columns:
+        # The CLI's `total_cost_usd` is the SESSION's running total, not this
+        # turn's, and unlike the token counts it has no per-turn equivalent in
+        # the result frame. So the raw cumulative is kept here and `cost_usd`
+        # holds the difference from the previous turn of the same session.
+        #
+        # Stored on the row rather than in memory because this service is
+        # restarted many times a day and an in-process last-seen value would
+        # reset to nothing each time, making the first turn after every restart
+        # re-charge the whole session.
+        #
+        # NULL on every row written before this column: those rows predate the
+        # fix and their cost_usd is the cumulative figure, which is why the
+        # Usage page reported $8,970.53 against a real $287.54.
+        await db_conn.execute(
+            "ALTER TABLE usage_events ADD COLUMN cost_cumulative_usd REAL")
 
     try:
         rm_cursor = await db_conn.execute("PRAGMA table_info(read_marks)")

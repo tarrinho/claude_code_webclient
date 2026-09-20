@@ -38,6 +38,7 @@ async def usage_record(
     is_error: bool = False,
     origin: str = "web",
     billing_route: str = "",
+    cost_cumulative_usd: float | None = None,
 ) -> int | None:
     """Record one model's usage for a completed turn.
 
@@ -63,8 +64,9 @@ async def usage_record(
             "INSERT INTO usage_events "
             "(chat_id, owner_id, model, provider, input_tokens, output_tokens, "
             " cache_read_tokens, cache_creation_tokens, cost_usd, cost_basis, "
-            " duration_ms, is_error, created_at, origin, billing_route) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " duration_ms, is_error, created_at, origin, billing_route, "
+            " cost_cumulative_usd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id,
                 owner_id,
@@ -81,6 +83,7 @@ async def usage_record(
                 db._now(),
                 origin or "web",
                 billing_route or "",
+                cost_cumulative_usd,
             ),
         )
         await db.db_conn.commit()
@@ -95,6 +98,46 @@ async def usage_record(
             chat_id, model, provider, exc,
         )
         return None
+
+
+async def usage_last_cumulative(chat_id: str, model: str) -> float | None:
+    """The session-cumulative cost last recorded for this chat and model.
+
+    `cost_usd` on a row is this turn's own spend; `cost_cumulative_usd` is the
+    CLI's running session total that produced it. Subtracting the latter from
+    the next frame's `total_cost_usd` is what turns a running total into a
+    per-turn charge.
+
+    Keyed on (chat_id, model) rather than on a session id because
+    `usage_record` never wrote one. A chat that starts a fresh CLI session
+    resets the CLI's total, which shows up as a smaller figure than the one
+    stored here -- the caller treats that as a first turn, which is the same
+    answer a session-keyed lookup would have given.
+
+    Returns None when nothing was recorded yet, or on a read failure: both mean
+    "no baseline", and the caller charges the frame's figure as-is rather than
+    dropping the row.
+    """
+    if not chat_id or not model:
+        return None
+    try:
+        cur = await db.db_conn.execute(
+            "SELECT cost_cumulative_usd FROM usage_events "
+            "WHERE chat_id = ? AND model = ? AND cost_cumulative_usd IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (chat_id, model),
+        )
+        row = await cur.fetchone()
+    except Exception as exc:
+        _log.warning(
+            "usage_cumulative_lookup_failed: chat_id=%s model=%s: %s "
+            "(charging the frame's figure as-is)", chat_id, model, exc,
+        )
+        return None
+    if row is None:
+        return None
+    value = row["cost_cumulative_usd"]
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 USAGE_IMPORT_BATCH: int = 500

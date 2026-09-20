@@ -1421,7 +1421,12 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     # charts distinguish the two, and every row written from now on is on the
     # recorded side of that line.
     route = db.billing_route_from_machine(machine)
-    cost = frame.get("cost_usd")
+    # The CLI's total_cost_usd is the SESSION's running total, like modelUsage
+    # was -- but unlike the token counts there is no per-turn field to switch
+    # to, so the difference has to be taken here. Measured across two turns of
+    # one session: 0.26945 then 0.418594, for a second turn that really cost
+    # 0.149144.
+    cumulative = frame.get("cost_usd")
     any_written = False
     any_failed = False
     # `usage_frame` reports the per-turn figures under the empty-string key,
@@ -1433,16 +1438,35 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     for index, (model, stats) in enumerate(models.items()):
         if not isinstance(stats, dict):
             continue
+        row_model = model or served_model or "unknown"
+        # Charged once per turn, against the first row only -- putting it on
+        # every row would multiply a multi-model turn's spend by the number of
+        # models (CLAUDE.md rule 5).
+        charge = None
+        if index == 0 and isinstance(cumulative, (int, float)):
+            previous = await db.usage_last_cumulative(chat_id, row_model)
+            if previous is None or cumulative < previous:
+                # No baseline, or the CLI's total went backwards because this
+                # chat started a fresh session. Either way this is turn one of
+                # a run and the figure is already the turn's own cost.
+                charge = cumulative
+            else:
+                charge = cumulative - previous
         row_id = await db.usage_record(
             chat_id,
             owner,
-            model or served_model or "unknown",
+            row_model,
             provider,
             input_tokens=stats.get("input_tokens", 0),
             output_tokens=stats.get("output_tokens", 0),
             cache_read_tokens=stats.get("cache_read_tokens", 0),
             cache_creation_tokens=stats.get("cache_creation_tokens", 0),
-            cost_usd=cost if index == 0 else None,
+            cost_usd=charge,
+            # The raw running total that produced `charge`, kept so the next
+            # turn has a baseline to subtract. Only on the charged row: the
+            # others carry no cost, so a baseline on them would be read back
+            # against a turn they did not pay for.
+            cost_cumulative_usd=cumulative if index == 0 else None,
             cost_basis=stats.get("cost_basis"),
             duration_ms=frame.get("duration_ms"),
             is_error=bool(frame.get("is_error")),

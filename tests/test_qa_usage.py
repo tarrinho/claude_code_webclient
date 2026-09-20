@@ -681,6 +681,37 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["model"], "vllm/Qwen3.6-35B-A3B-NVFP4")
         self.assertEqual(rows[0]["input_tokens"], 15531)
 
+    async def _record_cost(self, cumulative):
+        """Record one turn whose CLI running total is *cumulative*."""
+        runner._models_by_chat["c1"] = "m1"
+        await chat_routes._record_turn_usage("c1", "admin", {
+            "models": {"": {"input_tokens": 5, "output_tokens": 1}},
+            "cost_usd": cumulative,
+        })
+
+    async def test_cost_is_the_difference_from_the_previous_turn(self):
+        # The real figures: one session's total_cost_usd went 0.26945 ->
+        # 0.418594 across two turns, so turn 2 cost 0.149144. Recording the
+        # frame's own number would charge 0.418594 and count turn 1 twice.
+        await self._record_cost(0.26945)
+        await self._record_cost(0.418594)
+        rows = await db.usage_recent("admin", limit=10)
+        costs = [r["cost_usd"] for r in rows if r["cost_usd"] is not None]
+        self.assertEqual(len(costs), 2)
+        self.assertAlmostEqual(max(costs), 0.26945, places=6)
+        self.assertAlmostEqual(min(costs), 0.149144, places=6)
+
+    async def test_a_total_that_goes_backwards_starts_a_new_run(self):
+        # A fresh CLI session resets the running total. Without this the
+        # subtraction goes negative and the turn is recorded as a refund.
+        await self._record_cost(5.0)
+        await self._record_cost(0.25)
+        rows = await db.usage_recent("admin", limit=10)
+        costs = [r["cost_usd"] for r in rows if r["cost_usd"] is not None]
+        self.assertEqual(len(costs), 2)
+        self.assertNotIn(True, [c < 0 for c in costs])
+        self.assertAlmostEqual(min(costs), 0.25, places=6)
+
     async def test_the_row_falls_back_to_unknown_when_no_model_was_seen(self):
         # A row with a vague model beats no row at all: the tokens were spent
         # either way, and CLAUDE.md rule 5 is that unrecorded spend is the

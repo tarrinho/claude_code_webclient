@@ -128,9 +128,11 @@ export async function loadServer(quiet = false) {
       const mem = Math.round(live.mem_pct || 0);
       count.textContent = `CPU ${cpu}% · memory ${mem}%`;
     }
-    // Render the cleanup panel on tab open so the button is always visible.
+    // Render the cleanup panel on first tab open only (marked by the
+    // _cleaned-up attribute). The 30s poll must never overwrite an already-
+    // scanned panel, because that would destroy the results the user just saw.
     const cleanupPanel = byId('cleanupPanel');
-    if (cleanupPanel && !cleanupPanel.querySelector('#cleanupScanBtn')) {
+    if (cleanupPanel && !cleanupPanel.hasAttribute('data-cleaned-up')) {
       _renderCleanupDefault(cleanupPanel);
     }
   } catch (error) {
@@ -477,6 +479,8 @@ function _renderPreview(stats, container) {
   }
 
   container.innerHTML = html;
+  // Tell the 30s poll not to wipe this panel back to "scan first".
+  container.setAttribute('data-cleaned-up', 'true');
 
   // Cache the full payload on the container for the execute handler.
   container._cleanupStats = stats;

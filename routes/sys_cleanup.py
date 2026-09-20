@@ -10,12 +10,14 @@ module itself. Best-effort -- failures are recorded, not raised.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 _log = logging.getLogger("wc.app")
 
@@ -29,6 +31,26 @@ _PYTEST_RE = re.compile(r"python.*(?:pytest|test|unittest)", re.IGNORECASE)
 
 def _own_pid():
     return os.getpid()
+
+
+def _collect_session_names() -> dict[int, str]:
+    """Map PID → session name from ~/.claude/sessions/*.json."""
+    mapping: dict[int, str] = {}
+    session_dir = Path.home() / ".claude" / "sessions"
+    try:
+        for f in session_dir.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                if isinstance(data, dict) and "pid" in data and "name" in data:
+                    pid = data["pid"]
+                    name = data["name"]
+                    if isinstance(pid, int) and isinstance(name, str) and name:
+                        mapping[pid] = name
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return mapping
 
 
 def _own_uid():
@@ -135,6 +157,7 @@ def _proc_pgid(pid):
 def _collect_all_processes():
     """Collect all processes owned by this uid with full info."""
     now = time.time()
+    _session_names = _collect_session_names()
     raw = {}
     caller_pgid = _proc_pgid(_own_pid())
     caller_uid = _own_uid()
@@ -197,6 +220,10 @@ def _collect_all_processes():
         cmdline = _proc_cmdline(pid)
 
         kind = _detect_kind(pid, name, cmdline)
+
+        # Enhance detected processes with session names where available.
+        if kind == "claude" and pid in _session_names:
+            raw[pid]["session_name"] = _session_names[pid]
 
         try:
             rss_bytes = _proc_rss(pid)  # VmRSS is in kB

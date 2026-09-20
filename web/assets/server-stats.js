@@ -450,7 +450,9 @@ function _renderPreview(stats, container) {
       for (const p of procs) {
         html += `<li style="color: var(--fg); display: flex; align-items: center; gap: 4px;">`;
         html += `<input type="checkbox" class="cleanup-pid-check" data-kind="${kind}" data-pid="${p.pid}" data-rss="${p.rss_mb}" checked> `;
-        html += `<strong>${p.name}</strong> — PID ${p.pid}, `;
+        html += `<strong>${p.name}</strong>`;
+        if (p.session_name) html += ` <span style="color: var(--muted);">[${p.session_name}]</span>`;
+        html += ` — PID ${p.pid}, `;
         html += `${_bytesMb(p.rss_mb)}, running ${_durationCompact(p.age_s)}`;
         if (p.cmdline) html += `, <code style="font-size: 11px;">${p.cmdline.substring(0, 80)}</code>`;
         html += `</li>`;

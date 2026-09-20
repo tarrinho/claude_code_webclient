@@ -136,15 +136,57 @@ def _collect_all_processes():
     """Collect all processes owned by this uid with full info."""
     now = time.time()
     raw = {}
+    caller_pgid = _proc_pgid(_own_pid())
+    caller_uid = _own_uid()
+    # Walk up our parent chain — exclude every ancestor PID and their PGIDs.
+    # The Claude CLI that spawned this uvicorn lives in an ancestor PGID.
+    # Limit to ~5 levels up so we don't accidentally protect the whole
+    # system tree (the walk reaches PID 1 / init quickly).
+    _protect_pids: set[int] = {_own_pid()}
+    _protect_pgids: set[int] = {caller_pgid}
+    pid = _own_pid()
+    for _depth in range(8):
+        _protect_pids.add(pid)
+        try:
+            # /proc/pid/stat field 19 (0-indexed) is ppid; skip the
+            # comm field (fields 1-10) which may contain parens.
+            stat_raw = _proc_read(pid, "stat")
+            # Find the last "(" and match the following ")" — everything
+            # after it is space-delimited numeric fields.
+            last_paren = stat_raw.rfind(")")
+            if last_paren == -1:
+                raise ValueError("no ')' in stat")
+            fields = stat_raw[last_paren + 2:].split()
+            ppid_val = int(fields[1])  # field index 0 = state, 1 = ppid
+        except Exception:
+            ppid_val = 0
+        if ppid_val < 1:
+            break
+        try:
+            ppid_pg = os.getpgid(ppid_val)
+            _protect_pgids.add(ppid_pg)
+        except (OSError, ProcessLookupError):
+            pass
+        pid = ppid_val
+
     for entry in os.listdir(_CWD):
         if not entry.isdigit():
             continue
         pid = int(entry)
-        if pid == _own_pid() or pid < 1:
+        if pid < 1:
+            continue
+        # Protect: this Python process, ancestors, and any process in our
+        # PGID tree — killing them would kill ourselves.
+        if pid in _protect_pids:
+            continue
+        try:
+            if os.getpgid(pid) in _protect_pgids:
+                continue
+        except (OSError, ProcessLookupError):
             continue
         try:
             euid = _proc_uids(pid)
-            if euid != _own_uid():
+            if euid != caller_uid:
                 continue
         except Exception:
             continue

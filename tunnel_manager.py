@@ -35,6 +35,25 @@ _TRANSPORT_LOCKS: dict[str, asyncio.Lock] = {}
 # both connect successfully and both increment the same transport's shared
 # refcount for only one machine actually in use.
 _CONNECTING: set[str] = set()
+# Constructed at import, before any event loop exists. That is safe TODAY and
+# only because nothing ever *waits* on it -- do not read it as generally fine.
+#
+# asyncio.Queue uses the same _LoopBoundMixin as asyncio.Lock: it binds to the
+# first loop that makes it wait, and raises "is bound to a different event
+# loop" for every later loop that does. An operation that never suspends never
+# reaches _get_loop(), which is exactly what hides this until someone writes
+# the line that does suspend. The same trap in db.py's write lock was live and
+# broke three tests; see db._ensure_lock for the fix and the reasoning.
+#
+# What keeps this one harmless, all four of which have to stay true:
+#   * the queue is unbounded (maxsize=0), so `await _queue.put(...)` in
+#     queue_command never waits;
+#   * the drain uses get_nowait() inside `while not _queue.empty()`;
+#   * the other producers use put_nowait();
+#   * start() rebinds this with a fresh Queue on the running loop anyway.
+#
+# The first `await _queue.get()` arms it. If you add one, give this the same
+# lazy per-loop treatment db._ensure_lock has rather than leaving it here.
 _queue: asyncio.Queue = asyncio.Queue()
 _port_lock = threading.Lock()
 # Ports currently reserved by an in-flight _run() task. Kept under _port_lock

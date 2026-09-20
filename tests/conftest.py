@@ -629,3 +629,153 @@ def pytest_collection_modifyitems(session, config, items):
     # under noise that looks like a bug in the guard. UsageError is pytest's
     # own channel for "you invoked this wrong" and prints the message alone.
     raise pytest.UsageError(message)
+
+
+# ── Run provenance: which tree was this result actually about? ──────────────
+#
+# Four sessions share this working tree, this index and this service, and on
+# 2026-09-20 that produced four failures of the same shape in one evening:
+#
+#   * a browser run reported 2 failed; one had been fixed by a commit that
+#     landed *during* the 19-minute run, and the report never said so;
+#   * a re-run "proved" the fix was already in, when what it had actually read
+#     was another session's UNCOMMITTED edit -- had that edit been dropped the
+#     regression would have returned silently;
+#   * a file staged here was swept into another session's commit, because
+#     `git commit <pathspec>` commits the index, not the pathspec;
+#   * a fix was committed, green, and not live, because the service runs from
+#     a release directory built from a commit.
+#
+# Each was caught by a person noticing, which only worked because several
+# sessions happened to be paying attention at once. This makes the machine say
+# it instead. Deliberately NOT a refusal: testing your own uncommitted change
+# is the normal case and the overwhelmingly common one, so blocking it would
+# be wrong and would be switched off within a day. What was missing was never
+# permission, it was that a result carried no record of what it was a result
+# *of*. So the state goes in the header, where it is attached to the numbers.
+#
+# The one unambiguous failure -- HEAD moving mid-run -- is reported at the end
+# as well, because by then the header has scrolled past several hundred lines
+# of output and the summary is the part anyone actually reads.
+_PROVENANCE_OFF = "WC_NO_PROVENANCE"
+_head_at_start: str | None = None
+
+
+def _git(*args: str) -> str:
+    """Run a read-only git command, or return "" if it cannot."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", *args],
+            cwd=_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:  # noqa: BLE001 -- provenance must never break a run
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def pytest_sessionstart(session):
+    """Record HEAD before anything runs.
+
+    Separate from the header hook because pytest does not call
+    ``pytest_report_header`` under ``-q`` -- which left the starting sha unset
+    in exactly the invocation rules.md uses, so the end-of-run comparison
+    silently did nothing. Capture must not depend on display.
+    """
+    global _head_at_start
+    if _os.environ.get(_PROVENANCE_OFF):
+        return
+    _head_at_start = _git("rev-parse", "--short", "HEAD") or None
+
+
+def pytest_report_header(config):
+    """Print what this run is a result of, before any of the results."""
+    if _os.environ.get(_PROVENANCE_OFF):
+        return None
+
+    head = _head_at_start or _git("rev-parse", "--short", "HEAD")
+    if not head:
+        return None  # not a git checkout; nothing to say
+
+    lines = [f"tree: HEAD {head}"]
+
+    # The live release, so "green" and "live" are never silently conflated.
+    # Read from the symlink rather than asked of the service: this must work
+    # with the service stopped, and must not depend on it answering.
+    try:
+        import pathlib as _pl
+
+        current = _pl.Path.home() / ".local/share/webconsole/releases/current"
+        release = _pl.Path(_os.readlink(current)).name if current.is_symlink() else ""
+    except OSError:
+        release = ""
+    if release:
+        note = "" if release == head else "  <- NOT this tree; a green run here is not a live fix"
+        lines.append(f"live release: {release}{note}")
+
+    dirty = [ln for ln in _git("status", "--short").splitlines() if ln.strip()]
+    if dirty:
+        lines.append(
+            f"tree is DIRTY -- {len(dirty)} uncommitted path(s). This result "
+            f"describes the tree at this instant, not commit {head}:"
+        )
+        # Capped: a long list buries the point, and the count above is the
+        # part that matters.
+        for entry in dirty[:10]:
+            lines.append(f"    {entry}")
+        if len(dirty) > 10:
+            lines.append(f"    ... and {len(dirty) - 10} more")
+        lines.append(
+            "    Several sessions share this tree, so a path you do not "
+            "recognise is someone else's in-flight work -- and it is in this run."
+        )
+    return lines
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Repeat the provenance next to the numbers, and flag a moving tree.
+
+    Also emitted here, not only in the header, because the header does not
+    survive ``-q`` -- and ``-q`` is what rules.md invokes and what everyone
+    types. A guard that is invisible in the normal invocation is not a guard.
+    The summary is also simply the part that gets read: several hundred lines
+    of output separate the header from the total that gets quoted.
+    """
+    if _os.environ.get(_PROVENANCE_OFF) or not _head_at_start:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:  # pragma: no cover - only with -p no:terminal
+        return
+
+    head_now = _git("rev-parse", "--short", "HEAD")
+    dirty = [ln for ln in _git("status", "--short").splitlines() if ln.strip()]
+
+    # One quiet line when there is nothing wrong; anything louder would train
+    # people to skip past it, and then it would be missing on the day it
+    # matters.
+    if not dirty and (not head_now or head_now == _head_at_start):
+        reporter.write_line(f"tree: {_head_at_start}, clean")
+        return
+
+    if dirty:
+        reporter.write_line(
+            f"tree: {_head_at_start} with {len(dirty)} uncommitted path(s) -- "
+            f"this result describes the working tree, not that commit. "
+            f"In a shared tree, some of it may not be yours.",
+            yellow=True,
+        )
+
+    if head_now and head_now != _head_at_start:
+        reporter.write_sep("=", "RESULT IS NOT ATTRIBUTABLE TO A COMMIT", red=True)
+        reporter.write_line(
+            f"HEAD was {_head_at_start} when this run started and is "
+            f"{head_now} now."
+        )
+        reporter.write_line(
+            "Another session committed while this was running, so the earlier "
+            "tests and the later tests did not read the same code. A failure "
+            "here may already be fixed, and a pass may not survive. Re-run "
+            "before quoting these numbers."
+        )

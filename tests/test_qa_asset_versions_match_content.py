@@ -51,6 +51,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -160,6 +161,95 @@ class AssetVersionsMatchContentTests(unittest.TestCase):
         return sorted(
             p for p in (ROOT / "web" / "assets").rglob("*.js")
         ) + sorted((ROOT / "web" / "assets").glob("*.css"))
+
+
+class NonNumericBusterTests(unittest.TestCase):
+    """A `?v=` tag that is not a number must not be invisible.
+
+    `_REF_RE` matches `\\?v=(\\d+)`, so a reference written as
+    `./delegation.js?v=delegation_pin_20260920` is found by neither the
+    scan nor the rewriter. It is never compared against its target and
+    never updated, while `--check` still reports every reference as
+    matching -- so the one reference that is genuinely unmanaged is the
+    one the gate stays silent about.
+
+    That is not hypothetical. A tag of exactly that shape sat in
+    `web/assets/app.js` through several rounds of version syncing on
+    2026-09-20, untouched and unreported, until it was replaced by hand.
+
+    These cases build a throwaway web tree and point the module's path
+    globals at it, so nothing here depends on the repo's own assets.
+    """
+
+    def setUp(self):
+        self.mod = _load_script()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        web = Path(self.tmp.name) / "web"
+        assets = web / "assets"
+        assets.mkdir(parents=True)
+        (assets / "dep.js").write_text("export const a = 1;\n", encoding="utf-8")
+        self.web, self.assets = web, assets
+        self.mod.ROOT = Path(self.tmp.name)
+        self.mod.WEB = web
+        self.mod.ASSETS = assets
+
+    def _write_holder(self, buster: str) -> Path:
+        holder = self.assets / "holder.js"
+        holder.write_text(
+            f"import {{a}} from './dep.js?v={buster}';\n", encoding="utf-8")
+        return holder
+
+    def test_a_non_numeric_buster_is_reported(self):
+        self._write_holder("delegation_pin_20260920")
+        problems, _ = self.mod.scan()
+        self.assertTrue(
+            any("delegation_pin_20260920" in p for p in problems),
+            f"an unmanaged cache-buster was not reported: {problems}",
+        )
+
+    def test_a_numeric_buster_is_still_accepted(self):
+        """The guard must not start failing on correct references."""
+        want = self.mod.version_for(self.assets / "dep.js")
+        self._write_holder(str(want))
+        problems, seen = self.mod.scan()
+        self.assertEqual(problems, [])
+        self.assertEqual(seen, 1)
+
+    def test_a_stale_numeric_buster_is_still_reported(self):
+        self._write_holder("1")
+        problems, _ = self.mod.scan()
+        self.assertTrue(problems, "a stale numeric reference stopped failing")
+
+    def test_rewriting_replaces_a_non_numeric_buster(self):
+        holder = self._write_holder("delegation_pin_20260920")
+        self.mod.rewrite()
+        want = self.mod.version_for(self.assets / "dep.js")
+        self.assertIn(f"./dep.js?v={want}", holder.read_text(encoding="utf-8"))
+        self.assertNotIn("delegation_pin_20260920",
+                         holder.read_text(encoding="utf-8"))
+
+    def test_rewriting_a_non_numeric_buster_leaves_the_scan_clean(self):
+        self._write_holder("delegation_pin_20260920")
+        self.mod.rewrite()
+        problems, seen = self.mod.scan()
+        self.assertEqual(problems, [])
+        self.assertEqual(seen, 1)
+
+    def test_the_hash_ignores_a_non_numeric_buster_in_the_content(self):
+        """`_STRIP_RE` neutralises busters before hashing. If it only strips
+        numeric ones, a module's hash changes when a dependency's
+        non-numeric tag is rewritten, and the scheme stops terminating."""
+        dep = self.assets / "dep.js"
+        dep.write_text("import {x} from './other.js?v=abc_123';\n",
+                       encoding="utf-8")
+        first = self.mod.version_for(dep)
+        dep.write_text("import {x} from './other.js?v=999';\n",
+                       encoding="utf-8")
+        self.assertEqual(
+            first, self.mod.version_for(dep),
+            "the hash moved when only a dependency's buster changed",
+        )
 
 
 if __name__ == "__main__":

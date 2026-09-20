@@ -73,9 +73,28 @@ def _reference_files() -> list[Path]:
 
 
 # `?v=` appears against .js and .css alike; styles.css is versioned too.
-_REF_RE = re.compile(r"([\w./-]+\.(?:js|css))\?v=(\d+)")
+# Matches ANY cache-buster value, not just a decimal one, and that breadth is
+# deliberate. These patterns used to require `\d+`, so a reference written by
+# hand as `./delegation.js?v=delegation_pin_20260920` matched neither of them:
+# the scan never compared it against its target, the rewriter never updated it,
+# and `--check` reported every reference as matching while that one sat
+# permanently unmanaged. A tag of exactly that shape survived several rounds of
+# version syncing in web/assets/app.js on 2026-09-20 without one complaint.
+#
+# The written value is still always decimal (see version_for and the note above
+# on why); what widened is only what these will RECOGNISE, so a non-decimal tag
+# is now reported and replaced instead of ignored.
+#
+# The class stops at quotes, whitespace, `>` and `)` because that is what
+# terminates a reference in the two places they appear -- `import '…?v=N'` in a
+# module and `src="…?v=N">` in the HTML.
+_BUSTER = r"[^\"'\s>)]+"
+_REF_RE = re.compile(r"([\w./-]+\.(?:js|css))\?v=(" + _BUSTER + r")")
 # Used to neutralise querystrings before hashing -- see the module docstring.
-_STRIP_RE = re.compile(r"(\.(?:js|css))\?v=\d+")
+# This one must match the same breadth or the scheme stops terminating: a
+# dependency's non-decimal tag would survive into the hashed text, so rewriting
+# that tag would move the hash of every file importing it.
+_STRIP_RE = re.compile(r"(\.(?:js|css))\?v=" + _BUSTER)
 
 
 # When set, content is read from this git ref rather than the working tree.
@@ -160,7 +179,7 @@ def scan() -> tuple[list[str], int]:
         # off" failure the --ref scoping exists to avoid.
         text = _content(holder)
         for match in _REF_RE.finditer(text):
-            name, found = match.group(1), int(match.group(2))
+            name, found = match.group(1), match.group(2)
             target = _target(name, holder)
             if target is None:
                 problems.append(
@@ -169,7 +188,15 @@ def scan() -> tuple[list[str], int]:
                 continue
             seen += 1
             want = version_for(target)
-            if found != want:
+            if not found.isdigit():
+                # Reported separately from a stale number because the fix is
+                # the same but the failure is worse: a hand-written tag is not
+                # merely out of date, it was never being tracked at all.
+                problems.append(
+                    f"{holder.relative_to(ROOT)}: {name}?v={found} is not a "
+                    f"content hash, so it is never checked or updated; "
+                    f"should be {want}")
+            elif int(found) != want:
                 problems.append(
                     f"{holder.relative_to(ROOT)}: {name}?v={found} but its "
                     f"content hashes to {want}")
@@ -185,12 +212,15 @@ def rewrite() -> tuple[int, int]:
 
         def _sub(match: re.Match[str]) -> str:
             nonlocal changed_refs
-            name, found = match.group(1), int(match.group(2))
+            name, found = match.group(1), match.group(2)
             target = _target(name, holder)
             if target is None:
                 return match.group(0)
             want = version_for(target)
-            if want != found:
+            # A non-decimal tag always counts as changed: it cannot equal the
+            # hash, and it is the case most worth reporting in the summary
+            # line, since it means that reference had never been managed.
+            if not found.isdigit() or int(found) != want:
                 changed_refs += 1
             return f"{name}?v={want}"
 

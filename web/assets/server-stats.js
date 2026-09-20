@@ -401,6 +401,50 @@ function _renderPreview(stats, container) {
   const {counts, total_estimated_mb} = stats;
   const hasAny = Object.values(counts).some(v => v > 0);
 
+  // Selection tracker: the currently checked PIDs and their memory.
+  const _selected = new Set();
+  let _selectedMb = 0;
+  for (const kind of Object.keys(counts)) {
+    for (const p of stats[kind] || []) {
+      _selected.add(p.pid);
+      _selectedMb += p.rss_mb;
+    }
+  }
+
+  function _selectedText() {
+    const n = _selected.size;
+    return n === 0
+      ? 'Select processes above'
+      : `Stop ${n} selected (~${_bytesMb(_selectedMb)}`;
+  }
+
+  // Build process list with checkboxes, category by category.
+  const listHtml = Object.entries(stats)
+    .filter(([k]) => k !== 'total_estimated_mb' && k !== 'counts')
+    .map(([kind, procs]) => {
+      if (!procs.length) return '';
+      const label = KIND_LABEL[kind] || kind;
+      const catMb = procs.reduce((s, p) => s + p.rss_mb, 0);
+      let html = `<div style="margin: 4px 0;">`;
+      // Per-category checkbox.
+      html += `<label style="font-weight: bold; font-size: 12px; display: flex; align-items: center; gap: 4px;">`;
+      html += `<input type="checkbox" class="cleanup-cat-check" data-kind="${kind}" checked> `;
+      html += `${label} (${procs.length}, ${_bytesMb(catMb)})`;
+      html += `</label>`;
+      // Per-process checkboxes.
+      html += `<ul style="font-size: 12px; margin: 2px 0 4px 24px; padding-left: 0; list-style: none;">`;
+      for (const p of procs) {
+        html += `<li style="color: var(--fg); display: flex; align-items: center; gap: 4px;">`;
+        html += `<input type="checkbox" class="cleanup-pid-check" data-pid="${p.pid}" data-rss="${p.rss_mb}" checked> `;
+        html += `<strong>${p.name}</strong> — PID ${p.pid}, `;
+        html += `${_bytesMb(p.rss_mb)}, running ${_durationCompact(p.age_s)}`;
+        if (p.cmdline) html += `, <code style="font-size: 11px;">${p.cmdline.substring(0, 80)}</code>`;
+        html += `</li>`;
+      }
+      html += '</ul></div>';
+      return html;
+    }).join('');
+
   let html = '';
   if (hasAny) {
     const parts = [];
@@ -412,32 +456,81 @@ function _renderPreview(stats, container) {
     }
     html += `<p><strong>Found:</strong> ${parts.join(' · ')}</p>`;
     html += `<p>Estimated memory to free: <strong>${_bytesMb(total_estimated_mb)}</strong></p>`;
-    html += '<details style="margin-top: 6px;">';
-    html += '<summary style="font-size: 12px; color: var(--muted);">Show process details</summary>';
-    html += '<ul style="font-size: 12px; margin: 4px 0; padding-left: 20px;">';
-    for (const [kind, procs] of Object.entries(stats)) {
-      if (kind === 'total_estimated_mb' || kind === 'counts') continue;
-      for (const p of procs) {
-        html += `<li style="color: var(--fg);"><strong>${p.name}</strong> — PID ${p.pid}, `;
-        html += `${_bytesMb(p.rss_mb)}, running ${_durationCompact(p.age_s)}`;
-        if (p.cmdline) html += `, <code style="font-size: 11px;">${p.cmdline.substring(0, 80)}</code>`;
-        html += `</li>`;
-      }
-    }
-    html += '</ul></details>';
-    html += `<button id="cleanupExecuteBtn" class="srv-action-btn" style="margin-top: 8px;">`;
-    html += `Free ~${_bytesMb(total_estimated_mb)}`;
+    html += listHtml;
+    html += `<button id="cleanupExecuteBtn" class="srv-action-btn" style="margin-top: 8px;" disabled>`;
+    html += _selectedText();
     html += '</button>';
   } else {
     html = '<p style="color: var(--ok);">All processes healthy. Nothing to free.</p>';
   }
 
-  // Replace content, keeping the button in place
   container.innerHTML = html;
+
+  // Cache the full payload on the container for the execute handler.
+  container._cleanupStats = stats;
+  // Expose the selection tracker on the container too.
+  container._cleanupSelected = _selected;
+  container._cleanupSelectedMb = _selectedMb;
+  container._cleanupHasSelection = () => _selected.size > 0;
+  container._cleanupSelectedText = _selectedText;
+
+  // Select-all: check/uncheck all PIDs in a category.
+  container.querySelectorAll('.cleanup-cat-check').forEach(cb => {
+    cb.onchange = () => {
+      const kind = cb.dataset.kind;
+      const checked = cb.checked;
+      container.querySelectorAll(`.cleanup-pid-check[data-kind="${kind}"]`).forEach(pcb => {
+        pcb.checked = checked;
+        const pid = Number(pcb.dataset.pid);
+        const rss = parseFloat(pcb.dataset.rss);
+        if (checked) { _selected.add(pid); _selectedMb += rss; }
+        else { _selected.delete(pid); _selectedMb -= rss; }
+      });
+      _updateExecBtn();
+    };
+  });
+
+  // Per-process checkboxes.
+  container.querySelectorAll('.cleanup-pid-check').forEach(cb => {
+    cb.onchange = () => {
+      const pid = Number(cb.dataset.pid);
+      const rss = parseFloat(cb.dataset.rss);
+      if (cb.checked) { _selected.add(pid); _selectedMb += rss; }
+      else { _selected.delete(pid); _selectedMb -= rss; }
+      // Sync the parent category checkbox.
+      const kind = stats[Object.keys(stats).find(k =>
+        k !== 'total_estimated_mb' && k !== 'counts' &&
+        stats[k] && stats[k].some(p => p.pid === pid)
+      )] ? Object.keys(stats).find(k =>
+        k !== 'total_estimated_mb' && k !== 'counts' &&
+        stats[k] && stats[k].some(p => p.pid === pid)
+      ) : '';
+      _updateExecBtn();
+    };
+  });
 
   const execBtn = container.querySelector('#cleanupExecuteBtn');
   if (execBtn) {
-    execBtn.onclick = () => _runCleanup(stats, container);
+    execBtn.onclick = () => {
+      if (_selected.size > 0 && container._cleanupStats) {
+        _runCleanup(container._cleanupStats, container, [..._selected]);
+      }
+    };
+  }
+}
+
+function _updateExecBtn(container, stats) {
+  const btn = container?.querySelector('#cleanupExecuteBtn');
+  if (!btn) return;
+  if (!stats || !stats.counts || !Object.values(stats.counts).some(v => v > 0)) {
+    btn.disabled = true;
+    btn.textContent = 'Nothing to kill';
+    return;
+  }
+  // Recalculate from the current set (uses the closure variables on container).
+  if (container._cleanupSelectedText) {
+    btn.textContent = container._cleanupSelectedText();
+    btn.disabled = !container._cleanupHasSelection();
   }
 }
 

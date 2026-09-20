@@ -99,6 +99,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # stays behind auth like everything else under /api/.
         public_route = (
             request.url.path == "/login"
+            or request.url.path == "/api/auth/login"
             or request.url.path == "/api/version"
             or request.url.path == "/api/hard-refresh"
             or request.url.path == "/api/system/cleanup/preview"

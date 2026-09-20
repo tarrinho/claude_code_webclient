@@ -943,15 +943,35 @@ async def handle_cleanup_preview():
 
 
 @router.post("/api/system/cleanup/execute")
-async def handle_cleanup_execute():
+async def handle_cleanup_execute(request: Request):
     """POST /api/system/cleanup/execute — kill reclaimable processes.
 
-    Returns killed[], failed[], and freed_mb. This is an explicit action —
-    preview() must be called first so the user can see what will happen.
+    Accepts {"pids": [pid1, pid2, ...]}. Only kills the listed PIDs. Each
+    must appear in the current preview() output, so a stale page cannot kill
+    something it never showed.
     """
+    try:
+        data = await request.json()
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    payload_pids: list[int] = data.get("pids", [])
+    if not isinstance(payload_pids, list):
+        payload_pids = []
     _token_touched(request.state.session)
     try:
-        result = sys_cleanup.execute()
+        # Validate every PID against a fresh preview so a stale page cannot
+        # kill something that does not exist any more (or was replaced by
+        # something important).
+        preview_result = sys_cleanup.preview()
+        valid_pids: set[int] = set()
+        for kind in ("zombie", "claude", "chrome", "python"):
+            for p in preview_result.get(kind, []):
+                valid_pids.add(p["pid"])
+        filtered_pids = [pid for pid in payload_pids if pid in valid_pids]
+        # Kill only the validated PIDs.
+        result = sys_cleanup.execute(pid_filter=filtered_pids)
         return JSONResponse(result)
     except Exception as exc:
         _log.exception("cleanup execute failed")

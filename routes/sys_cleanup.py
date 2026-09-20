@@ -355,9 +355,28 @@ def _kill_single(pid):
         return False, str(exc)
 
 
-def execute() -> dict:
-    """Kill reclaimable processes. Returns killed[], failed[], freed_mb."""
+def execute(pid_filter: list[int] | None = None) -> dict:
+    """Kill reclaimable processes.
+
+    *pid_filter* is a whitelist of PIDs from the current preview. Only those
+    are killed. ``None`` (default, used by tests) kills everything the
+    preview returns — kept for backwards compatibility but **never** wired
+    into the HTTP endpoint.
+
+    Returns killed[], failed[], freed_mb.
+    """
     stats = preview()
+    if pid_filter:
+        allowed = set(pid_filter)
+        for kind in ("zombie", "claude", "chrome", "python"):
+            stats[kind] = [p for p in stats[kind] if p["pid"] in allowed]
+        # Recompute counts and total from the filtered preview
+        stats["counts"] = {k: len(v) for k, v in stats.items()
+                           if k in ("zombie", "claude", "chrome", "python")}
+        stats["total_estimated_mb"] = round(
+            sum(p["rss_mb"] for p in stats.values()
+                if isinstance(p, list) and all(isinstance(x, dict) for x in p)) or 0.0, 1
+        )
     killed = []
     failed = []
     freed = 0.0

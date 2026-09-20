@@ -109,12 +109,20 @@ ROWS = [
     # from the ladder -- equal accuracy is kept (spec 3) -- it DEMOTES it from
     # rung 1 to rung 2, where 2.7's reach probability is 1/6 instead of 1/2.
     # That alone takes planning's tree cost from $1.936 to $0.724.
-    ("azure_ai/gpt-5.6-sol", "coding", 1.0, 18, 3.4043, 7.85, 922000),
-    ("azure_ai/gpt-5.6-sol", "long-context", 1.0, 12, 3.4043, 7.84, 922000),
-    ("azure_ai/gpt-5.6-sol", "multi-turn", 0.833, 12, 3.4043, 17.02, 922000),
-    ("azure_ai/gpt-5.6-sol", "planning", 0.833, 12, 3.4043, 39.41, 922000),
-    ("azure_ai/gpt-5.6-sol", "comprehension", 0.583, 12, 3.4043, 14.53, 922000),
-    ("azure_ai/gpt-5.6-sol", "reasoning", 0.5, 6, 3.4043, 11.78, 922000),
+    #
+    # max_context was 922000 here until 2026-09-20 -- luna's and terra's
+    # figure, carried across the same way the rate above is, but without the
+    # dagger that marks the rate as assumed. The gateway's own
+    # /v1/model/info says 1050000 for sol, so it understated sol by 128000
+    # tokens. Corrected here and in the database together; re-read the
+    # gateway rather than copying a sibling's number when adding a family
+    # member, because these three are not the same model.
+    ("azure_ai/gpt-5.6-sol", "coding", 1.0, 18, 3.4043, 7.85, 1050000),
+    ("azure_ai/gpt-5.6-sol", "long-context", 1.0, 12, 3.4043, 7.84, 1050000),
+    ("azure_ai/gpt-5.6-sol", "multi-turn", 0.833, 12, 3.4043, 17.02, 1050000),
+    ("azure_ai/gpt-5.6-sol", "planning", 0.833, 12, 3.4043, 39.41, 1050000),
+    ("azure_ai/gpt-5.6-sol", "comprehension", 0.583, 12, 3.4043, 14.53, 1050000),
+    ("azure_ai/gpt-5.6-sol", "reasoning", 0.5, 6, 3.4043, 11.78, 1050000),
     # The model that ACTUALLY serves voice on this deployment, added
     # 2026-09-17. It had no row at all until then, so no 1.1 invariant could
     # see it while section 3's voice ladder named two models that have never
@@ -122,7 +130,7 @@ ROWS = [
     # tasks; latency and n are real (46 voice_turn_timing rows); the rate is
     # blended from usage_events and is marked with a double dagger in 2.6 --
     # 3.5167/1M for a "mini" model is not credible and needs a real price.
-    ("azure_ai/gpt-5.4-mini-copilot", "voice", None, 46, 0.0781, 2.002, None),
+    ("azure_ai/gpt-5.4-mini-copilot", "voice", None, 46, 0.0781, 2.002, 1050000),
     ("claude-sonnet-5", "multi-turn", 1.0, 12, 0.4769, 7.8, 1000000),
     ("claude-sonnet-5", "planning", 0.833, 12, 0.4769, 17.5, 1000000),
     ("claude-opus-5", "comprehension", 1.0, 12, 1.2310, 11.9, 1000000),

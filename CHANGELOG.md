@@ -171,6 +171,53 @@ churn.
   the full run, and two that passed batched failed in it. Both are
   order-dependent, and neither run alone would have shown it.
 
+## [0.19.1] — 2026-09-20
+
+### Added
+
+- **Process cleanup on the Server tab is selectable.** The panel scans for
+  reclaimable processes — zombies, long-running agents, stale Chrome tabs,
+  stray test runners — and each one now carries a checkbox, with a per-category
+  select-all and a button that names what it is about to stop. Claude sessions
+  are listed with their session name, so an agent is identifiable as
+  `[cweb6]` rather than as a bare PID.
+
+- **Active conversations lead the Favourites list.** A favourite that is
+  mid-turn, or whose terminal session is busy, floats to the top of the
+  section. Display-only: the stored order is untouched, and a floated
+  conversation drops back into its placement when it goes quiet.
+
+### Fixed
+
+- **Selective process cleanup never worked.** Three defects, each fatal on its
+  own: an empty selection took the *unfiltered* branch and would have killed
+  every reclaimable process on the host, which the endpoint reached whenever a
+  page's PIDs had all gone stale; the filtered-total recompute read a field off
+  the category lists rather than the rows inside them, so any non-empty
+  selection answered 500; and the handler called middleware's timestamp dict as
+  though it were a function, so the endpoint had answered 500 on every request
+  it ever received. A selection naming nothing still reclaimable is now refused
+  rather than widened.
+
+- **The cleanup scan crashed before it could report.** A process was annotated
+  with its Claude session name one statement before the row it annotates
+  existed, so any host with a session file naming a live agent raised
+  `KeyError` and the panel reported "Could not scan processes".
+
+- **`swapoff -a` could take the host down.** The swap-clearing step checked only
+  whether swap was in use, but `swapoff` reads every swapped page back into
+  RAM. It ran with roughly 2.4 GB in swap against 1.0 GB available and the
+  machine hard-locked. It now refuses unless RAM can absorb the pages with
+  headroom, and no longer drops the page cache immediately beforehand.
+
+- **Cache-busters could go stale silently.** The asset-version gate matched
+  only decimal `?v=` values, so a hand-written tag was compared against
+  nothing, updated by nothing, and reported by nothing while `--check` called
+  every reference current.
+
+- **Cost and token usage were over-reported.** Each turn is charged its own
+  cost and its own tokens rather than the session's running total.
+
 ## [0.19.0] — 2026-09-16
 
 ### Added

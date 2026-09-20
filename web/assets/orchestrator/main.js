@@ -107,7 +107,7 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
   // ── Init ─────────────────────────────────────────────────────────────
   export function init() {
     // Version display
-    if (el.topbarInfo) el.topbarInfo.textContent = "0.19.0";
+    if (el.topbarInfo) el.topbarInfo.textContent = "0.19.1";
 
     // Event listeners
     el.newSupervisorBtn.addEventListener("click", createSupervisor);

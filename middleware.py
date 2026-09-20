@@ -97,12 +97,27 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # session yet and still needs to show the running version. It returns
         # only the bare version string -- never the full changelog, which
         # stays behind auth like everything else under /api/.
+        #
+        # Nothing that reads host state belongs in this list.
+        # /api/system/cleanup/preview was added here on 2026-09-20 while the
+        # scan was being debugged, and it answers with the host's process
+        # table: PIDs, full command lines including --model and --resume, and
+        # the Claude session NAMES, which describe what the operator is
+        # working on. Measured from outside with no cookie, it returned 200
+        # and the live list. The panel calls it through apiFetch with the
+        # session cookie, so the exemption bought nothing and was removed.
+        # test_qa_api_tokens.py::DevExemptionIsGoneTests is what caught it.
+        #
+        # "/api/auth/login" went with it. It was added the same day, but no
+        # route is registered at that path and nothing in the tree requests
+        # it -- the login form posts to /login -- so it exempted nothing and
+        # only widened a list whose whole value is being short. If a real
+        # endpoint is added there, add the exemption back deliberately and
+        # update the guard's expected count in the same commit.
         public_route = (
             request.url.path == "/login"
-            or request.url.path == "/api/auth/login"
             or request.url.path == "/api/version"
             or request.url.path == "/api/hard-refresh"
-            or request.url.path == "/api/system/cleanup/preview"
             or request.url.path.startswith("/assets/")
         )
         if not public_route and request.state.session is None:

@@ -497,21 +497,6 @@
         <h3 class="server-section-heading">This console&rsquo;s host</h3>
         <p>Processor, memory and disk on the machine this console runs on, plus what WebConsole itself is using.</p>
         <div class="stats-body" id="serverBody"></div>
-        <!-- Process cleanup: one-click reclaim of idle agents, stale chrome tabs,
-             and stray python/test processes. Shows estimated memory before killing. -->
-        <h3 class="server-section-heading">Process cleanup</h3>
-        <p>
-          Reclaim memory used by idle long-running agents, stale Chrome tabs,
-          and stray test processes. Preview first, then confirm to kill.
-        </p>
-        <div id="cleanupPanel" class="stats-body">
-          <div id="cleanupStatus" style="color: var(--muted); font-size: 13px;">
-            Click below to scan for reclaimable processes.
-          </div>
-          <button id="cleanupScanBtn" class="srv-action-btn primary" style="margin-top: 8px;">
-            Scan for reclaimable processes
-          </button>
-        </div>
         <!-- One chart per metric, every machine on it, rather than a block of
              charts per machine: the question is which host is struggling, and
              that is a comparison, so the hosts have to share an axis. -->
@@ -540,6 +525,30 @@
           peak per period, plus WebConsole&rsquo;s own memory.
         </p>
         <div class="stats-body" id="serverHistory"></div>
+        <!-- Process cleanup: one-click reclaim of idle agents, stale chrome tabs,
+             and stray python/test processes. Shows estimated memory before killing.
+
+             Last on the tab, after every reading, and that position is load
+             bearing. The sections above are measurements and they tell one
+             story in order -- this console's host, then every host, then the
+             transports -- which test_the_consoles_own_host_leads_the_page
+             asserts precisely because reversing it is invisible otherwise.
+             This panel is not a reading: it is an action that kills processes.
+             It sat at index 1 between the host and the merged charts, which
+             broke both that narrative and that test. -->
+        <h3 class="server-section-heading">Process cleanup</h3>
+        <p>
+          Reclaim memory used by idle long-running agents, stale Chrome tabs,
+          and stray test processes. Preview first, then confirm to kill.
+        </p>
+        <div id="cleanupPanel" class="stats-body">
+          <div id="cleanupStatus" style="color: var(--muted); font-size: 13px;">
+            Click below to scan for reclaimable processes.
+          </div>
+          <button id="cleanupScanBtn" class="srv-action-btn primary" style="margin-top: 8px;">
+            Scan for reclaimable processes
+          </button>
+        </div>
       </div>
       <!-- Skills tab -->
       <div class="settings-panel" id="panelSkills" role="tabpanel" aria-labelledby="tabSkills" tabindex="0" hidden>

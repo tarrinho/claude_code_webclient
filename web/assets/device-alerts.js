@@ -1,7 +1,7 @@
 // ── Device alerts ─────────────────────────────────────────────────────────────
 
 import {apiFetch} from './api.js?v=2741508';
-import {notifyResult} from './server-stats.js?v=1678422';
+import {notifyResult} from './server-stats.js?v=5442298';
 import {listController} from './app.js?v=10621393';
 // Three levels, because on a phone the page is usually not the thing in front
 // of you:

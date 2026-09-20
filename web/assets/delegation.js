@@ -10,7 +10,7 @@
 // same rule specs.js follows for spec titles and paths, because a model id
 // or task type rendered straight into HTML is a stored-XSS hole.
 import {apiFetch} from './api.js?v=2741508';
-import {notifyResult} from './server-stats.js?v=1678422';
+import {notifyResult} from './server-stats.js?v=5442298';
 
 const byId = id => document.getElementById(id);
 

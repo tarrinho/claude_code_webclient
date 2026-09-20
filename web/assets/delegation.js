@@ -161,10 +161,9 @@ function _ladderElement(ladder, rowsForType) {
 
 /** Inline ladder editor for one task type.
  *
- *  Shows a pin badge when the ladder is pinned, each rung as a <select>
- *  populated from the task-type's own model rows, a "Sync from generated"
- *  button (copies the generated ladder into the editor), add/remove rung
- *  controls, and a Save button.
+ *  Always shows a pin action so the operator can pin the ladder:
+ *  when not pinned: a "Pin" button that copies the generated ladder;
+ *  when pinned: the ladder as <select> rungs, Sync/Revert/Save controls.
  *
  *  The model list comes from rowsForType so every selectable model is one
  *  that actually exists in the matrix — no free-text model ids. */
@@ -173,18 +172,53 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
   row.className = 'delegation-ladder-editor';
   row.dataset.taskType = taskType;
 
-  // Pin badge.
-  if (isPinned) {
-    const badge = document.createElement('span');
-    badge.className = 'delegation-pin-badge';
-    badge.textContent = 'PINNED';
-    badge.title = 'This ladder is pinned (operator override). '
-                + 'It survives re-benchmarking.';
-    row.appendChild(badge);
+  if (!isPinned) {
+    // "Pin" button: set the pin to the generated ladder.
+    const pinBtn = document.createElement('button');
+    pinBtn.type = 'button';
+    pinBtn.className = 'delegation-ladder-pin';
+    pinBtn.textContent = 'Pin';
+    pinBtn.title = 'Pin the current (generated) ladder so it survives re-benchmarking';
+    pinBtn.addEventListener('click', async () => {
+      if (generated.length === 0) {
+        showToast('No model data yet — cannot pin an empty ladder', 'error');
+        return;
+      }
+      try {
+        const response = await apiFetch('/api/delegation/ladder', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({task_type: taskType, rungs: generated}),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(_errorMessage(data, 'Could not pin'));
+        }
+        const data = await response.json().catch(() => ({}));
+        if (data.problems && data.problems.length) {
+          notifyResult('Pin set with warnings: ' + data.problems.join('; '), 'warning');
+        } else {
+          showToast('Ladder pinned');
+        }
+        await _refreshDelegation();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+    row.appendChild(pinBtn);
+    return row;
   }
 
-  // Sync from generated button (only when pinned).
-  if (isPinned && generated.length > 0) {
+  // ── Pinned ladder editor ──────────────────────────────────────────
+  const badge = document.createElement('span');
+  badge.className = 'delegation-pin-badge';
+  badge.textContent = 'PINNED';
+  badge.title = 'This ladder is pinned (operator override). '
+              + 'It survives re-benchmarking.';
+  row.appendChild(badge);
+
+  // Sync from generated button.
+  if (generated.length > 0) {
     const syncBtn = document.createElement('button');
     syncBtn.type = 'button';
     syncBtn.className = 'delegation-ladder-sync';

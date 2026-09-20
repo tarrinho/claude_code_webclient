@@ -1423,13 +1423,18 @@ button{touch-action:manipulation}
   flex-wrap:wrap; gap:4px 8px; min-height:24px;
 }
 .delegation-rung-wrap { display:inline-flex; align-items:center; gap:2px; }
-.delegation-rung-input {
+.delegation-rung-select {
   font:12px ui-monospace,SFMono-Regular,Consolas,monospace;
   padding:2px 4px; border:1px solid var(--muted); border-radius:3px;
-  width:160px; background:var(--surface); color:var(--fg);
+  background:var(--surface); color:var(--fg); cursor:pointer;
+  min-width:140px; max-width:280px;
 }
-.delegation-rung-input.delegation-rung-new {
+.delegation-rung-select.delegation-rung-new {
   border-style:dashed;
+}
+.delegation-rung-select option[disabled] { color:var(--warn); font-style:italic; }
+.delegation-rung-wrap.delegation-rung-warn .delegation-rung-select {
+  border-color:var(--warn); background:rgba(210,153,34,.06);
 }
 .delegation-rung-remove {
   background:none; border:none; color:var(--warn); font-size:14px;

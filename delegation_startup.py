@@ -96,7 +96,8 @@ class DelegationConfigError(RuntimeError):
 async def load_capability_table() -> CapabilityTable:
     rows = rows_to_capability(await db.delegation_rows_all())
     operational = await db.delegation_operational_all()
-    return CapabilityTable(rows, operational=operational)
+    pins = await db.delegation_pin_all()
+    return CapabilityTable(rows, operational=operational, pins=pins)
 
 
 async def live_known_models() -> frozenset[str] | None:
@@ -242,8 +243,9 @@ async def problems_after_writing(
             max_context=columns.get("max_context"),
         )
     operational = await db.delegation_operational_all()
+    pins = await db.delegation_pin_all()
     return await problems_with(
-        CapabilityTable(list(by_key.values()), operational=operational))
+        CapabilityTable(list(by_key.values()), operational=operational, pins=pins))
 
 
 async def validate_or_die() -> CapabilityTable:
@@ -255,10 +257,20 @@ async def validate_or_die() -> CapabilityTable:
     """
     rows = rows_to_capability(await db.delegation_rows_all())
     operational = await db.delegation_operational_all()
-    table = CapabilityTable(rows, operational=operational)
+    pins = await db.delegation_pin_all()
+    table = CapabilityTable(rows, operational=operational, pins=pins)
     known_models = await live_known_models()
     enforce_ceiling = await ceiling_enforcement_enabled()
     enforce_budget = await budget_enforcement_enabled()
+    # Boot safety: drop pins that introduce new problems not present in the
+    # generated ladder (operator decision 2026-09-18, #3). Dropped pins are
+    # logged so the operator knows what was overridden.
+    safe_table, dropped = table.without_unusable_pins()
+    if dropped:
+        for reason in dropped:
+            _log.warning("delegation: pin dropped at boot: %s", reason)
+        # Replace the table so validation runs against the pin-safe version.
+        table = safe_table
     problems = table.validate(known_models=known_models,
                               enforce_latency_ceiling=enforce_ceiling,
                               enforce_budget=enforce_budget)

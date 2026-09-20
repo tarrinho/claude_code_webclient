@@ -159,6 +159,172 @@ function _ladderElement(ladder, rowsForType) {
   return wrap;
 }
 
+/** Inline ladder editor for one task type.
+ *
+ *  Shows a pin badge when the ladder is pinned, each rung as an editable
+ *  input with remove (×) and add-rung (+) controls, and a "Revert to
+ *  generated" button when the pinned ladder differs from generated.
+ *
+ *  Saving sends PUT /api/delegation/ladder with {task_type, rungs}.
+ *  Reverting clears the pin. */
+function _ladderEditor(taskType, pinned, generated, isPinned, payload) {
+  const row = document.createElement('p');
+  row.className = 'delegation-ladder-editor';
+  row.dataset.taskType = taskType;
+
+  // Pin badge.
+  if (isPinned) {
+    const badge = document.createElement('span');
+    badge.className = 'delegation-pin-badge';
+    badge.textContent = 'PINNED';
+    badge.title = 'This ladder is pinned (operator override). '
+                + 'It survives re-benchmarking.';
+    row.appendChild(badge);
+  }
+
+  // Diff highlight: only when pinned ladder differs from generated.
+  const differs = !isPinned || pinned.join('\n') !== generated.join('\n');
+
+  // Rung controls.
+  const rungs = isPinned ? pinned : generated;
+  rungs.forEach((model, i) => {
+    const wrapper = document.createElement('span');
+    wrapper.className = 'delegation-rung-wrap';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'delegation-rung-input';
+    input.value = model;
+    input.setAttribute('aria-label', `Rung ${i} model`);
+    // Show diff highlight in input.
+    if (differs && !isPinned) {
+      input.classList.add('delegation-rung-diff');
+    }
+    wrapper.appendChild(input);
+
+    if (isPinned) {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'delegation-rung-remove';
+      removeBtn.textContent = '×';
+      removeBtn.title = 'Remove this rung';
+      removeBtn.addEventListener('click', () => {
+        input.value = '';
+      });
+      wrapper.appendChild(removeBtn);
+    }
+
+    row.appendChild(wrapper);
+
+    if (i < rungs.length - 1) {
+      row.appendChild(document.createTextNode(' → '));
+    }
+  });
+
+  // Add rung button (only when pinned).
+  if (isPinned) {
+    const maxAttempts = (payload.config && payload.config.attempts_and_caps
+      && payload.config.attempts_and_caps.max_attempts_generation
+      && payload.config.attempts_and_caps.max_attempts_generation.value)
+      || 3;
+    if (rungs.length < maxAttempts) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'delegation-rung-add';
+      addBtn.textContent = '+';
+      addBtn.title = 'Add rung (max ' + maxAttempts + ')';
+      addBtn.addEventListener('click', () => {
+        // Insert a blank input after the last rung.
+        const newInput = document.createElement('input');
+        newInput.type = 'text';
+        newInput.className = 'delegation-rung-input delegation-rung-new';
+        newInput.placeholder = 'model-id';
+        newInput.setAttribute('aria-label', 'New rung model');
+        newInput.value = '';
+        row.insertBefore(newInput, addBtn);
+      });
+      row.appendChild(addBtn);
+    }
+  }
+
+  // Revert to generated button (only when pinned and differs).
+  if (isPinned && differs) {
+    const revertBtn = document.createElement('button');
+    revertBtn.type = 'button';
+    revertBtn.className = 'delegation-ladder-revert';
+    revertBtn.textContent = 'Revert';
+    revertBtn.title = 'Clear the pin and regenerate the ladder';
+    revertBtn.addEventListener('click', async () => {
+      try {
+        const response = await apiFetch('/api/delegation/ladder', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({task_type: taskType}),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(_errorMessage(data, 'Could not revert pin'));
+        }
+        await _refreshDelegation();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+    row.appendChild(revertBtn);
+  }
+
+  // Save button (only when pinned and there are rungs).
+  if (isPinned) {
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'delegation-ladder-save';
+    saveBtn.textContent = 'Save';
+    saveBtn.title = 'Save changes to the pinned ladder';
+    saveBtn.addEventListener('click', async () => {
+      // Collect current rung values from inputs.
+      const inputs = row.querySelectorAll('.delegation-rung-input');
+      const rungs = [];
+      inputs.forEach(inp => {
+        const v = inp.value.trim();
+        if (v) rungs.push(v);
+      });
+      if (rungs.length === 0) {
+        showToast('At least one rung required', 'error');
+        return;
+      }
+      try {
+        const response = await apiFetch('/api/delegation/ladder', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({task_type: taskType, rungs}),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(_errorMessage(data, 'Could not save pin'));
+        }
+        // If the API returned problems (warnings), show them.
+        const data = await response.json().catch(() => ({}));
+        if (data.problems && data.problems.length) {
+          notifyResult('Pin saved with warnings: ' + data.problems.join('; '), 'warning');
+        } else {
+          showToast('Pin saved');
+        }
+        await _refreshDelegation();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+    row.appendChild(saveBtn);
+  }
+
+  // Warning display (when pinned with problems).
+  if (isPinned) {
+    row.classList.add('delegation-ladder-pinned');
+  }
+
+  return row;
+}
+
 /** One editable cell: an input bound to one (model, task_type, column). */
 function _cell(row, column) {
   const input = document.createElement('input');
@@ -559,8 +725,14 @@ function _card(taskType, rowsForType, payload) {
   ladderLabel.textContent = 'Ladder: ';
   ladderLine.appendChild(ladderLabel);
   const ladder = (payload.ladders || {})[taskType] || [];
+  const generated = (payload.generated_ladders || {})[taskType] || [];
+  const pins = payload.pins || {};
+  const isPinned = taskType in pins;
   ladderLine.appendChild(_ladderElement(ladder, rowsForType));
   card.appendChild(ladderLine);
+
+  // Ladder editor row: pin badge, rung controls, revert button.
+  card.appendChild(_ladderEditor(taskType, ladder, generated, isPinned, payload));
 
   const blockerEntry = (payload.blockers || {})[taskType];
   card.appendChild(_blockerElement(blockerEntry, taskType));

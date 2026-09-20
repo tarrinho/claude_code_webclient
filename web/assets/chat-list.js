@@ -58,6 +58,36 @@ export function groupChats(chats) {
   };
 }
 
+/** One section reordered so the conversations doing something lead.
+ *
+ *  The sidebar already marks these with a running dot, but the order came
+ *  straight from the server -- placement, then recency -- so the conversation
+ *  you were waiting on could sit anywhere in the section, including below the
+ *  fold.
+ *
+ *  Two properties this must keep, both load-bearing:
+ *
+ *  - **Stable.** Within "active" and within "idle", the incoming order
+ *    survives untouched, so the manual placement and recency the server sorted
+ *    by still decide everything the float does not. A plain `sort` with a
+ *    boolean comparator is not guaranteed to do this across engines for the
+ *    equal case; partitioning is stable by construction.
+ *  - **Not in place.** The caller holds the same array `groupChats` returned
+ *    and hands it to other readers, so sorting it here would reorder it for
+ *    them too.
+ *
+ *  Takes a predicate rather than reading the activity itself: the two signals
+ *  live in different places (`activeTurnIds` is a Set in the controller's
+ *  closure, `terminal_busy` arrives on the row), and a function reaching for
+ *  both could not be tested without a DOM.
+ */
+export function floatActive(chats, isActive) {
+  const active = [];
+  const idle = [];
+  for (const chat of chats) (isActive(chat) ? active : idle).push(chat);
+  return active.concat(idle);
+}
+
 // The visible label is the bare verb; the conversation title goes to
 // aria-label. Both used to live in textContent, so the menu rendered as six
 // lines each restating the full title ("Pin <title>", "Rename <title>"…),
@@ -136,6 +166,11 @@ export function createChatListController(dependencies) {
   // pattern caused every time a chat's running state flipped.
   const _chatDots = new Map();
 
+  // "Doing something right now", from the two signals the running dots use.
+  // Kept in one place so the order and the dots can never disagree.
+  const _isActive = chat =>
+    activeTurnIds.has(chat.id) || Boolean(chat.terminal_busy);
+
   // Persist the order of one section. Sends the whole section rather than a
   // single moved id: the server writes it as one transaction, so a drop cannot
   // half-apply and leave an order the user never chose.
@@ -145,8 +180,17 @@ export function createChatListController(dependencies) {
     // row in it swept Recent into a drag made inside Favourites -- silently
     // converting a recency-ordered section to a manual one. Only the rows
     // belonging to this section are sent.
+    //
+    // Floated rows are excluded for the same reason, one step further on. An
+    // active conversation sits at the top of Favourites only while it is busy,
+    // so persisting the order as displayed would write that temporary slot in
+    // as its permanent `position` -- a placement the user never chose, applied
+    // to whichever conversations happened to be running when somebody dragged
+    // an unrelated row. Leaving them out keeps the placement they already had;
+    // they drop back into it when they go quiet.
     const ids = [...container.querySelectorAll('.chat-item[data-chat-id]')]
       .filter(node => !sectionKey || node.dataset.section === sectionKey)
+      .filter(node => node.dataset.floated !== '1')
       .map(node => node.dataset.chatId);
     if (ids.length) onReorder(ids);
   }
@@ -272,6 +316,12 @@ export function createChatListController(dependencies) {
       if (chat.archived) item.classList.add('archived');
       item.dataset.chatId = chat.id;
       item.dataset.section = label;
+      // Marks a row whose position on screen came from the activity float
+      // rather than from the stored order, so commitOrder can leave its
+      // placement alone. Read off the DOM because that is what commitOrder
+      // walks; recomputing _isActive there could disagree with what was
+      // actually painted if the turn ended between render and drop.
+      if (_isActive(chat)) item.dataset.floated = '1';
 
       const open = document.createElement('button');
       open.type = 'button';
@@ -842,6 +892,10 @@ export function createChatListController(dependencies) {
     const visible = chats.filter(c => !c.is_temporary);
     const filtered = filterChats(visible, query);
     const groups = groupChats(filtered);
+    // Favourites only, deliberately. Recent is already recency-ordered, so a
+    // running conversation is near the top there by definition, and Archived
+    // is a place you go to look something up rather than to watch it work.
+    groups.pinned = floatActive(groups.pinned, _isActive);
     const cli = query ? cliSessions.filter(session =>
       (session.name || '').toLowerCase().includes(query) ||
       (session.cwd || '').toLowerCase().includes(query)

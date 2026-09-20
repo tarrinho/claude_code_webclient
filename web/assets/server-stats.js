@@ -368,6 +368,17 @@ const KIND_LABEL = {
   python: 'Stray Python/test process',
 };
 
+/** Render the initial "scan first" state in the cleanup panel. */
+function _renderCleanupDefault(panel) {
+  panel.innerHTML = `<div id="cleanupStatus" style="color: var(--muted); font-size: 13px;">
+    Click below to scan for reclaimable processes.
+  </div>
+  <button id="cleanupScanBtn" class="srv-action-btn" style="margin-top: 8px;">
+    Scan for reclaimable processes
+  </button>`;
+  byId('cleanupScanBtn').onclick = () => _scanCleanup(panel);
+}
+
 function _durationCompact(s) {
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);

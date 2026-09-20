@@ -147,7 +147,13 @@ function _ladderElement(ladder, rowsForType) {
     return wrap;
   }
   ladder.forEach((model, i) => {
-    if (i > 0) wrap.appendChild(document.createTextNode(' → '));
+    // Numbered to match the pinned editor's rungs, so the same ladder reads
+    // the same way whether or not it is pinned.
+    const num = document.createElement('span');
+    num.className = 'delegation-rung-num';
+    num.textContent = String(i + 1);
+    num.setAttribute('aria-hidden', 'true');
+    wrap.appendChild(num);
     const rung = document.createElement('span');
     rung.className = 'delegation-rung';
     rung.textContent = model;
@@ -173,6 +179,12 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
   row.dataset.taskType = taskType;
 
   if (!isPinned) {
+    // The static ladder now lives on this row rather than on a line of its
+    // own above it, so an unpinned type reads "Ladder: a > b > c   [Pin]".
+    const label = document.createElement('span');
+    label.className = 'delegation-ladder-label';
+    label.textContent = 'Ladder:';
+    row.append(label, _ladderElement(pinned, rowsForType));
     // "Pin" button: set the pin to the generated ladder.
     const pinBtn = document.createElement('button');
     pinBtn.type = 'button';
@@ -205,6 +217,7 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
         showToast(error.message, 'error');
       }
     });
+    pinBtn.classList.add('delegation-ladder-push');
     row.appendChild(pinBtn);
     return row;
   }
@@ -216,6 +229,13 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
   badge.title = 'This ladder is pinned (operator override). '
               + 'It survives re-benchmarking.';
   row.appendChild(badge);
+
+  // Sync, Revert and Save are grouped and pushed to the end of the row, so the
+  // merged line reads left to right as "this is the ladder" then "these act on
+  // it". Sync in particular used to be appended before the rungs, which put a
+  // control that rewrites every rung to the left of the rungs it rewrites.
+  const actions = document.createElement('span');
+  actions.className = 'delegation-ladder-actions delegation-ladder-push';
 
   // Sync from generated button.
   if (generated.length > 0) {
@@ -238,7 +258,7 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
         }
       });
     });
-    row.appendChild(syncBtn);
+    actions.appendChild(syncBtn);
   }
 
   // Rung selectors.
@@ -250,9 +270,19 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
     const wrapper = document.createElement('span');
     wrapper.className = 'delegation-rung-wrap';
 
+    // The rung's position, stated rather than implied. A ladder is an order --
+    // cheapest first, each rung tried before the next - and on one merged line
+    // of similar-looking selects that order was carried only by left-to-right
+    // position, which is not something a reader should have to infer.
+    const num = document.createElement('span');
+    num.className = 'delegation-rung-num';
+    num.textContent = String(i + 1);
+    num.setAttribute('aria-hidden', 'true');
+    wrapper.appendChild(num);
+
     const select = document.createElement('select');
     select.className = 'delegation-rung-select';
-    select.setAttribute('aria-label', `Rung ${i} model`);
+    select.setAttribute('aria-label', `Rung ${i + 1} model`);
 
     // Option: "(empty)" as default.
     const emptyOpt = document.createElement('option');
@@ -384,7 +414,7 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
           showToast(error.message, 'error');
         }
       });
-      row.appendChild(revertBtn);
+      actions.appendChild(revertBtn);
     }
 
     // Save button (only when pinned).
@@ -424,8 +454,13 @@ function _ladderEditor(taskType, pinned, generated, rowsForType, isPinned, paylo
         showToast(error.message, 'error');
       }
     });
-    row.appendChild(saveBtn);
+    actions.appendChild(saveBtn);
   }
+
+  // Appended last so the group lands at the end of the row regardless of which
+  // of the three buttons this state actually rendered. Skipped when empty, so
+  // a row with no applicable actions does not carry a stray flex spacer.
+  if (actions.childElementCount) row.appendChild(actions);
 
   return row;
 }
@@ -823,21 +858,21 @@ function _card(taskType, rowsForType, payload) {
   head.appendChild(_operationalKnob(taskType, live, blockerEntryForKnob));
   card.appendChild(head);
 
-  const ladderLine = document.createElement('p');
-  ladderLine.className = 'delegation-ladder-line';
-  const ladderLabel = document.createElement('span');
-  ladderLabel.className = 'delegation-ladder-label';
-  ladderLabel.textContent = 'Ladder: ';
-  ladderLine.appendChild(ladderLabel);
   const ladder = (payload.ladders || {})[taskType] || [];
   const generated = (payload.generated_ladders || {})[taskType] || [];
   const pins = payload.pins || {};
   const isPinned = taskType in pins;
-  ladderLine.appendChild(_ladderElement(ladder, rowsForType));
-  card.appendChild(ladderLine);
 
-  // Ladder editor row: pin badge, rung selects, sync/revert/save.
-  card.appendChild(_ladderEditor(taskType, ladder, generated, rowsForType, isPinned, payload));
+  // One line, not two. This used to print the ladder twice for a pinned type:
+  // once as static text and again directly underneath as the selects that
+  // edit it. That is safe to merge because CapabilityTable.ladder() returns
+  // `list(self._pins[task_type])` verbatim when a pin exists, so the effective
+  // ladder and the pinned one cannot disagree -- if that ever stops being
+  // true, this has to show the effective ladder with the pin marked, not the
+  // pin alone. Unpinned, the editor is just a "Pin" button, so the same row
+  // carries the static rungs and that button.
+  card.appendChild(
+    _ladderEditor(taskType, ladder, generated, rowsForType, isPinned, payload));
 
   const blockerEntry = (payload.blockers || {})[taskType];
   card.appendChild(_blockerElement(blockerEntry, taskType));
@@ -982,20 +1017,37 @@ async function _setCeilingEnforcement(enabled, knob) {
 
 /** The status band's enforcement knob, built from the same `toggle-knob`
  *  component the per-card operational knobs use. */
+/** A knob's caption: its name, and under it the value and enforcement state.
+ *
+ *  One line of 11px mono made the name, the number and the word "enforced"
+ *  equally weighted, so the band read as a row of similar-looking facts and
+ *  the switches did not stand out as things you could change. Splitting the
+ *  name onto its own line is what lets the value stay quiet underneath it. */
+function _knobText(name, detail) {
+  const text = document.createElement('span');
+  text.className = 'delegation-knob-text';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'delegation-knob-name';
+  nameEl.textContent = name;
+  const detailEl = document.createElement('span');
+  detailEl.className = 'delegation-knob-detail';
+  detailEl.textContent = detail;
+  text.append(nameEl, detailEl);
+  return text;
+}
+
 function _ceilingKnob(state) {
   const wrap = document.createElement('div');
   wrap.className = 'delegation-ceiling-knob';
-  const label = document.createElement('span');
-  label.className = 'delegation-fact';
   // Carries the ceiling's VALUE as well as its state, because this replaces
   // the plain `latency ceiling: 1500s` fact rather than sitting beside it --
   // two facts both opening with "latency ceiling" read as two unrelated
   // settings, and the knob looked like it governed something else.
   const value = state.ceiling_s === null || state.ceiling_s === undefined
-    ? 'latency ceiling' : `latency ceiling: ${state.ceiling_s}s`;
-  label.textContent = state.enabled
-    ? `${value} — enforced`
-    : `${value} — reported, not enforced`;
+    ? '—' : `${state.ceiling_s}s`;
+  const label = _knobText(
+    'Latency ceiling',
+    state.enabled ? `${value} — enforced` : `${value} — reported, not enforced`);
   const knob = document.createElement('button');
   knob.type = 'button';
   knob.className = 'toggle-knob';
@@ -1017,8 +1069,9 @@ function _ceilingKnob(state) {
     _setCeilingEnforcement(
       knob.getAttribute('aria-pressed') !== 'true', knob);
   });
-  wrap.appendChild(label);
-  wrap.appendChild(knob);
+  // Knob before caption: the control is the point of the cell, and a switch
+  // that trails its own label reads as an afterthought.
+  wrap.append(knob, label);
   return wrap;
 }
 
@@ -1061,13 +1114,11 @@ async function _setBudgetEnforcement(enabled, knob) {
 function _budgetKnob(state, budgetUsd) {
   const wrap = document.createElement('div');
   wrap.className = 'delegation-budget-knob';
-  const label = document.createElement('span');
-  label.className = 'delegation-fact';
   const value = budgetUsd === null || budgetUsd === undefined
-    ? 'tree budget' : `tree budget: $${budgetUsd}`;
-  label.textContent = state.enabled
-    ? `${value} — enforced`
-    : `${value} — reported, not enforced`;
+    ? '—' : `$${budgetUsd} / tree`;
+  const label = _knobText(
+    'Tree budget',
+    state.enabled ? `${value} — enforced` : `${value} — reported, not enforced`);
   const knob = document.createElement('button');
   knob.type = 'button';
   knob.className = 'toggle-knob';
@@ -1089,8 +1140,8 @@ function _budgetKnob(state, budgetUsd) {
     _setBudgetEnforcement(
       knob.getAttribute('aria-pressed') !== 'true', knob);
   });
-  wrap.appendChild(label);
-  wrap.appendChild(knob);
+  // Knob first, matching _ceilingKnob.
+  wrap.append(knob, label);
   return wrap;
 }
 
@@ -1132,10 +1183,17 @@ function _enabledKnob(state) {
   const wrap = document.createElement('div');
   wrap.className = 'delegation-enabled-knob';
   const label = document.createElement('span');
-  label.className = 'delegation-fact';
-  label.textContent = state.enabled
-    ? 'delegation: on'
-    : 'delegation: OFF — nothing below is in effect';
+  label.className = 'delegation-master-label';
+  label.textContent = 'Delegation';
+  if (!state.enabled) {
+    // The off state has to say what it costs. "Delegation" alone next to a
+    // dark switch is not a warning, and this switch turning off means nothing
+    // on the rest of the page is in effect.
+    const off = document.createElement('span');
+    off.className = 'delegation-master-off';
+    off.textContent = 'OFF — nothing below is in effect';
+    label.appendChild(off);
+  }
   const knob = document.createElement('button');
   knob.type = 'button';
   knob.className = 'toggle-knob';
@@ -1192,27 +1250,39 @@ function _renderStatus(payload) {
     items.push(budget === null || budget === undefined
       ? 'tree budget: not available' : `tree budget: $${budget}`);
   }
+  // The band is a strip, not a flat wrap of similar-looking spans: the master
+  // switch sits in its own cell, the two enforcement knobs follow it, and the
+  // read-only facts are pushed to the far end. That ordering used to be a CSS
+  // `order:-1` on the master knob while the markup appended it last -- the
+  // meaning lived in the stylesheet, so reading the JS told you the wrong
+  // order. Here the DOM says what it means.
+  const strip = document.createElement('div');
+  strip.className = 'delegation-strip';
+  const master = document.createElement('div');
+  master.className = 'delegation-strip-master';
+  const rest = document.createElement('div');
+  rest.className = 'delegation-strip-rest';
+  if (payload.enabled) master.appendChild(_enabledKnob(payload.enabled));
+  if (payload.ceiling_enforcement) {
+    rest.appendChild(_ceilingKnob(payload.ceiling_enforcement));
+  }
+  if (payload.budget_enforcement) {
+    rest.appendChild(_budgetKnob(payload.budget_enforcement, budget));
+  }
+  const factWrap = document.createElement('span');
+  factWrap.className = 'delegation-strip-facts';
   items.forEach(text => {
     const span = document.createElement('span');
     span.className = 'delegation-fact';
     span.textContent = text;
-    facts.appendChild(span);
+    factWrap.appendChild(span);
   });
-  // Rendered only when the server sent the field, so an older payload shows
-  // the band unchanged rather than a knob defaulting to a state it never
-  // reported.
-  if (payload.ceiling_enforcement) {
-    facts.appendChild(_ceilingKnob(payload.ceiling_enforcement));
-  }
-  if (payload.budget_enforcement) {
-    facts.appendChild(_budgetKnob(payload.budget_enforcement, budget));
-  }
-  // Last in the DOM but first in meaning: `order: -1` in the stylesheet puts
-  // it ahead of the facts, so the markup stays append-only while the master
-  // switch reads before the things it governs.
-  if (payload.enabled) {
-    facts.appendChild(_enabledKnob(payload.enabled));
-  }
+  rest.appendChild(factWrap);
+  // A strip with no master cell would leave an empty tinted box, so it is only
+  // added when the server actually sent the switch's state.
+  if (master.childElementCount) strip.appendChild(master);
+  strip.appendChild(rest);
+  facts.appendChild(strip);
   // The whole panel is marked when the design is off, so a ladder on this page
   // cannot be mistaken for one that is in effect. It is still SHOWN -- you
   // need to read the table to fix it before turning the switch back on.

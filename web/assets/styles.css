@@ -1407,6 +1407,49 @@ button{touch-action:manipulation}
   font:11px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--muted);
 }
 
+/* Control strip. The master switch governs everything below it, so it gets its
+   own tinted cell behind a divider rather than sitting in the same row as the
+   two knobs it governs -- previously the whole band was one flex wrap and the
+   ordering was expressed by `order:-1` on the master knob, so the markup and
+   the rendered order disagreed. */
+/* nowrap, so the master cell keeps its full height against the rest. Wrapping
+   here dropped the rest onto a second row and left the tinted cell floating
+   against a gap, reading as two unrelated boxes. The rest wraps internally
+   instead, which is where the slack belongs. */
+.delegation-strip {
+  display:flex; align-items:stretch; flex-wrap:nowrap;
+  border:1px solid var(--line); border-radius:8px;
+  background:var(--panel); overflow:hidden;
+}
+.delegation-strip-master {
+  display:flex; align-items:center; gap:10px; padding:10px 14px; flex-shrink:0;
+  background:var(--panel2); border-right:1px solid var(--line);
+}
+/* Narrow screens stack it, where side by side would squeeze both halves. */
+@media (max-width:700px){
+  .delegation-strip { flex-wrap:wrap; }
+  .delegation-strip-master {
+    flex-basis:100%; border-right:0; border-bottom:1px solid var(--line);
+  }
+}
+.delegation-master-label { font-size:13px; font-weight:650; }
+.delegation-master-off { display:block; font-size:11px; font-weight:500; color:var(--bad); }
+.delegation-strip-rest {
+  display:flex; align-items:center; gap:20px; flex:1 1 auto; flex-wrap:wrap;
+  padding:10px 14px; min-width:0;
+}
+/* Name over value, so the switch is not competing with 11px mono for
+   attention and the current setting is readable without decoding a toggle. */
+.delegation-knob-text { display:flex; flex-direction:column; line-height:1.25; min-width:0; }
+.delegation-knob-name { font-size:12px; font-weight:600; }
+.delegation-knob-detail {
+  font:11px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--muted);
+}
+/* Read-only readings sit at the far end, away from the controls. */
+.delegation-strip-facts {
+  margin-left:auto; display:flex; flex-wrap:wrap; gap:4px 14px; text-align:right;
+}
+
 /* Refresh row: identical structure to Backends' .backend-refresh-row, reused
    rather than duplicated -- see web/index.html's backendMap refresh row. */
 #panelDelegation .backend-refresh-row { margin-bottom:14px; }
@@ -1428,10 +1471,20 @@ button{touch-action:manipulation}
   background:var(--warn); color:#fff; font-size:12px; font-weight:700;
   line-height:1;
 }
-.delegation-ladder-line {
-  margin:0 0 8px; font-size:12px; color:var(--muted); overflow-wrap:anywhere;
+/* .delegation-ladder-line is gone: the static ladder and the editor were two
+   lines printing the same ladder, and are now one .delegation-ladder-editor
+   row. The label and rung styles below are still used, on that row. */
+.delegation-ladder-label { color:var(--muted); font-size:12px; }
+.delegation-ladder { display:inline-flex; align-items:center; gap:4px; flex-wrap:wrap; }
+/* The rung's position in the ladder. Quiet enough not to compete with the
+   model id, present enough that the order is stated rather than inferred. */
+.delegation-rung-num {
+  font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
+  color:var(--muted); flex-shrink:0;
 }
-.delegation-ladder-label { color:var(--muted); }
+/* Pushes a trailing group to the end of the merged row. */
+.delegation-ladder-push { margin-left:auto; }
+.delegation-ladder-actions { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
 .delegation-rung {
   color:var(--fg); font:12px ui-monospace,SFMono-Regular,Consolas,monospace;
   border-bottom:1px dotted var(--muted); cursor:default;
@@ -1525,7 +1578,10 @@ button{touch-action:manipulation}
 .delegation-budget-knob { display:inline-flex; align-items:center; gap:8px; }
 /* The master switch reads before the measurements it governs. Appended last in
    delegation.js so the markup stays append-only; `order` does the rest. */
-.delegation-enabled-knob { display:inline-flex; align-items:center; gap:8px; order:-1; flex-basis:100%; }
+/* `order:-1; flex-basis:100%` dropped with the flat facts row: the master
+   switch now leads because .delegation-strip-master is first in the markup,
+   so the order no longer lives in the stylesheet. */
+.delegation-enabled-knob { display:inline-flex; align-items:center; gap:8px; }
 /* Delegation off: the page still shows the table, dimmed, so it reads as a
    thing you are inspecting rather than a thing that is running. The knob
    itself is excluded, or turning it back on would be the hardest control to

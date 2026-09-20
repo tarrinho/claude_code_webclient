@@ -834,7 +834,7 @@ button{touch-action:manipulation}
 [hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 @media(min-width:768px){.sidebar-mobile{display:none}.sidebar-desktop{display:flex}.main{margin-left:var(--sidebar-w)}#menuBtn{display:none}.messages{padding:24px 40px}}
-@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn,.queue-toggle{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}.strip-action{min-width:28px;min-height:28px}}
+@media(pointer:coarse){.btn-icon,.theme-toggle,.btn-logout,.btn-send,.btn-new,.btn-primary,.btn-secondary,.chat-action,.chat-menu button,.retry-btn,.jump-latest,.queue-btn,.queue-toggle,.srv-action-btn{min-width:44px;min-height:44px}#composerInput{min-height:44px;padding:11px 0}.chat-actions,.message-tools{opacity:1}.skill-group-head,.skill-summary-row{min-height:44px}.settings-tab{min-height:44px}.strip-action{min-width:28px;min-height:28px}}
 /* Reclaim chrome on small screens so the scrolling panel gets usable height. */
 @media(max-width:480px){.dialog-backdrop{padding:8px}.dialog{padding:14px;max-height:calc(100dvh - 16px)}.settings-tabs{margin-bottom:12px}.settings-footer{margin-top:12px}}
 @media(max-width:480px){.usage-row{grid-template-columns:minmax(0,1fr) 2.6rem 3.6rem 3.6rem}.usage-row>:nth-child(5){display:none}.usage-turn{grid-template-columns:minmax(0,1fr) 5.5rem auto}.usage-turn>.usage-when,.usage-turn>.usage-turn-model{display:none}}
@@ -843,6 +843,28 @@ button{touch-action:manipulation}
    Inline SVG rather than a chart library: the CSP here is script-src 'self',
    and SVG inherits the theme variables above where a <canvas> would not. */
 .stats-body{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
+/* Server panel actions. This class was referenced from server-stats.js in six
+   places and defined nowhere, so every cleanup button rendered as raw browser
+   default chrome next to an app that has its own button vocabulary. Geometry
+   is .btn-secondary's, so a cleanup button and a Settings button are the same
+   object. The destructive variant is filled rather than outlined: "Stop 3
+   selected" and "Scan" used to be visually identical, which is the worst
+   property a kill button can have. */
+/* justify-self because #cleanupPanel is .stats-body, a single-column grid: a
+   bare button is a grid item and stretched edge to edge without this. No
+   effect on the buttons inside .srv-action-bar, which is flex. */
+.srv-action-btn{min-height:38px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);padding:7px 13px;cursor:pointer;font:inherit;justify-self:start}
+.srv-action-btn:hover:not(:disabled){border-color:var(--muted);background:var(--panel2)}
+.srv-action-btn.primary{border-color:var(--accent);background:var(--accent);color:#fff;font-weight:550}
+.srv-action-btn.primary:hover:not(:disabled){border-color:var(--accent2);background:var(--accent2)}
+.srv-action-btn.danger{border-color:var(--bad);background:var(--bad);color:#fff;font-weight:550}
+.srv-action-btn.danger:hover:not(:disabled){opacity:.9}
+/* Without this a disabled button looked identical to an enabled one, so the
+   execute button with nothing selected read as broken rather than inert. */
+.srv-action-btn:disabled{opacity:.45;cursor:not-allowed}
+/* Separates the actions from the list they act on, so a click target is never
+   flush against the last checkbox row. */
+.srv-action-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .stat-figure{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
 .stat-caption{font-size:12px;font-weight:600;color:var(--fg)}
 .stat-plot{position:relative}

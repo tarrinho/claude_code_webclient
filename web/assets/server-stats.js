@@ -375,7 +375,7 @@ function _renderCleanupDefault(panel) {
   panel.innerHTML = `<div id="cleanupStatus" style="color: var(--muted); font-size: 13px;">
     Click below to scan for reclaimable processes.
   </div>
-  <button id="cleanupScanBtn" class="srv-action-btn" style="margin-top: 8px;">
+  <button id="cleanupScanBtn" class="srv-action-btn primary" style="margin-top: 8px;">
     Scan for reclaimable processes
   </button>`;
   byId('cleanupScanBtn').onclick = () => _scanCleanup(panel);
@@ -428,7 +428,7 @@ function _renderPreview(stats, container) {
       btn.textContent = 'Select processes above';
     } else {
       btn.disabled = false;
-      btn.textContent = `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)}`;
+      btn.textContent = `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)})`;
     }
   }
 
@@ -473,9 +473,10 @@ function _renderPreview(stats, container) {
     html += `<p><strong>Found:</strong> ${parts.join(' · ')}</p>`;
     html += `<p>Estimated memory to free: <strong>${_bytesMb(total_estimated_mb)}</strong></p>`;
     html += listHtml;
-    html += `<button id="cleanupExecuteBtn" class="srv-action-btn" style="margin-top: 8px;">`;
-    html += `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)}`;
-    html += '</button>';
+    html += '<div class="srv-action-bar">';
+    html += `<button id="cleanupExecuteBtn" class="srv-action-btn danger">`;
+    html += `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)})`;
+    html += '</button></div>';
   } else {
     html = '<p style="color: var(--ok);">All processes healthy. Nothing to free.</p>';
   }
@@ -565,7 +566,10 @@ async function _runCleanup(previewStats, container, selectedPids) {
       html += '</ul></details>';
     }
 
-    html += `<button id="cleanupRescan" class="srv-action-btn" style="margin-top: 8px;">Scan again</button>`;
+    // Primary here because it is the only thing left to do on this screen.
+    html += '<div class="srv-action-bar">';
+    html += `<button id="cleanupRescan" class="srv-action-btn primary">Scan again</button>`;
+    html += '</div>';
     container.innerHTML = html;
     container.querySelector('#cleanupRescan').onclick = () => _scanCleanup(container);
   } catch (error) {
@@ -578,12 +582,14 @@ async function _runCleanup(previewStats, container, selectedPids) {
     const notice = document.createElement('p');
     notice.style.color = 'var(--warn)';
     notice.textContent = `Cleanup failed: ${error.message}`;
+    const bar = document.createElement('div');
+    bar.className = 'srv-action-bar';
     const retry = document.createElement('button');
-    retry.className = 'srv-action-btn';
-    retry.style.marginTop = '8px';
+    retry.className = 'srv-action-btn primary';
     retry.textContent = 'Scan again';
     retry.onclick = () => _scanCleanup(container);
-    container.append(notice, retry);
+    bar.appendChild(retry);
+    container.append(notice, bar);
     // Same reason the success path marks it: without this the 30s poll resets
     // the panel and the error disappears before it can be read.
     container.setAttribute('data-cleaned-up', 'true');
@@ -611,12 +617,14 @@ export async function _scanCleanup(container) {
     const notice = document.createElement('p');
     notice.style.color = 'var(--warn)';
     notice.textContent = error.message;
+    const bar = document.createElement('div');
+    bar.className = 'srv-action-bar';
     const retry = document.createElement('button');
-    retry.className = 'srv-action-btn';
-    retry.style.marginTop = '8px';
+    retry.className = 'srv-action-btn primary';
     retry.textContent = 'Scan for reclaimable processes';
     retry.onclick = () => _scanCleanup(container);
-    container.append(notice, retry);
+    bar.appendChild(retry);
+    container.append(notice, bar);
     container.setAttribute('data-cleaned-up', 'true');
   } finally {
     if (btn) {

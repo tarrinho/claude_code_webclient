@@ -5,7 +5,7 @@
 // going stale, per specs_gallery.py's own discover_specs() docstring.
 import {apiFetch} from './api.js?v=2741508';
 import {_showConfirmDialog} from './machines.js?v=3055851';
-import {notifyResult} from './server-stats.js?v=6666485';
+import {notifyResult} from './server-stats.js?v=5731908';
 
 const byId = id => document.getElementById(id);
 

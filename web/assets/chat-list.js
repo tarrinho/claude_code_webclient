@@ -146,14 +146,24 @@ export function createChatListController(dependencies) {
   // A set, not an id: several conversations can be mid-turn at once now that a
   // turn survives the user looking somewhere else.
   let activeTurnIds = new Set();
-  // Conversations whose reply landed while the user was elsewhere. Kept here
-  // rather than in the database: "have I read this" is per-browser, and
-  // updated_at already tells us when something changed.
-  let unreadIds = new Set();
+  // Conversations that asked the user something or reported a blocker.
+  //
+  // Derived from the `waiting` bucket of GET /api/orchestrator, which already
+  // classifies web conversations -- the browser was receiving this and using
+  // it only for the Orchestrator section's badge, so the one signal worth
+  // interrupting for never reached the row it belongs to.
+  //
+  // This replaced an "unread" set keyed on updated_at, which fired whenever a
+  // conversation changed while the user was elsewhere. That is output
+  // arriving, and renderSupervisor's own comment already said output is not a
+  // summons: a marker that fires on every reply is one that gets ignored,
+  // which costs the real asks buried among them.
+  let waitingIds = new Set();
   // Conversations whose turn has finished and nobody has sent a new prompt
-  // since. Distinct from unread: unread tracks "have I looked", this tracks
-  // "is it done" -- true even for the chat you are currently viewing, and
-  // cleared the moment you send into it again rather than by opening it.
+  // since. Distinct from needing an answer: that tracks "is a person
+  // required", this tracks "is it done" -- true even for the chat you are
+  // currently viewing, and cleared the moment you send into it again rather
+  // than by opening it.
   let endedIds = new Set();
   let historyEntries = [];
   // {waiting: [...], working: [...]} from GET /api/orchestrator.
@@ -356,51 +366,41 @@ export function createChatListController(dependencies) {
       const dotKey = `${list.id}:${chat.id}`;
       let dot = null;
 
-      if (activeTurnIds.has(chat.id)) {
+      // Order matters, and this tier is deliberately first. A conversation
+      // that asked a question and then started another turn still needs the
+      // person -- ranking "running" above it would hide the one signal the
+      // sidebar exists to surface behind the most common state there is.
+      if (waitingIds.has(chat.id)) {
         dot = _chatDots.get(dotKey);
-        if (dot) {
-          dot.className = 'chat-running';
-          dot.setAttribute('aria-label', 'Response in progress');
-          dot.title = 'Response in progress';
-          dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
-        } else {
+        if (!dot) {
           dot = document.createElement('span');
-          dot.className = 'chat-running';
-          dot.setAttribute('aria-label', 'Response in progress');
-          dot.title = 'Response in progress';
-          dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
           _chatDots.set(dotKey, dot);
         }
+        dot.className = 'chat-needs-answer';
+        dot.setAttribute('aria-label', 'Needs an answer');
+        dot.title = 'Asked you something, or reported it is stuck';
+        dot.removeAttribute('style');
         title.prepend(dot);
-      } else if (chat.terminal_busy) {
+      // Running here and running in its own terminal are one state, not two.
+      // Pedro's rule: if it is working, just pulse. The grey ring that used to
+      // mark terminal work made "something is happening" read two different
+      // ways depending on where it happened, which is a distinction the
+      // sidebar reader does not have to care about.
+      } else if (activeTurnIds.has(chat.id) || chat.terminal_busy) {
+        const inTerminal = !activeTurnIds.has(chat.id);
         dot = _chatDots.get(dotKey);
-        if (dot) {
-          dot.className = 'chat-terminal-busy';
-          dot.setAttribute('aria-label', 'Working in its terminal');
-          dot.title = 'Working in the terminal session running this conversation';
-          dot.removeAttribute('style');
-        } else {
+        if (!dot) {
           dot = document.createElement('span');
-          dot.className = 'chat-terminal-busy';
-          dot.setAttribute('aria-label', 'Working in its terminal');
-          dot.title = 'Working in the terminal session running this conversation';
           _chatDots.set(dotKey, dot);
         }
-        title.prepend(dot);
-      } else if (unreadIds.has(chat.id)) {
-        dot = _chatDots.get(dotKey);
-        if (dot) {
-          dot.className = 'chat-unread';
-          dot.setAttribute('aria-label', 'New reply');
-          dot.title = 'Replied while you were elsewhere';
-          dot.removeAttribute('style');
-        } else {
-          dot = document.createElement('span');
-          dot.className = 'chat-unread';
-          dot.setAttribute('aria-label', 'New reply');
-          dot.title = 'Replied while you were elsewhere';
-          _chatDots.set(dotKey, dot);
-        }
+        dot.className = 'chat-running';
+        dot.setAttribute('aria-label', 'Working');
+        dot.title = inTerminal
+          ? 'Working in the terminal session running this conversation'
+          : 'Response in progress';
+        // Kept from the original: a shared start offset so every pulse on the
+        // page beats together rather than shimmering out of phase.
+        dot.style.animationDelay = `-${(Date.now() % 1200) / 1000}s`;
         title.prepend(dot);
       } else if (endedIds.has(chat.id)) {
         dot = _chatDots.get(dotKey);
@@ -465,7 +465,7 @@ export function createChatListController(dependencies) {
         title.append(mic);
       }
       // Independent of the leading-dot chain above (running/terminal-busy/
-      // unread/ended/free): a chat can be actively running right now and
+      // needs-answer/running/ended/free): a chat can be actively running and
       // still carry a degraded flag from an earlier turn's silent write
       // failure -- the two facts do not exclude each other, so this is a
       // second, trailing marker rather than another tier in that chain.
@@ -978,6 +978,15 @@ export function createChatListController(dependencies) {
       waiting: Array.isArray(state?.waiting) ? state.waiting : [],
       working: Array.isArray(state?.working) ? state.working : [],
     };
+    // The same feed drives the per-row dot. Only `kind === "chat"` entries:
+    // the bucket also carries CLI/terminal sessions, whose ids are session
+    // ids and would never match a chat id -- filtering by kind says that on
+    // purpose rather than relying on the sets happening not to collide.
+    waitingIds = new Set(
+      orchestrator.waiting
+        .filter(entry => entry && entry.kind === 'chat' && entry.id)
+        .map(entry => entry.id),
+    );
     render();
   }
 
@@ -986,14 +995,6 @@ export function createChatListController(dependencies) {
     if (next.size === activeTurnIds.size
         && [...next].every(id => activeTurnIds.has(id))) return;
     activeTurnIds = next;
-    render();
-  }
-
-  function setUnread(ids) {
-    const next = new Set(ids || []);
-    if (next.size === unreadIds.size
-        && [...next].every(id => unreadIds.has(id))) return;
-    unreadIds = next;
     render();
   }
 
@@ -1097,7 +1098,6 @@ export function createChatListController(dependencies) {
     setOnMessageSearch,
     setMessageResults,
     setActiveTurns,
-    setUnread,
     setEnded,
     clearEnded,
     setHistory,

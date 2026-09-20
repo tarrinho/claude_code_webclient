@@ -215,18 +215,26 @@ button{touch-action:manipulation}
 .queue-toggle{font-size:.72rem;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);cursor:pointer;min-height:26px}
 .queue-toggle:hover{border-color:var(--accent)}
 .queue-toggle[data-held="yes"]{border-color:var(--warn);color:var(--warn)}
-/* A conversation whose linked terminal is working. Same size as the running dot
-   so rows do not shift, but outlined: there is nothing here to attach to. */
-.chat-terminal-busy{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--muted);box-sizing:border-box;vertical-align:middle}
-/* Replied while you were elsewhere: same footprint as the running dot so the
-   row does not shift when a turn finishes, but hollow and still. */
-.chat-unread{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;border:2px solid var(--accent);box-sizing:border-box;vertical-align:middle}
+/* Asked you something, or reported it is stuck. The only marker in this set
+   that is a genuine summons.
+
+   Same 10px filled footprint as the running dot and deliberately NOT animated:
+   motion means "running", colour means "you". Giving this one its own pulse
+   would put two animations side by side competing for the same glance, which
+   is how the previous set became noise. Amber rather than red because it is a
+   request, not a failure -- var(--warn) is already the page's "needs you"
+   colour on the delegation knobs and the queue bar.
+
+   .chat-terminal-busy was removed with it: a conversation working in its own
+   terminal now shows the running pulse, because working is working and the
+   reader does not have to care where. */
+.chat-needs-answer{display:inline-block;width:10px;height:10px;margin-right:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 6px 1px var(--warn);vertical-align:middle}
 /* A quiet "it finished" for a chat you already know about. Green
    (var(--ok)) for the same reason a diff adds lines in green: it is a
    completion, not a warning. */
 .chat-ended{display:inline-block;width:11px;margin-right:6px;font-size:11px;line-height:1;color:var(--ok);vertical-align:middle}
 .chat-ended::before{content:'↗'}
-/* Lowest tier of all: nothing running, busy, unread, just-finished or queued.
+/* Lowest tier of all: nothing running, needing an answer, just-finished or queued.
    A hollow circle rather than a filled dot -- every other indicator here
    fills or glows to say "look at this"; this one is the one state that
    should read as calm, so it stays a plain outline in --muted, no motion. */

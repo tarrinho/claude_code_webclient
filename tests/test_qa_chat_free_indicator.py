@@ -67,10 +67,27 @@ class ChatFreeIndicatorSourceTests(unittest.TestCase):
     def test_the_branch_comes_after_every_busier_tier(self):
         """Source order is the priority order here -- an earlier if/else
         branch wins, so chat-free must be textually last in the chain.
+
+        The tiers above it changed on 2026-09-20. `unreadIds` was removed
+        entirely: it fired whenever a conversation changed while the user was
+        elsewhere, which marks output arriving rather than anything needing a
+        person. `waitingIds` took the top of the chain, and `terminal_busy`
+        stopped being its own tier -- it now shares the running branch,
+        because working is working wherever it happens. See
+        tests/test_qa_chat_highlight_rules.py for the rule those follow.
+
+        The markers are the full branch statements, not the bare conditions.
+        `activeTurnIds.has(chat.id)` also appears in the `_isActive` helper
+        near the top of the module, so matching on the condition alone found
+        that definition rather than the branch and made the comparison
+        meaningless -- it passed only because the helper happens to sit above
+        the whole chain.
         """
         order = [self.chat_list.index(marker) for marker in (
-            "activeTurnIds.has(chat.id)", "chat.terminal_busy",
-            "unreadIds.has(chat.id)", "endedIds.has(chat.id)", "chat-free",
+            "if (waitingIds.has(chat.id)) {",
+            "} else if (activeTurnIds.has(chat.id) || chat.terminal_busy) {",
+            "} else if (endedIds.has(chat.id)) {",
+            "chat-free",
         )]
         self.assertEqual(order, sorted(order))
 

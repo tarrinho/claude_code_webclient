@@ -6,7 +6,7 @@
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
-import {createChatListController} from './chat-list.js?v=13606856';
+import {createChatListController} from './chat-list.js?v=14540077';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=8067332';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
@@ -764,27 +764,17 @@ function findChat(id) {
   return state.chats.find(chat => chat.id === id);
 }
 
-// Per-conversation "last time I looked", so a reply that arrived while the user
-// was in another conversation can be marked. Compared against updated_at, which
-// a finished turn already bumps -- no schema change, and it is a per-browser
-// question anyway.
-const seenKey = id => `wc_seen_${id}`;
-
-function markSeen(chatId, updatedAt) {
-  if (chatId && updatedAt) storageSet(seenKey(chatId), updatedAt);
-}
-
-function unreadChatIds(chats) {
-  return chats
-    .filter(chat => {
-      if (chat.id === state.currentChat?.id) return false;
-      const seen = storageGet(seenKey(chat.id));
-      // Never opened is not unread: otherwise every conversation in the sidebar
-      // lights up on a new browser.
-      return seen ? String(chat.updated_at) !== seen : false;
-    })
-    .map(chat => chat.id);
-}
+// The per-conversation "last time I looked" bookkeeping that used to live here
+// -- seenKey/markSeen/unreadChatIds, backed by wc_seen_<id> in localStorage --
+// is gone. It existed only to drive the sidebar's unread dot, which fired
+// whenever a conversation changed while the user was elsewhere. That marks
+// output arriving, and output arriving is not a summons; a dot that fires on
+// every reply is one that gets ignored, which costs the real asks buried among
+// them. The sidebar now marks only what needs a person, from the `waiting`
+// bucket of GET /api/orchestrator.
+//
+// Nothing else read those keys, so the writes went with the reads rather than
+// leaving localStorage accumulating values no code consults.
 
 // "Ended" tracks a running -> not-running transition, not a snapshot: a chat
 // that has simply never run must not show it, only one that just stopped.
@@ -838,7 +828,6 @@ async function refreshChats() {
   // Which conversations are busy is server state now -- a turn outlives the tab
   // that started it, so the open page cannot know on its own.
   listController.setActiveTurns(state.chats.filter(c => c.running).map(c => c.id));
-  listController.setUnread(unreadChatIds(state.chats));
   listController.setEnded(updateEndedTracking(state.chats));
   listController.render(state.chats, state.currentChat?.id);
 }
@@ -882,8 +871,6 @@ function updateCurrentUi(chat) {
   // voice-handoff.js cannot hear that the open chat changed.
   window.voiceConversation?.refreshControls?.();
   storageSet('wc_last_chat', chat.id);
-  markSeen(chat.id, chat.updated_at);
-  listController.setUnread(unreadChatIds(state.chats));
   listController.render(state.chats, chat.id);
   // chat.model is the routing PIN and empty for almost every conversation;
   // last_model_used is what actually answered its last turn. Falling back to

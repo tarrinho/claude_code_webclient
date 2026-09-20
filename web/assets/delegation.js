@@ -21,7 +21,7 @@ import {notifyResult} from './server-stats.js?v=7485924';
 // Static import of app.js is safe here and is what server-stats.js already
 // does: app.js reaches this module through a dynamic `await import()`, so
 // there is no static cycle between the two.
-import {showToast} from './app.js?v=11484994';
+import {showToast} from './app.js?v=5926217';
 
 const byId = id => document.getElementById(id);
 

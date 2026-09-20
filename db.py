@@ -39,11 +39,34 @@ _holds_write_lock: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+#: The loop the lock above belongs to. asyncio.Lock binds itself to the first
+#: event loop that *contends* on it and raises "is bound to a different event
+#: loop" for every later loop that does -- an uncontended acquire never touches
+#: the loop, which is why this hid until two tasks raced.
+_db_write_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
 async def _ensure_lock() -> asyncio.Lock:
-    """Create (or reuse) the write serialisation lock."""
-    global _db_write_lock
-    if _db_write_lock is None:
+    """Create (or reuse) the write serialisation lock for the running loop.
+
+    A module-global Lock survives longer than the loop that bound it. In
+    production that is harmless -- one loop runs for the life of the process --
+    but every test gets a fresh loop, so the first test that contended on this
+    lock bound it, and every later one that contended died on
+    ``RuntimeError: ... is bound to a different event loop``. Re-created when
+    the running loop changes, because a lock belonging to a closed loop
+    serialises nothing and can only raise.
+
+    Two loops running at once in one process would get a lock each and would
+    not serialise against each other. That is correct here rather than merely
+    tolerable: ``db_conn`` is an aiosqlite connection bound to a single loop,
+    so there is no cross-loop writing for a shared lock to protect.
+    """
+    global _db_write_lock, _db_write_lock_loop
+    loop = asyncio.get_running_loop()
+    if _db_write_lock is None or _db_write_lock_loop is not loop:
         _db_write_lock = asyncio.Lock()
+        _db_write_lock_loop = loop
     return _db_write_lock
 
 

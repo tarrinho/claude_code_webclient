@@ -481,7 +481,15 @@ async def lifespan(app: FastAPI):
         _log.info("admin user already exists or not configured")
     # History has to accumulate while nobody is watching, or the Server page
     # can only ever chart the moments someone had the tab open.
-    sysstats.start(db.system_sample_insert)
+    #
+    # config.LIGHT_SERVER gates this and the other three background workers
+    # below (tunnel_manager, the auto-answer poller, the usage-import loop): a
+    # test uvicorn spawned per browser class does not need any of them, and
+    # skipping them keeps each throwaway server small enough to hold alongside
+    # the live server on this 3.73 GB box. Off in production. Every matching
+    # stop() in the shutdown block guards on "never started" and no-ops.
+    if not config.LIGHT_SERVER:
+        sysstats.start(db.system_sample_insert)
     # Tunnel manager: background SSH tunnel lifecycle for ssh_proxy machines.
     import tunnel_manager
     # Unlike sysstats.start() just above (a sync function), tunnel_manager's
@@ -509,15 +517,17 @@ async def lifespan(app: FastAPI):
     # NOT the same mistake as calling it bare: that created a coroutine and
     # discarded it, so the manager never existed. create_task schedules it and
     # the reference is held below, so it runs -- just not in the critical path.
-    _startup_tasks.append(asyncio.create_task(
-        tunnel_manager.start(db.system_sample_insert), name="tunnel_manager.start",
-    ))
-    _startup_tasks[-1].add_done_callback(_log_startup_task)
+    if not config.LIGHT_SERVER:
+        _startup_tasks.append(asyncio.create_task(
+            tunnel_manager.start(db.system_sample_insert), name="tunnel_manager.start",
+        ))
+        _startup_tasks[-1].add_done_callback(_log_startup_task)
     # Answers permission and plan-approval prompts for chats whose owner armed
     # this. The lookups are injected from routes.chats rather than imported by
     # auto_answer, so that module carries no routes dependency and no cycle --
     # see docs/superpowers/specs/2026-09-02-auto-answer-knob-design.md.
-    auto_answer.start(_auto_answer_pending, _pending_options, _deliver_answer)
+    if not config.LIGHT_SERVER:
+        auto_answer.start(_auto_answer_pending, _pending_options, _deliver_answer)
     # Rate limiter cleanup background task.
     rate_limit.start_cleanup(interval_s=300.0)
     # Auto-answer cooldown cleanup background task.
@@ -619,9 +629,10 @@ async def lifespan(app: FastAPI):
                 _log.exception("cli usage import failed; retrying next tick")
             await asyncio.sleep(config.USAGE_IMPORT_INTERVAL_S)
 
-    _startup_tasks.append(asyncio.create_task(
-        _usage_import_loop(), name="usage_import"))
-    _startup_tasks[-1].add_done_callback(_log_startup_task)
+    if not config.LIGHT_SERVER:
+        _startup_tasks.append(asyncio.create_task(
+            _usage_import_loop(), name="usage_import"))
+        _startup_tasks[-1].add_done_callback(_log_startup_task)
 
     # Spec 1.1. Fails loudly rather than routing on bad data.
     #

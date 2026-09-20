@@ -150,6 +150,15 @@ PROXY_TOKEN = _str("WC_PROXY_TOKEN")
 # continuous loop. The UI-triggered half of transport sync (the Sync button)
 # is unaffected by this flag and still works.
 SYNC_REQUEST_WATCHER_ENABLED = _bool("WC_SYNC_REQUEST_WATCHER", False)
+# Lightweight server mode for test uvicorns. When on, the lifespan startup
+# skips the background workers that a browser test never exercises but that
+# each add steady-state RSS/CPU (and, for tunnel_manager, an SSH pass to every
+# transport at boot): the sysstats sampler, tunnel_manager, the auto-answer
+# poller and the 30s CLI-usage import loop. Off in production, so a real server
+# is unchanged; set to 1 by tests/test_frontend_browser.py's _BrowserFixture so
+# each per-class test uvicorn is far cheaper to hold alongside the live server.
+# The matching stop() calls all guard on "never started" and no-op cleanly.
+LIGHT_SERVER = _bool("WC_LIGHT_SERVER", False)
 # Interval when it is enabled. 10s was the shipped value and is far too
 # aggressive for the current whole-file implementation; defence in depth for
 # whoever flips the flag before the redesign lands.

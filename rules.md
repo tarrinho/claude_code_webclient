@@ -36,19 +36,45 @@ MAX_SWAP_PCT="${WC_PREFLIGHT_MAX_SWAP_PCT:-80}"
 STATE="${WC_PREFLIGHT_STATE:-${TMPDIR:-/tmp}/wc-rules-preflight-$(id -u)}"
 
 # Readings. The overrides exist for the test; a real run reads /proc.
-MEM_KB="${WC_PREFLIGHT_MEM_KB:-$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)}"
-SWAP_TOTAL="${WC_PREFLIGHT_SWAP_TOTAL:-$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)}"
-SWAP_FREE="${WC_PREFLIGHT_SWAP_FREE:-$(awk '/^SwapFree:/{print $2}' /proc/meminfo)}"
+# Wrapped in a function so the verdict can be taken again after a reclaim,
+# from the same code, rather than a second hand-copied copy that could drift.
+_preflight_read() {
+  MEM_KB="${WC_PREFLIGHT_MEM_KB:-$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)}"
+  SWAP_TOTAL="${WC_PREFLIGHT_SWAP_TOTAL:-$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)}"
+  SWAP_FREE="${WC_PREFLIGHT_SWAP_FREE:-$(awk '/^SwapFree:/{print $2}' /proc/meminfo)}"
+  if [ "${SWAP_TOTAL:-0}" -gt 0 ] 2>/dev/null; then
+    SWAP_PCT=$(( (SWAP_TOTAL - SWAP_FREE) * 100 / SWAP_TOTAL ))
+  else
+    SWAP_PCT=0
+  fi
+  REASONS=""
+  [ "${MEM_KB:-0}" -lt "$MIN_MEM_KB" ] 2>/dev/null && REASONS="${REASONS}only $((MEM_KB/1024)) MB available (need $((MIN_MEM_KB/1024)) MB); "
+  [ "$SWAP_PCT" -gt "$MAX_SWAP_PCT" ] && REASONS="${REASONS}swap at ${SWAP_PCT}% (limit ${MAX_SWAP_PCT}%); "
+}
 
-if [ "${SWAP_TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-  SWAP_PCT=$(( (SWAP_TOTAL - SWAP_FREE) * 100 / SWAP_TOTAL ))
-else
-  SWAP_PCT=0
+_preflight_read
+
+# Self-heal once, against the most common cause of a tight box: orphan test
+# processes left by a previous run that was Killed or Ctrl-C'ed. Reclaimed here
+# -- before the verdict -- only when the first reading is short, and only
+# orphans: stray pytest / "python ... test" processes and stale Chromium tabs
+# (alive >60s, >50MB RSS). It never touches a `claude` session (a peer's work)
+# or the live server, so it cannot cost anyone else their run. The reading is
+# then taken again and the verdict is decided on the second value. Skipped
+# entirely under the test overrides (a re-read would return the same injected
+# numbers) and by WC_PREFLIGHT_NO_RECLAIM=1.
+if [ -n "$REASONS" ] && [ -z "${WC_PREFLIGHT_MEM_KB:-}" ] && [ -z "${WC_PREFLIGHT_NO_RECLAIM:-}" ]; then
+  echo "preflight: tight box ($((MEM_KB/1024))MB) -- reclaiming orphan test processes before deciding"
+  ps aux | grep -E 'pytest|python.*test' | grep -v grep | grep -v claude | awk '{print $2}' | xargs -r kill -9 2>/dev/null || true
+  for pid in $(pgrep -u "$(id -u)" chrome chromium 2>/dev/null); do
+    rss=$(awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null) || continue
+    started=$(stat -c %Y "/proc/$pid" 2>/dev/null) || continue
+    elapsed=$(( $(date +%s) - started ))
+    if [ "${rss:-0}" -gt 51200 ] && [ "$elapsed" -gt 60 ]; then kill -TERM "$pid" 2>/dev/null || true; fi
+  done
+  sleep 1
+  _preflight_read
 fi
-
-REASONS=""
-[ "${MEM_KB:-0}" -lt "$MIN_MEM_KB" ] 2>/dev/null && REASONS="${REASONS}only $((MEM_KB/1024)) MB available (need $((MIN_MEM_KB/1024)) MB); "
-[ "$SWAP_PCT" -gt "$MAX_SWAP_PCT" ] && REASONS="${REASONS}swap at ${SWAP_PCT}% (limit ${MAX_SWAP_PCT}%); "
 
 echo "preflight: MemAvailable=$((MEM_KB/1024))MB swap=${SWAP_PCT}% load=$(cut -d' ' -f1 /proc/loadavg) cpus=$(nproc)"
 

@@ -106,6 +106,15 @@ class _BrowserFixture(unittest.TestCase):
     test methods re-runs every one of them under the new name.
     """
 
+    #: Spawn each test uvicorn in config.LIGHT_SERVER mode -- no sysstats
+    #: sampler, no tunnel_manager (which otherwise opens an SSH pass to every
+    #: transport at boot), no auto-answer poller, no 30s usage-import loop.
+    #: A browser test never exercises those, and skipping them keeps each
+    #: per-class server small enough to hold beside the live server on this
+    #: 3.73 GB box. A subclass that genuinely needs one of those workers
+    #: running sets ``LIGHT_SERVER = False`` to opt out.
+    LIGHT_SERVER = True
+
     @classmethod
     def setUpClass(cls):
         # Explicit try/except rather than addClassCleanup. The boot loop below
@@ -178,6 +187,9 @@ class _BrowserFixture(unittest.TestCase):
             "WC_SPECS_CACHE_TTL_S": "0",
             # The test server is plain HTTP on loopback.
             "WC_COOKIE_ALLOW_INSECURE": "1",
+            # Skip the background workers this test never uses -- see the
+            # LIGHT_SERVER class attribute. Per-class opt-out via that flag.
+            "WC_LIGHT_SERVER": "1" if cls.LIGHT_SERVER else "0",
         }
         # A file, not a PIPE. Nothing here ever reads the server's output, and
         # an unread pipe holds only 64K -- past that uvicorn blocks forever on
@@ -260,8 +272,20 @@ class _BrowserFixture(unittest.TestCase):
         self.errors: list[str] = []
         self._pw = sync_playwright().start()
         self.addCleanup(self._pw.stop)
+        # Memory-limiting flags. --single-process collapses Chromium's normal
+        # ~5-process model (browser, renderer, gpu, utility, zygote) into one,
+        # the single biggest per-test RAM cut; the rest drop caches and helpers
+        # a loopback page test never needs. These pages are simple local HTML,
+        # so --single-process's flakiness risk on heavy sites does not apply.
         self.browser = self._pw.chromium.launch(
-            executable_path=CHROMIUM, args=["--no-sandbox"]
+            executable_path=CHROMIUM,
+            args=[
+                "--no-sandbox",
+                "--single-process",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+            ],
         )
         self.addCleanup(self.browser.close)
         self.page = self.browser.new_page()

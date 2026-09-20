@@ -949,6 +949,12 @@ async def handle_cleanup_execute(request: Request):
     Accepts {"pids": [pid1, pid2, ...]}. Only kills the listed PIDs. Each
     must appear in the current preview() output, so a stale page cannot kill
     something it never showed.
+
+    A request naming no PID the current preview still offers is refused 400
+    rather than executed. It must never reach ``execute`` as an empty list
+    that could be read as "no filter": this endpoint kills other people's
+    running agents, and the one request that must not become "kill
+    everything" is the one from a page whose PIDs have all gone stale.
     """
     try:
         data = await request.json()
@@ -959,7 +965,18 @@ async def handle_cleanup_execute(request: Request):
     payload_pids: list[int] = data.get("pids", [])
     if not isinstance(payload_pids, list):
         payload_pids = []
-    _token_touched(request.state.session)
+    # Ignore anything that is not a plain int: `True` is an int in Python and
+    # would compare equal to PID 1.
+    payload_pids = [
+        pid for pid in payload_pids
+        if isinstance(pid, int) and not isinstance(pid, bool)
+    ]
+    # No `_token_touched(...)` here. That name is middleware's dict of last-seen
+    # timestamps keyed by API TOKEN ID, not a function, so the call raised
+    # TypeError and this endpoint answered 500 on every request it ever
+    # received -- first as a NameError on an undefined `request`, then, once
+    # the parameter was added, as this. The middleware maintains that cache
+    # itself; a session dict was never a key for it.
     try:
         # Validate every PID against a fresh preview so a stale page cannot
         # kill something that does not exist any more (or was replaced by
@@ -970,6 +987,17 @@ async def handle_cleanup_execute(request: Request):
             for p in preview_result.get(kind, []):
                 valid_pids.add(p["pid"])
         filtered_pids = [pid for pid in payload_pids if pid in valid_pids]
+    except Exception as exc:
+        _log.exception("cleanup preview failed during execute")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if not filtered_pids:
+        raise HTTPException(
+            status_code=400,
+            detail="No selected process is still reclaimable — scan again.",
+        )
+
+    try:
         # Kill only the validated PIDs.
         result = sys_cleanup.execute(pid_filter=filtered_pids)
         return JSONResponse(result)

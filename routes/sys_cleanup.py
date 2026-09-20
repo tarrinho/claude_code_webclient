@@ -22,6 +22,10 @@ from pathlib import Path
 _log = logging.getLogger("wc.app")
 
 _CWD = "/proc"
+# The kind keys `preview` groups rows under. Named once because three places
+# iterate them and a list that disagrees with preview's output silently drops
+# a whole category from a filter or a total.
+_KINDS = ("zombie", "claude", "chrome", "python")
 _KNOWN_SERVICES = {"uvicorn", "caddy"}
 _CLAUDE_SHELL_RE = re.compile(r"wc-claude\.sh")
 _CLAUDE_CLI_RE = re.compile(r"(2\.1\.\d+|claude).*--(dangerously-skip-permissions|--resume)")
@@ -389,23 +393,33 @@ def execute(pid_filter: list[int] | None = None) -> dict:
     """Kill reclaimable processes.
 
     *pid_filter* is a whitelist of PIDs from the current preview. Only those
-    are killed. ``None`` (default, used by tests) kills everything the
-    preview returns — kept for backwards compatibility but **never** wired
-    into the HTTP endpoint.
+    are killed. ``None`` (the default) kills everything the preview returns --
+    kept for backwards compatibility but **never** wired into the HTTP
+    endpoint.
+
+    The test is ``is not None``, not truthiness, and that distinction is the
+    whole safety property: an empty list means "kill nothing", not "no filter
+    supplied". Under `if pid_filter:` the empty list took the unfiltered
+    branch, so a request whose PIDs had all gone stale -- precisely what the
+    route's validation produces, and precisely the stale-page case the
+    validation exists for -- killed every reclaimable process on the host,
+    including other sessions' live agents.
 
     Returns killed[], failed[], freed_mb.
     """
     stats = preview()
-    if pid_filter:
+    if pid_filter is not None:
         allowed = set(pid_filter)
-        for kind in ("zombie", "claude", "chrome", "python"):
+        for kind in _KINDS:
             stats[kind] = [p for p in stats[kind] if p["pid"] in allowed]
-        # Recompute counts and total from the filtered preview
-        stats["counts"] = {k: len(v) for k, v in stats.items()
-                           if k in ("zombie", "claude", "chrome", "python")}
+        # Recompute counts and total from the filtered preview, so the
+        # response describes what was actually acted on. Iterating
+        # `stats.values()` here read `p["rss_mb"]` off the kind LISTS rather
+        # than off the rows inside them and raised TypeError on every
+        # selective kill -- the whole point of the parameter.
+        stats["counts"] = {kind: len(stats[kind]) for kind in _KINDS}
         stats["total_estimated_mb"] = round(
-            sum(p["rss_mb"] for p in stats.values()
-                if isinstance(p, list) and all(isinstance(x, dict) for x in p)) or 0.0, 1
+            sum(row["rss_mb"] for kind in _KINDS for row in stats[kind]), 1
         )
     killed = []
     failed = []

@@ -532,7 +532,16 @@ async function _runCleanup(previewStats, container, selectedPids) {
       method: 'POST',
       body: JSON.stringify({pids: selectedPids}),
     });
-    if (!resp.ok) throw new Error('Cleanup failed');
+    if (!resp.ok) {
+      // Prefer the server's own reason. The 400 raised when every selected
+      // PID has gone stale says what to do about it ("scan again"), and
+      // "Cleanup failed" throws that away and reads like a server fault.
+      let detail = '';
+      try {
+        detail = (await resp.json()).detail || '';
+      } catch { /* not JSON: fall through to the generic message */ }
+      throw new Error(detail || 'Cleanup failed');
+    }
     const result = await resp.json();
     const hasFail = result.failed && result.failed.length > 0;
 
@@ -560,8 +569,24 @@ async function _runCleanup(previewStats, container, selectedPids) {
     container.innerHTML = html;
     container.querySelector('#cleanupRescan').onclick = () => _scanCleanup(container);
   } catch (error) {
-    container.innerHTML = `<p style="color: var(--warn);">Cleanup failed: ${error.message}</p>
-      <button class="srv-action-btn" onclick="window._cleanupRescan()">Scan again</button>`;
+    // Built as nodes with a real listener, not as markup calling
+    // `window._cleanupRescan()`. That name is a module export and was never
+    // assigned to `window`, so the only way back from a failed cleanup was to
+    // reload the page. textContent also keeps a server-supplied message out
+    // of the HTML parser.
+    container.replaceChildren();
+    const notice = document.createElement('p');
+    notice.style.color = 'var(--warn)';
+    notice.textContent = `Cleanup failed: ${error.message}`;
+    const retry = document.createElement('button');
+    retry.className = 'srv-action-btn';
+    retry.style.marginTop = '8px';
+    retry.textContent = 'Scan again';
+    retry.onclick = () => _scanCleanup(container);
+    container.append(notice, retry);
+    // Same reason the success path marks it: without this the 30s poll resets
+    // the panel and the error disappears before it can be read.
+    container.setAttribute('data-cleaned-up', 'true');
   }
 }
 
@@ -599,11 +624,6 @@ export async function _scanCleanup(container) {
       btn.textContent = 'Scan for reclaimable processes';
     }
   }
-}
-
-// Export for onclick binding in _runCleanup's inline HTML.
-export function _cleanupRescan() {
-  _scanCleanup(byId('cleanupPanel'));
 }
 
 export function setStatus(text, type) {

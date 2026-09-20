@@ -1634,6 +1634,9 @@ button{touch-action:manipulation}
 /* Free is a category, not a high score -- coloured differently from 100% so
    the two are not read as the same claim. */
 .delegation-score-free { color:var(--accent); }
+/* Dagger on an assumed cost. Spec 2.6 already marks these in prose; this is
+   the same mark on the table that actually drives routing. */
+.delegation-cost-basis { color:var(--warn); font-weight:700; cursor:help; }
 .delegation-model-name {
   font:12px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--fg);
   white-space:nowrap;

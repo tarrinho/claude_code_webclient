@@ -455,7 +455,7 @@ async def handle_row_put(request: Request):
     # Unknown column names are refused outright, not silently dropped -- a
     # typo in a column name (or a client probing the endpoint) must not read
     # as a successful write of the columns it did recognise.
-    unknown = set(data) - {"model", "task_type"} - set(_EDITABLE)
+    unknown = set(data) - {"model", "task_type", "cost_basis"} - set(_EDITABLE)
     if unknown:
         raise HTTPException(
             status_code=400,
@@ -470,6 +470,23 @@ async def handle_row_put(request: Request):
             else (existing.get(c) if existing else None))
         for c in _EDITABLE
     }
+
+    # The basis follows the number it describes. Stated explicitly, it is
+    # stored. Not stated, it survives only while the cost it annotates is
+    # unchanged -- a new rate arriving without a word about where it came from
+    # makes the old provenance a false claim, and a false claim here is worse
+    # than the silence this column was added to end. This is the whole reason
+    # for the column: gpt-5.6-terra still carries a rate assumed from luna
+    # eight times ago, and nothing in the table can say so.
+    old_cost = existing.get("cost_per_1m_tokens") if existing else None
+    new_cost = merged_columns.get("cost_per_1m_tokens")
+    if "cost_basis" in data:
+        raw_basis = data["cost_basis"]
+        cost_basis = None if raw_basis is None else str(raw_basis).strip()[:200] or None
+    elif existing and old_cost == new_cost:
+        cost_basis = existing.get("cost_basis")
+    else:
+        cost_basis = None
 
     # Validate the resulting table before storing it -- see the module
     # docstring for the scoping rule. The check set is the task types already
@@ -495,7 +512,8 @@ async def handle_row_put(request: Request):
         if problems:
             raise HTTPException(status_code=400, detail="; ".join(problems))
 
-    await db.delegation_row_set(model, task_type, **merged_columns)
+    await db.delegation_row_set(
+        model, task_type, cost_basis=cost_basis, **merged_columns)
     _log.info("delegation_row_set model=%s task_type=%s", model, task_type)
     return JSONResponse({"ok": True})
 

@@ -920,6 +920,17 @@ function _modelTable(rowsForType, columns) {
     columns.forEach(column => {
       const td = document.createElement('td');
       td.appendChild(_cell(row, column));
+      // A cost with a stated basis is marked, because an assumed rate that
+      // looks measured is the defect this column exists to end -- terra has
+      // carried a rate assumed from luna since 2026-09-17 while luna moved
+      // eight times away from it, and nothing on this page could say so.
+      if (column === 'cost_per_1m_tokens' && row.cost_basis) {
+        const mark = document.createElement('span');
+        mark.className = 'delegation-cost-basis';
+        mark.textContent = ' †';
+        mark.title = `Not measured: ${row.cost_basis}`;
+        td.appendChild(mark);
+      }
       tr.appendChild(td);
     });
 

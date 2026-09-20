@@ -1266,6 +1266,22 @@ async def _ensure_orchestrator_columns() -> None:
         "reorder_acked_at": (
             "ALTER TABLE delegation_capability ADD COLUMN reorder_acked_at TEXT"
         ),
+        # Where cost_per_1m_tokens came from. Without this an assumed rate is
+        # indistinguishable from a measured one, and spec 2.6 already carries
+        # the distinction in prose (its dagger markers) while the table that
+        # drives routing did not. That gap has cost real accuracy once:
+        # gpt-5.6-terra was seeded with luna's rate "by operator decision
+        # pending real gateway billing", luna has since moved to 0.037, and
+        # terra still carries the assumed 1.476 -- an eightfold error nothing
+        # could detect, in the column generated_ladder sorts on.
+        #
+        # Free text rather than an enum: the useful value names its anchor
+        # ("assumed-from:azure_ai/gpt-5.6-luna x8.75"), and an enum would flatten
+        # exactly the part that makes staleness checkable. NULL means unstated,
+        # which is what every existing row honestly is.
+        "cost_basis": (
+            "ALTER TABLE delegation_capability ADD COLUMN cost_basis TEXT"
+        ),
     }
     for name, sql in cap_migrations.items():
         if name not in cap_columns:

@@ -15,12 +15,20 @@ from tiered_delegation import CapabilityRow
 
 _COLUMNS = ("accuracy", "n", "cost_per_1m_tokens", "median_latency_s", "max_context")
 
+#: Provenance for `cost_per_1m_tokens`, kept OUT of `_COLUMNS` on purpose.
+#: `_COLUMNS` is spec 2.6's five measured columns -- the set the editor
+#: exposes, the set `_EDITABLE` mirrors, and the set this table's full-row
+#: UPSERT nulls when omitted. `cost_basis` is a note about one of them, not a
+#: sixth measurement, and folding it in would put it in front of an operator
+#: as another number to measure.
+_COST_BASIS = "cost_basis"
+
 
 async def delegation_rows_all() -> list[dict[str, Any]]:
     """Every (model, task_type) row. NULL stays None."""
     cur = await db.db_conn.execute(
         "SELECT model, task_type, accuracy, n, cost_per_1m_tokens, "
-        "median_latency_s, max_context FROM delegation_capability "
+        "median_latency_s, max_context, cost_basis FROM delegation_capability "
         "ORDER BY task_type, model"
     )
     return [dict(row) for row in await cur.fetchall()]
@@ -30,22 +38,28 @@ async def delegation_row_set(model: str, task_type: str, **columns: Any) -> bool
     """Insert or update one row. Unknown column names are refused rather than
     silently dropped -- a typo in a column name would otherwise read as a
     successful write of nothing."""
-    unknown = set(columns) - set(_COLUMNS)
+    unknown = set(columns) - set(_COLUMNS) - {_COST_BASIS}
     if unknown:
         raise ValueError(f"unknown capability columns: {sorted(unknown)}")
     values = {c: columns.get(c) for c in _COLUMNS}
+    # Written like the measured columns -- supplied or nulled -- because this
+    # is a full-row UPSERT and a basis that survived a write it was not part
+    # of would describe a number that is no longer there. The caller decides
+    # what it should say; it is never carried over silently.
+    basis = columns.get(_COST_BASIS)
     await db.db_conn.execute(
         "INSERT INTO delegation_capability "
         "(model, task_type, accuracy, n, cost_per_1m_tokens, median_latency_s, "
-        " max_context, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        " max_context, cost_basis, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(model, task_type) DO UPDATE SET "
         "  accuracy = excluded.accuracy, n = excluded.n, "
         "  cost_per_1m_tokens = excluded.cost_per_1m_tokens, "
         "  median_latency_s = excluded.median_latency_s, "
-        "  max_context = excluded.max_context, updated_at = excluded.updated_at",
+        "  max_context = excluded.max_context, "
+        "  cost_basis = excluded.cost_basis, updated_at = excluded.updated_at",
         (model, task_type, values["accuracy"], values["n"],
          values["cost_per_1m_tokens"], values["median_latency_s"],
-         values["max_context"], db._now()),
+         values["max_context"], basis, db._now()),
     )
     await db.db_conn.commit()
     return True

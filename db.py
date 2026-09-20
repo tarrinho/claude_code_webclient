@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Final
 
 import asyncio
+import contextvars
 import aiosqlite
 
 import config
@@ -19,10 +20,23 @@ import config
 # Serialize writes on the shared aiosqlite connection so coroutines do not
 # collide with "cannot start a transaction within a transaction".  SQLite
 # auto-begins on the first execute(); a second coroutine hitting the same
-# connection without waiting raises that error.  Lock serialises every write
-# path so each coroutine either does the implicit BEGIN itself or waits until
-# the previous one has committed / rolled back.
+# connection without waiting raises that error.  The lock serialises every
+# write path so each coroutine either does the implicit BEGIN itself or waits
+# until the previous one has committed / rolled back.
+#
+# The lock MUST be reentrant within one asyncio task.  Several decorated write
+# functions call other decorated ones -- chat_update -> _fts_rebuild,
+# messages_append -> _fts_index_ids, messages_batch -> chats_reorder,
+# queue_hold_orphans -> queue_counts, chat_routing -> ai_machine_backend.  A
+# plain asyncio.Lock is not reentrant, so the inner acquire would wait forever
+# on the outer's hold -- a deadlock that never releases the lock, hanging every
+# later write and every decorated read (e.g. queue_counts on /api/chats).  The
+# contextvar below records whether the current task already holds the lock, so
+# a nested @db.write runs straight through instead of re-acquiring.
 _db_write_lock: asyncio.Lock | None = None
+_holds_write_lock: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "wc_holds_write_lock", default=False
+)
 
 
 async def _ensure_lock() -> asyncio.Lock:
@@ -34,22 +48,31 @@ async def _ensure_lock() -> asyncio.Lock:
 
 
 async def _write(fn, *args, **kwargs):
-    """Run a DB write inside the serialisation lock.
+    """Run a DB write inside the serialisation lock, reentrantly.
 
     SQLite auto-begins a transaction on the first ``execute()`` of a coroutine;
     a second coroutine hitting the same ``db_conn`` without waiting collides
-    with "cannot start a transaction within a transaction".  This context
-    manager serialises all write paths so each coroutine either does the
-    implicit BEGIN itself or waits until the previous one has committed /
-    rolled back.
+    with "cannot start a transaction within a transaction".  This serialises
+    all write paths so each coroutine either does the implicit BEGIN itself or
+    waits until the previous one has committed / rolled back.
+
+    If the current task already holds the lock (a nested @db.write call), run
+    ``fn`` directly rather than re-acquiring -- asyncio.Lock is not reentrant
+    and re-acquiring would deadlock.
     """
+    if _holds_write_lock.get():
+        return await fn(*args, **kwargs)
     lock = await _ensure_lock()
     async with lock:
-        return await fn(*args, **kwargs)
+        token = _holds_write_lock.set(True)
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _holds_write_lock.reset(token)
 
 
 def write(fn):
-    """Decorator that runs *fn* under the write serialisation lock.
+    """Decorator that runs *fn* under the reentrant write serialisation lock.
 
     Used like::
 
@@ -58,15 +81,11 @@ def write(fn):
             ...
 
     Applied at import time, so no event loop is running when the decorator
-    itself is evaluated — only the wrapped coroutine is awaited later.
+    itself is evaluated -- only the wrapped coroutine is awaited later.
     """
-    import asyncio
-
     if asyncio.iscoroutinefunction(fn):
         async def wrapper(*args, **kwargs):
-            lock = await _ensure_lock()
-            async with lock:
-                return await fn(*args, **kwargs)
+            return await _write(fn, *args, **kwargs)
         return wrapper
     # Fallback for synchronous functions (should not happen in route code).
     return fn

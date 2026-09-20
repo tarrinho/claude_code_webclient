@@ -184,7 +184,9 @@ async def test_put_ladder_rung_count_exceeded(db, test_app):
     body = {"task_type": "coding", "rungs": ["m1", "m2", "m3", "m4", "m5"]}
     resp = await test_app.put("/api/delegation/ladder", json=body)
     assert resp.status_code == 400
-    assert "max" in resp.json()["detail"].lower() or "rung" in resp.json()["detail"].lower()
+    # app.handle_http_exception renders HTTPException.detail as {"error": ...},
+    # so "detail" is the server-side field name, never the wire one.
+    assert "max" in resp.json()["error"].lower() or "rung" in resp.json()["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -193,7 +195,7 @@ async def test_put_ladder_duplicate_rungs(db, test_app):
     body = {"task_type": "coding", "rungs": ["m1", "m1", "m2"]}
     resp = await test_app.put("/api/delegation/ladder", json=body)
     assert resp.status_code == 400
-    assert "duplicate" in resp.json()["detail"].lower()
+    assert "duplicate" in resp.json()["error"].lower()
 
 
 @pytest.mark.asyncio

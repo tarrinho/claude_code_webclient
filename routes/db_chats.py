@@ -690,7 +690,6 @@ async def _fts_index_ids(msg_ids: Sequence[int | None]) -> None:
         return
     marks = ",".join("?" for _ in ids)
 
-@db.write
     async def work() -> None:
         await db.db_conn.execute(
             f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
@@ -726,7 +725,6 @@ async def _fts_forget_ids(msg_ids: Sequence[int | None]) -> None:
         return
     marks = ",".join("?" for _ in ids)
 
-@db.write
     async def work() -> None:
         await db.db_conn.execute(
             f"DELETE FROM messages_fts WHERE rowid IN ({marks})",  # nosec B608
@@ -745,7 +743,6 @@ async def _fts_rebuild(chat_id: str | None = None) -> None:
     this walks every message of the chat.
     """
 
-@db.write
     async def work() -> None:
         if chat_id:
             await db.db_conn.execute(

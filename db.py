@@ -48,6 +48,30 @@ async def _write(fn, *args, **kwargs):
         return await fn(*args, **kwargs)
 
 
+def write(fn):
+    """Decorator that runs *fn* under the write serialisation lock.
+
+    Used like::
+
+        @db.write
+        async def some_write():
+            ...
+
+    Applied at import time, so no event loop is running when the decorator
+    itself is evaluated — only the wrapped coroutine is awaited later.
+    """
+    import asyncio
+
+    if asyncio.iscoroutinefunction(fn):
+        async def wrapper(*args, **kwargs):
+            lock = await _ensure_lock()
+            async with lock:
+                return await fn(*args, **kwargs)
+        return wrapper
+    # Fallback for synchronous functions (should not happen in route code).
+    return fn
+
+
 def __getattr__(name: str):
     """Resolve extracted-db symbols lazily (circular-import guard)."""
     _SYMBOLS: dict[str, str] = {

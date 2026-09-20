@@ -1300,6 +1300,9 @@ SYSTEM_FIELDS: tuple[str, ...] = (
     "mem_used",
     "mem_total",
     "swap_pct",
+    "swap_used",
+    "swap_total",
+    "swap_max",
     "disk_pct",
     "disk_used",
     "disk_total",
@@ -1428,6 +1431,8 @@ async def system_series_by_host(
         "ROUND(MAX(cpu_pct), 1) AS cpu_max, "
         "ROUND(AVG(mem_pct), 1) AS mem_pct, "
         "ROUND(MAX(mem_pct), 1) AS mem_max, "
+        "ROUND(AVG(swap_pct), 1) AS swap_pct, "
+        "ROUND(MAX(swap_pct), 1) AS swap_max, "
         "ROUND(AVG(disk_pct), 1) AS disk_pct, "
         "ROUND(MAX(disk_pct), 1) AS disk_pct_max, "
         "ROUND(AVG(load1), 2) AS load1, "
@@ -1514,6 +1519,7 @@ async def system_series(
         "ROUND(AVG(mem_pct), 1) AS mem_pct, "
         "ROUND(MAX(mem_pct), 1) AS mem_max, "
         "ROUND(AVG(swap_pct), 1) AS swap_pct, "
+        "ROUND(MAX(swap_pct), 1) AS swap_max, "
         "ROUND(AVG(disk_pct), 1) AS disk_pct, "
         "ROUND(MAX(disk_pct), 1) AS disk_pct_max, "
         "CAST(AVG(mem_used) AS INTEGER) AS mem_used, "

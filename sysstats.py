@@ -265,6 +265,8 @@ def to_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "mem_used": snapshot.get("mem_used", 0),
         "mem_total": snapshot.get("mem_total", 0),
         "swap_pct": snapshot.get("swap_pct", 0.0),
+        "swap_total": snapshot.get("swap_total", 0),
+        "swap_used": snapshot.get("swap_used", 0),
         "disk_pct": disk.get("pct", 0.0),
         "disk_used": disk.get("used", 0),
         "disk_total": disk.get("total", 0),

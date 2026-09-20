@@ -252,12 +252,12 @@ function _renderTransportPanel(row) {
   }
 
   // Swap
-  if (row.swap_pct !== null && row.swap_pct !== undefined && row.swap_pct > 0) {
+  if (row.swap_total && row.swap_total > 0) {
     _card(grid, {
       label: 'Swap',
       value: _pctOrDash(row.swap_pct),
       ratio: row.swap_pct,
-      detail: _swapBytesDetail(row),
+      detail: _bytesDetail(row.swap_used, row.swap_total),
     });
   }
 
@@ -352,6 +352,142 @@ export function _duration(s) {
 export function notifyResult(message, type = '') {
   if (settingsVisible) setStatus(message, type === 'error' ? 'error' : 'success');
   else showToast(message, type);
+}
+
+// ── Process cleanup ─────────────────────────────────────────────────────────
+
+const KIND_LABEL = {
+  zombie: 'Zombie/defunct',
+  claude: 'Long-running agent (--resume, idle >2h)',
+  chrome: 'Stale Chrome/Chromium tab',
+  python: 'Stray Python/test process',
+};
+
+function _durationCompact(s) {
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function _bytesMb(n) {
+  return `${n.toFixed(0)} MB`;
+}
+
+/** Render the cleanup preview results in the cleanup status container. */
+function _renderPreview(stats, container) {
+  if (!stats || !stats.counts) {
+    container.innerHTML = '<p style="color: var(--muted);">Scan failed.</p>';
+    return;
+  }
+  const {counts, total_estimated_mb} = stats;
+  const hasAny = Object.values(counts).some(v => v > 0);
+
+  let html = '';
+  if (hasAny) {
+    const parts = [];
+    for (const [kind, count] of Object.entries(counts)) {
+      if (count > 0) {
+        const label = KIND_LABEL[kind] || kind;
+        parts.push(`${label} × ${count}`);
+      }
+    }
+    html += `<p><strong>Found:</strong> ${parts.join(' · ')}</p>`;
+    html += `<p>Estimated memory to free: <strong>${_bytesMb(total_estimated_mb)}</strong></p>`;
+    html += '<details style="margin-top: 6px;">';
+    html += '<summary style="font-size: 12px; color: var(--muted);">Show process details</summary>';
+    html += '<ul style="font-size: 12px; margin: 4px 0; padding-left: 20px;">';
+    for (const [kind, procs] of Object.entries(stats)) {
+      if (kind === 'total_estimated_mb' || kind === 'counts') continue;
+      for (const p of procs) {
+        html += `<li style="color: var(--fg);"><strong>${p.name}</strong> — PID ${p.pid}, `;
+        html += `${_bytesMb(p.rss_mb)}, running ${_durationCompact(p.age_s)}`;
+        if (p.cmdline) html += `, <code style="font-size: 11px;">${p.cmdline.substring(0, 80)}</code>`;
+        html += `</li>`;
+      }
+    }
+    html += '</ul></details>';
+    html += `<button id="cleanupExecuteBtn" class="srv-action-btn" style="margin-top: 8px;">`;
+    html += `Free ~${_bytesMb(total_estimated_mb)}`;
+    html += '</button>';
+  } else {
+    html = '<p style="color: var(--ok);">All processes healthy. Nothing to free.</p>';
+  }
+
+  // Replace content, keeping the button in place
+  container.innerHTML = html;
+
+  const execBtn = container.querySelector('#cleanupExecuteBtn');
+  if (execBtn) {
+    execBtn.onclick = () => _runCleanup(stats, container);
+  }
+}
+
+/** Execute the cleanup and render the result. */
+async function _runCleanup(previewStats, container) {
+  container.innerHTML = '<p>Terminating processes…</p>';
+  try {
+    const resp = await apiFetch('/api/system/cleanup/execute', {method: 'POST'});
+    if (!resp.ok) throw new Error('Cleanup failed');
+    const result = await resp.json();
+    const hasFail = result.failed && result.failed.length > 0;
+
+    let html = '';
+    html += `<p style="color: var(--ok);">Cleaned up.</p>`;
+    html += `<p>Killed: <strong>${result.killed ? result.killed.length : 0}</strong> processes · `;
+    html += `Freed: <strong>${_bytesMb(result.freed_mb || 0)}</strong>`;
+    if (hasFail) {
+      html += ` · Failed: <strong>${result.failed.length}</strong> <span style="color: var(--warn);">`;
+      html += `(check logs)</span>`;
+    }
+    html += '</p>';
+
+    // Show what was actually killed
+    if (result.killed && result.killed.length > 0) {
+      html += '<details><summary style="font-size: 12px; color: var(--muted);">Details</summary>';
+      html += '<ul style="font-size: 12px; padding-left: 20px; margin: 4px 0;">';
+      for (const k of result.killed) {
+        html += `<li style="color: var(--fg);"><strong>${k.kind}</strong> PID ${k.pid}${k.note ? ' — ' + k.note : ''}${k.rss_mb !== undefined ? ` (${_bytesMb(k.rss_mb)})` : ''}</li>`;
+      }
+      html += '</ul></details>';
+    }
+
+    html += `<button id="cleanupRescan" class="srv-action-btn" style="margin-top: 8px;">Scan again</button>`;
+    container.innerHTML = html;
+    container.querySelector('#cleanupRescan').onclick = () => _scanCleanup(container);
+  } catch (error) {
+    container.innerHTML = `<p style="color: var(--warn);">Cleanup failed: ${error.message}</p>
+      <button class="srv-action-btn" onclick="window._cleanupRescan()">Scan again</button>`;
+  }
+}
+
+/** Entry point: fetch preview and render. */
+export async function _scanCleanup(container) {
+  const btn = byId('cleanupScanBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Scanning…';
+  }
+  try {
+    const resp = await apiFetch('/api/system/cleanup/preview');
+    if (!resp.ok) throw new Error('Could not scan processes');
+    const stats = await resp.json();
+    _renderPreview(stats, container);
+  } catch (error) {
+    container.innerHTML = `<p style="color: var(--warn);">${error.message}</p>`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Scan for reclaimable processes';
+    }
+  }
+}
+
+// Export for onclick binding in _runCleanup's inline HTML.
+export function _cleanupRescan() {
+  _scanCleanup(byId('cleanupPanel'));
 }
 
 export function setStatus(text, type) {

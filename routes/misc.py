@@ -25,6 +25,7 @@ import auth
 import config
 import db
 import runner
+import sys_cleanup
 import sysstats
 import transcripts
 from middleware import _token_touched
@@ -926,6 +927,37 @@ async def handle_system_get(request: Request):
     return JSONResponse(snapshot)
 
 
+@router.get("/api/system/cleanup/preview")
+async def handle_cleanup_preview():
+    """GET /api/system/cleanup/preview — what can be reclaimed.
+
+    Returns process lists grouped by kind (zombie, claude, chrome, python),
+    per-process RSS and age, and total_estimated_mb. Does NOT kill anything.
+    """
+    try:
+        stats = sys_cleanup.preview()
+        return JSONResponse(stats)
+    except Exception as exc:
+        _log.exception("cleanup preview failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/system/cleanup/execute")
+async def handle_cleanup_execute():
+    """POST /api/system/cleanup/execute — kill reclaimable processes.
+
+    Returns killed[], failed[], and freed_mb. This is an explicit action —
+    preview() must be called first so the user can see what will happen.
+    """
+    _token_touched(request.state.session)
+    try:
+        result = sys_cleanup.execute()
+        return JSONResponse(result)
+    except Exception as exc:
+        _log.exception("cleanup execute failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 async def _transport_stats(session) -> list[dict[str, Any]]:
     """The last stored sample for each of this owner's SSH transports.
 
@@ -960,6 +992,8 @@ async def _transport_stats(session) -> list[dict[str, Any]]:
             "mem_used": sample.get("mem_used"),
             "mem_total": sample.get("mem_total"),
             "swap_pct": sample.get("swap_pct"),
+            "swap_used": sample.get("swap_used"),
+            "swap_total": sample.get("swap_total"),
             "disk_pct": sample.get("disk_pct"),
             "disk_used": sample.get("disk_used"),
             "disk_total": sample.get("disk_total"),

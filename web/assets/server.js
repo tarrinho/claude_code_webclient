@@ -277,6 +277,17 @@ export function renderHostHistory(container, payload) {
     caption: 'Memory', formatCell: pct,
   });
 
+  const swap = seriesFrom(rows, [
+    {key: 'avg', field: 'swap_pct'},
+    {key: 'peak', field: 'swap_max'},
+  ]);
+  if (swap.series.some(s => s.peak > 0)) {
+    seriesTable(container, swap, {
+      labelFor: key => (key === 'peak' ? 'Peak' : 'Average'),
+      caption: 'Swap', formatCell: pct,
+    });
+  }
+
   const disk = seriesFrom(rows, [
     {key: 'avg', field: 'disk_pct'},
     {key: 'peak', field: 'disk_pct_max'},
@@ -399,6 +410,10 @@ export function renderAllHosts(container, {history, transports}) {
   });
   chart('mem_pct', {
     title: 'Memory', formatValue: pct, formatTip: pct,
+    axisMax: 100, summarize: peakOf(pct),
+  });
+  chart('swap_pct', {
+    title: 'Swap', formatValue: pct, formatTip: pct,
     axisMax: 100, summarize: peakOf(pct),
   });
   chart('disk_pct', {

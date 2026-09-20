@@ -847,6 +847,9 @@ async def init() -> None:
             mem_used      INTEGER NOT NULL DEFAULT 0,
             mem_total     INTEGER NOT NULL DEFAULT 0,
             swap_pct      REAL NOT NULL DEFAULT 0,
+            swap_used     INTEGER NOT NULL DEFAULT 0,
+            swap_total    INTEGER NOT NULL DEFAULT 0,
+            swap_max      REAL NOT NULL DEFAULT 0,
             disk_pct      REAL NOT NULL DEFAULT 0,
             disk_used     INTEGER NOT NULL DEFAULT 0,
             disk_total    INTEGER NOT NULL DEFAULT 0,
@@ -1623,7 +1626,7 @@ async def _ensure_transport_columns() -> None:
 
 
 async def _ensure_system_samples_columns() -> None:
-    """Additive migration: add uptime_s if the table lacks it."""
+    """Additive migration: add new columns to system_samples."""
     cursor = await db_conn.execute("PRAGMA table_info(system_samples)")
     columns = {row["name"] for row in await cursor.fetchall()}
     if "uptime_s" not in columns:
@@ -1631,6 +1634,16 @@ async def _ensure_system_samples_columns() -> None:
             "ALTER TABLE system_samples ADD COLUMN uptime_s REAL NOT NULL DEFAULT 0"
         )
         await db_conn.commit()
+    for col, default in [
+        ("swap_used", "0"),
+        ("swap_total", "0"),
+        ("swap_max", "0"),
+    ]:
+        if col not in columns:
+            await db_conn.execute(
+                f"ALTER TABLE system_samples ADD COLUMN {col} REAL NOT NULL DEFAULT {default}"
+            )
+            await db_conn.commit()
 
 
 # _ensure_usage_columns lived here, and was the copy that ran: a

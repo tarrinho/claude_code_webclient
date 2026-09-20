@@ -497,6 +497,21 @@
         <h3 class="server-section-heading">This console&rsquo;s host</h3>
         <p>Processor, memory and disk on the machine this console runs on, plus what WebConsole itself is using.</p>
         <div class="stats-body" id="serverBody"></div>
+        <!-- Process cleanup: one-click reclaim of idle agents, stale chrome tabs,
+             and stray python/test processes. Shows estimated memory before killing. -->
+        <h3 class="server-section-heading">Process cleanup</h3>
+        <p>
+          Reclaim memory used by idle long-running agents, stale Chrome tabs,
+          and stray test processes. Preview first, then confirm to kill.
+        </p>
+        <div id="cleanupPanel" class="stats-body">
+          <div id="cleanupStatus" style="color: var(--muted); font-size: 13px;">
+            Click below to scan for reclaimable processes.
+          </div>
+          <button id="cleanupScanBtn" class="srv-action-btn" style="margin-top: 8px;">
+            Scan for reclaimable processes
+          </button>
+        </div>
         <!-- One chart per metric, every machine on it, rather than a block of
              charts per machine: the question is which host is struggling, and
              that is a comparison, so the hosts have to share an axis. -->

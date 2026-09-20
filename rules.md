@@ -31,7 +31,7 @@ one shell, empty in the next.
 # >>> preflight-block
 # Thresholds. Overridable so the gate can be tested without waiting for a full
 # box -- the same seam wc-health.sh uses for systemctl (registry #44).
-MIN_MEM_KB="${WC_PREFLIGHT_MIN_MEM_KB:-1048576}"      # 1 GB available
+MIN_MEM_KB="${WC_PREFLIGHT_MIN_MEM_KB:-512000}"       # 500 MB available
 MAX_SWAP_PCT="${WC_PREFLIGHT_MAX_SWAP_PCT:-80}"
 STATE="${WC_PREFLIGHT_STATE:-${TMPDIR:-/tmp}/wc-rules-preflight-$(id -u)}"
 
@@ -50,6 +50,13 @@ _preflight_read() {
   REASONS=""
   [ "${MEM_KB:-0}" -lt "$MIN_MEM_KB" ] 2>/dev/null && REASONS="${REASONS}only $((MEM_KB/1024)) MB available (need $((MIN_MEM_KB/1024)) MB); "
   [ "$SWAP_PCT" -gt "$MAX_SWAP_PCT" ] && REASONS="${REASONS}swap at ${SWAP_PCT}% (limit ${MAX_SWAP_PCT}%); "
+  # Load-bearing under `set -e`, which a real run uses. The two tests above are
+  # the last statements, so without this the function returns their status --
+  # non-zero precisely when the box is HEALTHY (both conditions false) -- and
+  # errexit kills the block before it can record OK. At top level those same
+  # lines are exempt, being the left side of a &&; moving them into a function
+  # is what changed their meaning.
+  return 0
 }
 
 _preflight_read
@@ -152,7 +159,21 @@ if ! grep -q '^OK' "$STATE"; then
 fi
 # Conditions change during a run, so the reading is taken again, not trusted.
 MEM_KB="${WC_PREFLIGHT_MEM_KB:-$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)}"
-MIN_MEM_KB="${WC_PREFLIGHT_MIN_MEM_KB:-2097152}"
+# 500 MB, and it is the same number as the run cap in §14 on purpose: the gate
+# guarantees that much is free, the cap forbids the run from exceeding it, so a
+# run that overruns is killed as exit 137 and the live server is never a
+# candidate for the kernel to pick.
+#
+# It was 2 GB, on the assumption that a test server costs what the live one
+# does (~1 GB). Measured 2026-09-20 rather than assumed, each inside a capped
+# scope: the WC_LIGHT_SERVER test uvicorn peaks at 129 MB, single-process
+# Chromium plus its driver at 175 MB, and a whole browser flow -- boot, launch,
+# navigate, log in, render -- peaks at 302 MB end to end and completes under a
+# 500 MB cap. The old figure conflated the live server's working set (a 187 MB
+# production database, 105,980 messages, the background workers) with a test
+# server that starts on an empty throwaway database and, since the
+# LIGHT_SERVER change, runs none of those workers.
+MIN_MEM_KB="${WC_PREFLIGHT_MIN_MEM_KB:-512000}"
 if [ "${MEM_KB:-0}" -lt "$MIN_MEM_KB" ] 2>/dev/null; then
   printf 'ABORT\tmemory fell to %s MB during the run\n' "$((MEM_KB/1024))" > "$STATE"
   echo "STOP: memory fell to $((MEM_KB/1024)) MB since §0 — do not start the suite"
@@ -707,7 +728,11 @@ time is what lowers it.
 ```bash
 # >>> capped-run-block
 # WC_TEST_CMD is the seam the test uses; a real run leaves it unset.
-CAP="${WC_TEST_MEMORY_MAX:-1G}"
+# 500M, matching §0b's floor exactly: the gate guarantees that much is free and
+# this forbids the run from using more, so the two cannot disagree. A cap above
+# the floor would let a run spend memory the gate never checked for, which is
+# the gap that makes an OOM the host's problem instead of the run's.
+CAP="${WC_TEST_MEMORY_MAX:-500M}"
 # The browser exclusions are in the DEFAULT, not only in the slices. Left to
 # the slices alone, invoking this with PYTEST_SLICE unset runs the whole suite
 # including the browser layer -- which is the invocation that was killed twice.

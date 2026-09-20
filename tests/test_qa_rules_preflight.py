@@ -82,7 +82,13 @@ class PreflightStopsAFullBoxTests(unittest.TestCase):
     def test_low_memory_aborts_with_a_nonzero_exit(self):
         """The exit code is the stop. Output alone can be read past."""
         result = self._run(
-            WC_PREFLIGHT_MEM_KB=str(600 * 1024),   # 600 MB, the real reading
+            # 300 MB. Below the 500 MB floor -- which is where this number has
+            # to sit, and it used to be 600 MB against the old 1 GB floor. The
+            # floor dropped once the suite's real cost was measured (a
+            # LIGHT_SERVER test uvicorn is 129 MB, a whole browser flow 302 MB),
+            # so 600 MB now describes a box that can comfortably run, and this
+            # case needs one that cannot.
+            WC_PREFLIGHT_MEM_KB=str(300 * 1024),
             WC_PREFLIGHT_SWAP_TOTAL=str(3 * GB_KB),
             WC_PREFLIGHT_SWAP_FREE=str(3 * GB_KB),
         )
@@ -115,7 +121,7 @@ class PreflightStopsAFullBoxTests(unittest.TestCase):
         old gate lacked rather than the words the new one uses.
         """
         self._run(
-            WC_PREFLIGHT_MEM_KB=str(600 * 1024),
+            WC_PREFLIGHT_MEM_KB=str(300 * 1024),   # below the 500 MB floor
             WC_PREFLIGHT_SWAP_TOTAL=str(3 * GB_KB),
             WC_PREFLIGHT_SWAP_FREE=str(3 * GB_KB),
         )

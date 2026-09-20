@@ -1366,7 +1366,9 @@ async def handle_chat_export(request: Request, chat_id: str):
     )
 
 
-async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
+async def _record_turn_usage(
+    chat_id: str, owner: str, frame: dict, served_model: str | None = None
+) -> None:
     """Persist a usage frame as one row per model.
 
     ``provider`` is resolved to one of three values and stored on the row,
@@ -1434,7 +1436,17 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     # from the model the runner saw serve this chat; "unknown" stays as the
     # last resort, so a row is still written when even that is missing rather
     # than the turn's spend going unrecorded.
-    served_model = runner.peek_last_model(chat_id)
+    # Passed in by a caller that already took it, or peeked when nobody has.
+    #
+    # It cannot simply be peeked here. `handle_send_message` calls
+    # `runner.take_last_model` for its own response BEFORE reaching this
+    # function, and take POPS -- so a peek at this point returns "" and every
+    # blocking-path row is attributed to "unknown". That shipped on
+    # 2026-09-20 and put "unknown" above replies that had plainly come from a
+    # named model. The argument removes the ordering dependency rather than
+    # reversing it, because a rule about which of two lines runs first is the
+    # kind that gets broken again by an unrelated edit.
+    served_model = served_model or runner.peek_last_model(chat_id)
     for index, (model, stats) in enumerate(models.items()):
         if not isinstance(stats, dict):
             continue
@@ -1707,12 +1719,15 @@ async def handle_submit_message(request: Request, chat_id: str):
     # Nothing is lost by not storing it: the served model is recorded per turn
     # in `usage_events`, it is returned in the response below, and the UI has
     # its own label for it that is not the picker.
-    await _record_turn_usage(chat_id, owner, runner.take_last_usage(chat_id))
+    # `model` is handed over explicitly: it was taken above, and take pops, so
+    # the recorder can no longer find it for itself.
+    await _record_turn_usage(
+        chat_id, owner, runner.take_last_usage(chat_id), served_model=model)
     # Attempts a retry discarded still spent real tokens (CLAUDE.md rule 5:
     # record failures too), and take_last_usage above only carries the kept
     # attempt.
     for frame in runner.take_retried_usage(chat_id):
-        await _record_turn_usage(chat_id, owner, frame)
+        await _record_turn_usage(chat_id, owner, frame, served_model=model)
     return JSONResponse(
         {"response": full_response, "chunks": len(chunks), "model": model}
     )

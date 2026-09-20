@@ -220,6 +220,28 @@ class ComponentAPIQA(UsageMixin, unittest.IsolatedAsyncioTestCase):
         await self.record(TURN1)
         self.assertEqual((await self.rows())[0]["model"], MODEL)
 
+    async def test_attribution_survives_the_handlers_own_take_of_the_model(self):
+        """The blocking handler pops the model before it records usage.
+
+        `handle_send_message` does `model = runner.take_last_model(chat_id)`
+        for its own JSON response, and only then calls `_record_turn_usage`.
+        `take_last_model` POPS, so a recorder that reads the same registry
+        afterwards finds it empty and writes "unknown".
+
+        That shipped: two `origin='web'` rows were written this way at
+        2026-09-20T22:24Z, with correct tokens and a correct cost delta but no
+        model, and the console showed "unknown" above a reply that had plainly
+        come from Sonnet. The earlier tests here missed it because they seeded
+        `_models_by_chat` and called the recorder directly, never reproducing
+        the handler's order -- exactly what CLAUDE.md rule 2 says to check.
+        """
+        runner._models_by_chat["c1"] = MODEL
+        taken = runner.take_last_model("c1")          # what the handler does
+        self.assertEqual(taken, MODEL)                # it got the model
+        await chat_routes._record_turn_usage(         # and then records
+            "c1", self.admin_id, runner.usage_frame(TURN1), served_model=taken)
+        self.assertEqual((await self.rows())[0]["model"], MODEL)
+
     async def test_a_row_is_still_written_when_no_model_was_seen(self):
         # A vague row beats unrecorded spend: the tokens were spent either way
         # (CLAUDE.md rule 5).

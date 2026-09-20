@@ -578,7 +578,21 @@ export async function _scanCleanup(container) {
     const stats = await resp.json();
     _renderPreview(stats, container);
   } catch (error) {
-    container.innerHTML = `<p style="color: var(--warn);">${error.message}</p>`;
+    // Mark the panel and re-offer the button, for the reason the success path
+    // marks it: without the attribute the 30s poll calls _renderCleanupDefault
+    // and resets the panel to "click below to scan", so a failed scan erased
+    // its own error within seconds and read as the click doing nothing at all.
+    container.replaceChildren();
+    const notice = document.createElement('p');
+    notice.style.color = 'var(--warn)';
+    notice.textContent = error.message;
+    const retry = document.createElement('button');
+    retry.className = 'srv-action-btn';
+    retry.style.marginTop = '8px';
+    retry.textContent = 'Scan for reclaimable processes';
+    retry.onclick = () => _scanCleanup(container);
+    container.append(notice, retry);
+    container.setAttribute('data-cleaned-up', 'true');
   } finally {
     if (btn) {
       btn.disabled = false;

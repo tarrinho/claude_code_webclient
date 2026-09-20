@@ -221,10 +221,6 @@ def _collect_all_processes():
 
         kind = _detect_kind(pid, name, cmdline)
 
-        # Enhance detected processes with session names where available.
-        if kind == "claude" and pid in _session_names:
-            raw[pid]["session_name"] = _session_names[pid]
-
         try:
             rss_bytes = _proc_rss(pid)  # VmRSS is in kB
             rss_mb = round(rss_bytes / 1024, 1)  # kB -> MB
@@ -245,6 +241,13 @@ def _collect_all_processes():
             "rss_mb": rss_mb, "age_s": age_s,
             "cmdline": cmdline, "pgid": pgid,
         }
+        # Session names are an annotation on the finished row, so this must
+        # stay below the assignment above. It was written before it, where
+        # `raw[pid]` did not exist yet -- every scan with a session file
+        # naming a live claude PID raised KeyError, the endpoint answered
+        # 500, and the panel showed nothing.
+        if kind == "claude" and pid in _session_names:
+            raw[pid]["session_name"] = _session_names[pid]
     return raw
 
 

@@ -5,7 +5,7 @@
 // empty until the server has been up for a sampling interval.
 
 import {apiFetch} from './api.js?v=2741508';
-import {showToast, settingsVisible} from './app.js?v=10377219';
+import {showToast, settingsVisible} from './app.js?v=10621393';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
@@ -401,9 +401,11 @@ function _renderPreview(stats, container) {
   const {counts, total_estimated_mb} = stats;
   const hasAny = Object.values(counts).some(v => v > 0);
 
-  // Selection tracker: the currently checked PIDs and their memory.
+  // Selection tracker (closure-scoped).
   const _selected = new Set();
   let _selectedMb = 0;
+
+  // Seed with all PIDs (everything starts checked).
   for (const kind of Object.keys(counts)) {
     for (const p of stats[kind] || []) {
       _selected.add(p.pid);
@@ -411,11 +413,21 @@ function _renderPreview(stats, container) {
     }
   }
 
-  function _selectedText() {
-    const n = _selected.size;
-    return n === 0
-      ? 'Select processes above'
-      : `Stop ${n} selected (~${_bytesMb(_selectedMb)}`;
+  function _updateBtn() {
+    const btn = container.querySelector('#cleanupExecuteBtn');
+    if (!btn) return;
+    if (!hasAny) {
+      btn.disabled = true;
+      btn.textContent = 'Nothing to kill';
+      return;
+    }
+    if (_selected.size === 0) {
+      btn.disabled = true;
+      btn.textContent = 'Select processes above';
+    } else {
+      btn.disabled = false;
+      btn.textContent = `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)}`;
+    }
   }
 
   // Build process list with checkboxes, category by category.
@@ -435,7 +447,7 @@ function _renderPreview(stats, container) {
       html += `<ul style="font-size: 12px; margin: 2px 0 4px 24px; padding-left: 0; list-style: none;">`;
       for (const p of procs) {
         html += `<li style="color: var(--fg); display: flex; align-items: center; gap: 4px;">`;
-        html += `<input type="checkbox" class="cleanup-pid-check" data-pid="${p.pid}" data-rss="${p.rss_mb}" checked> `;
+        html += `<input type="checkbox" class="cleanup-pid-check" data-kind="${kind}" data-pid="${p.pid}" data-rss="${p.rss_mb}" checked> `;
         html += `<strong>${p.name}</strong> — PID ${p.pid}, `;
         html += `${_bytesMb(p.rss_mb)}, running ${_durationCompact(p.age_s)}`;
         if (p.cmdline) html += `, <code style="font-size: 11px;">${p.cmdline.substring(0, 80)}</code>`;
@@ -457,8 +469,8 @@ function _renderPreview(stats, container) {
     html += `<p><strong>Found:</strong> ${parts.join(' · ')}</p>`;
     html += `<p>Estimated memory to free: <strong>${_bytesMb(total_estimated_mb)}</strong></p>`;
     html += listHtml;
-    html += `<button id="cleanupExecuteBtn" class="srv-action-btn" style="margin-top: 8px;" disabled>`;
-    html += _selectedText();
+    html += `<button id="cleanupExecuteBtn" class="srv-action-btn" style="margin-top: 8px;">`;
+    html += `Stop ${_selected.size} selected (~${_bytesMb(_selectedMb)}`;
     html += '</button>';
   } else {
     html = '<p style="color: var(--ok);">All processes healthy. Nothing to free.</p>';
@@ -468,11 +480,6 @@ function _renderPreview(stats, container) {
 
   // Cache the full payload on the container for the execute handler.
   container._cleanupStats = stats;
-  // Expose the selection tracker on the container too.
-  container._cleanupSelected = _selected;
-  container._cleanupSelectedMb = _selectedMb;
-  container._cleanupHasSelection = () => _selected.size > 0;
-  container._cleanupSelectedText = _selectedText;
 
   // Select-all: check/uncheck all PIDs in a category.
   container.querySelectorAll('.cleanup-cat-check').forEach(cb => {
@@ -486,7 +493,7 @@ function _renderPreview(stats, container) {
         if (checked) { _selected.add(pid); _selectedMb += rss; }
         else { _selected.delete(pid); _selectedMb -= rss; }
       });
-      _updateExecBtn();
+      _updateBtn();
     };
   });
 
@@ -497,48 +504,28 @@ function _renderPreview(stats, container) {
       const rss = parseFloat(cb.dataset.rss);
       if (cb.checked) { _selected.add(pid); _selectedMb += rss; }
       else { _selected.delete(pid); _selectedMb -= rss; }
-      // Sync the parent category checkbox.
-      const kind = stats[Object.keys(stats).find(k =>
-        k !== 'total_estimated_mb' && k !== 'counts' &&
-        stats[k] && stats[k].some(p => p.pid === pid)
-      )] ? Object.keys(stats).find(k =>
-        k !== 'total_estimated_mb' && k !== 'counts' &&
-        stats[k] && stats[k].some(p => p.pid === pid)
-      ) : '';
-      _updateExecBtn();
+      _updateBtn();
     };
   });
 
   const execBtn = container.querySelector('#cleanupExecuteBtn');
   if (execBtn) {
     execBtn.onclick = () => {
-      if (_selected.size > 0 && container._cleanupStats) {
+      if (_selected.size > 0) {
         _runCleanup(container._cleanupStats, container, [..._selected]);
       }
     };
   }
 }
 
-function _updateExecBtn(container, stats) {
-  const btn = container?.querySelector('#cleanupExecuteBtn');
-  if (!btn) return;
-  if (!stats || !stats.counts || !Object.values(stats.counts).some(v => v > 0)) {
-    btn.disabled = true;
-    btn.textContent = 'Nothing to kill';
-    return;
-  }
-  // Recalculate from the current set (uses the closure variables on container).
-  if (container._cleanupSelectedText) {
-    btn.textContent = container._cleanupSelectedText();
-    btn.disabled = !container._cleanupHasSelection();
-  }
-}
-
 /** Execute the cleanup and render the result. */
-async function _runCleanup(previewStats, container) {
+async function _runCleanup(previewStats, container, selectedPids) {
   container.innerHTML = '<p>Terminating processes…</p>';
   try {
-    const resp = await apiFetch('/api/system/cleanup/execute', {method: 'POST'});
+    const resp = await apiFetch('/api/system/cleanup/execute', {
+      method: 'POST',
+      body: JSON.stringify({pids: selectedPids}),
+    });
     if (!resp.ok) throw new Error('Cleanup failed');
     const result = await resp.json();
     const hasFail = result.failed && result.failed.length > 0;

@@ -302,13 +302,13 @@ Holding each model against each task type, with columns: measured accuracy, samp
 | `azure_ai/gpt-5.6-luna` | comprehension | 58.3% | 12 | 0.0370‡ | 9.2 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | reasoning | 50% | 6 | 0.0370‡ | 16.5 | 922,000 |
 | `azure_ai/gpt-5.6-luna` | voice | 83.3% | 12§ | 0.0370‡ | 11.0◊ | 922,000 |
-| `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 0.0781‡ | 2.002 | TBD |
-| `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 3.4043‡ | 7.85 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 3.4043‡ | 7.84 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | multi-turn | 83.3% | 12 | 3.4043‡ | 17.02 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | planning | 83.3% | 12 | 3.4043‡ | 39.41 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | comprehension | 58.3% | 12 | 3.4043‡ | 14.53 | 922,000 |
-| `azure_ai/gpt-5.6-sol` | reasoning | 50% | 6 | 3.4043‡ | 11.78 | 922,000 |
+| `azure_ai/gpt-5.4-mini-copilot` | voice | TBD | 46* | 0.0781‡ | 2.002 | 1,050,000 |
+| `azure_ai/gpt-5.6-sol` | coding | 100% | 18 | 3.4043‡ | 7.85 | 1,050,000 |
+| `azure_ai/gpt-5.6-sol` | long-context | 100% | 12 | 3.4043‡ | 7.84 | 1,050,000 |
+| `azure_ai/gpt-5.6-sol` | multi-turn | 83.3% | 12 | 3.4043‡ | 17.02 | 1,050,000 |
+| `azure_ai/gpt-5.6-sol` | planning | 83.3% | 12 | 3.4043‡ | 39.41 | 1,050,000 |
+| `azure_ai/gpt-5.6-sol` | comprehension | 58.3% | 12 | 3.4043‡ | 14.53 | 1,050,000 |
+| `azure_ai/gpt-5.6-sol` | reasoning | 50% | 6 | 3.4043‡ | 11.78 | 1,050,000 |
 | `azure_ai/gpt-5.4-mini` | coding | TBD | — | 0.0850‡ | TBD | 1,050,000 |
 | `azure_ai/gpt-5.4-mini` | reasoning | 86% | TBD | 0.0850‡ | TBD | 1,050,000 |
 | `azure_ai/gpt-5.6-luna` | multi-turn | 91.7% | 12 | 0.0370‡ | 13.5 | 922,000 |
@@ -370,6 +370,8 @@ These were not rewritten, because each is an *argument* built on the old numbers
 - **§2.7's exclusion of `azure_ai/gpt-5.4-mini` is now built on an inverted premise.** It recorded mini as **2.99× cheaper than sonnet**; at the corrected rates mini (0.0850) is **5.6×** cheaper than sonnet (0.4769). The exclusion itself still stands — §2.7 line 3 already records it as an operator decision rather than an arithmetic result, precisely so it would not move when the numbers did. This is that provision doing its job.
 - **The "55× gap" between luna and sonnet, cited in §2.7 and §5, is now about 12.9×** (0.0370 → 0.4769). The argument that excluding mini forces a large jump survives; its magnitude does not.
 - **§5.1's per-rung admissibility table** prices every rung from the old column. Its conclusions about which rungs a model may occupy need recomputing against the new rates before anyone relies on them.
+- **`azure_ai/gpt-5.6-sol`'s `max_context` was 922,000 here and is 1,050,000.** 922,000 is luna's and terra's figure, and sol had been given it by association rather than by measurement — understating sol by 128,000 tokens. The gateway's own `/model/info` reports 1,050,000, which is what the seeder and the database now carry. The same query answers the `TBD` this table held for `azure_ai/gpt-5.4-mini-copilot`: also 1,050,000. Both corrected above, on 2026-09-21. The consequence is confined to §3's long-context routing, which is the only place `max_context` is read; no rate, ladder or ceiling in this document depends on it.
+- **How the discrepancy surfaced, because the mechanism is worth keeping.** `tests/test_qa_delegation_shipped_state.py::SeedRowValuesTests` compares `bin/wc-seed-delegation.py`'s `ROWS` against this table cell by cell, so correcting the seeder without correcting the spec failed seven subtests immediately. That test is the only thing tying this document to the data that actually routes traffic; a correction landing in one and not the other is exactly what it exists to catch.
 
 **Nothing in this subsection changes a ladder by itself.** The ladders in use are generated from the database, not from this document — §2.6 is a snapshot of that table, and the snapshot is what has just been brought up to date.
 

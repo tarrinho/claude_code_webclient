@@ -4262,17 +4262,26 @@ class DelegationBudgetKnobBrowserTests(_BrowserFixture):
         Two facts both opening with "tree budget" read as two unrelated
         settings -- the same defect the ceiling knob's comment records."""
         self._open()
-        texts = [el.inner_text() for el in
-                 self.page.query_selector_all("#delegationFacts .delegation-fact")]
-        budget_facts = [t for t in texts if "tree budget" in t]
-        self.assertEqual(len(budget_facts), 1,
-                         f"tree budget stated {len(budget_facts)} times: {texts}")
+        # Asserted over the whole band rather than over `.delegation-fact`
+        # alone. The knob's caption used to be one `.delegation-fact` span;
+        # it is now a `.delegation-knob-name` over a `.delegation-knob-detail`
+        # so the switch is not competing with 11px mono. The claim is
+        # unchanged and is a claim about the band: whatever the markup, the
+        # budget is named once. Counting the region catches a duplicate in
+        # either element, which the old selector no longer would.
+        region = self.page.query_selector("#delegationFacts").inner_text()
+        self.assertEqual(region.lower().count("tree budget"), 1,
+                         f"tree budget stated {region.lower().count('tree budget')} "
+                         f"times: {region!r}")
         # Not asserted against a specific enforcement state: this class's
         # click tests share one fixture database, so whichever ran first
         # decides it. The claim under test is that the budget is stated once
-        # and that the single statement carries both the value and a state.
-        self.assertIn("$", budget_facts[0])
-        self.assertIn("enforced", budget_facts[0])
+        # and that the single statement carries both the value and a state --
+        # now split across the knob's two caption lines, so it is read as one
+        # block rather than from a single element.
+        knob_text = self.page.query_selector(".delegation-budget-knob").inner_text()
+        self.assertIn("$", knob_text)
+        self.assertIn("enforced", knob_text)
         self.assertEqual(self.errors, [])
 
     def test_clicking_the_knob_actually_enforces(self):
@@ -4313,10 +4322,11 @@ class DelegationBudgetKnobBrowserTests(_BrowserFixture):
         reloaded = self._budget_knob()
         self.assertIsNotNone(reloaded, "knob vanished after enabling")
         self.assertEqual(reloaded.get_attribute("aria-pressed"), "true")
-        texts = [el.inner_text() for el in
-                 self.page.query_selector_all("#delegationFacts .delegation-fact")]
-        self.assertTrue(any("tree budget" in t and "enforced" in t
-                            and "not enforced" not in t for t in texts), texts)
+        # Read from the knob's own caption, which now carries the value and
+        # the state on two lines instead of one `.delegation-fact` span.
+        knob_text = self.page.query_selector(".delegation-budget-knob").inner_text()
+        self.assertIn("enforced", knob_text, knob_text)
+        self.assertNotIn("not enforced", knob_text, knob_text)
         self.assertEqual(self.errors, [])
 
     def test_clicking_the_master_knob_turns_delegation_off(self):

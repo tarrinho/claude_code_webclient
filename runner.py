@@ -99,13 +99,44 @@ def usage_frame(obj: dict) -> dict | None:
     process and imports nothing from this package, so the parser exists on both
     sides rather than being shared. Keep the two in step.
 
-    ``modelUsage`` is keyed by model id and preferred; its keys are camelCase
-    while flat ``usage`` is snake_case. When only the flat form is present the
-    model is unknown here and reported under "", for the caller to resolve.
+    The flat ``usage`` object is **this turn**; ``modelUsage`` is the
+    **session's running total** and is only a fallback for a frame without the
+    flat form. Its keys are camelCase while ``usage`` is snake_case. The flat
+    form names no model, so it is reported under "" for the caller to resolve
+    from ``take_last_model``.
+
+    See ``claude_proxy.usage_frame`` for why the preference is this way round
+    and for the measurement that settled it -- these two parsers are deliberate
+    copies and must stay in step.
     """
     models: dict[str, dict[str, int]] = {}
     model_usage = obj.get("modelUsage")
-    if isinstance(model_usage, dict):
+    usage = obj.get("usage")
+    if isinstance(usage, dict):
+        # cost_basis has no flat equivalent, so it comes from modelUsage, and
+        # only when one model is named -- with two there is no way to say which
+        # basis belongs to this turn's tokens.
+        basis = None
+        if isinstance(model_usage, dict) and len(model_usage) == 1:
+            sole = next(iter(model_usage.values()))
+            if isinstance(sole, dict):
+                candidate = sole.get("costBasis")
+                basis = candidate if isinstance(candidate, str) else None
+        totals = {
+            "input_tokens": _int_or_zero(usage.get("input_tokens")),
+            "output_tokens": _int_or_zero(usage.get("output_tokens")),
+            "cache_read_tokens": _int_or_zero(usage.get("cache_read_input_tokens")),
+            "cache_creation_tokens": _int_or_zero(
+                usage.get("cache_creation_input_tokens")
+            ),
+        }
+        # Checked before cost_basis is added: it is a string, so an all-zero
+        # frame would otherwise look non-empty and record a row for a turn that
+        # spent nothing.
+        if any(totals.values()):
+            totals["cost_basis"] = basis
+            models[""] = totals
+    if not models and isinstance(model_usage, dict):
         for name, stats in model_usage.items():
             if not isinstance(name, str) or not isinstance(stats, dict):
                 continue
@@ -122,19 +153,6 @@ def usage_frame(obj: dict) -> dict | None:
                 # decide it -- see _usage_provider in app.py.
                 "cost_basis": basis if isinstance(basis, str) else None,
             }
-    if not models:
-        usage = obj.get("usage")
-        if isinstance(usage, dict):
-            totals = {
-                "input_tokens": _int_or_zero(usage.get("input_tokens")),
-                "output_tokens": _int_or_zero(usage.get("output_tokens")),
-                "cache_read_tokens": _int_or_zero(usage.get("cache_read_input_tokens")),
-                "cache_creation_tokens": _int_or_zero(
-                    usage.get("cache_creation_input_tokens")
-                ),
-            }
-            if any(totals.values()):
-                models[""] = totals
     if not models:
         return None
 
@@ -243,6 +261,20 @@ _skills_by_session: dict[str, set[str]] = _BoundedDict(_MAX_RUNNER_STATE_ENTRIES
 def take_last_model(chat_id: str) -> str:
     """Return and clear the last model reported for a blocking turn."""
     return _models_by_chat.pop(chat_id, "")
+
+
+def peek_last_model(chat_id: str) -> str:
+    """The model serving this chat's turn, without consuming it.
+
+    `usage_frame` reads the flat ``usage`` object, which is the per-turn figure
+    and names no model, so the model has to be supplied here instead. It cannot
+    come from `take_last_model`: that pops, and the usage recorder is not the
+    only caller -- the blocking path takes the value for its own response
+    first, and on the streaming path the usage event arrives mid-turn, before
+    anyone has taken it. A read that cleared the entry would hand whichever
+    caller ran second an empty string.
+    """
+    return _models_by_chat.get(chat_id, "") or ""
 
 
 def take_last_usage(chat_id: str) -> dict:

@@ -83,17 +83,65 @@ def _int_or_zero(value: object) -> int:
 def usage_frame(obj: dict) -> dict | None:
     """Build a ``usage`` frame from a Claude Code ``result`` frame.
 
-    ``modelUsage`` is preferred because it is keyed by model id, so a turn that
-    touched more than one model is attributed exactly. Its keys are camelCase
-    while the flat ``usage`` object is snake_case; both are normalised here.
+    The flat ``usage`` object is **this turn**. ``modelUsage`` is the
+    **session's running total**, and is only a fallback for a frame that omits
+    the flat form. Its keys are camelCase while ``usage`` is snake_case; both
+    are normalised here.
 
-    When only the flat form is present the model is unknown at this layer, so
-    it is reported under the empty-string key and the consumer fills it in from
-    the session's model. Returns None when there is nothing to record.
+    That preference used to be the other way round, on the reasoning that
+    ``modelUsage`` is keyed by model and so attributes a multi-model turn
+    exactly. The reasoning was sound and the premise was false. Measured
+    against a live CLI on 2026-09-20, two turns of one session reported::
+
+        turn 1   usage in=13854      modelUsage in=13854
+        turn 2   usage in=70         modelUsage in=13924    (13854 + 70)
+
+    so every turn was recording the whole session again. In production one
+    chat had reached 1,074,714,966 cache-read tokens across 2,664 turns by
+    that route, and a single row carried $2,893.
+
+    The flat form carries no model id, so the model is reported under the
+    empty-string key and the consumer fills it in from
+    ``runner.take_last_model``. Losing the per-model split *within* one turn is
+    the deliberate price of getting the quantities right -- and the split it
+    replaced was attributing lifetime totals to models that had not run in the
+    turn at all.
+
+    Returns None when there is nothing to record.
     """
     models: dict[str, dict[str, int]] = {}
     model_usage = obj.get("modelUsage")
-    if isinstance(model_usage, dict):
+    usage = obj.get("usage")
+    if isinstance(usage, dict):
+        # `cost_basis` still comes from modelUsage -- the flat object has no
+        # equivalent. Only when exactly one model is named, because with two
+        # there is no way to tell which basis belongs to this turn's tokens.
+        basis = None
+        if isinstance(model_usage, dict) and len(model_usage) == 1:
+            sole = next(iter(model_usage.values()))
+            if isinstance(sole, dict):
+                candidate = sole.get("costBasis")
+                basis = candidate if isinstance(candidate, str) else None
+        totals = {
+            "input_tokens": _int_or_zero(usage.get("input_tokens")),
+            "output_tokens": _int_or_zero(usage.get("output_tokens")),
+            "cache_read_tokens": _int_or_zero(
+                usage.get("cache_read_input_tokens")
+            ),
+            "cache_creation_tokens": _int_or_zero(
+                usage.get("cache_creation_input_tokens")
+            ),
+        }
+        # Checked before `cost_basis` is added: it is a string, so a frame of
+        # all-zero counts would otherwise look non-empty and record a row for
+        # a turn that spent nothing.
+        if any(totals.values()):
+            # The CLI's own assessment of whether its cost figure means
+            # anything. Recorded to explain a suppressed cost, never to
+            # decide it -- see _usage_provider in app.py.
+            totals["cost_basis"] = basis
+            models[""] = totals
+    if not models and isinstance(model_usage, dict):
         for name, stats in model_usage.items():
             if not isinstance(name, str) or not isinstance(stats, dict):
                 continue
@@ -105,26 +153,8 @@ def usage_frame(obj: dict) -> dict | None:
                 "cache_creation_tokens": _int_or_zero(
                     stats.get("cacheCreationInputTokens")
                 ),
-                # The CLI's own assessment of whether its cost figure means
-                # anything. Recorded to explain a suppressed cost, never to
-                # decide it -- see _usage_provider in app.py.
                 "cost_basis": basis if isinstance(basis, str) else None,
             }
-    if not models:
-        usage = obj.get("usage")
-        if isinstance(usage, dict):
-            totals = {
-                "input_tokens": _int_or_zero(usage.get("input_tokens")),
-                "output_tokens": _int_or_zero(usage.get("output_tokens")),
-                "cache_read_tokens": _int_or_zero(
-                    usage.get("cache_read_input_tokens")
-                ),
-                "cache_creation_tokens": _int_or_zero(
-                    usage.get("cache_creation_input_tokens")
-                ),
-            }
-            if any(totals.values()):
-                models[""] = totals
     if not models:
         return None
 

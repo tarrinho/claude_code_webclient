@@ -1424,13 +1424,19 @@ async def _record_turn_usage(chat_id: str, owner: str, frame: dict) -> None:
     cost = frame.get("cost_usd")
     any_written = False
     any_failed = False
+    # `usage_frame` reports the per-turn figures under the empty-string key,
+    # because the flat `usage` object the CLI sends names no model. Resolve it
+    # from the model the runner saw serve this chat; "unknown" stays as the
+    # last resort, so a row is still written when even that is missing rather
+    # than the turn's spend going unrecorded.
+    served_model = runner.peek_last_model(chat_id)
     for index, (model, stats) in enumerate(models.items()):
         if not isinstance(stats, dict):
             continue
         row_id = await db.usage_record(
             chat_id,
             owner,
-            model or "unknown",
+            model or served_model or "unknown",
             provider,
             input_tokens=stats.get("input_tokens", 0),
             output_tokens=stats.get("output_tokens", 0),

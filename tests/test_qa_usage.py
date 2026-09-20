@@ -100,8 +100,13 @@ class UnitQA(unittest.TestCase):
         proxy = claude_proxy.usage_frame(RESULT_FRAME)
         direct = runner.usage_frame(RESULT_FRAME)
         self.assertEqual(proxy, direct)
+        # Keyed by "" rather than by the model id: the numbers now come from
+        # the flat per-turn `usage` object, which names no model. The consumer
+        # fills it in from runner.peek_last_model. RESULT_FRAME's flat and
+        # modelUsage figures are equal here because it is a first turn, which
+        # is exactly when the old cumulative bug was invisible.
         self.assertEqual(
-            proxy["models"]["vllm/Qwen3.6-35B-A3B-NVFP4"],
+            proxy["models"][""],
             {
                 "input_tokens": 15531,
                 "output_tokens": 32,
@@ -114,18 +119,76 @@ class UnitQA(unittest.TestCase):
         self.assertEqual(proxy["duration_ms"], 2122)
         self.assertFalse(proxy["is_error"])
 
-    def test_model_usage_is_preferred_over_the_flat_totals(self):
-        # modelUsage is keyed by model, so it is the only form that can attribute
-        # a turn correctly. If both are present it must win.
+    def test_flat_usage_wins_because_model_usage_is_cumulative(self):
+        # This inverts a deliberate earlier decision, so the reason is recorded
+        # here rather than in a commit message nobody reads twice.
+        #
+        # The old test asserted modelUsage must win, on the grounds that it is
+        # keyed by model and so attributes a multi-model turn exactly. The
+        # premise was wrong: `modelUsage` is the SESSION's running total, not
+        # this turn's. Measured against a live CLI on 2026-09-20 with two turns
+        # in one session (see test_a_resumed_turn_records_only_its_own_tokens),
+        # and visible in production data -- one chat had 2,664 recorded turns
+        # whose cache-read figure had grown to 1,074,714,966, because every
+        # turn re-recorded the whole history.
+        #
+        # The flat `usage` object is the per-turn figure. It carries no model
+        # id, so attribution moves to the consumer, which knows the served
+        # model from `runner.take_last_model`. Losing the per-model split
+        # within a single turn is the deliberate cost of getting the
+        # quantities right.
         frame = {
             **RESULT_FRAME,
-            "usage": {"input_tokens": 999999, "output_tokens": 999999},
+            "usage": {"input_tokens": 70, "output_tokens": 4,
+                      "cache_read_input_tokens": 20008,
+                      "cache_creation_input_tokens": 13869},
         }
         for label, parse in self.parsers():
             models = parse(frame)["models"]
-            self.assertEqual(list(models), ["vllm/Qwen3.6-35B-A3B-NVFP4"], label)
-            self.assertEqual(models["vllm/Qwen3.6-35B-A3B-NVFP4"]["input_tokens"],
-                             15531, label)
+            self.assertEqual(list(models), [""], label)
+            self.assertEqual(models[""]["input_tokens"], 70, label)
+            self.assertEqual(models[""]["cache_creation_tokens"], 13869, label)
+
+    def test_a_resumed_turn_records_only_its_own_tokens(self):
+        """The two frames a live CLI actually emitted, replayed.
+
+        Captured 2026-09-20 from one session, turn 1 then `--resume`. The
+        cumulative relationship is exact on three independent fields:
+
+            13854 + 70    = 13924   (input)
+                4 +  4    =     8   (output)
+            20008 + 13869 = 33877   (cache creation)
+
+        so a parser that reads `modelUsage` reports turn 2 as 13,924 input
+        tokens when it really cost 70 -- a 199x over-count on the second turn
+        of a two-turn session.
+        """
+        turn1 = {
+            "type": "result",
+            "usage": {"input_tokens": 13854, "output_tokens": 4,
+                      "cache_read_input_tokens": 0,
+                      "cache_creation_input_tokens": 20008},
+            "modelUsage": {"claude-opus-5[1m]": {
+                "inputTokens": 13854, "outputTokens": 4,
+                "cacheReadInputTokens": 0, "cacheCreationInputTokens": 20008}},
+        }
+        turn2 = {
+            "type": "result",
+            "usage": {"input_tokens": 70, "output_tokens": 4,
+                      "cache_read_input_tokens": 20008,
+                      "cache_creation_input_tokens": 13869},
+            "modelUsage": {"claude-opus-5[1m]": {
+                "inputTokens": 13924, "outputTokens": 8,
+                "cacheReadInputTokens": 20008, "cacheCreationInputTokens": 33877}},
+        }
+        for label, parse in self.parsers():
+            first = parse(turn1)["models"][""]
+            second = parse(turn2)["models"][""]
+            self.assertEqual(first["input_tokens"], 13854, label)
+            self.assertEqual(second["input_tokens"], 70, label)
+            self.assertEqual(second["output_tokens"], 4, label)
+            # The cumulative figure must never be what lands in a row.
+            self.assertNotEqual(second["input_tokens"], 13924, label)
 
     def test_multiple_models_are_attributed_separately(self):
         # Two distinct models on purpose -- TESTING_MODEL and the second id
@@ -199,12 +262,30 @@ class UnitQA(unittest.TestCase):
             self.assertEqual(parse(frame)["models"]["m"]["input_tokens"], 0, label)
 
     def test_cost_basis_is_captured_when_the_cli_reports_it(self):
-        # Recorded to explain a suppressed cost, not to decide it.
+        # Recorded to explain a suppressed cost, not to decide it. It still
+        # comes from modelUsage -- the flat `usage` object has no equivalent --
+        # and rides along on the flat form's row under "".
         for label, parse in self.parsers():
             models = parse(RESULT_FRAME)["models"]
-            self.assertEqual(
-                models["vllm/Qwen3.6-35B-A3B-NVFP4"]["cost_basis"], "unknown", label
-            )
+            self.assertEqual(models[""]["cost_basis"], "unknown", label)
+
+    def test_cost_basis_is_dropped_when_two_models_are_named(self):
+        # With the flat per-turn numbers in hand and two models listed, there
+        # is no way to say which basis describes this turn's tokens. None is
+        # the honest answer; picking one would attach a real-looking label to
+        # a guess.
+        frame = {
+            "type": "result",
+            "usage": {"input_tokens": 70, "output_tokens": 4},
+            "modelUsage": {
+                "a": {"inputTokens": 10, "costBasis": "unknown"},
+                "b": {"inputTokens": 20, "costBasis": "billed"},
+            },
+        }
+        for label, parse in self.parsers():
+            models = parse(frame)["models"]
+            self.assertEqual(list(models), [""], label)
+            self.assertIsNone(models[""]["cost_basis"], label)
 
     def test_cost_basis_is_none_when_absent_or_malformed(self):
         frame = {"type": "result",
@@ -585,12 +666,31 @@ class ParityQA(TemporaryDBMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_blocking_path_records_via_take_last_usage(self):
         # _execute_proxy / _collect_chunks stash the frame; the handler drains it.
+        #
+        # The model is registered first because that is the real order: the CLI
+        # names the model in its init frame, long before the result frame the
+        # usage comes from. The recorder now needs it, because `usage_frame`
+        # reads the flat per-turn `usage` object, which names no model -- so
+        # this line is the test catching up with where attribution moved to,
+        # not a convenience.
+        runner._models_by_chat["c1"] = "vllm/Qwen3.6-35B-A3B-NVFP4"
         runner.record_usage_frame("c1", runner.usage_frame(RESULT_FRAME))
         await chat_routes._record_turn_usage("c1", "admin", runner.take_last_usage("c1"))
         rows = await self._rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["model"], "vllm/Qwen3.6-35B-A3B-NVFP4")
         self.assertEqual(rows[0]["input_tokens"], 15531)
+
+    async def test_the_row_falls_back_to_unknown_when_no_model_was_seen(self):
+        # A row with a vague model beats no row at all: the tokens were spent
+        # either way, and CLAUDE.md rule 5 is that unrecorded spend is the
+        # worse failure.
+        runner._models_by_chat.pop("c1", None)
+        await chat_routes._record_turn_usage(
+            "c1", "admin", runner.usage_frame(RESULT_FRAME))
+        rows = await self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["model"], "unknown")
 
     async def test_streaming_path_records_the_event_directly(self):
         # _do_proxy_stream / _do_direct_stream yield the event to the handler.

@@ -611,16 +611,32 @@ async def create_task_chat(
 
 
 async def _prompt_for(orchestrator_id: str, task: dict, owner_id: str) -> str:
-    """Build the prompt a task's turn runs with.
+    """The task's own prompt, preceded by what its dependencies concluded.
 
-    Stub: returns the task's own text, nothing more. Task 5 replaces this
-    with the dependency-aware version that folds in the results of the
-    tasks this one depends on -- exactly what `_build_dep_context` does for
-    the older in-memory engine above. Defined here only so `run_tasks`
-    below has a name to call; without it, this module raises NameError
-    before a single task chat is created.
+    The shared workspace carries files between tasks; this carries reasoning.
+    A task that concluded something in prose leaves nothing on disk, so the
+    two channels are not redundant.
     """
-    return task.get("description") or task["title"]
+    import db
+
+    deps = task.get("depends_on") or []
+    if not deps:
+        return task.get("description") or task["title"]
+
+    parts = []
+    for dep_id in deps:
+        dep = await db.orchestrator_task_get(orchestrator_id, dep_id, owner_id)
+        if dep and dep.get("result"):
+            parts.append(f"### Result of {dep['title']}\n\n{dep['result']}")
+
+    own = task.get("description") or task["title"]
+    if not parts:
+        return own
+
+    return (
+        "Earlier tasks in this run produced the following. Their files are in "
+        "your working directory.\n\n" + "\n\n".join(parts) + "\n\n---\n\n" + own
+    )
 
 
 async def _take_turn(chat: dict, owner: str, prompt: str, model: str | None):

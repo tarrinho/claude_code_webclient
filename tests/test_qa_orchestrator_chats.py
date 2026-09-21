@@ -173,6 +173,69 @@ class OrchestratorCreateTaskChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task_b["chat_id"], b)
 
 
+class PromptForDependenciesTests(unittest.IsolatedAsyncioTestCase):
+    """orchestrator._prompt_for: build task prompts that include dependency results.
+
+    A dependent task receives both its own instructions and the reasoning
+    (results in prose) from each completed predecessor, since a shared
+    workspace carries files but not conclusions.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_a_dependent_receives_its_predecessors_result(self):
+        import orchestrator
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "Research", "find X")
+        await db.orchestrator_task_create(
+            orch, "b", "Write up", "write it", depends_on=["a"])
+        await db.orchestrator_task_update(
+            orch, "a", "owner-uuid", status="done", result="X is 42")
+        task_b = await db.orchestrator_task_get(orch, "b", "owner-uuid")
+        prompt = await orchestrator._prompt_for(orch, dict(task_b), "owner-uuid")
+        self.assertIn("X is 42", prompt)
+        self.assertIn("write it", prompt)
+
+    async def test_a_task_with_no_dependencies_gets_only_its_own_prompt(self):
+        import orchestrator
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "Research", "find X")
+        task_a = await db.orchestrator_task_get(orch, "a", "owner-uuid")
+        prompt = await orchestrator._prompt_for(orch, dict(task_a), "owner-uuid")
+        self.assertEqual(prompt, "find X")
+        self.assertNotIn("Earlier tasks", prompt)
+
+    async def test_a_dependency_with_empty_result_does_not_inject_blank_section(self):
+        import orchestrator
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "Research", "find X")
+        await db.orchestrator_task_create(
+            orch, "b", "Write up", "write it", depends_on=["a"])
+        # Mark a as done but with no result (or empty result)
+        await db.orchestrator_task_update(
+            orch, "a", "owner-uuid", status="done", result="")
+        task_b = await db.orchestrator_task_get(orch, "b", "owner-uuid")
+        prompt = await orchestrator._prompt_for(orch, dict(task_b), "owner-uuid")
+        # Should only contain the task's own prompt, not the empty dependency result
+        self.assertEqual(prompt, "write it")
+        self.assertNotIn("Earlier tasks", prompt)
+
+
 class PlanValidationTests(unittest.TestCase):
     """validate_plan: turn planner output into task rows, or errors a person can act on."""
 

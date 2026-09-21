@@ -479,9 +479,22 @@ async def handle_orchestrator_stream(request: Request, supervisor_id: str):
                         })}\n\n"
                     elif progress != last_progress:
                         # Get tasks only when progress actually changed
-                        tasks_data = await db.orchestrator_tasks_get(
-                            supervisor_id, owner,
-                        )
+                        #
+                        # Run through _display_task exactly like
+                        # handle_orchestrator_tasks_get does, so the ids this
+                        # frame merges into state.tasks (web/assets/orchestrator
+                        # /stream.js, handleProgress, keyed on t.id) match the
+                        # ids /tasks already put there. Without this the raw,
+                        # "{supervisor_id}:"-prefixed storage id never matches
+                        # the stripped id the client already has, and every
+                        # progress frame appends a duplicate task instead of
+                        # updating the existing one.
+                        tasks_data = [
+                            _display_task(t, supervisor_id)
+                            for t in await db.orchestrator_tasks_get(
+                                supervisor_id, owner,
+                            )
+                        ]
                         yield f"data: {json.dumps({
                             'type': 'progress',
                             'progress': progress,
@@ -559,8 +572,19 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
 
-    # Verify task exists
-    task = await db.orchestrator_task_get(supervisor_id, task_id, owner)
+    # Verify task exists. `task_id` here is whatever the client has, and the
+    # client only ever sees ids through _display_task -- stripped of the
+    # "{supervisor_id}:" prefix handle_orchestrator_run stamps onto rows it
+    # creates (see _display_task). Storage still has the raw, prefixed id, so
+    # look that up first; fall back to the id as given for legacy-engine rows,
+    # which _display_task never touches. Without this, every id /tasks hands
+    # out 404s here because the raw lookup below never matches the stripped
+    # one the client was given.
+    stored_task_id = f"{supervisor_id}:{task_id}"
+    task = await db.orchestrator_task_get(supervisor_id, stored_task_id, owner)
+    if not task:
+        stored_task_id = task_id
+        task = await db.orchestrator_task_get(supervisor_id, stored_task_id, owner)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -577,7 +601,7 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
                     return
 
                 # Read current task state from DB
-                current = await db.orchestrator_task_get(supervisor_id, task_id, owner)
+                current = await db.orchestrator_task_get(supervisor_id, stored_task_id, owner)
                 if not current:
                     yield f"data: {json.dumps({'type': 'error', 'error': 'Task deleted'})}\n\n"
                     return
@@ -617,7 +641,7 @@ async def handle_orchestrator_task_stream(request: Request, supervisor_id: str, 
                 await asyncio.sleep(1.0)
 
                 # Re-read current state with fresh reference
-                current = await db.orchestrator_task_get(supervisor_id, task_id, owner)
+                current = await db.orchestrator_task_get(supervisor_id, stored_task_id, owner)
 
         except asyncio.CancelledError:
             raise

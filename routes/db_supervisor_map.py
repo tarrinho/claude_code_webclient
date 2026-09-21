@@ -235,7 +235,18 @@ async def supervisor_map(
                 orch = item["orch"]
                 orch_id = orch["id"]
                 members = members_by_orch.get(orch_id, [])
-                tasks = await db.orchestrator_tasks_get(orch_id, owner_id)
+                # _display_task strips the "{orch_id}:" prefix
+                # handle_orchestrator_run stamps onto task rows it creates
+                # (routes/orchestrators.py). Without it, the ids below would
+                # be raw/prefixed while `member.get("chat_id")` below is not,
+                # so the "members not covered by a task" de-dupe at
+                # `task_ids` would never match and every such member would
+                # show up twice: once as its task, once again as a chat.
+                from routes.orchestrators import _display_task
+                tasks = [
+                    _display_task(t, orch_id)
+                    for t in await db.orchestrator_tasks_get(orch_id, owner_id)
+                ]
 
                 orch_children: list[dict[str, Any]] = []
                 # Tasks. Typed "task", not "chat": a task id is not a chat id,

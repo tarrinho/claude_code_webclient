@@ -674,6 +674,78 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         run = await db.orchestrator_get(orch, "owner-uuid")
         self.assertEqual(run["status"], "error")
 
+    async def test_a_done_turn_with_no_output_is_recorded_as_failed(self):
+        """The 2026-08-30 signature this whole design exists to delete: a
+        turn that settles state="done" but leaves no captured assistant
+        output (the low-memory-refusal shape -- _start_turn's produce()
+        yields a "status" frame then "done", never "error") must not read as
+        success. Three of the fakes above (test_a_failed_task_blocks_...,
+        test_all_tasks_succeeding_..., test_a_cancelled_task_does_not_...)
+        were all rewritten to persist an assistant message via
+        db.messages_batch specifically so they would keep passing after that
+        fix -- which means the "no output" shape itself was never pinned
+        anywhere until now. This fake deliberately does NOT call
+        db.messages_batch, so the task chat has no assistant message at all.
+        """
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def fake_turn(chat, owner, prompt, model):
+            # No assistant message persisted -- a refused/empty "done".
+            return mock.Mock(task=asyncio.sleep(0), state="done")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        task = await db.orchestrator_task_get(orch, "a", "owner-uuid")
+        self.assertEqual(task["status"], "failed")
+        self.assertTrue(
+            task["result"], "a stored reason must explain the failure"
+        )
+
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertNotEqual(run["progress_pct"], 100.0)
+        self.assertEqual(run["progress_pct"], 0.0)
+        self.assertEqual(run["status"], "error")
+
+    async def test_capture_takes_the_newest_of_two_assistant_messages(self):
+        """db.messages_last returns oldest-first (see its own docstring in
+        routes/db_chats.py); run_tasks iterates `reversed(recent)` so a chat
+        holding TWO assistant messages -- e.g. after a retry re-sends into
+        the same task chat -- must capture the newest one, not the first
+        match in storage order. "OLD" is placed before "NEW" in the fake's
+        oldest-first return so that removing the `reversed(...)` call (i.e.
+        reverting to the pre-fix iteration order, which broke on the first
+        match) would capture "OLD" and fail this assertion.
+        """
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="done")
+
+        async def fake_messages_last(chat_id, count=1):
+            # Oldest-first, as db.messages_last actually returns.
+            return [
+                {"role": "user", "content": "find X"},
+                {"role": "assistant", "content": "OLD"},
+                {"role": "user", "content": "retry"},
+                {"role": "assistant", "content": "NEW"},
+            ]
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn), \
+             mock.patch("db.messages_last", side_effect=fake_messages_last):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        task = await db.orchestrator_task_get(orch, "a", "owner-uuid")
+        self.assertEqual(task["result"], "NEW")
+
     async def test_run_tasks_routes_execution_through_take_turn_only(self):
         """Guard 1: every route to execution goes through _take_turn (and so
         through _start_turn), never runner.run_turn/stream_turn directly --

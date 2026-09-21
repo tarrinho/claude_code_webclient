@@ -242,7 +242,9 @@ import { renderRail } from "./rail.js";
       ${task.chat_id ? `
       <div class="detail-section">
         <h3>Chat</h3>
-        <div class="detail-value"><a href="/?chat=${esc(encodeURIComponent(task.chat_id))}" target="_blank" rel="noopener">Open this task's chat →</a></div>
+        <div class="detail-value">
+          <span class="chat-id-pending" title="Jumping straight to this chat isn't wired up yet — nothing in the app reads a ?chat= parameter. Copy the id to find it another way.">${esc(task.chat_id)} <i>(direct link not yet available)</i></span>
+        </div>
       </div>` : ""}
       <div class="detail-section">
         <h3>Timeline</h3>

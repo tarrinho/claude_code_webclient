@@ -1,11 +1,16 @@
 # Orchestrator: chats all the way down — design
 
-**Status:** approved design, not yet implemented.
+**Status:** implemented, on branch `worktree-orchestrator-chats`. The legacy
+`<<PLAN>>` engine survives, interlocked against the new path rather than
+deleted (see "The load-bearing property" below); deleting it outright is
+named follow-up work, not part of this branch.
 
 **Goal:** make the orchestrator something that works. A task becomes an
-ordinary chat, so orchestration stops having an execution path of its own and
-inherits everything the chat path has already proven — usage accounting,
-transcripts, resume, standby, and the generated-images gallery.
+ordinary chat, so the NEW path (plan → approve → `/run`) has no execution path
+of its own and inherits everything the chat path has already proven — usage
+accounting, transcripts, resume, standby, and the generated-images gallery.
+The legacy engine still exists and keeps its own, separate execution path;
+see below for how the two are kept from ever running over the same rows.
 
 **Diagrams** (in the gallery, Settings → Images, and on disk under
 `/home/kali/projects/orchestrator-designs-2026-09-20/`):

@@ -388,36 +388,64 @@ Part 1 is the larger of the two, and within it the tool-calling loop (§4's
 "Wiring") is the single riskiest piece, being the only genuinely new mechanism
 on this path.
 
-## 12. What is actually built, and what is not
+## 12. The rule this feature exists to teach
 
-Recorded because this spec has been wrong about its own status twice, and a
-spec read as a description of working software is worse than no spec.
+Five things in this feature shipped broken. Four of them were the same defect
+wearing different clothes, and it is worth stating as a rule rather than a
+tally, because the tally invites the reader to think they were five separate
+lapses of attention. They were one, repeated.
+
+**The rule: a write path with no reachable read path is not finished, and it
+does not look unfinished. Prove the read before claiming the write.**
+
+The four:
+
+| built | not connected |
+|---|---|
+| summary written to `chats.voice_context` | column absent from `_CHAT_COLUMNS`, so every read returned empty |
+| `make_fetch_tool` and `FETCH_TOOL_SCHEMA` | nothing imported them; `chat.completions.create` passed no `tools` |
+| `messages_range_in`, `chats_in_session` and friends | never registered in `db.py`'s dispatch table |
+| the fetch tool attached to the turn | `VOICE_SYSTEM_PROMPT` still said "You have no tools", which a model obeys |
+
+Every one of them passed its own tests. Every one read as complete in review.
+In each case the missing half was one line in a different file, and the symptom
+was not an error but a silent fallback to the older behaviour — which is the
+worst possible symptom, because the feature appears to work and the old
+behaviour appears to be the new one.
+
+What follows from it, in the order the cost is paid:
+
+- **The test that matters is the one that reads back what was written.** Not
+  that the writer ran, not that the column exists — that a caller downstream
+  receives the value. `test_the_readers_are_reachable_on_the_db_facade` exists
+  for exactly this and would have caught three of the four.
+- **A dispatch table, an allowlist and a column list are all the same hazard.**
+  Anywhere a name must be repeated in a second place to take effect,
+  forgetting the second place is invisible. This codebase has at least four:
+  `db.py`'s dispatch, `_CHAT_COLUMNS`, `_ALLOWED_CHAT_FIELDS`, and
+  `_EDITABLE`.
+- **A prompt is a connection too.** The fourth case is the same defect in
+  natural language: the capability was wired and the model was told it did not
+  have it. Text that describes the system's abilities has to be updated with
+  the abilities.
+
+The fifth defect is a different shape and is recorded separately so it is not
+folded into the rule above: the panel blocked on its own summary.
+`await runVoiceContext(...)` sat before the calls that enable the microphone,
+so the session could neither hear nor answer for as long as the walk took. Its
+lesson is narrower — when you make something slow, check what is waiting on it.
+
+### 12.1 Status
 
 **Live and deployed:** the summary at session open with the ladder walk and
-status line (§3, §5); the fetch tool, wired to the model with tool calling on
-the voice path, widened to same-session siblings, with id bounds stated and
-recency expressible (§4); the thinking tone (§6). The keyword heuristic of §0
-is retired, surviving only as a fallback for a session with no stored summary.
+status line (§3, §5); the fetch tool, wired to the model, widened to
+same-session siblings, with id bounds stated and recency expressible (§4); the
+thinking tone (§6). The §0 keyword heuristic is retired, surviving only as a
+fallback for a session with no stored summary.
 
 **Not built:** the interrupt words of §7. The engine still matches `stop` only,
 still runs the recogniser only while `speaking` and not while `thinking`, and
 has no self-echo suppression. `wait` and `pause` do nothing.
-
-**Three defects shipped and were fixed, all the same shape — a write path with
-no reachable read path.** The summary was stored while `voice_context` was
-missing from `_CHAT_COLUMNS`, so every session silently fell back to the
-heuristic. The fetch tool was built, tested and committed while nothing
-imported it and `chat.completions.create` passed no `tools`. And both its
-readers were added to `routes/db_chats.py` without being registered in `db.py`'s
-dispatch table. In each case the code read as finished. A fourth, of the same
-family, is that `VOICE_SYSTEM_PROMPT` said "You have no tools" after the tool
-was attached — a model obeys that, so the tool would have been offered and
-never called.
-
-**A fifth, of a different shape:** the panel blocked on its own summary.
-`await runVoiceContext(...)` sat before the calls that enable the microphone,
-so the session could neither hear nor answer for as long as the walk took. Now
-started and not awaited; see §5.
 
 ## 13. Known defects outside this spec's scope
 

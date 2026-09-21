@@ -994,6 +994,29 @@ async def init() -> None:
             ON generated_images(owner_id, created_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_chat_path
             ON generated_images(chat_id, path);
+
+        -- One row per Task-tool subagent a conversation spawned. Display-only:
+        -- there is no transcript and nothing to open. Subagents run INSIDE the
+        -- CLI process (CLAUDE.md §0), so the console cannot hook their spawn --
+        -- they are observable only in the transcript, and this table is where
+        -- that observation is kept.
+        --
+        -- UNIQUE(chat_id, tool_use_id) with INSERT OR IGNORE is the idempotency
+        -- rule, the same one generated_images uses: a transcript gets re-scanned
+        -- for reasons that have nothing to do with this feature.
+        CREATE TABLE IF NOT EXISTS chat_subagents (
+            id           INTEGER PRIMARY KEY,
+            chat_id      TEXT NOT NULL,
+            tool_use_id  TEXT NOT NULL,
+            agent_type   TEXT,
+            description  TEXT,
+            status       TEXT NOT NULL DEFAULT 'running',
+            started_at   TEXT NOT NULL,
+            ended_at     TEXT,
+            UNIQUE(chat_id, tool_use_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_subagents_chat
+            ON chat_subagents(chat_id);
     """)
     await _ensure_chat_columns()
     await _ensure_machines_columns()

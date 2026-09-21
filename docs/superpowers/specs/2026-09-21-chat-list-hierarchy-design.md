@@ -289,6 +289,57 @@ out by a query.
   the logic is a pure function — `node` is installed (v24.19.0), and
   `chat-list.js` has no top-level imports, so it can be imported directly.
 
+## 10b. What this builds on — the orchestrator design, verified 2026-09-21
+
+`2026-09-20-orchestrator-chats-all-the-way-down-design.md` is the other half of
+this work and came first. **Nothing in it is superseded or replaced here.**
+Checked against the tree on 2026-09-21: neither design is implemented yet —
+`orchestrator.py` contains no `parent_chat_id` and creates no task chats,
+`chat_subagents` does not exist, and `chat-list.js:910` still filters on
+`!c.is_temporary` — so what exists to build on is that design's decisions and
+its nine-task plan, not code.
+
+**The seam, so neither side does the other's work.** Their Task 8 *hides*
+non-root chats from the flat list. It does not draw the card; nesting is this
+design's job. So:
+
+- **Theirs:** the predicate switch at `chat-list.js:910`, and task chats
+  existing as real chats at all (their Tasks 1–2).
+- **Mine:** §5's card, §8's composer, §9's `children` array, and
+  `chat_subagents` for in-chat Task subagents (§3–§4.1).
+- **Neither alone:** a task chat that asks a question. Their hiding removes the
+  row it would have marked; this design's card is where the marker goes
+  instead. That is the dependency worth stating, because each half looks
+  complete on its own and the signal is lost only when one ships without the
+  other.
+
+**Their resolution of the predicate is adopted here rather than re-litigated.**
+§10a previously recorded "whether `is_temporary` is the right hook for
+'not a root'" as unverified by anyone. It has since been resolved by
+measurement in their spec (`fe606322`), and the answer is **root-ness
+(`parent_chat_id IS NULL`), not `is_temporary`**. I re-checked all three of
+their supporting facts independently rather than take them on trust, and all
+three hold:
+
+1. `is_temporary` is produced inside the create handler's `if parent_chat_id:`
+   branch, not `if voice_mode:` — `routes/chats.py:490-497` says so in its own
+   comment. Only the *consumer* comment at `chat-list.js:910` says "voice",
+   because voice is currently the only thing that makes children; that comment
+   is what misled my earlier note.
+2. The two sets are identical on the live database: **0** chats are parented
+   but not temporary, and **0** are temporary without a parent. Switching the
+   predicate hides exactly what `!is_temporary` hides today.
+3. `is_temporary` is **not** in `_ALLOWED_CHAT_FIELDS`, so their Task 2 path —
+   `chat_create` plus `chat_update(parent_chat_id=…)`, which bypasses the HTTP
+   handler to share the run's `work_dir` — cannot set it without widening that
+   allowlist.
+
+My earlier instinct ("it probably needs its own predicate") was directionally
+right for the wrong reason: I expected the two concepts to diverge, whereas the
+real argument is that `is_temporary` is *already* derived from parentage and is
+unreachable from the path that creates task chats. Recorded because the
+measurement is the part worth keeping, not the instinct.
+
 ## 10a. Open — needs Pedro's decision, not adopted here
 
 **Proposed: orchestrator task chats are hidden from the flat root list and
@@ -329,10 +380,11 @@ database on 2026-09-21, **61 of 64 conversations were in the bucket and 54 of
 them were `done`** — so consuming it whole marks nearly every row and
 reproduces, in a new colour, the noise that filter exists to remove.
 
-Also open, and unverified by anyone so far: whether `chat-list.js`'s existing
-`is_temporary` filter (line 910) is the right hook for "not a root", or whether
-that needs its own predicate. Whoever reaches it first should read
-`setSupervisor` before changing it.
+The predicate question that used to sit here — whether `is_temporary` is the
+right hook for "not a root" — is **no longer open**. It was resolved by
+measurement in the orchestrator design and is adopted in §10b: the predicate is
+`parent_chat_id IS NULL`, and the switch itself belongs to their Task 8, not to
+this design.
 
 ## 11. Out of scope
 
@@ -343,3 +395,8 @@ that needs its own predicate. Whoever reaches it first should read
   editing surface is a separate feature and is not needed until parentage is
   ever wrong, which explicit-only capture is designed to prevent.
 - Migrating orchestrator or voice relations into a shared table (§3).
+- Anything owned by `2026-09-20-orchestrator-chats-all-the-way-down-design.md`:
+  task chats existing as real chats, the plan table and run view, the scheduler,
+  and the `chat-list.js:910` predicate switch (their Task 8). This design
+  consumes those; it does not reimplement or replace any of them. See §10b for
+  the seam.

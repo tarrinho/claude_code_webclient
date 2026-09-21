@@ -122,8 +122,13 @@ orchestration grew a copy of it.
 
 ## Data model
 
-`orchestrators` is unchanged and remains the run record (title, status,
-`progress_pct`, `config`).
+`orchestrators` remains the run record (title, status, `progress_pct`,
+`config`) and gains **one** column, because the shared workspace has to live
+somewhere and no existing column holds it:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `work_dir` | TEXT, nullable | The one directory every task chat of this run shares. NULL for the 3 legacy runs, which never had one. |
 
 `orchestrator_tasks` gains **one** column:
 
@@ -162,10 +167,13 @@ cannot read a single thing the researcher produced. That guts the feature.
 **Both channels are needed, and for different cargo:**
 
 1. **One workspace per run.** Every task chat in a run shares the run's
-   `work_dir`, so file artefacts flow: task 2 reads the CSV task 1 wrote. This
-   requires a new capability — either `POST /api/chats` accepts an explicit
-   `work_dir`, or `chat_update` allows it — and that is a real cost this spec
-   previously hid.
+   `work_dir`, so file artefacts flow: task 2 reads the CSV task 1 wrote.
+   **This needs no new capability**: `db.chat_create(chat_id, title,
+   description, work_dir, owner_id)` already takes an explicit `work_dir`. It
+   is only the HTTP create handler that computes one from the title slug, so
+   the orchestrator calls the database layer directly and passes the run's
+   directory. An earlier draft of this spec claimed a new parameter was
+   needed; that was wrong.
 2. **Predecessor results injected into the dependent's prompt.** Files carry
    artefacts; the prompt carries reasoning. A task that concluded something in
    prose leaves nothing on disk, so injection is not redundant with (1).
@@ -300,31 +308,27 @@ both a `chat` kind and a `subagent` kind, so a task that is a real chat
 renders as the former and needs nothing added there. **This design is
 unaffected and needs no re-opening.**
 
-The paragraph below is kept as written because the smaller half is still a
-live coordination question.
+### Which surface shows a task chat — ruled
 
-### Which surface shows a task chat — and one signal that can be lost
+**Pedro's ruling (2026-09-21): the family card owns the display.** Task chats
+are hidden from the flat root list and rendered as children inside their
+run's card.
 
-`docs/superpowers/specs/2026-09-21-chat-list-hierarchy-design.md` (approved
-with Pedro on 2026-09-21, the day after this one) renders chat relationships
-as family cards in the sidebar, and its decision 2 states that *"a supervisor
-fan-out adds small rows, not full chats"* — a subagent being a display-only
-child node rather than an openable conversation.
+No invention is needed for it. The hierarchy design's §4.3 already does
+exactly this for voice children — "they become visible inside their parent's
+card and nowhere else, so they never again appear as orphan rows in the flat
+list" — and the ruling extends that same rule to orchestrator members. The
+hiding predicate becomes **"not a root"** rather than "not present", which is
+the distinction that lets this design keep task chats out of the sidebar
+while the hierarchy design still nests them.
 
-**If that governs orchestrator tasks, this design does not work.** A task
-being a real chat is not a presentation choice here; it is the mechanism.
-Usage, transcripts, resume and the gallery are inherited precisely because a
-task goes through `_start_turn`. Display-only rows inherit none of it.
+That mirror edit belongs in the hierarchy spec, not here: its composer's
+precedence rule (orchestrator member → voice parent → root) is what
+implements the hiding. Relayed to its author.
 
-It may be a wording collision rather than a disagreement: that spec's
-decision 1 lists "subagents spawned in a chat" and "orchestrator and its
-members" as *separate* relationship kinds, and in-chat Task-tool subagents
-genuinely are display-only today — they leave no record anywhere. The
-question is which of those decision 2 means.
-
-Which surface shows task chats is reconcilable — hidden from the flat list,
-shown as children of their run — but only if one surface owns it, or both
-designs will build it.
+**Open for the implementation plan:** whether `chat-list.js`'s existing
+`is_temporary` filter is the right hook for "not a root", or whether that
+needs its own predicate. Unverified either way — see Task 8.
 
 **Hiding a chat also hides its alerts, and that is not free.** Reported by the
 session that changed the sidebar's per-row indicators (`873ecd74`,
@@ -353,7 +357,6 @@ did.
 | `orchestrator.py` | Scheduler replaces `OrchestratorEngine`; `TaskGraph` kept. ~1454 → ~250 lines |
 | `routes/orchestrators.py` | Plan propose / approve / run endpoints; member-create beside member-adopt |
 | `routes/db_orchestrators.py` | `chat_id` on tasks, `blocked` status, computed progress |
-| `routes/chats.py` | accept an explicit `work_dir` on create, so a run's tasks can share one (see "Workspace and data flow") |
 | `db.py` | One additive column in `_ensure_orchestrator_columns` |
 | `web/orchestrator.html`, `web/assets/orchestrator.js` | Editable plan rows; task list linking into task chats |
 | `web/assets/chat-list.js` | Hide task chats |
@@ -480,3 +483,882 @@ this design.
   shorter. The deletion that costs images is the *workspace* one, never the
   chat one. Whatever the implementation plan decides here, it should decide it
   about the directory rather than about the chat rows.
+
+---
+
+# Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> `superpowers:subagent-driven-development` (recommended) or
+> `superpowers:executing-plans` to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace the orchestrator's private execution path with real chats,
+so a run fans out into task chats that inherit usage, transcripts, resume and
+the generated-images gallery from `_start_turn`.
+
+**Architecture:** An orchestrator run is a parent chat plus one child chat per
+task, all sharing one workspace directory. A scheduler creates each task's
+chat when its `depends_on` are `done` and executes it by calling
+`_start_turn`, reading `LiveTurn.state` for the outcome. The `<<PLAN>>` prose
+grammar is deleted and replaced by a JSON plan a human approves before
+anything runs.
+
+**Tech Stack:** Python 3.13, FastAPI, aiosqlite, vanilla JS frontend, pytest +
+Playwright.
+
+**Spec:** this document, above.
+
+## Global Constraints
+
+- **Interpreter:** `.venv/bin/python -m pytest`, invoked bare. Any other
+  interpreter silently skips the browser layer (rules.md #50, #65).
+- **Never run `db.init()` against production.** It migrates. Use
+  `WC_DB_PATH="$(bin/wc-throwaway-db.sh)/webconsole.db"`.
+- **Run tests inside the cap:** `systemd-run --user --scope -q -p
+  MemoryMax=500M -p MemorySwapMax=0`. Exit 137 is the cap, not a test result.
+- **Shared tree.** Stage by pathspec, read `git diff --cached --name-only`
+  before every commit, and never `git add -A` / `git commit -a` / `git reset
+  --hard` (CLAUDE.md §11).
+- **`owner_id` must be a real user UUID**, never the string `"admin"` —
+  `chat_create` raises `ValueError` on it.
+- **A failed turn is an event, not an exception** (CLAUDE.md §4). Read
+  `LiveTurn.state`; never wrap a turn in `try`/`except` to detect failure.
+- **Model ids come from the allowlist** (`ai_machines.active_models`), never
+  from planner text.
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `orchestrator.py` | Scheduler + plan validation. `TaskGraph` kept; `PlanParser`, `ModelRouter`'s parsed-model path and the old engine deleted. |
+| `routes/db_orchestrators.py` | `chat_id` on tasks, `blocked` status, computed progress. |
+| `db.py` | One additive column in `_ensure_orchestrator_columns`. |
+| `routes/orchestrators.py` | Plan propose / approve / run endpoints. |
+| `web/orchestrator.html`, `web/assets/orchestrator.js` | Editable plan table; run view linking into task chats. |
+| `web/assets/chat-list.js` | Hide non-root chats (family-card children). |
+| `tests/test_qa_orchestrator_chats.py` | New: scheduler, dependencies, failure semantics. |
+| `tests/test_qa_orchestrator_guards.py` | New: the two architectural guards. |
+
+---
+
+### Task 1: Schema — `chat_id` on tasks, `blocked` status
+
+**Files:**
+- Modify: `db.py` (`_ensure_orchestrator_columns`)
+- Modify: `routes/db_orchestrators.py` (`orchestrator_task_create`, `orchestrator_task_update`)
+- Test: `tests/test_qa_orchestrator_chats.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `orchestrator_tasks.chat_id` (TEXT, nullable);
+  `orchestrators.work_dir` (TEXT, nullable);
+  `orchestrator_task_update(..., chat_id: str | None = None)`;
+  `orchestrator_update(..., work_dir: str | None = None)`;
+  `"blocked"` as a valid status string.
+
+Two columns, not one. An earlier draft of this plan added only `chat_id` and
+then had Task 7 read `run["work_dir"]` — a column that does not exist. The
+run's shared directory is the whole mechanism for artefact flow between
+tasks, so it needs a home.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_qa_orchestrator_chats.py
+import asyncio, unittest, uuid
+import db
+
+
+class SchemaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tasks_table_has_a_chat_id_column(self):
+        cur = await db.db_conn.execute("PRAGMA table_info(orchestrator_tasks)")
+        cols = {r["name"] for r in await cur.fetchall()}
+        self.assertIn("chat_id", cols)
+
+    async def test_runs_table_has_a_work_dir_column(self):
+        """The run's shared directory: without it the tasks cannot pass
+        files to one another, which is the point of one workspace per run."""
+        cur = await db.db_conn.execute("PRAGMA table_info(orchestrators)")
+        cols = {r["name"] for r in await cur.fetchall()}
+        self.assertIn("work_dir", cols)
+
+    async def test_a_task_can_record_the_chat_that_runs_it(self):
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "t1", "Research", None)
+        await db.orchestrator_task_update(orch, "t1", "owner-uuid", chat_id="chat-abc")
+        task = await db.orchestrator_task_get(orch, "t1")
+        self.assertEqual(task["chat_id"], "chat-abc")
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -v`
+Expected: FAIL — `chat_id` not in columns.
+
+- [ ] **Step 3: Add the column to the migration**
+
+In `db._ensure_orchestrator_columns`, inside the existing `task_migrations`
+dict (the same check-then-ALTER pattern already there):
+
+```python
+        "chat_id": "ALTER TABLE orchestrator_tasks ADD COLUMN chat_id TEXT",
+```
+
+and in the same function's `sup_migrations` dict, for the run itself:
+
+```python
+        "work_dir": "ALTER TABLE orchestrators ADD COLUMN work_dir TEXT",
+```
+
+- [ ] **Step 4: Let the update helpers write both**
+
+Add `chat_id: str | None = None` to `orchestrator_task_update`'s signature and
+`work_dir: str | None = None` to `orchestrator_update`'s, each included in its
+allowlisted `SET` fields exactly as `status` and `result` already are.
+
+The run's `work_dir` is set once, when the run is created: use the same
+`PROJECTS_ROOT / <slug>-<date>` shape the chat create handler uses, so an
+orchestrator workspace is indistinguishable from any other on disk.
+
+- [ ] **Step 5: Run the tests**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -v`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add db.py routes/db_orchestrators.py tests/test_qa_orchestrator_chats.py
+git diff --cached --name-only   # must be exactly those three
+git commit -m "feat: record which chat runs an orchestrator task"
+```
+
+---
+
+### Task 2: Create a task chat in the run's shared workspace
+
+**Files:**
+- Modify: `orchestrator.py`
+- Test: `tests/test_qa_orchestrator_chats.py`
+
+**Interfaces:**
+- Consumes: Task 1's `chat_id` column.
+- Produces: `async def create_task_chat(orchestrator_id: str, task_id: str,
+  title: str, work_dir: str, owner_id: str, parent_chat_id: str) -> str`,
+  returning the new chat id.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+    async def test_task_chats_of_one_run_share_its_workspace(self):
+        import orchestrator
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "t1", "One", None)
+        await db.orchestrator_task_create(orch, "t2", "Two", None)
+        a = await orchestrator.create_task_chat(
+            orch, "t1", "One", "/tmp/run-ws", "owner-uuid", "parent-chat")
+        b = await orchestrator.create_task_chat(
+            orch, "t2", "Two", "/tmp/run-ws", "owner-uuid", "parent-chat")
+        self.assertNotEqual(a, b)
+        chat_a = await db.chat_get(a, "owner-uuid")
+        chat_b = await db.chat_get(b, "owner-uuid")
+        # The point of the shared directory: artefacts flow between tasks.
+        self.assertEqual(chat_a["work_dir"], "/tmp/run-ws")
+        self.assertEqual(chat_b["work_dir"], "/tmp/run-ws")
+        self.assertEqual(chat_a["parent_chat_id"], "parent-chat")
+        # and the task now knows its chat
+        self.assertEqual((await db.orchestrator_task_get(orch, "t1"))["chat_id"], a)
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -k share -v`
+Expected: FAIL — `orchestrator has no attribute 'create_task_chat'`.
+
+- [ ] **Step 3: Implement it**
+
+```python
+async def create_task_chat(
+    orchestrator_id: str,
+    task_id: str,
+    title: str,
+    work_dir: str,
+    owner_id: str,
+    parent_chat_id: str,
+) -> str:
+    """Create the chat that will run one task, inside the run's workspace.
+
+    db.chat_create is called directly rather than POSTing to /api/chats: the
+    HTTP handler computes work_dir from the title slug and uniquifies it, and
+    every task in a run must share ONE directory so artefacts flow between
+    them. The database layer already takes work_dir as a parameter.
+    """
+    chat_id = uuid.uuid4().hex
+    await db.chat_create(chat_id, title, None, work_dir, owner_id)
+    await db.chat_update(chat_id, owner_id, parent_chat_id=parent_chat_id)
+    await db.orchestrator_member_add(orchestrator_id, chat_id)
+    await db.orchestrator_task_update(
+        orchestrator_id, task_id, owner_id, chat_id=chat_id)
+    return chat_id
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add orchestrator.py tests/test_qa_orchestrator_chats.py
+git diff --cached --name-only
+git commit -m "feat: create a task's chat inside the run's shared workspace"
+```
+
+---
+
+### Task 3: Validate a JSON plan, and fail visibly
+
+**Files:**
+- Modify: `orchestrator.py`
+- Test: `tests/test_qa_orchestrator_chats.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `def validate_plan(text: str, allowed_models: set[str]) ->
+  tuple[list[dict], list[str]]` returning `(rows, errors)`. `rows` are dicts
+  with keys `title`, `prompt`, `depends_on`, `model`. Non-empty `errors`
+  means show the raw text for hand-editing; it is never a silent zero-task run.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+class PlanValidationTests(unittest.TestCase):
+    def test_a_valid_plan_parses_to_rows(self):
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"do a","depends_on":[]}]', set())
+        self.assertEqual(errors, [])
+        self.assertEqual(rows[0]["title"], "A")
+
+    def test_invalid_json_is_an_error_not_an_empty_plan(self):
+        """The 2026-08-30 signature: a bad plan produced zero tasks and ran
+        anyway. Zero tasks with no error is the one outcome forbidden here."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("I'll start by...", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors, "a plan that cannot be read must say so")
+
+    def test_a_model_outside_the_allowlist_is_rejected(self):
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":[],"model":"--mcp-config=/tmp/evil"}]',
+            {"claude-opus-5"})
+        self.assertTrue(any("model" in e for e in errors))
+
+    def test_a_dependency_cycle_is_rejected_at_approval(self):
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":["b"],"id":"a"},'
+            ' {"title":"B","prompt":"y","depends_on":["a"],"id":"b"}]', set())
+        self.assertTrue(any("cycle" in e.lower() for e in errors))
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -k Plan -v`
+Expected: FAIL — `validate_plan` undefined.
+
+- [ ] **Step 3: Implement it**
+
+```python
+def validate_plan(text: str, allowed_models: set[str]):
+    """Turn planner output into task rows, or into errors a person can act on.
+
+    Never returns ([], []) -- an unreadable plan yields errors, because a
+    silent zero-task run is the failure this design exists to remove.
+    """
+    import json
+    rows: list[dict] = []
+    errors: list[str] = []
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        return [], [f"the plan is not valid JSON: {exc}"]
+    if not isinstance(parsed, list) or not parsed:
+        return [], ["the plan must be a non-empty JSON array of tasks"]
+
+    ids = {str(t.get("id") or i) for i, t in enumerate(parsed)}
+    for i, task in enumerate(parsed):
+        if not isinstance(task, dict):
+            errors.append(f"task {i} is not an object")
+            continue
+        title = str(task.get("title") or "").strip()
+        prompt = str(task.get("prompt") or "").strip()
+        if not title or not prompt:
+            errors.append(f"task {i} needs both a title and a prompt")
+        deps = task.get("depends_on") or []
+        if not isinstance(deps, list):
+            errors.append(f"task {i}: depends_on must be a list")
+            deps = []
+        for d in deps:
+            if str(d) not in ids:
+                errors.append(f"task {i} depends on unknown task {d!r}")
+        model = task.get("model")
+        # Never a raw argv token: an allowlist membership test, so a plan
+        # reading "--mcp-config=/tmp/evil" cannot reach --model.
+        if model is not None and str(model) not in allowed_models:
+            errors.append(f"task {i}: model {model!r} is not on the allowlist")
+            model = None
+        rows.append({
+            "id": str(task.get("id") or i),
+            "title": title, "prompt": prompt,
+            "depends_on": [str(d) for d in deps], "model": model,
+        })
+
+    if _has_cycle(rows):
+        errors.append("the plan has a dependency cycle")
+    return (rows, errors) if not errors else ([], errors)
+
+
+def _has_cycle(rows: list[dict]) -> bool:
+    graph = {r["id"]: r["depends_on"] for r in rows}
+    seen: set[str] = set()
+    stack: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in stack:
+            return True
+        if node in seen:
+            return False
+        seen.add(node); stack.add(node)
+        for dep in graph.get(node, []):
+            if visit(dep):
+                return True
+        stack.discard(node)
+        return False
+
+    return any(visit(n) for n in graph)
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -k Plan -v`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add orchestrator.py tests/test_qa_orchestrator_chats.py
+git diff --cached --name-only
+git commit -m "feat: validate the plan as data, and refuse it visibly"
+```
+
+---
+
+### Task 4: The scheduler — fan out, and read the outcome from LiveTurn
+
+**Files:**
+- Modify: `orchestrator.py`
+- Test: `tests/test_qa_orchestrator_chats.py`
+
+**Interfaces:**
+- Consumes: `create_task_chat` (Task 2).
+- Produces: `async def run_tasks(orchestrator_id: str, owner_id: str,
+  parent_chat_id: str, work_dir: str) -> None`. Sets each task's status to
+  `done`, `failed` or `blocked`, and the run's to `done`, `degraded` or
+  `error`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+class SchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_failed_task_blocks_dependents_and_spares_siblings(self):
+        """The three-way outcome. b depends on a and must be blocked when a
+        fails; c depends on nothing and must still run."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        for tid, deps in (("a", []), ("b", ["a"]), ("c", [])):
+            await db.orchestrator_task_create(
+                orch, tid, tid.upper(), None, depends_on=deps)
+
+        async def fake_turn(chat, owner, prompt, model):
+            state = "error" if chat["title"] == "A" else "done"
+            return mock.Mock(task=asyncio.sleep(0), state=state)
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        status = {t["id"]: t["status"]
+                  for t in await db.orchestrator_tasks_get(orch)}
+        self.assertEqual(status["a"], "failed")
+        self.assertEqual(status["b"], "blocked")
+        self.assertEqual(status["c"], "done")
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertEqual(run["status"], "degraded")
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -k Scheduler -v`
+Expected: FAIL — `run_tasks` undefined.
+
+- [ ] **Step 3: Implement it**
+
+```python
+async def _take_turn(chat: dict, owner: str, prompt: str, model: str | None):
+    """Execute one task by taking a turn in its own chat.
+
+    This indirection exists to be patched in tests, and to be the SINGLE
+    place the orchestrator touches execution -- guard 1 asserts that it
+    routes through _start_turn and nothing else.
+    """
+    from routes.chats import _start_turn
+    return await _start_turn(chat, owner, prompt, model)
+
+
+async def run_tasks(orchestrator_id, owner_id, parent_chat_id, work_dir):
+    tasks = {t["id"]: dict(t)
+             for t in await db.orchestrator_tasks_get(orchestrator_id)}
+    done: set[str] = set()
+    failed: set[str] = set()
+
+    while True:
+        ready = [
+            t for t in tasks.values()
+            if t["status"] == "pending"
+            and all(d in done for d in (t.get("depends_on") or []))
+        ]
+        # Anything still pending whose dependency failed is blocked, not
+        # skipped and not silently done.
+        for t in tasks.values():
+            if t["status"] == "pending" and any(
+                d in failed for d in (t.get("depends_on") or [])
+            ):
+                t["status"] = "blocked"
+                await db.orchestrator_task_update(
+                    orchestrator_id, t["id"], owner_id, status="blocked")
+        if not ready:
+            break
+
+        for t in ready:
+            chat_id = await create_task_chat(
+                orchestrator_id, t["id"], t["title"], work_dir,
+                owner_id, parent_chat_id)
+            chat = await db.chat_get(chat_id, owner_id)
+            prompt = await _prompt_for(orchestrator_id, t, owner_id)
+            live = await _take_turn(chat, owner_id, prompt, t.get("model"))
+            await live.task
+            # CLAUDE.md s4: a failed turn is an EVENT. The state carries it;
+            # an exception never arrives, so never look for one.
+            ok = live.state == "done"
+            t["status"] = "done" if ok else "failed"
+            (done if ok else failed).add(t["id"])
+            await db.orchestrator_task_update(
+                orchestrator_id, t["id"], owner_id, status=t["status"])
+
+    total = len(tasks)
+    status = ("done" if len(done) == total
+              else "error" if not done
+              else "degraded")
+    await db.orchestrator_update(
+        orchestrator_id, owner_id, status=status,
+        progress_pct=round(100.0 * len(done) / total, 1) if total else 0.0)
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add orchestrator.py tests/test_qa_orchestrator_chats.py
+git diff --cached --name-only
+git commit -m "feat: schedule tasks by dependency and read outcomes from LiveTurn"
+```
+
+---
+
+### Task 5: Give a dependent its predecessors' results
+
+**Files:**
+- Modify: `orchestrator.py`
+- Test: `tests/test_qa_orchestrator_chats.py`
+
+**Interfaces:**
+- Consumes: Task 4's `run_tasks`.
+- Produces: `async def _prompt_for(orchestrator_id: str, task: dict,
+  owner_id: str) -> str` — the task's prompt, prefixed with each completed
+  dependency's title and result.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+    async def test_a_dependent_receives_its_predecessors_result(self):
+        import orchestrator
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "Research", "find X")
+        await db.orchestrator_task_create(
+            orch, "b", "Write up", "write it", depends_on=["a"])
+        await db.orchestrator_task_update(
+            orch, "a", "owner-uuid", status="done", result="X is 42")
+        task_b = await db.orchestrator_task_get(orch, "b")
+        prompt = await orchestrator._prompt_for(orch, dict(task_b), "owner-uuid")
+        self.assertIn("X is 42", prompt)
+        self.assertIn("write it", prompt)
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -k predecessors -v`
+Expected: FAIL — `_prompt_for` undefined.
+
+- [ ] **Step 3: Implement it**
+
+```python
+async def _prompt_for(orchestrator_id: str, task: dict, owner_id: str) -> str:
+    """The task's own prompt, preceded by what its dependencies concluded.
+
+    The shared workspace carries files between tasks; this carries reasoning.
+    A task that concluded something in prose leaves nothing on disk, so the
+    two channels are not redundant.
+    """
+    deps = task.get("depends_on") or []
+    if not deps:
+        return task.get("description") or task["title"]
+    parts = []
+    for dep_id in deps:
+        dep = await db.orchestrator_task_get(orchestrator_id, dep_id)
+        if dep and dep.get("result"):
+            parts.append(f"### Result of {dep['title']}\n\n{dep['result']}")
+    own = task.get("description") or task["title"]
+    if not parts:
+        return own
+    return (
+        "Earlier tasks in this run produced the following. Their files are in "
+        "your working directory.\n\n" + "\n\n".join(parts) + "\n\n---\n\n" + own
+    )
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_chats.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add orchestrator.py tests/test_qa_orchestrator_chats.py
+git diff --cached --name-only
+git commit -m "feat: pass predecessor results into a dependent task's prompt"
+```
+
+---
+
+### Task 6: The two architectural guards
+
+**Files:**
+- Create: `tests/test_qa_orchestrator_guards.py`
+
+**Interfaces:**
+- Consumes: `orchestrator._take_turn` (Task 4).
+- Produces: nothing consumed by later tasks.
+
+These pin properties rather than behaviour, in the spirit of
+`test_qa_api_tokens.py::DevExemptionIsGoneTests`. Guard 1 is the most
+important test in this design: the gallery and usage benefits are inherited,
+not implemented, and hold only while a task goes through `_start_turn`.
+
+- [ ] **Step 1: Write the guards**
+
+```python
+"""The two properties this design rests on, asserted so they cannot rot."""
+import inspect
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+class TheOrchestratorHasNoSecondExecutionPathTests(unittest.TestCase):
+    def test_task_execution_routes_through_start_turn(self):
+        """If this fails, usage recording AND gallery capture have both
+        stopped, silently -- which is the state this design replaced."""
+        import orchestrator
+        src = inspect.getsource(orchestrator._take_turn)
+        self.assertIn("_start_turn", src)
+
+    def test_the_orchestrator_never_calls_the_runner_directly(self):
+        source = (ROOT / "orchestrator.py").read_text(encoding="utf-8")
+        for forbidden in ("runner.run_turn", "runner.stream_turn"):
+            self.assertNotIn(
+                forbidden, source,
+                f"{forbidden} bypasses _start_turn, so the turn records no "
+                "usage and its images never reach the gallery",
+            )
+
+
+class NoProseReachesArgvTests(unittest.TestCase):
+    def test_the_plan_grammar_is_gone(self):
+        source = (ROOT / "orchestrator.py").read_text(encoding="utf-8")
+        self.assertNotIn("<<PLAN", source)
+        self.assertNotIn("_MODEL_RE", source)
+
+    def test_a_model_from_plan_text_cannot_reach_the_cli(self):
+        """`[:--mcp-config=/tmp/evil.json]` once handed attacker-chosen argv
+        to the child. Membership of the allowlist is the only route now."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":[],'
+            '"model":"--mcp-config=/tmp/evil.json"}]',
+            {"claude-opus-5"},
+        )
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+```
+
+- [ ] **Step 2: Run them**
+
+Run: `.venv/bin/python -m pytest tests/test_qa_orchestrator_guards.py -v`
+Expected: PASS (4 tests) once Tasks 3–4 have landed.
+
+- [ ] **Step 3: Mutation-verify each guard**
+
+A guard that passes against both the fixed and the broken code is
+decoration. Temporarily break each property and confirm the guard fails:
+
+1. add `runner.run_turn(...)` to `orchestrator.py` → the second test fails;
+2. add the string `<<PLAN` back → the third fails;
+3. drop the allowlist check in `validate_plan` → the fourth fails.
+
+Revert each immediately. Record the result in the commit message.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_qa_orchestrator_guards.py
+git diff --cached --name-only
+git commit -m "test: pin the no-second-execution-path and no-prose-argv properties"
+```
+
+---
+
+### Task 7: Endpoints — propose, approve, run
+
+**Files:**
+- Modify: `routes/orchestrators.py`
+- Test: `tests/test_qa_orchestrator_chats.py`
+
+**Interfaces:**
+- Consumes: `validate_plan` (3), `run_tasks` (4).
+- Produces: `POST /api/orchestrators/{id}/plan` → `{rows, errors, raw}`;
+  `POST /api/orchestrators/{id}/run` with body `{rows: [...]}` → `{ok: true}`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+class EndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_unreadable_plan_returns_errors_and_the_raw_text(self):
+        """The approval gate's whole purpose: a bad plan is visible before
+        anything runs, and the operator can still hand-write the rows."""
+        from fastapi.testclient import TestClient
+        from app import app
+        client = TestClient(app)
+        # ... authenticate as the test owner, create an orchestrator ...
+        resp = client.post(f"/api/orchestrators/{orch}/plan",
+                           json={"raw": "I'll start by researching"})
+        body = resp.json()
+        self.assertEqual(body["rows"], [])
+        self.assertTrue(body["errors"])
+        self.assertIn("I'll start by", body["raw"])
+```
+
+- [ ] **Step 2: Run it and watch it fail** — 404, no such route.
+
+- [ ] **Step 3: Add the handlers**
+
+```python
+async def handle_orchestrator_plan(request: Request, orchestrator_id: str):
+    """Validate a proposed plan. Never executes anything."""
+    owner = await owner_of(request.state.session)
+    data = await request.json()
+    raw = str(data.get("raw") or "")
+    allowed = await _allowed_models(owner)
+    rows, errors = orchestrator.validate_plan(raw, allowed)
+    return JSONResponse({"rows": rows, "errors": errors, "raw": raw})
+
+
+async def handle_orchestrator_run(request: Request, orchestrator_id: str):
+    """Persist the approved rows and start the run in the background."""
+    owner = await owner_of(request.state.session)
+    data = await request.json()
+    rows = data.get("rows") or []
+    if not rows:
+        raise HTTPException(status_code=400, detail="no tasks to run")
+    run = await db.orchestrator_get(orchestrator_id, owner)
+    if not run:
+        raise HTTPException(status_code=404, detail="orchestrator not found")
+    for row in rows:
+        await db.orchestrator_task_create(
+            orchestrator_id, row["id"], row["title"], row["prompt"],
+            model=row.get("model"), depends_on=row.get("depends_on") or [])
+    asyncio.create_task(orchestrator.run_tasks(
+        orchestrator_id, owner, run["planner_chat_id"], run["work_dir"]))
+    return JSONResponse({"ok": True})
+```
+
+Register both beside the existing orchestrator routes.
+
+- [ ] **Step 4: Run the tests** — Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add routes/orchestrators.py tests/test_qa_orchestrator_chats.py
+git diff --cached --name-only
+git commit -m "feat: propose, approve and run an orchestrator plan"
+```
+
+---
+
+### Task 8: Frontend — plan table, run view, and hiding non-root chats
+
+**Files:**
+- Modify: `web/orchestrator.html`, `web/assets/orchestrator.js`
+- Modify: `web/assets/chat-list.js`
+- Test: `tests/test_frontend_browser.py` (one new class)
+
+**Interfaces:**
+- Consumes: Task 7's endpoints.
+- Produces: nothing consumed by later tasks.
+
+**Decide first, and verify rather than assume:** the spec's open question is
+whether `chat-list.js`'s existing `is_temporary` filter is the right hook for
+"not a root", or whether the predicate needs its own field. Read
+`setSupervisor` and the filter at the top of the render path before changing
+either. Per Pedro's ruling the predicate is **"not a root"**, and the
+hierarchy design's composer owns nesting — so this task only *hides*; it does
+not draw the family card.
+
+- [ ] **Step 1: Write the browser test**
+
+```python
+class OrchestratorPlanBrowserTests(_BrowserFixture):
+    def test_a_rejected_plan_shows_its_errors_and_stays_editable(self):
+        self._login()
+        self.page.goto(f"{self.base}/orchestrator", wait_until="domcontentloaded")
+        self.page.click("#newRun")
+        self.page.fill("#planRaw", "not json at all")
+        self.page.click("#validatePlan")
+        self.page.wait_for_selector(".plan-error", timeout=10_000)
+        self.assertIn("JSON", self.page.inner_text(".plan-error"))
+        # and the Run button must be unavailable while errors stand
+        self.assertTrue(self.page.is_disabled("#runPlan"))
+
+    def test_task_chats_do_not_appear_in_the_flat_sidebar(self):
+        self._login()
+        # ... create a run with one task via the API ...
+        self.page.goto(self.base, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#chatList", timeout=10_000)
+        rows = self.page.locator("#chatList .chat-row").all_inner_texts()
+        self.assertNotIn("Task: One", rows)
+```
+
+- [ ] **Step 2: Run the class and watch it fail**
+
+Run:
+```bash
+systemd-run --user --scope -q -p MemoryMax=500M -p MemorySwapMax=0 \
+  .venv/bin/python -m pytest \
+  "tests/test_frontend_browser.py::OrchestratorPlanBrowserTests" -v
+```
+Expected: FAIL. One class costs ~30s; do not run the whole 19-minute file.
+
+- [ ] **Step 3: Build the plan table**
+
+An editable table, not a text box — the structure is data by the time a
+person sees it. Each row: title, prompt, `depends_on`, optional model. Errors
+render as `.plan-error` and disable `#runPlan` while any remain.
+
+- [ ] **Step 4: Widen the sidebar filter to "not a root"**
+
+In `chat-list.js`, replace `chats.filter(c => !c.is_temporary)` with a
+predicate that also excludes chats that are an orchestrator member. Keep it
+one expression and comment why, citing this spec.
+
+- [ ] **Step 5: Re-run the class** — Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add web/orchestrator.html web/assets/orchestrator.js \
+        web/assets/chat-list.js tests/test_frontend_browser.py
+git diff --cached --name-only
+git commit -m "feat: editable plan table, and keep task chats out of the flat list"
+```
+
+---
+
+### Task 9: Delete the old engine
+
+**Files:**
+- Modify: `orchestrator.py`
+
+Do this **last**: the guards in Task 6 already forbid the deleted constructs
+returning, so deletion is verified by tests rather than by reading.
+
+- [ ] **Step 1: Delete `PlanParser`, its regexes, and `OrchestratorEngine`'s
+      scheduler**, keeping `TaskGraph`, `ProgressEvent` and `ProgressTracker`.
+
+- [ ] **Step 2: Delete the synthetic-id and bespoke usage-recording paths**
+      (`supervisor_<uuid>`, `subtask_<id>`, `_record_usage`) — usage is now
+      recorded by `_start_turn` for every task.
+
+- [ ] **Step 3: Run the full non-browser suite**
+
+```bash
+systemd-run --user --scope -q -p MemoryMax=500M -p MemorySwapMax=0 \
+  .venv/bin/python -m pytest -rs -p no:cacheprovider \
+  --ignore=tests/test_frontend_browser.py
+```
+Expected: no new failures. Investigate every one that names `orchestrator`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add orchestrator.py
+git diff --cached --name-only
+git commit -m "refactor: delete the prose plan grammar and the old engine"
+```
+
+---
+
+## Plan self-review
+
+**Spec coverage.** Data model → Task 1. Shared workspace and artefact flow →
+Task 2. Result injection → Task 5. Plan-as-data with a visible failure mode →
+Tasks 3 and 7. Scheduler, three-way task outcome and run status → Task 4.
+Both architectural guards → Task 6. Frontend and the hiding predicate → Task
+8. Deletions → Task 9.
+
+**Known gaps, deliberately left to the executor.** Task 7's test elides
+authentication setup and orchestrator creation, because the surrounding
+fixture differs between `TestClient` and browser tests and copying the wrong
+one is worse than an explicit ellipsis. Task 8 describes the plan table's
+behaviour rather than its markup, since `orchestrator.html` is another
+session's active file and its conventions should be followed rather than
+replaced.
+
+**Not covered, and out of scope by the spec's own open questions:** re-running
+only the failed tasks of a run, and what deleting a run does to its workspace.
+The second matters more than it looks — the spec records that deleting the
+*directory* is what costs the gallery its images, never deleting the chats.

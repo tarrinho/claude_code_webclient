@@ -123,7 +123,13 @@ class BenchmarkRoutesReorderTests(unittest.IsolatedAsyncioTestCase):
         before_ladder = benchmark_reorder._ladder_for(
             await delegation_rows_all(), "coding")
 
-        async def _bump_cost_then_report(model, task_type):
+        # Signature mirrors benchmark_cell.run_cell, including the keyword
+        # arguments this case does not use: a double that accepts fewer
+        # arguments than the real function fails with a TypeError from inside
+        # mock the moment production passes one, which is what happened when
+        # `on_progress` was added to run_cell and this stub was not updated.
+        async def _bump_cost_then_report(model, task_type, repeats=3,
+                                         timeout_s=None, on_progress=None):
             # Runs between measure_one_cell's before/after snapshots -- the
             # cost change that causes the flip, not the accuracy result.
             await delegation_row_set("cheap", "coding", accuracy=0.9, n=6,

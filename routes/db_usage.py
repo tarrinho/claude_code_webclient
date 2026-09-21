@@ -1353,7 +1353,26 @@ SYSTEM_FIELDS: tuple[str, ...] = (
     "swap_pct",
     "swap_used",
     "swap_total",
-    "swap_max",
+    # No "swap_max" here, and the omission is the point. A per-sample maximum
+    # is not a quantity: one sample holds one swap_pct, so its own max is
+    # itself. `swap_max` is a BUCKET aggregate -- `ROUND(MAX(swap_pct), 1) AS
+    # swap_max` in the two series queries below -- exactly like `mem_max`,
+    # which is likewise an alias and appears in neither this tuple nor the
+    # table.
+    #
+    # It was listed here from a6c904c4 (2026-09-20) until 2026-09-21, with a
+    # matching column added to `system_samples`. Nothing ever produced it:
+    # `sysstats.to_row` has no line for it, and the insert below reads
+    # `values.get(field, 0) or 0`, so every sample written in that window
+    # stored a literal 0. The Server tab was unaffected because it reads the
+    # aggregate, never the column. tests/test_qa_sysstats.py caught it the
+    # day it landed -- its docstring says "a column added to system_samples
+    # without a matching line here would silently store 0 for ever" -- and
+    # that is precisely what happened.
+    #
+    # The column itself is left in place: it is NOT NULL DEFAULT 0, dropping
+    # it needs a migration, and nothing reads it. Removing it from this tuple
+    # is what stops the pointless write.
     "disk_pct",
     "disk_used",
     "disk_total",

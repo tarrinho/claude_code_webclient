@@ -742,6 +742,22 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(Path(row_a["work_dir"]).is_dir())
         self.assertTrue(Path(row_b["work_dir"]).is_dir())
 
+    async def test_a_failed_workspace_mkdir_orphans_no_orchestrator_row(self):
+        """Fix round 1, MINOR 2: db.orchestrator_create used to commit before
+        the mkdir attempt, so an OSError here returned 500 while the row
+        stayed -- the client never received its id, so nobody could clean it
+        up. mkdir now runs first; a failure there must leave nothing behind
+        to orphan."""
+        client, headers = self._login()
+        before = await db.orchestrator_list((await db.user_get_by_name("alice"))["id"])
+        with patch.object(Path, "mkdir", side_effect=OSError("disk full")):
+            resp = client.post(
+                "/api/orchestrators", json={"title": "Will Fail"}, headers=headers,
+            )
+        self.assertEqual(resp.status_code, 500, resp.text)
+        after = await db.orchestrator_list((await db.user_get_by_name("alice"))["id"])
+        self.assertEqual(len(after), len(before))
+
     # ── POST /plan ──────────────────────────────────────────────────────
 
     def test_an_unreadable_plan_returns_errors_and_the_raw_text(self):
@@ -851,7 +867,101 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
-    async def test_run_persists_only_the_approved_rows_and_schedules_execution(self):
+    def test_run_rejects_a_dependency_cycle(self):
+        """Fix round 1, IMPORTANT 1: validate_plan rejects a cycle at /plan,
+        but /run is a second, independent entry point for rows that may have
+        been hand-edited after that check ran. Confirmed by execution before
+        this fix: posting a->b, b->a left BOTH rows stuck "pending" forever
+        (run_tasks's scheduler never finds either one "ready"), the
+        orchestrator ended "error" with progress_pct 0.0, and neither row
+        said why. This must be a clean 400 instead, with nothing persisted."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        resp = client.post(
+            f"/api/orchestrators/{orch}/run",
+            json={"rows": [
+                {"id": "a", "title": "A", "prompt": "x", "depends_on": ["b"]},
+                {"id": "b", "title": "B", "prompt": "y", "depends_on": ["a"]},
+            ]},
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("cycle", resp.json()["error"].lower())
+
+    async def test_a_rejected_cycle_creates_no_task_rows(self):
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        client.post(
+            f"/api/orchestrators/{orch}/run",
+            json={"rows": [
+                {"id": "a", "title": "A", "prompt": "x", "depends_on": ["b"]},
+                {"id": "b", "title": "B", "prompt": "y", "depends_on": ["a"]},
+            ]},
+            headers=headers,
+        )
+        alice_id = (await db.user_get_by_name("alice"))["id"]
+        self.assertEqual(await db.orchestrator_tasks_get(orch, alice_id), [])
+
+    def test_run_rejects_duplicate_ids_in_the_batch(self):
+        """Fix round 1, MINOR 3: validate_plan already rejects a duplicate
+        id; orchestrator_tasks.id is a bare TEXT PRIMARY KEY, so without this
+        check the same shape reaching /run raised an IntegrityError mid-loop
+        instead -- some rows already committed, run_tasks never scheduled,
+        an opaque 500 instead of /plan's clean 400."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        resp = client.post(
+            f"/api/orchestrators/{orch}/run",
+            json={"rows": [
+                {"id": "same", "title": "A", "prompt": "x", "depends_on": []},
+                {"id": "same", "title": "B", "prompt": "y", "depends_on": []},
+            ]},
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("duplicate", resp.json()["error"].lower())
+
+    async def test_rejected_duplicates_create_no_task_rows(self):
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        client.post(
+            f"/api/orchestrators/{orch}/run",
+            json={"rows": [
+                {"id": "same", "title": "A", "prompt": "x", "depends_on": []},
+                {"id": "same", "title": "B", "prompt": "y", "depends_on": []},
+            ]},
+            headers=headers,
+        )
+        alice_id = (await db.user_get_by_name("alice"))["id"]
+        self.assertEqual(await db.orchestrator_tasks_get(orch, alice_id), [])
+
+    def test_run_schedules_execution_after_persisting_rows(self):
+        """Proves the endpoint SCHEDULES a run and nothing more.
+
+        Fix round 1, TEST EVIDENCE 4: a prior version of this test polled
+        `run_tasks.await_count` after the response returned and treated that
+        as proof the background run happened. It was not: this synchronous
+        `fastapi.testclient.TestClient` builds a brand-new anyio portal (its
+        own thread and event loop) for every request that is never entered
+        as `with TestClient(app) as client`, and tears that portal down the
+        instant the response is returned -- confirmed by substituting the
+        real `orchestrator.run_tasks` and observing
+        "orchestrator_run_tasks_cancelled" logged 3/3 times with the
+        database never touched at all. The polling loop only "passed"
+        because a trivial mock coroutine with no internal awaits happened to
+        finish inside the one residual loop tick before teardown.
+
+        What IS deterministic, and does not depend on the loop ticking
+        again: `orchestrator.run_tasks(...)` is called -- producing the
+        coroutine hand to `asyncio.create_task` -- synchronously, inside the
+        request, before the response is returned. That call is asserted
+        here with no sleep and no polling. See
+        test_an_approved_run_actually_executes_its_tasks and
+        test_a_failure_inside_the_background_run_is_logged_not_lost below
+        for proof that the scheduled run actually does something, driven
+        over one persistent event loop instead of this portal-per-request
+        one.
+        """
         client, headers = self._login()
         orch = self._create_orchestrator(client, headers)
         with patch("orchestrator.run_tasks", new_callable=AsyncMock) as run_tasks:
@@ -863,45 +973,115 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json(), {"ok": True})
+            run_tasks.assert_called_once()
 
-            alice_id = (await db.user_get_by_name("alice"))["id"]
-            task = await db.orchestrator_task_get(orch, "t1", alice_id)
-            self.assertIsNotNone(task)
-            self.assertEqual(task["title"], "Research")
+        alice_id = asyncio.run(db.user_get_by_name("alice"))["id"]
+        task = asyncio.run(db.orchestrator_task_get(orch, "t1", alice_id))
+        self.assertIsNotNone(task)
+        self.assertEqual(task["title"], "Research")
 
-            # The response does not wait on run_tasks; give the event loop a
-            # moment to drain the scheduled background task before checking
-            # it actually got started with this run's own work_dir.
-            for _ in range(50):
-                if run_tasks.await_count:
-                    break
-                time.sleep(0.02)
-            run_tasks.assert_awaited_once()
-            call_args = run_tasks.await_args.args
-            self.assertEqual(call_args[0], orch)
-            self.assertEqual(call_args[1], alice_id)
+    @staticmethod
+    def _asgi_client():
+        """An httpx client over the real ASGI app, with NO lifespan trigger
+        (unlike `with TestClient(app) as client`, which this suite avoids)
+        and, crucially, no per-request portal: every call runs on whichever
+        asyncio loop is already current when awaited -- this test method's
+        own, managed by IsolatedAsyncioTestCase for its whole lifetime. A
+        background task scheduled here survives past the response, the same
+        as it does against the one persistent loop a real uvicorn process
+        runs (fix round 1, TEST EVIDENCE 4)."""
+        import httpx
+        from app import app
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://testserver",
+        )
+
+    async def test_an_approved_run_actually_executes_its_tasks(self):
+        """The completion proof TEST EVIDENCE 4 asked for: drive the whole
+        request over one persistent event loop (see _asgi_client) so the
+        task asyncio.create_task schedules is not cancelled before its first
+        await, and poll the actual database row -- not a mock -- for the
+        outcome _take_turn (not run_tasks itself) is patched here, one level
+        deeper than the scheduling test above, so run_tasks's own real
+        scheduling/status logic is what is under test.
+        """
+        from unittest import mock
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="done")
+
+        async with self._asgi_client() as client:
+            resp = await client.post(
+                "/login", json={"username": "alice", "password": self.password},
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            headers = {"X-CSRF-Token": client.cookies.get("wc_csrf")}
+
+            resp = await client.post(
+                "/api/orchestrators", json={"title": "Run"}, headers=headers,
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            orch = resp.json()["id"]
+
+            with patch("orchestrator._take_turn", side_effect=fake_turn):
+                resp = await client.post(
+                    f"/api/orchestrators/{orch}/run",
+                    json={"rows": [{"id": "t1", "title": "Research",
+                                     "prompt": "find X", "depends_on": []}]},
+                    headers=headers,
+                )
+                self.assertEqual(resp.status_code, 200, resp.text)
+
+                alice_id = (await db.user_get_by_name("alice"))["id"]
+                task = None
+                for _ in range(200):
+                    task = await db.orchestrator_task_get(orch, "t1", alice_id)
+                    if task["status"] in ("done", "failed", "blocked"):
+                        break
+                    await asyncio.sleep(0.01)
+
+        self.assertIsNotNone(task)
+        self.assertEqual(task["status"], "done")
+        run = await db.orchestrator_get(orch, alice_id)
+        self.assertEqual(run["status"], "done")
 
     async def test_a_failure_inside_the_background_run_is_logged_not_lost(self):
         """asyncio.create_task alone can be garbage-collected mid-run with
         nothing reported; the handler must keep a strong reference and log
-        a failure via the done callback."""
-        client, headers = self._login()
-        orch = self._create_orchestrator(client, headers)
-        with patch(
-            "orchestrator.run_tasks",
-            new_callable=AsyncMock, side_effect=RuntimeError("boom"),
-        ), self.assertLogs("wc.app", level="ERROR") as logs:
-            resp = client.post(
-                f"/api/orchestrators/{orch}/run",
-                json={"rows": [{"id": "t1", "title": "Research",
-                                 "prompt": "find X", "depends_on": []}]},
-                headers=headers,
+        a failure via the done callback. Driven over the persistent-loop
+        client (see _asgi_client / test_an_approved_run_actually_executes_
+        its_tasks above) rather than the synchronous TestClient, so the
+        scheduled task survives long enough to actually raise and be
+        logged (fix round 1, TEST EVIDENCE 4)."""
+        async with self._asgi_client() as client:
+            resp = await client.post(
+                "/login", json={"username": "alice", "password": self.password},
             )
             self.assertEqual(resp.status_code, 200, resp.text)
-            for _ in range(50):
-                if any("orchestrator_run_tasks_failed" in m for m in logs.output):
-                    break
-                time.sleep(0.02)
+            headers = {"X-CSRF-Token": client.cookies.get("wc_csrf")}
+
+            resp = await client.post(
+                "/api/orchestrators", json={"title": "Run"}, headers=headers,
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            orch = resp.json()["id"]
+
+            with patch(
+                "orchestrator.run_tasks",
+                new_callable=AsyncMock, side_effect=RuntimeError("boom"),
+            ), self.assertLogs("wc.app", level="ERROR") as logs:
+                resp = await client.post(
+                    f"/api/orchestrators/{orch}/run",
+                    json={"rows": [{"id": "t1", "title": "Research",
+                                     "prompt": "find X", "depends_on": []}]},
+                    headers=headers,
+                )
+                self.assertEqual(resp.status_code, 200, resp.text)
+                for _ in range(200):
+                    if any("orchestrator_run_tasks_failed" in m for m in logs.output):
+                        break
+                    await asyncio.sleep(0.01)
+
         self.assertTrue(
             any("orchestrator_run_tasks_failed" in m for m in logs.output),
             logs.output,

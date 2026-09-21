@@ -750,10 +750,12 @@ async def handle_orchestrator_run(request: Request, supervisor_id: str):
         raise HTTPException(status_code=400, detail="no tasks to run")
 
     allowed = await _allowed_models(owner)
+    ids: list[str] = []
     for row in rows:
         if not isinstance(row, dict):
             raise HTTPException(status_code=400, detail="each row must be an object")
-        if not str(row.get("id") or "").strip():
+        row_id = str(row.get("id") or "").strip()
+        if not row_id:
             raise HTTPException(status_code=400, detail="each row needs an id")
         if not str(row.get("title") or "").strip():
             raise HTTPException(status_code=400, detail="each row needs a title")
@@ -766,6 +768,28 @@ async def handle_orchestrator_run(request: Request, supervisor_id: str):
             raise HTTPException(
                 status_code=400, detail=f"model {model!r} is not on the allowlist",
             )
+        ids.append(row_id)
+
+    # Fix round 1, MINOR 3: validate_plan already rejects a duplicate id --
+    # orchestrator_tasks.id is a bare TEXT PRIMARY KEY, so without this check
+    # a duplicate in a hand-edited batch reaches db.orchestrator_task_create
+    # mid-loop, some rows already committed, and the operator sees an opaque
+    # 500 from the IntegrityError instead of the same clean 400 /plan gives.
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=400, detail="duplicate task id in rows")
+
+    # Fix round 1, IMPORTANT 1: validate_plan rejects a dependency cycle, but
+    # /run is a second, independent entry point for hand-edited rows that may
+    # never have gone through /plan again. Without this, a cycle posted here
+    # leaves every task in it stuck "pending" forever (run_tasks's scheduler
+    # has nothing ready to run) while the orchestrator itself ends "error"
+    # with nothing on either row explaining why -- confirmed by execution.
+    normalised = [
+        {"id": row_id, "depends_on": [str(d) for d in (row.get("depends_on") or [])]}
+        for row_id, row in zip(ids, rows)
+    ]
+    if orchestrator._has_cycle(normalised):
+        raise HTTPException(status_code=400, detail="the plan has a dependency cycle")
 
     if not run.get("work_dir"):
         # Every orchestrator created after this task's other half (the
@@ -966,14 +990,17 @@ async def _api_supervisors_create(request: Request):
     config_data = _validated_supervisor_config(
         body.get("config") if body.get("config") else None
     )
-    sid = uuid.uuid4().hex
-    await db.orchestrator_create(sid, title, description, session["user"], config_data)
-
     # A run's shared workspace, same shape as handle_chat_create's work_dir:
     # <slug>-<date>, uniquified with a counter when that path already exists.
     # Task 1 added the column but deliberately left it unpopulated -- this is
     # its first consumer (run_tasks, below, needs a directory that already
     # exists on disk), so this is where it gets written.
+    #
+    # Computed and created BEFORE the row is inserted, same order
+    # handle_chat_create uses -- a failed mkdir must not leave an orchestrator
+    # row the client never received an id for and nobody can clean up. Fix
+    # round 1, MINOR 2: the row used to be inserted first, so an OSError here
+    # orphaned it.
     slug = db.slug_from_title(title)
     slug = db.slug_pattern(slug) or "untitled"
     date_suffix = datetime.datetime.now(datetime.UTC).date().isoformat()
@@ -996,6 +1023,9 @@ async def _api_supervisors_create(request: Request):
             status_code=500,
             detail="Could not create orchestrator workspace — check server logs for details",
         )
+
+    sid = uuid.uuid4().hex
+    await db.orchestrator_create(sid, title, description, session["user"], config_data)
     await db.orchestrator_update(sid, session["user"], work_dir=work_dir)
 
     eng = orchestrator.OrchestratorEngine(sid, session["user"])

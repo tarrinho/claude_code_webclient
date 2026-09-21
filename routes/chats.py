@@ -2232,6 +2232,30 @@ async def _start_turn(
             await db.generated_image_record(
                 chat_id, chat["title"], chat["work_dir"], owner, images,
             )
+        # Subagents this turn spawned, from the same transcript the turn just
+        # wrote. Recorded here for the same reason and under the same rule as
+        # the images above: this is a secondary index, and a failure must never
+        # risk the turn's transcript write.
+        #
+        # The scan is over the whole file rather than the new bytes, and that is
+        # deliberate -- a Task's `tool_result` lands in a LATER record than its
+        # `tool_use`, so a subagent first seen as running is finished by a later
+        # pass over a region already read. The size-keyed cache in
+        # _scan_tasks_sync keeps that cheap, and the UNIQUE index makes the
+        # re-record a no-op.
+        if session_id:
+            try:
+                task_path = transcripts.transcript_path(session_id)
+                if task_path is not None:
+                    subagents = await asyncio.to_thread(
+                        transcripts._scan_tasks_sync, task_path)
+                    if subagents:
+                        await db.subagent_record(chat_id, subagents)
+            except Exception:
+                # Logged, never raised. The turn is already stored; losing a
+                # sidebar node is not worth failing the request for.
+                _log.warning("subagent_capture_failed chat_id=%s", chat_id,
+                             exc_info=True)
         await db.bump_chat_updated_at(chat_id)
         if session_id and session_id != chat["session_id"]:
             await db.chat_set_session(chat_id, session_id)

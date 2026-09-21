@@ -336,6 +336,9 @@ def __getattr__(name: str):
         "read_marks_get": "routes.db_read_marks",
         "read_mark_set": "routes.db_read_marks",
         "chat_last_activity": "routes.db_read_marks",
+        # subagents (Task-tool children, for the chat list hierarchy)
+        "subagent_record": "routes.db_subagents",
+        "subagents_for_chats": "routes.db_subagents",
         # backup / restore
         "db_backup": "routes.db_backup",
         "_db_backup_sync": "routes.db_backup",

@@ -150,3 +150,29 @@ class SubagentAccessorTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestCase
                          "a re-scan must not un-finish completed work")
         self.assertEqual(got["c1"][0]["ended_at"], "2026-09-21T00:00:09Z",
                          "and must not clear the end time either")
+
+
+class CaptureOrderingTests(unittest.TestCase):
+    """The capture call's placement, asserted on source.
+
+    Placement is the whole property here: the comment already in this block
+    says a failure must never risk the turn's transcript write, because that
+    is the primary artifact and a subagent row is a secondary index. A
+    behavioural test cannot see ordering; this can.
+    """
+
+    SOURCE = __import__("pathlib").Path("routes/chats.py").read_text()
+
+    def test_capture_runs_after_the_transcript_write(self):
+        batch = self.SOURCE.index("await db.messages_batch(")
+        capture = self.SOURCE.index("await db.subagent_record(")
+        self.assertLess(batch, capture,
+                        "subagent capture must not precede messages_batch")
+
+    def test_capture_sits_with_the_other_secondary_index(self):
+        """Next to generated_image_record, which is the same kind of thing
+        and already carries the rule in a comment."""
+        images = self.SOURCE.index("await db.generated_image_record(")
+        capture = self.SOURCE.index("await db.subagent_record(")
+        self.assertLess(abs(images - capture), 1200,
+                        "the two secondary indexes should stay adjacent")

@@ -61,6 +61,63 @@ class VoiceConversationUiTests(unittest.TestCase):
         self.assertIn('window.voiceConversation?.onReplyError', conv)
 
 
+class ThinkingToneTests(unittest.TestCase):
+    """Spec §6: a pulse while the model is thinking, silent once it speaks.
+
+    The audible behaviour cannot be asserted without a speaker, so what is
+    pinned here is the wiring and the two properties the spec makes
+    load-bearing: the tone is ADDITIONAL to the visual indicator, and it has
+    no in-app mute.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tone = (ASSETS / "voice-tone.js").read_text()
+        cls.engine = (ASSETS / "voice-engine.js").read_text()
+
+    def test_the_tone_starts_on_thinking_and_stops_on_anything_else(self):
+        """Driven from setVoiceStatus, the one place status changes, so the
+        tone cannot outlive the state that started it."""
+        self.assertIn("if (next === 'thinking') startThinkingTone();", self.engine)
+        self.assertIn("else stopThinkingTone();", self.engine)
+
+    def test_the_visual_indicator_is_not_replaced_by_the_tone(self):
+        """Spec §6 makes the tone's absence the fault signal, which only works
+        if the tone is additional -- a user watching the screen must still see
+        Thinking… and a user listening must still hear it."""
+        self.assertIn("renderThinkingIndicator(next === 'thinking');", self.engine)
+
+    def test_there_is_no_in_app_mute(self):
+        """A control that silences a fault signal defeats the reason for
+        having one. The system volume is the mute."""
+        for word in ("muted", "setMute", "toggleTone", "toneEnabled"):
+            self.assertNotIn(word, self.tone, word)
+
+    def test_it_synthesises_rather_than_loading_an_audio_file(self):
+        """A file that fails to load is silence, and silence is the fault
+        signal -- so the failure mode would be indistinguishable from the
+        thing it reports."""
+        self.assertIn("createOscillator", self.tone)
+        for asset in (".mp3", ".wav", ".ogg", "new Audio("):
+            self.assertNotIn(asset, self.tone, asset)
+
+    def test_the_pulse_is_about_one_per_second(self):
+        """Requirement 9's rate, as a number rather than a promise."""
+        import re
+        interval = int(re.search(r"PULSE_INTERVAL_MS = (\d+)", self.tone).group(1))
+        self.assertGreaterEqual(interval, 700)
+        self.assertLessEqual(interval, 1300)
+
+    def test_starting_twice_does_not_double_the_beat(self):
+        """setVoiceStatus can fire repeatedly for the same state."""
+        self.assertIn("if (timer) return;", self.tone)
+
+    def test_voice_engine_is_still_under_its_line_cap(self):
+        """It is at 299 of 300 after this change. Recorded explicitly so the
+        next addition extracts rather than discovering the cap by failing."""
+        self.assertLess(len(self.engine.splitlines()), 300)
+
+
 class VoiceStartupOrderingTests(unittest.TestCase):
     """The panel must become usable without waiting for its summary.
 

@@ -8,7 +8,7 @@ import {showToast} from './app.js?v=5926217';
 import {
   flushSpeechBuffer, appendSpeechBuffer, clearSpeechBuffer, setVoiceStatus,
   updateVoiceButtonVisibility, pendingSpeechCount,
-} from './voice-engine.js?v=4274770';
+} from './voice-engine.js?v=4844568';
 import {
   voiceOverlay, voiceTooltipMessages, voiceTooltipConclusion,
   voiceParentState, voiceTempChatId, closeVoiceTooltip,

@@ -10,7 +10,7 @@ import {
   setVoiceStatus, startListening, updateVoiceButtonVisibility,
   stopListeningForClose, refreshButtonRefs, resetTranscript, voiceStatus,
   voiceMicBtn, voiceLiveBtn,
-} from './voice-engine.js?v=4274770';
+} from './voice-engine.js?v=4844568';
 import {runVoiceContext} from './voice-context.js?v=6826762';
 import {
   resetVoiceHandoffState, voiceConversationComplete, voiceHandoffReject,

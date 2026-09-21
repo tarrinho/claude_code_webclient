@@ -6,6 +6,10 @@
 // Ported originally from voice-chat-app's speech-recognition.js /
 // thinking-sound.js.
 
+// The audible thinking cue this file's own header records as ported from
+// voice-chat-app's thinking-sound.js -- it never actually crossed over.
+import {startThinkingTone, stopThinkingTone} from './voice-tone.js?v=6299239';
+
 let voiceMicBtn = document.getElementById('voiceMicBtn');
 let voiceLiveBtn = document.getElementById('voiceLiveBtn');
 let voiceStopBtn = document.getElementById('voiceStopBtn');
@@ -89,6 +93,11 @@ export function setVoiceStatus(next) {
   // Only while actually thinking: the first spoken sentence moves the status
   // to `speaking`, which is when the indicator has done its job.
   renderThinkingIndicator(next === 'thinking');
+  // The audible half of the same signal (spec §6). Driven from the one place
+  // status changes, so the tone cannot outlive the state that started it --
+  // a beep still pulsing while the model speaks would be worse than none.
+  if (next === 'thinking') startThinkingTone();
+  else stopThinkingTone();
   if (next === 'speaking' && previous !== 'speaking' && recognition && recognizing) {
     intentionalStop = true;
     recognition.stop();

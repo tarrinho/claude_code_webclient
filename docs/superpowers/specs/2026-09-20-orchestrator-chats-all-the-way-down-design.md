@@ -336,14 +336,42 @@ That mirror edit belongs in the hierarchy spec, not here: its composer's
 precedence rule (orchestrator member → voice parent → root) is what
 implements the hiding. Relayed to its author.
 
-**Open for the implementation plan:** whether `chat-list.js`'s existing
-`is_temporary` filter (around line 910) is the right hook for "not a root",
-or whether that needs its own predicate. **Unverified by anyone** — the
-hierarchy spec records it as open too. The instinct there, explicitly labelled
-an instinct rather than a measurement, is that it needs its own predicate,
-since `is_temporary` means "ephemeral voice scratch chat" and "not a root" is
-a different claim that merely coincides today. Read `setSupervisor` before
-changing either — see Task 8.
+**Resolved by measurement — use a parent-based predicate, not
+`is_temporary`.** Three facts, each checked against the tree and the live
+database rather than reasoned from the names:
+
+1. **The producer is already root-ness, not voice.** `is_temporary = 1` is
+   set inside the `if parent_chat_id:` branch of the create handler, *not*
+   inside `if voice_mode:`, and the comment above it says so outright:
+   "Temporariness is derived from having a parent … and that is the only way
+   a chat becomes temporary." Only the *consumer* comment at
+   `chat-list.js:910` says voice, because voice is the only thing that
+   currently makes children. That comment is what misled an earlier draft of
+   this section.
+2. **Switching the predicate changes nothing today.** Of the live chats:
+   2 have a parent, 2 are temporary, **0** are parented-but-not-temporary and
+   **0** are temporary-without-a-parent. The two sets are identical, so
+   filtering on "is a root" hides exactly what `!is_temporary` hides now.
+3. **This design cannot use `is_temporary` anyway.** Task 2 creates a task
+   chat with `db.chat_create` plus `chat_update(parent_chat_id=…)`,
+   deliberately bypassing the HTTP handler to share the run's `work_dir` —
+   and `is_temporary` is **not in `_ALLOWED_CHAT_FIELDS`**, so that path
+   cannot set it without widening the allowlist. The flag is reachable only
+   through the create handler this design does not use.
+
+So the predicate is `parent_chat_id IS NULL` for root-ness, leaving
+`is_temporary` to mean ephemeral — which is what its producer comment already
+believes it means. The cost of *not* splitting them is the one worth naming:
+two unrelated concepts on one column, so the first change wanting "ephemeral"
+to differ from "has a parent" has to separate them under load. Cheap now,
+expensive later.
+
+Every consumer of `is_temporary` outside tests, so the blast radius is known:
+`chat-list.js:910` (this filter), `voice-tooltip.js:66` and `:84` (overlay
+client state, keyed on `voice_mode` rather than this flag),
+`routes/chats.py:389` (exposes it in the payload) and the column lists in
+`routes/db_chats.py`. Nothing branches on it for cleanup, retention or turn
+behaviour.
 
 **Hiding a chat also hides its alerts, and that is not free.** Reported by the
 session that changed the sidebar's per-row indicators (`873ecd74`,
@@ -1304,11 +1332,34 @@ An editable table, not a text box — the structure is data by the time a
 person sees it. Each row: title, prompt, `depends_on`, optional model. Errors
 render as `.plan-error` and disable `#runPlan` while any remain.
 
-- [ ] **Step 4: Widen the sidebar filter to "not a root"**
+- [ ] **Step 4: Switch the sidebar filter to root-ness**
 
-In `chat-list.js`, replace `chats.filter(c => !c.is_temporary)` with a
-predicate that also excludes chats that are an orchestrator member. Keep it
-one expression and comment why, citing this spec.
+In `chat-list.js` (line ~910), replace
+
+```javascript
+    const visible = chats.filter(c => !c.is_temporary);
+```
+
+with a predicate on having a parent, and correct the comment, which currently
+claims a voice meaning the producer does not have:
+
+```javascript
+    // Show roots only. A chat with a parent is rendered inside its parent's
+    // card, never as an orphan row here -- voice children and orchestrator
+    // task chats alike. Keyed on parentage rather than is_temporary: the
+    // create handler derives is_temporary FROM having a parent, so the two
+    // agree today (2 of 2 live chats), but an orchestrator task chat is
+    // created through db.chat_create, which cannot set is_temporary at all --
+    // it is not in _ALLOWED_CHAT_FIELDS.
+    const visible = chats.filter(c => !c.parent_chat_id);
+```
+
+`parent_chat_id` is already in the chat-list payload
+(`routes/chats.py`'s serialiser), so no endpoint change is needed.
+
+Verify it is behaviour-preserving before moving on: 0 live chats are
+parented-but-not-temporary and 0 are temporary-without-a-parent, so no row
+should change visibility.
 
 - [ ] **Step 5: Re-run the class** — Expected: PASS.
 

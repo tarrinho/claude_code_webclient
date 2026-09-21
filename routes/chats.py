@@ -2091,6 +2091,46 @@ async def _repair_after_refusal(chat_id: str, session_id: str | None) -> None:
     await db.chat_mark_degraded(chat_id, "transcript", detail)
 
 
+def _parse_iso_ts(stamp: Any) -> datetime.datetime | None:
+    """Parse an ISO-8601 timestamp (``Z`` or explicit offset) to an aware
+    ``datetime``, or ``None`` if *stamp* is missing or does not parse."""
+    if not stamp:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _drop_subagents_before_chat(
+    subagents: list[dict[str, Any]], chat: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Drop rows whose ``started_at`` predates *chat*'s own ``created_at``.
+
+    ``_scan_tasks_sync`` below reads the whole SESSION transcript, but several
+    chats can share one ``session_id`` -- ``handle_chats_list``'s own comment
+    says so, and on the live database 11 session_ids are shared by 2+ chats,
+    covering 27 of 105 chats. Without this filter, every chat on a shared
+    session records the session's entire subagent history, including
+    subagents spawned before that chat existed, and the same rows show up
+    under every sibling.
+
+    A missing or unparseable timestamp on either side keeps the row rather
+    than dropping it: a subagent shown under one extra chat is a smaller
+    fault than one silently lost.
+    """
+    created = _parse_iso_ts(chat.get("created_at"))
+    if created is None:
+        return subagents
+    kept = []
+    for row in subagents:
+        started = _parse_iso_ts(row.get("started_at"))
+        if started is not None and started < created:
+            continue
+        kept.append(row)
+    return kept
+
+
 async def _start_turn(
     chat: dict, owner: str, prompt: str, model: str | None
 ) -> turns.LiveTurn:
@@ -2237,23 +2277,24 @@ async def _start_turn(
             await db.generated_image_record(
                 chat_id, chat["title"], chat["work_dir"], owner, images,
             )
-        # Subagents this turn spawned, from the same transcript the turn just
-        # wrote. Recorded here for the same reason and under the same rule as
-        # the images above: this is a secondary index, and a failure must never
-        # risk the turn's transcript write.
+        # Subagents this turn spawned -- secondary index, same failure rule
+        # as images above.
         #
-        # The scan is over the whole file rather than the new bytes, and that is
-        # deliberate -- a Task's `tool_result` lands in a LATER record than its
-        # `tool_use`, so a subagent first seen as running is finished by a later
-        # pass over a region already read. The size-keyed cache in
-        # _scan_tasks_sync keeps that cheap, and the UNIQUE index makes the
-        # re-record a no-op.
+        # Whole-file scan: a `tool_result` lands after its `tool_use`, so
+        # finishing one needs a re-pass over region already read. The
+        # size-keyed cache in _scan_tasks_sync does NOT help here: this turn
+        # just appended to the file, so the size key always misses; it only
+        # helps a second call in the same idle window. Measured: median
+        # 0.16 MB (~1.5ms), largest 141 MB (~1.33s CPU, ~300MB RSS; 13/3068
+        # exceed 16 MB) -- tolerable: threaded (asyncio.to_thread) and
+        # failure-isolated, not cheap.
         if session_id:
             try:
                 task_path = transcripts.transcript_path(session_id)
                 if task_path is not None:
                     subagents = await asyncio.to_thread(
                         transcripts._scan_tasks_sync, task_path)
+                    subagents = _drop_subagents_before_chat(subagents, chat)
                     if subagents:
                         await db.subagent_record(chat_id, subagents)
             except Exception:

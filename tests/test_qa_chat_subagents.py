@@ -180,6 +180,70 @@ class CaptureOrderingTests(unittest.TestCase):
                         "the two secondary indexes should stay adjacent")
 
 
+class SubagentAttributionTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestCase):
+    """FINDING 1 (2026-09-21 branch review): several chats can share one
+    session_id (handle_chats_list's own comment says so; on the live
+    database 11 session_ids are shared by 2+ chats, covering 27 of 105
+    chats). The whole-session scan in routes/chats.py must not attribute a
+    subagent spawned before a chat existed to that chat.
+
+    Uses the plain mixin, not ChatSubagentsSchemaTests: subclassing a
+    TestCase re-runs its tests inside every subclass, so the schema cases
+    would otherwise execute again here too."""
+
+    async def test_a_row_older_than_the_chat_is_dropped_a_newer_one_kept(self):
+        import pathlib
+
+        from routes.chats import _drop_subagents_before_chat
+        from routes.db_subagents import subagent_record, subagents_for_chats
+
+        pathlib.Path(f"{self.tmp.name}/p").mkdir(parents=True, exist_ok=True)
+        await db.user_create("bob", None, "x")
+        owner = (await db.user_get_by_name("bob"))["id"]
+        await db.chat_create("c1", "C", None, f"{self.tmp.name}/p", owner)
+        # chat_create stamps created_at to "now" -- pin it to a known value so
+        # the before/after rows below are unambiguous rather than racing the
+        # clock.
+        await db.db_conn.execute(
+            "UPDATE chats SET created_at = ? WHERE id = ?",
+            ("2026-09-21T10:00:00Z", "c1"))
+        await db.db_conn.commit()
+        chat = await db.chat_get("c1", owner)
+
+        rows = [
+            {"tool_use_id": "tu_old", "agent_type": "x", "description": "d",
+             "status": "done", "started_at": "2026-09-21T09:59:00Z",
+             "ended_at": "2026-09-21T09:59:05Z"},
+            {"tool_use_id": "tu_new", "agent_type": "x", "description": "d",
+             "status": "running", "started_at": "2026-09-21T10:00:05Z",
+             "ended_at": None},
+        ]
+        kept = _drop_subagents_before_chat(rows, chat)
+        await subagent_record("c1", kept)
+
+        got = await subagents_for_chats(["c1"])
+        self.assertEqual([r["tool_use_id"] for r in got["c1"]], ["tu_new"],
+                          "the row started before the chat existed must not "
+                          "be recorded, and the newer one must be")
+
+    async def test_a_missing_or_unparseable_timestamp_is_kept_not_dropped(self):
+        """When it cannot tell, it keeps the row: a subagent shown under one
+        extra chat is a smaller fault than one silently lost."""
+        from routes.chats import _drop_subagents_before_chat
+
+        rows = [
+            {"tool_use_id": "tu_bad_stamp", "started_at": "not-a-timestamp"},
+            {"tool_use_id": "tu_no_stamp", "started_at": None},
+        ]
+        self.assertEqual(
+            _drop_subagents_before_chat(rows, {"created_at": "2026-09-21T10:00:00Z"}),
+            rows)
+        self.assertEqual(
+            _drop_subagents_before_chat(rows, {"created_at": "not-a-timestamp"}),
+            rows)
+        self.assertEqual(_drop_subagents_before_chat(rows, {}), rows)
+
+
 class SubagentRetentionTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestCase):
     """Uses the plain mixin, not ChatSubagentsSchemaTests: subclassing a
     TestCase re-runs its tests inside every subclass, so the schema cases

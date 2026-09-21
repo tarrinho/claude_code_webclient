@@ -320,6 +320,34 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         run = await db.orchestrator_get(orch, "owner-uuid")
         self.assertEqual(run["status"], "degraded")
 
+    async def test_blocking_is_transitive_across_a_dependency_chain(self):
+        """a fails, b depends on a, c depends on b: both b and c must end
+        blocked. Regression for the fix-round-1 defect where the blocking
+        pass only checked `d in failed` (never `d in blocked`) and the loop
+        broke as soon as `ready` went empty, one step before c's own
+        dependency (b) had been blocked -- leaving c "pending" forever with
+        the scheduler already terminated."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        for tid, deps in (("a", []), ("b", ["a"]), ("c", ["b"])):
+            await db.orchestrator_task_create(
+                orch, tid, tid.upper(), None, depends_on=deps)
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="error")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        status = {t["id"]: t["status"]
+                  for t in await db.orchestrator_tasks_get(orch, "owner-uuid")}
+        self.assertEqual(status["a"], "failed")
+        self.assertEqual(status["b"], "blocked")
+        self.assertEqual(status["c"], "blocked")
+        self.assertNotIn("pending", status.values())
+
     async def test_all_tasks_succeeding_marks_the_run_done(self):
         import orchestrator
         from unittest import mock
@@ -372,6 +400,103 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         status = {t["id"]: t["status"]
                   for t in await db.orchestrator_tasks_get(orch, "owner-uuid")}
         self.assertEqual(status["a"], "failed")
+
+    async def test_a_real_cancelled_task_is_read_as_failed_not_raised(self):
+        """Fix-round-1 CRITICAL 2 regression: turns._run re-raises
+        asyncio.CancelledError from inside the task AFTER setting
+        live.state = "cancelled" (see turns.py), which a Mock's bare
+        `task=asyncio.sleep(0)` cannot reproduce -- a coroutine has none of a
+        real asyncio.Task's cancellation semantics. This drives a real
+        asyncio.Task that raises CancelledError itself, the way
+        POST /api/chats/{id}/stop and turns.shutdown() both do to a live
+        turn. Before the fix, `await live.task` propagated the
+        CancelledError uncaught and the whole scheduling loop died with it.
+        """
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        class _FakeLiveTurn:
+            def __init__(self):
+                self.state = "running"
+                self.task = asyncio.ensure_future(self._run())
+
+            async def _run(self):
+                # Mirrors turns._run: settle the state, THEN raise -- the
+                # cancellation is real, not simulated by a Mock.
+                self.state = "cancelled"
+                raise asyncio.CancelledError
+
+        async def fake_turn(chat, owner, prompt, model):
+            return _FakeLiveTurn()
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        status = {t["id"]: t["status"]
+                  for t in await db.orchestrator_tasks_get(orch, "owner-uuid")}
+        self.assertEqual(status["a"], "failed")
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertEqual(run["status"], "error")
+
+    async def test_a_cancelled_task_does_not_abandon_a_sibling(self):
+        """Property C/one-failed-leaf-does-not-abandon-the-rest, specifically
+        for cancellation: b has no dependency on a and must still run and
+        succeed even though a's turn was cancelled."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        for tid in ("a", "b"):
+            await db.orchestrator_task_create(
+                orch, tid, tid.upper(), None, depends_on=[])
+
+        class _FakeCancelledLiveTurn:
+            def __init__(self):
+                self.state = "running"
+                self.task = asyncio.ensure_future(self._run())
+
+            async def _run(self):
+                self.state = "cancelled"
+                raise asyncio.CancelledError
+
+        async def fake_turn(chat, owner, prompt, model):
+            if chat["title"] == "A":
+                return _FakeCancelledLiveTurn()
+            return mock.Mock(task=asyncio.sleep(0), state="done")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        status = {t["id"]: t["status"]
+                  for t in await db.orchestrator_tasks_get(orch, "owner-uuid")}
+        self.assertEqual(status["a"], "failed")
+        self.assertEqual(status["b"], "done")
+
+    async def test_an_exception_before_a_turn_still_leaves_a_terminal_status(self):
+        """Fix-round-1 IMPORTANT 3: an exception from create_task_chat must
+        not leave the run stuck at whatever status the caller set before
+        invoking run_tasks -- a terminal status is written on the way out,
+        and only then does the exception propagate (no retry, nothing
+        swallowed)."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_update(orch, "owner-uuid", status="running")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("chat creation exploded")
+
+        with mock.patch("orchestrator.create_task_chat", side_effect=boom):
+            with self.assertRaises(RuntimeError):
+                await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertEqual(run["status"], "error")
 
     async def test_run_tasks_routes_execution_through_take_turn_only(self):
         """Guard 1: every route to execution goes through _take_turn (and so

@@ -641,20 +641,39 @@ async def run_tasks(
 
     A failed turn is an EVENT, not an exception (rules.md/CLAUDE.md s4):
     ``_take_turn`` returns a ``turns.LiveTurn`` whose ``state`` says what
-    happened -- ``run``/``error``/``cancelled``/``done`` -- and it never
+    happened -- ``running``/``error``/``cancelled``/``done`` -- and it never
     raises for a failed turn. Only ``state`` is read to decide success;
     catching an exception here would silently treat a failed turn as an
     empty success, which is the exact bug this design replaces.
 
-    A task whose dependency failed is marked ``blocked`` and written to the
-    database explicitly -- never skipped, never left "pending" forever, and
-    never marked "done". Tasks that do not depend on anything that failed
-    keep running: one failed leaf must not abandon unrelated work.
+    ``await live.task`` can still raise ``asyncio.CancelledError`` -- not
+    because this function is being cancelled, but because ``turns._run``
+    deliberately re-raises it after settling ``turn.state = "cancelled"``, so
+    the underlying ``asyncio.Task`` reports as cancelled to *its* watchers
+    (``POST /api/chats/{id}/stop`` and ``turns.shutdown()`` both cancel a live
+    turn's task this way, and either can land on a task chat mid-run). That
+    exception is swallowed here, the same idiom ``turns.cancel`` uses for the
+    same reason: ``live.state`` is already ``"cancelled"`` by the time it
+    raises, so catching it costs nothing about "read the outcome from
+    state" -- it is what lets a stopped task chat be read as one, instead of
+    aborting the whole scheduling loop and abandoning every other task.
 
-    No retry and no cleanup for a partial ``create_task_chat`` failure: that
-    helper performs four un-transactioned writes, and retrying after a
-    partial failure would create a second orphan chat. Known, accepted
-    limitation from Task 2 -- not this task's to fix.
+    A task whose dependency failed *or was itself blocked* is marked
+    ``blocked`` and written to the database explicitly -- never skipped,
+    never left "pending" forever, and never marked "done". Blocking is
+    transitive: a chain a -> b -> c where a fails must end with b AND c
+    blocked, not c stuck "pending" forever because "blocked" alone never
+    entered the check. Tasks that do not depend on anything that failed or
+    was blocked keep running: one failed leaf must not abandon unrelated
+    work.
+
+    The run's own status is always written on the way out, including when an
+    exception -- e.g. from ``create_task_chat``, which performs four
+    un-transactioned writes and is not retried here (Task 2's known, accepted
+    limitation) -- propagates out of the per-task loop. That is reporting an
+    outcome that already happened, not a retry, and the exception still
+    propagates to the caller once the status is recorded; nothing here is
+    swallowed.
     """
     import json
 
@@ -675,53 +694,79 @@ async def run_tasks(
                 deps = json.loads(deps) if deps else []
             except ValueError:
                 deps = []
-        t["depends_on"] = deps or []
+        # A corrupted row can decode to a non-list JSON value (e.g. the int
+        # 5), which is truthy and would otherwise survive into the `for d
+        # in ...` loops below and raise TypeError. Same idiom validate_plan
+        # already uses for the same reason.
+        if not isinstance(deps, list):
+            deps = []
+        t["depends_on"] = deps
         tasks[t["id"]] = t
 
     done: set[str] = set()
     failed: set[str] = set()
+    blocked: set[str] = set()
 
-    while True:
-        ready = [
-            t for t in tasks.values()
-            if t["status"] == "pending"
-            and all(d in done for d in (t.get("depends_on") or []))
-        ]
-        # Anything still pending whose dependency failed is blocked, not
-        # skipped and not silently done.
-        for t in tasks.values():
-            if t["status"] == "pending" and any(
-                d in failed for d in (t.get("depends_on") or [])
-            ):
-                t["status"] = "blocked"
+    try:
+        while True:
+            # Blocking first, and re-checked every pass: a dependency that is
+            # itself freshly blocked (not failed) must block its own
+            # dependents too, which needs `d in blocked` in the check, not
+            # only `d in failed`. `changed` keeps the loop going while
+            # blocking is still spreading even when nothing is ready --
+            # otherwise a chain a -> b -> c stops as soon as `ready` is
+            # empty, one step after b is blocked and before c ever is,
+            # leaving c "pending" forever.
+            changed = False
+            for t in tasks.values():
+                if t["status"] == "pending" and any(
+                    d in failed or d in blocked for d in t["depends_on"]
+                ):
+                    t["status"] = "blocked"
+                    blocked.add(t["id"])
+                    changed = True
+                    await db.orchestrator_task_update(
+                        orchestrator_id, t["id"], owner_id, status="blocked")
+
+            ready = [
+                t for t in tasks.values()
+                if t["status"] == "pending"
+                and all(d in done for d in t["depends_on"])
+            ]
+            if not ready and not changed:
+                break
+
+            for t in ready:
+                chat_id = await create_task_chat(
+                    orchestrator_id, t["id"], t["title"], work_dir,
+                    owner_id, parent_chat_id)
+                chat = await db.chat_get(chat_id, owner_id)
+                prompt = await _prompt_for(orchestrator_id, t, owner_id)
+                live = await _take_turn(chat, owner_id, prompt, t.get("model"))
+                try:
+                    await live.task
+                except asyncio.CancelledError:
+                    # Expected for a stopped/shutdown turn -- turns._run has
+                    # already set live.state = "cancelled" before raising
+                    # this. Not swallowing a failure: the state read below
+                    # still marks the task failed.
+                    pass
+                # CLAUDE.md s4: a failed turn is an EVENT. The state carries
+                # it; an exception never arrives here as a *result* -- only
+                # ever as the cancellation above -- so never look for one.
+                ok = live.state == "done"
+                t["status"] = "done" if ok else "failed"
+                (done if ok else failed).add(t["id"])
                 await db.orchestrator_task_update(
-                    orchestrator_id, t["id"], owner_id, status="blocked")
-        if not ready:
-            break
-
-        for t in ready:
-            chat_id = await create_task_chat(
-                orchestrator_id, t["id"], t["title"], work_dir,
-                owner_id, parent_chat_id)
-            chat = await db.chat_get(chat_id, owner_id)
-            prompt = await _prompt_for(orchestrator_id, t, owner_id)
-            live = await _take_turn(chat, owner_id, prompt, t.get("model"))
-            await live.task
-            # CLAUDE.md s4: a failed turn is an EVENT. The state carries it;
-            # an exception never arrives, so never look for one.
-            ok = live.state == "done"
-            t["status"] = "done" if ok else "failed"
-            (done if ok else failed).add(t["id"])
-            await db.orchestrator_task_update(
-                orchestrator_id, t["id"], owner_id, status=t["status"])
-
-    total = len(tasks)
-    status = ("done" if len(done) == total
-              else "error" if not done
-              else "degraded")
-    await db.orchestrator_update(
-        orchestrator_id, owner_id, status=status,
-        progress_pct=round(100.0 * len(done) / total, 1) if total else 0.0)
+                    orchestrator_id, t["id"], owner_id, status=t["status"])
+    finally:
+        total = len(tasks)
+        status = ("done" if len(done) == total
+                  else "error" if not done
+                  else "degraded")
+        await db.orchestrator_update(
+            orchestrator_id, owner_id, status=status,
+            progress_pct=round(100.0 * len(done) / total, 1) if total else 0.0)
 
 
 # -- Orchestrator engine -------------------------------------------------------

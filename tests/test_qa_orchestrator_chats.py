@@ -204,6 +204,74 @@ class PlanValidationTests(unittest.TestCase):
             ' {"title":"B","prompt":"y","depends_on":["a"],"id":"b"}]', set())
         self.assertTrue(any("cycle" in e.lower() for e in errors))
 
+    def test_null_in_json_array_returns_errors_not_crash(self):
+        """Regression: calling .get() on null would raise AttributeError.
+        Must return ([], errors) instead."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("[null]", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors, "null in array must produce errors, not crash")
+        self.assertTrue(any("not an object" in e for e in errors))
+
+    def test_empty_array_in_json_array_returns_errors_not_crash(self):
+        """Regression: calling .get() on [] would raise AttributeError.
+        Must return ([], errors) instead."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("[[]]", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors, "empty array in array must produce errors, not crash")
+        self.assertTrue(any("not an object" in e for e in errors))
+
+    def test_mixed_valid_and_invalid_items_returns_errors_not_crash(self):
+        """Regression: calling .get() on a string would raise AttributeError.
+        Must return ([], errors) even when one task is valid."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"do a","depends_on":[]}, "oops"]', set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors, "mixed valid/invalid items must produce errors, not crash")
+
+    def test_duplicate_explicit_ids_are_rejected(self):
+        """Regression: two tasks with explicit id='x' would both be added to rows,
+        creating two rows with the same id. Must produce an error instead."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":[],"id":"same"},'
+            ' {"title":"B","prompt":"y","depends_on":[],"id":"same"}]', set())
+        self.assertEqual(rows, [])
+        self.assertTrue(any("already used" in e for e in errors))
+
+    def test_explicit_id_colliding_with_index_id_is_rejected(self):
+        """Regression: task 0 with id='1' collides with task 1's default index id '1'.
+        Must produce an error instead of two rows with id '1'."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":[],"id":"1"},'
+            ' {"title":"B","prompt":"y","depends_on":[]}]', set())
+        self.assertEqual(rows, [])
+        self.assertTrue(any("already used" in e for e in errors))
+
+    def test_empty_string_returns_error_not_empty_plan(self):
+        """Edge case: empty string is not valid JSON."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+
+    def test_empty_object_returns_error_not_empty_plan(self):
+        """Edge case: {} is not a list."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("{}", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+
+    def test_empty_array_returns_error_not_empty_plan(self):
+        """Edge case: [] is an empty list."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("[]", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,13 @@ def validate_plan(text: str, allowed_models: set[str]):
     if not isinstance(parsed, list) or not parsed:
         return [], ["the plan must be a non-empty JSON array of tasks"]
 
-    ids = {str(t.get("id") or i) for i, t in enumerate(parsed)}
+    # Build ids set, but only call .get() on dicts to avoid AttributeError
+    # on list items that are not objects. Use index as fallback id.
+    ids = {
+        str(t.get("id") or i) if isinstance(t, dict) else str(i)
+        for i, t in enumerate(parsed)
+    }
+    seen_ids: set[str] = set()
     for i, task in enumerate(parsed):
         if not isinstance(task, dict):
             errors.append(f"task {i} is not an object")
@@ -59,8 +65,13 @@ def validate_plan(text: str, allowed_models: set[str]):
         if model is not None and str(model) not in allowed_models:
             errors.append(f"task {i}: model {model!r} is not on the allowlist")
             model = None
+        task_id = str(task.get("id") or i)
+        # Detect duplicate ids as they are built into rows.
+        if task_id in seen_ids:
+            errors.append(f"task {i}: id {task_id!r} is already used")
+        seen_ids.add(task_id)
         rows.append({
-            "id": str(task.get("id") or i),
+            "id": task_id,
             "title": title, "prompt": prompt,
             "depends_on": [str(d) for d in deps], "model": model,
         })

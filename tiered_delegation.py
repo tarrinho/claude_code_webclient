@@ -1433,6 +1433,79 @@ class CapabilityTable:
             breach = self._budget_breach(task_type, tree_cost, costliest_rung)
             if breach is not None and enforce_budget:
                 problems.append(breach)
+
+        # Table-level, so outside the per-task-type loop above.
+        problems.extend(self._max_context_problems())
+        return problems
+
+    def _max_context_problems(self) -> list[str]:
+        """`max_context` must not disagree with itself across task types.
+
+        A context window is a property of the MODEL. The same model measured
+        on `coding` and on `planning` has the same window, so a row set where
+        it differs is not a window at all -- it is some per-run quantity that
+        was written into this column by mistake.
+
+        That is not hypothetical, which is why this is an invariant rather
+        than a comment. Measured on this deployment 2026-09-20:
+
+            claude-haiku-4-5-20251001   24, 10, 20      across six task types
+            claude-fable-5              13900 - 14062   across six task types
+
+        Both passed every other check, because every other check asks only
+        whether the column is non-null. They were displayed on the settings
+        page as measured fact for as long as they sat there. The real figures
+        are 200000 and 1000000.
+
+        Scoped to rows on OPERATIONAL task types, following the same rule the
+        "no blank fields" check above uses. The first draft of this scanned
+        the whole table on the argument that a wrong window is wrong whether
+        or not it routes -- true, but it made the check fire on fixtures that
+        mix a real model into a synthetic task type purely to exercise
+        something else, reporting an impossible model in tests that are about
+        cost arithmetic. Nothing is lost: a flip runs validation, so a bad
+        window on a dormant row is still refused at the moment it would begin
+        to matter, which is the moment before it routes.
+
+        Non-positive values are skipped along with None. Zero is not a context
+        window -- it carries exactly as much information as "not measured" --
+        and it is what several fixtures use as filler for a column the case
+        under test does not care about. Reporting those would flag an impossible
+        model (one row 229376, another 0) in tests that are about something
+        else entirely, while telling nobody anything true. "Not measured" is
+        `missing_columns`'s business; conflating the two would report one fault
+        twice.
+
+        Deliberately NOT a plausibility floor as well. A floor would have
+        caught the 24s, but not the 13900s; this catches both, and every
+        bound I considered either failed to catch the real cases or would
+        have rejected fixtures that are legitimately small. If a uniformly
+        wrong value ever ships, add the floor then, with that value as its
+        evidence.
+        """
+        by_model: dict[str, dict[int, list[str]]] = {}
+        for row in self._rows:
+            if row.task_type not in self._operational:
+                continue
+            if row.max_context is None or row.max_context <= 0:
+                continue
+            by_model.setdefault(row.model, {}).setdefault(
+                row.max_context, []).append(row.task_type)
+
+        problems: list[str] = []
+        for model in sorted(by_model):
+            seen = by_model[model]
+            if len(seen) < 2:
+                continue
+            detail = "; ".join(
+                f"{value} on {', '.join(sorted(seen[value]))}"
+                for value in sorted(seen)
+            )
+            problems.append(
+                f"{model}: max_context disagrees with itself across task "
+                f"types ({detail}) -- a context window is a property of the "
+                f"model, so this column is carrying something else"
+            )
         return problems
 
     def without_unusable_pins(self) -> tuple["CapabilityTable", list[str]]:

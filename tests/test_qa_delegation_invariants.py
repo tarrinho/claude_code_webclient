@@ -597,7 +597,7 @@ class TreeCostTests(unittest.TestCase):
         together on purpose so the latency invariant does not fire and mask
         which check caught it."""
         rows = [
-            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0, 922_000),
             _row("claude-sonnet-5", "widget", 0.95, 20, _rate_over_budget(), 10.5),
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
@@ -619,7 +619,7 @@ class TreeCostTests(unittest.TestCase):
         contributes $0.068 and sonnet at rung 1 contributes $1.868 of the
         $1.9359 total, so sonnet is the rung to name."""
         rows = [
-            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0, 922_000),
             _row("claude-sonnet-5", "widget", 0.95, 20, _rate_over_budget(), 10.5),
         ]
         table = _table(rows + GATE_ROWS, operational={"widget"})
@@ -637,7 +637,7 @@ class TreeCostTests(unittest.TestCase):
         an implementation that reports a budget problem unconditionally fails
         here while passing the test above."""
         rows = [
-            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.90, 20, 0.0285, 10.0, 922_000),
             _row("azure_ai/mid", "widget", 0.95, 20, 0.5000, 10.5),
         ]
         table = _table(rows + GATE_SINGLE, operational={"widget"})
@@ -706,7 +706,7 @@ class LadderTruncationTests(unittest.TestCase):
         the end would leave a ladder that tops out at 60%."""
         rows = [
             _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
-            _row("azure_ai/gpt-5.6-luna", "widget", 0.55, 20, 0.0285, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.55, 20, 0.0285, 10.0, 922_000),
             _row("claude-sonnet-5", "widget", 0.60, 20, 1.5709, 10.0),
             _row("claude-opus-5", "widget", 1.00, 20, 3.6082, 10.0),
         ]
@@ -720,7 +720,7 @@ class LadderTruncationTests(unittest.TestCase):
         abandoning the thesis the design is built on."""
         rows = [
             _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
-            _row("azure_ai/gpt-5.6-luna", "widget", 0.55, 20, 0.0285, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 0.55, 20, 0.0285, 10.0, 922_000),
             _row("claude-sonnet-5", "widget", 0.60, 20, 1.5709, 10.0),
             _row("claude-opus-5", "widget", 1.00, 20, 3.6082, 10.0),
         ]
@@ -786,7 +786,7 @@ class LadderTruncationTests(unittest.TestCase):
         first when there are four."""
         rows = [
             _row("vllm/free", "widget", 0.50, 20, 0.0000, 10.0),
-            _row("azure_ai/gpt-5.6-luna", "widget", 1.00, 20, 0.0285, 10.0),
+            _row("azure_ai/gpt-5.6-luna", "widget", 1.00, 20, 0.0285, 10.0, 922_000),
             _row("claude-sonnet-5", "widget", 1.00, 20, 1.5709, 10.0),
         ]
         self.assertEqual(

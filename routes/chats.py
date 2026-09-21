@@ -33,7 +33,9 @@ import turns
 from classification import _asks_a_question
 from routes.naming import _NAME_RE
 from routes.naming import generate_name as _generate_agent_name
-from routes.voice import stream_voice_turn, voice_handoff as voice_handoff_fn
+from routes.voice import (
+    stream_voice_context, stream_voice_turn, voice_handoff as voice_handoff_fn,
+)
 from shared import (
     _MODEL_RE,
     context_window_from_error,
@@ -2634,6 +2636,42 @@ async def _api_chat_create(request: Request):
 @router.post("/api/chats/{chat_id}/voice/handoff")
 async def _api_voice_handoff(request: Request, chat_id: str):
     return await handle_voice_handoff(request, chat_id)
+
+
+async def handle_voice_context(request: Request, chat_id: str):
+    """POST /api/chats/{chat_id}/voice/context -- summarise the originating
+    chat, streaming one status event per attempt.
+
+    A stream rather than a field on the chat-create response: the walk takes
+    up to 15s and must report each attempt (spec §5), and blocking chat
+    creation for that long would leave the user looking at nothing.
+
+    Always ends with `ready` or `degraded`, never with an error frame. A
+    session that cannot be summarised still opens -- spec §2 -- so there is no
+    failure here for the client to handle, only a session that starts without
+    an overview and leans on the fetch tool instead.
+    """
+    session = request.state.session
+    owner = await owner_of(session)
+    chat = await db.chat_get(chat_id, owner)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    acquire_sse_slot(session["user"])
+
+    async def generator():
+        try:
+            async for frame in stream_voice_context(chat, owner):
+                yield frame
+        finally:
+            release_sse_slot(session["user"])
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+@router.post("/api/chats/{chat_id}/voice/context")
+async def _api_voice_context(request: Request, chat_id: str):
+    return await handle_voice_context(request, chat_id)
 
 
 # Registered before /api/chats/{chat_id} so "order" is never captured as an id.

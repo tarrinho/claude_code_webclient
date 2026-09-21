@@ -25,6 +25,10 @@ _ALLOWED_CHAT_FIELDS = {
     "title",
     "description",
     "goal",
+    # Written once, by the voice context endpoint at session open. Not exposed
+    # through PATCH /api/chats: that route has its own narrower allowlist, so
+    # adding it here does not make it user-editable.
+    "voice_context",
     "archived",
     "pinned",
     "pinned_at",

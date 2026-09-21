@@ -1471,6 +1471,15 @@ async def _ensure_chat_columns() -> None:
         "parent_chat_id": "ALTER TABLE chats ADD COLUMN parent_chat_id TEXT",
         "is_temporary": "ALTER TABLE chats ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 0",
         "goal": "ALTER TABLE chats ADD COLUMN goal TEXT",
+        # The summary a voice session opened with, per
+        # docs/superpowers/specs/2026-09-21-voice-session-context-design.md.
+        # Stored rather than held in memory so that what the model was told is
+        # inspectable afterwards: the replay record already keeps the exact
+        # input a turn saw, and a context that existed only in a process would
+        # be the one part of that input nobody could reconstruct. NULL is the
+        # spec's degraded open -- the session started without one, which is a
+        # normal outcome, not a missing value.
+        "voice_context": "ALTER TABLE chats ADD COLUMN voice_context TEXT",
         "standby_reason": "ALTER TABLE chats ADD COLUMN standby_reason TEXT",
         # Which PROCESS serves this chat, as "<pidDomain>|<pid>|<procStart>".
         #

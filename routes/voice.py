@@ -541,3 +541,115 @@ async def voice_handoff(chat_id: str, owner: str) -> str | None:
         await _record_voice_conversation(chat_id, None)
         await db.chat_delete(chat_id, owner)
         return None
+
+
+# ── Session context (spec 2026-09-21-voice-session-context-design) ───────────
+#
+# A voice session opens knowing what the chat it came from is about. The
+# summary is produced here, once, at open -- not on the spoken path, which is
+# why it runs through the Claude Code CLI like every other caller rather than
+# widening this file's direct-API exception. See voice_context's docstring.
+
+
+async def stream_voice_context(chat: dict, owner: str):
+    """Summarise the parent chat, reporting each attempt as an SSE event.
+
+    Yields `status` frames and ends with either `ready` (summary stored) or
+    `degraded` (no summary, session opens anyway). Degraded is a normal
+    outcome per spec §2, not an error: the fetch tool is what makes it
+    survivable, and refusing to open would deny the user the one thing the
+    feature is for.
+    """
+    import voice_context as vc
+    from routes.db_delegation import (
+        delegation_operational_all, delegation_pin_all, delegation_rows_all,
+        rows_to_capability,
+    )
+    from tiered_delegation import CapabilityTable
+
+    chat_id = chat["id"]
+    parent_id = chat.get("parent_chat_id")
+
+    def frame(payload: dict) -> str:
+        return f"data: {json.dumps(payload)}\n\n"
+
+    yield frame({"type": "status", "state": vc.STATUS_INITIALISING})
+
+    if not parent_id:
+        # Nothing to summarise is not a failure; it is a session opened from
+        # no parent, which the UI already allows.
+        yield frame({"type": "status", "state": vc.STATUS_DEGRADED,
+                     "reason": "no originating conversation"})
+        return
+
+    messages = await db.messages_get(parent_id)
+    window, truncated = vc.select_window(messages)
+    if not window:
+        yield frame({"type": "status", "state": vc.STATUS_DEGRADED,
+                     "reason": "the conversation has no messages yet"})
+        return
+
+    rows = await delegation_rows_all()
+    ladder = CapabilityTable(
+        rows_to_capability(rows),
+        operational=await delegation_operational_all(),
+        pins=await delegation_pin_all(),
+    ).ladder("comprehension")
+    accuracy = {
+        r["model"]: r.get("accuracy")
+        for r in rows if r.get("task_type") == "comprehension"
+    }
+    latency = {
+        r["model"]: r.get("median_latency_s")
+        for r in rows if r.get("task_type") == "comprehension"
+    }
+    rungs = vc.eligible_rungs(ladder, accuracy)
+    if not rungs:
+        yield frame({"type": "status", "state": vc.STATUS_DEGRADED,
+                     "reason": "no model is available to summarise with"})
+        return
+
+    prompt = vc.summary_prompt(window, truncated)
+    clock = vc.BudgetClock()
+    events: list[dict] = []
+
+    async def run_rung(model: str) -> str | None:
+        # owner is passed because this chat_id is a real chat but the rule in
+        # CLAUDE.md §2 is to pass it on every chain regardless -- the cost of
+        # getting it wrong is a turn that dies on "Not logged in".
+        chunks, _ = await runner.run_turn(
+            prompt, None, chat.get("work_dir") or ".", chat_id,
+            model=model, owner=owner,
+        )
+        text = "".join(chunks).strip()
+        # CLAUDE.md §5: the caller records its own usage, and records failures
+        # too -- a rung that ran and returned nothing still spent tokens.
+        try:
+            from routes.chats import _record_turn_usage
+            frame_usage = runner.take_last_usage(chat_id)
+            if frame_usage:
+                await _record_turn_usage(chat_id, owner, frame_usage,
+                                         origin="voice-summary")
+        except Exception:
+            _log.exception("voice summary usage not recorded chat_id=%s", chat_id)
+        return text
+
+    def emit(state: str, model: str | None) -> None:
+        events.append({"type": "status", "state": state, "model": model})
+
+    summary = await vc.walk_summary_ladder(
+        rungs=rungs, run_rung=run_rung, clock=clock,
+        # An unmeasured rung is assumed to fit; refusing it on a missing
+        # number would skip a model that might well be fast.
+        expected_s=lambda m: float(latency.get(m) or 0.0),
+        emit=emit,
+    )
+    for event in events:
+        yield frame(event)
+
+    if summary:
+        await db.chat_update(chat_id, owner, voice_context=summary)
+        yield frame({"type": "status", "state": vc.STATUS_READY})
+    else:
+        yield frame({"type": "status", "state": vc.STATUS_DEGRADED,
+                     "reason": "no model produced a usable summary in time"})

@@ -206,5 +206,48 @@ class BudgetFitsTheChosenLadderTests(unittest.TestCase):
                          ["claude-sonnet-5", "claude-opus-5"])
 
 
+
+class ContextEndpointTests(_DbFixture):
+    """The SSE endpoint's shape, without spending a model call.
+
+    The paths here are the ones that must never raise: a voice chat with no
+    parent, and one whose parent has no messages. Both end in `degraded`
+    rather than an error, because spec §2 says the session opens either way
+    and the client has no failure to handle -- only a session that starts
+    without an overview.
+    """
+
+    async def _frames(self, chat):
+        import json as _json
+
+        from routes.voice import stream_voice_context
+        out = []
+        async for raw in stream_voice_context(chat, "admin"):
+            out.append(_json.loads(raw.removeprefix("data: ").strip()))
+        return out
+
+    async def test_a_session_with_no_parent_opens_degraded(self):
+        await db.chat_create("solo", "solo", None, "/tmp", "admin")
+        chat = dict(await db.chat_get("solo", "admin"))
+        frames = await self._frames(chat)
+        self.assertEqual([f["state"] for f in frames],
+                         [vc.STATUS_INITIALISING, vc.STATUS_DEGRADED])
+        self.assertIn("no originating conversation", frames[-1]["reason"])
+
+    async def test_an_empty_parent_opens_degraded_not_summarising_nothing(self):
+        await db.chat_create("p", "parent", None, "/tmp", "admin")
+        await db.chat_create("v", "voice", None, "/tmp", "admin")
+        chat = dict(await db.chat_get("v", "admin"))
+        chat["parent_chat_id"] = "p"
+        frames = await self._frames(chat)
+        self.assertEqual(frames[-1]["state"], vc.STATUS_DEGRADED)
+        self.assertIn("no messages", frames[-1]["reason"])
+
+    def test_the_route_is_registered(self):
+        from routes.chats import router
+        paths = {getattr(r, "path", "") for r in router.routes}
+        self.assertIn("/api/chats/{chat_id}/voice/context", paths)
+
+
 if __name__ == "__main__":
     unittest.main()

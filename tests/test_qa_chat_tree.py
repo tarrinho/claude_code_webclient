@@ -107,7 +107,67 @@ class BuildChatTreeTests(unittest.TestCase):
         out = build_chat_tree(
             [_chat("a", parent_chat_id="b"), _chat("b", parent_chat_id="a")],
             {}, {})
-        self.assertEqual(len(out), 2)
+        self.assertEqual([c["id"] for c in out], ["a", "b"])
+        self.assertEqual(out[0]["children"], [])
+        self.assertEqual(out[1]["children"], [])
+
+    def test_a_two_chat_cycle_is_order_independent(self):
+        """The up-front cycle pass exists precisely so this does not depend
+        on which row comes first. An earlier draft attached as it walked, so
+        for a two-chat cycle whichever row came first became the other's
+        parent -- reversing the input here must still leave both as roots
+        with no children, never one nested under the other."""
+        out = build_chat_tree(
+            [_chat("b", parent_chat_id="a"), _chat("a", parent_chat_id="b")],
+            {}, {})
+        self.assertEqual([c["id"] for c in out], ["b", "a"])
+        self.assertEqual(out[0]["children"], [])
+        self.assertEqual(out[1]["children"], [])
+
+    def test_a_chain_deeper_than_the_bound_promotes_the_tail(self):
+        """`_host_for`'s walk is bounded; a chain longer than that bound has
+        its tail fall out of reach and come back as an extra root instead of
+        flattening onto the chain's real root. This is also the only test
+        that reaches the `host is None` promotion branch through a chat
+        whose immediate parent IS present (as opposed to missing outright)."""
+        out = build_chat_tree(
+            [_chat("a"), _chat("b", parent_chat_id="a"),
+             _chat("c", parent_chat_id="b"),
+             _chat("d", parent_chat_id="c"),
+             _chat("e", parent_chat_id="d")],
+            {}, {})
+        self.assertEqual([c["id"] for c in out], ["a", "e"])
+        self.assertEqual({k["id"] for k in out[0]["children"]}, {"b", "c", "d"})
+        self.assertEqual(out[1]["children"], [])
+
+    def test_a_promoted_orphan_still_gets_its_subagents(self):
+        """The subagent-attachment loop must cover chats promoted by the
+        `host is None` branch too, not only the roots that existed before
+        promotion -- otherwise a promoted chat silently loses its own
+        subagent children."""
+        out = build_chat_tree(
+            [_chat("kid", parent_chat_id="gone")],
+            {"kid": [_sub("tu_1")]}, {})
+        self.assertEqual([c["id"] for c in out], ["kid"])
+        self.assertEqual(len(out[0]["children"]), 1)
+        self.assertEqual(out[0]["children"][0]["kind"], "subagent")
+
+    def test_relation_is_orchestrator_for_a_normal_member(self):
+        out = build_chat_tree(
+            [_chat("orch"), _chat("task1")], {}, {"task1": "orch"})
+        self.assertEqual(out[0]["children"][0]["relation"], "orchestrator")
+
+    def test_relation_is_voice_when_the_named_orchestrator_is_absent(self):
+        """member_of can name an orchestrator that is not in `chats`
+        (archived, deleted, or filtered out by a search). _parent_of then
+        falls through to the voice parent, so the label must say "voice" --
+        deriving it from member_of alone (rather than from the parent that
+        actually won) would mislabel this reachable case as "orchestrator"."""
+        out = build_chat_tree(
+            [_chat("vparent"), _chat("kid", parent_chat_id="vparent")],
+            {}, {"kid": "missing_orch"})
+        self.assertEqual([c["id"] for c in out], ["vparent"])
+        self.assertEqual(out[0]["children"][0]["relation"], "voice")
 
     def test_subagents_and_chat_children_share_one_list(self):
         out = build_chat_tree(

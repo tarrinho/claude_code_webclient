@@ -82,12 +82,22 @@ def build_chat_tree(
     }
 
     def _host_for(chat_id: str) -> str | None:
-        """The nearest ancestor that is itself a root, or None.
+        """The nearest ancestor within `_MAX_DEPTH + 2` hops that is itself a
+        root, or None.
 
         A chain deeper than one level flattens onto the root it reaches rather
         than nesting further -- the card draws one level, so a grandchild joins
         its grandparent's card instead of creating a level with nowhere to go.
-        The bounded loop is what guarantees termination regardless of the data.
+
+        Termination does not depend on this bound: every parent chain either
+        hits `None` or loops back into a cycle, and every cycle's members are
+        already roots (decided up front, above), so the walk below could not
+        hang even unbounded. What the bound actually does is cap how far a
+        chain is followed: a chain longer than that -- e.g. a five-chat chain
+        a<-b<-c<-d<-e with `_MAX_DEPTH = 1` -- has its tail (`e`) fall out of
+        reach of this walk and come back as `None`, so the caller promotes it
+        to its own root instead of flattening it onto `a`. See
+        test_a_chain_deeper_than_the_bound_promotes_the_tail.
         """
         current = parent_by_id.get(chat_id)
         for _ in range(_MAX_DEPTH + 2):
@@ -112,7 +122,10 @@ def build_chat_tree(
     # resorted here.
     for node in out:
         for row in subagents.get(node["id"], []):
-            node["children"].append({"kind": "subagent", **row})
+            # Literal last: a row's own "kind" key (there shouldn't be one,
+            # but rows come from a DB query the caller controls) must never
+            # override what this loop is asserting about it.
+            node["children"].append({**row, "kind": "subagent"})
 
     for chat in chats:
         if chat["id"] in roots:
@@ -120,17 +133,30 @@ def build_chat_tree(
         host_id = _host_for(chat["id"])
         host = index.get(host_id) if host_id else None
         if host is None:
-            # Its whole chain is absent. Promote rather than drop.
+            # Its whole chain is absent. Promote rather than drop -- and
+            # give it its own subagents too: this node was not in `out` for
+            # the loop above, so without this it would render with an empty
+            # children list even when `subagents` has rows for it.
             node = {**chat, "children": []}
+            for row in subagents.get(chat["id"], []):
+                node["children"].append({**row, "kind": "subagent"})
             index[chat["id"]] = node
             out.append(node)
             continue
+        # The parent that actually won for this chat, per _parent_of's
+        # precedence -- not member_of alone. member_of can name an
+        # orchestrator that is absent from `chats` (archived, deleted, or
+        # filtered out by a search); _parent_of then falls through to the
+        # voice parent, and labelling that "orchestrator" would describe a
+        # nesting that did not happen.
+        winning_parent = parent_by_id[chat["id"]]
         host["children"].append({
             "kind": "chat",
             "id": chat["id"],
             "title": chat.get("title"),
-            "relation": "orchestrator" if member_of.get(chat["id"])
-                        else "voice",
+            "relation": ("orchestrator"
+                         if winning_parent == member_of.get(chat["id"])
+                         else "voice"),
         })
 
     return out

@@ -11,6 +11,7 @@ import {
   stopListeningForClose, refreshButtonRefs, resetTranscript, voiceStatus,
   voiceMicBtn, voiceLiveBtn,
 } from './voice-engine.js?v=4274770';
+import {runVoiceContext} from './voice-context.js?v=6826762';
 import {
   resetVoiceHandoffState, voiceConversationComplete, voiceHandoffReject,
 } from './voice-handoff.js?v=16609920';
@@ -50,10 +51,14 @@ async function openVoiceTooltip() {
   voiceOverlay.hidden = false;
   voiceTooltipMessages.innerHTML = '';
   voiceTooltipTitle.textContent = `Voice: ${chat.title}`;
-  const loadingMsg = document.createElement('div');
-  loadingMsg.className = 'voice-status';
-  loadingMsg.textContent = 'Using pre-existing conversation context in voice chat…';
-  voiceTooltipMessages.appendChild(loadingMsg);
+  // The startup status line (spec §5). It stays in place and is pushed up by
+  // the conversation as it begins, rather than being replaced: what the
+  // session opened knowing is worth being able to scroll back to, especially
+  // when it opened knowing nothing.
+  const statusLine = document.createElement('div');
+  statusLine.className = 'voice-status voice-startup-status';
+  statusLine.textContent = 'Initialising…';
+  voiceTooltipMessages.appendChild(statusLine);
 
   // Create temp voice chat with parent context
   try {
@@ -89,8 +94,13 @@ async function openVoiceTooltip() {
     window.conversationController.stop();
   }
 
-  // Replace loading with "waiting for input" message
-  voiceTooltipMessages.innerHTML = '';
+  // Summarise the originating chat before the first spoken turn. Awaited, so
+  // a reply can never be built on context that has not arrived -- but the
+  // panel is already on screen and the line advances as events arrive, which
+  // is the reason this streams rather than returning one value.
+  await runVoiceContext(voiceTempChatId, statusLine);
+
+  // Appended, not replacing: the status line above stays, per spec §5.
   const idleMsg = document.createElement('div');
   idleMsg.className = 'voice-status';
   idleMsg.textContent = 'Waiting for your voice input…';

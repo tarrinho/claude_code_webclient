@@ -19,7 +19,13 @@ _CHAT_COLUMNS = (
     "id, title, description, session_id, work_dir, owner_id, created_at, "
     "updated_at, archived, pinned, pinned_at, position, deleted_at, model, ai_machine_id, "
     "transcript_offset, degraded, degraded_reason, degraded_at, voice_mode, type, "
-    "parent_chat_id, is_temporary, goal, standby_reason, session_proc"
+    "parent_chat_id, is_temporary, goal, standby_reason, session_proc, "
+    # Selected because stream_voice_turn reads it off the chat dict. Adding
+    # the column and the write path without this line would have left the
+    # summary stored, never read, and the voice session silently falling back
+    # to the keyword heuristic it was built to replace -- working, wrong, and
+    # indistinguishable from working right.
+    "voice_context"
 )
 _ALLOWED_CHAT_FIELDS = {
     "title",

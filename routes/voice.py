@@ -195,7 +195,29 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
             {"role": "system", "content": VOICE_SYSTEM_PROMPT},
         ]
         parent_id = chat.get("parent_chat_id")
-        if parent_id:
+        # The summary the session opened with, written once by
+        # stream_voice_context. It replaces the keyword heuristic below, which
+        # bucketed the parent's last 12 messages by substring match -- a line
+        # containing "goal" became GOAL, a quoted string became a NAME -- and
+        # so described the conversation only when it happened to be phrased
+        # the way the matcher expected.
+        #
+        # The heuristic is kept solely as a fallback for a session that opened
+        # before this landed, or one whose ladder walk came back degraded. In
+        # the degraded case a crude frame beats none: the alternative is a
+        # model that knows nothing at all about the conversation it is being
+        # asked about.
+        stored_summary = (chat.get("voice_context") or "").strip()
+        if stored_summary:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Here is a summary of the conversation this voice session "
+                    "was opened from. Use it as context; do not read it back "
+                    "verbatim.\n\n" + stored_summary
+                ),
+            })
+        elif parent_id:
             parent_msgs = await db.messages_get(parent_id)
             if parent_msgs:
                 # Take the last ~6 turns (up to 12 messages, 6 pairs).

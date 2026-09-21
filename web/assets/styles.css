@@ -1704,3 +1704,7 @@ button{touch-action:manipulation}
   margin:2px 0 0; color:var(--fg); text-align:left; overflow-wrap:anywhere;
 }
 @media(min-width:700px){ .delegation-config { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); } }
+/* The voice session's startup status line. Stays in place as the conversation
+   begins rather than being replaced: what the session opened knowing is worth
+   scrolling back to, and most worth it when it opened knowing nothing. */
+.voice-startup-status { color: var(--muted); font-size: 12px; line-height: 1.45; }

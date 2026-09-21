@@ -59,3 +59,71 @@ class ChatSubagentsSchemaTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestC
         await db.db_conn.commit()
         cur = await db.db_conn.execute("SELECT COUNT(*) FROM chat_subagents")
         self.assertEqual((await cur.fetchone())[0], 2)
+
+
+class SubagentAccessorTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestCase):
+    """Uses its own base classes, not ChatSubagentsSchemaTests: subclassing a
+    TestCase re-runs its tests inside every subclass, so the schema cases
+    above would otherwise execute again here too."""
+
+    async def test_record_then_read_back_grouped_by_chat(self):
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        await subagent_record("c1", [
+            {"tool_use_id": "tu_2", "agent_type": "test-writer",
+             "description": "write tests", "status": "running",
+             "started_at": "2026-09-21T00:00:02Z", "ended_at": None},
+            {"tool_use_id": "tu_1", "agent_type": "code-review",
+             "description": "review", "status": "done",
+             "started_at": "2026-09-21T00:00:01Z",
+             "ended_at": "2026-09-21T00:00:09Z"},
+        ])
+        got = await subagents_for_chats(["c1"])
+        self.assertEqual([r["tool_use_id"] for r in got["c1"]], ["tu_1", "tu_2"],
+                         "must be ordered by started_at, not insertion order")
+        self.assertEqual(got["c1"][0]["status"], "done")
+
+    async def test_recording_the_same_rows_twice_changes_nothing(self):
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        row = {"tool_use_id": "tu_1", "agent_type": "x", "description": "d",
+               "status": "running", "started_at": "2026-09-21T00:00:01Z",
+               "ended_at": None}
+        await subagent_record("c1", [row])
+        await subagent_record("c1", [row])
+        got = await subagents_for_chats(["c1"])
+        self.assertEqual(len(got["c1"]), 1)
+
+    async def test_a_rescan_promotes_running_to_done(self):
+        """The tool_result arrives in a later record, so the second scan of the
+        same transcript must be able to finish a row it already inserted."""
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        await subagent_record("c1", [
+            {"tool_use_id": "tu_1", "agent_type": "x", "description": "d",
+             "status": "running", "started_at": "2026-09-21T00:00:01Z",
+             "ended_at": None}])
+        await subagent_record("c1", [
+            {"tool_use_id": "tu_1", "agent_type": "x", "description": "d",
+             "status": "done", "started_at": "2026-09-21T00:00:01Z",
+             "ended_at": "2026-09-21T00:00:09Z"}])
+        got = await subagents_for_chats(["c1"])
+        self.assertEqual(len(got["c1"]), 1)
+        self.assertEqual(got["c1"][0]["status"], "done")
+        self.assertEqual(got["c1"][0]["ended_at"], "2026-09-21T00:00:09Z")
+
+    async def test_an_empty_row_list_is_a_no_op(self):
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        await subagent_record("c1", [])
+        self.assertEqual(await subagents_for_chats(["c1"]), {})
+
+    async def test_an_empty_chat_id_list_queries_nothing(self):
+        from routes.db_subagents import subagents_for_chats
+        self.assertEqual(await subagents_for_chats([]), {})
+
+    async def test_only_the_requested_chats_come_back(self):
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        for chat in ("c1", "c2"):
+            await subagent_record(chat, [
+                {"tool_use_id": "tu_1", "agent_type": "x", "description": "d",
+                 "status": "running", "started_at": "2026-09-21T00:00:01Z",
+                 "ended_at": None}])
+        got = await subagents_for_chats(["c1"])
+        self.assertEqual(set(got), {"c1"})

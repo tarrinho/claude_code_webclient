@@ -194,6 +194,11 @@ async def chat_delete(chat_id: str, owner_id: str) -> bool:
     msg_ids = [row["id"] for row in await cur.fetchall()]
     try:
         await db.db_conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+        # Subagent nodes are owned by their chat and have no independent lifetime.
+        # Deliberately a real delete rather than a soft one: the row carries no
+        # history worth keeping once the conversation that spawned it is gone.
+        await db.db_conn.execute(
+            "DELETE FROM chat_subagents WHERE chat_id = ?", (chat_id,))
         await db.db_conn.execute(
             "DELETE FROM chats WHERE id = ? AND owner_id = ?",
             (chat_id, owner_id),

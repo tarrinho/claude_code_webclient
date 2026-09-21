@@ -174,5 +174,29 @@ class CaptureOrderingTests(unittest.TestCase):
         and already carries the rule in a comment."""
         images = self.SOURCE.index("await db.generated_image_record(")
         capture = self.SOURCE.index("await db.subagent_record(")
+        self.assertLess(images, capture,
+                        "capture must follow the image record, not precede it")
         self.assertLess(abs(images - capture), 1200,
                         "the two secondary indexes should stay adjacent")
+
+
+class SubagentRetentionTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestCase):
+    """Uses the plain mixin, not ChatSubagentsSchemaTests: subclassing a
+    TestCase re-runs its tests inside every subclass, so the schema cases
+    would otherwise execute again here too."""
+
+    async def test_deleting_a_chat_removes_its_subagents(self):
+        """A subagent row's only lifetime is its chat's. There is no
+        independent expiry: a row is small, and 'probably dead' is a guess."""
+        import pathlib
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        pathlib.Path(f"{self.tmp.name}/p").mkdir(parents=True, exist_ok=True)
+        await db.user_create("bob", None, "x")
+        owner = (await db.user_get_by_name("bob"))["id"]
+        await db.chat_create("c1", "C", None, f"{self.tmp.name}/p", owner)
+        await subagent_record("c1", [
+            {"tool_use_id": "tu_1", "agent_type": "x", "description": "d",
+             "status": "running", "started_at": "2026-09-21T10:00:00Z",
+             "ended_at": None}])
+        await db.chat_delete("c1", owner)
+        self.assertEqual(await subagents_for_chats(["c1"]), {})

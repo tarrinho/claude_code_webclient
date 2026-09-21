@@ -48,7 +48,17 @@ def validate_plan(text: str, allowed_models: set[str]):
         if not isinstance(task, dict):
             errors.append(f"task {i} is not an object")
             continue
-        title = str(task.get("title") or "").strip()
+        # Collapsed, not merely stripped: a title is rendered on one line
+        # (an <input type="text">, per plan.js) but is also spliced verbatim
+        # into a dependent task's prompt as `### Result of {title}` --
+        # _prompt_for's own single-line f-string, with nothing between the
+        # title and the newlines that follow. A title containing embedded
+        # "\n\n**Task:**\n\n" forges a second, fake task boundary ahead of
+        # the genuine one, and the operator never sees it: the <input>
+        # element strips CR/LF from its *display* while the posted JSON
+        # value keeps them. join(split()) removes every run of whitespace,
+        # newlines included, so nothing reaching either gate can carry one.
+        title = " ".join(str(task.get("title") or "").split())
         prompt = str(task.get("prompt") or "").strip()
         if not title or not prompt:
             errors.append(f"task {i} needs both a title and a prompt")
@@ -656,7 +666,22 @@ async def _prompt_for(orchestrator_id: str, task: dict, owner_id: str) -> str:
         # from previous model turns) and must not be able to forge structure.
         result_lines = dep["result"].split("\n")
         quoted_result = "\n".join(f"> {line}" for line in result_lines)
-        parts.append(f"### Result of {dep['title']}\n\n{quoted_result}")
+        # The title is collapsed to one line here too -- defence in depth,
+        # since validate_plan and handle_orchestrator_run both already do
+        # this at the gates a title normally arrives through, but a row
+        # created some other way (a direct db.orchestrator_task_create call,
+        # e.g. from a test or a future caller) must not be able to smuggle a
+        # multi-line title back in through this side door.
+        #
+        # The "### Result of ..." header line itself is blockquoted too, not
+        # just the body below it: previously only `quoted_result` carried a
+        # "> " prefix, so the header line was the one part of this whole
+        # block that still read as top-level markdown structure -- exactly
+        # where a forged title's own fake heading would have landed. Every
+        # line of the dependency block, including the blank separator, now
+        # carries "> ", so none of it can present as anything but a quote.
+        title = " ".join(str(dep.get("title") or "").split())
+        parts.append(f"> ### Result of {title}\n>\n{quoted_result}")
 
     own = task.get("description") or task["title"]
     if not parts:
@@ -802,21 +827,49 @@ async def run_tasks(
                 # CLAUDE.md s4: a failed turn is an EVENT. The state carries
                 # it; an exception never arrives here as a *result* -- only
                 # ever as the cancellation above -- so never look for one.
-                ok = live.state == "done"
-                t["status"] = "done" if ok else "failed"
-                (done if ok else failed).add(t["id"])
-
+                #
                 # The turn's conclusion has to reach dependent tasks, and
                 # LiveTurn does not carry it -- _start_turn persists it as
-                # the chat's assistant message. Capture it so dependents can
-                # read the reasoning (not just files) from predecessors.
+                # the chat's assistant message. Capture it BEFORE deciding
+                # the verdict, not after: a low-memory refusal
+                # (_start_turn's produce()) yields a "status" frame and then
+                # "done" -- never an "error" frame -- so turns._run settles
+                # state="done" with nothing stored. state == "done" is
+                # therefore necessary but not sufficient; the presence of a
+                # captured assistant message is the second half of the
+                # verdict, and it must already be in hand before that
+                # verdict is computed.
                 result_text = ""
-                if ok:
+                if live.state == "done":
+                    # db.messages_last returns OLDEST-first (its own
+                    # docstring/comment says so); a comment here used to
+                    # claim "newest first" and break on the first match,
+                    # which is precisely backwards -- it picked the OLDEST
+                    # assistant message in the window rather than the
+                    # newest. Dormant while a task chat only ever held one
+                    # turn, but retry re-sends into the SAME chat, and a
+                    # stale first answer silently feeding every dependent
+                    # is the exact failure this reorder exists to prevent.
                     recent = await db.messages_last(chat_id, 5)
-                    for message in recent:  # newest first
+                    for message in reversed(recent):  # now newest first
                         if message["role"] == "assistant":
                             result_text = message["content"]
                             break
+
+                # A "done" turn that produced no output is not a success --
+                # it is verbatim the 2026-08-30 signature this whole design
+                # exists to delete: a refused or empty turn recorded as a
+                # completed task with result=''. Requiring captured output
+                # closes it without touching _start_turn's frame protocol.
+                ok = live.state == "done" and bool(result_text.strip())
+                if live.state == "done" and not ok:
+                    result_text = (
+                        "The turn completed with no assistant output -- "
+                        "likely refused (e.g. low memory) or produced "
+                        "nothing."
+                    )
+                t["status"] = "done" if ok else "failed"
+                (done if ok else failed).add(t["id"])
 
                 await db.orchestrator_task_update(
                     orchestrator_id, t["id"], owner_id, status=t["status"],

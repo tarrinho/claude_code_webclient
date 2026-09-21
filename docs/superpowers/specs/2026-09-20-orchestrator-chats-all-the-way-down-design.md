@@ -113,10 +113,21 @@ Parent chat  ──plan turn──▶  proposed tasks  ──you approve/edit─
                         Gallery (no new code)
 ```
 
-The load-bearing property: **the orchestrator no longer has an execution path
-of its own.** CLAUDE.md's "change both paths or neither" (§1) stops applying to
-it, and the gallery works because the chat path's scan is reached, not because
-orchestration grew a copy of it.
+The load-bearing property, amended after the final whole-branch review found
+the original wording false on this deployment: **the NEW path (plan → approve
+→ `/run`) has no execution path of its own** -- it schedules real chat turns
+through `_start_turn` and nothing else (see guard 1). The legacy `<<PLAN>>`
+engine (`OrchestratorEngine.start_from_user_prompt` / `_run_planner_turn` /
+`_materialise_plan`, still reachable via `POST /api/orchestrators/{id}/send`)
+**still exists** -- other subsystems hook it, so this design does not delete
+it -- and is now interlocked against the new path instead:
+`/send`, `/pause` and `/resume` refuse with 409 once an orchestrator has any
+task rows `/run` created, so the two schedulers can never run over the same
+`orchestrator_tasks` rows at once. CLAUDE.md's "change both paths or neither"
+(§1) stops applying to the new path for this reason, not because the legacy
+one is gone. Deleting the legacy engine outright is follow-up work, not part
+of this branch. The gallery works because the chat path's scan is reached for
+every task chat, not because orchestration grew a copy of it.
 
 ---
 

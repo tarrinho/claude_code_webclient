@@ -11,6 +11,7 @@ import asyncio
 import datetime
 import json
 import logging
+import sqlite3
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -646,10 +647,41 @@ async def handle_orchestrator_tasks_get(supervisor_id: str, owner_id: str):
     """
     tasks = await db.orchestrator_tasks_get(supervisor_id, owner_id)
     return JSONResponse({
-        "tasks": tasks,
+        "tasks": [_display_task(t, supervisor_id) for t in tasks],
         "count": len(tasks),
         "cost": await db.orchestrator_cost(supervisor_id, owner_id),
     })
+
+
+def _display_task(task: dict, supervisor_id: str) -> dict:
+    """Strip the ``"{supervisor_id}:"`` namespacing handle_orchestrator_run
+    stamps onto a task's id and its depends_on entries (see that function),
+    so what the operator sees matches the plain id they approved -- "task-1",
+    not "<uuid>:task-1". The prefix was needed only to keep this run's ids
+    from colliding with another run's at the storage layer; nothing outside
+    that layer should ever have to look at it.
+
+    A legacy-engine row's id (``{orchestrator_id[:8]}_{plan_id}``, a
+    different separator, on purpose -- see _row_id in orchestrator.py) never
+    starts with this prefix, so this is a no-op for it.
+    """
+    out = dict(task)
+    prefix = f"{supervisor_id}:"
+    raw_id = str(out.get("id") or "")
+    if raw_id.startswith(prefix):
+        out["id"] = raw_id[len(prefix):]
+    deps = out.get("depends_on")
+    if isinstance(deps, str) and deps:
+        try:
+            parsed = json.loads(deps)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            out["depends_on"] = json.dumps([
+                d[len(prefix):] if isinstance(d, str) and d.startswith(prefix) else d
+                for d in parsed
+            ])
+    return out
 
 
 async def handle_orchestrator_messages_get(request: Request, supervisor_id: str):
@@ -757,7 +789,17 @@ async def handle_orchestrator_run(request: Request, supervisor_id: str):
         row_id = str(row.get("id") or "").strip()
         if not row_id:
             raise HTTPException(status_code=400, detail="each row needs an id")
-        if not str(row.get("title") or "").strip():
+        # Collapsed, not merely stripped -- same fix and the same reason as
+        # validate_plan's: a title is spliced verbatim into a dependent
+        # task's "### Result of {title}" header (orchestrator._prompt_for),
+        # and a multi-line title forges a second, fake task boundary ahead
+        # of the genuine one. Mutated in place so every later read of
+        # row["title"] in this function -- including the create loop below
+        # -- sees the collapsed form; a hand-edited /run row never went
+        # through validate_plan's own gate, so this is not redundant with it.
+        title = " ".join(str(row.get("title") or "").split())
+        row["title"] = title
+        if not title:
             raise HTTPException(status_code=400, detail="each row needs a title")
         if not str(row.get("prompt") or "").strip():
             raise HTTPException(status_code=400, detail="each row needs a prompt")
@@ -800,11 +842,73 @@ async def handle_orchestrator_run(request: Request, supervisor_id: str):
             status_code=409, detail="orchestrator has no workspace -- recreate it",
         )
 
-    for row in rows:
-        await db.orchestrator_task_create(
-            supervisor_id, str(row["id"]), row["title"], row["prompt"],
-            model=row.get("model"), depends_on=row.get("depends_on") or [],
+    if not run.get("planner_chat_id"):
+        # Mirrors the work_dir guard just above, and for the same reason:
+        # every orchestrator created after the /api/orchestrators POST
+        # handler was given a parent chat has one; an older row created
+        # before that change would not. Without a parent, create_task_chat
+        # sets every task chat's parent_chat_id to None -- so it becomes a
+        # ROOT chat, which is exactly what the hierarchy design's
+        # parent_chat_id-based sidebar predicate uses to decide what to
+        # show, and every task chat of the run would flood the sidebar
+        # instead of nesting under a family card.
+        raise HTTPException(
+            status_code=409,
+            detail="orchestrator has no parent conversation -- recreate it",
         )
+
+    # CRITICAL fix: orchestrator_tasks.id is a bare TEXT PRIMARY KEY (see
+    # db.py's CREATE TABLE), not a composite (orchestrator_id, id) key -- and
+    # plan-local ids repeat by construction: plan.js's _nextRowId resets its
+    # counter to 1 every time the plan dialog opens, and validate_plan's own
+    # id fallback is the array index ("0", "1", ...) when a row carries no
+    # explicit id. So the SECOND run ever created, of ANY orchestrator, hit
+    # the UNIQUE constraint on a duplicate GLOBAL id -- reproduced by
+    # execution: first run 200, second run 500, zero rows persisted on the
+    # second (the loop below had already inserted some rows from THIS run
+    # before the failing one, an opaque IntegrityError-turned-500).
+    #
+    # Namespaced with the orchestrator's own id, the same shape
+    # orchestrator.py's `_row_id` already uses for the legacy engine's
+    # `_materialise_plan` (see that function) -- a different separator
+    # (":" rather than "_") so the two paths' ids are never confused with
+    # each other, which fix 7's /send interlock below relies on.
+    # `depends_on` values are namespaced the same way and consistently: they
+    # are read back by run_tasks and compared directly against the (now
+    # namespaced) `id` column, and by _prompt_for's own dependency lookups
+    # (db.orchestrator_task_get keyed on the same namespaced id) -- if
+    # depends_on were left bare, every dependency would silently stop
+    # resolving the moment ids became namespaced, with no error raised
+    # anywhere: run_tasks would simply never see any of a task's
+    # dependencies as satisfied.
+    def _namespaced(row_id: str) -> str:
+        return f"{supervisor_id}:{row_id}"
+
+    id_map = {row_id: _namespaced(row_id) for row_id in ids}
+
+    for row in rows:
+        row_id = str(row["id"])
+        namespaced_depends_on = [
+            id_map.get(str(d), str(d)) for d in (row.get("depends_on") or [])
+        ]
+        try:
+            await db.orchestrator_task_create(
+                supervisor_id, id_map[row_id], row["title"], row["prompt"],
+                model=row.get("model"), depends_on=namespaced_depends_on,
+            )
+        except sqlite3.IntegrityError as exc:
+            # A clean 400 naming the offending id, never an opaque 500 with
+            # some of this run's rows already committed. The namespacing
+            # above makes this vanishingly unlikely in ordinary use -- it
+            # would take two /run calls racing on the exact same
+            # orchestrator and row id -- but the failure mode this replaces
+            # (partial write, opaque 500) is exactly what fix round 1's
+            # MINOR 3 already fixed for the *duplicate-within-batch* case
+            # above; this is the same fix for the *storage-layer* case.
+            raise HTTPException(
+                status_code=400,
+                detail=f"task id {row_id!r} could not be created: {exc}",
+            ) from None
 
     task = asyncio.create_task(
         orchestrator.run_tasks(
@@ -846,6 +950,41 @@ async def _api_orchestrator_read(request: Request):
     return await handle_orchestrator_read(request)
 
 
+async def _refuse_if_run_path_owns_this(supervisor_id: str, owner_id: str) -> None:
+    """Raise 409 when *supervisor_id*'s task rows were created by /run.
+
+    /send starts the legacy ``<<PLAN>>`` engine
+    (``OrchestratorEngine.start_from_user_prompt`` ->
+    ``_run_planner_turn`` -> ``_materialise_plan``), and the composer in the
+    run view still posts to it -- so without this guard an operator could
+    approve a plan, click Run (scheduling ``orchestrator.run_tasks`` over
+    rows ``handle_orchestrator_run`` already persisted), then type into the
+    composer and start a SECOND scheduler over the same
+    ``orchestrator_tasks`` rows. ``/pause`` and ``/resume`` drive that same
+    legacy engine and are refused here for the same reason.
+
+    Identified by the ``"{supervisor_id}:"`` id prefix
+    ``handle_orchestrator_run`` stamps on every row it creates (fix 1's
+    namespacing) -- the legacy engine's own namespacing
+    (``{orchestrator_id[:8]}_{plan_id}``, a different, non-colliding
+    separator; see ``_row_id`` in ``orchestrator.py``) never produces that
+    prefix, so the two paths' rows can never be mistaken for each other.
+
+    This is isolation, not deletion: the legacy engine stays in place --
+    other subsystems still hook it -- and is merely refused a second
+    execution surface over rows the new path already owns. Deleting it is
+    follow-up work (see this design's spec, amended alongside this fix).
+    """
+    tasks = await db.orchestrator_tasks_get(supervisor_id, owner_id)
+    prefix = f"{supervisor_id}:"
+    if any(str(t.get("id") or "").startswith(prefix) for t in tasks):
+        raise HTTPException(
+            status_code=409,
+            detail="this orchestrator's tasks were created by /run; the "
+                   "legacy engine cannot start a second scheduler over them",
+        )
+
+
 @router.post("/api/orchestrators/{supervisor_id}/send")
 async def _api_orchestrator_send(request: Request, supervisor_id: str):
     session = request.state.session
@@ -869,6 +1008,7 @@ async def _api_orchestrator_send(request: Request, supervisor_id: str):
     existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
+    await _refuse_if_run_path_owns_this(supervisor_id, session["user"])
 
     # Get or create engine
     if supervisor_id not in _supervisor_engines:
@@ -901,6 +1041,7 @@ async def _api_orchestrator_pause(request: Request, supervisor_id: str):
     existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
+    await _refuse_if_run_path_owns_this(supervisor_id, session["user"])
     if existing.get("status") not in ("planning", "running"):
         raise HTTPException(status_code=409, detail="Orchestrator is not running")
     eng = _supervisor_engines.get(supervisor_id)
@@ -920,6 +1061,7 @@ async def _api_orchestrator_resume(request: Request, supervisor_id: str):
     existing = await db.orchestrator_get(supervisor_id, session["user"])
     if not existing:
         raise HTTPException(status_code=404, detail="Orchestrator not found")
+    await _refuse_if_run_path_owns_this(supervisor_id, session["user"])
     if existing.get("status") != "paused":
         raise HTTPException(status_code=409, detail="Orchestrator is not paused")
     eng = _supervisor_engines.get(supervisor_id)
@@ -974,7 +1116,13 @@ def _validated_supervisor_config(raw: Any) -> Any:
 @router.post("/api/orchestrators")
 async def _api_supervisors_create(request: Request):
     session = request.state.session
-    existing = await db.orchestrator_list(session["user"])
+    # owner_of, not the raw session["user"], because this handler is about
+    # to call db.chat_create -- which raises ValueError outright for a
+    # legacy session still carrying a login *name* rather than an id (see
+    # owner_of's own docstring in shared.py). Every other db.* call in this
+    # function tolerates that shape; chat_create does not.
+    owner = await owner_of(session)
+    existing = await db.orchestrator_list(owner)
     if len(existing) >= _MAX_SUPERVISORS_PER_OWNER:
         raise HTTPException(
             status_code=429,
@@ -1025,10 +1173,27 @@ async def _api_supervisors_create(request: Request):
         )
 
     sid = uuid.uuid4().hex
-    await db.orchestrator_create(sid, title, description, session["user"], config_data)
-    await db.orchestrator_update(sid, session["user"], work_dir=work_dir)
+    await db.orchestrator_create(sid, title, description, owner, config_data)
+    await db.orchestrator_update(sid, owner, work_dir=work_dir)
 
-    eng = orchestrator.OrchestratorEngine(sid, session["user"])
+    # The run's parent conversation. planner_chat_id was, until now, only
+    # ever written by the legacy engine's _run_planner_turn -- so on the new
+    # /run path it stayed NULL for every run ever created that way.
+    # create_task_chat unconditionally does `db.chat_update(chat_id, owner_id,
+    # parent_chat_id=parent_chat_id)`, and that update does not skip a None,
+    # so every task chat's parent_chat_id ended up NULL too -- making every
+    # task chat a ROOT chat. Two consequences, both closed by giving every
+    # run a real parent at creation time, in the same directory as its
+    # tasks: no run had a parent conversation to show a family card under,
+    # and the hierarchy design's parent_chat_id-based sidebar predicate
+    # (parent_chat_id IS NULL means "show it") could never hide a task chat,
+    # because none of them had a non-null parent to be hidden by.
+    planner_chat_id = uuid.uuid4().hex
+    await db.chat_create(planner_chat_id, title, None, work_dir, owner)
+    await db.orchestrator_set_planner_chat(sid, planner_chat_id)
+    await db.orchestrator_member_add(sid, planner_chat_id)
+
+    eng = orchestrator.OrchestratorEngine(sid, owner)
     _register_engine(sid, eng)
     return JSONResponse({"ok": True, "id": sid, "title": title, "status": "idle"})
 

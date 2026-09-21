@@ -239,6 +239,11 @@ import { renderRail } from "./rail.js";
         <h3>Result</h3>
         <div class="detail-result">${esc(task.result)}</div>
       </div>` : ""}
+      ${task.chat_id ? `
+      <div class="detail-section">
+        <h3>Chat</h3>
+        <div class="detail-value"><a href="/?chat=${esc(encodeURIComponent(task.chat_id))}" target="_blank" rel="noopener">Open this task's chat →</a></div>
+      </div>` : ""}
       <div class="detail-section">
         <h3>Timeline</h3>
         <div class="detail-value">

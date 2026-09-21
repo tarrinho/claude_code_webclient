@@ -274,7 +274,7 @@ async def orchestrator_tasks_get(
     cur = await db.db_conn.execute(
         "SELECT t.id, t.orchestrator_id, t.title, t.description, t.status, "
         "       t.model, t.result, t.progress_pct, t.parent_task_id, "
-        "       t.depends_on, t.created_at, t.updated_at "
+        "       t.depends_on, t.chat_id, t.created_at, t.updated_at "
         "FROM orchestrator_tasks t "
         "JOIN orchestrators s ON s.id = t.orchestrator_id AND s.owner_id = ? "
         "WHERE t.orchestrator_id = ? "

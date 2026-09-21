@@ -18,6 +18,78 @@ import config
 
 _log = logging.getLogger("wc.orchestrator")
 
+# -- Plan validation -------------------------------------------------------
+
+
+def validate_plan(text: str, allowed_models: set[str]):
+    """Turn planner output into task rows, or into errors a person can act on.
+
+    Never returns ([], []) -- an unreadable plan yields errors, because a
+    silent zero-task run is the failure this design exists to remove.
+    """
+    import json
+    rows: list[dict] = []
+    errors: list[str] = []
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        return [], [f"the plan is not valid JSON: {exc}"]
+    if not isinstance(parsed, list) or not parsed:
+        return [], ["the plan must be a non-empty JSON array of tasks"]
+
+    ids = {str(t.get("id") or i) for i, t in enumerate(parsed)}
+    for i, task in enumerate(parsed):
+        if not isinstance(task, dict):
+            errors.append(f"task {i} is not an object")
+            continue
+        title = str(task.get("title") or "").strip()
+        prompt = str(task.get("prompt") or "").strip()
+        if not title or not prompt:
+            errors.append(f"task {i} needs both a title and a prompt")
+        deps = task.get("depends_on") or []
+        if not isinstance(deps, list):
+            errors.append(f"task {i}: depends_on must be a list")
+            deps = []
+        for d in deps:
+            if str(d) not in ids:
+                errors.append(f"task {i} depends on unknown task {d!r}")
+        model = task.get("model")
+        # Never a raw argv token: an allowlist membership test, so a plan
+        # reading "--mcp-config=/tmp/evil" cannot reach --model.
+        if model is not None and str(model) not in allowed_models:
+            errors.append(f"task {i}: model {model!r} is not on the allowlist")
+            model = None
+        rows.append({
+            "id": str(task.get("id") or i),
+            "title": title, "prompt": prompt,
+            "depends_on": [str(d) for d in deps], "model": model,
+        })
+
+    if _has_cycle(rows):
+        errors.append("the plan has a dependency cycle")
+    return (rows, errors) if not errors else ([], errors)
+
+
+def _has_cycle(rows: list[dict]) -> bool:
+    graph = {r["id"]: r["depends_on"] for r in rows}
+    seen: set[str] = set()
+    stack: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in stack:
+            return True
+        if node in seen:
+            return False
+        seen.add(node); stack.add(node)
+        for dep in graph.get(node, []):
+            if visit(dep):
+                return True
+        stack.discard(node)
+        return False
+
+    return any(visit(n) for n in graph)
+
+
 # -- Model routing rules --------------------------------------------------
 DEFAULT_RULES: dict[str, Any] = {
     "rules": [

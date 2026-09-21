@@ -172,5 +172,38 @@ class OrchestratorCreateTaskChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task_b["chat_id"], b)
 
 
+class PlanValidationTests(unittest.TestCase):
+    """validate_plan: turn planner output into task rows, or errors a person can act on."""
+
+    def test_a_valid_plan_parses_to_rows(self):
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"do a","depends_on":[]}]', set())
+        self.assertEqual(errors, [])
+        self.assertEqual(rows[0]["title"], "A")
+
+    def test_invalid_json_is_an_error_not_an_empty_plan(self):
+        """The 2026-08-30 signature: a bad plan produced zero tasks and ran
+        anyway. Zero tasks with no error is the one outcome forbidden here."""
+        import orchestrator
+        rows, errors = orchestrator.validate_plan("I'll start by...", set())
+        self.assertEqual(rows, [])
+        self.assertTrue(errors, "a plan that cannot be read must say so")
+
+    def test_a_model_outside_the_allowlist_is_rejected(self):
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":[],"model":"--mcp-config=/tmp/evil"}]',
+            {"claude-opus-5"})
+        self.assertTrue(any("model" in e for e in errors))
+
+    def test_a_dependency_cycle_is_rejected_at_approval(self):
+        import orchestrator
+        rows, errors = orchestrator.validate_plan(
+            '[{"title":"A","prompt":"x","depends_on":["b"],"id":"a"},'
+            ' {"title":"B","prompt":"y","depends_on":["a"],"id":"b"}]', set())
+        self.assertTrue(any("cycle" in e.lower() for e in errors))
+
+
 if __name__ == "__main__":
     unittest.main()

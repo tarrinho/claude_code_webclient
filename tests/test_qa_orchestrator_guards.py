@@ -40,32 +40,93 @@ import ast
 import inspect
 import unittest
 
+# Fix round 1 (2026-09-21): the first version of this file matched raw
+# source TEXT ("_start_turn" as a substring; "runner.run_turn" as a
+# substring). Both forms were defeated by ordinary, non-adversarial edits:
+#
+#   * guard 1 kept passing when `_take_turn` was rewritten to call
+#     `runner.run_turn` as long as SOME string containing "_start_turn"
+#     remained anywhere in the source -- first caught in the shape of a
+#     stale docstring, then again (reviewer finding) in the shape of an
+#     ordinary non-docstring assignment `_note = "_start_turn"`. A
+#     docstring-only fix closed that one instance and left the class open.
+#   * guards 2/3 kept passing under `from runner import run_turn` followed
+#     by a bare `run_turn(...)` call, and under
+#     `getattr(runner, "run_turn")` -- neither contains the literal
+#     substring "runner.run_turn".
+#
+# The fix is structural, not lexical: parse the function to an AST and
+# require a real CODE reference (a `Name`/`Attribute` node, a `Call`, or an
+# import), which a string literal (an `ast.Constant`) can never produce --
+# regardless of where in the function that literal sits.
 
-def _source_without_docstring(func) -> str:
-    """`inspect.getsource(func)` including its own docstring.
 
-    A docstring that *explains* the property under test (as `_take_turn`'s
-    does: "guard 1 asserts that it routes through _start_turn") will itself
-    contain the string a naive `assertIn` looks for -- so the assertion
-    would keep passing even after the real call is deleted, as long as
-    nobody also edits the prose. That was verified empirically while
-    writing this file: temporarily replacing the `_start_turn` call with
-    `runner.run_turn` did NOT fail a plain `assertIn("_start_turn", src)`
-    check, because the docstring line survived the edit. Stripping the
-    docstring first means the assertion can only be satisfied by actual
-    code.
+def _references_identifier(func, name: str) -> bool:
+    """True iff `func`'s body contains an actual code reference to `name`:
+    a `Name` node, an `Attribute` node whose `.attr` is `name`, or an
+    import (`import`/`from ... import`) binding `name`.
+
+    Deliberately NOT a text/substring search: a string literal such as a
+    docstring, a comment (comments never reach the AST at all), or a plain
+    `_note = "name"` assignment is an `ast.Constant`, never a `Name` or
+    `Attribute`, so none of those can satisfy this check.
     """
-    src = inspect.getsource(func)
-    tree = ast.parse(src)
-    fn = tree.body[0]
-    if (
-        fn.body
-        and isinstance(fn.body[0], ast.Expr)
-        and isinstance(getattr(fn.body[0], "value", None), ast.Constant)
-        and isinstance(fn.body[0].value.value, str)
-    ):
-        fn.body = fn.body[1:]
-    return ast.unparse(fn)
+    tree = ast.parse(inspect.getsource(func))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == name:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == name:
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if (alias.asname or alias.name) == name or alias.name == name:
+                    return True
+    return False
+
+
+_FORBIDDEN_RUNNER_CALLS = ("run_turn", "stream_turn")
+
+
+def _reaches_runner_turn_call(func) -> str | None:
+    """Return the forbidden name reached, or None if the function contains
+    no way -- however spelled -- of reaching `runner.run_turn` /
+    `runner.stream_turn`, the two calls that bypass `_start_turn` and lose
+    usage recording and gallery capture silently.
+
+    Structural, on the AST, so it survives routine refactors that a
+    substring check does not:
+
+      * `runner.run_turn(...)`               -- Attribute access, attr in
+        the forbidden set, caught regardless of the base expression's name
+        (not just a base literally spelled "runner").
+      * `from runner import run_turn` then a bare `run_turn(...)` call --
+        caught two ways: the `ImportFrom` alias itself, and the bare
+        `Name` reference at the call site (so it is still caught even if
+        inspection only sees the call site and not the import).
+      * `getattr(runner, "run_turn")` -- a `Call` to `getattr` where one
+        argument is the string constant `"run_turn"`/`"stream_turn"`,
+        caught independently of what the resulting callable is later
+        named.
+    """
+    tree = ast.parse(inspect.getsource(func))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_RUNNER_CALLS:
+            return node.attr
+        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_RUNNER_CALLS:
+            return node.id
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _FORBIDDEN_RUNNER_CALLS:
+                    return alias.name
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+        ):
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and arg.value in _FORBIDDEN_RUNNER_CALLS:
+                    return arg.value
+    return None
 
 
 class TheNewSchedulerHasNoSecondExecutionPathTests(unittest.TestCase):
@@ -75,30 +136,38 @@ class TheNewSchedulerHasNoSecondExecutionPathTests(unittest.TestCase):
 
     def test_take_turn_routes_through_start_turn(self):
         """If this fails, usage recording AND gallery capture have both
-        stopped, silently -- which is the state this design replaced."""
+        stopped, silently -- which is the state this design replaced.
+
+        Checks for a real `_start_turn` reference (Name/Attribute/import),
+        not a substring anywhere in the source: see the fix-round-1 note
+        above `_references_identifier` for why a plain substring check was
+        insufficient.
+        """
         import orchestrator
-        code = _source_without_docstring(orchestrator._take_turn)
-        self.assertIn("_start_turn", code)
+        self.assertTrue(
+            _references_identifier(orchestrator._take_turn, "_start_turn"),
+            "_take_turn no longer contains a real reference to _start_turn",
+        )
 
     def test_run_tasks_never_calls_the_runner_directly(self):
         import orchestrator
-        src = inspect.getsource(orchestrator.run_tasks)
-        for forbidden in ("runner.run_turn", "runner.stream_turn"):
-            self.assertNotIn(
-                forbidden, src,
-                f"{forbidden} bypasses _start_turn, so the turn records no "
-                "usage and its images never reach the gallery",
-            )
+        forbidden = _reaches_runner_turn_call(orchestrator.run_tasks)
+        self.assertIsNone(
+            forbidden,
+            f"run_tasks can reach runner.{forbidden}, which bypasses "
+            "_start_turn, so the turn records no usage and its images "
+            "never reach the gallery",
+        )
 
     def test_create_task_chat_never_calls_the_runner_directly(self):
         import orchestrator
-        src = inspect.getsource(orchestrator.create_task_chat)
-        for forbidden in ("runner.run_turn", "runner.stream_turn"):
-            self.assertNotIn(
-                forbidden, src,
-                f"{forbidden} bypasses _start_turn, so the turn records no "
-                "usage and its images never reach the gallery",
-            )
+        forbidden = _reaches_runner_turn_call(orchestrator.create_task_chat)
+        self.assertIsNone(
+            forbidden,
+            f"create_task_chat can reach runner.{forbidden}, which "
+            "bypasses _start_turn, so the turn records no usage and its "
+            "images never reach the gallery",
+        )
 
 
 class NoProseReachesArgvTests(unittest.TestCase):

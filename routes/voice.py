@@ -22,14 +22,30 @@ from shared import backend_kind
 _log = logging.getLogger("wc.voice")
 
 # Conversational tone/brevity — adapted from voice-chat-app's SYSTEM_PROMPT.
-# Kept even though this path genuinely has no tool schema available to the
-# model (unlike the CLI path, where --tools "" makes the same true and this
-# line would be redundant): it still steers tone, and costs nothing here.
+#
+# "You have no tools" was true until the fetch tool landed and is now false
+# when a session has a parent conversation. Left uncorrected it would have
+# been worse than a stale comment: a model told it has no tools declines to
+# call the one it was given, so the tool would have been wired, offered, and
+# never used.
 VOICE_SYSTEM_PROMPT = (
     "You are a conversational thinking partner in a spoken voice chat. You "
-    "have no tools, no file access, and cannot run code or take any action "
-    "of any kind — you can only talk. Keep replies short and natural for "
-    "speech: plain sentences, no markdown, no bullet lists, no code blocks."
+    "cannot run code, edit files, or take any action in the world — you can "
+    "only talk and look things up in this conversation's own history. Keep "
+    "replies short and natural for speech: plain sentences, no markdown, no "
+    "bullet lists, no code blocks."
+)
+
+#: Appended only when the fetch tool is actually attached, so a session
+#: without a parent is never told about a tool it does not have.
+VOICE_FETCH_INSTRUCTION = (
+    " You have a fetch_messages tool that returns messages from the "
+    "conversation this voice session was opened from, by id range. Prefer "
+    "calling it over guessing whenever you are unsure of a specific detail — "
+    "a number, a name, a path, or what was decided. Any summary you were "
+    "given covers only the most recent part of that conversation, so older "
+    "detail is only available through the tool. Say you are checking, keep it "
+    "brief, and never read raw message text aloud verbatim."
 )
 
 
@@ -191,10 +207,11 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         # The structured summary is much cheaper than dumping raw messages
         # and gives the model a usable picture of what was discussed before
         # the voice session started.
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": VOICE_SYSTEM_PROMPT},
-        ]
         parent_id = chat.get("parent_chat_id")
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": VOICE_SYSTEM_PROMPT
+             + (VOICE_FETCH_INSTRUCTION if parent_id else "")},
+        ]
         # The summary the session opened with, written once by
         # stream_voice_context. It replaces the keyword heuristic below, which
         # bucketed the parent's last 12 messages by substring match -- a line
@@ -319,31 +336,103 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         # reconstructed afterwards.
         sent_messages = [dict(m) for m in messages]
 
-        stream = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            stream=True,
-            # Asks an OpenAI-compatible gateway to attach a usage object to
-            # the final chunk. Not every gateway honours it -- chunk.usage
-            # stays None on those, and input_tokens/output_tokens stay 0
-            # rather than the turn failing over a missing accounting detail.
-            stream_options={"include_usage": True},
-        )
-        async for chunk in stream:
-            if chunk.choices:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    if ttft_ms is None:
-                        ttft_ms = int((time.time() - t0) * 1000)
-                    assistant_text += delta
-                    yield f"data: {json.dumps({'type': 'text', 'content': delta})}\n\n"
-            served = getattr(chunk, "model", None)
-            if served:
-                model_served = served
-            usage = getattr(chunk, "usage", None)
-            if usage:
-                input_tokens = usage.prompt_tokens or 0
-                output_tokens = usage.completion_tokens or 0
+        # The fetch tool, bound to the conversation this session was opened
+        # from. It exists so the model can look a detail up instead of
+        # guessing -- which is what makes a short summary, or no summary at
+        # all, survivable rather than a session that knows nothing.
+        import voice_context as vc
+
+        fetch_tool = None
+        if parent_id:
+            async def _read(cid: str, low: int, high: int) -> list[dict]:
+                return await db.messages_range(cid, low, high)
+
+            fetch_tool = vc.make_fetch_tool_async(parent_id, _read)
+
+        tool_kwargs = {"tools": [vc.FETCH_TOOL_SCHEMA]} if fetch_tool else {}
+
+        # Rounds, not one call: a tool call is answered and the turn
+        # continues, so the model can fetch and then speak. Bounded because an
+        # unbounded loop is a model that can spend the user's money in a
+        # circle -- two fetches before answering is already generous for a
+        # spoken exchange, where latency is the whole constraint.
+        for _round in range(3):
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=True,
+                # Asks an OpenAI-compatible gateway to attach a usage object to
+                # the final chunk. Not every gateway honours it -- chunk.usage
+                # stays None on those, and input_tokens/output_tokens stay 0
+                # rather than the turn failing over a missing accounting detail.
+                stream_options={"include_usage": True},
+                **tool_kwargs,
+            )
+            # Tool calls arrive in fragments across chunks, keyed by index:
+            # the id and name usually in the first, the arguments a character
+            # at a time after it. They are accumulated and only executed once
+            # the round ends.
+            pending: dict[int, dict] = {}
+            async for chunk in stream:
+                if chunk.choices:
+                    choice_delta = chunk.choices[0].delta
+                    delta = choice_delta.content
+                    if delta:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.time() - t0) * 1000)
+                        assistant_text += delta
+                        yield f"data: {json.dumps({'type': 'text', 'content': delta})}\n\n"
+                    for call in (getattr(choice_delta, "tool_calls", None) or []):
+                        slot = pending.setdefault(
+                            call.index, {"id": "", "name": "", "arguments": ""})
+                        if call.id:
+                            slot["id"] = call.id
+                        function = getattr(call, "function", None)
+                        if function is not None:
+                            if getattr(function, "name", None):
+                                slot["name"] = function.name
+                            if getattr(function, "arguments", None):
+                                slot["arguments"] += function.arguments
+                served = getattr(chunk, "model", None)
+                if served:
+                    model_served = served
+                usage = getattr(chunk, "usage", None)
+                if usage:
+                    # Accumulated across rounds: a turn that fetched twice
+                    # spent the tokens of three completions, and recording
+                    # only the last would under-report it.
+                    input_tokens += usage.prompt_tokens or 0
+                    output_tokens += usage.completion_tokens or 0
+
+            if not pending or not fetch_tool:
+                break
+
+            messages.append({
+                "role": "assistant",
+                "content": assistant_text or None,
+                "tool_calls": [
+                    {"id": slot["id"], "type": "function",
+                     "function": {"name": slot["name"],
+                                  "arguments": slot["arguments"] or "{}"}}
+                    for slot in pending.values()
+                ],
+            })
+            for slot in pending.values():
+                try:
+                    args = json.loads(slot["arguments"] or "{}")
+                    result = await fetch_tool(args.get("from_id"), args.get("to_id"))
+                except Exception as exc:  # noqa: BLE001
+                    # A failed lookup is an answer the model can act on, not a
+                    # dead turn: it can say it could not find something, which
+                    # is far better than the session ending mid-sentence.
+                    _log.exception("voice fetch_messages failed chat_id=%s", chat_id)
+                    result = {"messages": [], "truncated": False,
+                              "note": f"Lookup failed: {exc}"}
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": slot["id"],
+                    "content": json.dumps(result),
+                })
         if assistant_text.strip():
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         else:

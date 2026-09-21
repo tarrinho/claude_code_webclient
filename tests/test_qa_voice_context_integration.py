@@ -286,5 +286,63 @@ class SseFrameShapeTests(_DbFixture):
         parts = [p for p in joined.split("\n\n") if p.strip()]
         self.assertTrue(all(p.startswith("data: ") for p in parts), parts)
 
+
+class FetchToolWiringTests(unittest.IsolatedAsyncioTestCase):
+    """The tool is offered to the model, and the model is told it exists.
+
+    Both halves are needed and neither is sufficient. The tool was built,
+    tested and committed in 5771c0c0 while nothing imported it -- dead code
+    that looked finished. And the system prompt said "You have no tools",
+    which a model obeys: wiring it without correcting that would have
+    produced a tool that is offered, never called, and impossible to tell
+    apart from one that simply is not useful.
+    """
+
+    def test_the_turn_attaches_the_tool_schema(self):
+        src = (Path(__file__).resolve().parents[1] / "routes" / "voice.py").read_text()
+        turn = src[src.index("async def stream_voice_turn"):]
+        self.assertIn("vc.FETCH_TOOL_SCHEMA", turn)
+        self.assertIn("make_fetch_tool_async", turn)
+
+    def test_the_prompt_no_longer_claims_there_are_no_tools(self):
+        from routes.voice import VOICE_SYSTEM_PROMPT
+        self.assertNotIn("no tools", VOICE_SYSTEM_PROMPT.lower())
+
+    def test_the_fetch_instruction_says_prefer_fetching_over_guessing(self):
+        """Requirement 7, in the words the model actually receives."""
+        from routes.voice import VOICE_FETCH_INSTRUCTION
+        lowered = VOICE_FETCH_INSTRUCTION.lower()
+        self.assertIn("fetch_messages", lowered)
+        self.assertIn("guessing", lowered)
+
+    def test_the_instruction_is_only_added_when_there_is_a_parent(self):
+        """A session opened from nothing has no tool, so telling it about one
+        would invite a call that cannot succeed."""
+        src = (Path(__file__).resolve().parents[1] / "routes" / "voice.py").read_text()
+        self.assertIn("if parent_id else", src)
+
+    async def test_the_async_tool_is_bound_and_bounded(self):
+        async def read(cid, low, high):
+            self.assertEqual(cid, "bound-chat")
+            return [{"id": i, "role": "user", "content": "x" * 500}
+                    for i in range(low, min(high, low + 5000) + 1)]
+
+        tool = vc.make_fetch_tool_async("bound-chat", read)
+        result = await tool(0, 4999)
+        self.assertTrue(result["truncated"])
+        self.assertLessEqual(len(result["messages"]), vc.FETCH_MAX_MESSAGES)
+
+    async def test_the_async_tool_refuses_non_numeric_ids_without_reading(self):
+        called = []
+
+        async def read(cid, low, high):
+            called.append((low, high))
+            return []
+
+        tool = vc.make_fetch_tool_async("bound-chat", read)
+        result = await tool("abc", None)
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(called, [])
+
 if __name__ == "__main__":
     unittest.main()

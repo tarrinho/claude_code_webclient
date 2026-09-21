@@ -155,6 +155,63 @@ def summary_prompt(window: list[dict[str, Any]], truncated: bool) -> str:
     return "\n".join(lines)
 
 
+def _bound_fetch_result(rows: list[dict]) -> dict[str, Any]:
+    """Shape and bound a fetch result. Shared by the sync and async tools so
+    the two cannot drift: the truncation rule is the part a model depends on
+    to know whether it received everything."""
+    out: list[dict[str, Any]] = []
+    total = 0
+    truncated = False
+    last_id: Any = None
+    for row in rows:
+        content = str(row.get("content") or "")
+        if out and (len(out) >= FETCH_MAX_MESSAGES
+                    or total + len(content) > FETCH_MAX_CHARS):
+            truncated = True
+            break
+        out.append({"id": row.get("id"), "role": row.get("role"),
+                    "content": content})
+        total += len(content)
+        last_id = row.get("id")
+    result: dict[str, Any] = {"messages": out, "truncated": truncated}
+    if truncated:
+        result["note"] = (
+            f"Truncated after id {last_id}. Request from {last_id} onward "
+            f"for the rest.")
+    elif not out:
+        result["note"] = "No messages in that range."
+    return result
+
+
+def _normalise_range(from_id, to_id) -> tuple[int, int] | None:
+    try:
+        low, high = int(from_id), int(to_id)
+    except (TypeError, ValueError):
+        return None
+    return (high, low) if low > high else (low, high)
+
+
+def make_fetch_tool_async(chat_id: str, read_messages):
+    """`make_fetch_tool` for an async reader.
+
+    The database layer here is aiosqlite, so the tool that actually runs
+    inside a voice turn needs this one; the sync version stays because it is
+    what makes the binding testable without an event loop. Both close over
+    `chat_id` and expose only a range, so neither can address another
+    conversation.
+    """
+
+    async def fetch_messages(from_id, to_id) -> dict[str, Any]:
+        bounds = _normalise_range(from_id, to_id)
+        if bounds is None:
+            return {"messages": [], "truncated": False,
+                    "note": "from_id and to_id must be whole numbers"}
+        rows = await read_messages(chat_id, *bounds)
+        return _bound_fetch_result(rows)
+
+    return fetch_messages
+
+
 def make_fetch_tool(chat_id: str, read_messages: Callable[[str, int, int], list[dict]]):
     """A message-fetching tool hard-bound to one chat.
 

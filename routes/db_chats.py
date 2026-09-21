@@ -598,6 +598,23 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
 
 
 @db.write
+async def messages_range(chat_id: str, from_id: int, to_id: int) -> list[dict[str, Any]]:
+    """One chat's messages whose ids fall in [from_id, to_id], in id order.
+
+    The chat_id is a parameter here but is never supplied by a model: the
+    voice fetch tool captures it in a closure and exposes only the range, so
+    this cannot be steered at another conversation from the model's side.
+    See voice_context.make_fetch_tool_async.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT id, role, content, created_at FROM messages "
+        "WHERE chat_id = ? AND id BETWEEN ? AND ? ORDER BY id ASC",
+        (chat_id, from_id, to_id),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+@db.write
 async def messages_get(chat_id: str) -> list[dict[str, Any]]:
     cur = await db.db_conn.execute(
         "SELECT id, role, content, created_at FROM messages "

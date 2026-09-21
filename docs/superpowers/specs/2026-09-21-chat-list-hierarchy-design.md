@@ -34,10 +34,25 @@ they hold.
 1. **All four relationship kinds are in scope**: subagents spawned in a chat,
    orchestrator and its members, voice handoff children, and chats opened from
    another.
-2. **A subagent is a display-only child node** — a lightweight record with a
-   name, status and timing. It is *not* an openable conversation. A supervisor
-   fan-out therefore adds small rows, not full chats, and "chat" keeps meaning
-   what it means today.
+2. **An in-chat Task-tool subagent is a display-only child node** — a
+   lightweight record with a name, status and timing. It is *not* an openable
+   conversation, so a conversation that fans out to several Task subagents adds
+   small rows rather than full chats, and "chat" keeps meaning what it means
+   today.
+
+   **This governs only the subagents of decision 1's first kind**: those
+   spawned by the `Task` tool inside a single conversation, which today leave
+   no record anywhere (§4.1). It says nothing about orchestrator tasks, which
+   are a separate relationship kind in decision 1 and whose nature is decided
+   by the orchestrator's own design, not here — see §4.2.
+
+   An earlier draft of this clause said "a supervisor fan-out", which names
+   orchestrator machinery rather than in-chat subagents and read as a ruling
+   on orchestrator tasks. It was never one. Corrected 2026-09-21 after a peer
+   session reading this spec against
+   `2026-09-20-orchestrator-chats-all-the-way-down-design.md` asked which
+   of the two kinds it governed — the right question, and the wording was
+   the whole of the problem.
 3. **Parentage is explicit only.** It is recorded by the code that creates the
    child. A conversation started with "New conversation" is a root even if
    another chat was open at the time. Inferring parentage from whatever was
@@ -108,10 +123,21 @@ reuses a proven shape rather than inventing one.
 **A subagent that never completes** stays `running` for ever if left alone —
 the CLI can die without writing a `tool_result`. §7 covers that.
 
-### 4.2 Orchestrator — no capture
+### 4.2 Orchestrator — no capture, and no opinion
 
 `orchestrator_members(orchestrator_id, chat_id)` and `orchestrator_tasks`
-already hold the relation.
+already hold the relation. This design reads them and renders them; it writes
+nothing to them and changes nothing about them.
+
+**Whether an orchestrator task is itself a real chat is not decided here.** It
+is decided by `2026-09-20-orchestrator-chats-all-the-way-down-design.md`, where
+a task being a real chat is the mechanism rather than the presentation: usage,
+transcripts, resume, standby and the generated-images gallery are inherited
+precisely because a task goes through `routes/chats.py`'s `_start_turn`, which
+is the only place images are ever recorded. Nothing in this design depends on
+the answer either way — §9's `children` array already carries both a `chat`
+kind and a `subagent` kind, so a task that is a real chat renders as the
+former and needs nothing added here.
 
 ### 4.3 Voice handoff — no capture
 

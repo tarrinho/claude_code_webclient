@@ -146,6 +146,7 @@ def __getattr__(name: str):
         "orchestrator_member_add": "routes.db_orchestrators",
         "orchestrator_member_remove": "routes.db_orchestrators",
         "orchestrator_members_list": "routes.db_orchestrators",
+        "orchestrator_member_owners": "routes.db_orchestrators",
         "orchestrator_messages_append": "routes.db_orchestrators",
         "orchestrator_messages_get": "routes.db_orchestrators",
         "orchestrator_progress": "routes.db_orchestrators",

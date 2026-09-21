@@ -24,6 +24,7 @@ from typing import Any, Final
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+import chat_tree
 import config
 import db
 import prompts
@@ -347,9 +348,7 @@ async def handle_chats_list(request: Request):
         for entry in await db.read_claude_sessions()
         if entry.get("sessionId") and entry.get("name")
     }
-    return JSONResponse(
-        {
-            "chats": [
+    items = [
                 {
                     "id": c["id"],
                     "title": c["title"],
@@ -401,9 +400,15 @@ async def handle_chats_list(request: Request):
                         c.get("session_id"), c.get("title"), session_names),
                 }
                 for c in chats
-            ],
-        }
-    )
+            ]
+    # One query for every conversation's subagents rather than one per row: a
+    # sidebar that costs a query per chat gets slower in proportion to how much
+    # work you have done, which is backwards.
+    chat_ids = [row["id"] for row in items]
+    subagents = await db.subagents_for_chats(chat_ids)
+    member_of = await db.orchestrator_member_owners(chat_ids)
+    items = chat_tree.build_chat_tree(items, subagents, member_of)
+    return JSONResponse({"chats": items})
 
 
 async def handle_chat_create(request: Request):

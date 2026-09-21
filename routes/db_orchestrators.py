@@ -576,3 +576,27 @@ async def orchestrator_clear_degraded(orchestrator_id: str, kind: str) -> None:
         _log.exception(
             "supervisor_clear_degraded failed id=%s kind=%s", orchestrator_id, kind,
         )
+
+
+async def orchestrator_member_owners(chat_ids: list[str]) -> dict[str, str]:
+    """Map a member chat id to the orchestrator's OWN chat id.
+
+    The orchestrator's own chat is `orchestrators.planner_chat_id`, not a
+    `chat_id` column -- the table has no such column, and a join against one
+    would raise `no such column` rather than degrade quietly.
+
+    Returns `{}` for an empty input rather than querying: the sidebar asks on
+    every load, and `IN ()` is not valid SQL.
+    """
+    if not chat_ids:
+        return {}
+    marks = ", ".join("?" * len(chat_ids))
+    cursor = await db.db_conn.execute(
+        "SELECT m.chat_id AS member, o.planner_chat_id AS owner "
+        "FROM orchestrator_members m "
+        "JOIN orchestrators o ON o.id = m.orchestrator_id "
+        f"WHERE m.chat_id IN ({marks})",  # nosec B608: parameterised
+        tuple(chat_ids),
+    )
+    return {r["member"]: r["owner"] for r in await cursor.fetchall()
+            if r["owner"]}

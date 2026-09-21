@@ -153,6 +153,16 @@ class TheSchedulerNeverReachesTheRunnerDirectlyTests(unittest.IsolatedAsyncioTes
 
         async def stub_start_turn(chat, owner_id, prompt, model):
             import turns
+            # A real `_start_turn` always persists the assistant's reply
+            # before its LiveTurn settles "done" -- this stub must too, now
+            # that run_tasks (fix 3) treats a "done" turn with no captured
+            # output as failed (the exact 2026-08-30 signature: a refused or
+            # empty turn recorded as a completed task). Without this write,
+            # this stub's state="done" would (correctly, post-fix) be read
+            # as failed, which is not what this guard is testing.
+            await db.messages_batch(
+                chat["id"], [("user", prompt), ("assistant", "stub answer")]
+            )
             task = asyncio.ensure_future(asyncio.sleep(0))
             await task
             return turns.LiveTurn(

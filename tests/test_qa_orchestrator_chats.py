@@ -461,6 +461,16 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_turn(chat, owner, prompt, model):
             state = "error" if chat["title"] == "A" else "done"
+            if state == "done":
+                # Fix 3: a "done" turn with no captured output is now read
+                # as failed (see run_tasks), so a fake meant to succeed must
+                # persist an assistant message the way a real _start_turn
+                # would -- otherwise this "done" stub would (correctly,
+                # post-fix) be read as failed, which is not what this test
+                # is exercising.
+                await db.messages_batch(
+                    chat["id"], [("user", prompt), ("assistant", "done")]
+                )
             return mock.Mock(task=asyncio.sleep(0), state=state)
 
         with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
@@ -510,6 +520,12 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
 
         async def fake_turn(chat, owner, prompt, model):
+            # Fix 3: a "done" state alone is no longer enough (see
+            # run_tasks) -- a real success also leaves a captured assistant
+            # message, so this fake must too.
+            await db.messages_batch(
+                chat["id"], [("user", prompt), ("assistant", "done")]
+            )
             return mock.Mock(task=asyncio.sleep(0), state="done")
 
         with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
@@ -619,6 +635,12 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         async def fake_turn(chat, owner, prompt, model):
             if chat["title"] == "A":
                 return _FakeCancelledLiveTurn()
+            # Fix 3: a "done" state alone is no longer enough (see
+            # run_tasks) -- b is meant to succeed, so this fake must also
+            # leave a captured assistant message the way a real turn would.
+            await db.messages_batch(
+                chat["id"], [("user", prompt), ("assistant", "done")]
+            )
             return mock.Mock(task=asyncio.sleep(0), state="done")
 
         with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
@@ -674,6 +696,74 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         take_turn.assert_awaited_once()
         run_turn.assert_not_called()
         stream_turn.assert_not_called()
+
+
+class OrchestratorTaskImageGalleryTests(unittest.IsolatedAsyncioTestCase):
+    """The spec's Testing section required "a task whose workspace gains an
+    image results in a generated_images row", and no task ever delivered it.
+
+    Every existing scheduler test (SchedulerTests above) patches
+    ``orchestrator._take_turn``, which bypasses ``_start_turn`` entirely --
+    and ``_start_turn`` is the ONLY place a generated image is ever detected
+    (``_new_workspace_images`` / ``db.generated_image_record``, both at the
+    end of ``routes.chats._start_turn``'s ``finish()``). A guard that
+    replaces ``_take_turn`` can prove the scheduler calls it, but it can
+    never prove an image reaches the gallery, because none of the code that
+    would put it there ever runs.
+
+    This test fakes only the CLI layer instead -- ``runner.stream_turn``,
+    the same technique ``tests/test_qa_chat_generated_images.py``'s
+    component test (``TurnAppendsGeneratedImagesQA``) already uses for a
+    plain chat turn -- so a REAL ``run_tasks`` drives a REAL ``_start_turn``,
+    including the image scan and the gallery write.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_a_task_that_leaves_an_image_gets_a_gallery_row(self):
+        import runner
+        import orchestrator
+
+        owner_id = uuid.uuid4().hex
+        orch = uuid.uuid4().hex
+        work_dir = str(Path(self.tmp.name) / "run-ws")
+        Path(work_dir).mkdir(parents=True)
+        await db.orchestrator_create(orch, "run", None, owner_id)
+        await db.orchestrator_update(orch, owner_id, work_dir=work_dir)
+        await db.orchestrator_task_create(orch, "a", "Make a chart", "draw it")
+
+        async def event_gen():
+            # Written mid-stream, as a real agent would -- the file must
+            # appear *during* the turn (see _events in
+            # test_qa_chat_generated_images.py) or its mtime would predate
+            # the turn's own start_ts and the scan would treat it as
+            # pre-existing rather than generated.
+            (Path(work_dir) / "chart.png").write_bytes(b"x")
+            yield {"type": "text", "content": "Here is the chart."}
+            yield {"type": "done"}
+
+        with patch.object(runner, "stream_turn", lambda *a, **k: event_gen()):
+            await orchestrator.run_tasks(orch, owner_id, "parent-chat", work_dir)
+
+        task = await db.orchestrator_task_get(orch, "a", owner_id)
+        self.assertEqual(task["status"], "done")
+        self.assertIn("chart.png", task["result"])
+
+        rows, _, _ = await db.generated_images_list(owner_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["path"], "chart.png")
 
 
 class EndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -935,6 +1025,57 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         alice_id = (await db.user_get_by_name("alice"))["id"]
         self.assertEqual(await db.orchestrator_tasks_get(orch, alice_id), [])
 
+    def test_a_second_run_can_reuse_the_first_runs_task_id(self):
+        """CRITICAL fix 1 regression, reproduced by execution before the fix:
+        orchestrator_tasks.id was a bare TEXT PRIMARY KEY -- a GLOBAL one,
+        not (orchestrator_id, id) -- and plan-local ids repeat by
+        construction: plan.js's row counter resets to "task-1" every time
+        the plan dialog opens, and validate_plan's own id fallback is the
+        array index ("0", "1", ...) when a row carries no explicit id. The
+        first run of any orchestrator succeeded; the SECOND run ever
+        created, of a DIFFERENT orchestrator reusing the same row id, hit
+        the UNIQUE constraint mid-loop and came back 500 with some of its
+        rows already committed. Both runs below use the identical row id
+        "task-1" and must both succeed, and each must persist its own row
+        under its own orchestrator.
+        """
+        client, headers = self._login()
+        with patch("orchestrator.run_tasks", new_callable=AsyncMock):
+            first_orch = self._create_orchestrator(client, headers, title="First")
+            resp1 = client.post(
+                f"/api/orchestrators/{first_orch}/run",
+                json={"rows": [{"id": "task-1", "title": "Research A",
+                                 "prompt": "find X", "depends_on": []}]},
+                headers=headers,
+            )
+            self.assertEqual(resp1.status_code, 200, resp1.text)
+
+            second_orch = self._create_orchestrator(client, headers, title="Second")
+            resp2 = client.post(
+                f"/api/orchestrators/{second_orch}/run",
+                json={"rows": [{"id": "task-1", "title": "Research B",
+                                 "prompt": "find Y", "depends_on": []}]},
+                headers=headers,
+            )
+            self.assertEqual(
+                resp2.status_code, 200,
+                "the second run must not 500 on a task id the first run "
+                f"already used -- that is precisely the bug this pins: "
+                f"{resp2.text}",
+            )
+
+        alice_id = asyncio.run(db.user_get_by_name("alice"))["id"]
+        first_tasks = asyncio.run(db.orchestrator_tasks_get(first_orch, alice_id))
+        second_tasks = asyncio.run(db.orchestrator_tasks_get(second_orch, alice_id))
+        self.assertEqual(len(first_tasks), 1, "the first run's row must survive")
+        self.assertEqual(len(second_tasks), 1, "the second run's row must exist at all")
+        self.assertEqual(first_tasks[0]["title"], "Research A")
+        self.assertEqual(second_tasks[0]["title"], "Research B")
+        # Namespaced storage: the same plan-local id "task-1" produced two
+        # distinct primary keys, one per orchestrator -- proof the fix is
+        # namespacing the stored id, not merely tolerating the collision.
+        self.assertNotEqual(first_tasks[0]["id"], second_tasks[0]["id"])
+
     def test_run_schedules_execution_after_persisting_rows(self):
         """Proves the endpoint SCHEDULES a run and nothing more.
 
@@ -976,9 +1117,14 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
             run_tasks.assert_called_once()
 
         alice_id = asyncio.run(db.user_get_by_name("alice"))["id"]
-        task = asyncio.run(db.orchestrator_task_get(orch, "t1", alice_id))
-        self.assertIsNotNone(task)
-        self.assertEqual(task["title"], "Research")
+        # Not db.orchestrator_task_get(orch, "t1", ...): fix 1 namespaces the
+        # stored id as f"{orch}:t1" so a second orchestrator's own "t1" can
+        # never collide with this one's at the storage layer (see
+        # handle_orchestrator_run) -- the posted row id "t1" is no longer
+        # the literal primary key.
+        tasks = asyncio.run(db.orchestrator_tasks_get(orch, alice_id))
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["title"], "Research")
 
     @staticmethod
     def _asgi_client():
@@ -1008,6 +1154,12 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         from unittest import mock
 
         async def fake_turn(chat, owner, prompt, model):
+            # Fix 3: a "done" state alone is no longer enough (see
+            # run_tasks) -- this fake means to succeed, so it must also
+            # leave a captured assistant message the way a real turn would.
+            await db.messages_batch(
+                chat["id"], [("user", "find X"), ("assistant", "done")]
+            )
             return mock.Mock(task=asyncio.sleep(0), state="done")
 
         async with self._asgi_client() as client:
@@ -1033,10 +1185,17 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resp.status_code, 200, resp.text)
 
                 alice_id = (await db.user_get_by_name("alice"))["id"]
+                # Not db.orchestrator_task_get(orch, "t1", ...): fix 1
+                # namespaces the stored id as f"{orch}:t1" (see
+                # handle_orchestrator_run), so "t1" is no longer the literal
+                # primary key. orchestrator_tasks_get is not; it takes only
+                # the orchestrator id, so it is unaffected by the storage
+                # scheme.
                 task = None
                 for _ in range(200):
-                    task = await db.orchestrator_task_get(orch, "t1", alice_id)
-                    if task["status"] in ("done", "failed", "blocked"):
+                    tasks = await db.orchestrator_tasks_get(orch, alice_id)
+                    task = tasks[0] if tasks else None
+                    if task and task["status"] in ("done", "failed", "blocked"):
                         break
                     await asyncio.sleep(0.01)
 

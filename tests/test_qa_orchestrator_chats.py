@@ -17,6 +17,7 @@ so a later class here does not have to fight it or reuse it by accident.
 """
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 import uuid
@@ -271,6 +272,129 @@ class PlanValidationTests(unittest.TestCase):
         rows, errors = orchestrator.validate_plan("[]", set())
         self.assertEqual(rows, [])
         self.assertTrue(errors)
+
+
+class SchedulerTests(unittest.IsolatedAsyncioTestCase):
+    """orchestrator.run_tasks: fan out in dependency order, one real chat turn
+    per task, and read the outcome from turns.LiveTurn.state -- never from an
+    exception. Same throwaway-database fixture shape as the classes above.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_a_failed_task_blocks_dependents_and_spares_siblings(self):
+        """The three-way outcome. b depends on a and must be blocked when a
+        fails; c depends on nothing and must still run."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        for tid, deps in (("a", []), ("b", ["a"]), ("c", [])):
+            await db.orchestrator_task_create(
+                orch, tid, tid.upper(), None, depends_on=deps)
+
+        async def fake_turn(chat, owner, prompt, model):
+            state = "error" if chat["title"] == "A" else "done"
+            return mock.Mock(task=asyncio.sleep(0), state=state)
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        status = {t["id"]: t["status"]
+                  for t in await db.orchestrator_tasks_get(orch, "owner-uuid")}
+        self.assertEqual(status["a"], "failed")
+        self.assertEqual(status["b"], "blocked")
+        self.assertEqual(status["c"], "done")
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertEqual(run["status"], "degraded")
+
+    async def test_all_tasks_succeeding_marks_the_run_done(self):
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="done")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["progress_pct"], 100.0)
+
+    async def test_all_tasks_failing_marks_the_run_error(self):
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="error")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        run = await db.orchestrator_get(orch, "owner-uuid")
+        self.assertEqual(run["status"], "error")
+
+    async def test_failed_turn_is_read_from_state_not_an_exception(self):
+        """CLAUDE.md s4: a failed turn is an event carried in LiveTurn.state,
+        never an exception. If run_tasks only caught exceptions to detect
+        failure, this cancelled-state turn would be misread as success."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="cancelled")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn):
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        status = {t["id"]: t["status"]
+                  for t in await db.orchestrator_tasks_get(orch, "owner-uuid")}
+        self.assertEqual(status["a"], "failed")
+
+    async def test_run_tasks_routes_execution_through_take_turn_only(self):
+        """Guard 1: every route to execution goes through _take_turn (and so
+        through _start_turn), never runner.run_turn/stream_turn directly --
+        those calls are how usage accounting and the image gallery get
+        wired in, and they are lost silently if anything bypasses it."""
+        import orchestrator
+        from unittest import mock
+        orch = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, "owner-uuid")
+        await db.orchestrator_task_create(orch, "a", "A", None, depends_on=[])
+
+        async def fake_turn(chat, owner, prompt, model):
+            return mock.Mock(task=asyncio.sleep(0), state="done")
+
+        with mock.patch("orchestrator._take_turn", side_effect=fake_turn) as take_turn, \
+             mock.patch("runner.run_turn") as run_turn, \
+             mock.patch("runner.stream_turn") as stream_turn:
+            await orchestrator.run_tasks(orch, "owner-uuid", "parent", "/tmp/ws")
+
+        take_turn.assert_awaited_once()
+        run_turn.assert_not_called()
+        stream_turn.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -607,6 +607,123 @@ async def create_task_chat(
     return chat_id
 
 
+# -- Scheduler -------------------------------------------------------------
+
+
+async def _prompt_for(orchestrator_id: str, task: dict, owner_id: str) -> str:
+    """Build the prompt a task's turn runs with.
+
+    Stub: returns the task's own text, nothing more. Task 5 replaces this
+    with the dependency-aware version that folds in the results of the
+    tasks this one depends on -- exactly what `_build_dep_context` does for
+    the older in-memory engine above. Defined here only so `run_tasks`
+    below has a name to call; without it, this module raises NameError
+    before a single task chat is created.
+    """
+    return task.get("description") or task["title"]
+
+
+async def _take_turn(chat: dict, owner: str, prompt: str, model: str | None):
+    """Execute one task by taking a turn in its own chat.
+
+    This indirection exists to be patched in tests, and to be the SINGLE
+    place the orchestrator touches execution -- guard 1 asserts that it
+    routes through _start_turn and nothing else.
+    """
+    from routes.chats import _start_turn
+    return await _start_turn(chat, owner, prompt, model)
+
+
+async def run_tasks(
+    orchestrator_id: str, owner_id: str, parent_chat_id: str, work_dir: str
+) -> None:
+    """Fan tasks out in dependency order, one real chat turn per task.
+
+    A failed turn is an EVENT, not an exception (rules.md/CLAUDE.md s4):
+    ``_take_turn`` returns a ``turns.LiveTurn`` whose ``state`` says what
+    happened -- ``run``/``error``/``cancelled``/``done`` -- and it never
+    raises for a failed turn. Only ``state`` is read to decide success;
+    catching an exception here would silently treat a failed turn as an
+    empty success, which is the exact bug this design replaces.
+
+    A task whose dependency failed is marked ``blocked`` and written to the
+    database explicitly -- never skipped, never left "pending" forever, and
+    never marked "done". Tasks that do not depend on anything that failed
+    keep running: one failed leaf must not abandon unrelated work.
+
+    No retry and no cleanup for a partial ``create_task_chat`` failure: that
+    helper performs four un-transactioned writes, and retrying after a
+    partial failure would create a second orphan chat. Known, accepted
+    limitation from Task 2 -- not this task's to fix.
+    """
+    import json
+
+    import db
+
+    raw_tasks = await db.orchestrator_tasks_get(orchestrator_id, owner_id)
+    tasks: dict[str, dict] = {}
+    for row in raw_tasks:
+        t = dict(row)
+        deps = t.get("depends_on")
+        # Stored as a JSON string (orchestrator_task_create json.dumps'es
+        # it); orchestrator_tasks_get's SELECT returns the column raw,
+        # unparsed. Iterating a JSON string's characters instead of its
+        # list elements would make "[]" look non-empty and "a" never equal
+        # a task id, so every dependency check below would be wrong.
+        if isinstance(deps, str):
+            try:
+                deps = json.loads(deps) if deps else []
+            except ValueError:
+                deps = []
+        t["depends_on"] = deps or []
+        tasks[t["id"]] = t
+
+    done: set[str] = set()
+    failed: set[str] = set()
+
+    while True:
+        ready = [
+            t for t in tasks.values()
+            if t["status"] == "pending"
+            and all(d in done for d in (t.get("depends_on") or []))
+        ]
+        # Anything still pending whose dependency failed is blocked, not
+        # skipped and not silently done.
+        for t in tasks.values():
+            if t["status"] == "pending" and any(
+                d in failed for d in (t.get("depends_on") or [])
+            ):
+                t["status"] = "blocked"
+                await db.orchestrator_task_update(
+                    orchestrator_id, t["id"], owner_id, status="blocked")
+        if not ready:
+            break
+
+        for t in ready:
+            chat_id = await create_task_chat(
+                orchestrator_id, t["id"], t["title"], work_dir,
+                owner_id, parent_chat_id)
+            chat = await db.chat_get(chat_id, owner_id)
+            prompt = await _prompt_for(orchestrator_id, t, owner_id)
+            live = await _take_turn(chat, owner_id, prompt, t.get("model"))
+            await live.task
+            # CLAUDE.md s4: a failed turn is an EVENT. The state carries it;
+            # an exception never arrives, so never look for one.
+            ok = live.state == "done"
+            t["status"] = "done" if ok else "failed"
+            (done if ok else failed).add(t["id"])
+            await db.orchestrator_task_update(
+                orchestrator_id, t["id"], owner_id, status=t["status"])
+
+    total = len(tasks)
+    status = ("done" if len(done) == total
+              else "error" if not done
+              else "degraded")
+    await db.orchestrator_update(
+        orchestrator_id, owner_id, status=status,
+        progress_pct=round(100.0 * len(done) / total, 1) if total else 0.0)
+
+
 # -- Orchestrator engine -------------------------------------------------------
 
 SUPERVISOR_SYSTEM_PROMPT = (

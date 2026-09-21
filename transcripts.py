@@ -783,6 +783,125 @@ def _scan_questions_sync(path: Path) -> list[dict[str, Any]]:
     return questions
 
 
+#: (size, rows) per transcript path, keyed the same way _question_scan_cache is
+#: and for the same measured reason: every caller polls, and re-reading a
+#: 16 MB transcript on each poll spends disk and CPU finding the answer it
+#: already had.
+_task_scan_cache: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+
+_TASK_TOOL: Final[str] = "Task"
+
+
+def _scan_tasks_sync(path: Path) -> list[dict[str, Any]]:
+    """Quick-scan the full transcript for Task-tool subagent blocks.
+
+    Task subagents run INSIDE the CLI process, so the console never sees them
+    spawn (CLAUDE.md §0). This is the only place they are observable: a
+    `tool_use` block whose name is `Task`, carrying `subagent_type` and
+    `description` in its input.
+
+    Status is a pairing, not a second source -- a `tool_use` with a matching
+    `tool_result` is done, one without is running. Exactly what
+    `_scan_questions_sync` does for AskUserQuestion, and for the same reason:
+    the transcript already records both halves, so nothing else has to.
+
+    Both passes complete before anything is returned, so a `tool_result` read
+    before its `tool_use` still pairs. Nothing guarantees file order after a
+    compaction or a partial write.
+
+    Unlike the question scan, finished rows are NOT skipped: a subagent that
+    has completed is still worth showing, with the fact that it finished. The
+    caller's UNIQUE index, not this filter, is what keeps the import idempotent.
+    """
+    key = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    cached = _task_scan_cache.get(key)
+    if cached is not None and cached[0] == size:
+        return list(cached[1])
+
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+
+    # Most transcripts never spawned a subagent, and for those the split below
+    # is pure waste: it turns a 136 MB read into millions of bytes objects to
+    # discover there was nothing to find. Measured on this host: the largest
+    # transcript is 136 MB and 13 of 3068 exceed 16 MB, at roughly 1.33 s of
+    # CPU and ~300 MB transient RSS per turn on the worst one -- paid on every
+    # completed turn, because the size-keyed cache below cannot help a file the
+    # turn itself just appended to.
+    #
+    # The needle is deliberately just b'"Task"', not b'"name":"Task"': a false
+    # POSITIVE only costs the work we would have done anyway, while a false
+    # NEGATIVE silently loses a subagent for ever, and the writer's spacing
+    # around the colon is not ours to depend on.
+    if b'"Task"' not in raw:
+        _task_scan_cache[key] = (len(raw), [])
+        return []
+
+    started: dict[str, dict[str, Any]] = {}
+    ended: dict[str, str | None] = {}
+
+    for line in raw.split(b"\n"):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            record = json.loads(text.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        stamp = str(record.get("timestamp") or "")
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            kind = block.get("type")
+            if kind == "tool_use" and block.get("name") == _TASK_TOOL:
+                use_id = str(block.get("id") or "")
+                if not use_id:
+                    continue
+                payload = block.get("input")
+                payload = payload if isinstance(payload, dict) else {}
+                agent_type = payload.get("subagent_type")
+                description = payload.get("description")
+                started[use_id] = {
+                    "tool_use_id": use_id,
+                    "agent_type": str(agent_type) if agent_type else None,
+                    "description": str(description) if description else None,
+                    "started_at": stamp,
+                }
+            elif kind == "tool_result":
+                result_id = str(block.get("tool_use_id") or "")
+                if result_id:
+                    ended[result_id] = stamp or None
+
+    rows: list[dict[str, Any]] = []
+    for use_id, row in started.items():
+        finished = use_id in ended
+        rows.append({
+            **row,
+            "status": "done" if finished else "running",
+            "ended_at": ended.get(use_id) if finished else None,
+        })
+
+    # Cached under the size actually read, not the earlier stat() -- the file
+    # can grow between the two, and keying on what was really parsed is what
+    # keeps the next call's comparison honest rather than trusting a number
+    # that may already be stale by the time it is stored. Mirrors
+    # _scan_questions_sync's cache-write for the same reason.
+    _task_scan_cache[key] = (len(raw), list(rows))
+    return rows
+
+
 async def read_turns(session_id: str, offset: int = 0) -> dict[str, Any]:
     """Read a session's conversation from *offset* to the end.
 

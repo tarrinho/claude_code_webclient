@@ -227,6 +227,15 @@ export function createChatListController(dependencies) {
   const _isActive = chat =>
     activeTurnIds.has(chat.id) || Boolean(chat.terminal_busy);
 
+  // A chat with children is wrapped in a .chat-family card, so the row is no
+  // longer a direct child of the section container. Reordering moves the whole
+  // family, not the head row out of its own card -- so every place that walks
+  // or inserts siblings asks for the unit, not the row.
+  function orderUnit(node) {
+    const parent = node.parentElement;
+    return parent && parent.classList.contains('chat-family') ? parent : node;
+  }
+
   // Persist the order of one section. Sends the whole section rather than a
   // single moved id: the server writes it as one transaction, so a drop cannot
   // half-apply and leave an order the user never chose.
@@ -247,10 +256,15 @@ export function createChatListController(dependencies) {
     const ids = [...container.querySelectorAll('.chat-item[data-chat-id]')]
       .filter(node => !sectionKey || node.dataset.section === sectionKey)
       .filter(node => node.dataset.floated !== '1')
-      // A child row inside a family card is not a root: commitOrder walks the
-      // DOM to build what it persists, so a child left in that walk would have
-      // its position written as if it were one. See the card-building comment
-      // in renderSection for why children get a card instead of an indent.
+      // Second line of defence, not the primary guard: the primary guard is
+      // the `.chat-item[data-chat-id]` selector above -- child rows are built
+      // with class `chat-child` and never `chat-item` (see _childRow), so they
+      // are not in this list to begin with. This filter only matters if a
+      // future change ever gives a child row the `chat-item` class; it is
+      // kept because that failure mode -- a child row's position written as
+      // if it were a root -- is exactly the one commitOrder exists to avoid.
+      // See the card-building comment in renderSection for why children get a
+      // card instead of an indent.
       .filter(node => node.dataset.child !== '1')
       .map(node => node.dataset.chatId);
     if (ids.length) onReorder(ids);
@@ -261,14 +275,22 @@ export function createChatListController(dependencies) {
   function nudge(chatId, delta) {
     const row = document.querySelector(`.chat-item[data-chat-id="${CSS.escape(chatId)}"]`);
     if (!row || !row.parentElement) return;
-    const siblings = [...row.parentElement.querySelectorAll('.chat-item[data-chat-id]')]
-      .filter(node => node.dataset.section === row.dataset.section);
-    const index = siblings.indexOf(row);
+    // For a family head, the unit to move is the .chat-family card, and its
+    // container is one level further up than row.parentElement -- walking
+    // row.parentElement directly found only the head inside its own card
+    // (one .chat-item), so a move never had a second sibling to swap with.
+    const unit = orderUnit(row);
+    const container = unit.parentElement;
+    if (!container) return;
+    const siblings = [...container.querySelectorAll('.chat-item[data-chat-id]')]
+      .filter(node => node.dataset.section === row.dataset.section)
+      .map(node => orderUnit(node));
+    const index = siblings.indexOf(unit);
     const next = index + delta;
     if (index < 0 || next < 0 || next >= siblings.length) return;
-    if (delta < 0) row.parentElement.insertBefore(row, siblings[next]);
-    else row.parentElement.insertBefore(siblings[next], row);
-    commitOrder(row.parentElement, row.dataset.section);
+    if (delta < 0) container.insertBefore(unit, siblings[next]);
+    else container.insertBefore(siblings[next], unit);
+    commitOrder(container, row.dataset.section);
   }
 
   // Open upwards when the menu would otherwise hang below the fold. Measured
@@ -644,7 +666,11 @@ export function createChatListController(dependencies) {
       // cannot silently reshuffle the rest of the list.
       item.draggable = true;
       item.addEventListener('dragstart', event => {
-        dragging = item;
+        // A family head drags its whole card, not itself out of the card --
+        // see orderUnit. The visual "lifted" state stays on the row: only
+        // .chat-item.dragging has an opacity rule, and dimming the head is
+        // enough feedback without adding a rule for the card too.
+        dragging = orderUnit(item);
         item.classList.add('dragging');
         event.dataTransfer.effectAllowed = 'move';
         // Firefox needs data set or the drag never starts.
@@ -656,12 +682,17 @@ export function createChatListController(dependencies) {
         commitOrder(target, label);
       });
       item.addEventListener('dragover', event => {
-        if (!dragging || dragging === item || dragging.parentElement !== target) return;
+        // The hovered unit, same reasoning as dragstart: a family head hovers
+        // as its card, or insertBefore below is asked to move `dragging` next
+        // to a node (the bare head row) that is not a child of `target`, which
+        // throws NotFoundError on every tick the pointer spends over a card.
+        const overUnit = orderUnit(item);
+        if (!dragging || dragging === overUnit || dragging.parentElement !== target) return;
         if (dragging.dataset.section !== item.dataset.section) return;
         event.preventDefault();
         const box = item.getBoundingClientRect();
         const below = event.clientY > box.top + box.height / 2;
-        target.insertBefore(dragging, below ? item.nextSibling : item);
+        target.insertBefore(dragging, below ? overUnit.nextSibling : overUnit);
       });
 
       item.append(open, actions);
@@ -676,6 +707,12 @@ export function createChatListController(dependencies) {
         item.classList.add('chat-family-head');
         const family = document.createElement('div');
         family.className = 'chat-family';
+        // Mirrors item.dataset.section: dragstart/dragover compare
+        // dragging.dataset.section against the hovered row's, and dragging is
+        // this card (via orderUnit) whenever the head has children -- without
+        // this the comparison read undefined and every cross-family dragover
+        // guard failed closed.
+        family.dataset.section = label;
         family.appendChild(item);
 
         const shown = childRowsFor(chat, expandedFamilies.has(chat.id));
@@ -692,6 +729,22 @@ export function createChatListController(dependencies) {
         }
         for (const kid of shown) {
           family.appendChild(_childRow(kid, currentId));
+        }
+        // The mirror of the button above: expandedFamilies reads as a toggle
+        // to whoever clicked "N children", and an expand with no way back
+        // reads as broken rather than as "already open". Only offered once
+        // expansion is actually why the card is showing more than the
+        // collapsed default -- a small family has nothing to collapse back to.
+        if (kids.length > CHILD_COLLAPSE_AT && shown.length) {
+          const less = document.createElement('button');
+          less.type = 'button';
+          less.className = 'chat-family-more';
+          less.textContent = 'Show fewer';
+          less.onclick = () => {
+            expandedFamilies.delete(chat.id);
+            render();
+          };
+          family.appendChild(less);
         }
         // Appended to `target`, not `list`: in a collapsed section (Archived)
         // `target` is the <details> element, and appending to `list` instead

@@ -202,6 +202,11 @@ def __getattr__(name: str):
         "_ALLOWED_CHAT_FIELDS": "routes.db_chats",
         "chat_search": "routes.db_chats",
         "messages_get": "routes.db_chats",
+        # Voice fetch tool (spec 2026-09-21): a range reader and the
+        # session grouping that decides which chats it may span.
+        "messages_range": "routes.db_chats",
+        "messages_range_in": "routes.db_chats",
+        "chats_in_session": "routes.db_chats",
         "messages_last": "routes.db_chats",
         "messages_page": "routes.db_chats",
         "messages_append": "routes.db_chats",

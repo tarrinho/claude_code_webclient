@@ -344,10 +344,30 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
 
         fetch_tool = None
         if parent_id:
-            async def _read(cid: str, low: int, high: int) -> list[dict]:
-                return await db.messages_range(cid, low, high)
+            # The originating chat, plus the other chats of the same CLI
+            # session. Widened from requirement 6's single chat by operator
+            # decision on 2026-09-21: several chats routinely share one
+            # terminal session, and they are the conversations a voice session
+            # opened from one of them is most likely to be asked about.
+            #
+            # Computed once, here, and closed over -- so the reachable set is
+            # fixed when the turn starts and the model has no say in it.
+            reachable = [parent_id]
+            try:
+                parent = await db.chat_get(parent_id, owner)
+                siblings = await db.chats_in_session(
+                    (parent or {}).get("session_id") or "", owner)
+                reachable = list(dict.fromkeys([parent_id, *siblings]))
+            except Exception:
+                # A failure to widen is not a failure to answer: fall back to
+                # the parent alone rather than losing the tool entirely.
+                _log.exception("voice fetch scope fell back to parent chat_id=%s",
+                               chat_id)
 
-            fetch_tool = vc.make_fetch_tool_async(parent_id, _read)
+            async def _read(chat_ids, low: int, high: int) -> list[dict]:
+                return await db.messages_range_in(chat_ids, low, high)
+
+            fetch_tool = vc.make_fetch_tool_async(reachable, _read)
 
         tool_kwargs = {"tools": [vc.FETCH_TOOL_SCHEMA]} if fetch_tool else {}
 

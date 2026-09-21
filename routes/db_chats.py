@@ -598,6 +598,50 @@ async def chat_search(owner_id: str, query: str) -> list[dict[str, Any]]:
 
 
 @db.write
+async def chats_in_session(session_id: str, owner_id: str) -> list[str]:
+    """Every chat of *owner_id* that belongs to the same CLI session.
+
+    The grouping the voice fetch tool widens to: several chats routinely share
+    one terminal session (three apiece is typical here), and they are the
+    conversations a voice session opened from one of them is most likely to be
+    about. Owner-scoped, so the set can never cross an account boundary.
+    """
+    if not session_id:
+        return []
+    cur = await db.db_conn.execute(
+        "SELECT id FROM chats WHERE session_id = ? AND owner_id = ? "
+        "AND deleted_at IS NULL",
+        (session_id, owner_id),
+    )
+    return [row["id"] for row in await cur.fetchall()]
+
+
+@db.write
+async def messages_range_in(
+    chat_ids: Sequence[str], from_id: int, to_id: int
+) -> list[dict[str, Any]]:
+    """Messages in [from_id, to_id] belonging to any of *chat_ids*, in id order.
+
+    Takes a set of chats rather than one, and still needs no chat argument from
+    the model: `messages.id` is a single autoincrement across the whole table,
+    so an id range is already unambiguous. That is what lets the voice tool
+    reach a session's sibling chats while keeping the guarantee structural --
+    the allowlist is fixed when the session opens and there is no parameter
+    through which the model could name a conversation outside it.
+    """
+    ids = [c for c in chat_ids if c]
+    if not ids:
+        return []
+    marks = ",".join("?" for _ in ids)
+    cur = await db.db_conn.execute(
+        f"SELECT id, chat_id, role, content, created_at FROM messages "  # nosec B608
+        f"WHERE chat_id IN ({marks}) AND id BETWEEN ? AND ? ORDER BY id ASC",
+        (*ids, from_id, to_id),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+@db.write
 async def messages_range(chat_id: str, from_id: int, to_id: int) -> list[dict[str, Any]]:
     """One chat's messages whose ids fall in [from_id, to_id], in id order.
 

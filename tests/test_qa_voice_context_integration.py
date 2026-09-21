@@ -322,8 +322,8 @@ class FetchToolWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("if parent_id else", src)
 
     async def test_the_async_tool_is_bound_and_bounded(self):
-        async def read(cid, low, high):
-            self.assertEqual(cid, "bound-chat")
+        async def read(chat_ids, low, high):
+            self.assertEqual(list(chat_ids), ["bound-chat"])
             return [{"id": i, "role": "user", "content": "x" * 500}
                     for i in range(low, min(high, low + 5000) + 1)]
 
@@ -335,7 +335,7 @@ class FetchToolWiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_async_tool_refuses_non_numeric_ids_without_reading(self):
         called = []
 
-        async def read(cid, low, high):
+        async def read(chat_ids, low, high):
             called.append((low, high))
             return []
 
@@ -343,6 +343,74 @@ class FetchToolWiringTests(unittest.IsolatedAsyncioTestCase):
         result = await tool("abc", None)
         self.assertEqual(result["messages"], [])
         self.assertEqual(called, [])
+
+
+class SessionScopedFetchTests(_DbFixture):
+    """The widening agreed on 2026-09-21: the tool reaches the originating
+    chat plus the other chats of the same CLI session, and nothing else.
+
+    Requirement 6 originally bound it to one chat. What makes the widening
+    safe is that the guarantee stays structural: `messages.id` is a single
+    autoincrement across the whole table, so a range is unambiguous without
+    naming a chat, and the schema still exposes only from_id and to_id. The
+    model cannot express a request for a conversation outside the allowlist.
+    """
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        now = db._now()
+        for chat_id, session, body in (
+            ("a", "sess-1", "ALPHA from chat a"),
+            ("b", "sess-1", "BETA from sibling b"),
+            ("c", "sess-2", "GAMMA from a different session"),
+        ):
+            await db.chat_create(chat_id, chat_id, None, "/tmp", "admin")
+            # Directly, not via chat_update: session_id is deliberately absent
+            # from _ALLOWED_CHAT_FIELDS, so chat_update would silently do
+            # nothing and the fixture would look set up while being empty.
+            await db.db_conn.execute(
+                "UPDATE chats SET session_id = ? WHERE id = ?", (session, chat_id))
+            await db.db_conn.execute(
+                "INSERT INTO messages (chat_id, role, content, created_at) "
+                "VALUES (?, ?, ?, ?)", (chat_id, "user", body, now))
+        await db.db_conn.commit()
+
+    async def test_the_session_grouping_finds_siblings_and_stops_there(self):
+        self.assertEqual(sorted(await db.chats_in_session("sess-1", "admin")), ["a", "b"])
+        self.assertEqual(await db.chats_in_session("sess-2", "admin"), ["c"])
+
+    async def test_the_grouping_is_owner_scoped(self):
+        """It can never cross an account boundary, whatever the session id."""
+        self.assertEqual(await db.chats_in_session("sess-1", "someone-else"), [])
+
+    async def test_a_range_reads_siblings_but_not_other_sessions(self):
+        tool = vc.make_fetch_tool_async(["a", "b"], db.messages_range_in)
+        result = await tool(0, 10**9)
+        text = " ".join(m["content"] for m in result["messages"])
+        self.assertIn("ALPHA", text)
+        self.assertIn("BETA", text)
+        self.assertNotIn("GAMMA", text, "a chat outside the session leaked in")
+
+    async def test_a_single_chat_id_still_works(self):
+        """The sync caller and the fallback path both pass one id."""
+        tool = vc.make_fetch_tool_async("a", db.messages_range_in)
+        result = await tool(0, 10**9)
+        text = " ".join(m["content"] for m in result["messages"])
+        self.assertIn("ALPHA", text)
+        self.assertNotIn("BETA", text)
+
+    async def test_an_empty_allowlist_reads_nothing_rather_than_everything(self):
+        """A missing scope must fail closed. Building the IN clause from an
+        empty list would otherwise be the one shape that matches every row."""
+        self.assertEqual(await db.messages_range_in([], 0, 10**9), [])
+
+    def test_the_readers_are_reachable_on_the_db_facade(self):
+        """db.py dispatches by name, so a helper added to routes/db_chats.py
+        is invisible until it is registered. Both of this feature's readers
+        were written before they were reachable, and the voice_context column
+        had the same defect -- a write path with no read path looks finished."""
+        for name in ("messages_range", "messages_range_in", "chats_in_session"):
+            self.assertTrue(hasattr(db, name), name)
 
 if __name__ == "__main__":
     unittest.main()

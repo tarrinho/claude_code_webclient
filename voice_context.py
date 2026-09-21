@@ -191,22 +191,32 @@ def _normalise_range(from_id, to_id) -> tuple[int, int] | None:
     return (high, low) if low > high else (low, high)
 
 
-def make_fetch_tool_async(chat_id: str, read_messages):
-    """`make_fetch_tool` for an async reader.
+def make_fetch_tool_async(chat_ids, read_messages):
+    """`make_fetch_tool` for an async reader, over one or more chats.
 
     The database layer here is aiosqlite, so the tool that actually runs
     inside a voice turn needs this one; the sync version stays because it is
-    what makes the binding testable without an event loop. Both close over
-    `chat_id` and expose only a range, so neither can address another
-    conversation.
+    what makes the binding testable without an event loop.
+
+    `chat_ids` may be a single id or a list. The list is the originating chat
+    plus the other chats of the same CLI session -- the widening agreed on
+    2026-09-21, replacing requirement 6's single-chat binding.
+
+    **The guarantee survives the widening, and that is why it was done this
+    way.** `messages.id` is one autoincrement across the whole table, so an id
+    range is unambiguous without naming a chat. The allowlist is fixed when
+    the session opens and the schema still exposes only `from_id` and
+    `to_id`, so the model cannot express a request for a conversation outside
+    it -- structural, as before, rather than validated.
     """
+    allowed = [chat_ids] if isinstance(chat_ids, str) else list(chat_ids)
 
     async def fetch_messages(from_id, to_id) -> dict[str, Any]:
         bounds = _normalise_range(from_id, to_id)
         if bounds is None:
             return {"messages": [], "truncated": False,
                     "note": "from_id and to_id must be whole numbers"}
-        rows = await read_messages(chat_id, *bounds)
+        rows = await read_messages(allowed, *bounds)
         return _bound_fetch_result(rows)
 
     return fetch_messages

@@ -326,6 +326,39 @@ Run `PRAGMA integrity_check` against the production (or test) database.
 python3 -c "import sqlite3; conn = sqlite3.connect('data/webconsole.db'); print(conn.execute('PRAGMA integrity_check').fetchone()); conn.close()"
 ```
 
+**Anything that writes, migrates, or calls `db.init()` needs a throwaway copy
+instead — and there is now one way to make it:**
+
+```bash
+WC_DB_PATH="$(bin/wc-throwaway-db.sh)/webconsole.db"
+```
+
+It copies through SQLite's online backup API (a byte copy of a WAL-mode
+database being written is not guaranteed to be a valid one), names the
+directory `wc-throwaway-*`, and reaps old copies before making a new one.
+
+The naming is the point, and it is why this is a script rather than a
+sentence. The rule to use a throwaway copy was already written in two places
+and was being followed — on 2026-09-21 `/tmp` was **100% full, 1.4 MB free on
+a 1.9 GB tmpfs**, holding ten abandoned ~185 MB copies called `wcn`, `wcg`,
+`wck`, `wcb`, `wcs`, `wcval`, `wcverify`, `wcv3`, `wcv2` and `tmpr7nj83bj`.
+Every one was a session correctly obeying the rule and inventing its own name.
+Nothing could tell a throwaway copy from any other directory, so nothing could
+clean one up, and the first symptom was Chromium failing to write its profile
+— which reads as a broken browser, not a full disk, on a box where the browser
+suite is already the expensive thing.
+
+`bin/wc-health.sh` reaps on its 30-second timer: older than
+`WC_THROWAWAY_MAX_AGE_HOURS` (6), and only when no file inside is open.
+Registry #65 is the reason this is mechanical rather than a third prose
+reminder — two documentation-only fixes for the interpreter habit both
+recurred, against readers who had read them.
+
+One trap worth recording, because the first attempt at the cleanup hit it:
+check open files with `fuser "$dir"/*`, never `fuser -m "$dir"`. The `-m` form
+matches every process using the **mount**, so on a tmpfs it reports every
+candidate as busy and reaps nothing.
+
 ## 7. Auth smoke
 
 Log in via the test client, verify the session cookie is set, then
@@ -1112,7 +1145,41 @@ regardless of the bug, on the same feature, back to back.
    single check that would have caught both halves of #90 immediately instead
    of after a live-browser round trip each; do it *before* moving on, not
    after a review flags a suspiciously-quiet test.
-5. **Run the full set of tests written this stage, and report the aggregate**
+5. **Mutation-verify the FIXTURE too, not only the code.** Sub-rule 4 proves
+   the assertion notices a broken implementation. It cannot notice a fixture
+   that never presents the input the real caller produces, because the mutation
+   and the fixture share the same blind spot -- so the revert fails the test,
+   the test is trusted, and the bug ships anyway.
+
+   Two of these shipped on 2026-09-20/21, both mutation-verified, both wrong:
+
+   - **A multi-variant input tested with one variant.** The sidebar's new
+     needs-an-answer dot was fed from `/api/orchestrator`'s `waiting` bucket,
+     which carries three reasons: `asks`, `blocked` and `done`. Every fixture
+     used `asks`. Reverting the code failed the tests correctly; the code was
+     still wrong for `done`, so 61 of 64 live conversations were marked instead
+     of 6, and the change was useless in exactly the way it was meant to fix.
+   - **A consumer tested without its caller's sequence.** `_record_turn_usage`
+     resolves the model from the runner's registry. Every test seeded that
+     registry and called the recorder directly. The real handler calls
+     `take_last_model` first, which *pops*, so in production the recorder
+     always found it empty and wrote `"unknown"`. Every signature was correct
+     and the value never arrived -- CLAUDE.md rule 2, again.
+
+   So before trusting a new test, ask two questions about its inputs rather
+   than its assertions:
+
+   - **Does this input have variants the producer emits?** Enumerate them from
+     the producer, not from the branch under test, and put every one in the
+     fixture. If the code should treat them differently, assert that
+     difference; a fixture carrying only the variant you are thinking about
+     passes for the same reason the bug exists.
+   - **Does the real caller reach this code in the state I am simulating?**
+     Replay the caller's actual sequence rather than hand-setting the state it
+     would have produced. Hand-set state encodes what you believe the caller
+     does; the sequence encodes what it does.
+
+6. **Run the full set of tests written this stage, and report the aggregate**
    in §20 alongside the rest -- a test written and never run is a claim, not
    a check.
 

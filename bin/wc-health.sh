@@ -44,6 +44,26 @@ if [ -x "$(dirname "${BASH_SOURCE[0]}")/wc-install-claude-shim.sh" ]; then
         log "could not assert the claude shim; terminal sessions may be unrouted"
 fi
 
+# Reap abandoned throwaway database copies. Same reasoning as the shim above:
+# this concerns the developer environment, not the web service, so it runs
+# whatever state the server is in.
+#
+# On a timer because the leak is silent and shared. Verification work copies
+# the ~185 MB production database into /tmp (rules.md §6, CLAUDE.md §9) and
+# nothing deleted the copies: on 2026-09-21 ten of them had filled a 1.9 GB
+# tmpfs to 100%, leaving 1.4 MB free, and Chromium could not write its profile
+# -- so every browser test on the box failed with what reads as a browser
+# fault rather than a full disk. Nobody owns /tmp, so nobody was going to
+# notice until it broke something.
+#
+# Only touches directories matching wc-throwaway-*, only when older than
+# WC_THROWAWAY_MAX_AGE_HOURS (6 by default), and only when no file inside is
+# open. Silent when there is nothing to do, so this costs one glob per tick.
+if [ -x "$(dirname "${BASH_SOURCE[0]}")/wc-throwaway-db.sh" ]; then
+    "$(dirname "${BASH_SOURCE[0]}")/wc-throwaway-db.sh" --reap || \
+        log "could not reap throwaway database copies"
+fi
+
 # Deliberately silent when systemd is not managing the server: otherwise a
 # developer running launch.sh by hand gets their server restarted underneath
 # them by a timer they forgot was installed.

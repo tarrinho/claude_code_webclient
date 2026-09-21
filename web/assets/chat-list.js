@@ -88,6 +88,48 @@ export function floatActive(chats, isActive) {
   return active.concat(idle);
 }
 
+/** How many children a card shows before it collapses itself.
+ *
+ *  Five shows a typical two-or-three-subagent turn in full while refusing to
+ *  let a ten-way fan-out push every other conversation off screen. A supervisor
+ *  fan-out is exactly when the tree is most useful and exactly when it is most
+ *  crowded, so the default has to favour the reader over completeness.
+ */
+export const CHILD_COLLAPSE_AT = 5;
+
+/** How long ago a subagent started, for the `running` label.
+ *
+ *  A local copy rather than an import of server-stats.js's `_agoText`, and the
+ *  duplication is deliberate: `chat-list.js` has NO top-level imports, which
+ *  is what lets it be imported and executed directly under node. Adding an
+ *  import here to save nine lines would cost the ability to test this file
+ *  behaviourally at all, and `_stale` above is already a local helper for the
+ *  same reason (server.js keeps its own copy of `card()` on the same grounds).
+ */
+export function childAge(stamp) {
+  if (!stamp) return '';
+  const then = new Date(/Z$|[+-]\d\d:?\d\d$/.test(stamp) ? stamp : `${stamp}Z`);
+  if (Number.isNaN(then.getTime())) return '';
+  const seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
+  if (seconds < 90) return `${seconds}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+/** The child rows to render for one chat.
+ *
+ *  Pure, and exported, so the collapse rule is testable by execution rather
+ *  than by matching source -- a text assertion cannot tell a correct threshold
+ *  from an off-by-one.
+ */
+export function childRowsFor(chat, expanded) {
+  const children = chat.children || [];
+  if (!children.length) return [];
+  if (children.length > CHILD_COLLAPSE_AT && !expanded) return [];
+  return children;
+}
+
 // The visible label is the bare verb; the conversation title goes to
 // aria-label. Both used to live in textContent, so the menu rendered as six
 // lines each restating the full title ("Pin <title>", "Rename <title>"…),
@@ -165,6 +207,10 @@ export function createChatListController(dependencies) {
   // currently viewing, and cleared the moment you send into it again rather
   // than by opening it.
   let endedIds = new Set();
+  // Which families the user has expanded. Per-browser, like unreadIds and
+  // endedIds: it is a viewing preference, not a property of the conversation,
+  // so it does not belong in the database.
+  let expandedFamilies = new Set();
   let historyEntries = [];
   // {waiting: [...], working: [...]} from GET /api/orchestrator.
   let orchestrator = {waiting: [], working: []};
@@ -201,6 +247,11 @@ export function createChatListController(dependencies) {
     const ids = [...container.querySelectorAll('.chat-item[data-chat-id]')]
       .filter(node => !sectionKey || node.dataset.section === sectionKey)
       .filter(node => node.dataset.floated !== '1')
+      // A child row inside a family card is not a root: commitOrder walks the
+      // DOM to build what it persists, so a child left in that walk would have
+      // its position written as if it were one. See the card-building comment
+      // in renderSection for why children get a card instead of an indent.
+      .filter(node => node.dataset.child !== '1')
       .map(node => node.dataset.chatId);
     if (ids.length) onReorder(ids);
   }
@@ -320,7 +371,7 @@ export function createChatListController(dependencies) {
       list.appendChild(heading);
     }
 
-    chats.forEach(chat => {
+    for (const chat of chats) {
       const item = document.createElement('div');
       item.className = `chat-item${chat.id === currentId ? ' active' : ''}`;
       if (chat.archived) item.classList.add('archived');
@@ -614,8 +665,108 @@ export function createChatListController(dependencies) {
       });
 
       item.append(open, actions);
+
+      // A chat with children becomes a card: the parent row, then its children
+      // at full width inside a bordered container. Containment rather than
+      // indentation -- see the design's §5. Indentation costs horizontal space
+      // in a 380px sidebar, and subagent names are the text that identifies
+      // which subagent is which.
+      const kids = chat.children || [];
+      if (kids.length) {
+        item.classList.add('chat-family-head');
+        const family = document.createElement('div');
+        family.className = 'chat-family';
+        family.appendChild(item);
+
+        const shown = childRowsFor(chat, expandedFamilies.has(chat.id));
+        if (kids.length > CHILD_COLLAPSE_AT && !shown.length) {
+          const more = document.createElement('button');
+          more.type = 'button';
+          more.className = 'chat-family-more';
+          more.textContent = `${kids.length} children`;
+          more.onclick = () => {
+            expandedFamilies.add(chat.id);
+            render();
+          };
+          family.appendChild(more);
+        }
+        for (const kid of shown) {
+          family.appendChild(_childRow(kid, currentId));
+        }
+        // Appended to `target`, not `list`: in a collapsed section (Archived)
+        // `target` is the <details> element, and appending to `list` instead
+        // would draw the card outside its disclosure, breaking the section
+        // it belongs to for the one chat that happens to have children.
+        target.appendChild(family);
+        continue;
+      }
+
       target.appendChild(item);
-    });
+    }
+  }
+
+  /** One row inside a family card.
+   *
+   *  A display-only subagent is deliberately not a link and carries no menu:
+   *  there is nothing to open. A child CHAT is clickable like any other row.
+   *
+   *  Every child row carries data-child="1", which is what keeps it out of
+   *  commitOrder's id list. That exclusion is the whole reason this design
+   *  nests with a card rather than an indent: commitOrder builds what it
+   *  persists by walking the DOM, so a child left in that walk would have its
+   *  position written as if it were a root.
+   */
+  function _childRow(kid, currentId) {
+    const row = document.createElement('div');
+    row.className = 'chat-child';
+    row.dataset.child = '1';
+    row.draggable = false;
+
+    if (kid.kind === 'subagent') {
+      const mark = document.createElement('span');
+      mark.className = 'chat-child-mark';
+      row.appendChild(mark);
+      const label = document.createElement('span');
+      label.className = 'chat-child-label';
+      label.textContent = `subagent · ${kid.agent_type || 'agent'}`;
+      row.appendChild(label);
+      const state = document.createElement('span');
+      state.className = 'chat-child-state';
+      // A running subagent carries its age, not just the word "running".
+      // The CLI can die without ever writing a tool_result, so a row can sit
+      // `running` for ever -- and there is deliberately no timeout sweeper,
+      // because inventing a "probably dead" threshold would report a guess as
+      // a fact. The age is the truth that is actually available, and it makes
+      // a stale row visible as stale rather than as active work.
+      state.textContent = kid.status === 'done'
+        ? 'done'
+        : `running ${childAge(kid.started_at)}`;
+      row.appendChild(state);
+      return row;
+    }
+
+    row.dataset.chatId = kid.id;
+    row.classList.add('chat-child-chat');
+    if (kid.id === currentId) row.classList.add('active');
+    const dot = document.createElement('span');
+    dot.className = 'chat-child-dot';
+    // Re-applied here, not inherited: the `waiting` bucket is filtered in
+    // setSupervisor and NOT in the endpoint, and it carries three reasons.
+    // Measured 2026-09-21: 61 of 64 conversations were in it and 54 were
+    // "done", so a second consumer that trusts the bucket marks nearly
+    // everything.
+    if (waitingIds.has(kid.id)) dot.classList.add('chat-child-asks');
+    row.appendChild(dot);
+    const label = document.createElement('span');
+    label.className = 'chat-child-label';
+    label.textContent = kid.title || kid.id;
+    row.appendChild(label);
+    const rel = document.createElement('span');
+    rel.className = 'chat-child-state';
+    rel.textContent = kid.relation === 'orchestrator' ? 'task' : 'voice';
+    row.appendChild(rel);
+    row.onclick = () => onSelect(kid.id);
+    return row;
   }
 
   // Drop dot elements for rows this list no longer shows, so _chatDots stays

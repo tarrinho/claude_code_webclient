@@ -180,6 +180,7 @@ class ChatHighlightBrowserTests(_BrowserFixture):
             self._chat("c3", "Working in its terminal", terminal_busy=True),
             self._chat("c4", "Idle"),
             self._chat("c5", "Finished a while ago"),
+            self._chat("c6", "Reported a blocker"),
         ]}
         # c5 is in the same bucket as c1 but for reason "done". The endpoint
         # puts finished work in `waiting` too, so a fixture without it cannot
@@ -190,6 +191,8 @@ class ChatHighlightBrowserTests(_BrowserFixture):
                  "status": "waiting", "reason": "asks", "since": "1"},
                 {"kind": "chat", "id": "c5", "title": "Finished a while ago",
                  "status": "waiting", "reason": "done", "since": "2"},
+                {"kind": "chat", "id": "c6", "title": "Reported a blocker",
+                 "status": "waiting", "reason": "blocked", "since": "3"},
             ],
             "working": [], "updated": [],
         }
@@ -259,6 +262,17 @@ class ChatHighlightBrowserTests(_BrowserFixture):
         self._login()
         self.page.wait_for_selector(f"{self.DESKTOP} .chat-needs-answer", timeout=15_000)
         self.assertNotIn("needs-answer", self._dot_class("c5") or "")
+
+    def test_a_blocked_chat_is_marked_too(self):
+        """The third reason in the bucket, and the one a one-variant fixture
+        misses. "blocked" means the agent reported it is stuck, which needs a
+        person exactly as much as "asks" does -- so it must be amber, while
+        "done" beside it must not. Asserting only the reason under test is how
+        the `done` defect passed every check it had.
+        """
+        self._login()
+        self.page.wait_for_selector(f"{self.DESKTOP} .chat-needs-answer", timeout=15_000)
+        self.assertEqual(self._dot_class("c6"), "chat-needs-answer")
 
     def test_no_unread_dot_is_rendered_anywhere(self):
         self._login()

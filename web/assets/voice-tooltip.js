@@ -9,7 +9,7 @@ import {showToast} from './app.js?v=5926217';
 import {
   setVoiceStatus, startListening, updateVoiceButtonVisibility,
   stopListeningForClose, refreshButtonRefs, resetTranscript, voiceStatus,
-  voiceMicBtn, voiceLiveBtn,
+  voiceMicBtn, voiceLiveBtn, performVoiceStop,
 } from './voice-engine.js?v=4844568';
 import {runVoiceContext} from './voice-context.js?v=6826762';
 import {
@@ -253,3 +253,14 @@ function startVoiceLive() {
 
 voiceLiveBtn.addEventListener('click', startVoiceLive);
 voiceTooltipLive.addEventListener('click', startVoiceLive);
+
+// The stop button inside the panel. It was declared and never bound, so the
+// only control that ends a conversation was the page-level one -- and ending
+// the conversation is what reveals the handoff panel (voice-handoff.js listens
+// for `voice:stopped` with endConversation set). Pressing stop in the panel
+// therefore did nothing, and the summarize-to-parent feature looked absent
+// rather than unreachable.
+//
+// `true` matters: performVoiceStop(false) is the barge-in path, which halts
+// speech and keeps listening. Only `true` ends the conversation.
+voiceTooltipStop.addEventListener('click', () => performVoiceStop(true));

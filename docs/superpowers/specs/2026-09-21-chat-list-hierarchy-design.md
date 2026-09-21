@@ -289,6 +289,51 @@ out by a query.
   the logic is a pure function — `node` is installed (v24.19.0), and
   `chat-list.js` has no top-level imports, so it can be imported directly.
 
+## 10a. Open — needs Pedro's decision, not adopted here
+
+**Proposed: orchestrator task chats are hidden from the flat root list and
+render only inside their run's card.**
+
+Relayed to this session on 2026-09-21 by the orchestrator session as a ruling
+from Pedro, which reached them through a third session rather than from him
+directly. They said so themselves and advised confirming first-hand. **It is
+therefore recorded here as proposed and is not applied**: it hides
+conversations from the sidebar, which is the operator's call and not something
+to enact on a second-hand relay.
+
+The argument for it, recorded because it is a good one. §4.3 already does
+exactly this for voice children — they become visible inside their parent's
+card and nowhere else — so extending the same rule to orchestrator members
+invents nothing, and the composer's precedence rule (§8) is already the thing
+that would implement it: the hiding predicate becomes "not a root" rather than
+"not present". It also solves a problem the orchestrator design cannot solve
+alone: a task chat that asks a question lands in `GET /api/orchestrator`'s
+`waiting` bucket and would otherwise mark a sidebar row that no longer exists,
+so the summons disappears silently. A card gives it somewhere to be drawn.
+
+If adopted, the edit is to §4.3 and §8, and nothing in §3–§7 changes.
+
+**Inherited hazard, verified 2026-09-21 rather than taken on trust.** Any
+surface consuming the `waiting` bucket — including this card — must re-apply
+the filter itself, because it is **client-side**, in `chat-list.js`'s
+`setSupervisor`, not in the endpoint:
+
+```js
+entry.kind === 'chat' && entry.id && entry.reason !== 'done'
+```
+
+The bucket carries three reasons: `asks`, `blocked` and `done`. Only the first
+two want a person. It also carries CLI/terminal sessions, whose ids are session
+ids. That function's own comment records the measurement: against the live
+database on 2026-09-21, **61 of 64 conversations were in the bucket and 54 of
+them were `done`** — so consuming it whole marks nearly every row and
+reproduces, in a new colour, the noise that filter exists to remove.
+
+Also open, and unverified by anyone so far: whether `chat-list.js`'s existing
+`is_temporary` filter (line 910) is the right hook for "not a root", or whether
+that needs its own predicate. Whoever reaches it first should read
+`setSupervisor` before changing it.
+
 ## 11. Out of scope
 
 - Subagents as openable conversations (decision 2).

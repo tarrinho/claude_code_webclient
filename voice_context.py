@@ -232,6 +232,71 @@ FETCH_TOOL_SCHEMA = {
 }
 
 
+#: Status events the walk emits, in the order a successful open sees them.
+#: The status line (spec §5) renders these; they are the only thing the user
+#: sees of any of this, which is why the walk reports every attempt rather
+#: than only its outcome.
+STATUS_INITIALISING = "initialising"
+STATUS_SUMMARISING = "summarising"
+STATUS_FAILED = "failed"
+STATUS_ESCALATING = "escalating"
+STATUS_READY = "ready"
+STATUS_DEGRADED = "degraded"
+
+
+async def walk_summary_ladder(
+    *,
+    rungs: list[str],
+    run_rung,
+    clock: "BudgetClock",
+    expected_s: Callable[[str], float],
+    emit,
+) -> str | None:
+    """Try each rung until one returns a usable summary. Return it, or None.
+
+    None means the session opens degraded (spec §2): with no summary and a
+    status line that says so. It is a normal outcome here, not an error --
+    measured against this deployment's ladder it is expected on a real share
+    of sessions, and the fetch tool is what makes it survivable.
+
+    `run_rung(model) -> str | None` performs one attempt; anything it raises
+    is a failed rung rather than a failed walk, because one model being
+    unreachable must not deny the user a session.
+
+    `expected_s(model)` is that rung's measured median latency, used to refuse
+    a rung that cannot finish inside the remaining budget. Starting one anyway
+    is the difference between opening degraded at 9s and opening degraded at
+    15s having spent the gap on a call that was always going to be cancelled.
+
+    `emit(state, model)` reports progress. Awaited if it returns an awaitable,
+    so the caller can push straight onto an SSE stream.
+    """
+    async def _emit(state: str, model: str | None = None) -> None:
+        result = emit(state, model)
+        if hasattr(result, "__await__"):
+            await result
+
+    for index, model in enumerate(rungs):
+        if clock.expired():
+            break
+        if not clock.allows(expected_s(model)):
+            # Not attempted, and said so: a rung silently skipped for time
+            # looks identical to one that was never in the ladder.
+            await _emit(STATUS_FAILED, model)
+            continue
+        await _emit(STATUS_SUMMARISING, model)
+        try:
+            text = await run_rung(model)
+        except Exception:
+            text = None
+        if is_usable_summary(text):
+            return text
+        await _emit(STATUS_FAILED, model)
+        if index + 1 < len(rungs) and not clock.expired():
+            await _emit(STATUS_ESCALATING, rungs[index + 1])
+    return None
+
+
 class BudgetClock:
     """Spec §3's total budget across all attempts.
 

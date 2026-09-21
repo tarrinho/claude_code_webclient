@@ -1420,7 +1420,8 @@ async def handle_chat_export(request: Request, chat_id: str):
 
 
 async def _record_turn_usage(
-    chat_id: str, owner: str, frame: dict, served_model: str | None = None
+    chat_id: str, owner: str, frame: dict, served_model: str | None = None,
+    origin: str = "web",
 ) -> None:
     """Persist a usage frame as one row per model.
 
@@ -1537,7 +1538,12 @@ async def _record_turn_usage(
             is_error=bool(frame.get("is_error")),
             # Stated, not inferred. Every web turn runs against a session-linked
             # conversation, so "has a session id" never distinguished the two.
-            origin="web",
+            # Defaulted rather than fixed, so a non-web caller can reuse this
+            # whole function instead of copying it: the provider mapping, the
+            # billing route and the charge-cost-once rule below are subtle
+            # enough that a second implementation would drift, which is the
+            # failure CLAUDE.md §5 describes for the supervisor.
+            origin=origin,
             billing_route=route,
         )
         if row_id is None:

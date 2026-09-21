@@ -199,5 +199,117 @@ class SummaryPromptTests(unittest.TestCase):
         self.assertIn("assistant: the cache", prompt)
 
 
+class LadderWalkTests(unittest.IsolatedAsyncioTestCase):
+    """Spec §3. The status events are asserted, not just the return value:
+    the status line is the only part of this the user ever sees."""
+
+    def setUp(self):
+        self.events = []
+        self.t = [1000.0]
+
+    def _clock(self, budget=15.0):
+        return vc.BudgetClock(budget_s=budget, now=lambda: self.t[0])
+
+    def _emit(self, state, model=None):
+        self.events.append((state, model))
+
+    async def test_the_first_rung_succeeding_stops_the_walk(self):
+        async def run(model):
+            self.t[0] += 6.0
+            return "A real summary of the conversation so far."
+
+        out = await vc.walk_summary_ladder(
+            rungs=["claude-sonnet-5", "claude-opus-5"], run_rung=run,
+            clock=self._clock(), expected_s=lambda m: 6.0, emit=self._emit)
+        self.assertTrue(out.startswith("A real summary"))
+        self.assertEqual(self.events, [(vc.STATUS_SUMMARISING, "claude-sonnet-5")])
+
+    async def test_a_failed_rung_escalates_and_the_next_one_answers(self):
+        async def run(model):
+            self.t[0] += 3.0
+            return None if model == "weak" else "A usable summary of the work."
+
+        out = await vc.walk_summary_ladder(
+            rungs=["weak", "claude-opus-5"], run_rung=run,
+            clock=self._clock(), expected_s=lambda m: 3.0, emit=self._emit)
+        self.assertTrue(out.startswith("A usable summary"))
+        self.assertEqual(self.events, [
+            (vc.STATUS_SUMMARISING, "weak"),
+            (vc.STATUS_FAILED, "weak"),
+            (vc.STATUS_ESCALATING, "claude-opus-5"),
+            (vc.STATUS_SUMMARISING, "claude-opus-5"),
+        ])
+
+    async def test_every_rung_failing_returns_none_for_a_degraded_open(self):
+        async def run(model):
+            self.t[0] += 1.0
+            return None
+
+        out = await vc.walk_summary_ladder(
+            rungs=["a", "b"], run_rung=run, clock=self._clock(),
+            expected_s=lambda m: 1.0, emit=self._emit)
+        self.assertIsNone(out)
+        self.assertIn((vc.STATUS_FAILED, "b"), self.events)
+
+    async def test_a_raising_rung_is_a_failed_rung_not_a_failed_walk(self):
+        """One model being unreachable must not deny the user a session."""
+        async def run(model):
+            self.t[0] += 1.0
+            if model == "broken":
+                raise RuntimeError("gateway down")
+            return "Summary produced by the surviving rung."
+
+        out = await vc.walk_summary_ladder(
+            rungs=["broken", "claude-opus-5"], run_rung=run,
+            clock=self._clock(), expected_s=lambda m: 1.0, emit=self._emit)
+        self.assertTrue(out.startswith("Summary produced"))
+
+    async def test_a_rung_that_cannot_finish_is_not_started(self):
+        """The measured case from spec §1.1, as a behaviour: after a 9.2s
+        failure only 5.8s remain, so a 6.0s rung must be skipped rather than
+        started and cancelled."""
+        started = []
+
+        async def run(model):
+            started.append(model)
+            self.t[0] += 9.2
+            return None
+
+        out = await vc.walk_summary_ladder(
+            rungs=["slow", "sonnet"], run_rung=run, clock=self._clock(),
+            expected_s=lambda m: 9.2 if m == "slow" else 6.0, emit=self._emit)
+        self.assertIsNone(out)
+        self.assertEqual(started, ["slow"])
+        # Skipped-for-time is reported: a rung silently dropped looks the same
+        # as one that was never in the ladder.
+        self.assertIn((vc.STATUS_FAILED, "sonnet"), self.events)
+
+    async def test_an_exhausted_budget_stops_the_walk(self):
+        async def run(model):
+            self.t[0] += 20.0
+            return None
+
+        out = await vc.walk_summary_ladder(
+            rungs=["a", "b", "c"], run_rung=run, clock=self._clock(),
+            expected_s=lambda m: 1.0, emit=self._emit)
+        self.assertIsNone(out)
+        self.assertEqual([m for s, m in self.events if s == vc.STATUS_SUMMARISING], ["a"])
+
+    async def test_an_async_emit_is_awaited(self):
+        """The caller pushes these onto an SSE stream, so emit may be async."""
+        seen = []
+
+        async def emit(state, model=None):
+            seen.append((state, model))
+
+        async def run(model):
+            return "A perfectly good summary of the conversation."
+
+        await vc.walk_summary_ladder(
+            rungs=["m"], run_rung=run, clock=self._clock(),
+            expected_s=lambda m: 1.0, emit=emit)
+        self.assertEqual(seen, [(vc.STATUS_SUMMARISING, "m")])
+
+
 if __name__ == "__main__":
     unittest.main()

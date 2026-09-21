@@ -94,11 +94,22 @@ async function openVoiceTooltip() {
     window.conversationController.stop();
   }
 
-  // Summarise the originating chat before the first spoken turn. Awaited, so
-  // a reply can never be built on context that has not arrived -- but the
-  // panel is already on screen and the line advances as events arrive, which
-  // is the reason this streams rather than returning one value.
-  await runVoiceContext(voiceTempChatId, statusLine);
+  // Started, NOT awaited -- and this is a deliberate departure from spec §5's
+  // "the first spoken turn is gated on the stream finishing".
+  //
+  // Awaiting it here was shipped and was wrong: the mic is enabled at the end
+  // of this function, so blocking on the summary left the panel open with no
+  // microphone for as long as the walk took. Summarising is a real CLI turn
+  // over a window of up to 40,000 characters, which is tens of seconds, and
+  // during it the session could neither listen nor reply -- a voice feature
+  // that cannot hear you is a worse failure than one that starts a single
+  // turn without an overview.
+  //
+  // The cost of not gating: an utterance made before the summary lands runs
+  // with no context, exactly as a degraded session does, and every later turn
+  // in that session has it. stream_voice_turn reads the summary from the chat
+  // row per turn, so nothing needs to be re-sent when it arrives.
+  runVoiceContext(voiceTempChatId, statusLine).catch(() => {});
 
   // Appended, not replacing: the status line above stays, per spec §5.
   const idleMsg = document.createElement('div');

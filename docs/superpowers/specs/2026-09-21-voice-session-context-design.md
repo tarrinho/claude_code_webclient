@@ -235,10 +235,21 @@ events. The app already uses SSE for turns, so this is an existing pattern.
 **Ordering.** `voice-tooltip.js` calls it immediately after `POST /api/chats`
 returns the temp chat id, and does not await completion before showing the
 voice panel — the panel appears at `initialising`, and the line advances as
-events arrive. The first spoken turn is gated on the stream finishing, in
-either outcome: with a summary, or degraded. The user can therefore see the
-session opening while it summarises, which is the point of streaming it, but
-cannot get a reply built on context that has not arrived yet.
+events arrive.
+
+**The first spoken turn is NOT gated on the stream finishing.** An earlier
+version of this section said it was, and that version shipped and was wrong.
+The mic is enabled at the end of the panel's setup, so awaiting the summary
+left the session open with no microphone for as long as the walk took — tens
+of seconds for a real CLI turn over a 40,000-character window. Reported from
+use on 2026-09-21: the session "stopped replying and also listening".
+
+A voice feature that cannot hear you is a worse failure than one that starts a
+single turn without an overview. So the panel becomes usable immediately and
+the summary lands when it lands. An utterance made before it arrives runs with
+no context, exactly as a degraded session does; every later turn in that
+session has it, because `stream_voice_turn` reads the summary from the chat
+row on each turn rather than being handed it once.
 
 `setVoiceStatus` in `voice-engine.js` currently models `idle`, `listening`,
 `speaking`, `thinking`. The startup states are additions to it, not a second

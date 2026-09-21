@@ -119,6 +119,21 @@ class NeedsAnswerIndicatorTests(unittest.TestCase):
         # two id spaces happening never to collide.
         self.assertIn("kind === 'chat'", CHAT_LIST)
 
+    def test_finished_work_is_not_treated_as_needing_an_answer(self):
+        """`waiting` is the attention feed, and it is broader than this dot.
+
+        It carries three reasons -- "asks", "blocked" and "done". Only the
+        first two need a person; "done" is finished work, which earns the
+        quiet .chat-ended arrow rather than a summons.
+
+        This shipped wrong once. Taking the bucket whole marked 61 of 64 live
+        conversations amber, 54 of them only because they had finished at some
+        point, which reproduced the exact noise this change exists to remove
+        in a new colour. Pedro's report was "I don't see it" -- the sidebar
+        looked no better than before. After the filter: 6 rows.
+        """
+        self.assertIn("entry.reason !== 'done'", CHAT_LIST)
+
 
 class IndicatorPrecedenceTests(unittest.TestCase):
     """Order asserted, because reversing it is invisible to every other test.
@@ -164,10 +179,18 @@ class ChatHighlightBrowserTests(_BrowserFixture):
             self._chat("c2", "Working here", running=True),
             self._chat("c3", "Working in its terminal", terminal_busy=True),
             self._chat("c4", "Idle"),
+            self._chat("c5", "Finished a while ago"),
         ]}
+        # c5 is in the same bucket as c1 but for reason "done". The endpoint
+        # puts finished work in `waiting` too, so a fixture without it cannot
+        # tell "marks what needs a person" from "marks the whole bucket".
         self._supervisor = {
-            "waiting": [{"kind": "chat", "id": "c1", "title": "Asked me something",
-                         "status": "waiting", "reason": "asks", "since": "1"}],
+            "waiting": [
+                {"kind": "chat", "id": "c1", "title": "Asked me something",
+                 "status": "waiting", "reason": "asks", "since": "1"},
+                {"kind": "chat", "id": "c5", "title": "Finished a while ago",
+                 "status": "waiting", "reason": "done", "since": "2"},
+            ],
             "working": [], "updated": [],
         }
 
@@ -230,6 +253,12 @@ class ChatHighlightBrowserTests(_BrowserFixture):
         self.page.wait_for_selector(f"{self.DESKTOP} .chat-running", timeout=15_000)
         self.assertNotIn("needs-answer", self._dot_class("c4") or "")
         self.assertNotIn("running", self._dot_class("c4") or "")
+
+    def test_a_finished_chat_is_not_marked_as_needing_an_answer(self):
+        """The regression that made the whole change useless in practice."""
+        self._login()
+        self.page.wait_for_selector(f"{self.DESKTOP} .chat-needs-answer", timeout=15_000)
+        self.assertNotIn("needs-answer", self._dot_class("c5") or "")
 
     def test_no_unread_dot_is_rendered_anywhere(self):
         self._login()

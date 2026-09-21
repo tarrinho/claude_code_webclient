@@ -978,13 +978,24 @@ export function createChatListController(dependencies) {
       waiting: Array.isArray(state?.waiting) ? state.waiting : [],
       working: Array.isArray(state?.working) ? state.working : [],
     };
-    // The same feed drives the per-row dot. Only `kind === "chat"` entries:
-    // the bucket also carries CLI/terminal sessions, whose ids are session
-    // ids and would never match a chat id -- filtering by kind says that on
-    // purpose rather than relying on the sets happening not to collide.
+    // The same feed drives the per-row dot, but NOT all of it.
+    //
+    // `waiting` is the attention feed, and it holds three reasons: "asks",
+    // "blocked" and "done". The first two need a person. The third does not --
+    // it is finished work, which earns the quiet .chat-ended arrow and not a
+    // summons. Measured against the live database on 2026-09-21: 61 of 64
+    // conversations were in this bucket and 54 of them were "done", so taking
+    // the bucket whole marked almost every row and reproduced the noise this
+    // change exists to remove, in a new colour.
+    //
+    // Only `kind === "chat"` entries: the bucket also carries CLI/terminal
+    // sessions, whose ids are session ids and would never match a chat id --
+    // filtering by kind says that on purpose rather than relying on the sets
+    // happening not to collide.
     waitingIds = new Set(
       orchestrator.waiting
-        .filter(entry => entry && entry.kind === 'chat' && entry.id)
+        .filter(entry => entry && entry.kind === 'chat' && entry.id
+                      && entry.reason !== 'done')
         .map(entry => entry.id),
     );
     render();

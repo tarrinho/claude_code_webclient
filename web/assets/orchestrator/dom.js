@@ -28,6 +28,7 @@
     progressBarFill: $("#overall-progress-fill"),
     runCost: $("#run-cost"),
     newSupervisorBtn: $("#new-orchestrator-btn"),
+    newRunBtn: $("#newRun"),
     topbarInfo: $("#topbar-info"),
     goalBanner: $("#goal-banner"),
     goalText: $("#goal-text"),

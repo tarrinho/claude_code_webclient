@@ -4612,5 +4612,36 @@ class DelegationBenchmarkControlsBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class OrchestratorPlanBrowserTests(_BrowserFixture):
+    """The plan-approval gate: propose, validate, and only then run.
+
+    Task 8's scope is the plan table and run view. The sidebar-hiding half of
+    the design (chat-list.js's `is_temporary` -> `parent_chat_id` switch) is
+    deliberately out of scope for this class: Pedro's ruling made that change
+    conditional on the "family card" UI existing first (a hidden task chat
+    must have somewhere to reappear), and that card belongs to a different
+    session's design. So this covers only the rejected-plan path -- the
+    endpoint this dialog talks to never executes anything on a plan it
+    cannot read, and neither does the client editing that plan's table.
+    """
+
+    def test_a_rejected_plan_shows_its_errors_and_stays_editable(self):
+        self._login()
+        self.page.goto(f"{self.base}/orchestrator", wait_until="domcontentloaded")
+        self.page.click("#newRun")
+        # #newRun creates a fresh orchestrator (POST /api/orchestrators) before
+        # opening the dialog, so the field is not on the page instantly.
+        self.page.wait_for_selector("#planRaw", timeout=10_000)
+        self.page.fill("#planRaw", "not json at all")
+        self.page.click("#validatePlan")
+        self.page.wait_for_selector(".plan-error", timeout=10_000)
+        self.assertIn("JSON", self.page.inner_text(".plan-error"))
+        # and the Run button must be unavailable while errors stand
+        self.assertTrue(self.page.is_disabled("#runPlan"))
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

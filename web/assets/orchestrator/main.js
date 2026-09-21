@@ -62,6 +62,7 @@ import { initResizeHandles } from "./layout.js";
 import { createSupervisor, loadSupervisors, setSupervisorSort } from "./list.js";
 import { loadMembers, membersNotice, openMembersPicker } from "./members.js";
 import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
+import { startNewRun } from "./plan.js";
 
   // ── State ────────────────────────────────────────────────────────────
   // The live EventSource, held so it can be closed. It used to be an
@@ -111,6 +112,7 @@ import { loadTasks, sendPrompt, togglePauseResume } from "./tasks.js";
 
     // Event listeners
     el.newSupervisorBtn.addEventListener("click", createSupervisor);
+    el.newRunBtn?.addEventListener("click", startNewRun);
     el.sendBtn.addEventListener("click", sendPrompt);
     el.promptInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {

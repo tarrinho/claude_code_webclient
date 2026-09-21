@@ -160,7 +160,7 @@ async def orchestrator_get(orchestrator_id: str, owner_id: str) -> dict[str, Any
     cur = await db.db_conn.execute(
         "SELECT id, title, description, config, status, plan, progress_pct, "
         "created_at, updated_at, completed_at, degraded, degraded_reason, "
-        "planner_chat_id "
+        "planner_chat_id, work_dir "
         "FROM orchestrators WHERE id = ? AND owner_id = ?",
         (orchestrator_id, owner_id),
     )
@@ -203,6 +203,7 @@ async def orchestrator_update(
     plan: str | None = None,
     progress_pct: float | None = None,
     config: dict[str, Any] | None = None,
+    work_dir: str | None = None,
 ) -> bool:
     """Update orchestrator fields; only non-None values are set.  Returns rowcount."""
     pairs: list[tuple[str, Any]] = [
@@ -211,6 +212,7 @@ async def orchestrator_update(
         ("status", status),
         ("plan", plan),
         ("config", json.dumps(config) if config is not None else None),
+        ("work_dir", work_dir),
     ]
     if progress_pct is not None:
         pairs.append(("progress_pct", float(progress_pct)))
@@ -323,6 +325,7 @@ async def orchestrator_task_update(
     progress_pct: float | None = None,
     model: str | None = None,
     title: str | None = None,
+    chat_id: str | None = None,
 ) -> bool:
     """Update a task's fields.  Returns rowcount."""
     pairs: list[tuple[str, Any]] = [
@@ -330,6 +333,7 @@ async def orchestrator_task_update(
         ("result", result),
         ("model", model),
         ("title", title),
+        ("chat_id", chat_id),
     ]
     sets: list[str] = []
     vals: list[Any] = []
@@ -373,7 +377,7 @@ async def orchestrator_task_get(
     cur = await db.db_conn.execute(
         "SELECT t.id, t.orchestrator_id, t.title, t.description, t.status, "
         "       t.model, t.result, t.progress_pct, t.parent_task_id, "
-        "       t.depends_on, t.created_at, t.updated_at "
+        "       t.depends_on, t.chat_id, t.created_at, t.updated_at "
         "FROM orchestrator_tasks t "
         "JOIN orchestrators s ON s.id = t.orchestrator_id AND s.owner_id = ? "
         "WHERE t.id = ? AND t.orchestrator_id = ?",

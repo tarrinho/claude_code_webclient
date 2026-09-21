@@ -1187,6 +1187,13 @@ async def _ensure_orchestrator_columns() -> None:
         # orchestrator that spent them. It is the first and often the largest
         # turn of a run.
         "planner_chat_id": "ALTER TABLE orchestrators ADD COLUMN planner_chat_id TEXT",
+        # The run's shared workspace on disk -- the mechanism by which one
+        # task's artefacts reach the next task in the same run, the same way
+        # a chat's own work_dir does for a single conversation. Set once, at
+        # creation, using the same PROJECTS_ROOT / <slug>-<date> shape
+        # routes/chats.py's handle_chat_create uses, so an orchestrator
+        # workspace is indistinguishable from any other on disk.
+        "work_dir": "ALTER TABLE orchestrators ADD COLUMN work_dir TEXT",
     }
     for name, sql in sup_migrations.items():
         if name not in sup_columns:
@@ -1222,6 +1229,11 @@ async def _ensure_orchestrator_columns() -> None:
             "ALTER TABLE orchestrator_tasks ADD COLUMN priority "
             "INTEGER NOT NULL DEFAULT 0"
         ),
+        # Which chat actually ran this task -- a task can be re-run under a
+        # fresh chat, so this is recorded per task rather than assumed from
+        # the orchestrator's own planner_chat_id (which only ever names the
+        # planning turn, not any task's).
+        "chat_id": "ALTER TABLE orchestrator_tasks ADD COLUMN chat_id TEXT",
     }
     for name, sql in task_migrations.items():
         if name not in columns:

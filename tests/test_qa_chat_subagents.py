@@ -127,3 +127,26 @@ class SubagentAccessorTests(_SubagentDbFixture, unittest.IsolatedAsyncioTestCase
                  "ended_at": None}])
         got = await subagents_for_chats(["c1"])
         self.assertEqual(set(got), {"c1"})
+
+    async def test_a_done_row_is_never_reopened(self):
+        """The UPDATE is narrowed to running -> done on purpose.
+
+        A transcript is re-scanned from the start, so an older region gets read
+        again after a subagent has finished. Without the `status != 'done'`
+        guard that re-read would write `running` back over a completed row, and
+        the sidebar would show finished work as still in flight -- with no
+        second source to correct it, because the transcript is the only record.
+        """
+        from routes.db_subagents import subagent_record, subagents_for_chats
+        done = {"tool_use_id": "tu_1", "agent_type": "x", "description": "d",
+                "status": "done", "started_at": "2026-09-21T00:00:01Z",
+                "ended_at": "2026-09-21T00:00:09Z"}
+        await subagent_record("c1", [done])
+        # The same subagent as an earlier scan saw it: still running, no end.
+        await subagent_record("c1", [{**done, "status": "running",
+                                      "ended_at": None}])
+        got = await subagents_for_chats(["c1"])
+        self.assertEqual(got["c1"][0]["status"], "done",
+                         "a re-scan must not un-finish completed work")
+        self.assertEqual(got["c1"][0]["ended_at"], "2026-09-21T00:00:09Z",
+                         "and must not clear the end time either")

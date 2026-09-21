@@ -489,6 +489,41 @@ class ProgressTracker:
         ]
 
 
+# -- Task chats ----------------------------------------------------------
+
+async def create_task_chat(
+    orchestrator_id: str,
+    task_id: str,
+    title: str,
+    work_dir: str,
+    owner_id: str,
+    parent_chat_id: str,
+) -> str:
+    """Create the chat that will run one task, inside the run's workspace.
+
+    ``db.chat_create`` is called directly rather than POSTing to
+    ``/api/chats``: that handler computes ``work_dir`` from the title slug
+    and uniquifies it, giving every chat its own directory. Every task chat
+    in one run must share the SAME directory instead, so one task's
+    artefacts are on disk for the next task to read -- the database layer
+    already accepts ``work_dir`` as an explicit parameter, so it is passed
+    straight through unchanged.
+
+    Local ``import db``, matching every other db use in this module: db
+    imports orchestrator at load time, so a module-level import is a cycle.
+    """
+    import db
+
+    chat_id = uuid.uuid4().hex
+    await db.chat_create(chat_id, title, None, work_dir, owner_id)
+    await db.chat_update(chat_id, owner_id, parent_chat_id=parent_chat_id)
+    await db.orchestrator_member_add(orchestrator_id, chat_id)
+    await db.orchestrator_task_update(
+        orchestrator_id, task_id, owner_id, chat_id=chat_id,
+    )
+    return chat_id
+
+
 # -- Orchestrator engine -------------------------------------------------------
 
 SUPERVISOR_SYSTEM_PROMPT = (

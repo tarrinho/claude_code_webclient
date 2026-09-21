@@ -117,5 +117,60 @@ class OrchestratorTaskChatIdSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task["status"], "blocked")
 
 
+class OrchestratorCreateTaskChatTests(unittest.IsolatedAsyncioTestCase):
+    """orchestrator.create_task_chat: the chat that actually runs one task,
+    inside the run's shared workspace directory. Same throwaway-database
+    fixture shape as OrchestratorTaskChatIdSchemaTests above.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        await db.init()
+
+    async def asyncTearDown(self):
+        await db.close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tmp.cleanup()
+
+    async def test_task_chats_of_one_run_share_its_workspace(self):
+        import orchestrator
+
+        owner_id = uuid.uuid4().hex
+        orch = uuid.uuid4().hex
+        # The parent chat only needs to exist as an id here: chat_update's
+        # parent_chat_id column carries no foreign-key constraint, and this
+        # test is about the two task chats, not the parent chat itself.
+        parent_chat_id = uuid.uuid4().hex
+        await db.orchestrator_create(orch, "run", None, owner_id)
+        await db.orchestrator_task_create(orch, "t1", "One", None)
+        await db.orchestrator_task_create(orch, "t2", "Two", None)
+
+        a = await orchestrator.create_task_chat(
+            orch, "t1", "One", "/tmp/run-ws", owner_id, parent_chat_id,
+        )
+        b = await orchestrator.create_task_chat(
+            orch, "t2", "Two", "/tmp/run-ws", owner_id, parent_chat_id,
+        )
+
+        self.assertNotEqual(a, b)
+        chat_a = await db.chat_get(a, owner_id)
+        chat_b = await db.chat_get(b, owner_id)
+        # The point of the shared directory: artefacts flow between tasks.
+        self.assertEqual(chat_a["work_dir"], "/tmp/run-ws")
+        self.assertEqual(chat_b["work_dir"], "/tmp/run-ws")
+        self.assertEqual(chat_a["parent_chat_id"], parent_chat_id)
+        self.assertEqual(chat_b["parent_chat_id"], parent_chat_id)
+        # and each task now knows its own chat
+        task_a = await db.orchestrator_task_get(orch, "t1", owner_id)
+        task_b = await db.orchestrator_task_get(orch, "t2", owner_id)
+        self.assertEqual(task_a["chat_id"], a)
+        self.assertEqual(task_b["chat_id"], b)
+
+
 if __name__ == "__main__":
     unittest.main()

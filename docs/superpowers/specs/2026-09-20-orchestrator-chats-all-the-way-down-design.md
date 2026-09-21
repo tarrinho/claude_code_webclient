@@ -284,7 +284,26 @@ of re-implementing execution, and one more reason guard 1 below matters.
 - The plan-approval step is an editable table, not a text box: the structure is
   data by the time a person sees it.
 
-### Unresolved: interaction with the chat-list hierarchy design
+### Resolved: interaction with the chat-list hierarchy design
+
+`docs/superpowers/specs/2026-09-21-chat-list-hierarchy-design.md` decision 2
+originally read "a supervisor fan-out adds small rows, not full chats", which
+appeared to forbid this design's central mechanism. Raised with its author
+rather than reconciled between specs; the answer is that **decision 2 governs
+only in-chat `Task`-tool subagents and says nothing about orchestrator
+tasks**. Corrected there in `f40dc1f3`, which rewords the decision and
+retitles §4.2 "no capture, and no opinion" — that design reads and renders
+`orchestrator_members` / `orchestrator_tasks` and writes nothing to them.
+
+The two compose rather than collide: its `children` array already carries
+both a `chat` kind and a `subagent` kind, so a task that is a real chat
+renders as the former and needs nothing added there. **This design is
+unaffected and needs no re-opening.**
+
+The paragraph below is kept as written because the smaller half is still a
+live coordination question.
+
+### Which surface shows a task chat — and one signal that can be lost
 
 `docs/superpowers/specs/2026-09-21-chat-list-hierarchy-design.md` (approved
 with Pedro on 2026-09-21, the day after this one) renders chat relationships
@@ -303,10 +322,27 @@ members" as *separate* relationship kinds, and in-chat Task-tool subagents
 genuinely are display-only today — they leave no record anywhere. The
 question is which of those decision 2 means.
 
-Raised with Pedro and with that spec's author rather than resolved here. The
-smaller half — which surface shows task chats — is reconcilable either way
-(hidden from the flat list, shown as children of their run), but only if one
-surface owns it, or both designs will build it.
+Which surface shows task chats is reconcilable — hidden from the flat list,
+shown as children of their run — but only if one surface owns it, or both
+designs will build it.
+
+**Hiding a chat also hides its alerts, and that is not free.** Reported by the
+session that changed the sidebar's per-row indicators (`873ecd74`,
+`8a89b4aa`): the dot ladder is fed from `GET /api/orchestrator`'s `waiting`
+bucket, filtered to `kind === "chat"` and `reason !== "done"`. A task chat
+that asks a question lands in that bucket and would mark a row which, under
+this design, **does not exist in the flat list** — so the signal is silently
+lost rather than visibly broken. Either the run view surfaces waiting tasks
+itself, or hiding them costs the operator the one indicator that says a task
+is blocked on a question.
+
+The same report carries a warning about how easily that feed misleads:
+mapping the whole `waiting` bucket to the marker lit **61 of 64
+conversations**, because 54 were in the bucket for `reason: "done"`. The
+filter that makes it meaningful lives in `chat-list.js`'s `setSupervisor`,
+not in the endpoint — so any second surface that consumes `waiting` inherits
+the problem and has to re-apply the filter rather than assuming the endpoint
+did.
 
 ---
 
@@ -420,3 +456,27 @@ this design.
 - Deletion semantics: whether deleting a run deletes its task chats. Existing
   precedent (ARCHITECTURE.md) is that deleting a chat deliberately leaves its
   workspace on disk, which argues for keeping task chats too.
+
+  **The database half of this question is settled; the filesystem half is the
+  whole question.** A gallery row outlives its chat: `generated_images`
+  snapshots `chat_title` and `work_dir` rather than joining them live and has
+  deliberately no foreign key to `chats` — the schema says why, that "an image
+  must stay servable and identifiable after its chat row is gone" — and
+  `chat_ids_that_exist` only chooses between linking back and saying "(chat
+  deleted)", never authorising or filtering. Verified: `chat_delete` issues
+  two DELETEs and nothing else, and there is no `rmtree` or `shutil` call
+  anywhere in `routes/chats.py` or `routes/db_chats.py`, so deleting a chat
+  today leaves its files alone.
+
+  But a surviving row is **not** a surviving image. `_file_exists` is a
+  self-healing read check that skips any row whose file has gone, naming "a
+  workspace removed by hand" as the case it exists for. So the image survives
+  only while the file does.
+
+  That lands harder on this design than on the current one, and the shared
+  workspace is why: **one run has one directory**, so any future "delete this
+  run and its workspace" action would remove every image the run ever
+  produced, in one go, while leaving every row intact and the gallery silently
+  shorter. The deletion that costs images is the *workspace* one, never the
+  chat one. Whatever the implementation plan decides here, it should decide it
+  about the directory rather than about the chat rows.

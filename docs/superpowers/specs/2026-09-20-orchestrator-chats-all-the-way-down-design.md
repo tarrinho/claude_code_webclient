@@ -308,11 +308,21 @@ both a `chat` kind and a `subagent` kind, so a task that is a real chat
 renders as the former and needs nothing added there. **This design is
 unaffected and needs no re-opening.**
 
-### Which surface shows a task chat — ruled
+### Which surface shows a task chat — proposed, awaiting Pedro
 
-**Pedro's ruling (2026-09-21): the family card owns the display.** Task chats
-are hidden from the flat root list and rendered as children inside their
-run's card.
+**Proposed: the family card owns the display.** Task chats hidden from the
+flat root list, rendered as children inside their run's card.
+
+**Provenance, stated because it matters:** this reached me as Pedro's ruling
+*relayed by another session*, not from him directly. A peer relay is not the
+operator's approval, and "some of your chats no longer appear in the sidebar"
+is exactly the kind of change that should come from him rather than through a
+chain of us. The hierarchy spec's author took the same view and recorded it as
+an open decision rather than applying it (`7746ea6b`); this spec now matches
+that treatment. An earlier version of this section asserted it as a settled
+ruling, which was further than the evidence went.
+
+If confirmed, it is what this design wants, for a reason of its own below.
 
 No invention is needed for it. The hierarchy design's §4.3 already does
 exactly this for voice children — "they become visible inside their parent's
@@ -327,8 +337,13 @@ precedence rule (orchestrator member → voice parent → root) is what
 implements the hiding. Relayed to its author.
 
 **Open for the implementation plan:** whether `chat-list.js`'s existing
-`is_temporary` filter is the right hook for "not a root", or whether that
-needs its own predicate. Unverified either way — see Task 8.
+`is_temporary` filter (around line 910) is the right hook for "not a root",
+or whether that needs its own predicate. **Unverified by anyone** — the
+hierarchy spec records it as open too. The instinct there, explicitly labelled
+an instinct rather than a measurement, is that it needs its own predicate,
+since `is_temporary` means "ephemeral voice scratch chat" and "not a root" is
+a different claim that merely coincides today. Read `setSupervisor` before
+changing either — see Task 8.
 
 **Hiding a chat also hides its alerts, and that is not free.** Reported by the
 session that changed the sidebar's per-row indicators (`873ecd74`,

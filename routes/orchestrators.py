@@ -8,10 +8,12 @@ included, so that order belongs in one readable place.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import uuid
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request
@@ -23,6 +25,7 @@ import orchestrator
 import transcripts
 import turns
 from classification import _classify_cli_session, _cli_maps, classify_chat
+from routes.machines import known_backend_models
 from routes.misc import handle_sessions_resume
 from shared import _HEX_SESSION_ID_RE, owner_of
 
@@ -661,6 +664,137 @@ async def handle_orchestrator_messages_get(request: Request, supervisor_id: str)
     return JSONResponse({"messages": messages, "count": len(messages)})
 
 
+async def _allowed_models(owner_id: str) -> set[str]:
+    """The model ids a proposed or approved plan may name.
+
+    Reuses ``known_backend_models`` (routes/machines.py): a local, no-network
+    read of ``config.KNOWN_MODELS`` plus every configured machine's default
+    and active models. ``owner_id`` is accepted but not used to scope the
+    query -- the same shape ``known_backend_models`` already uses for the
+    Backends/Models combo box -- because this set is a security allowlist
+    (validate_plan never lets a plan's ``model`` field reach the CLI's
+    ``--model`` flag unless it is a member) rather than a per-owner resource
+    list.
+    """
+    known = await known_backend_models()
+    return set(known.ids)
+
+
+async def handle_orchestrator_plan(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/plan -- validate a proposed plan.
+
+    Never executes anything: this is the approval gate. A plan that cannot be
+    read comes back as ``rows: []`` plus ``errors``, and the raw text the
+    operator typed, so they can fix it by hand rather than re-guessing what
+    they wrote. On 2026-08-30 the previous orchestrator parsed a plan into
+    nothing, reported nothing, and executed anyway -- burning two tasks. This
+    endpoint's whole job is to make that outcome visible instead.
+    """
+    session = request.state.session
+    owner = await owner_of(session)
+    existing = await db.orchestrator_get(supervisor_id, owner)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    raw = str(data.get("raw") or "")
+    allowed = await _allowed_models(owner)
+    rows, errors = orchestrator.validate_plan(raw, allowed)
+    return JSONResponse({"rows": rows, "errors": errors, "raw": raw})
+
+
+# Strong references for run_tasks()'s background execution, mirroring
+# app.py's _startup_tasks / _log_startup_task: asyncio only holds a weak
+# reference to a running task, so a bare asyncio.create_task can be
+# garbage-collected mid-run with nothing logged. Discarded on completion via
+# the done callback below, so this does not grow without bound.
+_run_tasks_bg: set[asyncio.Task[Any]] = set()
+
+
+def _log_run_tasks_failure(task: asyncio.Task[Any]) -> None:
+    if task.cancelled():
+        _log.info("orchestrator_run_tasks_cancelled task=%s", task.get_name())
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.error(
+            "orchestrator_run_tasks_failed task=%s", task.get_name(), exc_info=exc,
+        )
+
+
+async def handle_orchestrator_run(request: Request, supervisor_id: str):
+    """POST /api/supervisors/{id}/run -- persist the approved rows and run.
+
+    Only rows the operator actually approved reach ``db.orchestrator_task_
+    create``: nothing here re-derives a plan from stored state, so this can
+    only run what was in the request body. Each row's ``model`` is checked
+    against the allowlist again here, independent of ``validate_plan`` --
+    the operator may have hand-edited the rows returned by ``/plan`` (that
+    edit path is the whole point of returning ``raw`` and ``rows``
+    separately), so a row reaching this endpoint is not guaranteed to have
+    passed that check.
+    """
+    session = request.state.session
+    owner = await owner_of(session)
+    run = await db.orchestrator_get(supervisor_id, owner)
+    if not run:
+        raise HTTPException(status_code=404, detail="Orchestrator not found")
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    rows = data.get("rows") or []
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="no tasks to run")
+
+    allowed = await _allowed_models(owner)
+    for row in rows:
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=400, detail="each row must be an object")
+        if not str(row.get("id") or "").strip():
+            raise HTTPException(status_code=400, detail="each row needs an id")
+        if not str(row.get("title") or "").strip():
+            raise HTTPException(status_code=400, detail="each row needs a title")
+        if not str(row.get("prompt") or "").strip():
+            raise HTTPException(status_code=400, detail="each row needs a prompt")
+        model = row.get("model")
+        # Same allowlist membership test as validate_plan, and for the same
+        # reason: never a raw argv token reaching --model.
+        if model is not None and str(model) not in allowed:
+            raise HTTPException(
+                status_code=400, detail=f"model {model!r} is not on the allowlist",
+            )
+
+    if not run.get("work_dir"):
+        # Every orchestrator created after this task's other half (the
+        # /api/orchestrators POST handler) has one; an older row created
+        # before that change would not, and run_tasks needs a real shared
+        # directory to hand task chats.
+        raise HTTPException(
+            status_code=409, detail="orchestrator has no workspace -- recreate it",
+        )
+
+    for row in rows:
+        await db.orchestrator_task_create(
+            supervisor_id, str(row["id"]), row["title"], row["prompt"],
+            model=row.get("model"), depends_on=row.get("depends_on") or [],
+        )
+
+    task = asyncio.create_task(
+        orchestrator.run_tasks(
+            supervisor_id, owner, run["planner_chat_id"], run["work_dir"],
+        ),
+        name=f"orchestrator-run-{supervisor_id}",
+    )
+    _run_tasks_bg.add(task)
+    task.add_done_callback(_run_tasks_bg.discard)
+    task.add_done_callback(_log_run_tasks_failure)
+
+    return JSONResponse({"ok": True})
+
+
 @router.get("/api/orchestrator")
 async def _api_supervisor(request: Request):
     return await handle_supervisor(request)
@@ -834,6 +968,36 @@ async def _api_supervisors_create(request: Request):
     )
     sid = uuid.uuid4().hex
     await db.orchestrator_create(sid, title, description, session["user"], config_data)
+
+    # A run's shared workspace, same shape as handle_chat_create's work_dir:
+    # <slug>-<date>, uniquified with a counter when that path already exists.
+    # Task 1 added the column but deliberately left it unpopulated -- this is
+    # its first consumer (run_tasks, below, needs a directory that already
+    # exists on disk), so this is where it gets written.
+    slug = db.slug_from_title(title)
+    slug = db.slug_pattern(slug) or "untitled"
+    date_suffix = datetime.datetime.now(datetime.UTC).date().isoformat()
+    work_dir = str(Path(config.PROJECTS_ROOT).resolve() / f"{slug}-{date_suffix}")
+    base = work_dir
+    counter = 0
+    while Path(work_dir).exists():
+        counter += 1
+        work_dir = f"{base}-{counter}"
+    try:
+        Path(work_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _log.error(
+            "could_not_create_orchestrator_workspace: failed to create "
+            "work_dir=%s (check permissions, disk space, and "
+            "PROJECTS_ROOT=%s): %s",
+            work_dir, config.PROJECTS_ROOT, exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create orchestrator workspace — check server logs for details",
+        )
+    await db.orchestrator_update(sid, session["user"], work_dir=work_dir)
+
     eng = orchestrator.OrchestratorEngine(sid, session["user"])
     _register_engine(sid, eng)
     return JSONResponse({"ok": True, "id": sid, "title": title, "status": "idle"})
@@ -925,3 +1089,13 @@ async def _api_orchestrator_task_stream(request: Request, supervisor_id: str, ta
 @router.get("/api/orchestrators/{supervisor_id}/messages")
 async def _api_orchestrator_messages(request: Request, supervisor_id: str):
     return await handle_orchestrator_messages_get(request, supervisor_id)
+
+
+@router.post("/api/orchestrators/{supervisor_id}/plan")
+async def _api_orchestrator_plan(request: Request, supervisor_id: str):
+    return await handle_orchestrator_plan(request, supervisor_id)
+
+
+@router.post("/api/orchestrators/{supervisor_id}/run")
+async def _api_orchestrator_run(request: Request, supervisor_id: str):
+    return await handle_orchestrator_run(request, supervisor_id)

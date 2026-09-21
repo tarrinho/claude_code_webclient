@@ -18,11 +18,16 @@ so a later class here does not have to fight it or reuse it by accident.
 from __future__ import annotations
 
 import asyncio
+import json
+import secrets
 import tempfile
+import time
 import unittest
 import uuid
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
+import auth
 import config
 import db
 
@@ -669,6 +674,238 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         take_turn.assert_awaited_once()
         run_turn.assert_not_called()
         stream_turn.assert_not_called()
+
+
+class EndpointTests(unittest.IsolatedAsyncioTestCase):
+    """POST /plan and /run: the approval gate itself, exercised over real
+    HTTP (fastapi.testclient.TestClient over app.app) rather than by calling
+    orchestrator.py functions directly -- the whole point of this pair of
+    endpoints is that nothing can execute except through them.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_patch = patch.object(config, "DB_PATH", f"{self.tmp.name}/db")
+        self.root_patch = patch.object(config, "PROJECTS_ROOT", f"{self.tmp.name}/p")
+        self.db_patch.start()
+        self.root_patch.start()
+        self.addCleanup(self.db_patch.stop)
+        self.addCleanup(self.root_patch.stop)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+
+        self.password = secrets.token_urlsafe(16)
+        await db.user_create("alice", None, auth.hash_password(self.password))
+        await db.user_create("bob", None, auth.hash_password(self.password))
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from app import app
+        return TestClient(
+            app, raise_server_exceptions=False, base_url="https://testserver",
+        )
+
+    def _login(self, who: str = "alice"):
+        client = self._client()
+        resp = client.post("/login", json={"username": who, "password": self.password})
+        self.assertEqual(resp.status_code, 200, "fixture must log in")
+        return client, {"X-CSRF-Token": client.cookies.get("wc_csrf")}
+
+    def _create_orchestrator(self, client, headers, title="Run"):
+        resp = client.post("/api/orchestrators", json={"title": title}, headers=headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()["id"]
+
+    # ── orchestrator creation: this task's own half of task 1's decision ──
+
+    async def test_creating_an_orchestrator_populates_and_creates_its_work_dir(self):
+        """Task 1 added orchestrators.work_dir but deliberately left it
+        unpopulated -- run_tasks (this task's /run handler) is the first
+        consumer, so this task is the one that writes it, at creation time,
+        the same <slug>-<date> shape handle_chat_create uses."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers, title="Nightly Research")
+        alice_id = (await db.user_get_by_name("alice"))["id"]
+        row = await db.orchestrator_get(orch, alice_id)
+        self.assertTrue(row["work_dir"])
+        self.assertTrue(Path(row["work_dir"]).is_dir())
+
+    async def test_two_orchestrators_created_the_same_day_get_distinct_work_dirs(self):
+        client, headers = self._login()
+        a = self._create_orchestrator(client, headers, title="Same Title")
+        b = self._create_orchestrator(client, headers, title="Same Title")
+        alice_id = (await db.user_get_by_name("alice"))["id"]
+        row_a = await db.orchestrator_get(a, alice_id)
+        row_b = await db.orchestrator_get(b, alice_id)
+        self.assertNotEqual(row_a["work_dir"], row_b["work_dir"])
+        self.assertTrue(Path(row_a["work_dir"]).is_dir())
+        self.assertTrue(Path(row_b["work_dir"]).is_dir())
+
+    # ── POST /plan ──────────────────────────────────────────────────────
+
+    def test_an_unreadable_plan_returns_errors_and_the_raw_text(self):
+        """The approval gate's whole purpose: a bad plan is visible before
+        anything runs, and the operator can still hand-write the rows."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        resp = client.post(
+            f"/api/orchestrators/{orch}/plan",
+            json={"raw": "I'll start by researching"}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["rows"], [])
+        self.assertTrue(body["errors"])
+        self.assertIn("I'll start by", body["raw"])
+
+    def test_a_valid_plan_returns_rows_and_no_errors(self):
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        plan = json.dumps(
+            [{"title": "Research", "prompt": "find X", "depends_on": []}]
+        )
+        resp = client.post(
+            f"/api/orchestrators/{orch}/plan", json={"raw": plan}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["errors"], [])
+        self.assertEqual(len(body["rows"]), 1)
+        self.assertEqual(body["rows"][0]["title"], "Research")
+
+    def test_plan_never_starts_anything(self):
+        """The propose endpoint must never execute a task, even for a plan
+        that parses cleanly -- approval is a separate, later step."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        plan = json.dumps(
+            [{"title": "Research", "prompt": "find X", "depends_on": []}]
+        )
+        with patch("orchestrator.run_tasks", new_callable=AsyncMock) as run_tasks:
+            resp = client.post(
+                f"/api/orchestrators/{orch}/plan", json={"raw": plan}, headers=headers,
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            time.sleep(0.1)
+            run_tasks.assert_not_called()
+
+    def test_plan_requires_an_existing_orchestrator(self):
+        client, headers = self._login()
+        resp = client.post(
+            "/api/orchestrators/nonexistent/plan", json={"raw": "x"}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_plan_is_owner_scoped(self):
+        alice, alice_headers = self._login("alice")
+        orch = self._create_orchestrator(alice, alice_headers)
+        bob, bob_headers = self._login("bob")
+        resp = bob.post(
+            f"/api/orchestrators/{orch}/plan", json={"raw": "x"}, headers=bob_headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    # ── POST /run ───────────────────────────────────────────────────────
+
+    def test_run_rejects_an_empty_rows_list(self):
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        resp = client.post(
+            f"/api/orchestrators/{orch}/run", json={"rows": []}, headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_run_requires_an_existing_orchestrator(self):
+        client, headers = self._login()
+        resp = client.post(
+            "/api/orchestrators/nonexistent/run",
+            json={"rows": [{"id": "1", "title": "A", "prompt": "x"}]},
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_run_is_owner_scoped(self):
+        alice, alice_headers = self._login("alice")
+        orch = self._create_orchestrator(alice, alice_headers)
+        bob, bob_headers = self._login("bob")
+        resp = bob.post(
+            f"/api/orchestrators/{orch}/run",
+            json={"rows": [{"id": "1", "title": "A", "prompt": "x"}]},
+            headers=bob_headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_run_rejects_a_model_outside_the_allowlist(self):
+        """Defence in depth: validate_plan already refuses this at /plan, but
+        the rows reaching /run may have been hand-edited by the operator
+        after that check ran, so the same allowlist test is repeated here --
+        a plan reading a flag-shaped model must never reach --model."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        resp = client.post(
+            f"/api/orchestrators/{orch}/run",
+            json={"rows": [{"id": "1", "title": "A", "prompt": "x",
+                             "model": "--mcp-config=/tmp/evil"}]},
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    async def test_run_persists_only_the_approved_rows_and_schedules_execution(self):
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        with patch("orchestrator.run_tasks", new_callable=AsyncMock) as run_tasks:
+            resp = client.post(
+                f"/api/orchestrators/{orch}/run",
+                json={"rows": [{"id": "t1", "title": "Research",
+                                 "prompt": "find X", "depends_on": []}]},
+                headers=headers,
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(resp.json(), {"ok": True})
+
+            alice_id = (await db.user_get_by_name("alice"))["id"]
+            task = await db.orchestrator_task_get(orch, "t1", alice_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task["title"], "Research")
+
+            # The response does not wait on run_tasks; give the event loop a
+            # moment to drain the scheduled background task before checking
+            # it actually got started with this run's own work_dir.
+            for _ in range(50):
+                if run_tasks.await_count:
+                    break
+                time.sleep(0.02)
+            run_tasks.assert_awaited_once()
+            call_args = run_tasks.await_args.args
+            self.assertEqual(call_args[0], orch)
+            self.assertEqual(call_args[1], alice_id)
+
+    async def test_a_failure_inside_the_background_run_is_logged_not_lost(self):
+        """asyncio.create_task alone can be garbage-collected mid-run with
+        nothing reported; the handler must keep a strong reference and log
+        a failure via the done callback."""
+        client, headers = self._login()
+        orch = self._create_orchestrator(client, headers)
+        with patch(
+            "orchestrator.run_tasks",
+            new_callable=AsyncMock, side_effect=RuntimeError("boom"),
+        ), self.assertLogs("wc.app", level="ERROR") as logs:
+            resp = client.post(
+                f"/api/orchestrators/{orch}/run",
+                json={"rows": [{"id": "t1", "title": "Research",
+                                 "prompt": "find X", "depends_on": []}]},
+                headers=headers,
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            for _ in range(50):
+                if any("orchestrator_run_tasks_failed" in m for m in logs.output):
+                    break
+                time.sleep(0.02)
+        self.assertTrue(
+            any("orchestrator_run_tasks_failed" in m for m in logs.output),
+            logs.output,
+        )
 
 
 if __name__ == "__main__":

@@ -250,6 +250,33 @@ async def _live_updated_at(chats: list[dict]) -> dict[str, str]:
     return live
 
 
+def _session_name_for(
+    session_id: str | None, title: str | None, names: dict[str, str],
+) -> str | None:
+    """The live terminal session's own name for a chat row, or None.
+
+    None in three cases, each for its own reason: the chat is not attached to
+    a session; the session it is attached to is no longer running, so the
+    registry has no name and inventing one would point at nothing; or the
+    title already contains the name, where repeating it is noise rather than
+    information.
+
+    The containment test is case-insensitive and one-directional on purpose.
+    A chat titled "api.anthropic.com : 1 : cweb3 - major supervisor change"
+    already says cweb3, so it gains nothing; a chat titled "local : 1 :
+    Status" attached to the same session says nothing about where it runs,
+    and is exactly the row this exists for.
+    """
+    if not session_id:
+        return None
+    name = (names.get(session_id) or "").strip()
+    if not name:
+        return None
+    if name.lower() in (title or "").lower():
+        return None
+    return name
+
+
 async def _busy_terminal_sessions() -> set[str]:
     """Session ids whose interactive terminal reports itself busy.
 
@@ -300,6 +327,24 @@ async def handle_chats_list(request: Request):
     queued_held = await db.queue_held_counts(owner)
     busy_sessions = await _busy_terminal_sessions()
     last_models = await db.last_models_used(owner)
+    # The name the terminal session calls itself, for chats attached to one
+    # that is still running. Served from here rather than from /api/sessions
+    # because that endpoint deliberately drops any CLI session already linked
+    # to a chat -- so the sidebar's "CLI Sessions" section is empty whenever
+    # every session has been opened in the console, and the registry's names
+    # ("cweb1 - check rules.md") had nowhere left to appear. The chat rows are
+    # where those sessions are actually visible, so the name belongs on them.
+    #
+    # Not a 1:1 map: several chats can share one session_id, so one name can
+    # legitimately appear on several rows -- which is the point, since that is
+    # the only way to see that they are the same terminal.
+    #
+    # read_claude_sessions caches for 4s, so this costs a dict build per list.
+    session_names = {
+        entry.get("sessionId"): entry.get("name")
+        for entry in await db.read_claude_sessions()
+        if entry.get("sessionId") and entry.get("name")
+    }
     return JSONResponse(
         {
             "chats": [
@@ -344,6 +389,14 @@ async def handle_chats_list(request: Request):
                     "is_temporary": bool(c.get("is_temporary")),
                     "goal": c.get("goal"),
                     "standby_reason": c.get("standby_reason"),
+                    # Omitted when the title already carries it, so the row
+                    # does not say the same thing twice. Present only while
+                    # the session is running: the registry lists live
+                    # sessions only, so this disappears when the terminal
+                    # exits, which is honest -- there is no longer a session
+                    # of that name to point at.
+                    "session_name": _session_name_for(
+                        c.get("session_id"), c.get("title"), session_names),
                 }
                 for c in chats
             ],

@@ -248,6 +248,10 @@ button{touch-action:manipulation}
 .chat-queued{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:.7rem;line-height:1.35;background:var(--surface-2,rgba(127,127,127,.18));color:var(--text-muted,inherit);vertical-align:middle}
 .chat-queued[data-held="yes"]{background:var(--warn);color:#0d1117}
 .chat-degraded{display:inline-block;margin-left:6px;color:var(--warn);font-size:11px;vertical-align:middle;cursor:help}
+/* The terminal session a conversation runs in. Mono, because it is an
+   identifier sessions address each other by rather than prose, and quiet
+   enough that a row still reads title-first. */
+.chat-session-name{display:inline-block;margin-left:6px;padding:0 4px;border:1px solid var(--line);border-radius:3px;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);vertical-align:middle;cursor:help;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat-voice{display:inline-block;margin-left:4px;font-size:12px;vertical-align:middle}
 @media (prefers-reduced-motion:reduce){.chat-running{animation:none}.chat-group>summary::before{transition:none}}
 

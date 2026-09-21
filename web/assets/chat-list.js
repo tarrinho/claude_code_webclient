@@ -478,6 +478,24 @@ export function createChatListController(dependencies) {
           || 'A background write failed for this conversation; check the server logs.';
         title.append(warn);
       }
+      // The terminal session this conversation is attached to, under the name
+      // that session calls itself. The sidebar's "CLI Sessions" section can
+      // never show these: /api/sessions drops any session already linked to a
+      // chat, so once every session has been opened in the console that
+      // section renders nothing and the registry's names disappear from the
+      // page entirely. The row that represents the session is the honest
+      // place for its name.
+      //
+      // The same name on several rows is not a duplicate -- those chats share
+      // one terminal, and this is the only thing on the page that says so.
+      // The server omits it when the title already contains it.
+      if (chat.session_name) {
+        const tag = document.createElement('span');
+        tag.className = 'chat-session-name';
+        tag.textContent = chat.session_name;
+        tag.title = `Running in terminal session "${chat.session_name}"`;
+        title.append(tag);
+      }
       const meta = document.createElement('div');
       meta.className = 'chat-meta';
       const metaParts = [formatTime(chat.updated_at)];

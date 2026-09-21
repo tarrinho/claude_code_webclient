@@ -7,6 +7,18 @@ ordinary chat, so orchestration stops having an execution path of its own and
 inherits everything the chat path has already proven — usage accounting,
 transcripts, resume, standby, and the generated-images gallery.
 
+**Diagrams** (in the gallery, Settings → Images, and on disk under
+`/home/kali/projects/orchestrator-designs-2026-09-20/`):
+
+- `orchestrator-A-APPROVED-lifecycle-and-states.svg` — this design: the run
+  lifecycle, the task state machine (`pending → running → done | failed`, with
+  dependents going to `blocked`), where the gallery hop happens, and the guard
+  the whole thing rests on.
+- `orchestrator-A-chats-all-the-way-down.svg`, `...-B-plan-as-data.svg`,
+  `...-C-recipes.svg` — the three candidates this was chosen from, kept so the
+  rejected options and their trade-offs remain readable rather than being
+  recoverable only from a conversation.
+
 ---
 
 ## The evidence this design is answering

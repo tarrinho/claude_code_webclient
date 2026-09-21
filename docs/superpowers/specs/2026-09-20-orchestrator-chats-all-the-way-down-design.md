@@ -308,21 +308,25 @@ both a `chat` kind and a `subagent` kind, so a task that is a real chat
 renders as the former and needs nothing added there. **This design is
 unaffected and needs no re-opening.**
 
-### Which surface shows a task chat — proposed, awaiting Pedro
+### Which surface shows a task chat — approved
 
-**Proposed: the family card owns the display.** Task chats hidden from the
-flat root list, rendered as children inside their run's card.
+**Approved by Pedro directly, 2026-09-21: the family card owns the display.**
+Task chats are hidden from the flat root list and rendered as children inside
+their run's card.
 
-**Provenance, stated because it matters:** this reached me as Pedro's ruling
-*relayed by another session*, not from him directly. A peer relay is not the
-operator's approval, and "some of your chats no longer appear in the sidebar"
-is exactly the kind of change that should come from him rather than through a
-chain of us. The hierarchy spec's author took the same view and recorded it as
-an open decision rather than applying it (`7746ea6b`); this spec now matches
-that treatment. An earlier version of this section asserted it as a settled
-ruling, which was further than the evidence went.
+Provenance, because this spec previously got it wrong in both directions: the
+decision first reached this session as a *relay* from another session, was
+written in here as settled, and was then corrected back to "proposed" when
+the hierarchy spec's author declined to act on the same relay (`7746ea6b`) —
+rightly, since a peer relay is not the operator's approval and this hides
+conversations from the sidebar. It has now been confirmed first-hand.
 
-If confirmed, it is what this design wants, for a reason of its own below.
+**Sequencing condition, and it is load-bearing.** Task 8's hiding must not
+land before the family card exists to show the hidden chats, or task chats
+are hidden with nowhere to appear — strictly worse than today. Either the
+hierarchy work lands first, or Task 8 ships last. The plan puts Task 8 second
+from the end for this reason; if the card is not ready when Task 8 comes up,
+skip its Step 4 (the filter change) and land it separately.
 
 No invention is needed for it. The hierarchy design's §4.3 already does
 exactly this for voice children — "they become visible inside their parent's

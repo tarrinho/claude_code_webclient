@@ -208,10 +208,7 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
         # and gives the model a usable picture of what was discussed before
         # the voice session started.
         parent_id = chat.get("parent_chat_id")
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": VOICE_SYSTEM_PROMPT
-             + (VOICE_FETCH_INSTRUCTION if parent_id else "")},
-        ]
+        messages: list[dict[str, str]] = []
         # The summary the session opened with, written once by
         # stream_voice_context. It replaces the keyword heuristic below, which
         # bucketed the parent's last 12 messages by substring match -- a line
@@ -367,7 +364,41 @@ async def stream_voice_turn(chat: dict, prompt: str, owner: str):
             async def _read(chat_ids, low: int, high: int) -> list[dict]:
                 return await db.messages_range_in(chat_ids, low, high)
 
-            fetch_tool = vc.make_fetch_tool_async(reachable, _read)
+            async def _read_latest(chat_ids) -> list[dict]:
+                return await db.messages_latest_in(chat_ids, 40)
+
+            fetch_tool = vc.make_fetch_tool_async(reachable, _read, _read_latest)
+
+            # Tell the model which ids exist. Without this the tool is
+            # unusable for anything but recency: it takes ids, and nothing
+            # else in the prompt or the summary says what they are, so a
+            # range has to be invented and an invented range returns nothing.
+            try:
+                low_id, high_id = await db.messages_id_bounds(reachable)
+            except Exception:
+                low_id = high_id = None
+            if low_id is not None:
+                fetch_scope = (
+                    f" The messages you can read have ids from {low_id} to "
+                    f"{high_id}; higher ids are more recent. Omit both ids to "
+                    f"get the most recent messages, which is usually what you "
+                    f"want for 'the last' or 'the latest' anything."
+                )
+            else:
+                fetch_scope = (
+                    " Omit both ids to get the most recent messages."
+                )
+
+        # Built here, not earlier: the fetch instruction carries the id range,
+        # which is only known once the reachable set has been resolved. Then
+        # INSERTED at the front rather than appended -- by this point the
+        # summary and the user's prompt are already in the list, and a system
+        # message arriving after the prompt is not a system message.
+        messages.insert(0, {
+            "role": "system",
+            "content": VOICE_SYSTEM_PROMPT
+            + ((VOICE_FETCH_INSTRUCTION + fetch_scope) if fetch_tool else ""),
+        })
 
         tool_kwargs = {"tools": [vc.FETCH_TOOL_SCHEMA]} if fetch_tool else {}
 

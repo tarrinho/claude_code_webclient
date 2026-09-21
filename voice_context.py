@@ -191,7 +191,7 @@ def _normalise_range(from_id, to_id) -> tuple[int, int] | None:
     return (high, low) if low > high else (low, high)
 
 
-def make_fetch_tool_async(chat_ids, read_messages):
+def make_fetch_tool_async(chat_ids, read_messages, read_latest=None):
     """`make_fetch_tool` for an async reader, over one or more chats.
 
     The database layer here is aiosqlite, so the tool that actually runs
@@ -211,11 +211,26 @@ def make_fetch_tool_async(chat_ids, read_messages):
     """
     allowed = [chat_ids] if isinstance(chat_ids, str) else list(chat_ids)
 
-    async def fetch_messages(from_id, to_id) -> dict[str, Any]:
-        bounds = _normalise_range(from_id, to_id)
+    async def fetch_messages(from_id=None, to_id=None) -> dict[str, Any]:
+        # Omitting both means "the most recent", and that is not a
+        # convenience. The model is never told which ids exist -- they run to
+        # six figures here -- so the commonest question it gets, "what was the
+        # last thing we hit", was unanswerable: it had to invent a range, and
+        # an invented range returns nothing. Recency has to be askable without
+        # naming an id.
+        if from_id is None and to_id is None:
+            rows = await read_latest(allowed)
+            result = _bound_fetch_result(rows)
+            if not result["messages"]:
+                result["note"] = "This conversation has no messages yet."
+            return result
+        bounds = _normalise_range(
+            from_id if from_id is not None else to_id,
+            to_id if to_id is not None else from_id)
         if bounds is None:
             return {"messages": [], "truncated": False,
-                    "note": "from_id and to_id must be whole numbers"}
+                    "note": "from_id and to_id must be whole numbers, "
+                            "or omit both for the most recent messages"}
         rows = await read_messages(allowed, *bounds)
         return _bound_fetch_result(rows)
 
@@ -289,11 +304,16 @@ FETCH_TOOL_SCHEMA = {
             "type": "object",
             "properties": {
                 "from_id": {"type": "integer",
-                            "description": "First message id, inclusive."},
+                            "description": "First message id, inclusive. "
+                                           "Omit with to_id for the most "
+                                           "recent messages."},
                 "to_id": {"type": "integer",
                           "description": "Last message id, inclusive."},
             },
-            "required": ["from_id", "to_id"],
+            # Neither is required: a model that has not been told which ids
+            # exist cannot supply one, and "the most recent" is the question
+            # it is asked most often.
+            "required": [],
         },
     },
 }

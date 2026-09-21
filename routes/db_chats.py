@@ -617,6 +617,52 @@ async def chats_in_session(session_id: str, owner_id: str) -> list[str]:
 
 
 @db.write
+async def messages_latest_in(
+    chat_ids: Sequence[str], limit: int = 40
+) -> list[dict[str, Any]]:
+    """The most recent *limit* messages across *chat_ids*, in id order.
+
+    Exists because the voice fetch tool's id range is unanswerable from the
+    model's side for the most common question it gets asked -- "what was the
+    last thing / the latest problem". The model is not told which ids exist
+    (they run to six figures here), so recency has to be expressible without
+    naming one.
+    """
+    ids = [c for c in chat_ids if c]
+    if not ids:
+        return []
+    marks = ",".join("?" for _ in ids)
+    cur = await db.db_conn.execute(
+        f"SELECT id, chat_id, role, content, created_at FROM messages "  # nosec B608
+        f"WHERE chat_id IN ({marks}) ORDER BY id DESC LIMIT ?",
+        (*ids, max(1, int(limit))),
+    )
+    rows = [dict(r) for r in await cur.fetchall()]
+    rows.reverse()
+    return rows
+
+
+@db.write
+async def messages_id_bounds(chat_ids: Sequence[str]) -> tuple[int | None, int | None]:
+    """The lowest and highest message id across *chat_ids*.
+
+    Told to the model so it can construct a range at all. Without it the tool
+    is unusable: it takes ids, and nothing else in the prompt or the summary
+    says what they are.
+    """
+    ids = [c for c in chat_ids if c]
+    if not ids:
+        return (None, None)
+    marks = ",".join("?" for _ in ids)
+    cur = await db.db_conn.execute(
+        f"SELECT MIN(id), MAX(id) FROM messages WHERE chat_id IN ({marks})",  # nosec B608
+        tuple(ids),
+    )
+    row = await cur.fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+@db.write
 async def messages_range_in(
     chat_ids: Sequence[str], from_id: int, to_id: int
 ) -> list[dict[str, Any]]:

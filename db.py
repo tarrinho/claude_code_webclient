@@ -206,6 +206,8 @@ def __getattr__(name: str):
         # session grouping that decides which chats it may span.
         "messages_range": "routes.db_chats",
         "messages_range_in": "routes.db_chats",
+        "messages_latest_in": "routes.db_chats",
+        "messages_id_bounds": "routes.db_chats",
         "chats_in_session": "routes.db_chats",
         "messages_last": "routes.db_chats",
         "messages_page": "routes.db_chats",

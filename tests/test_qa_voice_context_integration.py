@@ -315,11 +315,13 @@ class FetchToolWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fetch_messages", lowered)
         self.assertIn("guessing", lowered)
 
-    def test_the_instruction_is_only_added_when_there_is_a_parent(self):
-        """A session opened from nothing has no tool, so telling it about one
-        would invite a call that cannot succeed."""
+    def test_the_instruction_is_only_added_when_the_tool_exists(self):
+        """A session with no tool must not be told about one, or it will make
+        a call that cannot succeed. Gated on `fetch_tool` rather than on
+        `parent_id`: the tool is what the instruction describes, and the two
+        can diverge if resolving the reachable set fails."""
         src = (Path(__file__).resolve().parents[1] / "routes" / "voice.py").read_text()
-        self.assertIn("if parent_id else", src)
+        self.assertIn("if fetch_tool else", src)
 
     async def test_the_async_tool_is_bound_and_bounded(self):
         async def read(chat_ids, low, high):
@@ -411,6 +413,75 @@ class SessionScopedFetchTests(_DbFixture):
         had the same defect -- a write path with no read path looks finished."""
         for name in ("messages_range", "messages_range_in", "chats_in_session"):
             self.assertTrue(hasattr(db, name), name)
+
+
+class RecencyAndScopeTests(_DbFixture):
+    """The tool has to be answerable by a model that has never seen an id.
+
+    Reported from use on 2026-09-21: asked for the session's last problem, the
+    voice model could not find it. The cause was structural, not a model
+    failure -- fetch_messages required from_id and to_id, and nothing in the
+    prompt, the schema or the summary said which ids exist. On this database
+    they run from 143 to 131343, so any guess returns nothing. Recency was
+    also inexpressible, and "the last anything" is the commonest question.
+    """
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        now = db._now()
+        await db.chat_create("k", "k", None, "/tmp", "admin")
+        for i in range(60):
+            await db.db_conn.execute(
+                "INSERT INTO messages (chat_id, role, content, created_at) "
+                "VALUES (?, ?, ?, ?)", ("k", "user", f"line {i}", now))
+        await db.db_conn.commit()
+
+    async def test_omitting_both_ids_returns_the_most_recent(self):
+        tool = vc.make_fetch_tool_async(
+            ["k"], db.messages_range_in,
+            lambda ids: db.messages_latest_in(ids, 40))
+        result = await tool()
+        self.assertTrue(result["messages"])
+        # The newest line must be present; the oldest must have fallen off.
+        text = " ".join(m["content"] for m in result["messages"])
+        self.assertIn("line 59", text)
+        self.assertNotIn("line 0 ", text + " ")
+
+    async def test_the_id_bounds_are_available_to_put_in_the_prompt(self):
+        low, high = await db.messages_id_bounds(["k"])
+        self.assertIsNotNone(low)
+        self.assertLess(low, high)
+
+    async def test_bounds_of_an_empty_scope_are_none_rather_than_zero(self):
+        """Zero would read as a real id and invite a range that matches
+        nothing."""
+        self.assertEqual(await db.messages_id_bounds([]), (None, None))
+
+    async def test_one_supplied_id_is_treated_as_a_point_not_an_error(self):
+        """A model that names only from_id means "from here"; refusing would
+        spend a round trip teaching it the schema."""
+        tool = vc.make_fetch_tool_async(
+            ["k"], db.messages_range_in,
+            lambda ids: db.messages_latest_in(ids, 40))
+        low, _ = await db.messages_id_bounds(["k"])
+        result = await tool(low, None)
+        self.assertEqual(len(result["messages"]), 1)
+
+    def test_the_schema_no_longer_demands_ids_the_model_cannot_know(self):
+        self.assertEqual(
+            vc.FETCH_TOOL_SCHEMA["function"]["parameters"]["required"], [])
+
+    def test_the_turn_tells_the_model_which_ids_exist(self):
+        src = (Path(__file__).resolve().parents[1] / "routes" / "voice.py").read_text()
+        self.assertIn("messages_id_bounds", src)
+        self.assertIn("higher ids are more recent", src)
+
+    def test_the_system_message_is_inserted_first_not_appended(self):
+        """It is built late, because it carries the id range, which is only
+        known after the reachable set resolves. Appending it there would put
+        a system message after the user's prompt."""
+        src = (Path(__file__).resolve().parents[1] / "routes" / "voice.py").read_text()
+        self.assertIn('messages.insert(0, {', src)
 
 if __name__ == "__main__":
     unittest.main()

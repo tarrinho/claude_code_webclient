@@ -12,7 +12,7 @@ import {
 import {
   voiceOverlay, voiceTooltipMessages, voiceTooltipConclusion,
   voiceParentState, voiceTempChatId, closeVoiceTooltip,
-} from './voice-tooltip.js?v=9706777';
+} from './voice-tooltip.js?v=6759869';
 
 const voiceAgreeBtn = document.getElementById('voiceAgreeBtn');
 const voiceSummarizeBtn = document.getElementById('voiceSummarizeBtn');

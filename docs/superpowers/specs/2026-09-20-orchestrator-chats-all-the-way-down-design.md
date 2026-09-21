@@ -59,7 +59,8 @@ removes the parser rather than hardening it.
 ### Why images never reached the gallery
 
 Images enter `generated_images` through exactly one call site:
-`routes/chats.py:2156`, inside `_start_turn`, which scans the chat's
+one inside `_start_turn` (`routes/chats.py`, the `_new_workspace_images` /
+`generated_image_record` pair at the end of the turn), which scans the chat's
 `work_dir` (`_new_workspace_images`) and records what is new. The orchestrator
 never goes through `_start_turn`, so anything its tasks produce is invisible to
 the gallery **by construction**. This is a structural gap, not a bug, and no
@@ -73,17 +74,17 @@ separate execution path.
 The pieces are present and merely unconnected:
 
 - **Child chat creation.** `POST /api/chats` already accepts `parent_chat_id`
-  and creates a child chat (`routes/chats.py:464-476`). Built for voice
+  and creates a child chat (`routes/chats.py`, the `if parent_chat_id:` branch of the create handler). Built for voice
   handoff, so it also sets `is_temporary=1`, disables auto-answer and copies
   the parent's title — voice-specific behaviour this design does **not**
   inherit.
 - **Run-to-chat membership.** `orchestrator_members` links a run to chat ids,
   and `orchestrator_member_add` is already called from
-  `routes/orchestrators.py:296`. Today a run can only *adopt* existing chats
+  `routes/orchestrators.py`. Today a run can only *adopt* existing chats
   (`_resolve_member`); it never creates one for a task. That is the gap.
-- **The turn path.** `_start_turn` (`routes/chats.py:2028`) runs a turn and
+- **The turn path.** `_start_turn` (`routes/chats.py`) runs a turn and
   then records usage, writes the transcript, and scans for images.
-- **Sidebar filtering.** `web/assets/chat-list.js:892` already hides chats via
+- **Sidebar filtering.** `web/assets/chat-list.js` already hides chats via
   `chats.filter(c => !c.is_temporary)`, so hiding task chats needs a flag, not
   new UI machinery.
 - **Dependency ordering.** `orchestrator.py:TaskGraph` is sound and is kept.
@@ -143,6 +144,47 @@ and nothing is destroyed.
 
 ---
 
+## Workspace and data flow between tasks
+
+The first version of this spec gave tasks `depends_on` and said a task runs
+when its dependencies are `done` — and never said **how a dependent receives
+anything**. That is not an omission that could be filled in during
+implementation; the code actively prevents it. `work_dir` is *computed*, not
+accepted: the create handler in `routes/chats.py` derives it from the title slug and
+uniquifies it with a counter, and `work_dir` is not in
+`db_chats._ALLOWED_CHAT_FIELDS`, so it cannot be set afterwards either.
+
+Left alone, every task chat gets its own isolated directory and nothing
+crosses between them. `depends_on` would be pure ordering with zero
+information flow — "run the write-up after the research" while the writer
+cannot read a single thing the researcher produced. That guts the feature.
+
+**Both channels are needed, and for different cargo:**
+
+1. **One workspace per run.** Every task chat in a run shares the run's
+   `work_dir`, so file artefacts flow: task 2 reads the CSV task 1 wrote. This
+   requires a new capability — either `POST /api/chats` accepts an explicit
+   `work_dir`, or `chat_update` allows it — and that is a real cost this spec
+   previously hid.
+2. **Predecessor results injected into the dependent's prompt.** Files carry
+   artefacts; the prompt carries reasoning. A task that concluded something in
+   prose leaves nothing on disk, so injection is not redundant with (1).
+
+### What a shared workspace costs
+
+The image scan filters `st_mtime <= since` (`_new_workspace_images` in `routes/chats.py`), so a
+*sequential* task never re-records the files its predecessor wrote — they are
+older than its own turn start. **Parallel tasks are different:** two tasks
+starting together in one workspace will each see the other's images, and the
+gallery's unique index is `(chat_id, path)`, so one file becomes two rows
+under two chats.
+
+That is accepted rather than solved. It is cosmetic, it only affects tasks
+running concurrently in the same run, and the alternatives — attributing
+images to the run instead of the chat, or suppressing the scan for task chats
+— would each cost more than the duplicate does. Recorded here so it is a
+decision rather than a surprise.
+
 ## Task source: propose, approve, run
 
 The planning turn runs in the parent chat like any other turn and is asked for
@@ -180,6 +222,28 @@ answers 429 and it reads as a capacity problem.
 
 ---
 
+## How the scheduler learns a task finished, and whether it failed
+
+Both mechanisms already exist and must be **named**, not invented. Left vague,
+the first is reimplemented as a polling loop and the second is got wrong in
+the specific way CLAUDE.md §4 warns about.
+
+**Completion.** `_start_turn` returns a `turns.LiveTurn`, which carries
+`state` (`running | done | error | cancelled`), `finished_at`, and
+`task: asyncio.Task`. The scheduler awaits that task and reads that state.
+There is nothing to poll.
+
+**Failure.** `LiveTurn.state` is the answer, and a `try`/`except` around the
+turn is **not**. CLAUDE.md §4: *"a failed turn arrives as
+`{"type": "error", "error": …}` in the event stream. It does not raise. Code
+that only handles exceptions will treat a failed turn as a successful empty
+one."* A successful-looking empty turn is precisely the signature of the
+2026-08-30 run — two tasks, `result = ''`, no error anywhere.
+
+`_start_turn` already handles the error frame correctly
+(`routes/chats.py`, its `event.get("type") == "error"` branch). That is one more thing gained by reusing it instead
+of re-implementing execution, and one more reason guard 1 below matters.
+
 ## Failure handling
 
 - **A task fails** → `failed`, with its error stored. Its dependents become
@@ -214,11 +278,35 @@ answers 429 and it reads as a capacity problem.
   invites the two copies to disagree. One batched query per page, following
   `chat_ids_that_exist`'s precedent of answering a whole page's membership
   question in a single round trip rather than one per row. The existing
-  `chat-list.js:892` filter is reused; only the predicate widens.
+  `chat-list.js` filter is reused; only the predicate widens.
 - The run view lists tasks with status, links into each task chat, and shows
   `blocked` distinctly from `failed` so a stalled dependency is legible.
 - The plan-approval step is an editable table, not a text box: the structure is
   data by the time a person sees it.
+
+### Unresolved: interaction with the chat-list hierarchy design
+
+`docs/superpowers/specs/2026-09-21-chat-list-hierarchy-design.md` (approved
+with Pedro on 2026-09-21, the day after this one) renders chat relationships
+as family cards in the sidebar, and its decision 2 states that *"a supervisor
+fan-out adds small rows, not full chats"* — a subagent being a display-only
+child node rather than an openable conversation.
+
+**If that governs orchestrator tasks, this design does not work.** A task
+being a real chat is not a presentation choice here; it is the mechanism.
+Usage, transcripts, resume and the gallery are inherited precisely because a
+task goes through `_start_turn`. Display-only rows inherit none of it.
+
+It may be a wording collision rather than a disagreement: that spec's
+decision 1 lists "subagents spawned in a chat" and "orchestrator and its
+members" as *separate* relationship kinds, and in-chat Task-tool subagents
+genuinely are display-only today — they leave no record anywhere. The
+question is which of those decision 2 means.
+
+Raised with Pedro and with that spec's author rather than resolved here. The
+smaller half — which surface shows task chats — is reconcilable either way
+(hidden from the flat list, shown as children of their run), but only if one
+surface owns it, or both designs will build it.
 
 ---
 
@@ -229,6 +317,7 @@ answers 429 and it reads as a capacity problem.
 | `orchestrator.py` | Scheduler replaces `OrchestratorEngine`; `TaskGraph` kept. ~1454 → ~250 lines |
 | `routes/orchestrators.py` | Plan propose / approve / run endpoints; member-create beside member-adopt |
 | `routes/db_orchestrators.py` | `chat_id` on tasks, `blocked` status, computed progress |
+| `routes/chats.py` | accept an explicit `work_dir` on create, so a run's tasks can share one (see "Workspace and data flow") |
 | `db.py` | One additive column in `_ensure_orchestrator_columns` |
 | `web/orchestrator.html`, `web/assets/orchestrator.js` | Editable plan rows; task list linking into task chats |
 | `web/assets/chat-list.js` | Hide task chats |
@@ -281,6 +370,32 @@ auth-exemption defect on 2026-09-20.
    construction rather than by vigilance.
 
 ---
+
+## Rejected alternatives
+
+Recorded so they are not re-proposed without their cost.
+
+**A workspace per task, instead of per run.** More isolated, and it is what
+the code does by default — which is exactly why it needs an explicit refusal.
+It makes `depends_on` meaningless: a dependent cannot read what its
+predecessor wrote, so dependencies degrade to ordering with no data flow. It
+also leaves one directory per task on disk for ever. Isolation between tasks
+of the same run is not a property anyone asked for; flow between them is the
+point.
+
+**Injecting predecessor results only, with no shared workspace.** Cheaper —
+no change to chat creation — but it carries only prose. A task producing a
+file, an image or a dataset has nothing to hand on, and images are the reason
+this work started.
+
+**Attributing gallery images to the run rather than the chat.** Would remove
+the duplicate-row case for parallel tasks, at the cost of changing
+`generated_images`' meaning for every existing row and every non-orchestrator
+caller. A cosmetic duplicate is not worth a schema-wide semantic change.
+
+**Catching exceptions around a task's turn.** The obvious way to detect
+failure, and wrong: a failed turn is an event, not an exception (CLAUDE.md
+§4). Reading `LiveTurn.state` is the correct mechanism.
 
 ## The risk worth stating plainly
 

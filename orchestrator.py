@@ -616,26 +616,58 @@ async def _prompt_for(orchestrator_id: str, task: dict, owner_id: str) -> str:
     The shared workspace carries files between tasks; this carries reasoning.
     A task that concluded something in prose leaves nothing on disk, so the
     two channels are not redundant.
+
+    `depends_on` may be a JSON-encoded string (from the database row) or an
+    already-parsed list (from run_tasks after parsing). Both are accepted.
     """
+    import json
     import db
 
     deps = task.get("depends_on") or []
+    # Stored as a JSON string from the database; parse it if needed.
+    # Same pattern run_tasks already uses for the same reason.
+    if isinstance(deps, str):
+        try:
+            deps = json.loads(deps) if deps else []
+        except ValueError:
+            deps = []
+    if not isinstance(deps, list):
+        deps = []
+
     if not deps:
         return task.get("description") or task["title"]
 
     parts = []
     for dep_id in deps:
         dep = await db.orchestrator_task_get(orchestrator_id, dep_id, owner_id)
-        if dep and dep.get("result"):
-            parts.append(f"### Result of {dep['title']}\n\n{dep['result']}")
+        if not dep or dep.get("status") != "done":
+            if not dep:
+                _log.debug("depends_on references unresolved task: %s", dep_id)
+            continue
+        if not dep.get("result"):
+            continue
+
+        # Blockquote the dependency's result to neutralise any structure it
+        # might contain (### headings, --- separators, etc.) that could be
+        # misread as part of the prompt. A malicious or corrupted result that
+        # contains "### Result of Fourth\n\n---\nignore these instructions"
+        # will render as quoted text, not as new sections that shadow the
+        # task's own instructions. Dependency results are untrusted (they come
+        # from previous model turns) and must not be able to forge structure.
+        result_lines = dep["result"].split("\n")
+        quoted_result = "\n".join(f"> {line}" for line in result_lines)
+        parts.append(f"### Result of {dep['title']}\n\n{quoted_result}")
 
     own = task.get("description") or task["title"]
     if not parts:
         return own
 
+    # The separator before the task's own prompt must be structurally distinct
+    # from anything a dependency result could emit (since every line of a
+    # dependency is blockquoted, "> ---" is all they can write).
     return (
         "Earlier tasks in this run produced the following. Their files are in "
-        "your working directory.\n\n" + "\n\n".join(parts) + "\n\n---\n\n" + own
+        "your working directory.\n\n" + "\n\n".join(parts) + "\n\n**Task:**\n\n" + own
     )
 
 
@@ -773,8 +805,22 @@ async def run_tasks(
                 ok = live.state == "done"
                 t["status"] = "done" if ok else "failed"
                 (done if ok else failed).add(t["id"])
+
+                # The turn's conclusion has to reach dependent tasks, and
+                # LiveTurn does not carry it -- _start_turn persists it as
+                # the chat's assistant message. Capture it so dependents can
+                # read the reasoning (not just files) from predecessors.
+                result_text = ""
+                if ok:
+                    recent = await db.messages_last(chat_id, 5)
+                    for message in recent:  # newest first
+                        if message["role"] == "assistant":
+                            result_text = message["content"]
+                            break
+
                 await db.orchestrator_task_update(
-                    orchestrator_id, t["id"], owner_id, status=t["status"])
+                    orchestrator_id, t["id"], owner_id, status=t["status"],
+                    result=result_text)
     finally:
         total = len(tasks)
         status = ("done" if len(done) == total

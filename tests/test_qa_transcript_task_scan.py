@@ -126,6 +126,49 @@ class TaskScanTests(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertIsNone(got[0]["agent_type"])
 
+    def test_a_spaced_colon_after_name_is_still_found(self):
+        """The prefilter's needle is b'"Task"', not b'"name":"Task"'. json.dumps
+        writes the spaced form (`"name": "Task"`) by default, and a narrower
+        needle keyed to the compact form would silently drop every subagent in
+        a transcript written this way -- a false negative that loses the row
+        for ever, unlike a false positive which only costs the work anyway
+        done. Assert the bytes actually carry the spaced form so this test
+        cannot quietly stop covering what it claims."""
+        path = _write([_task_use("tu_1", "code-review", "review the diff",
+                                 "2026-09-21T10:00:00Z")])
+        self.addCleanup(path.unlink)
+        raw = path.read_bytes()
+        self.assertIn(b'"name": "Task"', raw)
+        self.assertNotIn(b'"name":"Task"', raw)
+        got = transcripts._scan_tasks_sync(path)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["tool_use_id"], "tu_1")
+
+    def test_a_transcript_with_no_task_block_at_all_is_empty(self):
+        path = _write([
+            {"timestamp": "2026-09-21T10:00:00Z", "message": {"content": [
+                {"type": "text", "text": "just chatting, no tools involved"},
+            ]}},
+        ])
+        self.addCleanup(path.unlink)
+        self.assertEqual(transcripts._scan_tasks_sync(path), [])
+
+    def test_the_word_task_in_ordinary_message_text_is_not_a_subagent(self):
+        """The prefilter is a cheap gate, not the detector: the JSON substring
+        '"Task"' appears in this transcript's bytes (as the entire body of an
+        ordinary text block, not a tool_use name), so the prefilter must let
+        it through -- but the real parsing loop must still recognise this
+        block's type is "text", not "tool_use", and return nothing."""
+        path = _write([
+            {"timestamp": "2026-09-21T10:00:00Z", "message": {"content": [
+                {"type": "text", "text": "Task"},
+            ]}},
+        ])
+        self.addCleanup(path.unlink)
+        raw = path.read_bytes()
+        self.assertIn(b'"Task"', raw)
+        self.assertEqual(transcripts._scan_tasks_sync(path), [])
+
     def test_the_cache_is_keyed_on_size_like_the_question_scan(self):
         path = _write([_task_use("tu_1", "a", "d", "2026-09-21T10:00:00Z")])
         self.addCleanup(path.unlink)

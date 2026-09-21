@@ -827,6 +827,22 @@ def _scan_tasks_sync(path: Path) -> list[dict[str, Any]]:
     except OSError:
         return []
 
+    # Most transcripts never spawned a subagent, and for those the split below
+    # is pure waste: it turns a 136 MB read into millions of bytes objects to
+    # discover there was nothing to find. Measured on this host: the largest
+    # transcript is 136 MB and 13 of 3068 exceed 16 MB, at roughly 1.33 s of
+    # CPU and ~300 MB transient RSS per turn on the worst one -- paid on every
+    # completed turn, because the size-keyed cache below cannot help a file the
+    # turn itself just appended to.
+    #
+    # The needle is deliberately just b'"Task"', not b'"name":"Task"': a false
+    # POSITIVE only costs the work we would have done anyway, while a false
+    # NEGATIVE silently loses a subagent for ever, and the writer's spacing
+    # around the colon is not ours to depend on.
+    if b'"Task"' not in raw:
+        _task_scan_cache[key] = (len(raw), [])
+        return []
+
     started: dict[str, dict[str, Any]] = {}
     ended: dict[str, str | None] = {}
 

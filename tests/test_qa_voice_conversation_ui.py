@@ -59,3 +59,47 @@ class VoiceConversationUiTests(unittest.TestCase):
         self.assertIn('window.voiceConversation?.onReplyChunk', conv)
         self.assertIn('window.voiceConversation?.onReplyDone', conv)
         self.assertIn('window.voiceConversation?.onReplyError', conv)
+
+
+class VoiceStartupOrderingTests(unittest.TestCase):
+    """The panel must become usable without waiting for its summary.
+
+    Reported from use on 2026-09-21: a voice session "stopped replying and
+    also listening". The cause was `await runVoiceContext(...)` sitting before
+    the two calls that enable the microphone, so the session was deaf for as
+    long as the summary took -- tens of seconds for a CLI turn over a window of
+    up to 40,000 characters. The server log showed no message requests at all,
+    only polling, because the client never got as far as sending.
+
+    Source inspection rather than a browser, matching this file's style. What
+    is pinned is an ordering, which is the whole of the defect: the feature
+    worked, the summary arrived, and the microphone was simply unreachable
+    until it did.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = (ASSETS / "voice-tooltip.js").read_text()
+
+    def test_the_context_stream_is_not_awaited(self):
+        """`await runVoiceContext` is the regression, precisely."""
+        self.assertNotIn("await runVoiceContext", self.src)
+
+    def test_the_summary_is_read_per_turn_so_not_gating_is_safe(self):
+        """What makes it safe not to wait: `stream_voice_turn` re-reads the
+        summary off the chat row on every turn, rather than being handed it
+        once at open. So an utterance made before the summary lands costs that
+        one turn its overview and nothing after it. If this ever became a
+        value captured at session start, not gating would silently mean the
+        whole session ran without context."""
+        voice_py = (ROOT / "routes" / "voice.py").read_text()
+        turn = voice_py[voice_py.index("async def stream_voice_turn"):]
+        turn = turn[:turn.index("async def ", 10)]
+        self.assertIn('chat.get("voice_context")', turn)
+
+    def test_a_failure_in_the_stream_cannot_reject_into_the_open_path(self):
+        """Unawaited promises that reject become unhandled rejections, and an
+        unhandled rejection here would surface as a broken session rather than
+        as a session that merely has no summary."""
+        tail = self.src[self.src.index("runVoiceContext("):]
+        self.assertIn(".catch(", tail.split("\n")[0] + tail.split("\n")[1])

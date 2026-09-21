@@ -249,5 +249,42 @@ class ContextEndpointTests(_DbFixture):
         self.assertIn("/api/chats/{chat_id}/voice/context", paths)
 
 
+
+class SseFrameShapeTests(_DbFixture):
+    """The wire contract between stream_voice_context and the parser in
+    web/assets/voice-context.js.
+
+    That parser splits on a blank line and reads lines beginning `data:`. The
+    two were written together, in different languages, with nothing checking
+    that they agree -- so a frame shaped even slightly differently would stop
+    the status line updating while every server-side test stayed green, and
+    the only symptom would be a line that says "Initialising…" forever.
+    """
+
+    async def _raw(self):
+        from routes.voice import stream_voice_context
+        await db.chat_create("solo", "solo", None, "/tmp", "admin")
+        chat = dict(await db.chat_get("solo", "admin"))
+        return [frame async for frame in stream_voice_context(chat, "admin")]
+
+    async def test_every_frame_is_a_complete_sse_event(self):
+        for raw in await self._raw():
+            self.assertTrue(raw.startswith("data: "), raw)
+            self.assertTrue(raw.endswith("\n\n"), repr(raw))
+
+    async def test_every_frame_carries_parseable_json_with_a_type(self):
+        import json as _json
+        for raw in await self._raw():
+            payload = _json.loads(raw[len("data: "):].strip())
+            self.assertEqual(payload["type"], "status")
+            self.assertIn("state", payload)
+
+    async def test_the_blank_line_separator_survives_concatenation(self):
+        """The client accumulates bytes and splits on a blank line, so frames
+        must remain separable once joined -- which is how they arrive."""
+        joined = "".join(await self._raw())
+        parts = [p for p in joined.split("\n\n") if p.strip()]
+        self.assertTrue(all(p.startswith("data: ") for p in parts), parts)
+
 if __name__ == "__main__":
     unittest.main()

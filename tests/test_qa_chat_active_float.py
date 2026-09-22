@@ -35,6 +35,35 @@ CHAT_LIST = ROOT / "web" / "assets" / "chat-list.js"
 NODE = shutil.which("node")
 
 
+def _function_body(source: str, signature: str) -> str:
+    """The text of one function, from *signature* to its matching brace.
+
+    The wiring cases below used a fixed character window instead --
+    `source[start:start + 900]`. That is a magic number standing in for "this
+    function", and it expires silently: on 2026-09-22 a five-line comment added
+    inside `nudge` pushed `commitOrder(` to 1023 characters from the signature,
+    so the assertion failed against code that was entirely correct. A window
+    that is too small reports a defect that is not there; a window that is too
+    large reads into the next function and reports a defect that belongs to it.
+    Neither failure mode is visible when the test is written, because both
+    depend on how long the function happens to be that day.
+
+    Counting braces costs one loop and removes the number from the test. It is
+    still source inspection -- see this module's docstring on why that is a weak
+    check -- but it is at least scoped to what it claims to be reading.
+    """
+    start = source.index(signature)
+    depth = 0
+    for index in range(source.index("{", start), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unbalanced braces after {signature!r}")
+
+
 def _run_float(chats, active_ids):
     """Call floatActive(chats, predicate) in node and return the id order.
 
@@ -150,8 +179,7 @@ class FloatWiringTests(unittest.TestCase):
         permanent `position` -- silently converting a placement the user
         never chose, which is the failure the comment above commitOrder
         already warns about for cross-section drags."""
-        start = self.SOURCE.index("function commitOrder(")
-        body = self.SOURCE[start:start + 1400]
+        body = _function_body(self.SOURCE, "function commitOrder(")
         self.assertIn("dataset.floated !== '1'", body,
                       "commitOrder must exclude floated rows")
 
@@ -159,8 +187,7 @@ class FloatWiringTests(unittest.TestCase):
         """`nudge` is the second way an order reaches the server. It must
         delegate rather than build its own id list, or the float protection
         would cover drag and quietly miss every phone reorder."""
-        start = self.SOURCE.index("function nudge(")
-        body = self.SOURCE[start:start + 900]
+        body = _function_body(self.SOURCE, "function nudge(")
         self.assertIn("commitOrder(", body)
         self.assertNotIn("onReorder(", body)
 

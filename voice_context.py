@@ -125,8 +125,16 @@ def eligible_rungs(
     return kept or rungs
 
 
-def summary_prompt(window: list[dict[str, Any]], truncated: bool) -> str:
-    """The summarisation request. Plain text, no tool use, no preamble."""
+def summary_prompt(window: list[dict[str, Any]], truncated: bool,
+                   total_messages: int | None = None) -> str:
+    """The summarisation request. Plain text, no tool use, no preamble.
+
+    `total_messages` is how many the conversation actually has, and saying it
+    is the difference between a usable note and a useless one. A boolean
+    "this is only the most recent part" reads identically whether one message
+    was dropped or fifteen thousand were, so a model cannot tell whether the
+    rest is worth reaching for. Stating the proportion lets it decide.
+    """
     lines = [
         "Summarise the conversation below for someone who is about to "
         "continue it by voice and has not read it.",
@@ -142,9 +150,22 @@ def summary_prompt(window: list[dict[str, Any]], truncated: bool) -> str:
         "",
     ]
     if truncated:
-        lines.append(
-            "NOTE: this is only the most recent part of a longer "
-            "conversation. Say so if the beginning matters.")
+        shown = len(window)
+        if total_messages and total_messages > shown:
+            dropped = total_messages - shown
+            share = round(dropped / total_messages * 100)
+            lines.append(
+                f"NOTE: you are seeing the most recent {shown} of "
+                f"{total_messages} messages. "
+                f"{dropped} older message{'' if dropped == 1 else 's'} "
+                f"({share}% of the conversation) "
+                f"{'is' if dropped == 1 else 'are'} not shown, and "
+                f"{'is' if dropped == 1 else 'are'} available through the "
+                f"fetch tool. Say so if the beginning matters.")
+        else:
+            lines.append(
+                "NOTE: this is only the most recent part of a longer "
+                "conversation. Say so if the beginning matters.")
         lines.append("")
     lines.append("--- conversation ---")
     for message in window:

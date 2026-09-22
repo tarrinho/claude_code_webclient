@@ -24,6 +24,48 @@ churn.
 
 ### Added
 
+- **A voice session now opens knowing what the conversation it came from is
+  about.** On open it summarises the originating chat with a cheap model drawn
+  from the comprehension ladder, reporting each attempt in a status line
+  (`initialising` → `summarising` → `ready`). It replaces a keyword heuristic
+  that bucketed the parent's last twelve messages by substring match, so a
+  conversation was only described when it happened to be phrased the way the
+  matcher expected. If every model fails or the fifteen-second budget runs out
+  the session **still opens**, says it has no summary, and relies on the fetch
+  tool below — a voice feature that refuses to open is worse than one that
+  starts without an overview.
+- **The voice model can read the conversation's own history.** A `fetch_messages`
+  tool returns messages verbatim by id range, so it looks a detail up instead of
+  guessing. It reaches the originating chat plus the other chats of the same
+  terminal session, and it takes no chat argument at all: message ids are unique
+  across the database, so the set it can see is fixed when the turn starts and
+  the model cannot express a request for anything outside it.
+- **The voice session beeps while it is thinking.** A pulse about once a second,
+  synthesised rather than loaded from a file, silent the moment it starts
+  speaking. There is deliberately no mute: the tone's *absence* is the signal
+  that something has gone wrong, and a control that silences a fault signal
+  defeats the point of having one.
+
+### Fixed
+
+- **The voice panel could neither hear nor answer while it summarised.** The
+  microphone is enabled at the end of the panel's setup, and the summary was
+  awaited before that, so for as long as the ladder walk took the session was
+  deaf. Reported from use as "it stopped replying and also listening".
+- **The voice model could not use the tool it was given.** `fetch_messages`
+  required two message ids and nothing told the model which ids exist — they run
+  to six figures — so any range it invented returned nothing. Asked for the
+  session's last problem it answered, honestly, that it could not find it. The
+  id range is now stated, and omitting both ids returns the most recent
+  messages, which is the shape most questions actually take.
+- **The stop button inside the voice panel did nothing.** It was declared and
+  never given a click handler. Ending a conversation is what reveals the
+  summarize-to-parent controls, so the handoff feature was reachable only from
+  the page-level button and looked absent rather than unwired.
+- **A voice summary's cost was invisible.** It is recorded under its own
+  `voice-summary` origin instead of being indistinguishable from the user's own
+  turns.
+
 - **Settings › Delegation is now a page rather than a raw table.** A status band
   saying in plain English what is routing (nothing), how many cells are
   measured, and the ceiling and budget; then one card per task type carrying its

@@ -771,7 +771,7 @@ async def stream_voice_context(chat: dict, owner: str):
                      "reason": "no model is available to summarise with"})
         return
 
-    prompt = vc.summary_prompt(window, truncated)
+    prompt = vc.summary_prompt(window, truncated, total_messages=len(messages))
     clock = vc.BudgetClock()
     events: list[dict] = []
 

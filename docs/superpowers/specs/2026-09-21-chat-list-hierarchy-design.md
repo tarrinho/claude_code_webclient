@@ -340,17 +340,40 @@ real argument is that `is_temporary` is *already* derived from parentage and is
 unreachable from the path that creates task chats. Recorded because the
 measurement is the part worth keeping, not the instinct.
 
-## 10a. Open — needs Pedro's decision, not adopted here
+## 10a. APPROVED — Pedro, first-hand, 2026-09-22
 
-**Proposed: orchestrator task chats are hidden from the flat root list and
-render only inside their run's card.**
+**Orchestrator task chats are hidden from the flat root list and render only
+inside their run's card.**
 
-Relayed to this session on 2026-09-21 by the orchestrator session as a ruling
-from Pedro, which reached them through a third session rather than from him
-directly. They said so themselves and advised confirming first-hand. **It is
-therefore recorded here as proposed and is not applied**: it hides
-conversations from the sidebar, which is the operator's call and not something
-to enact on a second-hand relay.
+**With one binding condition, which is the whole reason the approval took three
+attempts to obtain cleanly: the card must exist before the hiding lands.**
+Hiding without a card means task chats disappear from the sidebar with nowhere
+to appear — strictly worse than doing nothing, because work vanishes silently.
+The orchestrator design owns the hiding (its Task 8); this design owns the card
+(Task 7). Task 7 first, or the filter ships separately.
+
+### How the approval was obtained, because the path is the lesson
+
+Reached this session twice as a relay before it was ever confirmed. On
+2026-09-21 the orchestrator session passed it on as a ruling from Pedro that
+had come to *them* through a third session; they flagged the provenance
+themselves and advised confirming first-hand. It was recorded as proposed and
+**not applied** — it hides conversations, which is the operator's call and not
+something to enact on a chain of agents. A second relay then asserted Pedro had
+confirmed it directly. That was also not acted on.
+
+When finally put to Pedro in plain language, his first response was **"I dont
+know what is the 10a"** — he did not recognise the decision under the name two
+sessions had been attributing to him. Restated without jargon (does an
+orchestrator's task chats stay in your sidebar, or live only inside its card?)
+he approved it immediately, with the card-first condition.
+
+The lesson is not that the relays were dishonest — both were careful and both
+disclosed their provenance. It is that a decision can travel through three
+agents, arrive with confident attribution, and still not be a decision the
+named person has knowingly made. A spec section number is not a shared
+vocabulary with the operator; asking in his terms is what produced an answer in
+one exchange.
 
 The argument for it, recorded because it is a good one. §4.3 already does
 exactly this for voice children — they become visible inside their parent's

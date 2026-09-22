@@ -580,3 +580,39 @@ async def orchestrator_clear_degraded(orchestrator_id: str, kind: str) -> None:
         _log.exception(
             "supervisor_clear_degraded failed id=%s kind=%s", orchestrator_id, kind,
         )
+
+
+async def orchestrator_member_owners(chat_ids: list[str]) -> dict[str, str]:
+    """Map a member chat id to the orchestrator's OWN chat id.
+
+    The orchestrator's own chat is `orchestrators.planner_chat_id`, not a
+    `chat_id` column -- the table has no such column, and a join against one
+    would raise `no such column` rather than degrade quietly.
+
+    Returns `{}` for an empty input rather than querying: the sidebar asks on
+    every load, and `IN ()` is not valid SQL.
+    """
+    if not chat_ids:
+        return {}
+    marks = ", ".join("?" * len(chat_ids))
+    # ORDER BY is not cosmetic: `orchestrator_members`' primary key is
+    # (orchestrator_id, chat_id), so one chat can belong to several
+    # orchestrators, and the dict comprehension below lets the LAST row for a
+    # given chat_id win. With no ORDER BY, "last" is whatever order SQLite
+    # happens to return -- unspecified, and free to change between polls --
+    # so a chat in two orchestrators could flip parents from one sidebar
+    # refresh to the next. Ordering ascending by added_at makes the dict
+    # comprehension's "last row wins" resolve deterministically to the most
+    # recently added membership, every time. (0 chats are in more than one
+    # orchestrator today, so this has no observed effect yet -- it closes the
+    # failure mode before it has a chat to bite.)
+    cursor = await db.db_conn.execute(
+        "SELECT m.chat_id AS member, o.planner_chat_id AS owner "
+        "FROM orchestrator_members m "
+        "JOIN orchestrators o ON o.id = m.orchestrator_id "
+        f"WHERE m.chat_id IN ({marks}) "  # nosec B608: parameterised
+        "ORDER BY m.added_at, m.orchestrator_id",
+        tuple(chat_ids),
+    )
+    return {r["member"]: r["owner"] for r in await cursor.fetchall()
+            if r["owner"]}

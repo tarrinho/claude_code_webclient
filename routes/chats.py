@@ -24,6 +24,7 @@ from typing import Any, Final
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+import chat_tree
 import config
 import db
 import prompts
@@ -347,9 +348,7 @@ async def handle_chats_list(request: Request):
         for entry in await db.read_claude_sessions()
         if entry.get("sessionId") and entry.get("name")
     }
-    return JSONResponse(
-        {
-            "chats": [
+    items = [
                 {
                     "id": c["id"],
                     "title": c["title"],
@@ -401,9 +400,15 @@ async def handle_chats_list(request: Request):
                         c.get("session_id"), c.get("title"), session_names),
                 }
                 for c in chats
-            ],
-        }
-    )
+            ]
+    # One query for every conversation's subagents rather than one per row: a
+    # sidebar that costs a query per chat gets slower in proportion to how much
+    # work you have done, which is backwards.
+    chat_ids = [row["id"] for row in items]
+    subagents = await db.subagents_for_chats(chat_ids)
+    member_of = await db.orchestrator_member_owners(chat_ids)
+    items = chat_tree.build_chat_tree(items, subagents, member_of)
+    return JSONResponse({"chats": items})
 
 
 async def handle_chat_create(request: Request):
@@ -2086,6 +2091,46 @@ async def _repair_after_refusal(chat_id: str, session_id: str | None) -> None:
     await db.chat_mark_degraded(chat_id, "transcript", detail)
 
 
+def _parse_iso_ts(stamp: Any) -> datetime.datetime | None:
+    """Parse an ISO-8601 timestamp (``Z`` or explicit offset) to an aware
+    ``datetime``, or ``None`` if *stamp* is missing or does not parse."""
+    if not stamp:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _drop_subagents_before_chat(
+    subagents: list[dict[str, Any]], chat: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Drop rows whose ``started_at`` predates *chat*'s own ``created_at``.
+
+    ``_scan_tasks_sync`` below reads the whole SESSION transcript, but several
+    chats can share one ``session_id`` -- ``handle_chats_list``'s own comment
+    says so, and on the live database 11 session_ids are shared by 2+ chats,
+    covering 27 of 105 chats. Without this filter, every chat on a shared
+    session records the session's entire subagent history, including
+    subagents spawned before that chat existed, and the same rows show up
+    under every sibling.
+
+    A missing or unparseable timestamp on either side keeps the row rather
+    than dropping it: a subagent shown under one extra chat is a smaller
+    fault than one silently lost.
+    """
+    created = _parse_iso_ts(chat.get("created_at"))
+    if created is None:
+        return subagents
+    kept = []
+    for row in subagents:
+        started = _parse_iso_ts(row.get("started_at"))
+        if started is not None and started < created:
+            continue
+        kept.append(row)
+    return kept
+
+
 async def _start_turn(
     chat: dict, owner: str, prompt: str, model: str | None
 ) -> turns.LiveTurn:
@@ -2232,6 +2277,31 @@ async def _start_turn(
             await db.generated_image_record(
                 chat_id, chat["title"], chat["work_dir"], owner, images,
             )
+        # Subagents this turn spawned -- secondary index, same failure rule
+        # as images above.
+        #
+        # Whole-file scan: a `tool_result` lands after its `tool_use`, so
+        # finishing one needs a re-pass over region already read. The
+        # size-keyed cache in _scan_tasks_sync does NOT help here: this turn
+        # just appended to the file, so the size key always misses; it only
+        # helps a second call in the same idle window. Measured: median
+        # 0.16 MB (~1.5ms), largest 141 MB (~1.33s CPU, ~300MB RSS; 13/3068
+        # exceed 16 MB) -- tolerable: threaded (asyncio.to_thread) and
+        # failure-isolated, not cheap.
+        if session_id:
+            try:
+                task_path = transcripts.transcript_path(session_id)
+                if task_path is not None:
+                    subagents = await asyncio.to_thread(
+                        transcripts._scan_tasks_sync, task_path)
+                    subagents = _drop_subagents_before_chat(subagents, chat)
+                    if subagents:
+                        await db.subagent_record(chat_id, subagents)
+            except Exception:
+                # Logged, never raised. The turn is already stored; losing a
+                # sidebar node is not worth failing the request for.
+                _log.warning("subagent_capture_failed chat_id=%s", chat_id,
+                             exc_info=True)
         await db.bump_chat_updated_at(chat_id)
         if session_id and session_id != chat["session_id"]:
             await db.chat_set_session(chat_id, session_id)

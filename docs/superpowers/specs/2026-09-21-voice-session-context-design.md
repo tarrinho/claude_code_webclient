@@ -1,7 +1,8 @@
 # Voice session context — design
 
-**Status:** design, not implemented
-**Date:** 2026-09-21
+**Status:** part 1 (context) implemented and deployed; part 2 (audio) half
+implemented — the thinking tone is live, the interrupt words are not.
+**Date:** 2026-09-21, amended 2026-09-22 to match what shipped.
 
 A voice session should open knowing what the conversation it came from is
 about, be able to look up any detail it is unsure of, and be interruptible by
@@ -108,9 +109,12 @@ before implementation.**
   session opens, which for a feature whose point is talking is a long time to
   stare at a status line.
 
-Recorded here rather than resolved, because it trades cost against startup
-latency and that is the operator's call. §11 assumes the first option; if the
-second is chosen, §3's budget changes and nothing else does.
+**Resolved 2026-09-21: the walk starts at `claude-sonnet-5`.** Implemented as
+`MIN_RUNG_ACCURACY = 0.75` in `voice_context.py`, which drops any rung measured
+below that and so skips luna at 0.583 while keeping everything else. The budget
+stays at 15 seconds. A live run confirmed it: the status line went
+`initialising → summarising (claude-sonnet-5) → ready` without luna being
+attempted.
 
 ## 2. Amendments to the stated requirements
 
@@ -183,18 +187,46 @@ summarisation and the fetch tool and hands `voice.py` two finished things: a
 context string and a bound tool. `voice.py`'s own responsibilities do not
 change.
 
-**Binding.** The tool is constructed with the parent `chat_id` captured in the
-closure. Its schema takes **only** `from_id` and `to_id` — there is no chat
-parameter to supply, so it cannot address another conversation. This is a
-structural guarantee rather than a validated one: the model cannot express the
-request that would read someone else's chat.
+**Binding — widened on 2026-09-21, guarantee unchanged.** Requirement 6 bound
+the tool to the originating chat alone. By operator decision it now reaches
+that chat **plus the other chats of the same CLI session**: several chats
+routinely share one terminal session (three apiece is typical here), and those
+are the conversations a voice session opened from one of them is most likely
+to be asked about.
+
+The widening deliberately did **not** add a chat parameter. `messages.id` is a
+single autoincrement across the whole table, so an id range is already
+unambiguous without naming a chat. The allowlist is computed once when the
+turn starts and closed over; the schema still exposes only `from_id` and
+`to_id`. The model therefore still cannot *express* a request for a
+conversation outside the set — structural, not validated, exactly as before.
+`chats_in_session` is owner-scoped, so the set can never cross an account
+boundary, and `messages_range_in` returns nothing on an empty allowlist,
+because an `IN` clause built from an empty list is the one shape that would
+otherwise match every row.
 
 **Signature and behaviour.** `fetch_messages(from_id, to_id)` returns the
-messages of the bound chat whose `messages.id` falls in that inclusive range,
-verbatim, in id order, each with its id, role and content. `messages.id` is a
-stable ordered integer key, which is what makes a range expressible. A range
-that matches nothing returns an empty list rather than an error, because "there
-is nothing there" is a true and useful answer.
+messages of the reachable chats whose `messages.id` falls in that inclusive
+range, verbatim, in id order, each with its id, role and content. A range that
+matches nothing returns an empty list rather than an error, because "there is
+nothing there" is a true and useful answer.
+
+**Both ids are optional, and that is the fix for a defect this spec caused.**
+As first written the schema *required* `from_id` and `to_id`, and nothing
+anywhere told the model which ids exist — not the instruction, not the schema,
+not the summary, which is prose. On this database they run from 143 to
+131,343, so any range the model invented returned nothing. Reported from use
+on 2026-09-21: asked for the session's last problem, the model said it could
+not find it. That was the honest answer; it had been handed a tool it could
+not call.
+
+Two changes fix it. The turn now computes `messages_id_bounds` for the
+reachable set and states the range in the instruction, noting that higher ids
+are more recent. And **omitting both ids returns the most recent messages**,
+because "the last anything" is the commonest question a voice session gets and
+was the one shape the original schema could not express. A single supplied id
+is read as a point rather than refused, which saves a round trip spent
+teaching the model the schema.
 
 **Result bounding.** A range can name 15,175 messages. The tool returns at most
 **200 messages or 40,000 characters**, whichever comes first, and says
@@ -356,7 +388,86 @@ Part 1 is the larger of the two, and within it the tool-calling loop (§4's
 "Wiring") is the single riskiest piece, being the only genuinely new mechanism
 on this path.
 
-## 12. Open risk
+## 12. The rule this feature exists to teach
+
+Five things in this feature shipped broken. Four of them were the same defect
+wearing different clothes, and it is worth stating as a rule rather than a
+tally, because the tally invites the reader to think they were five separate
+lapses of attention. They were one, repeated.
+
+**The rule: a write path with no reachable read path is not finished, and it
+does not look unfinished. Prove the read before claiming the write.**
+
+The four:
+
+| built | not connected |
+|---|---|
+| summary written to `chats.voice_context` | column absent from `_CHAT_COLUMNS`, so every read returned empty |
+| `make_fetch_tool` and `FETCH_TOOL_SCHEMA` | nothing imported them; `chat.completions.create` passed no `tools` |
+| `messages_range_in`, `chats_in_session` and friends | never registered in `db.py`'s dispatch table |
+| the fetch tool attached to the turn | `VOICE_SYSTEM_PROMPT` still said "You have no tools", which a model obeys |
+
+Every one of them passed its own tests. Every one read as complete in review.
+In each case the missing half was one line in a different file, and the symptom
+was not an error but a silent fallback to the older behaviour — which is the
+worst possible symptom, because the feature appears to work and the old
+behaviour appears to be the new one.
+
+What follows from it, in the order the cost is paid:
+
+- **The test that matters is the one that reads back what was written.** Not
+  that the writer ran, not that the column exists — that a caller downstream
+  receives the value. `test_the_readers_are_reachable_on_the_db_facade` exists
+  for exactly this and would have caught three of the four.
+- **A dispatch table, an allowlist and a column list are all the same hazard.**
+  Anywhere a name must be repeated in a second place to take effect,
+  forgetting the second place is invisible. This codebase has at least four:
+  `db.py`'s dispatch, `_CHAT_COLUMNS`, `_ALLOWED_CHAT_FIELDS`, and
+  `_EDITABLE`.
+- **A prompt is a connection too.** The fourth case is the same defect in
+  natural language: the capability was wired and the model was told it did not
+  have it. Text that describes the system's abilities has to be updated with
+  the abilities.
+
+The fifth defect is a different shape and is recorded separately so it is not
+folded into the rule above: the panel blocked on its own summary.
+`await runVoiceContext(...)` sat before the calls that enable the microphone,
+so the session could neither hear nor answer for as long as the walk took. Its
+lesson is narrower — when you make something slow, check what is waiting on it.
+
+### 12.1 Status
+
+**Live and deployed:** the summary at session open with the ladder walk and
+status line (§3, §5); the fetch tool, wired to the model, widened to
+same-session siblings, with id bounds stated and recency expressible (§4); the
+thinking tone (§6). The §0 keyword heuristic is retired, surviving only as a
+fallback for a session with no stored summary.
+
+**Not built:** the interrupt words of §7. The engine still matches `stop` only,
+still runs the recogniser only while `speaking` and not while `thinking`, and
+has no self-echo suppression. `wait` and `pause` do nothing.
+
+## 13. Known defects outside this spec's scope
+
+Found while testing the above, on 2026-09-21, in the pre-existing handoff path
+(`voice_handoff`), which this design does not otherwise touch:
+
+- **The voice panel's own stop button was never wired.** `voiceTooltipStop` was
+  declared in `voice-tooltip.js` and given no listener, so pressing it did
+  nothing. Ending the conversation is what reveals the summarize-to-parent
+  controls (`voice-handoff.js` listens for `voice:stopped` with
+  `endConversation` set), so the handoff feature was reachable only from the
+  page-level stop button and looked absent. Fixed 2026-09-22.
+- **A parent pinned to a keyless backend loses its summary silently.**
+  `voice_handoff` needs an API key to call the summarising model directly. An
+  Anthropic Oauth backend authenticates by host login and stores no key, so the
+  handoff takes its no-key branch: it records the conversation, deletes the
+  temporary chat, and returns `None`. The user sees a 400 with no reason. The
+  deletion itself is by design — every path deletes the temp chat, and the
+  conversation is written to a conversation recording first — but the summary
+  is lost and nothing says why. **Not yet fixed.**
+
+## 14. Open risk
 
 The first ladder rung is measured at 58.3% comprehension accuracy. Under §2's
 degraded open, the expected steady state is that a meaningful share of voice

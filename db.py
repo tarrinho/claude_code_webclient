@@ -146,6 +146,7 @@ def __getattr__(name: str):
         "orchestrator_member_add": "routes.db_orchestrators",
         "orchestrator_member_remove": "routes.db_orchestrators",
         "orchestrator_members_list": "routes.db_orchestrators",
+        "orchestrator_member_owners": "routes.db_orchestrators",
         "orchestrator_messages_append": "routes.db_orchestrators",
         "orchestrator_messages_get": "routes.db_orchestrators",
         "orchestrator_progress": "routes.db_orchestrators",
@@ -343,6 +344,9 @@ def __getattr__(name: str):
         "read_marks_get": "routes.db_read_marks",
         "read_mark_set": "routes.db_read_marks",
         "chat_last_activity": "routes.db_read_marks",
+        # subagents (Task-tool children, for the chat list hierarchy)
+        "subagent_record": "routes.db_subagents",
+        "subagents_for_chats": "routes.db_subagents",
         # backup / restore
         "db_backup": "routes.db_backup",
         "_db_backup_sync": "routes.db_backup",
@@ -1001,6 +1005,29 @@ async def init() -> None:
             ON generated_images(owner_id, created_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_chat_path
             ON generated_images(chat_id, path);
+
+        -- One row per Task-tool subagent a conversation spawned. Display-only:
+        -- there is no transcript and nothing to open. Subagents run INSIDE the
+        -- CLI process (CLAUDE.md §0), so the console cannot hook their spawn --
+        -- they are observable only in the transcript, and this table is where
+        -- that observation is kept.
+        --
+        -- UNIQUE(chat_id, tool_use_id) with INSERT OR IGNORE is the idempotency
+        -- rule, the same one generated_images uses: a transcript gets re-scanned
+        -- for reasons that have nothing to do with this feature.
+        CREATE TABLE IF NOT EXISTS chat_subagents (
+            id           INTEGER PRIMARY KEY,
+            chat_id      TEXT NOT NULL,
+            tool_use_id  TEXT NOT NULL,
+            agent_type   TEXT,
+            description  TEXT,
+            status       TEXT NOT NULL DEFAULT 'running',
+            started_at   TEXT NOT NULL,
+            ended_at     TEXT,
+            UNIQUE(chat_id, tool_use_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_subagents_chat
+            ON chat_subagents(chat_id);
     """)
     await _ensure_chat_columns()
     await _ensure_machines_columns()

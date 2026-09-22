@@ -185,7 +185,30 @@ class SummaryPromptTests(unittest.TestCase):
         """A summary built from a tail the model believes is the whole chat is
         worse than one it knows is partial."""
         prompt = vc.summary_prompt([_msg(1, "hi")], truncated=True)
-        self.assertIn("most recent part", prompt)
+        self.assertIn("most recent", prompt)
+
+    def test_a_small_and_a_huge_truncation_do_not_read_the_same(self):
+        """A boolean note is useless: dropping one message and dropping
+        fifteen thousand produced identical wording, so the model could not
+        judge whether the rest was worth fetching."""
+        window = [_msg(i, "x") for i in range(100)]
+        nearly_whole = vc.summary_prompt(window, truncated=True, total_messages=101)
+        mostly_missing = vc.summary_prompt(window, truncated=True, total_messages=15175)
+        self.assertNotEqual(nearly_whole, mostly_missing)
+        self.assertIn("1%", nearly_whole)
+        self.assertIn("99%", mostly_missing)
+
+    def test_the_note_points_at_the_tool_that_can_recover_the_rest(self):
+        window = [_msg(i, "x") for i in range(100)]
+        prompt = vc.summary_prompt(window, truncated=True, total_messages=15175)
+        self.assertIn("fetch tool", prompt)
+
+    def test_the_note_is_grammatical_for_a_single_dropped_message(self):
+        """It is read by a model and may be spoken back."""
+        window = [_msg(i, "x") for i in range(100)]
+        prompt = vc.summary_prompt(window, truncated=True, total_messages=101)
+        self.assertIn("1 older message ", prompt)
+        self.assertNotIn("1 older messages", prompt)
 
     def test_a_whole_chat_carries_no_truncation_note(self):
         prompt = vc.summary_prompt([_msg(1, "hi")], truncated=False)

@@ -6,7 +6,7 @@
 // logic indefinitely, no matter how many times app.js itself was reloaded.
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
-import {createChatListController} from './chat-list.js?v=5571793';
+import {createChatListController} from './chat-list.js?v=12311311';
 import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=8067332';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';

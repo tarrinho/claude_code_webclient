@@ -40,12 +40,20 @@ function _buildOriginBreakdown(data) {
     // terminal is typed into that terminal instead of run by the server.
     'web-routed': 'Asked here, ran in its terminal',
     terminal: 'Terminal sessions (including agents)',
+    // These three write rows and had no label, so they rendered as their raw
+    // origin string. Small, but the page is meant to explain where spend came
+    // from, and "voice-summary" explains nothing to whoever reads it.
+    voice: 'Voice conversations',
+    'voice-summary': 'Voice summaries',
+    orchestrator: 'Orchestrator runs',
   };
   rows.forEach(row => {
-    const total = (row.input_tokens || 0) + (row.output_tokens || 0);
-    const unsplit = row.unsplit_tokens || 0;
-    // The comparable number is what is left once re-counted context is removed.
-    const comparable = Math.max(0, total - unsplit);
+    // Both numbers come from the server, which holds the only definition of
+    // each. This file used to compute its own -- summing input+output and
+    // subtracting re-counted context -- which is how the page ended up with
+    // three different answers to "how many tokens", none of them labelled.
+    const fresh = row.new_tokens || 0;
+    const total = row.total_tokens || 0;
 
     const item = document.createElement('div');
     item.className = 'usage-origin-row';
@@ -54,18 +62,24 @@ function _buildOriginBreakdown(data) {
     name.textContent = LABELS[row.origin] || row.origin;
     const figure = document.createElement('span');
     figure.className = 'usage-origin-figure';
-    figure.textContent = `${row.requests} req · ${_abbrev(comparable)} tokens`;
-    figure.title = `${comparable.toLocaleString()} tokens`;
+    figure.textContent =
+      `${row.requests} req · ${_abbrev(fresh)} new / ${_abbrev(total)} total`;
+    figure.title =
+      `${fresh.toLocaleString()} new, ${total.toLocaleString()} processed`;
     item.append(name, figure);
     section.appendChild(item);
 
+    // Only where the gap is actually unexplained. Saying it on every row would
+    // train the reader to skip it.
+    const unsplit = row.unsplit_tokens || 0;
     if (unsplit) {
       const note = document.createElement('p');
       note.className = 'usage-origin-note';
       note.textContent =
-        `Plus ${_abbrev(unsplit)} tokens not counted above. ` +
-        (row.unsplit_note || '');
-      note.title = `${unsplit.toLocaleString()} tokens excluded`;
+        `${_abbrev(unsplit)} of this is context re-sent by a model that ` +
+        'reports no cache breakdown, so it counts towards the total but not ' +
+        'towards new.';
+      note.title = `${unsplit.toLocaleString()} tokens of unclassifiable input`;
       section.appendChild(note);
     }
   });
@@ -97,16 +111,19 @@ function _buildSessionBreakdown(data) {
     name.title = row.session_id || '';
     const figure = document.createElement('span');
     figure.className = 'usage-origin-figure';
-    const total = (row.input_tokens || 0) + (row.output_tokens || 0);
-    figure.textContent = `${row.requests} req · ${_abbrev(total)}`;
-    figure.title = `${total.toLocaleString()} tokens`;
+    const fresh = row.new_tokens || 0;
+    const total = row.total_tokens || 0;
+    figure.textContent =
+      `${row.requests} req · ${_abbrev(fresh)} new / ${_abbrev(total)} total`;
+    figure.title =
+      `${fresh.toLocaleString()} new, ${total.toLocaleString()} processed`;
     if (row.context_unsplit) {
       const flag = document.createElement('span');
       flag.className = 'usage-unsplit-flag';
       flag.textContent = 'context not split';
       flag.title =
-        'This model reports no cache breakdown, so each turn counts the whole ' +
-        'conversation again rather than new tokens.';
+        'This model reports no cache breakdown, so its re-sent context counts ' +
+        'towards the total but cannot be counted as new.';
       figure.appendChild(flag);
     }
     item.append(name, figure);
@@ -123,9 +140,20 @@ export function _renderUsage() {
   const overall = _usageData.overall || {};
 
   const count = byId('usageCount');
+  // Two numbers, both named. The old header printed input and output and
+  // called it the total, which on this deployment left 53.1 billion cache-read
+  // tokens -- four fifths of everything processed -- off a figure presented as
+  // complete.
   count.textContent = overall.requests
-    ? `${overall.requests} requests · ${_abbrev(overall.input_tokens)} in · ${_abbrev(overall.output_tokens)} out`
+    ? `${overall.requests} requests · ${_abbrev(overall.new_tokens)} new · ` +
+      `${_abbrev(overall.total_tokens)} processed`
     : 'No requests yet';
+  if (overall.requests) {
+    count.title =
+      `${Number(overall.new_tokens || 0).toLocaleString()} new tokens\n` +
+      `${Number(overall.total_tokens || 0).toLocaleString()} tokens processed ` +
+      '(includes cache reads and cache writes)';
+  }
 
   if (!totals.length) {
     // An empty range is not the same as zero usage; say which it is.
@@ -153,7 +181,9 @@ export function _renderUsage() {
   head.className = 'usage-row usage-head';
   head.append(
     _cell('Model', 'usage-model'), _cell('Reqs', 'usage-num'),
-    _cell('Input', 'usage-num'), _cell('Output', 'usage-num'),
+    _cell('New', 'usage-num', 'Tokens that were not re-read context'),
+    _cell('Total', 'usage-num',
+          'Everything processed, including cache reads and cache writes'),
     _cell('Cost', 'usage-num'),
   );
   table.appendChild(head);
@@ -171,18 +201,30 @@ export function _renderUsage() {
     }
     // The dash carries its own explanation, preferring Claude Code's own
     // verdict on the cost basis over anything we infer from the base URL.
-    const cost = row.cost_usd === null || row.cost_usd === undefined
+    // A cost summed from a handful of rows is a sample, not a total. On this
+    // deployment cost_usd is NULL on 216,730 of 217,074 rows, so the figure
+    // came from 0.16% of the usage it sat beside and said nothing about that.
+    // Where no row carried a cost the dash is honest; where some did, the
+    // number is shown with how much of the model's traffic it covers.
+    const costed = row.costed_requests || 0;
+    const cost = !costed
       ? _cell('—', 'usage-num usage-muted',
-              row.cost_note || 'Not available for this backend.')
-      : _cell(`$${Number(row.cost_usd).toFixed(2)}`, 'usage-num',
-              row.cost_basis_unknown
-                ? 'Claude Code reported the cost basis as unknown.'
-                : undefined);
+              row.cost_note || 'No turn on this model reported a cost.')
+      : _cell(`$${Number(row.cost_usd || 0).toFixed(2)}`,
+              costed < row.requests ? 'usage-num usage-partial' : 'usage-num',
+              costed < row.requests
+                ? `From ${costed.toLocaleString()} of ${Number(row.requests).toLocaleString()} `
+                  + 'turns; the rest reported no cost.'
+                : (row.cost_basis_unknown
+                   ? 'Claude Code reported the cost basis as unknown.'
+                   : undefined));
     line.append(
       name,
       _cell(String(row.requests), 'usage-num'),
-      _cell(_abbrev(row.input_tokens), 'usage-num', `${row.input_tokens} tokens`),
-      _cell(_abbrev(row.output_tokens), 'usage-num', `${row.output_tokens} tokens`),
+      _cell(_abbrev(row.new_tokens), 'usage-num',
+            `${Number(row.new_tokens || 0).toLocaleString()} new tokens`),
+      _cell(_abbrev(row.total_tokens), 'usage-num',
+            `${Number(row.total_tokens || 0).toLocaleString()} tokens processed`),
       cost,
     );
     table.appendChild(line);

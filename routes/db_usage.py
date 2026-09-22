@@ -689,6 +689,45 @@ def routed_owner_of(
     return None
 
 
+# The Usage page reports two numbers for every row it shows, and these are the
+# only definitions of them. Written once here because the page previously used
+# three different answers -- the headline summed input+output, the origin rows
+# subtracted re-read context from that, and the per-model table showed input and
+# output in separate columns -- so no two sections agreed and none of them said
+# which question it was answering.
+#
+# TOTAL is everything the model actually read and wrote. Cache reads are real
+# processed context and are billed, so leaving them out understated this
+# deployment by 5.1x: 13.2 billion shown against 67.2 billion moved, with 53.1
+# billion of cache reads invisible.
+#
+# NEW is the part that was not re-read context. For a model reporting a cache
+# breakdown that is input_tokens, which already excludes the cached prefix. For
+# a model reporting none (`context_unsplit`), input_tokens is the whole
+# conversation re-sent every turn, and how much of it was new is genuinely
+# unknown -- so it is excluded from NEW rather than guessed at, and the page
+# says so. Output is always new by construction.
+#
+# What this deliberately does NOT do is subtract unsplit input from a combined
+# figure, which is what the old origin breakdown did. That cut terminal usage
+# from 10.24 billion to 148 million and made it read as 12x smaller than the
+# website, when measured against TOTAL it is several times larger.
+_NEW_TOKENS = (
+    "COALESCE(SUM(output_tokens), 0) + "
+    "COALESCE(SUM(CASE WHEN context_unsplit = 1 THEN 0 "
+    "                  ELSE input_tokens END), 0)"
+)
+_TOTAL_TOKENS = (
+    "COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) + "
+    "COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_creation_tokens), 0)"
+)
+# Input the page cannot classify: present in TOTAL, absent from NEW. The page
+# prints this so a gap between the two numbers is explained rather than noticed.
+_UNSPLIT_TOKENS = (
+    "COALESCE(SUM(CASE WHEN context_unsplit = 1 THEN input_tokens ELSE 0 END), 0)"
+)
+
+
 @db.write
 async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str, Any]]:
     """Totals split by where the turn came from: this website, or a terminal.
@@ -708,10 +747,12 @@ async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str
         "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
         "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
         "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
-        "COALESCE(SUM(CASE WHEN context_unsplit = 1 "
-        "                  THEN input_tokens ELSE 0 END), 0) AS unsplit_tokens, "
-        "SUM(CASE WHEN context_unsplit = 1 THEN 1 ELSE 0 END) AS unsplit_requests "
-        f"FROM usage_events {where} GROUP BY origin ORDER BY origin",  # nosec B608
+        f"{_UNSPLIT_TOKENS} AS unsplit_tokens, "
+        "SUM(CASE WHEN context_unsplit = 1 THEN 1 ELSE 0 END) AS unsplit_requests, "
+        f"{_NEW_TOKENS} AS new_tokens, "
+        f"{_TOTAL_TOKENS} AS total_tokens "
+        f"FROM usage_events {where} GROUP BY origin "  # nosec B608
+        "ORDER BY total_tokens DESC",
         params,
     )
     return [dict(row) for row in await cur.fetchall()]
@@ -789,11 +830,19 @@ async def usage_by_session(
         "COALESCE(SUM(u.input_tokens), 0) AS input_tokens, "
         "COALESCE(SUM(u.output_tokens), 0) AS output_tokens, "
         "COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens, "
+        "COALESCE(SUM(u.cache_creation_tokens), 0) AS cache_creation_tokens, "
         "MAX(u.context_unsplit) AS context_unsplit, "
-        "MAX(u.created_at) AS last_seen "
+        "MAX(u.created_at) AS last_seen, "
+        # Unqualified column names: this query has one table, so the `u` alias
+        # is optional and the shared fragments stay usable everywhere.
+        f"{_NEW_TOKENS} AS new_tokens, "
+        f"{_TOTAL_TOKENS} AS total_tokens "
         f"FROM usage_events u {where} "  # nosec B608
         "GROUP BY u.session_id "
-        "ORDER BY SUM(u.input_tokens + u.output_tokens) DESC LIMIT ?",
+        # Ordered by TOTAL, matching what the page now leads with. It used to
+        # order by input+output, so the list could disagree with its own
+        # figures once cache reads were shown.
+        "ORDER BY total_tokens DESC LIMIT ?",
         [*params, max(1, min(int(limit), 100))],
     )
     return [dict(row) for row in await cur.fetchall()]
@@ -818,7 +867,13 @@ async def usage_totals(owner_id: str, days: int | None = 30) -> list[dict[str, A
         "SUM(COALESCE(cost_usd, 0)) AS cost_usd, "
         "SUM(is_error) AS errors, MAX(created_at) AS last_used, "
         "MAX(CASE WHEN cost_basis = 'unknown' THEN 1 ELSE 0 END) "
-        "AS cost_basis_unknown "
+        "AS cost_basis_unknown, "
+        f"{_NEW_TOKENS} AS new_tokens, "
+        f"{_TOTAL_TOKENS} AS total_tokens, "
+        # How much of this model's cost figure is real. cost_usd is NULL on
+        # 216,730 of 217,074 rows here, so a summed total is a sample
+        # presented as a total unless the page can say how big the sample is.
+        "SUM(CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS costed_requests "
         f"FROM usage_events WHERE {where} "  # nosec B608: clause is static
         "GROUP BY model, provider ORDER BY requests DESC, model ASC",
         params,
@@ -843,6 +898,12 @@ async def usage_overall(owner_id: str, days: int | None = 30) -> dict[str, Any]:
         "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
         "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
         "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+        "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens, "
+        f"{_NEW_TOKENS} AS new_tokens, "
+        f"{_TOTAL_TOKENS} AS total_tokens, "
+        f"{_UNSPLIT_TOKENS} AS unsplit_tokens, "
+        "SUM(CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS costed_requests, "
+        "COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS cost_usd, "
         "COALESCE(SUM(is_error), 0) AS errors, "
         "COUNT(DISTINCT model) AS models "
         f"FROM usage_events WHERE {where}",  # nosec B608: clause is static

@@ -501,7 +501,7 @@ async function _switchTab(tab) {
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────────
-import { _renderUsage, loadUsage } from './usage.js?v=6329126';
+import { _renderUsage, loadUsage } from './usage.js?v=12775289';
 // The same rows the Usage tab sums, kept in time order. Rendered by stats.js,
 // which owns the SVG; this only fetches and reports failure.
 

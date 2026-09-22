@@ -240,6 +240,7 @@ async def usage_import(
             last = start + USAGE_IMPORT_BATCH >= len(rows)
             checkpoint = int(offset) if last else int(batch[-1].get("offset") or offset)
             try:
+                before_changes = db.db_conn.total_changes
                 await db.db_conn.execute("BEGIN")
                 for row in batch:
                     routed = db.routed_owner_of(
@@ -248,15 +249,22 @@ async def usage_import(
                         str(row.get("timestamp") or ""),
                         str(row.get("after_prompt") or ""),
                     )
+                    # OR IGNORE, paired with the partial unique index in
+                    # _ensure_usage_uniqueness: a turn this import has already
+                    # recorded is skipped rather than written twice. Without
+                    # the index this clause is inert, and without this clause
+                    # the index would raise IntegrityError and abort the whole
+                    # batch -- losing the turns after it as well as the one
+                    # already held.
                     await db.db_conn.execute(
-                        "INSERT INTO usage_events "
+                        "INSERT OR IGNORE INTO usage_events "
                         "(chat_id, session_id, owner_id, model, requested_model, "
                         " provider, input_tokens, "
                         " output_tokens, cache_read_tokens, cache_creation_tokens, "
                         " cost_usd, cost_basis, duration_ms, is_error, created_at, "
-                        " origin, context_unsplit) "
+                        " origin, context_unsplit, source_offset) "
                         "VALUES (?, ?, ?, ?, ?, 'cli', ?, ?, ?, ?, ?, ?, NULL, 0, ?, "
-                        " ?, ?)",
+                        " ?, ?, ?)",
                         (
                             routed["chat_id"] if routed else "",
                             session_id,
@@ -272,19 +280,132 @@ async def usage_import(
                             row.get("timestamp") or db._now(),
                             "web-routed" if routed else "terminal",
                             1 if row.get("context_unsplit") else 0,
+                            # The line this turn came from. None rather than 0
+                            # when absent: 0 is a real offset, and the index is
+                            # partial on IS NOT NULL, so a missing value must
+                            # opt out of the constraint rather than collide
+                            # with the first line of the file.
+                            (None if row.get("offset") is None
+                             else int(row["offset"])),
                         ),
                     )
+                # Rows actually inserted, not rows offered. With OR IGNORE
+                # above these diverge whenever a turn was already recorded,
+                # and `len(batch)` would report an import that did nothing as
+                # a full success -- the caller logs this number as
+                # "cli_usage_imported rows=N".
+                #
+                # Read BEFORE the cursor upsert below, not after the commit:
+                # total_changes counts every statement on the connection, and
+                # the cursor write is one of them. Measuring after it reported
+                # exactly one row too many per batch, which the concurrency
+                # test caught as [61, 61] against an expected [60, 60].
+                inserted = db.db_conn.total_changes - before_changes
                 await db.db_conn.execute(
                     "INSERT INTO usage_cursors (session_id, offset) VALUES (?, ?) "
                     "ON CONFLICT(session_id) DO UPDATE SET offset = excluded.offset",
                     (session_id, checkpoint),
                 )
                 await db.db_conn.commit()
-                written += len(batch)
+                written += inserted
             except Exception:
                 await db.db_conn.rollback()
                 raise
     return written
+
+
+@db.write
+async def _ensure_usage_uniqueness() -> None:
+    """Collapse re-imported transcript turns, then make them impossible.
+
+    Measured on this deployment 2026-09-22: 23,557 of 217,074 usage rows were
+    exact duplicates -- same session, same millisecond timestamp, same model
+    and all four token counts. That is 10.9% of the table, and both the turn
+    count and every token total were inflated by it. The newest was two days
+    old, so it was not a historical artefact.
+
+    It is not the documented "one row per turn per model" behaviour, which
+    `usage_agent_totals` describes and which would be legitimate: of the extra
+    rows, *zero* carried a second model. Nor is it a batching fault -- duplicate
+    pairs were never adjacent in rowid (0 of 23,448 groups) and 97.7% sat more
+    than 10,000 rows apart, so the copies came from separate import passes. They
+    concentrated in 12 sessions out of 2,060.
+
+    The suspected source is that `transcripts._usage_since_sync` resumes on a
+    byte offset guarded only by `offset >= size`, while the sibling read path
+    carries `_RESUME_ANCHOR_BYTES` for exactly this reason: a size comparison
+    cannot tell "appended to" from "rewritten to a similar length", and
+    `repair_if_needed()` rewrites transcripts in place. A rewrite shifts every
+    offset, the cursor lands mid-history, and turns already imported are
+    imported again.
+
+    This function does not depend on that diagnosis being right, which is why
+    it exists separately from any fix to the reader. A unique index makes the
+    table self-defending against *any* path that re-inserts an identical turn,
+    including ones nobody has thought of. If the reader is later fixed, this
+    stays correct and costs one index.
+
+    The two halves use DIFFERENT keys on purpose, and that is the design:
+
+    * History is matched on content, because those rows carry no
+      `source_offset` and never can -- the offsets they came from were not
+      recorded at the time.
+    * Everything after this runs is matched on `(session_id, source_offset)`,
+      the transcript line the turn came from, which names it exactly.
+
+    A single content-based key for both would have been simpler and wrong. The
+    importer can legitimately write two rows for one session at one timestamp
+    with identical token counts, told apart only by which routed request they
+    answer; a content key drops the second and loses real spend. That is not
+    hypothetical -- it is what `tests/test_qa_usage_origin.py` builds, and the
+    first version of this migration broke it.
+
+    The delete must run before the index is created. SQLite refuses to build a
+    UNIQUE index over a table that already violates it, so the other order
+    would raise on every startup against a database with history, turning a
+    silent over-count into a server that will not boot.
+
+    `MIN(id)` wins so the surviving row is the first import, keeping ids stable
+    for anything that recorded one. Idempotent: the delete matches nothing on a
+    second run, and the index creation is IF NOT EXISTS.
+    """
+    # History: matched on content, because these rows have no source_offset and
+    # never will. Deliberately excludes chat_id and origin, and that choice was
+    # measured rather than assumed. Including chat_id catches 20,821 of the
+    # 23,557, leaving 2,736 groups whose copies differ in it. Those 2,736 are
+    # the whole question, so they were characterised directly: every one of
+    # them holds an empty chat_id alongside a real one AND spans two origins --
+    # the signature of a re-import after the routed markers changed. Groups
+    # holding two DIFFERENT real chat_ids, which would be distinct turns that a
+    # content key wrongly collapses, number exactly zero in this database.
+    await db.db_conn.execute(
+        "DELETE FROM usage_events WHERE id NOT IN ("
+        "  SELECT MIN(id) FROM usage_events"
+        "  GROUP BY session_id, created_at, model, input_tokens,"
+        "           output_tokens, cache_read_tokens, cache_creation_tokens"
+        ") AND session_id IS NOT NULL AND session_id <> ''"
+    )
+    # Going forward: matched on identity, not content. A turn is one line of
+    # one transcript, so (session_id, source_offset) names it exactly -- no
+    # guessing, and no possibility of collapsing two real turns that happen to
+    # agree on every count.
+    #
+    # The content key above must NOT be used here. `usage_import` can legally
+    # write two rows for one session at one timestamp with identical token
+    # counts, routed to different conversations by their `after_prompt` --
+    # tests/test_qa_usage_origin.py builds exactly that, and a content-keyed
+    # index silently dropped the second. Production happens to contain no such
+    # pair today, which is precisely why relying on that would be a trap: the
+    # constraint would hold until the first time someone sent two identical
+    # prompts to one session, and then quietly lose the second turn's spend.
+    #
+    # Partial on IS NOT NULL so pre-column history stays unconstrained.
+    await db.db_conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_import_once "
+        "ON usage_events(session_id, source_offset) "
+        "WHERE source_offset IS NOT NULL"
+    )
+    await db.db_conn.commit()
 
 
 @db.write
@@ -333,6 +454,19 @@ async def _ensure_usage_columns() -> None:
         "billing_route":
             "ALTER TABLE usage_events ADD COLUMN billing_route "
             "TEXT NOT NULL DEFAULT ''",
+        # Where this turn sat in its transcript -- the byte offset just past
+        # its own line, the same value the import cursor checkpoints on. It is
+        # the natural identity of an imported turn: one line, one row. Nothing
+        # reads it; it exists so the unique index in
+        # _ensure_usage_uniqueness can be exact rather than heuristic.
+        #
+        # NULL for every row that predates the column, deliberately and
+        # permanently -- the offsets those rows came from were never recorded
+        # and cannot be recovered. The index is partial on IS NOT NULL for
+        # that reason, so history is left unconstrained and only new imports
+        # are guarded.
+        "source_offset":
+            "ALTER TABLE usage_events ADD COLUMN source_offset INTEGER",
         # The model the work was *asked* to run on, beside `model`, which is
         # what answered. They diverge whenever a turn reaches a live terminal:
         # a running CLI process cannot be re-pointed, so a request routed into

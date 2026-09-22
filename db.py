@@ -1039,6 +1039,12 @@ async def init() -> None:
     # silently not run. See the note where that copy used to be.
     from routes.db_usage import _ensure_usage_columns as _usage_columns
     await _usage_columns()
+    # After the columns, not before: the uniqueness migration groups on
+    # session_id, which the CREATE TABLE above does carry, but it runs beside
+    # the additive migrations and there is no reason to depend on that ordering
+    # being incidental.
+    from routes.db_usage import _ensure_usage_uniqueness as _usage_uniqueness
+    await _usage_uniqueness()
     await _ensure_system_samples_columns()
     await _ensure_orchestrator_columns()
     await _backfill_orchestrators_from_supervisors()

@@ -170,6 +170,57 @@ class UsageDuplicateImportQA(unittest.IsolatedAsyncioTestCase):
         cur = await db.db_conn.execute("SELECT id FROM usage_events")
         self.assertEqual((await cur.fetchone())["id"], first)
 
+    async def test_the_survivor_keeps_the_attribution(self):
+        """Row counts cannot see this, which is the point.
+
+        The duplicates are re-imports written after the routed markers changed,
+        so the copy carrying the corrected chat_id is the LATER one. Keeping
+        MIN(id) therefore kept the unattributed row and deleted the attributed
+        sibling: measured against production, 1,402 groups and 1,403 real
+        chat_ids destroyed, unrecoverably.
+
+        A test asserting only "23,557 removed, redundancy zero" passes against
+        both the broken and the fixed version -- the count, the totals and the
+        redundancy are all correct either way. Only the survivor's contents
+        tell the two apart.
+        """
+        unattributed = _TURN.replace(", 4096", ", NULL")
+        attributed = (
+            "'c-real', 'sess-a', 'admin', 'claude-opus-5', 'cli', 100, 20, 7, 3, 0, "
+            "'2026-09-20T11:04:43.666Z', 'web-routed', NULL")
+        await self._insert_raw(unattributed)   # lower id, no chat_id
+        await self._insert_raw(attributed)     # higher id, carries the chat_id
+
+        from routes.db_usage import _ensure_usage_uniqueness
+        await _ensure_usage_uniqueness()
+
+        self.assertEqual(await self._count(), 1)
+        cur = await db.db_conn.execute(
+            "SELECT chat_id, origin FROM usage_events")
+        row = await cur.fetchone()
+        self.assertEqual(row["chat_id"], "c-real",
+                         "the surviving row lost its conversation")
+        # The whole row survives, not a patched hybrid: origin has to agree
+        # with chat_id, or the origin breakdown files routed spend as
+        # untargeted terminal usage.
+        self.assertEqual(row["origin"], "web-routed",
+                         "origin and chat_id disagree on the surviving row")
+
+    async def test_a_group_with_no_attribution_still_keeps_the_oldest(self):
+        """The fallback. Most duplicate groups carry no chat_id at all."""
+        unattributed = _TURN.replace(", 4096", ", NULL")
+        await self._insert_raw(unattributed)
+        cur = await db.db_conn.execute("SELECT MIN(id) m FROM usage_events")
+        first = (await cur.fetchone())["m"]
+        await self._insert_raw(unattributed)
+
+        from routes.db_usage import _ensure_usage_uniqueness
+        await _ensure_usage_uniqueness()
+
+        self.assertEqual(await self._count(), 1)
+        cur = await db.db_conn.execute("SELECT id FROM usage_events")
+        self.assertEqual((await cur.fetchone())["id"], first)
+
     async def test_the_migration_is_idempotent(self):
         from routes.db_usage import _ensure_usage_uniqueness
         await self._insert_raw(_TURN.replace(", 4096", ", NULL"))

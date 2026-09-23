@@ -365,9 +365,11 @@ async def _ensure_usage_uniqueness() -> None:
     would raise on every startup against a database with history, turning a
     silent over-count into a server that will not boot.
 
-    `MIN(id)` wins so the surviving row is the first import, keeping ids stable
-    for anything that recorded one. Idempotent: the delete matches nothing on a
-    second run, and the index creation is IF NOT EXISTS.
+    The survivor is the lowest-id row that carries a chat_id, falling back to
+    the lowest id when none does -- see the comment on the DELETE for why, and
+    for the 1,403 attributions the obvious rule would have destroyed.
+    Idempotent: the delete matches nothing on a second run, and the index
+    creation is IF NOT EXISTS.
     """
     # History: matched on content, because these rows have no source_offset and
     # never will. Deliberately excludes chat_id and origin, and that choice was
@@ -378,9 +380,37 @@ async def _ensure_usage_uniqueness() -> None:
     # the signature of a re-import after the routed markers changed. Groups
     # holding two DIFFERENT real chat_ids, which would be distinct turns that a
     # content key wrongly collapses, number exactly zero in this database.
+    # Which copy survives is not a detail, and getting it wrong destroys data
+    # the row counts cannot show. The first version kept MIN(id) -- the oldest
+    # row -- while the paragraph above describes these duplicates as re-imports
+    # written after the routed markers changed. Those two statements point in
+    # opposite directions: the re-imported copy is the one carrying the
+    # corrected chat_id, and by construction it has the HIGHER id. Measured on
+    # this database, MIN(id) kept an unattributed row over an attributed
+    # sibling in 1,402 groups and destroyed 1,403 real chat_ids, permanently,
+    # because the rows holding them were the ones deleted.
+    #
+    # So prefer a row that carries attribution, falling back to MIN(id) when
+    # none in the group does. Keeping the whole attributed row rather than
+    # patching chat_id onto the oldest one is deliberate: chat_id is not the
+    # only field that differs. In all 1,402 groups `origin` differs too
+    # ('terminal' against 'web-routed'), and in 1,145 so does
+    # `requested_model` -- so copying one column across would leave a row
+    # claiming a conversation while still labelled as untargeted terminal
+    # spend, which is worse than either original and would corrupt the origin
+    # breakdown. Every other column is identical, so the surviving row is a
+    # real row rather than a hybrid.
+    #
+    # The earlier note that MIN(id) "keeps ids stable for anything that
+    # recorded one" was unfounded: no table declares a foreign key to
+    # usage_events, and nothing joins on its id.
     await db.db_conn.execute(
         "DELETE FROM usage_events WHERE id NOT IN ("
-        "  SELECT MIN(id) FROM usage_events"
+        "  SELECT COALESCE("
+        "           MIN(CASE WHEN COALESCE(chat_id, '') <> '' THEN id END),"
+        "           MIN(id))"
+        "  FROM usage_events"
+        "  WHERE session_id IS NOT NULL AND session_id <> ''"
         "  GROUP BY session_id, created_at, model, input_tokens,"
         "           output_tokens, cache_read_tokens, cache_creation_tokens"
         ") AND session_id IS NOT NULL AND session_id <> ''"

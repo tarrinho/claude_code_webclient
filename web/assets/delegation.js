@@ -10,7 +10,7 @@
 // same rule specs.js follows for spec titles and paths, because a model id
 // or task type rendered straight into HTML is a stored-XSS hole.
 import {apiFetch} from './api.js?v=2741508';
-import {notifyResult} from './server-stats.js?v=7485924';
+import {notifyResult} from './server-stats.js?v=1683277';
 // This module calls showToast in 13 places and never imported it, so every one
 // of them raised `ReferenceError: showToast is not defined` -- including the
 // handlers that report why a write was refused. A rejected PUT therefore threw

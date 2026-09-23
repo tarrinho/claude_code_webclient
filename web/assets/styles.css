@@ -901,6 +901,20 @@ button{touch-action:manipulation}
 /* Pushes a trailing action away from a destructive one, so "Scan again" is
    never adjacent to the button that kills processes. */
 .srv-action-bar .push-right{margin-left:auto}
+/* Scratch-space reclaim. #reclaimPanel is .stats-body, a grid, so every
+   direct child would stretch the full column width without justify-self --
+   the same trap the cleanup buttons fell into. */
+.srv-reclaim-status{color:var(--muted);font-size:13px;justify-self:start}
+.srv-reclaim-status.error{color:var(--bad)}
+.srv-reclaim-list{justify-self:start;font-size:12px}
+.srv-reclaim-group{margin:8px 0 2px;font-weight:600;color:var(--fg)}
+.srv-reclaim-items{margin:0 0 4px 8px;padding-left:0;list-style:none}
+.srv-reclaim-items li{color:var(--fg);line-height:1.7}
+.srv-reclaim-detail{color:var(--muted)}
+/* Collapsed by default: the reasons matter when someone asks why their
+   directory is missing, and are noise the rest of the time. */
+.srv-reclaim-skipped{justify-self:start;font-size:12px;color:var(--muted);margin-top:8px}
+.srv-reclaim-skipped summary{cursor:pointer}
 .stat-figure{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
 .stat-caption{font-size:12px;font-weight:600;color:var(--fg)}
 .stat-plot{position:relative}

@@ -25,7 +25,7 @@ import auth
 import config
 import db
 import runner
-from routes import sys_cleanup
+from routes import sys_cleanup, sys_reclaim
 import sysstats
 import transcripts
 from middleware import _token_touched
@@ -1003,6 +1003,66 @@ async def handle_cleanup_execute(request: Request):
         return JSONResponse(result)
     except Exception as exc:
         _log.exception("cleanup execute failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/system/reclaim/preview")
+async def handle_reclaim_preview():
+    """GET /api/system/reclaim/preview — stale scratch space that can go.
+
+    Returns the tmpfs entries that are old enough, owned by this uid, and
+    held open by nothing, plus a reason for every entry it passed over.
+    Deletes nothing. Like the cleanup preview above, this reports host
+    state and stays behind auth.
+    """
+    try:
+        return JSONResponse(sys_reclaim.preview())
+    except Exception as exc:
+        _log.exception("reclaim preview failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/system/reclaim/execute")
+async def handle_reclaim_execute(request: Request):
+    """POST /api/system/reclaim/execute — delete the selected scratch paths.
+
+    Accepts ``{"paths": ["/tmp/wcval", ...]}``. Each path must appear in a
+    preview taken now, not in the one the page is showing, so a directory a
+    suite has claimed since the scan is refused rather than deleted.
+
+    A request naming no currently-reclaimable path is refused 400. It must
+    never reach ``execute`` as an empty list: an empty list there deletes
+    nothing today, and the day someone reads it as "no filter" it deletes
+    everything.
+    """
+    try:
+        data = await request.json()
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    payload = data.get("paths", [])
+    if not isinstance(payload, list):
+        payload = []
+    paths = [p for p in payload if isinstance(p, str) and p]
+
+    try:
+        offered = {row["path"] for row in sys_reclaim.preview()["entries"]}
+    except Exception as exc:
+        _log.exception("reclaim preview failed during execute")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    selected = [p for p in paths if p in offered]
+    if not selected:
+        raise HTTPException(
+            status_code=400,
+            detail="No selected path is still reclaimable — scan again.",
+        )
+
+    try:
+        return JSONResponse(sys_reclaim.execute(selected))
+    except Exception as exc:
+        _log.exception("reclaim execute failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 

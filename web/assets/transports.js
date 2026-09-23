@@ -5,7 +5,7 @@ import {byId} from './app.js?v=5926217';
 // notifyResult comes from server-stats.js directly, not via app.js -- app.js
 // only re-exports it there as part of unrelated, uncommitted work elsewhere
 // in this shared tree; machines.js already imports it the same direct way.
-import {notifyResult} from './server-stats.js?v=7485924';
+import {notifyResult} from './server-stats.js?v=1683277';
 
 export let _transports = [];
 let _transportEditing = null;

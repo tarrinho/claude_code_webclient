@@ -24,6 +24,35 @@ churn.
 
 ### Added
 
+- **Settings → Server can now reclaim the host's in-memory scratch space.** A
+  second action panel below Process cleanup scans `/tmp` and `/dev/shm` — both
+  tmpfs on this host, so what accumulates there is held in RAM and paged out to
+  swap — and offers the stale entries for deletion. A hand cleanup on
+  2026-09-22 recovered 1.2 GB of swap and 336 MB of `/tmp` that nothing else
+  was ever going to remove, which is what this replaces.
+
+  An entry is only offered when it is older than two hours, owned by the
+  service's own uid, a plain file or directory, and held open by no running
+  process — descriptors, working directories and memory maps are all checked,
+  so a peer's in-flight test run, the live service and every editor buffer stay
+  off the list. A directory is treated as being as new as the newest file
+  anywhere inside it, so an active scratch tree cannot look stale because its
+  top level is old. Infrastructure sockets (screen, tmux, ssh-agent, dbus, X11)
+  and this deployment's databases are excluded outright.
+
+  Everything it passed over is listed with its reason, collapsed, because
+  "nothing to reclaim" and "it is all in use by a running job" are otherwise
+  indistinguishable and only the second one means come back later. Deletion
+  re-derives the whole scan server-side and accepts only paths that are still
+  reclaimable at that moment, so a page left open while a suite claimed a
+  directory refuses rather than deletes. A request naming nothing still
+  reclaimable is refused with 400 rather than executed — an empty list must
+  never become "no filter".
+
+  It is a separate panel rather than a second mode of Process cleanup on
+  purpose: one button that might kill your agent and might delete your files is
+  a button nobody can click confidently.
+
 - **A voice session now opens knowing what the conversation it came from is
   about.** On open it summarises the originating chat with a cheap model drawn
   from the comprehension ladder, reporting each attempt in a status line

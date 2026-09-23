@@ -84,6 +84,21 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
         # database that predates one of them -- `active_models` was added after
         # first release, so an older file has the machines but not the column.
         # Callers read through .get(), so a missing column is a missing value.
+        #
+        # The same sentence is why the table read is guarded too. `is_file()`
+        # is satisfied by a file that is not a database at all: an empty one,
+        # a truncated one, or one another process created and has not
+        # populated yet. A zero-byte data/webconsole.db is routinely left in a
+        # worktree by a test run, and it made this raise `no such table:
+        # ai_machines` three lines below the comment saying this tool must not
+        # be why a terminal fails to start. A missing column was handled and a
+        # missing table was not, which is a distinction nothing outside this
+        # file would predict.
+        #
+        # Unreadable is treated exactly as absent: return no machines, let the
+        # caller fall back to its default backend. Refusing to launch is the
+        # wrong response to "the lookup did not work" -- the lookup is an
+        # optimisation over the default, not a precondition for it.
         rows = [dict(r) for r in con.execute("SELECT * FROM ai_machines")]
         try:
             setting = con.execute(
@@ -92,6 +107,8 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
             default_model = setting["value"] if setting else ""
         except sqlite3.Error:
             default_model = ""
+    except sqlite3.Error:
+        return {}
     finally:
         con.close()
     # Only this owner's machines are selectable. Without this, naming a profile
@@ -220,7 +237,12 @@ def _resolve_model(db: Path, model: str) -> int:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
+        # Guarded for the same reason as machine_for above: is_file() does not
+        # mean "is a readable database", and an unreadable one must behave as
+        # an absent one rather than raise into a shell that is trying to start.
         rows = [dict(r) for r in con.execute("SELECT * FROM ai_machines")]
+    except sqlite3.Error:
+        return 0
     finally:
         con.close()
     owner = _owner_scope(rows)

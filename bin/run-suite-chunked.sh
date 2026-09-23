@@ -29,7 +29,10 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
-PY=.venv/bin/python
+# Overridable so the admission logic can be exercised against a throwaway
+# tests directory: the default is relative, which is correct in the repo and
+# unusable from anywhere else. Nothing in production sets it.
+PY="${WC_PY:-.venv/bin/python}"
 OUT="${WC_SUITE_OUT:-/tmp/wc-suite-$$}"
 
 # ── Memory admission ───────────────────────────────────────────────────
@@ -42,16 +45,43 @@ OUT="${WC_SUITE_OUT:-/tmp/wc-suite-$$}"
 # That is the incident this check exists to refuse, and it is the reason the
 # guard was built with a caller here rather than only in the console.
 #
-# Declared cost is higher than an agent's: a chunk running chromium is the
-# heaviest tenant in the suite, which is why browser files already run one at
-# a time below.
+# The cost is declared PER PHASE, not once for the whole run, and that
+# distinction is the whole point of this block.
+#
+# It used to ask once for 700 MB -- the price of a chunk running chromium,
+# the heaviest tenant here, which is why browser files run one at a time
+# below. But the plain chunks are not chromium. A six-file plain chunk was
+# measured at 209 MB peak RSS on 2026-09-23. Declaring the browser price for
+# all of them meant a box with no 700 MB window refused the 300-odd plain
+# files too, and on 2026-09-22 and 23 that refused four consecutive attempts
+# to get any reading at all on a box that had ample room for the plain half.
+#
+# Refusing work the host can afford is not the safe direction. It reads as
+# caution, but the effect is that nobody gets a suite result, so changes ship
+# on narrower evidence -- which is how the defective migration of 2026-09-23
+# reached production.
+#
+# So: the plain phase is admitted on the plain cost, the browser phase on the
+# browser cost, and a host that can afford one but not the other runs that one
+# and says loudly which it skipped. A skipped phase is reported as NOT RUN in
+# the aggregate, never omitted -- a partial run presenting its survivors as the
+# whole is registry #50, and this file has already been that twice.
 #
 # See docs/superpowers/specs/2026-09-08-resource-guard-design.md.
-if ! guard_output="$($PY -m resource_guard --cost-mb "${WC_SUITE_COST_MB:-700}" 2>&1)"; then
-    echo "run-suite-chunked: refusing to start — not enough memory on this host." >&2
+PLAIN_COST_MB="${WC_SUITE_PLAIN_COST_MB:-300}"
+BROWSER_COST_MB="${WC_SUITE_COST_MB:-700}"
+SKIPPED_BROWSER=""
+
+if ! guard_output="$($PY -m resource_guard --cost-mb "$PLAIN_COST_MB" 2>&1)"; then
+    echo "run-suite-chunked: refusing to start — not enough memory for even the" >&2
+    echo "  plain chunks (declared ${PLAIN_COST_MB} MB)." >&2
     printf '%s\n' "$guard_output" >&2
     echo "A suite run here is what took the server down on 2026-09-07." >&2
     exit 75  # EX_TEMPFAIL: try again when the box is quieter
+fi
+
+if ! browser_guard="$($PY -m resource_guard --cost-mb "$BROWSER_COST_MB" 2>&1)"; then
+    SKIPPED_BROWSER="yes"
 fi
 
 mkdir -p "$OUT"
@@ -148,11 +178,34 @@ if [ "${#chunk[@]}" -gt 0 ]; then
   run_chunk "$(printf 'plain-%02d' "$i")" "${chunk[@]}"
 fi
 
-# Browser files, one at a time.
+# Browser files, one at a time -- unless the host could not be admitted for
+# them. A skipped file writes its own log saying so, so it appears in the
+# aggregate as NOT RUN rather than vanishing from the count: the difference
+# between "the browser suite passed" and "the browser suite did not happen" is
+# exactly the difference this script exists to preserve.
 while read -r f; do
   [ -z "$f" ] && continue
-  run_chunk "browser-$(basename "$f" .py)" "$f"
+  name="browser-$(basename "$f" .py)"
+  if [ -n "$SKIPPED_BROWSER" ]; then
+    {
+      echo "NOT RUN -- host not admitted for the browser phase"
+      echo "declared cost: ${BROWSER_COST_MB} MB"
+      printf '%s\n' "$browser_guard"
+    } >"$OUT/$name.log"
+    echo "75" >"$OUT/$name.rc"
+    printf '%-28s rc=75  NOT RUN (browser phase not admitted)\n' "$name"
+    continue
+  fi
+  run_chunk "$name" "$f"
 done <<<"$BROWSER_FILES"
+
+if [ -n "$SKIPPED_BROWSER" ]; then
+    echo
+    echo "run-suite-chunked: the BROWSER phase was skipped -- the host could not" >&2
+    echo "  be admitted for ${BROWSER_COST_MB} MB. The plain chunks above did run." >&2
+    printf '%s\n' "$browser_guard" >&2
+    echo "  This run is NOT a full-suite result." >&2
+fi
 
 echo
 echo "=== aggregate ==="
@@ -176,6 +229,13 @@ for log in sorted(out.glob("*.log")):
     summary = next((ln for ln in reversed(lines)
                     if re.search(r"\d+ (passed|failed|error|skipped)", ln)), "")
     if not summary:
+        # A phase the host was not admitted for is not a crash, and saying so
+        # matters: "killed or crashed" sends the reader looking for a defect
+        # that is not there, while the real fact -- this file did not run, so
+        # the suite result is partial -- is the one they need.
+        if lines and lines[0].startswith("NOT RUN"):
+            bad.append((log.stem, rc, "NOT RUN -- phase not admitted"))
+            continue
         # No counts at all: killed (137), crashed, or collection died.
         bad.append((log.stem, rc, "NO SUMMARY -- killed or crashed"))
         continue

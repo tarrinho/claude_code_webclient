@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=9941940">
+<link rel="stylesheet" href="/assets/styles.css?v=8687252">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -549,6 +549,30 @@
             Scan for reclaimable processes
           </button>
         </div>
+        <!-- Scratch space: the other half of reclaiming memory on this host.
+             /tmp and /dev/shm are tmpfs, so what accumulates there is held in
+             RAM and paged to swap; a hand cleanup on 2026-09-22 got 1.2 GB of
+             swap back. Deliberately a second panel rather than a second mode
+             of the one above -- that one kills processes, this one deletes
+             files, and they need different amounts of thought before the
+             click. Last on the tab because it is an action, for the reason
+             the comment above states. -->
+        <h3 class="server-section-heading">Scratch space</h3>
+        <p>
+          Delete stale files and directories left in the host&rsquo;s in-memory
+          temporary space. Only entries older than two hours, owned by this
+          service, and held open by no running process are offered &mdash;
+          nothing in use by the server, a session, or a test run can be listed.
+          Preview first, then confirm.
+        </p>
+        <div id="reclaimPanel" class="stats-body">
+          <div id="reclaimStatus" style="color: var(--muted); font-size: 13px;">
+            Click below to scan /tmp and /dev/shm for stale scratch space.
+          </div>
+          <button id="reclaimScanBtn" class="srv-action-btn primary" style="margin-top: 8px;">
+            Scan for reclaimable space
+          </button>
+        </div>
       </div>
       <!-- Skills tab -->
       <div class="settings-panel" id="panelSkills" role="tabpanel" aria-labelledby="tabSkills" tabindex="0" hidden>
@@ -667,7 +691,7 @@
   </div>
 </div>
 <script type="module" src="/assets/usage.js?v=12775289"></script>
-<script type="module" src="/assets/server-stats.js?v=7485924"></script>
+<script type="module" src="/assets/server-stats.js?v=1683277"></script>
 <script type="module" src="/assets/skills.js?v=15159128"></script>
 <script type="module" src="/assets/machines.js?v=3055851"></script>
 <script type="module" src="/assets/orchestrator.js?v=225906"></script>

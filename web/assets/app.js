@@ -571,7 +571,7 @@ async function loadStats(force = false) {
 
 // ── Server statistics ─────────────────────────────────────────────────────────
 // Host health rather than model spend. Two requests because they answer
-import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=7485924';
+import { startServerPolling, stopServerPolling, loadServer, notifyResult, setStatus } from './server-stats.js?v=1683277';
 export { notifyResult, setStatus };
 
 import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=15159128';

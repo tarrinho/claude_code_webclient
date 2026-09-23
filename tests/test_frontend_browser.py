@@ -4643,5 +4643,151 @@ class OrchestratorPlanBrowserTests(_BrowserFixture):
         self.assertEqual(self.errors, [])
 
 
+@unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")
+@unittest.skipIf(CHROMIUM is None, "no Chromium binary on PATH")
+class ScratchReclaimPanelTests(_BrowserFixture):
+    """The Server tab's scratch-space panel, in a real browser.
+
+    The preview call is stubbed throughout. This suite must never scan the
+    host's real /tmp, and it must certainly never reach the execute endpoint
+    with a real path: the whole point of the feature is that clicking it
+    deletes files.
+
+    The button width assertion is not cosmetic fussiness. #reclaimPanel is a
+    grid, so a button without justify-self stretches the full column -- which
+    is exactly how the process cleanup buttons shipped, and it was invisible
+    to every test that only checked the markup.
+    """
+
+    PREVIEW = {
+        "entries": [
+            {"path": "/tmp/wcval", "name": "wcval", "root": "/tmp",
+             "kind": "webconsole", "size_mb": 181.0, "age_s": 90000,
+             "is_dir": True},
+            {"path": "/tmp/somebody", "name": "somebody", "root": "/tmp",
+             "kind": "other", "size_mb": 12.0, "age_s": 90000,
+             "is_dir": False},
+        ],
+        "skipped": [{"path": "/tmp/live", "reason": "a running process is using it"}],
+        "roots": ["/tmp", "/dev/shm"],
+        "counts": {"webconsole": 1, "other": 1},
+        "total_mb": 193.0,
+        "min_age_s": 7200,
+        "mem": {"mem_available_mb": 1636.0, "swap_free_mb": 2606.0},
+    }
+
+    def _open_server_tab(self):
+        self._login()
+        self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
+        self.page.wait_for_selector("#settingsBtn", timeout=15_000)
+        self.page.click("#settingsBtn")
+        self.page.click('[data-tab="server"]')
+        self.page.wait_for_selector("#reclaimPanel", timeout=15_000)
+
+    def _stub_preview(self):
+        self.page.route(
+            "**/api/system/reclaim/preview",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(self.PREVIEW),
+            ),
+        )
+
+    def test_the_panel_is_last_on_the_tab(self):
+        """Below process cleanup, which is below every reading. Asserted by
+        document order: both are actions, and the destructive pair belongs at
+        the end where nobody meets them while reading a chart."""
+        self._open_server_tab()
+        order = self.page.evaluate("""
+          () => {
+            const cleanup = document.getElementById('cleanupPanel');
+            const reclaim = document.getElementById('reclaimPanel');
+            if (!cleanup || !reclaim) return null;
+            return cleanup.compareDocumentPosition(reclaim)
+              & Node.DOCUMENT_POSITION_FOLLOWING ? 'reclaim-last' : 'reclaim-first';
+          }
+        """)
+        self.assertEqual(order, "reclaim-last")
+        self.assertEqual(self.errors, [])
+
+    def test_scanning_lists_the_entries_and_their_sizes(self):
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
+        text = self.page.inner_text("#reclaimPanel")
+        self.assertIn("wcval", text)
+        self.assertIn("181.0 MB", text)
+        self.assertEqual(self.errors, [])
+
+    def test_only_this_project_s_leftovers_start_selected(self):
+        """A stranger's files are offered, never pre-ticked."""
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
+        checked = self.page.evaluate("""
+          () => [...document.querySelectorAll('.reclaim-check')]
+                  .filter(b => b.checked).map(b => b.dataset.path)
+        """)
+        self.assertEqual(checked, ["/tmp/wcval"])
+        self.assertIn("181.0 MB", self.page.inner_text("#reclaimDeleteBtn"))
+
+    def test_deselecting_everything_disables_the_delete_button(self):
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
+        self.page.evaluate("""
+          () => document.querySelectorAll('.reclaim-check').forEach(b => {
+            if (b.checked) { b.checked = false; b.dispatchEvent(new Event('change')); }
+          })
+        """)
+        self.assertTrue(self.page.is_disabled("#reclaimDeleteBtn"))
+
+    def test_the_skipped_reasons_are_reachable(self):
+        """"Nothing to reclaim" and "it is all in use" must not look alike."""
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector(".srv-reclaim-skipped", timeout=10_000)
+        self.page.click(".srv-reclaim-skipped summary")
+        self.assertIn("a running process is using it",
+                      self.page.inner_text(".srv-reclaim-skipped"))
+
+    def test_the_buttons_do_not_stretch_the_panel(self):
+        """The grid trap: a direct child of .stats-body fills the column."""
+        self._open_server_tab()
+        widths = self.page.evaluate("""
+          () => {
+            const panel = document.getElementById('reclaimPanel');
+            const btn = document.getElementById('reclaimScanBtn');
+            return [panel.getBoundingClientRect().width,
+                    btn.getBoundingClientRect().width];
+          }
+        """)
+        panel_width, button_width = widths
+        self.assertLess(
+            button_width, panel_width * 0.8,
+            f"the scan button is {button_width}px in a {panel_width}px panel",
+        )
+
+    def test_a_failed_scan_stays_on_screen(self):
+        """The poll re-renders this tab every thirty seconds. An error that
+        the next tick erases is an error nobody can read."""
+        self._open_server_tab()
+        self.page.route(
+            "**/api/system/reclaim/preview",
+            lambda route: route.fulfill(status=500, body="boom"),
+        )
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector(".srv-reclaim-status.error", timeout=10_000)
+        self.assertIn("Scan failed", self.page.inner_text("#reclaimPanel"))
+        self.assertEqual(
+            self.page.get_attribute("#reclaimPanel", "data-reclaimed"), "1",
+            "without this flag the next poll wipes the failure",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

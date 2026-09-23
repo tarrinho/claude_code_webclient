@@ -6,6 +6,7 @@
 
 import {apiFetch} from './api.js?v=2741508';
 import {showToast, settingsVisible} from './app.js?v=5926217';
+import {renderReclaimDefault} from './server-reclaim.js?v=859220';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share
@@ -134,6 +135,13 @@ export async function loadServer(quiet = false) {
     const cleanupPanel = byId('cleanupPanel');
     if (cleanupPanel && !cleanupPanel.hasAttribute('data-cleaned-up')) {
       _renderCleanupDefault(cleanupPanel);
+    }
+    // Same contract for the scratch-space panel below it, with its own
+    // attribute: the two panels are scanned independently, so one flag for
+    // both would let a scan of either wipe the other's results.
+    const reclaimPanel = byId('reclaimPanel');
+    if (reclaimPanel && !reclaimPanel.hasAttribute('data-reclaimed')) {
+      renderReclaimDefault(reclaimPanel);
     }
   } catch (error) {
     // A background refresh keeps what is on screen. One failed poll is not

@@ -404,8 +404,30 @@ async def _ensure_usage_uniqueness() -> None:
     # The earlier note that MIN(id) "keeps ids stable for anything that
     # recorded one" was unfounded: no table declares a foreign key to
     # usage_events, and nothing joins on its id.
+    #
+    # Only rows WITHOUT a source_offset are candidates for deletion here, and
+    # that restriction is load-bearing twice over. A row carrying an offset has
+    # an exact identity -- one line of one transcript -- and the content key is
+    # a heuristic standing in for an identity those rows already have. Matching
+    # them by content re-introduces the very failure the offset key exists to
+    # prevent: two legitimately distinct routed turns in one session, same
+    # timestamp and identical counts, told apart only by their offsets, with
+    # the second silently deleted. Nothing above catches that, because
+    # test_two_turns_at_one_timestamp_are_both_kept exercises the INDEX and
+    # never calls this migration.
+    #
+    # The second reason is newer and is a consequence of preferring the
+    # attributed row. Where the attributed copy carries an offset that another
+    # surviving turn also holds -- what a rewritten transcript produces -- the
+    # old MIN(id) rule happened to keep the offsetless copy and the unique
+    # index below built cleanly, while preferring the attributed one leaves two
+    # survivors sharing (session_id, source_offset) and the CREATE UNIQUE INDEX
+    # three statements later raises inside db.init(), so the server does not
+    # boot. Reproduced against plain sqlite3; not reachable on this deployment,
+    # whose index already exists and which has zero colliding pairs, but fully
+    # reachable on a restored backup or a fresh copy.
     await db.db_conn.execute(
-        "DELETE FROM usage_events WHERE id NOT IN ("
+        "DELETE FROM usage_events WHERE source_offset IS NULL AND id NOT IN ("
         "  SELECT COALESCE("
         "           MIN(CASE WHEN COALESCE(chat_id, '') <> '' THEN id END),"
         "           MIN(id))"
@@ -413,6 +435,27 @@ async def _ensure_usage_uniqueness() -> None:
         "  WHERE session_id IS NOT NULL AND session_id <> ''"
         "  GROUP BY session_id, created_at, model, input_tokens,"
         "           output_tokens, cache_read_tokens, cache_creation_tokens"
+        ") AND session_id IS NOT NULL AND session_id <> ''"
+    )
+    # Identity duplicates, collapsed before the index is built rather than
+    # discovered by it. Two rows sharing (session_id, source_offset) are the
+    # same transcript line recorded twice, so this is exact rather than
+    # heuristic, and the same preference applies: keep the copy that carries
+    # attribution.
+    #
+    # This exists so the CREATE UNIQUE INDEX below cannot raise on a database
+    # that reaches it holding such a pair. Without it the failure lands inside
+    # db.init(), which means a server that will not start -- a far worse
+    # outcome than the over-count the whole migration is here to remove.
+    await db.db_conn.execute(
+        "DELETE FROM usage_events WHERE source_offset IS NOT NULL AND id NOT IN ("
+        "  SELECT COALESCE("
+        "           MIN(CASE WHEN COALESCE(chat_id, '') <> '' THEN id END),"
+        "           MIN(id))"
+        "  FROM usage_events"
+        "  WHERE session_id IS NOT NULL AND session_id <> ''"
+        "    AND source_offset IS NOT NULL"
+        "  GROUP BY session_id, source_offset"
         ") AND session_id IS NOT NULL AND session_id <> ''"
     )
     # Going forward: matched on identity, not content. A turn is one line of

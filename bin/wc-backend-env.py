@@ -76,9 +76,18 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
     """
     if not db.is_file():
         return {}
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
+    # The connect is INSIDE the try, not before it. An earlier version guarded
+    # only the table read, which covers "this file is not a database" and not
+    # "this file cannot be opened" -- and the second is just as reachable: a
+    # zero-byte file left by another process may be mode 000 or owned by
+    # another uid, and sqlite3.connect then raises `unable to open database
+    # file` out of exactly the function whose whole purpose is not to raise.
+    # Guarding half the ways a path can be unusable is the same defect as
+    # guarding a missing column but not a missing table.
+    con = None
     try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
         # SELECT * rather than a column list. This tool must not be the reason
         # a terminal fails to launch, and naming columns makes it fail on any
         # database that predates one of them -- `active_models` was added after
@@ -110,7 +119,10 @@ def machine_for(db: Path, profile: str | None = None) -> dict[str, object]:
     except sqlite3.Error:
         return {}
     finally:
-        con.close()
+        # `con` is None when the connect itself failed, which is the case this
+        # guard was widened to cover.
+        if con is not None:
+            con.close()
     # Only this owner's machines are selectable. Without this, naming a profile
     # could pin somebody else's backend and export their credential.
     owner = _owner_scope(rows)
@@ -234,17 +246,19 @@ def _resolve_model(db: Path, model: str) -> int:
     """
     if not db.is_file():
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
+    # Connect inside the try, same reason as machine_for above: is_file() does
+    # not mean "is a readable database", and neither "not a database" nor
+    # "cannot be opened" may raise into a shell that is trying to start.
+    con = None
     try:
-        # Guarded for the same reason as machine_for above: is_file() does not
-        # mean "is a readable database", and an unreadable one must behave as
-        # an absent one rather than raise into a shell that is trying to start.
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute("SELECT * FROM ai_machines")]
     except sqlite3.Error:
         return 0
     finally:
-        con.close()
+        if con is not None:
+            con.close()
     owner = _owner_scope(rows)
     if owner:
         rows = [r for r in rows if str(r.get("owner_id") or "").strip() == owner]

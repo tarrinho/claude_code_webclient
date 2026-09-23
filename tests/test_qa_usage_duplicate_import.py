@@ -152,8 +152,14 @@ class UsageDuplicateImportQA(unittest.IsolatedAsyncioTestCase):
         Groups holding two *different* real chat_ids, which a content key would
         wrongly collapse, number exactly zero in production.
 
-        MIN(id) wins so the survivor is the first import, keeping ids stable
-        for anything that recorded one.
+        MIN(id) wins HERE only because no member of this group carries a
+        chat_id, which is the fallback arm of the keep rule. The rule itself
+        prefers an attributed row -- see
+        test_the_survivor_keeps_the_attribution. This docstring used to assert
+        that MIN(id) "keeps ids stable for anything that recorded one", which
+        is the exact sentence 14cbaab4 removed from the source as unfounded:
+        nothing declares a foreign key to usage_events. Two files disagreeing
+        about a rule is how the next reader learns the wrong one.
         """
         old = _TURN.replace(", 4096", ", NULL")
         await self._insert_raw(old)
@@ -220,6 +226,62 @@ class UsageDuplicateImportQA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self._count(), 1)
         cur = await db.db_conn.execute("SELECT id FROM usage_events")
         self.assertEqual((await cur.fetchone())["id"], first)
+
+    async def test_two_real_turns_with_offsets_survive_the_migration(self):
+        """The content key must not be applied to rows that have an identity.
+
+        `test_two_turns_at_one_timestamp_are_both_kept` asserts the INDEX
+        tolerates this pair. It never calls the migration, so it said nothing
+        about the DELETE -- and the DELETE was matching on content across every
+        row in the table, offsets included, which collapsed exactly the pair
+        the offset key exists to keep apart. Found in review of 14cbaab4.
+        """
+        first = _TURN.replace(", 4096", ", 4096")
+        second = (
+            "'c2', 'sess-a', 'admin', 'claude-opus-5', 'cli', 100, 20, 7, 3, 0, "
+            "'2026-09-20T11:04:43.666Z', 'web-routed', 5120")
+        await self._insert_raw(first)
+        await self._insert_raw(second)
+
+        from routes.db_usage import _ensure_usage_uniqueness
+        await _ensure_usage_uniqueness()
+
+        self.assertEqual(await self._count(), 2,
+                         "a distinct routed turn was deleted by content match")
+
+    async def test_colliding_offsets_do_not_stop_the_server_booting(self):
+        """The regression the attributed keep-rule introduced.
+
+        Where the attributed copy carries an offset another surviving turn also
+        holds -- what a rewritten transcript produces -- preferring it leaves
+        two survivors sharing (session_id, source_offset), and the CREATE
+        UNIQUE INDEX inside this same migration then raises inside db.init().
+        The failure is not a bad number; it is a server that does not start.
+
+        MIN(id) happened to avoid this by keeping the offsetless copy, so the
+        dry-run against production was clean and said nothing about it.
+        """
+        await db.db_conn.execute("DROP INDEX IF EXISTS idx_usage_import_once")
+        # A duplicate pair whose attributed copy sits at offset 9 ...
+        await self._insert_raw(_TURN.replace(", 4096", ", NULL"))
+        await self._insert_raw(
+            "'c-real', 'sess-a', 'admin', 'claude-opus-5', 'cli', 100, 20, 7, 3, 0, "
+            "'2026-09-20T11:04:43.666Z', 'web-routed', 9")
+        # ... and a different turn already holding offset 9.
+        await self._insert_raw(
+            "'', 'sess-a', 'admin', 'claude-opus-5', 'cli', 200, 20, 7, 3, 0, "
+            "'2026-09-20T11:05:00.000Z', 'terminal', 9")
+
+        from routes.db_usage import _ensure_usage_uniqueness
+        # The assertion is that this does not raise.
+        await _ensure_usage_uniqueness()
+
+        cur = await db.db_conn.execute(
+            "SELECT COUNT(*) c FROM usage_events "
+            "WHERE source_offset IS NOT NULL "
+            "GROUP BY session_id, source_offset HAVING c > 1")
+        self.assertIsNone(await cur.fetchone(),
+                          "two rows still share (session_id, source_offset)")
 
     async def test_the_migration_is_idempotent(self):
         from routes.db_usage import _ensure_usage_uniqueness

@@ -22,6 +22,24 @@ churn.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Usage page counts each terminal turn once, and keeps the conversation
+  it belongs to.** Re-imported transcript turns had been recorded twice —
+  23,557 of 217,074 rows, 10.9% of the table — inflating every request count
+  and token total on the page. They are now collapsed, and a unique index on
+  the transcript line each row came from prevents a repeat.
+
+  The first version of that repair kept the oldest copy of each pair, which
+  destroyed 1,403 per-conversation attributions: these duplicates are
+  re-imports written after a request was routed, so the copy carrying the
+  conversation id is the newer one. It now keeps the attributed copy whole —
+  `chat_id` and `origin` together, since writing one without the other
+  produces a row claiming a conversation while still labelled as untargeted
+  terminal spend. The destroyed attributions were recovered by re-deriving
+  them from the transcripts and the routing markers, which the deduplication
+  never touched.
+
 ### Added
 
 - **Settings → Server can now reclaim the host's in-memory scratch space.** A

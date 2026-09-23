@@ -26,6 +26,7 @@ default, never a precondition for it -- refusing to start is a worse answer to
 from __future__ import annotations
 
 import importlib.util
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -78,6 +79,28 @@ class UnreadableBackendDbQA(unittest.TestCase):
         db = self.dir / "junk.db"
         db.write_bytes(b"this is not a database")
         self.assertEqual(self.mod.machine_for(db), {})
+
+    @unittest.skipIf(os.geteuid() == 0, "root can open a mode-000 file")
+    def test_a_file_that_cannot_be_opened_at_all(self):
+        """The half the first version of this guard missed.
+
+        Guarding only the table read covers "this file is not a database" and
+        not "this file cannot be opened" -- and the second is just as
+        reachable, since a stray file left by another process may be mode 000
+        or owned by another uid. sqlite3.connect then raises `unable to open
+        database file` out of the function whose entire purpose is not to
+        raise. Found in review of 84b38d49, which shipped with the connect
+        outside the try.
+        """
+        db = self.dir / "locked.db"
+        db.touch()
+        os.chmod(db, 0o000)
+        try:
+            self.assertTrue(db.is_file(), "fixture must pass the is_file gate")
+            self.assertEqual(self.mod.machine_for(db), {})
+            self.assertEqual(self.mod._resolve_model(db, "some/model"), 0)
+        finally:
+            os.chmod(db, 0o644)
 
     def test_model_resolution_survives_the_same_files(self):
         """_resolve_model reads the same table through its own connection, so

@@ -2379,9 +2379,37 @@ class LoadMoreMessagesBrowserTests(_BrowserFixture):
         return chat_id
 
     def _open_chat(self, chat_id, timeout=20_000):
+        """Open a conversation and confirm it actually opened.
+
+        The two sibling `_open_chat` helpers in this file each wait for
+        something the open produces -- `#questionBar`, `#autoAnswerToggle` --
+        and this one clicked and returned. That gap is what made
+        test_only_the_newest_fifty_render_and_more_can_be_loaded fail inside a
+        full-file run while passing 2 of 2 in isolation: the sidebar re-renders
+        on a 6s poll (see the note on the helper at the top of this file), so a
+        click can resolve a row that is replaced before the event dispatches.
+        Playwright reports that click as a success -- the row was present,
+        visible and enabled -- and nothing opens. The next line then waited 10s
+        for a message that was never going to arrive, and named the message.
+
+        `#composerArea` is the confirmation because it is shown only by the
+        function that finishes opening a chat, so its visibility cannot be true
+        for any other reason. Re-clicking is safe: opening the chat that is
+        already open is idempotent.
+        """
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
-        self.page.wait_for_selector(row, timeout=timeout)
-        self.page.click(row)
+        for attempt in range(3):
+            self.page.wait_for_selector(row, timeout=timeout)
+            self.page.click(row)
+            try:
+                self.page.wait_for_selector(
+                    "#composerArea", state="visible", timeout=timeout // 4)
+                return
+            except Exception:
+                if attempt == 2:
+                    raise AssertionError(
+                        f"chat {chat_id} never opened after 3 clicks -- the "
+                        "composer stayed hidden")
 
     def test_only_the_newest_fifty_render_and_more_can_be_loaded(self):
         chat_id = self._seed_chat(60)

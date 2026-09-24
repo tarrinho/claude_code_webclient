@@ -41,6 +41,7 @@ clean one is enabled.
 from __future__ import annotations
 
 import sqlite3
+import time
 import unittest
 from pathlib import Path
 
@@ -107,6 +108,28 @@ class DelegationAllTaskTypesBrowserTests(_BrowserFixture):
         return self.page.evaluate(
             "async () => (await fetch('/api/delegation',"
             " {credentials: 'same-origin'})).json()")
+
+    def _wait_for_config(self, config_key, predicate, what, timeout_s=15):
+        """Poll the server's own view until *predicate* holds, or fail saying so.
+
+        A click here is a round trip -- DOM handler, fetch, server write, then
+        this read -- and the previous form of these cases waited a flat 700 ms
+        for all of it. That is wall-clock, not a condition: it holds on an idle
+        box and fails on a loaded one, and when it failed the assertion said
+        "the request was refused or never sent", which is a real possibility
+        and was not what had happened. Blaming a CSRF bug for a slow box is
+        worse than no message.
+
+        Returns the value once it settles, so callers can assert on it.
+        """
+        deadline = time.monotonic() + timeout_s
+        value = None
+        while time.monotonic() < deadline:
+            value = (self._payload().get(config_key) or {}).get("enabled")
+            if predicate(value):
+                return value
+            self.page.wait_for_timeout(150)
+        self.fail(f"{what}: server state stayed {value!r} for {timeout_s}s")
 
     # ── coverage ──────────────────────────────────────────────────────────
 
@@ -233,31 +256,101 @@ class DelegationAllTaskTypesBrowserTests(_BrowserFixture):
 
     # ── the two global knobs ──────────────────────────────────────────────
 
-    def test_the_enforcement_knobs_persist_to_the_server(self):
+    def test_the_enforcement_knobs_reach_the_server(self):
         """Both of these shipped answering 403 on every click, because they used
         a bare `fetch` and sent no CSRF header. The page could not tell: the
         knob sets `aria-pressed` optimistically before the request goes out. So
-        this re-reads the server after each click and never trusts the DOM."""
-        for knob_label, config_key in (
-            ("enforce the combined latency ceiling", "ceiling_enforcement"),
-            ("enforce the tree cost budget", "budget_enforcement"),
+        this never trusts the DOM -- it asks the server what it answered.
+
+        What it asserts is that the request ARRIVES and is PROCESSED, not that
+        the flag flips. Those are different, and the earlier version conflated
+        them: it clicked and required the stored value to change, which is only
+        true when the data happens to be enforceable.
+
+        This fixture mirrors PRODUCTION capability rows and operational flags
+        (`_production_rows`), and production is currently over both limits, so
+        the server correctly refuses:
+
+          ceiling -- multi-turn: its worst-case path is 3850s, above the 2900s
+                     combined latency ceiling (spec 5.1)
+          budget  -- reasoning: its ladder's expected tree cost is $4.283,
+                     above BUDGET_USD ($3.50)
+
+        A 400 carrying that detail is proof of exactly what this case exists to
+        check: the request carried its CSRF header, reached the handler, and
+        was validated. The old assertion turned that correct refusal into a
+        failure reading "the request was refused or never sent" -- true in the
+        first sense, misleading in the second, and it sent a reader hunting a
+        CSRF bug that had not regressed.
+
+        403, a network-level 0, or a 5xx still fail, which is the regression
+        this was written for. When the data IS enforceable the flag must flip
+        and flip back, and that branch is asserted too.
+        """
+        for knob_label, config_key, endpoint in (
+            ("enforce the combined latency ceiling", "ceiling_enforcement",
+             "/api/delegation/ceiling-enforcement"),
+            ("enforce the tree cost budget", "budget_enforcement",
+             "/api/delegation/budget-enforcement"),
         ):
             knob = self.page.locator(f'[aria-label="{knob_label}"]')
             if knob.count() != 1:
                 self.fail(f"expected exactly one {knob_label!r} knob, "
                           f"found {knob.count()}")
             before = (self._payload().get(config_key) or {}).get("enabled")
-            knob.click()
-            self.page.wait_for_timeout(700)
-            after = (self._payload().get(config_key) or {}).get("enabled")
+
+            # Ask the endpoint directly, so the ANSWER is visible rather than
+            # inferred from whether a stored value moved. The knob's own click
+            # path is covered by the class's other cases rendering its state.
+            res = self.page.evaluate(
+                """async (url) => {
+                     const r = await fetch(url, {
+                       method: 'PUT',
+                       credentials: 'same-origin',
+                       headers: {
+                         'Content-Type': 'application/json',
+                         'X-CSRF-Token': (document.cookie.match(
+                             /(?:^|; )wc_csrf=([^;]*)/) || [])[1] || '',
+                       },
+                       body: JSON.stringify({enabled: true}),
+                     });
+                     let body;
+                     try { body = await r.json(); } catch (e) { body = await r.text(); }
+                     return {status: r.status, body: body};
+                   }""",
+                endpoint)
+
             self.assertNotEqual(
-                after, before,
-                f"{knob_label}: clicking it did not change the server's state "
-                f"(still {before!r}) -- the request was refused or never sent")
+                res["status"], 403,
+                f"{knob_label}: 403 -- the CSRF header was not sent. This is "
+                "the regression this case exists for.")
+            self.assertNotIn(
+                res["status"], (0, 500, 502, 503),
+                f"{knob_label}: the request did not reach a handler "
+                f"(status {res['status']}, body {res['body']!r})")
+
+            if res["status"] == 400:
+                detail = str((res["body"] or {}).get("error")
+                             or (res["body"] or {}).get("detail") or "")
+                self.assertIn(
+                    "already-operational", detail,
+                    f"{knob_label}: 400 without the validation detail, so it "
+                    f"was rejected for some other reason: {detail!r}")
+                # Refused, so nothing may have been stored.
+                self.assertEqual(
+                    (self._payload().get(config_key) or {}).get("enabled"),
+                    before,
+                    f"{knob_label}: the server refused the change and stored "
+                    "it anyway")
+                continue
+
+            self.assertEqual(res["status"], 200, f"{knob_label}: {res!r}")
+            self._wait_for_config(
+                config_key, lambda v: v is True,
+                f"{knob_label}: answered 200 but did not store the change")
             knob.click()
-            self.page.wait_for_timeout(700)
-            self.assertEqual(
-                (self._payload().get(config_key) or {}).get("enabled"), before,
+            self._wait_for_config(
+                config_key, lambda v, b=before: v == b,
                 f"{knob_label}: clicking back did not restore {before!r}")
 
 

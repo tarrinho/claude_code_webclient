@@ -393,14 +393,31 @@ class RoutedAttributionQA(unittest.IsolatedAsyncioTestCase):
         launched to run. They diverge whenever a web request reaches a live
         terminal, because that process cannot be re-pointed -- 11,022 rows on
         2026-09-15 ran on the terminal's model while the conversation asked for
-        another, and nothing in this table could show it."""
-        with patch.object(prompts, "session_model", return_value="claude-opus-5"):
+        another, and nothing in this table could show it.
+
+        The launched model is DERIVED from TESTING_MODEL rather than hardcoded.
+        It used to be the literal "claude-opus-5" while `model` came from
+        TESTING_MODEL, which resolves to "claude-opus-5" on any host that has
+        not set WC_TESTING_MODEL -- so the two could not diverge and the case
+        failed on its own final assertion, for everyone running the suite on
+        that model. The bug was in the fixture, not in the code it covers: this
+        test is about the two columns being recorded separately, and which
+        model ids they hold is immaterial as long as they differ.
+        """
+        launched = ("claude-sonnet-5" if TESTING_MODEL != "claude-sonnet-5"
+                    else "claude-opus-5")
+        self.assertNotEqual(
+            launched, TESTING_MODEL,
+            "the fixture must pick a launched model that differs from the one "
+            "the transcript reports, or it proves nothing")
+
+        with patch.object(prompts, "session_model", return_value=launched):
             await db.usage_import("admin", "sess-live", [self._row(10, "2026-09-15T10:00:00Z")], 10)
         cur = await db.db_conn.execute(
             "SELECT model, requested_model FROM usage_events WHERE session_id = ?",
             ("sess-live",))
         row = await cur.fetchone()
-        self.assertEqual(row["requested_model"], "claude-opus-5")
+        self.assertEqual(row["requested_model"], launched)
         self.assertEqual(row["model"], TESTING_MODEL)
         self.assertNotEqual(row["model"], row["requested_model"],
                             "this fixture is meant to show the two diverging")

@@ -29,7 +29,7 @@ import unittest
 from tests.test_frontend_browser import CHROMIUM, DRIVER_OK, DRIVER_WHY, _BrowserFixture
 
 
-def _expand_first_transport_group(page, timeout: int = 8_000):
+def _expand_first_transport_group(page, timeout: int = 15_000):
     """Open the first Backends group so its cards are in the DOM.
 
     Every transport group now starts collapsed each time the panel opens (an
@@ -42,10 +42,34 @@ def _expand_first_transport_group(page, timeout: int = 8_000):
     Expanding here rather than asserting on the header keeps each test about
     what it was written for: one fetch shared by concurrent loads, and a
     failed refresh not erasing a list that had already loaded.
+
+    Two things here are about flakiness rather than about the feature, and
+    both were measured on 2026-09-24 when this file failed inside a full-suite
+    chunk while passing 2 of 2 in isolation:
+
+    * The timeout was 8s while every other wait in this file uses 15s. A wait
+      that is shorter than its neighbours for no stated reason is a wait that
+      expires first under load, and the failure it produces -- `.machine-card`
+      never visible -- names the card rather than the clock.
+    * The click is verified rather than assumed. A click can land before the
+      toggle's handler is bound, or on a node a re-render has just replaced;
+      Playwright reports success either way, because the element was present,
+      visible and enabled at the moment it was clicked. Re-clicking a group
+      that did expand would collapse it again, so the retry checks first.
     """
     page.wait_for_selector(".transport-collapse-toggle", timeout=timeout)
-    page.click(".transport-collapse-toggle")
-    page.wait_for_selector(".machine-card", timeout=timeout)
+    for attempt in range(3):
+        if page.query_selector(".machine-card"):
+            return
+        page.click(".transport-collapse-toggle")
+        try:
+            page.wait_for_selector(".machine-card", timeout=timeout // 3)
+            return
+        except Exception:
+            if attempt == 2:
+                raise AssertionError(
+                    "the transport group never expanded after 3 clicks -- no "
+                    ".machine-card reached the DOM")
 
 
 @unittest.skipUnless(DRIVER_OK, f"playwright driver unusable ({DRIVER_WHY})")

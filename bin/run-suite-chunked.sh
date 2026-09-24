@@ -35,6 +35,27 @@ cd "$(dirname "$0")/.." || exit 1
 PY="${WC_PY:-.venv/bin/python}"
 OUT="${WC_SUITE_OUT:-/tmp/wc-suite-$$}"
 
+# Per-chunk wall-clock caps. Defined HERE, above the header that prints them:
+# this file runs under `set -u`, so a header line referencing a variable
+# assigned further down kills the script on that line, after the run looks like
+# it has started. That is how the first version of this change failed -- caught
+# by tests/test_qa_suite_phase_admission.py, which is the whole reason those
+# cases exist.
+CHUNK_TIMEOUT="${WC_CHUNK_TIMEOUT:-600}"
+# Browser files get their own, larger cap, for the same reason they get their
+# own memory cost: they are not the same kind of work.
+# tests/test_frontend_browser.py alone runs about 17 minutes (measured
+# 2026-09-24: 1030s, 140 passed), against a 600s plain cap -- so under one
+# shared timeout it could NEVER finish. Every chunked run reported it as
+# rc=124, "NO SUMMARY -- killed or crashed", and the full-suite result was
+# permanently one file short.
+#
+# Worse than the false alarm: the kill was hiding a real failure inside that
+# file. Raising the cap is what revealed it. A cap a file cannot possibly meet
+# does not bound a hang -- it guarantees a red line that means nothing, and
+# everything the file would have told you is lost behind it.
+BROWSER_CHUNK_TIMEOUT="${WC_BROWSER_CHUNK_TIMEOUT:-1800}"
+
 # ── Memory admission ───────────────────────────────────────────────────
 # This runner exists because the whole suite in one process gets OOM-killed on
 # this box (see the header above). Chunking bounds what *this* run costs; it
@@ -132,6 +153,7 @@ echo "python        : $PY"
 echo "collected     : $collected files (from pytest, not a glob)"
 echo "browser files : $(echo "$BROWSER_FILES" | grep -c . )"
 echo "plain files   : $(echo "$PLAIN_FILES" | grep -c . )"
+echo "timeouts      : ${CHUNK_TIMEOUT}s plain, ${BROWSER_CHUNK_TIMEOUT}s browser"
 echo "results dir   : $OUT"
 echo
 
@@ -145,18 +167,20 @@ echo
 #
 # `timeout` reports 124 when it fires. That is treated like 137 (killed) below:
 # a chunk that did not finish is a chunk needing attention, never a pass.
-CHUNK_TIMEOUT="${WC_CHUNK_TIMEOUT:-600}"
 
 run_chunk() {
   local name="$1"; shift
   local log="$OUT/$name.log"
-  timeout "$CHUNK_TIMEOUT" "$PY" -m pytest -rs -q "$@" >"$log" 2>&1
+  # Browser chunks are named browser-*; they get the larger cap.
+  local cap="$CHUNK_TIMEOUT"
+  case "$name" in browser-*) cap="$BROWSER_CHUNK_TIMEOUT" ;; esac
+  timeout "$cap" "$PY" -m pytest -rs -q "$@" >"$log" 2>&1
   local rc=$?
   if [ "$rc" -eq 124 ]; then
     # Say so in the log itself, so the file is self-describing rather than
     # only the console line carrying the fact.
     echo "" >>"$log"
-    echo "CHUNK TIMED OUT after ${CHUNK_TIMEOUT}s -- killed, results incomplete" >>"$log"
+    echo "CHUNK TIMED OUT after ${cap}s -- killed, results incomplete" >>"$log"
   fi
   local summary
   # The same rule the aggregator below uses: the last line that actually

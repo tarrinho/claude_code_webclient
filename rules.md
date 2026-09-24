@@ -301,8 +301,15 @@ ALIAS = {"argon2": "argon2_cffi", "dotenv": "python_dotenv", "jwt": "pyjwt",
          "yaml": "pyyaml", "PIL": "pillow", "multipart": "python_multipart"}
 # Test-only tooling: rules.md §14 installs these explicitly on the QA node
 # rather than shipping them as runtime dependencies.
-TEST_ONLY = {"pytest", "playwright", "selenium", "quickjs", "httpx", "requests",
-             "pyflakes"}
+#
+# `pytest_asyncio` was missing from this set while `pytest` was in it, so every
+# run of this stage reported it as a missing requirement -- a dependency that
+# must NOT be added, since requirements.txt deliberately ships no test tooling.
+# It is imported only by tests/fixtures/db.py. A stage that reports a finding
+# nobody should act on teaches its reader to skim, which costs the findings
+# that are real; §20 of this file is the same lesson about a different check.
+TEST_ONLY = {"pytest", "pytest_asyncio", "playwright", "selenium", "quickjs",
+             "httpx", "requests", "pyflakes"}
 missing = sorted(
     m for m in found
     if m not in stdlib and m not in local and m not in TEST_ONLY

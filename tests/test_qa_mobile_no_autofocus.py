@@ -466,6 +466,63 @@ class ComposerAutoFocusTests(unittest.TestCase):
             self._composer_focused(page),
             "a pointer device lost the type-straight-away behaviour")
 
+    # ── the helper's own correctness ────────────────────────────────────────
+
+    def test_the_drawer_wait_survives_a_slow_transition(self):
+        """`_open_drawer_if_present` must wait for arrival, not for a duration.
+
+        This is the regression test for the flake fixed in a117579b, and it is
+        here because rules.md §16a is explicit: a fix needs a test that fails
+        without it, checked by reverting the fix and watching it fail. The
+        original change shipped with the mechanism measured but no such test.
+
+        The bug: `.sidebar-mobile` animates `transform: translateX(-100%)` to
+        `translateX(0)` over `.2s`, and the helper waited a flat
+        `wait_for_timeout(300)`. Wall-clock, not a condition -- it assumes 300
+        ms of real time buys 200 ms of animation, which holds on an idle box
+        and fails on a loaded one, because a starved compositor advances a
+        transition slower than the clock. The wait returned with every row
+        still translated off-screen, and the click that followed had to wait
+        out the remainder inside its own actionability timeout. When that ran
+        out the failure read `element is outside of the viewport`, naming a row
+        that was innocent.
+
+        Slowing the transition to 3s is what makes the race deterministic
+        instead of load-dependent: it holds the mid-flight state still long
+        enough to assert on. Against the old helper the drawer is at roughly
+        x = -249 when the wait returns; against this one the transform is the
+        identity matrix and the first row is on-screen and clickable.
+        """
+        page = self._phone()
+        page.add_style_tag(content=(
+            ".sidebar-mobile{transition:transform 3000ms linear !important}"))
+        self._open_drawer_if_present(page)
+
+        settled = page.evaluate(
+            """() => {
+                 const el = document.querySelector('.sidebar-mobile');
+                 if (!el) return 0;
+                 const t = getComputedStyle(el).transform;
+                 if (!t || t === 'none') return 0;
+                 return new DOMMatrixReadOnly(t).m41;
+               }"""
+        )
+        self.assertLess(
+            abs(settled), 1.0,
+            f"the helper returned with the drawer still {settled:.1f}px from "
+            "its resting position, so every row in it is off-screen")
+
+        # The consequence, not just the cause: a row in that drawer is usable.
+        row = page.locator(
+            f'.chat-item[data-chat-id="{self.first_chat}"]:visible').first
+        row.wait_for(state="visible", timeout=15_000)
+        box = row.bounding_box()
+        self.assertIsNotNone(box, "the row has no box to click")
+        self.assertGreaterEqual(
+            box["x"], 0,
+            f"row sits at x={box['x']:.1f}, outside the viewport -- this is "
+            "the exact state that produced 'element is outside of the viewport'")
+
     # ── the sidebar search box ──────────────────────────────────────────────
 
     @staticmethod

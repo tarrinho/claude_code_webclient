@@ -831,7 +831,6 @@ async def usage_by_origin(owner_id: str, days: int | None = 30) -> list[dict[str
     return [dict(row) for row in await cur.fetchall()]
 
 
-
 # The dashboard's observation windows are hours, not days: "1h" is one of the
 # four the spec names and _cutoff's day granularity cannot express it.
 def _cutoff_hours(hours: float) -> str:
@@ -882,6 +881,7 @@ async def usage_agent_totals(
             out[agent_id] = {"turns": row["turns"] or 0,
                              "tokens": row["tokens"] or 0}
     return out
+
 
 async def usage_by_session(
     owner_id: str, days: int | None = 30, limit: int = 15

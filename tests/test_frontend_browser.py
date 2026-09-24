@@ -99,6 +99,46 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _click_row_until_open(page, row_selector, confirms, timeout=20_000,
+                          attempts=3):
+    """Click a sidebar row and confirm the conversation actually opened.
+
+    Four `_open_chat` helpers in this file each clicked a row and then waited
+    for something the open produces. The wait was right; the unchecked click
+    was not. The sidebar re-renders on its own poll, rebuilding every row node,
+    so a click can resolve a row that is replaced before the event dispatches.
+    Playwright reports that as a success -- the element was present, visible
+    and enabled at the moment it was clicked -- and nothing opens.
+
+    The failure then names the confirmation element, which is innocent, and
+    says nothing about the click. Measured across three full-file runs on
+    2026-09-24, each blaming a different element for the same cause:
+
+        #messagesArea .message   -- LoadMoreMessages
+        #autoAnswerToggle        -- AutoAnswerCycle, "43 x locator resolved to
+                                    hidden <button hidden ...>"
+
+    That second one is worth reading twice: `hidden` is set by the code path
+    that CLOSES a conversation, so a toggle hidden for 43 consecutive polls is
+    not a slow toggle -- it is proof no chat was ever open. The element the
+    failure named could not have become visible no matter how long the wait.
+
+    Re-clicking is safe: opening the chat that is already open is idempotent.
+    """
+    for attempt in range(attempts):
+        page.wait_for_selector(row_selector, timeout=timeout)
+        page.click(row_selector)
+        try:
+            page.wait_for_selector(confirms, state="visible",
+                                   timeout=timeout // attempts)
+            return
+        except Exception:
+            if attempt == attempts - 1:
+                raise AssertionError(
+                    f"the conversation never opened after {attempts} clicks -- "
+                    f"{confirms} never became visible")
+
+
 class _BrowserFixture(unittest.TestCase):
     """Server + browser lifecycle. No tests of its own.
 
@@ -365,7 +405,23 @@ class _BrowserFixture(unittest.TestCase):
         self.page.click("#settingsBtn")
         # The header exists whether or not the group is collapsed, so it is the
         # honest readiness signal for "the panel has rendered".
-        self.page.wait_for_selector(".transport-collapse-toggle", timeout=10_000)
+        #
+        # `:visible` is load-bearing, and its absence is what failed this class
+        # on 2026-09-24. The selector matches every transport toggle in the
+        # document, and `wait_for_selector` waits for the FIRST match to become
+        # visible rather than for any match to be. The failure says so in as
+        # many words -- "21 x locator resolved to 3 elements. Proceeding with
+        # the first one" -- and that first one belonged to a group that stays
+        # hidden, so the wait could only ever expire. It then reported a
+        # timeout on a panel that had rendered correctly, which is the same
+        # shape as the `.machine-card` wait this helper was written to fix.
+        #
+        # 15s rather than 10s for the same reason `_add_transport` uses 20s:
+        # several agent sessions share this host, and a wait that is shorter
+        # than its neighbours for no stated reason is the one that expires
+        # first under contention.
+        self.page.wait_for_selector(".transport-collapse-toggle:visible",
+                                    timeout=15_000)
         # One group, not all of them. Expanding one is all this helper owes its
         # callers: it exists so that `.machine-card` exists, and one expanded
         # group renders cards. A test needing a *particular* group open should
@@ -394,11 +450,16 @@ class _BrowserFixture(unittest.TestCase):
         # use, and dispatching goes straight to the app's own handler. What
         # this helper is doing is opening a panel so a test can start; whether
         # the toggle is clickable is not the subject of any test using it.
+        # `:visible` here too, and for the same reason: a collapsed toggle in a
+        # hidden group is still `aria-expanded="false"`, so without it `.first`
+        # can select a toggle nobody can see, dispatch a click into a hidden
+        # group, and leave every visible group collapsed -- after which the
+        # `.machine-card` wait below fails while the panel is working.
         toggle = self.page.locator(
-            '.transport-collapse-toggle[aria-expanded="false"]').first
+            '.transport-collapse-toggle[aria-expanded="false"]:visible').first
         if toggle.count():
             toggle.dispatch_event("click")
-        self.page.wait_for_selector(".machine-card", timeout=10_000)
+        self.page.wait_for_selector(".machine-card", timeout=15_000)
         self.page.wait_for_timeout(800)
 
     def _picker(self) -> list[str]:
@@ -707,6 +768,26 @@ class BackendsTurnCountBrowserTests(_BrowserFixture):
 class TransportUIBrowserTests(_BrowserFixture):
     """The "+ Add transport" form and the grouped backends map.
 
+    NOTE ON ISOLATION, added 2026-09-24: every test here adds a transport to a
+    server and database shared by the whole class, and none of them used to
+    remove it. State therefore accumulated in test order -- by the later cases
+    the Backends panel held every group the earlier ones had created -- and the
+    class's own comment below records the symptom without naming the cause:
+    "the residual pass/fail count moves by a couple either way between runs of
+    identical code -- measured 5/7, 7/5 and 6/6". A count that moves on
+    identical code is not noise to be averaged over; it is shared state.
+
+    Measured: the full-suite run of 2026-09-24 failed
+    test_saving_a_transport_shows_an_empty_group_header, while running the same
+    class in isolation failed test_editing_back_to_this_server_moves_it_out_of_the_group
+    twice -- and that second test passes on its own. Different victims, same
+    cause, and neither is a defect in the panel.
+
+    `setUp` now clears `ssh_transports` so each test starts from the same
+    known state. This does not touch the shared server or the browser, both of
+    which are deliberately class-scoped for cost; it removes only the thing
+    that was leaking between cases.
+
     Before this feature, every backend rendered flat in the Backends map and
     ran on the same host as the console. The ssh-transport/backend-split plan
     lets a backend execute over an SSH transport instead, and groups the map
@@ -724,6 +805,27 @@ class TransportUIBrowserTests(_BrowserFixture):
     BackendsTurnCountBrowserTests gets its own class rather than sharing
     BackendsPanelBrowserTests' fixture data).
     """
+
+    def setUp(self):
+        super().setUp()
+        # The docstring above claimed this class does not depend on run order
+        # or on leftover state. It did -- every test added a transport to a
+        # class-scoped database and nothing removed it. Clearing the table is
+        # what makes the claim true rather than aspirational.
+        #
+        # Done in the database rather than through the UI: there is no bulk
+        # delete in the panel, and driving one removal per leftover group would
+        # make each test's setup depend on how many tests ran before it, which
+        # is the property being removed.
+        import sqlite3   # local, matching this file's convention elsewhere
+        con = sqlite3.connect(str(Path(self.tmp.name) / "wc.db"))
+        try:
+            con.execute("DELETE FROM ssh_transports")
+            con.commit()
+        finally:
+            con.close()
+        # The page may already be showing a stale list from a previous test.
+        self.page.reload(wait_until="domcontentloaded")
 
     def _add_transport(self, name: str) -> None:
         self.page.click("#addTransportBtn")
@@ -2074,10 +2176,7 @@ class QuestionDismissBrowserTests(_BrowserFixture):
         brings a conversation seeded after page load into the list.
         """
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
-        self.page.wait_for_selector(row, timeout=timeout)
-        self.page.click(row)
-        self.page.wait_for_selector("#questionBar", state="visible",
-                                    timeout=timeout)
+        _click_row_until_open(self.page, row, "#questionBar", timeout)
 
     def _wait_for_poll(self, calls, timeout_ms=20_000):
         """Wait for one more GET to arrive, and fail if none does.
@@ -2222,10 +2321,7 @@ class AutoAnswerCycleBrowserTests(_BrowserFixture):
 
     def _open_chat(self, chat_id, timeout=20_000):
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
-        self.page.wait_for_selector(row, timeout=timeout)
-        self.page.click(row)
-        self.page.wait_for_selector("#autoAnswerToggle", state="visible",
-                                    timeout=timeout)
+        _click_row_until_open(self.page, row, "#autoAnswerToggle", timeout)
 
     def _wait_for_mode(self, mode, timeout=5000):
         # Not wait_for_function: the app's own CSP is script-src 'self' with
@@ -2398,18 +2494,7 @@ class LoadMoreMessagesBrowserTests(_BrowserFixture):
         already open is idempotent.
         """
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
-        for attempt in range(3):
-            self.page.wait_for_selector(row, timeout=timeout)
-            self.page.click(row)
-            try:
-                self.page.wait_for_selector(
-                    "#composerArea", state="visible", timeout=timeout // 4)
-                return
-            except Exception:
-                if attempt == 2:
-                    raise AssertionError(
-                        f"chat {chat_id} never opened after 3 clicks -- the "
-                        "composer stayed hidden")
+        _click_row_until_open(self.page, row, "#composerArea", timeout)
 
     def test_only_the_newest_fifty_render_and_more_can_be_loaded(self):
         chat_id = self._seed_chat(60)
@@ -2491,9 +2576,7 @@ class QueuePanelBrowserTests(_BrowserFixture):
         four working behaviours as broken.
         """
         row = f'{self.DESKTOP} .chat-item[data-chat-id="{chat_id}"] .chat-open'
-        self.page.wait_for_selector(row, timeout=timeout)
-        self.page.click(row)
-        self.page.wait_for_selector("#queueToggle", state="visible", timeout=timeout)
+        _click_row_until_open(self.page, row, "#queueToggle", timeout)
         # dispatch_event, not click: the queue poll re-renders the composer
         # row, so a real click spends its whole timeout waiting for an element
         # that keeps being replaced under it -- the same churn that shows up

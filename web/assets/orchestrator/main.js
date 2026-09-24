@@ -108,7 +108,7 @@ import { startNewRun } from "./plan.js";
   // ── Init ─────────────────────────────────────────────────────────────
   export function init() {
     // Version display
-    if (el.topbarInfo) el.topbarInfo.textContent = "0.19.1";
+    if (el.topbarInfo) el.topbarInfo.textContent = "0.20.0";
 
     // Event listeners
     el.newSupervisorBtn.addEventListener("click", createSupervisor);

@@ -22,6 +22,21 @@ churn.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-09-24
+
+A minor bump rather than a patch: the orchestrator now runs every task as a
+real conversation, the chat list has a hierarchy, and Settings can reclaim the
+host's scratch space — three things an operator can see and use that did not
+exist in 0.19.1.
+
+The `Fixed` section below is longer than the `Added` one, and that is the
+honest shape of this release. One entry in it describes a defect that reached
+production and destroyed data before it was caught; it is written out in full
+rather than summarised, because the recovery depended on a detail — that
+`chat_id` is computed at import time from markers the deduplication never
+touched — which is exactly the kind of thing a later reader needs and cannot
+reconstruct.
+
 ### Fixed
 
 - **The Usage page counts each terminal turn once, and keeps the conversation

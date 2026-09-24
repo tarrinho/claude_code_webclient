@@ -281,10 +281,33 @@ class ComposerAutoFocusTests(unittest.TestCase):
         # `:visible` is load-bearing: the sidebar renders every conversation
         # twice, once in the desktop list and once in the mobile drawer, so a
         # bare selector resolves the hidden copy and waits out its timeout.
-        row = page.locator(f'.chat-item[data-chat-id="{chat_id}"]:visible').first
-        row.wait_for(state="visible", timeout=15_000)
-        row.click()
-        page.wait_for_selector("#composerArea", timeout=15_000)
+        #
+        # The click is verified rather than assumed, for the same reason as the
+        # drawer's. The sidebar re-renders on a poll, rebuilding every row node,
+        # so a click can resolve a row that is replaced before the event
+        # dispatches -- Playwright reports a successful click on a node that is
+        # no longer in the tree, and nothing happens. Observed as
+        # `#composerArea` resolving hidden 34 times in a row and then timing
+        # out, a failure that names the composer and says nothing about the
+        # click that never landed.
+        #
+        # `#composerArea` is only shown by the function that finishes opening a
+        # chat, so its visibility is the proof the click took effect. Re-clicking
+        # is safe: opening the chat that is already open is idempotent.
+        for attempt in range(3):
+            row = page.locator(
+                f'.chat-item[data-chat-id="{chat_id}"]:visible').first
+            row.wait_for(state="visible", timeout=15_000)
+            row.click()
+            try:
+                page.wait_for_selector(
+                    "#composerArea", state="visible", timeout=5_000)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise AssertionError(
+                        f"chat {chat_id} never opened after 3 clicks -- the "
+                        "composer stayed hidden")
         # The focus, if it happens, happens in the same task as the render.
         page.wait_for_timeout(400)
 
@@ -297,12 +320,82 @@ class ComposerAutoFocusTests(unittest.TestCase):
     def _matches(page, query: str) -> bool:
         return page.evaluate("(q) => window.matchMedia(q).matches", query)
 
+    # How far the drawer may still be translated before we call it arrived.
+    # Sub-pixel, because a settled transform is exactly the identity matrix and
+    # anything else means the animation is still running.
+    _DRAWER_SETTLED_PX = 0.5
+
     def _open_drawer_if_present(self, page):
-        """The phone layout hides the conversation list behind a menu button."""
+        """The phone layout hides the conversation list behind a menu button.
+
+        Waits for the drawer to ARRIVE, not for 300 ms to pass. `.sidebar-mobile`
+        animates `transform: translateX(-100%)` to `translateX(0)` over `.2s`,
+        and the old flat `wait_for_timeout(300)` was wall-clock: it assumed 300
+        ms of real time buys 200 ms of animation, which holds on an idle box and
+        not on a loaded one. A starved compositor advances the transition slower
+        than the clock, so the wait returned with the drawer still in flight and
+        every row still translated off-screen to the left. The click that
+        followed then had to wait out the remainder inside its own actionability
+        timeout, and when that ran out the failure read `element is outside of
+        the viewport` -- naming the row, which was innocent, and saying nothing
+        about the animation, which was not.
+
+        Measured with the transition slowed to 3s to hold the mid-flight state
+        still: at the moment the old 300 ms wait expired the sidebar's computed
+        transform was `matrix(1, 0, 0, 1, -248.882, 0)` and the target row's
+        bounding box sat at x = -240.9. With this wait it is the identity matrix
+        and x = 8.
+
+        This is the difference between waiting for a duration and waiting for a
+        condition. Only the second one is a fact about the page.
+        """
         button = page.locator("#menuBtn")
-        if button.is_visible():
+        if not button.is_visible():
+            return
+
+        # Clicked in a loop, because the first click can be silently lost.
+        # `_page` waits for `#settingsBtn`, which is in the static HTML and so
+        # exists the moment the document renders -- long before app.js binds
+        # `menuBtn`'s listener at line 2482 of 2880. A click that lands in that
+        # window does nothing at all, and nothing reports it: the button is
+        # present, visible and enabled, so Playwright considers the click a
+        # success. The old flat wait then moved on and the failure surfaced
+        # later as a locator timeout naming a row, which is the wrong thing to
+        # be told about.
+        #
+        # Waiting for the drawer to be OPEN is what makes the click verifiable,
+        # and re-clicking is what makes a lost one recoverable. `openSidebar`
+        # only ever adds the class, so a repeat click on an open drawer is a
+        # no-op rather than a toggle.
+        deadline = 15_000
+        for attempt in range(5):
             button.click()
-            page.wait_for_timeout(300)
+            try:
+                page.wait_for_function(
+                    "() => document.getElementById('sidebar')"
+                    "?.classList.contains('open') === true",
+                    timeout=deadline // 5,
+                )
+                break
+            except Exception:
+                if attempt == 4:
+                    raise AssertionError(
+                        "the drawer never opened after 5 clicks on #menuBtn -- "
+                        "app.js may have failed to bind its listener")
+
+        # Then wait for it to ARRIVE, not for 300 ms to pass.
+        page.wait_for_function(
+            """(limit) => {
+                 const el = document.querySelector('.sidebar-mobile');
+                 // No drawer in this layout: nothing to wait for.
+                 if (!el) return true;
+                 const t = getComputedStyle(el).transform;
+                 if (!t || t === 'none') return true;
+                 return Math.abs(new DOMMatrixReadOnly(t).m41) < limit;
+               }""",
+            arg=self._DRAWER_SETTLED_PX,
+            timeout=15_000,
+        )
 
     # ── the discriminator itself ────────────────────────────────────────────────
 
@@ -383,8 +476,7 @@ class ComposerAutoFocusTests(unittest.TestCase):
     def test_opening_the_sidebar_on_a_phone_does_not_focus_search(self):
         """Tapping the menu icon is a request to browse, not to type."""
         page = self._phone()
-        page.click("#menuBtn")
-        page.wait_for_timeout(300)
+        self._open_drawer_if_present(page)
         self.assertFalse(
             self._search_focused(page),
             "opening the sidebar on a phone focused search, which raises the "
@@ -393,8 +485,11 @@ class ComposerAutoFocusTests(unittest.TestCase):
     def test_tapping_sidebar_search_on_a_phone_does_focus_it(self):
         """The other half: *only* if the user taps the box themselves."""
         page = self._phone()
-        page.click("#menuBtn")
-        page.wait_for_timeout(300)
+        # Through the helper, not a flat wait: this taps a control INSIDE the
+        # drawer, so a tap issued while it is still travelling lands on a box
+        # that is off-screen to the left -- the same race that made the
+        # composer test flaky, one control over.
+        self._open_drawer_if_present(page)
         page.tap("#chatSearch")
         page.wait_for_timeout(200)
         self.assertTrue(

@@ -218,11 +218,27 @@ TESTING_MODEL_ENFORCE_DEFAULT = _bool("WC_TESTING_MODEL_ENFORCE_DEFAULT", True)
 
 # --- remote QA execution -----------------------------------------------------
 # See docs/superpowers/specs/2026-09-09-remote-qa-execution-design.md.
-# Same env vars bin/run-suite-chunked.sh already reads for the equivalent
-# local-run settings, deliberately -- a remote run and a local chunked run
-# should agree on what "enough room" and "too long" mean unless told
-# otherwise.
-QA_CAPACITY_FLOOR_MB = _int("WC_SUITE_COST_MB", 700)
+#
+# QA_CHUNK_TIMEOUT still shares bin/run-suite-chunked.sh's variable, because
+# "too long" means the same thing in both places.
+#
+# "Enough room" no longer does, and this is where the two deliberately part.
+# The local runner now admits each phase on its own cost -- roughly 300 MB for
+# a plain chunk, 700 for one running chromium -- because charging the browser
+# price to 300-odd plain files refused readings the host could easily afford.
+# A remote run has no such split: it sends the WHOLE suite to one host, so the
+# room it needs is the room the heaviest phase needs, and 700 is the right
+# floor for selecting a transport.
+#
+# So the number is unchanged and its meaning is not. WC_SUITE_COST_MB locally
+# is now the BROWSER phase's cost; here it is the whole run's floor. Sharing
+# one variable across two meanings is how an operator raising it to be
+# conservative would raise the remote floor and the local browser bar while
+# leaving local plain chunks at 300 -- a change they did not ask for and would
+# not see. It therefore has its own name, with the old one honoured as a
+# fallback so any existing override keeps working.
+QA_CAPACITY_FLOOR_MB = _int("WC_QA_CAPACITY_FLOOR_MB",
+                            _int("WC_SUITE_COST_MB", 700))
 QA_CHUNK_TIMEOUT = _int("WC_CHUNK_TIMEOUT", 600)
 
 # --- usage accounting ------------------------------------------------------

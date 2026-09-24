@@ -25,6 +25,7 @@ merely permissive:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -92,21 +93,8 @@ class PhaseAdmissionBehaviourTests(unittest.TestCase):
         defect that does not exist -- and that the run does not exit 0, because
         a zero is what gets quoted as a full-suite result.
 
-        WHAT THIS DOES NOT COVER, stated rather than implied: the shell branch
-        that decides to write those files. Two routes to it were tried and
-        neither is worth its cost. Driving the runner against a synthetic tests
-        directory hangs -- the script resolves paths relative to the repository
-        and is not built to run elsewhere -- and a test that hangs for ten
-        minutes is worse than an honest gap. Exercising it in the real
-        repository means running the entire plain phase first, because the
-        browser loop is last, which is the whole suite.
-
-        So the decision branch is covered by source assertions only, and that
-        is weaker than it sounds: a wrong variable name there would skip
-        silently. What IS verified end to end, by hand in this repository on
-        2026-09-23, is the plain refusal -- WC_SUITE_PLAIN_COST_MB=99999999
-        produces "refusing to start ... plain chunks (declared 99999999 MB)"
-        and exit 75, so the 2026-09-07 protection is intact.
+        The shell branch that writes these files is covered separately, by
+        `test_the_skip_branch_writes_not_run_artefacts` below.
         """
         import re
         source = RUNNER.read_text()
@@ -136,6 +124,122 @@ class PhaseAdmissionBehaviourTests(unittest.TestCase):
                 result.returncode, 0,
                 "an aggregate containing a skipped phase must not exit 0 -- "
                 "a zero is what gets quoted as a complete result")
+
+
+@unittest.skipUnless(RUNNER.exists(), "runner not present")
+class SkipBranchTests(unittest.TestCase):
+    """Drive the skip decision itself, against a synthetic root.
+
+    An earlier version of this file claimed this could not be done -- that the
+    runner "resolves paths relative to the repository" and hangs elsewhere. It
+    resolves them relative to its OWN location (`cd "$(dirname "$0")/.."`), so
+    copying the script and the one module it imports into a temporary root
+    with two stub test files drives the whole branch in about a second. The
+    claim was wrong and was found in review; the gap it excused was cheap to
+    close all along.
+
+    This matters because the branch is otherwise covered by source assertions
+    only, and a wrong variable name in it would skip the browser phase
+    silently -- reporting a partial run as a complete one, which is the exact
+    failure the rest of this file exists to prevent.
+    """
+
+    def _root(self, tmp: Path) -> Path:
+        """A minimal tree the runner can execute in."""
+        root = tmp / "root"
+        (root / "bin").mkdir(parents=True)
+        (root / "tests").mkdir()
+        (root / "bin" / "run-suite-chunked.sh").write_text(RUNNER.read_text())
+        # resource_guard is the only project module the script imports.
+        shutil.copy(ROOT / "resource_guard.py", root / "resource_guard.py")
+        (root / "tests" / "test_plain_probe.py").write_text(
+            "def test_ok():\n    assert True\n")
+        # Classified as a browser file by the runner's own grep.
+        (root / "tests" / "test_browser_probe.py").write_text(
+            "sync_playwright = None\n"
+            "def test_never_runs():\n    assert True\n")
+        (root / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n")
+        return root
+
+    def _run(self, root: Path, out: Path, **env_extra):
+        env = dict(os.environ)
+        env.pop("WC_RESOURCE_GUARD", None)
+        env.update({
+            "WC_PY": str(ROOT / ".venv" / "bin" / "python"),
+            "WC_SUITE_OUT": str(out),
+            "PYTHONPATH": str(root),
+            **env_extra,
+        })
+        return subprocess.run(
+            ["bash", str(root / "bin" / "run-suite-chunked.sh")],
+            cwd=str(root), env=env, capture_output=True, text=True, timeout=300,
+        )
+
+    def test_the_skip_branch_writes_not_run_artefacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpp = Path(tmp)
+            root = self._root(tmpp)
+            out = tmpp / "out"
+            result = self._run(root, out,
+                               WC_SUITE_PLAIN_COST_MB="1",
+                               WC_SUITE_COST_MB="99999999")
+
+            combined = result.stdout + result.stderr
+            log = out / "browser-test_browser_probe.log"
+            rc = out / "browser-test_browser_probe.rc"
+            self.assertTrue(log.exists(), f"no NOT RUN log written:\n{combined[-1200:]}")
+            self.assertTrue(log.read_text().startswith("NOT RUN"))
+            self.assertEqual(rc.read_text().strip(), "75")
+            self.assertIn("NOT RUN (browser phase not admitted)", result.stdout)
+            self.assertIn("NOT a full-suite result", result.stderr)
+            self.assertNotEqual(result.returncode, 0,
+                                "a run with a skipped phase must not exit 0")
+            # The plain chunk still ran: a skipped browser phase must not cost
+            # the reading the host could afford.
+            self.assertTrue((out / "plain-01.log").exists())
+
+    def test_an_affordable_browser_phase_actually_runs(self):
+        """The complement, so the skip branch cannot be satisfied by always
+        skipping -- which would pass every assertion above."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpp = Path(tmp)
+            root = self._root(tmpp)
+            out = tmpp / "out"
+            result = self._run(root, out,
+                               WC_SUITE_PLAIN_COST_MB="1", WC_SUITE_COST_MB="1")
+
+            log = out / "browser-test_browser_probe.log"
+            self.assertTrue(log.exists())
+            self.assertFalse(log.read_text().startswith("NOT RUN"),
+                             "browser phase was skipped despite being affordable")
+            self.assertNotIn("NOT a full-suite result", result.stderr)
+            self.assertEqual(result.returncode, 0, result.stdout[-1200:])
+
+    def test_no_browser_files_means_no_skip_banner(self):
+        """Finding 6: the banner announced an omission from a run that had
+        none, because the verdict was taken for a phase with no members.
+
+        Two independent guards now prevent this -- the verdict is not taken
+        when `browser_count` is 0, and the banner checks it again -- so
+        removing either ALONE leaves this test green. Verified: both single
+        mutations pass, and restoring the original pre-fix state (both absent)
+        fails here with "claimed a skipped phase with no browser files". That
+        is defence in depth rather than a redundant assertion, and it is worth
+        writing down, because a reader who mutates one guard and sees green
+        would otherwise conclude this test is decorative.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpp = Path(tmp)
+            root = self._root(tmpp)
+            (root / "tests" / "test_browser_probe.py").unlink()
+            out = tmpp / "out"
+            result = self._run(root, out,
+                               WC_SUITE_PLAIN_COST_MB="1",
+                               WC_SUITE_COST_MB="99999999")
+
+            self.assertNotIn("NOT a full-suite result", result.stderr,
+                             "claimed a skipped phase with no browser files")
+            self.assertEqual(result.returncode, 0, result.stdout[-1200:])
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ PLAIN_COST_MB="${WC_SUITE_PLAIN_COST_MB:-300}"
 BROWSER_COST_MB="${WC_SUITE_COST_MB:-700}"
 SKIPPED_BROWSER=""
 
-if ! guard_output="$($PY -m resource_guard --cost-mb "$PLAIN_COST_MB" 2>&1)"; then
+if ! guard_output="$("$PY" -m resource_guard --cost-mb "$PLAIN_COST_MB" 2>&1)"; then
     echo "run-suite-chunked: refusing to start — not enough memory for even the" >&2
     echo "  plain chunks (declared ${PLAIN_COST_MB} MB)." >&2
     printf '%s\n' "$guard_output" >&2
@@ -80,9 +80,12 @@ if ! guard_output="$($PY -m resource_guard --cost-mb "$PLAIN_COST_MB" 2>&1)"; th
     exit 75  # EX_TEMPFAIL: try again when the box is quieter
 fi
 
-if ! browser_guard="$($PY -m resource_guard --cost-mb "$BROWSER_COST_MB" 2>&1)"; then
-    SKIPPED_BROWSER="yes"
-fi
+# The browser verdict is taken immediately before the browser loop, not here.
+# The plain phase runs ~50 chunks in between, so a verdict taken now describes
+# memory pressure that is minutes to hours stale by the time it is acted on --
+# wrong in both directions. It would skip a phase the box has since made room
+# for, and admit one it no longer has room for, which is the direction that
+# matters.
 
 mkdir -p "$OUT"
 
@@ -120,6 +123,12 @@ if [ "$planned" -ne "$collected" ]; then
   exit 1
 fi
 
+# The interpreter is printed because getting it wrong is silent and this
+# project has the scar: a non-venv python skips the browser layer entirely
+# while the aggregate still prints a confident TOTAL. The header named the
+# file counts and the results directory and not the one thing that decides
+# whether the run means anything.
+echo "python        : $PY"
 echo "collected     : $collected files (from pytest, not a glob)"
 echo "browser files : $(echo "$BROWSER_FILES" | grep -c . )"
 echo "plain files   : $(echo "$PLAIN_FILES" | grep -c . )"
@@ -178,6 +187,19 @@ if [ "${#chunk[@]}" -gt 0 ]; then
   run_chunk "$(printf 'plain-%02d' "$i")" "${chunk[@]}"
 fi
 
+# Browser admission, asked HERE rather than at startup, so the verdict
+# describes the box as it is now and not as it was ~50 chunks ago. Only asked
+# when there is actually a browser file to run: a verdict about a phase with no
+# members is a question with no consequence, and answering it is what let an
+# earlier version print "this run is NOT a full-suite result" over a run from
+# which nothing had been omitted.
+browser_count=$(echo "$BROWSER_FILES" | grep -c .)
+if [ "$browser_count" -gt 0 ]; then
+    if ! browser_guard="$("$PY" -m resource_guard --cost-mb "$BROWSER_COST_MB" 2>&1)"; then
+        SKIPPED_BROWSER="yes"
+    fi
+fi
+
 # Browser files, one at a time -- unless the host could not be admitted for
 # them. A skipped file writes its own log saying so, so it appears in the
 # aggregate as NOT RUN rather than vanishing from the count: the difference
@@ -199,7 +221,13 @@ while read -r f; do
   run_chunk "$name" "$f"
 done <<<"$BROWSER_FILES"
 
-if [ -n "$SKIPPED_BROWSER" ]; then
+# Both conditions, because SKIPPED_BROWSER alone was not enough: with zero
+# browser files the banner announced a skipped phase over a run from which
+# nothing had been omitted, while the aggregate correctly exited 0 because no
+# NOT RUN log existed. Text and exit status disagreeing about whether a result
+# is complete is worse than either being wrong alone -- a reader believes the
+# words.
+if [ -n "$SKIPPED_BROWSER" ] && [ "$browser_count" -gt 0 ]; then
     echo
     echo "run-suite-chunked: the BROWSER phase was skipped -- the host could not" >&2
     echo "  be admitted for ${BROWSER_COST_MB} MB. The plain chunks above did run." >&2
@@ -226,16 +254,24 @@ for log in sorted(out.glob("*.log")):
     rc_file = out / f"{log.stem}.rc"
     rc = rc_file.read_text().strip() if rc_file.exists() else "?"
     lines = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if ln.strip()]
+    # NOT RUN is decided BEFORE the summary search, not after it. A skipped
+    # phase's log carries the resource guard's own output, and if that ever
+    # contains a line matching the counts pattern -- it already prints numbers
+    # about memory -- the search would find it, treat the skip as a real chunk,
+    # add its "counts" to the totals and drop it from `bad`. That is a phase
+    # that did not run being reported as one that passed, which is the precise
+    # failure this parser has already had once.
+    #
+    # A phase the host was not admitted for is also not a crash, and the
+    # distinction matters to the reader: "killed or crashed" sends them looking
+    # for a defect that is not there, while the real fact -- this file did not
+    # run, so the suite result is partial -- is the one they need.
+    if lines and lines[0].startswith("NOT RUN"):
+        bad.append((log.stem, rc, "NOT RUN -- phase not admitted"))
+        continue
     summary = next((ln for ln in reversed(lines)
                     if re.search(r"\d+ (passed|failed|error|skipped)", ln)), "")
     if not summary:
-        # A phase the host was not admitted for is not a crash, and saying so
-        # matters: "killed or crashed" sends the reader looking for a defect
-        # that is not there, while the real fact -- this file did not run, so
-        # the suite result is partial -- is the one they need.
-        if lines and lines[0].startswith("NOT RUN"):
-            bad.append((log.stem, rc, "NOT RUN -- phase not admitted"))
-            continue
         # No counts at all: killed (137), crashed, or collection died.
         bad.append((log.stem, rc, "NO SUMMARY -- killed or crashed"))
         continue

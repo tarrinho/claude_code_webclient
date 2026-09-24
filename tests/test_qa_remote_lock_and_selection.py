@@ -4,6 +4,7 @@ Design: docs/superpowers/specs/2026-09-09-remote-qa-execution-design.md §5.
 """
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -189,6 +190,54 @@ class ConfigDefaultsTests(unittest.TestCase):
         import config
 
         self.assertEqual(config.QA_CAPACITY_FLOOR_MB, 700)
+
+    def _floor_with(self, **env_extra) -> int:
+        """QA_CAPACITY_FLOOR_MB as a freshly-imported config would compute it.
+
+        A subprocess, deliberately, rather than importlib.reload(): reloading
+        config in-process swaps the module object while every other module in
+        the suite still holds a reference to the old one, and this codebase has
+        already paid for that class of desync once. Reading the value out of a
+        clean interpreter costs a fork and mutates nothing.
+        """
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        env = dict(os.environ)
+        env.pop("WC_QA_CAPACITY_FLOOR_MB", None)
+        env.pop("WC_SUITE_COST_MB", None)
+        env.update(env_extra)
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import config; print(config.QA_CAPACITY_FLOOR_MB)"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=env, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(out.returncode, 0, out.stderr[-600:])
+        return int(out.stdout.strip())
+
+    def test_the_remote_floor_has_its_own_variable(self):
+        """The local runner's WC_SUITE_COST_MB now means the BROWSER phase's
+        cost, not a whole run's floor. A remote run sends the entire suite to
+        one host, so its floor is the heaviest phase's -- the same 700, for a
+        different reason. Sharing one variable across the two meanings would
+        let an operator raising it move the remote floor and the local browser
+        bar while leaving local plain chunks alone."""
+        self.assertEqual(self._floor_with(WC_QA_CAPACITY_FLOOR_MB="1234"), 1234)
+
+    def test_the_old_variable_is_still_honoured(self):
+        """Backward compatibility: an existing WC_SUITE_COST_MB override must
+        keep moving the remote floor, or this split silently changes the
+        behaviour of a deployment that had tuned it."""
+        self.assertEqual(self._floor_with(WC_SUITE_COST_MB="999"), 999)
+
+    def test_the_new_variable_wins_when_both_are_set(self):
+        """Otherwise the fallback is unreachable in exactly the deployment
+        most likely to set both while migrating."""
+        self.assertEqual(
+            self._floor_with(WC_QA_CAPACITY_FLOOR_MB="111",
+                             WC_SUITE_COST_MB="999"), 111)
 
 
 if __name__ == "__main__":

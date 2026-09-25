@@ -104,13 +104,22 @@ churn.
   rather than a measurement, and rewriting ladder generation around it is a
   spec decision.
 
-  **Budget enforcement stays off**, deliberately, even though nothing now
-  breaches. `multi-turn` sits at a 3.2% margin and `planning` at 4.6%, and
-  switching on a limit that close to the data is precisely the mistake the
-  ceiling raise above exists to correct. Either those two get repinned off
-  their fable-5 and gpt-5-mini rungs, or `BUDGET_USD` moves; until one of
-  those happens, enforcing it would mean the next re-measurement blocks a
-  task type.
+- **`multi-turn` repinned again, to `luna → sonnet-5`.** Its budget margin was
+  3.2%, the thinnest of any type, entirely because of the same `claude-fable-5`
+  top rung: $3.386 → **$0.655**, an 81.3% margin, and the worst-case path
+  improves to 2,053s (39.6%) as well. Dropping to two rungs costs nothing
+  measured — every candidate above `claude-sonnet-5` ties its accuracy of 1.0
+  while being dearer and slower, so a third rung was buying latency and money
+  for no measurable accuracy.
+
+  **Budget enforcement stays off, and `planning` is now the only reason.** It
+  sits at a 4.6% margin and, unlike the others, cannot be repinned out of it:
+  `claude-fable-5` is the **only** model that reaches accuracy 1.0 on planning
+  (everything else tops out at 0.833), so it is a genuine accuracy ceiling
+  rather than a dominated rung. Every ladder that keeps it costs about $3.34.
+  So the choice is a real one — accept `planning` capped at 0.833 accuracy, or
+  move `BUDGET_USD` — and it is not a choice to make silently while tidying
+  margins. Every other type is now between 20.7% and 99.4%.
 
 ### Fixed
 

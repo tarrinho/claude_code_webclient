@@ -99,6 +99,55 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _click_until_visible(page, click_selector, confirms, timeout=20_000,
+                         attempts=3):
+    """Click something and confirm it had the effect the caller is waiting for.
+
+    The general form of the sidebar-row fix documented below. A click that
+    Playwright reports as successful only means the element was present,
+    visible and enabled at that instant -- not that the handler ran. Any part
+    of this page that re-renders on a poll can replace the node between those
+    two facts, and then the test fails on whatever it waited for next, which is
+    innocent.
+
+    The caller names the effect, so the failure names the click. Re-clicking
+    must be idempotent for this to be safe; every current caller opens
+    something that is already open, which is.
+    """
+    for attempt in range(attempts):
+        page.wait_for_selector(click_selector, timeout=timeout)
+        page.click(click_selector)
+        try:
+            page.wait_for_selector(confirms, state="visible",
+                                   timeout=timeout // attempts)
+            return
+        except Exception:
+            if attempt == attempts - 1:
+                raise AssertionError(
+                    f"clicking {click_selector} never made {confirms} visible, "
+                    f"after {attempts} attempts")
+
+
+def _open_settings_tab(page, tab, timeout=20_000):
+    """Open Settings and select one of its tabs, confirming both steps.
+
+    Fourteen call sites did `click("#settingsBtn")` immediately followed by
+    `click('[data-tab=...]')` with nothing between them. When the first click
+    was swallowed the second failed on the tab selector, so three separate
+    files reported "[data-tab=\\"delegation\\"] not found" for a dialog that had
+    never opened. Measured on 2026-09-25 across repeated runs of the delegation
+    subset alone: 0, 1 and 2 failures on unmodified main, naming a different
+    test each time.
+
+    The panel id is derived rather than passed, because the page names them
+    consistently (`delegation` -> `#panelDelegation`) and a second argument at
+    fourteen call sites is fourteen chances to confirm the wrong thing.
+    """
+    panel = f"#panel{tab[0].upper()}{tab[1:]}"
+    _click_until_visible(page, "#settingsBtn", f'[data-tab="{tab}"]', timeout)
+    _click_until_visible(page, f'[data-tab="{tab}"]', panel, timeout)
+
+
 def _click_row_until_open(page, row_selector, confirms, timeout=20_000,
                           attempts=3):
     """Click a sidebar row and confirm the conversation actually opened.
@@ -402,7 +451,12 @@ class _BrowserFixture(unittest.TestCase):
         memory gate, so the interaction went unseen until the set ran on a QA
         node. Expand first, then wait.
         """
-        self.page.click("#settingsBtn")
+        # Confirmed rather than assumed, for the reason in
+        # `_click_until_visible`: a swallowed click here cannot fail on its own
+        # terms, only on the toggle wait below, which then blames a panel that
+        # was never asked to render. Three of this file's four failures on
+        # 2026-09-25 arrived at `.transport-collapse-toggle` this way.
+        _click_until_visible(self.page, "#settingsBtn", "#settingsDialog")
         # The header exists whether or not the group is collapsed, so it is the
         # honest readiness signal for "the panel has rendered".
         #
@@ -3487,8 +3541,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#serverBody", timeout=15_000)
 
         headings = self.page.locator(
@@ -3521,8 +3574,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#serverTimeframe", timeout=15_000)
 
         # The FIRST element child, not the first one that happens to carry an
@@ -3583,8 +3635,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#allHostCharts figure.stat-figure",
                                     timeout=15_000)
 
@@ -3630,8 +3681,7 @@ class TransportStatsPanelTests(_BrowserFixture):
             "request",
             lambda r: calls.append(r.url) if "/api/system" in r.url else None,
         )
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_timeout(3000)
 
         self.assertTrue(calls, "the Server tab never asked for host stats")
@@ -3700,8 +3750,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#allHostCharts figure.stat-figure",
                                     timeout=15_000)
 
@@ -3787,8 +3836,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#allHostCharts figure.stat-figure",
                                     timeout=15_000)
 
@@ -3834,8 +3882,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#transportStats .transport-panel",
                                     timeout=10_000)
         self.page.wait_for_timeout(1500)
@@ -3866,8 +3913,7 @@ class TransportStatsPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#transportStats .transport-panel",
                                     timeout=10_000)
 
@@ -3920,8 +3966,7 @@ class StatisticsPanelBrowserTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="stats"]')
+        _open_settings_tab(self.page, 'stats')
         self.page.wait_for_selector("#statsBody figure.stat-figure",
                                     timeout=15_000)
 
@@ -4126,8 +4171,7 @@ class DelegationKnobAffordanceBrowserTests(_BrowserFixture):
         con.close()
 
     def _open(self):
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="delegation"]')
+        _open_settings_tab(self.page, 'delegation')
         self.page.wait_for_selector("#panelDelegation:not([hidden])",
                                      timeout=10_000)
         self.page.wait_for_selector(".delegation-card", timeout=10_000)
@@ -4347,8 +4391,7 @@ class DelegationBudgetKnobBrowserTests(_BrowserFixture):
     """
 
     def _open(self):
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="delegation"]')
+        _open_settings_tab(self.page, 'delegation')
         self.page.wait_for_selector("#panelDelegation:not([hidden])",
                                      timeout=10_000)
         self.page.wait_for_timeout(300)
@@ -4569,8 +4612,7 @@ class DelegationConfigLayoutBrowserTests(_BrowserFixture):
     """
 
     def _open_delegation(self):
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="delegation"]')
+        _open_settings_tab(self.page, 'delegation')
         self.page.wait_for_selector("#panelDelegation:not([hidden])", timeout=10_000)
         # state="attached", not the wait_for_selector default of "visible":
         # under the broken CSS the label column collapses to zero width and
@@ -4675,8 +4717,7 @@ class DelegationBenchmarkControlsBrowserTests(_BrowserFixture):
         con.close()
 
     def _open(self):
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="delegation"]')
+        _open_settings_tab(self.page, 'delegation')
         self.page.wait_for_selector("#panelDelegation:not([hidden])",
                                      timeout=10_000)
         self.page.wait_for_selector(".delegation-card", timeout=10_000)
@@ -4809,8 +4850,7 @@ class ScratchReclaimPanelTests(_BrowserFixture):
         self._login()
         self.page.goto(self.base, timeout=10_000, wait_until="domcontentloaded")
         self.page.wait_for_selector("#settingsBtn", timeout=15_000)
-        self.page.click("#settingsBtn")
-        self.page.click('[data-tab="server"]')
+        _open_settings_tab(self.page, 'server')
         self.page.wait_for_selector("#reclaimPanel", timeout=15_000)
 
     def _stub_preview(self):

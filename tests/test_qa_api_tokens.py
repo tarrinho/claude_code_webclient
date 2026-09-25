@@ -212,7 +212,17 @@ class DevExemptionIsGoneTests(ApiTokenBase):
         self.assertEqual(block.count("startswith"), 1, block)
         # And no other `==` path check either -- same reasoning, for the
         # exact-match exemptions rather than the one prefix-match one.
-        self.assertEqual(block.count(' == "'), 3, block)
+        #
+        # Raised from 3 to 4 on 2026-09-25 for /api/csp-report, which is
+        # exempt because browsers send CSP reports with credentials omitted --
+        # gated, the endpoint would receive nothing and a report-only CSP
+        # rollout would look clean while reporting nothing. Taking this guard
+        # at its word rather than as a counter to bump: the handler stores
+        # nothing, returns no body, echoes no submitted value, refuses a body
+        # over 16 KB, and strips control characters from the four fields it
+        # logs. tests/test_qa_csp_report.py covers the abuse cases, including
+        # the log-injection one.
+        self.assertEqual(block.count(' == "'), 4, block)
 
 
 class PublicVersionEndpointTests(ApiTokenBase):

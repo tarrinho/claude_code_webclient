@@ -80,18 +80,68 @@ churn.
   has. That type is the one to watch — it is the only one whose
   re-measurement can move this again.
 
-  **Latency-ceiling enforcement stays off**, but for a narrower reason than
-  the code previously gave. Its docstring argued that no task type was
-  operational and that breaching types breach because they lack a
-  `TIER0_BASELINE_CALIBRATION` entry. Both were false when measured: all nine
-  types are operational, and `comprehension` is equally uncalibrated yet sat
-  under the ceiling. The real obstacle was margin, and the ceiling raise above
-  has now removed it: nothing breaches the ceiling, so turning the knob on
-  would no longer block anything. It remains off because switching it on is a
-  separate deliberate act — the assertion that the arithmetic is trustworthy
-  for every operational type — and because the *budget* knob has its own
-  live breach (`reasoning`'s ladder is $4.283 against a $3.50 `BUDGET_USD`)
-  which this work did not touch.
+  **Latency-ceiling enforcement is now ON**, for the first time. Its docstring
+  had argued the default was off because no task type was operational and
+  because breaching types breach for want of a `TIER0_BASELINE_CALIBRATION`
+  entry. Both were false when measured: all nine types are operational, and
+  `comprehension` is equally uncalibrated yet sat under the ceiling. The real
+  obstacle was margin, the ceiling raise removed it, and the service was
+  restarted to prove it boots with the invariant enforced rather than assumed.
+
+- **`reasoning` no longer breaches the tree-cost budget.** It was the only
+  type over, at $4.283 against a $3.50 `BUDGET_USD`, and the cause was the
+  same shape as `multi-turn`'s ceiling breach: the top rung was
+  `claude-fable-5` at $6.8902. Here it was not merely expensive but **strictly
+  dominated** — `claude-opus-5` scores the same accuracy of 1.0 at $1.231 and
+  10.2s against fable-5's 22.2s, so there is no measured axis on which the
+  costlier rung is better. Repinned to `luna → sonnet-5 → opus-5`: $1.143,
+  a 67.3% budget margin, and the worst-case path improves to 2,406s as well.
+
+  The same domination holds on `coding` (six cheaper, faster models tie
+  fable-5's accuracy) and on `multi-turn` (two do). Those two are under both
+  limits and were left alone; the only case for an expensive top rung is
+  capability the benchmark cannot resolve at n=12, which is an assumption
+  rather than a measurement, and rewriting ladder generation around it is a
+  spec decision.
+
+- **`multi-turn` repinned again, to `luna → sonnet-5`.** Its budget margin was
+  3.2%, the thinnest of any type, entirely because of the same `claude-fable-5`
+  top rung: $3.386 → **$0.655**, an 81.3% margin, and the worst-case path
+  improves to 2,053s (39.6%) as well. Dropping to two rungs costs nothing
+  measured — every candidate above `claude-sonnet-5` ties its accuracy of 1.0
+  while being dearer and slower, so a third rung was buying latency and money
+  for no measurable accuracy.
+
+  **Budget enforcement stays off, and `planning` is now the only reason.** It
+  sits at a 4.6% margin and, unlike the others, cannot be repinned out of it:
+  `claude-fable-5` is the **only** model that reaches accuracy 1.0 on planning
+  (everything else tops out at 0.833), so it is a genuine accuracy ceiling
+  rather than a dominated rung. Every ladder that keeps it costs about $3.34.
+  So the choice is a real one — accept `planning` capped at 0.833 accuracy, or
+  move `BUDGET_USD` — and it is not a choice to make silently while tidying
+  margins. Every other type is now between 20.7% and 99.4%.
+
+### Fixed
+
+- **Prospective validation now builds the table boot builds, pins included.**
+  A knob flip and a row write are validated for exactly one reason — to
+  predict what `validate_or_die` will say at the next restart. Four call sites
+  were predicting it with a table boot never builds: both enforcement
+  endpoints, the row-write check and the settings page's blockers constructed
+  `CapabilityTable(rows, operational=...)` with **no pins**, while boot
+  applies pins and then pin-safes them. The row-write site's own comment had
+  asserted the opposite for as long as it had been false.
+
+  Measured on production data, the disagreement was total for one task type:
+  `multi-turn`'s generated ladder is 3,850s and its pinned ladder 2,675s
+  against a 3,400s ceiling. So the ceiling-enforcement knob refused a flip
+  that boot would have accepted, and the reason it printed named a ladder the
+  router does not use. `boot_shaped_table()` is now the single builder and
+  `validate_or_die` uses it too, so the two cannot drift again.
+
+  Honouring pins here weakens nothing: `without_unusable_pins` drops any pin
+  whose problems are not a subset of the same type's problems without it, so a
+  pin can only ever remove a problem, never introduce one.
 
 - **`voice-engine.js` split into four.** It was at 299 lines against a
   300-line cap, so the interrupt work extracted the three pieces of it that

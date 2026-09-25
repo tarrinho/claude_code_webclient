@@ -44,11 +44,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import db
-from delegation_startup import (budget_enforcement_enabled,
+from delegation_startup import (boot_shaped_table,
+                                budget_enforcement_enabled,
                                 ceiling_enforcement_enabled,
                                 delegation_enabled,
                                 live_known_models,
-                                problems_with)
+                                problems_with,
+                                prospective_table)
 from routes.db_benchmark import capability_meta_all
 from routes.db_delegation import rows_to_capability, delegation_pin_all, delegation_pin_set
 from routes.db_users import setting_set
@@ -285,6 +287,7 @@ def _blockers_by_task_type(
     known_models: frozenset[str] | None,
     enforce_latency_ceiling: bool = CEILING_ENFORCEMENT_DEFAULT,
     enforce_budget: bool = BUDGET_ENFORCEMENT_DEFAULT,
+    pins: dict[str, list[str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Why each task type cannot go operational, for the settings page.
 
@@ -324,8 +327,15 @@ def _blockers_by_task_type(
     blockers: dict[str, dict[str, Any]] = {}
     task_types = sorted({row.task_type for row in capability_rows})
     for task_type in task_types:
-        candidate = CapabilityTable(
-            capability_rows, operational=operational_set | {task_type})
+        # Boot-shaped, pins included. Without them this page reported a
+        # blocker naming a ladder the router does not use: on 2026-09-25
+        # `multi-turn` was shown as breaching at 3,850s -- its GENERATED
+        # ladder -- while the pinned ladder it actually routes on is 2,675s,
+        # under the ceiling. The comment at this function's one call site
+        # requires the blocker to "agree with what a real flip attempt would
+        # say", and that flip is validated boot-shaped.
+        candidate, _dropped = boot_shaped_table(
+            capability_rows, operational_set | {task_type}, pins or {})
         # The breach is computed for every type, operational or not, and
         # whatever the knob says -- the knob decides whether it also appears
         # in `data` below, never whether it is measured.
@@ -401,7 +411,7 @@ async def handle_delegation_get(request: Request):
     enforce_budget = await budget_enforcement_enabled()
     blockers = _blockers_by_task_type(
         capability_rows, operational_set, known_models, enforce_ceiling,
-        enforce_budget)
+        enforce_budget, pins)
     return JSONResponse({
         "rows": rows,
         "operational": operational,
@@ -498,7 +508,12 @@ async def handle_row_put(request: Request):
         merged_rows = [r for r in rows
                        if not (r["model"] == model and r["task_type"] == task_type)]
         merged_rows.append({"model": model, "task_type": task_type, **merged_columns})
-        table = CapabilityTable(rows_to_capability(merged_rows), operational=operational)
+        # Boot-shaped, pins included. The comment below has always claimed
+        # this path matches `validate_or_die`; until 2026-09-25 it did not,
+        # because this table carried no pins and boot's does.
+        table, _dropped = boot_shaped_table(
+            rows_to_capability(merged_rows), operational,
+            await delegation_pin_all())
         # `problems_with` is the single place that pairs a table with the
         # live settings of both enforcement knobs, and it carries the same
         # live-model list and the same fallback as
@@ -618,9 +633,13 @@ async def handle_ceiling_enforcement_put(request: Request):
     enabled = bool(data["enabled"])
 
     if enabled:
-        rows = rows_to_capability(await db.delegation_rows_all())
-        operational = await db.delegation_operational_all()
-        table = CapabilityTable(rows, operational=operational)
+        # Through `prospective_table`, so this predicts boot instead of
+        # predicting something boot never builds. It used to construct the
+        # table with no pins while `validate_or_die` applies them, which meant
+        # a pinned ladder that clears the ceiling was judged on the generated
+        # ladder that does not -- see `boot_shaped_table` for the measured
+        # case.
+        table, _dropped = await prospective_table()
         known_models = await live_known_models()
         problems = table.validate(known_models=known_models,
                                   enforce_latency_ceiling=True)
@@ -661,9 +680,9 @@ async def handle_budget_enforcement_put(request: Request):
     enabled = bool(data["enabled"])
 
     if enabled:
-        rows = rows_to_capability(await db.delegation_rows_all())
-        operational = await db.delegation_operational_all()
-        table = CapabilityTable(rows, operational=operational)
+        # Same correction as the ceiling knob above, for the same reason: a
+        # check that exists to predict boot has to build boot's table.
+        table, _dropped = await prospective_table()
         known_models = await live_known_models()
         problems = table.validate(known_models=known_models,
                                   enforce_budget=True)

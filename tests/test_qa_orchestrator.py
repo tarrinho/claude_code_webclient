@@ -1041,7 +1041,17 @@ class FramingPolicyTests(unittest.TestCase):
             return _Resp()
 
         middleware = app.SecurityMiddleware(app=None)
-        asyncio.run(middleware.dispatch(SimpleNamespace(url=SimpleNamespace(path="/")), _handler))
+        # The double carries `method` and `headers` because a real Starlette
+        # Request always does. It previously carried only `url`, which was
+        # enough while this middleware read nothing else -- and then stopped
+        # being enough the day it grew a Fetch Metadata check, failing three
+        # tests that are about framing and have no opinion on request methods.
+        # A fake narrower than the object it stands in for reports the next
+        # change to that object as a defect in whatever the test was actually
+        # about.
+        request = SimpleNamespace(
+            url=SimpleNamespace(path="/"), method="GET", headers={})
+        asyncio.run(middleware.dispatch(request, _handler))
         return captured
 
     def test_same_origin_framing_is_permitted(self):

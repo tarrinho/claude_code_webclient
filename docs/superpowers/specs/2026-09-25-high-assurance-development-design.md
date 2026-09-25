@@ -69,28 +69,72 @@ This is precisely the gap the talks address. Their answer is not more review.
 It is to make the invariant machine-checkable, enforce it where it cannot be
 argued with, and put it outside the reach of whoever is writing the code.
 
-## 2. What this changes
+## 2. Threat model
 
-Nothing about what we build. Everything about what the environment refuses to
-let us build wrongly.
+Google's numbers come from a hostile-internet context. This console is a
+single-operator tool behind Tailscale with an API token. Importing their
+conclusions without stating our own threat model would be cargo-culting, so:
 
-Three principles, in priority order.
+**Not the threat.** Anonymous internet attackers, hostile registered users,
+multi-tenant isolation. There is one operator and no public exposure.
 
-**Deterministic invariants beat review.** Where a rule can be expressed as
-something a machine decides — a header, a compile-time ban, a test that fails
-on mutation — it is expressed that way. Prose in `rules.md` is a last resort,
-not a first one.
+**The actual threat, and it is real.** This console's entire job is to render
+text that nobody trusted. Model output, transcript contents, session names,
+peer-session messages, remote QA-node payloads, commit text, file contents read
+by an agent — every one of these reaches the DOM, and every one is attacker-
+influenceable if any repository, web page, ticket or document an agent reads is
+attacker-influenceable. `chat-list.js:32` records a stored XSS that already
+happened here, from exactly this direction.
 
-**A check must fail when the thing it guards breaks.** A check that cannot be
-shown to fail has not been shown to check anything. This is a requirement on
-new checks, not an aspiration.
+So the adversary is not someone attacking the console. It is **content the
+console renders on the operator's behalf**, which the operator has no reason to
+distrust and every reason to read.
 
-**Guardrails live outside the agent's reach.** Response headers, build
-configuration and the enforcement pipeline are not things a session edits to
-make its own work pass. An exemption is a reviewed change to the guardrail, not
-a local edit.
+That distinction changes priorities rather than removing them. It is why
+section 3 argues against a nonce rollout and for Trusted Types; the injection
+risk here is DOM-side, from data, not from an attacker who can place inline
+script in our templates.
 
-## 3. The Content Security Policy
+## 3. The console is itself an agent surface
+
+The 2026 talk names a "lethal trifecta": sensitive data access, untrusted
+context, and the capability to act. Applied honestly, this console has all
+three.
+
+- **Sensitive data.** The production database, transcripts, API tokens in the
+  environment, the whole repository.
+- **Untrusted context.** Everything in section 2, plus cross-session messages
+  from peer agents, which arrive as text and are acted on.
+- **Capability to act.** It spawns the `claude` CLI, deploys releases,
+  restarts services and writes to the production database.
+
+We already hold two of the talk's four defences, without having framed them
+that way. **Policy enforcement with escalate-to-human** exists as the
+permission classifier and the confirmation rules. **Observability** exists as
+`requests-log.md`, the SDD ledgers and the transcripts.
+
+Two are weak:
+
+**3.1 Markdown and markup sanitisation on the exfiltration path.** The talk's
+worked example is an agent rendering markdown that contains an image URL
+carrying stolen data in its query string. `img-src 'self' data:` in the current
+CSP already refuses a remote image load, which is a real defence and worth
+recording as one — it was not put there for this reason. `connect-src 'self'`
+covers the fetch path.
+
+**3.2 Bounded capability.** A session's own reach is bounded by the permission
+classifier, but a *peer* session asking for an action denied to it is bounded
+only by the receiving agent's judgement. This was exercised on 2026-09-23:
+a peer reported that deploy and restart were denied to it and asked another
+session to run them. The request was refused and escalated to the operator.
+That is the right outcome, and it came from judgement rather than from a
+control. A control would be better.
+
+Section 9 does not attempt to fix 3.2, because the design is not obvious and
+guessing at one is worse than naming the gap. It is recorded here so it is not
+rediscovered as a surprise.
+
+## 4. The Content Security Policy
 
 `middleware.py:221` currently emits, unconditionally:
 
@@ -104,200 +148,242 @@ This is already far better than the gated-on-a-nonce-nobody-set policy it
 replaced, which shipped no CSP at all. It is not yet strict, and the gaps are
 specific.
 
-**3.1 `object-src 'none'`.** Absent. `default-src 'self'` covers `object-src`
+**4.1 `object-src 'none'`.** Absent. `default-src 'self'` covers `object-src`
 by fallback, but `'self'` is not `'none'` — a same-origin upload or reflected
 path can still be embedded as a plugin document. `object-src 'none'` is
 unconditional in every strict-CSP recommendation and costs nothing here,
 because this application embeds no plugin content.
 
-**3.2 Trusted Types.** Absent. Add `require-trusted-types-for 'script'` and a
+**4.2 Trusted Types.** Absent. Add `require-trusted-types-for 'script'` and a
 `trusted-types` directive naming the policies we actually create. This is the
 half of the Google result that pairs with CSP: the 100-plus applications
-reporting zero XSS ran both, not one.
+reporting zero XSS ran both, not one. Given the threat model in section 2 —
+injection through rendered data, not through our templates — this is the single
+highest-value item in the document.
 
-**3.3 `style-src 'unsafe-inline'`.** Present, and not free. It does not enable
+**4.3 `style-src 'unsafe-inline'`.** Present, and not free. It does not enable
 script execution, but it does permit CSS-based exfiltration of DOM content
-through attribute selectors and it weakens any future nonce story. Removal is
-gated on an inventory of inline `style=` attributes, which is work, so this is
-staged last rather than first.
+through attribute selectors, which is the same exfiltration path section 3.1
+cares about. Removal is gated on an inventory of inline `style=` attributes,
+which is work, so this is staged last rather than dropped.
 
-**3.4 Reporting.** No `report-to` or `report-uri`. Without a report sink, a CSP
+**4.4 Reporting.** No `report-to` or `report-uri`. Without a report sink, a CSP
 violation in production is invisible, and every tightening below has to be
 deployed blind. This lands first, in report-only mode, because it is what makes
 the rest measurable rather than hopeful.
 
-**3.5 Keep `script-src 'self'` and do not add a nonce yet.** The talks
-recommend nonce plus `'strict-dynamic'` where script delivery is not fully
-controlled. Here it is: both templates load only same-origin external scripts
-and carry no inline handlers, which the existing comment records. A nonce would
-add plumbing and no assurance. Revisit if a third-party script is ever
-introduced — and treat that introduction as the trigger, in the guardrail
-itself, not as something to remember.
+**4.5 Keep `script-src 'self'`; do not add a nonce.** The talks recommend nonce
+plus `'strict-dynamic'` where script delivery is not fully controlled. Here it
+is: `web/index.html` loads two scripts, both same-origin, and neither template
+carries an inline handler. A nonce would add plumbing and no assurance against
+the threat in section 2. The trigger for revisiting is the introduction of a
+third-party or inline script — and that trigger belongs in the guardrail check,
+not in anyone's memory.
 
-## 4. Trusted Types, and the sinks that actually exist
+**4.6 `script-src 'self'` does not cover the scripts we already ship.** Two
+vendored minified libraries sit under `web/assets/` — `d3.min.js` (279 KB) and
+`purify.min.js` (29 KB). Both are same-origin, so CSP permits them
+unconditionally, and neither `<script>` tag carries an `integrity` attribute. A
+modification to either file — by a compromised dependency update, or by an
+agent with write access to this tree — executes with full privileges and no
+control notices. `purify.min.js` is the sanitiser guarding the `specs.js` sink,
+so an attacker who can edit it owns the sanitiser too.
+
+This is a supply-chain gap, not an XSS gap, and it is the one item here that
+strict CSP genuinely cannot help with. Fix: Subresource Integrity hashes on
+both tags, plus a preflight stage that fails when a vendored asset's hash
+changes without a corresponding hash update. That stage is the point — an SRI
+attribute nobody regenerates is another check that stops checking.
+
+## 5. Trusted Types, and the sinks that actually exist
 
 Enforcement without an inventory produces a broken application and a rolled-
-back header. The inventory, measured rather than assumed:
+back header. The inventory, measured across first-party code (excluding the two
+vendored bundles):
 
-- 19 files under `web/assets/` mention `innerHTML`. Most are comments recording
-  that `textContent` was chosen deliberately — `conversation.js:745`,
-  `transcript.js:13`, `chat-list.js:32`, the last documenting a stored XSS that
-  already happened here.
-- `remote-stats.js:37` and `:40` assign constant strings. Safe, and no Trusted
-  Types policy is needed for a literal.
-- `remote-stats.js:51` interpolates seven values, each through `esc()`.
-- `specs.js:204` assigns the output of `window.DOMPurify.sanitize(html)`, on
-  markdown already sanitised server-side by `nh3`.
+**Script-execution sinks: none.** No `eval(`, no `new Function`, no
+`document.write`, no `srcdoc`, no `javascript:` URL construction anywhere in
+`web/assets/` or the templates. This is worth stating positively, because it
+means Trusted Types enforcement has no script-URL surface to break.
 
-So there is exactly one templating sink and one sanitiser sink. Both are
-expressible as named Trusted Types policies, which is a small enough surface to
-enforce rather than report on.
+**HTML sinks: four, in two files.** No `outerHTML`, no `insertAdjacentHTML`.
 
-The order is: report-only, confirm zero violations in production for a week,
-then enforce. Not the reverse.
+- `remote-stats.js:37` and `:40` — constant strings. No policy needed for a
+  literal.
+- `remote-stats.js:51` — interpolates seven values, each through `esc()`.
+- `specs.js:204` — assigns `window.DOMPurify.sanitize(html)`, over markdown
+  already sanitised server-side by `nh3`.
 
-## 5. Isolation headers
+Of the 19 files that mention `innerHTML`, the rest are comments recording that
+`textContent` was chosen deliberately: `conversation.js:745`,
+`transcript.js:13`, and `chat-list.js:32`, the last documenting the stored XSS
+that already happened here.
+
+So: one templating sink and one sanitiser sink, needing two named policies. A
+surface this small should be enforced rather than reported on indefinitely.
+
+Order: report-only, confirm zero violations in production for a week, then
+enforce. Not the reverse.
+
+## 6. Isolation headers
 
 `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer` and HSTS are present and correct.
 
-Missing, and worth adding in this order:
+Missing, in this order:
 
-**5.1 Fetch Metadata.** Reject cross-site state-changing requests by inspecting
-`Sec-Fetch-Site`. The talks describe this as a few lines at the server edge,
-and here it would sit in the same middleware that already sets the headers
-above. It defends the same class the `wc_csrf` token defends, from a different
-direction and without per-form plumbing — defence in depth, not a replacement.
+**6.1 Fetch Metadata.** Reject cross-site state-changing requests by inspecting
+`Sec-Fetch-Site`. A few lines in the middleware that already sets the headers
+above. It defends the class `wc_csrf` defends, from a different direction and
+without per-form plumbing.
 
-**5.2 `Cross-Origin-Opener-Policy: same-origin`.** Isolates this window from
+Named risk, because this one can break things rather than merely tighten them:
+the remote QA node, the proxy and any `curl`-based tooling send no
+`Sec-Fetch-*` headers at all. The rule must treat *absent* as allowed and only
+refuse an explicit `cross-site`, or the first deploy takes out the remote
+execution path. That is a real trade — it means a non-browser client can always
+opt out — and it is the correct one here, where browser-originated CSRF is the
+threat and the token guards the rest.
+
+**6.2 `Cross-Origin-Opener-Policy: same-origin`.** Isolates this window from
 cross-origin openers. The console opens no cross-origin popups.
 
-**5.3 `Cross-Origin-Resource-Policy: same-origin`.** Refuses cross-origin
+**6.3 `Cross-Origin-Resource-Policy: same-origin`.** Refuses cross-origin
 embedding of our own responses.
 
-All three are one-line additions to the same response hook, and all three are
-verified by a test asserting on the response headers of a real request — not by
+All three are verified by asserting on the headers of a real response, never by
 grepping `middleware.py` for the string.
 
-## 6. Checks that can fail
+## 7. Checks that can fail
 
-This is the section that addresses our own six incidents, and it is the one
-with the most value per line of work.
+This section addresses our own six incidents, and carries the most value per
+line of work.
 
-**6.1 Every new check ships with its mutation.** A check is accepted when its
-author can state what they broke to make it fail, and the test suite
-demonstrates it. This is already how the best work in this repository is done —
-the corrected usage keep-rule was verified by reverting it and observing
-exactly one test fail, and the attribution repair was validated against 9
-values stored before the incident, not against its own arithmetic. The rule
-makes that the default rather than the exception.
+**7.1 Every new check ships with its mutation.** A check is accepted when its
+author can state what they broke to make it fail, and the suite demonstrates
+it. The best work here already does this — the corrected usage keep-rule was
+verified by reverting it and observing exactly one test fail; the attribution
+repair was validated against nine values stored before the incident rather than
+against its own arithmetic. The rule makes that the default.
 
-**6.2 Source-text assertions are a last resort, and are scoped when used.**
+**7.2 Source-text assertions are a last resort, and are scoped when used.**
 Where a behaviour can be executed, execute it — `node` is present, and
 `chat-list.js` deliberately carries no top-level imports so its pure functions
-can be run directly. Where source inspection is genuinely the only option,
-extract by structure, never by character count. `_function_body` in
-`tests/test_qa_chat_active_float.py` is the pattern: count braces from the
-signature, and the number disappears from the test.
+run directly. Where source inspection is the only option, extract by structure,
+never by character count. `_function_body` in `tests/test_qa_chat_active_float.py`
+is the pattern: count braces from the signature, and the magic number
+disappears.
 
-**6.3 A check's summary states what it measured.** The §4 preflight line is the
-example: "zero innerHTML assignments with interpolation" would have been true
-as "zero unescaped interpolations into innerHTML", which is what it actually
-establishes. A reader who verifies one over-claim and finds it false learns to
-skim the whole stage, which is how §11's four false positives on `_*timer`
-names already train people to ignore it.
+**7.3 A check's summary states what it measured.** The §4 preflight line is the
+example: "zero unescaped interpolations into innerHTML" is true and is what it
+established; "zero innerHTML assignments with interpolation" is false. A reader
+who tests one over-claim and finds it false learns to skim the whole stage —
+which is how §11's four false positives on `_*timer` names already train people
+to ignore it.
 
-**6.4 Never read a runner's status through a pipe.** Invoke it on its own line
-and read `$?` directly. This cost two sessions a false green in one day, in two
-different wrappers. A lint rule over `bin/` and the rules-file command blocks
-catches it mechanically.
+**7.4 Never read a runner's status through a pipe.** Invoke on its own line,
+read `$?` directly. Two sessions, two wrappers, one day, two false greens. A
+lint over `bin/` and the rules-file command blocks catches it mechanically.
 
-**6.5 Aggregates report what did not run.** A chunked run that skips a phase
-must say so and exit non-zero, rather than presenting survivors as a total.
-This is already implemented for browser-phase admission; the requirement is
-that it stays true of any future runner.
+**7.5 Aggregates report what did not run.** A run that skips a phase says so
+and exits non-zero rather than presenting survivors as a total. Already true of
+browser-phase admission; the requirement is that it stays true of any future
+runner.
 
-**6.6 Failures are matched by assertion text, never by chunk index.** Chunk
-numbers shift whenever a file is added anywhere `pytest` collects. Between two
-runs a day apart, the same two failures moved from `plain-16`/`plain-46` to
-`plain-16`/`plain-47`; matching on index would have reported one new failure
-and one fix, both false.
+**7.6 Failures are matched by assertion text, never by chunk index.** Chunk
+numbers shift whenever a file is added anywhere `pytest` collects. Across two
+runs a day apart the same two failures moved from `plain-16`/`plain-46` to
+`plain-16`/`plain-47`; matching on index reports one new failure and one fix,
+both false.
 
-**6.7 Tests own their state.** The zero-byte `data/webconsole.db` case:
-`config.DB_PATH` resolves relative to the working directory, so each worktree
-has its own, and one suite run leaves a file that makes the next run's test
-fail for an unrelated reason. A test that needs a database creates and removes
-one it controls.
+**7.7 Tests own their state.** `config.DB_PATH` resolves relative to the
+working directory, so every worktree has its own and one suite run leaves a
+file that makes the next run fail for an unrelated reason. A test needing a
+database creates and removes one it controls.
 
-## 7. Guardrails outside reach
+## 8. Guardrails, and an honest note on enforcement
 
-Three things stop being ordinary code:
-
-- the security header block in `middleware.py`
-- the enforcement configuration for Trusted Types policies
-- the admission and reporting logic in the suite runners
+Three things stop being ordinary code: the security-header block in
+`middleware.py`, the Trusted Types policy configuration, and the admission and
+reporting logic in the suite runners.
 
 Changing them is permitted. Changing them *in the same commit as the work they
-would have blocked* is what this prevents. Mechanically: a dedicated
-`CODEOWNERS` entry, and a preflight stage that fails when a diff touches both a
-guardrail file and application code, requiring the guardrail change to land
-separately and first.
+would have blocked* is what this prevents.
 
-This is the "immutable guardrails" recommendation from the 2026 talk, reduced
-to what a repository of this size can actually enforce.
+**The enforcement mechanism has to match how this repository actually works.**
+There is no `CODEOWNERS` file, no pull-request flow, and no branch protection:
+commits reach `main` by direct push, including from agent sessions. Proposing
+`CODEOWNERS` here would be proposing a control that never fires — the same
+defect this document is about, committed in the document itself.
 
-## 8. What this is not
+What is enforceable today is a preflight stage that fails when one diff touches
+both a guardrail file and application code, requiring the guardrail change to
+land separately and first. That is weaker than review — it orders changes, it
+does not gate them — and it is worth having precisely because it runs.
 
-**Not a CSP nonce rollout.** Section 3.5 gives the reason: no inline scripts,
-no third-party scripts, so a nonce is plumbing without assurance today.
+Recording the gap rather than papering over it: organisational policy requires
+human review before merge, enforced by branch protection and `CODEOWNERS`.
+Neither exists in this repository. Whether to close that gap is an operator
+decision, not one this spec should make silently, and it is larger than the
+subject of this document.
 
-**Not a rewrite of `rules.md`.** Two of its stages are demonstrably weaker than
-they read (§5's `TEST_ONLY` set omits `pytest_asyncio` and tells the reader to
-add a dependency that must not be added; §11's grep excludes `_*timer` and so
-reports four correct handles every run). Those are bugs in specific stages,
-fixed as such. The document's structure is sound.
+## 9. What this is not
 
-**Not a policy of more review.** The evidence in section 1 is that review was
-present throughout and did not catch any of the six. Four of them were caught
-by execution — running the test against the broken version, running the
-composer over real rows, opening the log. That is where the effort goes.
+**Not a CSP nonce rollout.** Section 4.5 gives the reason.
 
-**Not applicable to legacy code retroactively.** Following the migration model
-in the talks: enforce on new code, let existing code deprecate. A rule that
-fails the whole tree on day one is a rule that gets disabled on day two.
+**Not a rewrite of `rules.md`.** Two stages are demonstrably weaker than they
+read — §5's `TEST_ONLY` set omits `pytest_asyncio` and so tells the reader to
+add a dependency that must not be added, and §11's grep excludes `_*timer` and
+reports four correct handles every run. Those are bugs in stages, fixed as
+such. The structure is sound.
 
-## 9. Order of work
+**Not a policy of more review.** Review was present for all six incidents in
+section 1 and caught none. Four were caught by execution — running the test
+against the broken version, running the composer over real rows, opening the
+log. That is where effort goes.
+
+**Not retroactive.** Following the migration model in the talks: enforce on new
+code, let existing code deprecate. A rule that fails the whole tree on day one
+is a rule that gets disabled on day two.
+
+**Not a fix for section 3.2.** Cross-session capability laundering is named,
+not solved.
+
+## 10. Order of work
 
 Each step is independently valuable and independently revertible.
 
 1. **CSP reporting endpoint, report-only.** Makes everything after it
    measurable. No behaviour change.
-2. **`object-src 'none'`.** One directive, no inventory needed, immediate.
-3. **Fetch Metadata, COOP, CORP.** Three lines in the existing response hook,
-   plus header assertions against real responses.
-4. **Trusted Types, report-only**, with the two policies from section 4. One
+2. **`object-src 'none'`.** One directive, no inventory, immediate.
+3. **SRI on the two vendored bundles, plus the hash-drift stage.** The only
+   item strict CSP cannot cover, and the sanitiser is one of the two files.
+4. **Fetch Metadata, COOP, CORP**, with the absent-header rule from 6.1, and
+   header assertions against real responses.
+5. **Trusted Types, report-only**, with the two policies from section 5. One
    week of production reports.
-5. **Trusted Types, enforced**, if and only if step 4 reported zero violations.
-6. **The check rules from section 6**, as preflight stages with their own
+6. **Trusted Types, enforced**, if and only if step 5 reported zero violations.
+7. **The check rules from section 7**, as preflight stages with their own
    mutations, plus fixes to §5's `TEST_ONLY` set and §11's grep.
-7. **Guardrail separation** — `CODEOWNERS` and the mixed-diff stage.
-8. **`style-src` inventory**, then removal of `'unsafe-inline'` if the
-   inventory allows.
+8. **Guardrail ordering stage** from section 8.
+9. **`style-src` inventory**, then removal of `'unsafe-inline'` if it allows.
 
-Steps 1-3 are a single afternoon. Step 8 may never be worth it, and saying so
+Steps 1-4 are a single afternoon. Step 9 may never be worth it, and saying so
 now is better than leaving it as an open intention.
 
-## 10. How we will know it worked
+## 11. How we will know it worked
 
 Not by the absence of findings, which is what every false green in section 1
 also looked like.
 
 - Step 1 succeeds when a deliberately-injected violation appears in the report
   sink. Verified by injecting one.
-- Steps 2, 3 and 5 succeed when a request that should be refused is refused,
-  asserted against a live response rather than against the source of the
-  header.
-- Step 6 succeeds when each new stage has a recorded mutation that makes it
+- Steps 2, 4 and 6 succeed when a request or an assignment that should be
+  refused is refused, asserted against live behaviour rather than against the
+  source of the header.
+- Step 3 succeeds when editing a byte of `purify.min.js` fails the build.
+  Verified by editing a byte.
+- Step 7 succeeds when each new stage has a recorded mutation that makes it
   fail.
 - The whole thing succeeds if, six months from now, the incident register has
   fewer entries of the form "the check passed and the thing was broken". That
